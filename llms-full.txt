@@ -433,6 +433,8 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 | Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |
 | Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
 | Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
+| Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
+| Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
 | Auto-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
 | Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
 | Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
@@ -704,6 +706,107 @@ Two guards enforce the supported contract instead of silently misbehaving:
 1. **Branch-ensure everywhere** (N4): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
 2. **Topology precondition** (N4): `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. It compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained). Single-member sprints skip the check (nothing to compare). Matching HEADs at start is a best-effort shared-workspace heuristic, not a proof of ongoing shared state -- the latter needs the deferred sync layer.
 
+## Workflow Subsystem (SEA-embedded workflow runner)
+
+`apra-fleet workflow <name>` runs a self-contained script (an ESM entry point
+under `workflows/<name>/`) against a live fleet connection, from inside the
+single-executable-application (SEA) binary -- no separate Node install and no
+unpacking to a temp directory required. `auto-sprint` is itself shipped as one
+of these built-in workflows rather than as a bespoke subcommand, so the
+launcher, the packaging, and the docs only need to solve this problem once.
+
+**Two always-separate processes.** The workflow launcher (`apra-fleet
+workflow`, `auto-sprint`) and the `apra-fleet` MCP server are never merged
+into one process. This is a hard boundary, not an optimization detail --
+see `docs/adr-workflow-server-resolution.md` for the ADR and its explicit
+scope guard against reopening it.
+
+**Server connection resolution is a single shared helper**, not duplicated
+per consumer. `@apralabs/apra-fleet-client/server-resolution`
+(`packages/apra-fleet-client/src/client/server-resolution.mjs`) implements
+one resolution order used identically by `src/cli/workflow.ts` and
+`packages/apra-fleet-se/bin/cli.mjs`:
+
+1. `APRA_FLEET_TRANSPORT` forced override (`http` fails loud with no
+   singleton rather than silently falling back to a private server; `stdio`
+   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to self-spawn).
+2. Probe for a healthy HTTP singleton (`checkRunningInstance()` -- the same
+   pid + `/health` check the installed service already uses for
+   startup-dedup) and attach with zero spawned processes. This is the
+   default, steady-state path.
+3. Fall back to stdio self-spawn (the four-tier command resolution
+   `resolveFleetServerCommand()` already had) only when no healthy
+   singleton is found.
+
+The rationale for one shared helper over two copies: a launcher that merely
+mirrored the old stdio-only `resolveFleetServerCommand()` would always
+self-spawn a private server even when a healthy HTTP singleton already
+existed, doubling running servers and splitting state. Duplicating the
+resolution order in two languages (TS launcher, MJS auto-sprint) was
+rejected because it guarantees drift between the two copies over time; see
+the ADR for the full tradeoff writeup.
+
+**Workflow entry contract:** a workflow is a directory under `workflows/`
+containing a `workflow.json` (name, entry, description) and an entry file
+that is either self-executing ESM or exports `main(args)` / `run(args)` /
+a default export. The launcher sets two env vars for every workflow run --
+`APRA_FLEET_SERVER_BIN` and `APRA_FLEET_SE_SCHEMAS_DIR` -- and never
+clobbers a value the caller already set. See `docs/authoring-workflows.md`
+for the full contract, including the raw-node escape hatch and how a
+workflow should import the shared engine/client packages.
+
+**Entry-path escape prevention is security-critical, not incidental:** the
+launcher resolves a workflow's `entry` against its own directory and
+rejects any resolution that escapes it (checked via `path.relative` plus
+`..`/absolute-path detection) before ever executing the file. A workflow
+manifest is not a trusted-by-construction input.
+
+**Packaging:** the workflow runtime, agent schemas, and built-in workflows
+(including auto-sprint) are embedded as SEA assets by
+`scripts/gen-sea-config.mjs`, proven viable by an earlier spike that
+dynamic `import()` of on-disk ESM works from inside a SEA main script on
+all three target OSes.
+
+**Install/uninstall/update lifecycle (Phases 1-3, closed this sprint,
+`apra-fleet-7pm`):** `install.ts`'s workflow-install step and its extraction
+logic (extract-to-temp-then-rename, with Windows EBUSY retry/backoff) were
+factored out into `src/cli/workflow-assets.ts` so more than one caller can
+share the exact same code path instead of re-implementing it:
+
+- `apra-fleet install` (fresh install) calls `extractWorkflowSubsystemAssets()`
+  to lay down `~/.apra-fleet/{node_modules,schemas,workflows/<builtin>}`.
+- `src/cli/workflow.ts`'s launcher self-heals: if a `workflow <name>`
+  invocation finds the on-disk payload missing or incomplete
+  (`hasWorkflowSubsystemAssets()` is false), it re-extracts from the same
+  embedded SEA assets before running, rather than failing with an opaque
+  module-not-found error.
+- `apra-fleet uninstall --skill workflows` removes the shared runtime/schema
+  dirs plus only the built-in workflow subdirectories recorded in
+  `workflows/.installed.json`'s `builtin` array (falling back to the static
+  `BUILTIN_WORKFLOW_NAMES` list if that manifest is missing, so a
+  partially-installed tree still cleans up). User-authored workflow
+  directories are left in place; `workflows/` itself is only removed if
+  nothing user-authored remains, and the command prints which user
+  workflows it kept.
+- `apra-fleet update` reads back the previously-persisted `--workflows` mode
+  and threads it into the re-invoked install, so an update refreshes
+  built-in workflow assets to the new version while preserving any
+  user-authored workflows already on disk.
+
+**CI coverage (Phase 4, closed this sprint):** `build:binary` smoke tests
+exercise the packaged SEA binary's `workflow` subcommand and the
+auto-sprint-as-built-in-workflow path end-to-end (not just the source
+`.ts`/`.mjs` files), and a regression-guard test suite
+(`tests/regression-command-surface.test.ts`) pins the full existing CLI
+command surface (`install --help`, `uninstall --dry-run`, `--version`,
+stdio handshake) against golden fixtures so future workflow-subsystem work
+can't silently change unrelated command output.
+
+The workflow subsystem is now installable, self-healing, uninstallable, and
+update-safe end-to-end; remaining gaps for this feature are tracked as
+individual open issues under `apra-fleet-7pm`, not as a phase-level
+placeholder.
+
 ## PM Skill Submodule
 
 The PM skill and its four agent definitions (planner, plan-reviewer, doer, reviewer) are vendored from the [apra-pm](https://github.com/Apra-Labs/apra-pm) repository via a git submodule at `vendor/apra-pm/`. At build time, `scripts/vendor-pm.mjs` copies the skill and agent files into `dist/`. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`). For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation.
@@ -829,6 +932,9 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.apra-fleet/bin/apra-fleet[.exe]` | The fleet binary |
 | `~/.apra-fleet/hooks/` | Shell hooks (statusline, etc.) |
 | `~/.apra-fleet/scripts/` | Helper scripts |
+| `~/.apra-fleet/node_modules/` | Shared on-disk workflow runtime (`@apralabs/apra-fleet-workflow`, `@apralabs/apra-fleet-client`, vendored `ajv` + deps) that `apra-fleet workflow <name>` and any user-authored workflow resolve bare specifiers against -- see `docs/authoring-workflows.md` |
+| `~/.apra-fleet/schemas/` | Installed agent role verdict/input JSON schemas (17 files); the `APRA_FLEET_SE_SCHEMAS_DIR` default the workflow launcher sets |
+| `~/.apra-fleet/workflows/` | Installed workflows (`.installed.json` + one directory per workflow, built-in or user-authored); run with `apra-fleet workflow <name> [args...]` -- see `docs/authoring-workflows.md` |
 | `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
 | `~/.claude/skills/pm/` | PM orchestration skill |
 | `~/.claude/skills/pm/cost.js` | Auto-generated CJS module with sprint cost functions (all providers with PM) |
@@ -859,6 +965,27 @@ the `apra-fleet` MCP server to be reachable (it spawns/connects to it over
 stdio the same way `apra-fleet` itself does); see
 `packages/apra-fleet-se/docs/cli-reference.md` for its server- and
 schema-resolution order across dev/bundled/standalone layouts.
+
+### The `apra-fleet workflow <name>` subcommand
+
+`install` also populates `~/.apra-fleet/node_modules/`, `~/.apra-fleet/schemas/`,
+and `~/.apra-fleet/workflows/` (see the directory table above) so that
+`apra-fleet workflow <name> [args...]` -- the SEA-binary workflow runner --
+can run built-in workflows (`auto-sprint`, `hello-world`) or any
+user-authored workflow with zero system Node required. See
+`docs/authoring-workflows.md` for the full authoring contract.
+
+The workflow launcher and the `apra-fleet` MCP server it talks to are
+always separate processes. Set `APRA_FLEET_TRANSPORT=http` (the default) or
+`APRA_FLEET_TRANSPORT=stdio` to control how the launcher reaches that
+server: `http` (default) attaches to the already-running installed-service
+singleton at `http://localhost:${APRA_FLEET_PORT:-7523}/mcp` and spawns
+nothing; `stdio` self-spawns a private server the same way the `auto-sprint`
+bin does. See `docs/adr-workflow-server-resolution.md` for the full
+resolution order (this same order also governs where role schemas resolve
+from in the installed-binary case: `APRA_FLEET_SE_SCHEMAS_DIR`, set by the
+launcher to `~/.apra-fleet/schemas`, is now tier 1 of the schema resolution
+described in `packages/apra-fleet-se/docs/cli-reference.md`).
 
 **What `install` does NOT do:**
 
@@ -946,7 +1073,16 @@ apra-fleet uninstall
 | `--force` | Automatically stop the running fleet server before uninstalling |
 | `--yes` | Skip the confirmation prompt |
 | `--llm <provider>` | Remove only a specific provider (`claude`, `agy`, `codex`, `copilot`, `gemini`) |
-| `--skill fleet\|pm\|all` | Remove only the specified skill directories (default: `all`) |
+| `--skill fleet\|pm\|workflows\|all` | Remove only the specified skill directories (default: `all`) |
+
+`--skill workflows` removes the shared workflow runtime and schemas
+(`~/.apra-fleet/node_modules/`, `~/.apra-fleet/schemas/`) plus only the
+built-in workflow subdirectories under `~/.apra-fleet/workflows/` (read from
+`workflows/.installed.json`'s `builtin` list, falling back to the static
+built-in name list if that manifest is missing). Any user-authored
+`workflows/<name>/` directories are left in place, and the command reports
+which ones it kept; the `workflows/` root itself is only removed if nothing
+user-authored remains in it.
 
 Examples:
 
@@ -962,6 +1098,9 @@ apra-fleet uninstall --skill pm
 
 # Remove only Claude's fleet skills
 apra-fleet uninstall --llm claude --skill fleet
+
+# Remove only the workflow runtime + built-in workflows, keep user-authored ones
+apra-fleet uninstall --skill workflows
 ```
 
 If the fleet server is running, uninstall aborts and tells you to re-run with
@@ -1071,22 +1210,27 @@ needed.
 6. Spawns the installer detached, then exits with status 0:
 
    ```
-   <installer> install --force --llm <provider> --skill <skill>
+   <installer> install --force --llm <provider> --skill <skill> --workflows <mode>
    ```
 
    `--force` makes the installer stop the running apra-fleet server before
-   replacing the binary. The `--llm` and `--skill` values come from
-   `install-config.json` (see below).
+   replacing the binary. The `--llm`, `--skill`, and `--workflows` values come
+   from `install-config.json` (see below).
 
 Any unexpected error is caught and printed as `Error: Update failed -- <message>`.
 
 ## install-config.json
 
 `update` reads `~/.apra-fleet/data/install-config.json` and uses the first
-provider entry to recover the `--llm` provider and its `--skill` set, so the
-update preserves the original install configuration. If the file is missing or
-cannot be parsed, `update` prints a warning and falls back to
-`--llm claude --skill all`.
+provider entry to recover the `--llm` provider, its `--skill` set, and its
+persisted `workflowsMode` (`all` or `none`), so the update preserves the
+original install configuration -- including refreshing built-in workflow
+assets to the new version while leaving any user-authored workflows on disk
+untouched. `workflowsMode` is optional for backward compatibility: an
+`install-config.json` written before the workflow subsystem existed won't
+have the field, so `update` defaults it to `all`, matching a fresh install.
+If the file is missing or cannot be parsed, `update` prints a warning and
+falls back to `--llm claude --skill all --workflows all`.
 
 ## Stopping and restarting the server
 
