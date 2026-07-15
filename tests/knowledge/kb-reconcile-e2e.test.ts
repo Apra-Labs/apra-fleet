@@ -121,7 +121,7 @@ function challengerIdFor(originalId: string): string {
 }
 
 describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
-  it('duplicate skipped, refinement superseded, contradiction flagged, directive pending; then sweep + prefilter + export produce the reconciled bible', async () => {
+  it('duplicate skipped, refinement kept live alongside its predecessor, contradiction flagged, directive pending; then sweep + prefilter + export produce the reconciled bible', async () => {
     // --- Fixture files (real files in the temp git repo) -----------------
     const fileDup = path.join(repoDir, 'dup.ts');
     const fileBeta = path.join(repoDir, 'beta.ts');
@@ -193,9 +193,16 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     expect(provider.hasEntry('b-dup')).toBe(false);
     expect(rawRow(aDup.id).superseded_at).toBeFalsy();
 
-    // refinement: aRefine superseded, a fresh row (NOT the bible id, since
-    // AUDN's update path always mints a random id) now carries the refined claim.
-    expect(rawRow(aRefine.id).superseded_at).toBeTruthy();
+    // refinement: AUDN decides 'update' (so importReport.superseded, which
+    // counts 'update' decisions, still sees it), but supersede is OPT-IN and a
+    // bible cannot opt in: it is authored on another branch and cannot name
+    // THIS worktree's local uuid, so no bible entry can carry `supersedes`.
+    // An import refinement is therefore an ordinary refinement -- aRefine stays
+    // LIVE and the fresh row (NOT the bible id, since AUDN's update path always
+    // mints a random id) carries the refined claim and links 'refines' to it.
+    // Retiring the predecessor is a curation act (kb-review.md Step 4), not
+    // something an import infers.
+    expect(rawRow(aRefine.id).superseded_at).toBeFalsy();
     expect(provider.hasEntry('b-refine')).toBe(false);
 
     // contradiction #1: pair asymmetry as landed -- aContra (original) is

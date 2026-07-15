@@ -71,7 +71,8 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     }));
 
     // Entry C: promoted to CONFIRMED, then superseded by a correcting capture
-    // (AUDN 'update' -- same title/symbols/files triggers it).
+    // (AUDN 'update' -- same title/symbols/files -- that explicitly names C via
+    // `supersedes`, since supersede is opt-in).
     const c = await provider.capture(makeInput({
       title: 'Entry C knowledge',
       summary: 'Summary C',
@@ -85,6 +86,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       symbols: ['symC'],
       source_files: ['src/c.ts'],
       content: 'Corrected content for C.',
+      supersedes: c.id,
     }));
     expect(cUpdate.audn_decision).toBe('update');
 

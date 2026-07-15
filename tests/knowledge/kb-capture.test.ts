@@ -48,12 +48,33 @@ describe('kb_capture AUDN decisions', () => {
     expect(second.id).toBe(first.id);
   });
 
-  it('updated fact returns audn_decision=update and old entry has superseded_at set', async () => {
+  // Supersede is OPT-IN. An ordinary refinement still decides 'update' (that is
+  // a topicality signal) but must leave its predecessor live; only a capture
+  // that names what it replaces retires anything.
+  it('refined fact returns audn_decision=update and leaves the old entry live', async () => {
     const first = await provider.capture(makeInput());
     expect(first.audn_decision).toBe('add');
 
     const updated = makeInput({
       content: 'The registry initializes eagerly at startup, not lazily. Changed in v2.',
+    });
+    const second = await provider.capture(updated);
+    expect(second.audn_decision).toBe('update');
+    expect(second.id).not.toBe(first.id);
+
+    const allResults = await provider.query({ include_superseded: true, include_stale: true });
+    const old = allResults.results.find(e => e.id === first.id);
+    expect(old).toBeDefined();
+    expect(old!.superseded_at).toBeFalsy();
+  });
+
+  it('an explicit supersedes capture returns update and retires the named entry', async () => {
+    const first = await provider.capture(makeInput());
+    expect(first.audn_decision).toBe('add');
+
+    const updated = makeInput({
+      content: 'The registry initializes eagerly at startup, not lazily. Changed in v2.',
+      supersedes: first.id,
     });
     const second = await provider.capture(updated);
     expect(second.audn_decision).toBe('update');

@@ -36,6 +36,8 @@ export const kbCaptureSchema = z.object({
     .describe('Confidence level (default: INFERRED)'),
   scope: z.enum(['project', 'global']).optional()
     .describe('Scope: project (default) or global for team-wide conventions'),
+  supersedes: z.string().optional()
+    .describe('Id of an entry this capture REPLACES. Only honored when AUDN independently matches that same entry as a same-topic candidate (same type, overlapping symbols and source_files), so it cannot retire an arbitrary entry. Omit it unless you mean to retire something -- an ordinary refinement links to its predecessor and both stay live. The KB Agent sets this when resolving a flagged pair; doer/reviewer captures should not.'),
 });
 
 export type KbCaptureInput = z.infer<typeof kbCaptureSchema>;
@@ -131,6 +133,7 @@ export async function kbCapture(input: KbCaptureInput): Promise<string> {
     source,
     confidence,
     scope,
+    supersedes: input.supersedes,
   });
 
   return JSON.stringify({ id, audn_decision, confidence_clamped });

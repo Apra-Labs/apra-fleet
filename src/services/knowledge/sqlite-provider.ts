@@ -556,15 +556,33 @@ export class SqliteProvider implements MemoryProvider {
     }
 
     if (decision.decision === 'update') {
-      // D2 (F2a): a superseded entry MUST be marked both superseded_at AND
-      // stale = 1 so it is excluded from query()/prime() by default (query
-      // filters stale = 0 independently of superseded_at). content_hash is
-      // left intact. Only the 'update' branch touches this; the flagged/none
-      // branches are owned by the contradiction path.
-      db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?').run(now, decision.matchedId);
       const newId = randomUUID();
+
+      if (input.supersedes === decision.matchedId) {
+        // EXPLICIT: the caller named what it replaces and AUDN independently
+        // matched it. Retire it exactly as before -- superseded_at + stale = 1.
+        // D2 (F2a): both flags are required so the old row is excluded from
+        // query()/prime() by default (query filters stale = 0 independently of
+        // superseded_at). content_hash is left intact.
+        // flagged_for_review is deliberately NOT cleared here; that is
+        // resolveContradiction's behavior, and kb-review.md depends on the
+        // difference (a kept entry stays listed under flagged_only).
+        db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?')
+          .run(now, decision.matchedId);
+        this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
+        this.wireLinks(db, newId, input);
+        return { id: newId, audn_decision: 'update' };
+      }
+
+      // IMPLICIT: same type, overlapping symbol and file, different content.
+      // That is a topicality signal, not consent to destroy -- two DISTINCT
+      // facts about one symbol used to eat each other. Link and keep both;
+      // curation retires what it means to retire, explicitly.
       this.insertEntry(db, newId, input, newContent, now, sourceFileHashes);
       this.wireLinks(db, newId, input);
+      db.prepare(
+        'INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)'
+      ).run(newId, decision.matchedId, 'refines');
       return { id: newId, audn_decision: 'update' };
     }
 

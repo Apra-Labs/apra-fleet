@@ -133,6 +133,7 @@ describe('SqliteProvider.list (T3.3, F8a)', () => {
     await provider.capture(makeInput({
       symbols: ['symSupersede'],
       content: 'The registry now initializes eagerly at startup.',
+      supersedes: first.id,
     }));
 
     const results = await provider.list({});

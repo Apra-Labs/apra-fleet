@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
-// T1.3 / D2 (F2a): when AUDN decides 'update', the OLD entry must be marked
-// BOTH superseded_at AND stale = 1. Previously only superseded_at was set, so
-// the old row could still leak through query()/prime() paths that filter on
-// stale independently of superseded_at.
+// Supersede is OPT-IN. symbol+file overlap is a topicality signal, not consent
+// to destroy: measured 25% of real agent captures retired a DISTINCT entry.
+// A caller that means to replace something passes `supersedes`. Everything else
+// links and both entries stay live.
 
 function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
   return {
@@ -37,45 +37,122 @@ afterEach(() => {
   provider.close();
 });
 
-describe('AUDN update supersede marks old entry superseded_at AND stale', () => {
-  it('sets superseded_at and stale=1 on the old entry, keeps the new one live', async () => {
-    const first = await provider.capture(makeInput());
-    expect(first.audn_decision).toBe('add');
+describe('implicit capture does NOT supersede', () => {
+  it('keeps two DISTINCT facts about the same symbol+file both live', async () => {
+    const perf = await provider.capture(makeInput({
+      title: 'parseConfig is slow on large files',
+      content: 'parseConfig does a full re-read per key; it is slow on large files.',
+      source_files: ['src/config.ts'],
+      symbols: ['parseConfig'],
+    }));
+    const crash = await provider.capture(makeInput({
+      title: 'parseConfig throws on null input',
+      content: 'parseConfig throws a TypeError when handed a null input buffer.',
+      source_files: ['src/config.ts'],
+      symbols: ['parseConfig'],
+    }));
 
-    // Correcting entry: same type, same symbols AND files, similar title,
-    // different content -> AUDN decides 'update'.
+    const live = await provider.query({ limit: 50 });
+    const ids = live.results.map(e => e.id);
+    expect(ids).toContain(perf.id);
+    expect(ids).toContain(crash.id);
+  });
+
+  it('leaves the prior entry unsuperseded and unstale', async () => {
+    const first = await provider.capture(makeInput());
     const second = await provider.capture(makeInput({
       content: 'The registry now initializes eagerly at startup. Changed in v2.',
     }));
     expect(second.audn_decision).toBe('update');
-    expect(second.id).not.toBe(first.id);
 
-    // Old entry must carry BOTH superseded_at and stale = 1.
     const all = await provider.query({ include_superseded: true, include_stale: true });
     const old = all.results.find(e => e.id === first.id);
-    expect(old).toBeDefined();
-    expect(old!.superseded_at).toBeTruthy();
-    expect(old!.stale).toBe(true);
-
-    // content_hash left intact (empty here, but not corrupted).
-    expect(old!.content_hash).toBe('');
-
-    // New entry is live.
-    const fresh = all.results.find(e => e.id === second.id);
-    expect(fresh).toBeDefined();
-    expect(fresh!.superseded_at).toBeFalsy();
-    expect(fresh!.stale).toBe(false);
+    expect(old!.superseded_at).toBeFalsy();
+    expect(old!.stale).toBe(false);
   });
 
-  it('query() excludes the superseded/stale old entry by default', async () => {
+  it('links the refinement to its predecessor', async () => {
     const first = await provider.capture(makeInput());
     const second = await provider.capture(makeInput({
       content: 'The registry now initializes eagerly at startup. Changed in v2.',
     }));
 
-    const defaultResults = await provider.query({ query: 'Registry initialization behavior' });
-    const ids = defaultResults.results.map(e => e.id);
+    // getLinked() does not expose link_type, and wireLinks already creates
+    // shares_symbol/shares_file edges between these two. Assert the 'refines'
+    // edge directly. (TS `private` is compile-time only.)
+    const db = (provider as unknown as { db: import('better-sqlite3').Database }).db;
+    const row = db.prepare(
+      'SELECT 1 FROM links WHERE from_id = ? AND to_id = ? AND link_type = ?'
+    ).get(second.id, first.id, 'refines');
+    expect(row).toBeDefined();
+  });
+});
+
+describe('explicit supersedes DOES supersede', () => {
+  it('retires the named entry with superseded_at AND stale', async () => {
+    const first = await provider.capture(makeInput());
+    const second = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup. Changed in v2.',
+      supersedes: first.id,
+    }));
+    expect(second.audn_decision).toBe('update');
+
+    const all = await provider.query({ include_superseded: true, include_stale: true });
+    const old = all.results.find(e => e.id === first.id);
+    expect(old!.superseded_at).toBeTruthy();
+    expect(old!.stale).toBe(true);
+    expect(old!.content_hash).toBe('');
+
+    const fresh = all.results.find(e => e.id === second.id);
+    expect(fresh!.superseded_at).toBeFalsy();
+    expect(fresh!.stale).toBe(false);
+  });
+
+  it('does NOT clear flagged_for_review on the superseded entry', async () => {
+    // resolveContradiction clears the flag; this path must not. kb-review.md
+    // depends on the difference.
+    const first = await provider.capture(makeInput({ flagged_for_review: true }));
+    const second = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup. Changed in v2.',
+      supersedes: first.id,
+    }));
+    expect(second.id).not.toBe(first.id);
+
+    const all = await provider.query({ include_superseded: true, include_stale: true });
+    const old = all.results.find(e => e.id === first.id);
+    expect(old!.flagged_for_review).toBe(true);
+  });
+
+  it('query() excludes the explicitly superseded entry by default', async () => {
+    const first = await provider.capture(makeInput());
+    const second = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup. Changed in v2.',
+      supersedes: first.id,
+    }));
+
+    const results = await provider.query({ query: 'Registry initialization behavior' });
+    const ids = results.results.map(e => e.id);
     expect(ids).not.toContain(first.id);
     expect(ids).toContain(second.id);
+  });
+
+  it('ignores a supersedes id that is not the matched candidate', async () => {
+    const first = await provider.capture(makeInput());
+    const unrelated = await provider.capture(makeInput({
+      title: 'Unrelated cache behavior',
+      content: 'The cache evicts on a 60s TTL.',
+      source_files: ['src/cache.ts'],
+      symbols: ['evictCache'],
+    }));
+    // Names an id AUDN did not match -> must not retire anything.
+    const third = await provider.capture(makeInput({
+      content: 'The registry now initializes eagerly at startup. Changed in v2.',
+      supersedes: unrelated.id,
+    }));
+    expect(third.id).not.toBe(first.id);
+
+    const all = await provider.query({ include_superseded: true, include_stale: true });
+    expect(all.results.find(e => e.id === unrelated.id)!.superseded_at).toBeFalsy();
+    expect(all.results.find(e => e.id === first.id)!.superseded_at).toBeFalsy();
   });
 });

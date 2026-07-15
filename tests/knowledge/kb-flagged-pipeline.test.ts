@@ -111,7 +111,8 @@ describe('kb flagged-pipeline e2e (T3.7, F11)', () => {
     const bPromotedTwice = await fetchEntry(bId);
     expect(bPromotedTwice.confidence).toBe('CONFIRMED');
 
-    // Supersede A (the loser) via a corrective capture that AUDN treats as
+    // Supersede A (the loser) via a corrective capture that names A via
+    // `supersedes` (supersede is opt-in) AND that AUDN independently treats as
     // an UPDATE against A specifically: same title/symbols/source_files as
     // A, but the corrective content carries NEITHER a contradiction keyword
     // nor a polarity word, so it does not re-flag -- it dedups/updates A
@@ -123,6 +124,7 @@ describe('kb flagged-pipeline e2e (T3.7, F11)', () => {
       content: 'See the symbolFoo-v2 entry for the current status of module Alpha.',
       symbols: ['symbolFoo'],
       source_files: ['src/symbolFoo.ts'],
+      supersedes: aId,
     }));
     expect(correctionOut.audn_decision).toBe('update');
 

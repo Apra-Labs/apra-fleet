@@ -58,28 +58,35 @@ Wait for the user's response before proceeding to the next pair.
 
 ### Step 4: Apply resolution
 
+Supersede is OPT-IN: you must name the entry you are retiring via
+`supersedes=<id>`. It is honored only when AUDN independently matches that same
+entry (same type, overlapping symbols and source_files), so the corrective
+capture must still carry the SAME title/symbols/source_files as its target --
+otherwise nothing is retired and you get a second live entry instead. A capture
+without `supersedes` never retires anything.
+
 **A -- Keep original:**
 - `kb_promote(original.id, reason="contradiction resolved: original kept")` -- upgrades its confidence.
-- `kb_capture` a new entry with the SAME title/symbols/source_files as the challenger, corrected content that carries no contradiction keyword or polarity word (or AUDN will flag it again instead of updating), `confidence=UNVERIFIED`. AUDN will UPDATE (supersede) the challenger.
+- `kb_capture` a new entry with the SAME title/symbols/source_files as the challenger, corrected content that carries no contradiction keyword or polarity word (or AUDN will flag it again instead of updating), `confidence=UNVERIFIED`, and `supersedes=<challenger.id>`. That retires the challenger.
 
 **B -- Keep challenger:**
 - `kb_promote(challenger.id, reason="contradiction resolved: challenger kept")`.
-- `kb_capture` a corrected entry with the SAME title/symbols/source_files as the original, corrected content free of contradiction/polarity words, that supersedes the original. AUDN updates (supersedes) the original.
+- `kb_capture` a corrected entry with the SAME title/symbols/source_files as the original, corrected content free of contradiction/polarity words, and `supersedes=<original.id>`. That retires the original.
 
 **M -- Merge:**
 - Ask the user to provide the merged content.
-- `kb_capture` a new entry with merged content. AUDN supersedes whichever entry has the closest title match.
+- `kb_capture` a new entry with merged content and `supersedes=<id of whichever entry it replaces>`. Repeat for the second entry if both must be retired -- `supersedes` names ONE entry, so retiring both takes two captures.
 - `kb_promote` the newly captured entry id.
 
 **D -- Delete both:**
-- `kb_capture` a retraction entry: `title=<original title>`, `content="Retracted: both entries were incorrect."`, `confidence=UNVERIFIED`. AUDN supersedes the original.
-- `kb_capture` same for the challenger.
+- `kb_capture` a retraction entry: `title=<original title>`, `content="Retracted: both entries were incorrect."`, `confidence=UNVERIFIED`, `supersedes=<original.id>`.
+- `kb_capture` same for the challenger, with `supersedes=<challenger.id>`.
 
 **S -- Skip:**
 - No action. Note it in the session summary.
 
 **Verified actual behavior (T3.7, F11 e2e proof) -- read this before reporting "resolved":**
-- Superseding an entry (via the corrective `kb_capture` above, AUDN decision `update`) sets its `superseded_at` and `stale=1`. That entry then drops out of every future `kb_query({flagged_only:true})` listing -- the tool always excludes superseded entries.
+- Superseding an entry (via the corrective `kb_capture` above with `supersedes` set, AUDN decision `update`) sets its `superseded_at` and `stale=1`. That entry then drops out of every future `kb_query({flagged_only:true})` listing -- the tool always excludes superseded entries.
 - `kb_promote` does **NOT** clear `flagged_for_review` and does **NOT** clear `contradiction_of`. This means the entry you KEPT (promoted, not superseded) stays visible in `kb_query({flagged_only:true})` forever -- it is not automatically delisted just because it was resolved. Do not expect the pair to fully disappear from the flagged list; expect only the superseded side to disappear. Recognize an already-resolved pair by its counterpart's absence (or by checking `promoted_at`/`confidence` on the id you kept), not by the pair vanishing entirely.
 - A `kb_feedback`-downvoted entry (`stale=1` + `flagged_for_review=1`, never superseded) stays listed under `flagged_only` until it is separately resolved the same way -- superseded via a corrective capture, or otherwise retired. Simply promoting a *different* entry never clears it.
 

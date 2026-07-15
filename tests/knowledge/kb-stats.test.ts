@@ -87,16 +87,17 @@ describe('SqliteProvider.stats (T2.1, F5, D4)', () => {
       symbols: ['symX'], source_files: ['src/x.ts'],
     }));
 
-    // superseded: same-type update (AUDN 'update' decision).
+    // superseded: same-type update with an explicit supersedes (AUDN 'update'
+    // decision). Supersede is opt-in -- without `supersedes` both rows stay live.
     const first = await provider.capture(makeInput({
       title: 'Superseded entry', summary: 'Original', symbols: ['symSup'], source_files: ['src/sup.ts'],
     }));
     const update = await provider.capture(makeInput({
       title: 'Superseded entry', summary: 'Original', symbols: ['symSup'], source_files: ['src/sup.ts'],
       content: 'Corrected content.',
+      supersedes: first.id,
     }));
     expect(update.audn_decision).toBe('update');
-    void first;
 
     const stats = await provider.stats();
     // 2 stale rows: the invalidated context-cache entry AND the superseded

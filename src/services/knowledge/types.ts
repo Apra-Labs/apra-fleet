@@ -48,6 +48,13 @@ export interface KBEntry {
   stale: boolean;
   flagged_for_review: boolean;
   contradiction_of?: string;
+  // Opt-in supersede. When a capture names the entry it replaces AND AUDN
+  // independently matches that same entry as a same-topic candidate, the named
+  // entry is retired. symbol+file overlap alone is NOT consent to destroy --
+  // that inference silently retired 25% of real agent captures' predecessors.
+  // The curation layer (skills/pm/kb-review.md Step 4) sets this deliberately;
+  // ordinary doer/reviewer captures never do.
+  supersedes?: string;
   // Tolerant reads (D5, no migration): existing rows carry legacy free-string
   // author values and legacy source values ('doer', 'reviewer',
   // 'user_interrupt', 'kb_agent_harvest'). New WRITES from the tool layer are

@@ -99,9 +99,10 @@ describe('kb_query', () => {
   it('superseded entry excluded by default', async () => {
     const first = await provider.capture(makeInput());
 
-    // Capture an update to supersede the first entry
+    // Capture an update that explicitly supersedes the first entry
     const updated = makeInput({
       content: 'The registry now initializes eagerly at startup.',
+      supersedes: first.id,
     });
     await provider.capture(updated);
 
