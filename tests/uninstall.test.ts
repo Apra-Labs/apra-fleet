@@ -30,6 +30,8 @@ describe('uninstall', () => {
     // Default mocks for fs
     vi.spyOn(fs, 'existsSync').mockReturnValue(true);
     vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({ providers: { claude: { skill: 'all' } } }));
+    // No built-in/user workflow dirs by default; individual tests override this.
+    vi.spyOn(fs, 'readdirSync').mockReturnValue([]);
 
     // Default mock for readline
     (readline.createInterface as any).mockReturnValue({
@@ -216,6 +218,78 @@ describe('uninstall', () => {
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Gemini...'));
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Codex...'));
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Copilot...'));
+  });
+
+  describe('--skill workflows', () => {
+    const workflowsDir = config.WORKFLOWS_DIR;
+    const nodeModulesDir = config.NODE_MODULES_DIR;
+    const schemasDir = config.SCHEMAS_DIR;
+
+    function mockWorkflowsLayout(userDirs: string[]) {
+      const builtinDirs = ['auto-sprint', 'hello-world'];
+      const allDirs = [...builtinDirs, ...userDirs];
+      vi.spyOn(fs, 'readFileSync').mockImplementation((p: any) => {
+        if (typeof p === 'string' && p.includes('.installed.json')) {
+          return JSON.stringify({ version: '1.0.0', builtin: builtinDirs });
+        }
+        return JSON.stringify({ providers: { claude: { skill: 'all' } } });
+      });
+      vi.spyOn(fs, 'readdirSync').mockImplementation((p: any) => {
+        if (p === workflowsDir) {
+          return allDirs.map(name => ({ name, isDirectory: () => true })) as any;
+        }
+        return [] as any;
+      });
+    }
+
+    it('removes builtin workflows and the empty workflows/ root (empty-after case)', async () => {
+      mockWorkflowsLayout([]);
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await runUninstall(['--skill', 'workflows', '--yes']);
+
+      expect(fs.rmSync).toHaveBeenCalledWith(nodeModulesDir, expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(schemasDir, expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'auto-sprint'), expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'hello-world'), expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(workflowsDir, expect.any(Object));
+      expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringContaining('kept user workflows'));
+    });
+
+    it('keeps user-authored workflows and the workflows/ root (non-empty-after case)', async () => {
+      mockWorkflowsLayout(['my-custom']);
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await runUninstall(['--skill', 'workflows', '--yes']);
+
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'auto-sprint'), expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'hello-world'), expect.any(Object));
+      expect(fs.rmSync).not.toHaveBeenCalledWith(workflowsDir, expect.any(Object));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('kept user workflows: my-custom'));
+    });
+
+    it('--dry-run prints the identical plan for both cases without deleting anything', async () => {
+      mockWorkflowsLayout(['my-custom']);
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await runUninstall(['--skill', 'workflows', '--dry-run', '--yes']);
+
+      expect(fs.rmSync).not.toHaveBeenCalled();
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing workflow runtime: ${nodeModulesDir}`));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing workflow schemas: ${schemasDir}`));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing built-in workflow: ${path.join(workflowsDir, 'auto-sprint')}`));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing built-in workflow: ${path.join(workflowsDir, 'hello-world')}`));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('kept user workflows: my-custom'));
+    });
+
+    it('is included in --skill all', async () => {
+      mockWorkflowsLayout([]);
+
+      await runUninstall(['--yes']);
+
+      expect(fs.rmSync).toHaveBeenCalledWith(nodeModulesDir, expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(workflowsDir, expect.any(Object));
+    });
   });
 
   it('aborts if apra-fleet server is running', async () => {
