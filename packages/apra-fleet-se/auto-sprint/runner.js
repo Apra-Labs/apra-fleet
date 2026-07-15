@@ -1156,6 +1156,28 @@ export async function main(context) {
         return [...merged.values()];
     }
 
+    // apra-fleet-xbu.C5: a bead that has been decomposed into subtasks
+    // (i.e. it is itself SOMEONE ELSE's `--parent`) must never be dispatched
+    // to a doer alongside its own subtasks -- the doer would claim/attempt
+    // to close a grouping node, not a leaf unit of work, and (per
+    // GRAPH-SEMANTICS.md) that item's "done" status is meant to come from
+    // its children closing, never from being worked directly. This is a
+    // STRUCTURAL check (does this ready bead have children in scope?), not
+    // an issue_type check -- retyping a bead to change its dispatch
+    // eligibility does not work (issue_type has no effect on `--ready`
+    // inclusion) and was reverted earlier in this remediation (see Phase
+    // A2). A bead can be a leaf `type=task` OR a decomposed `type=bug`/
+    // `type=feature` parent; only the has-children structure tells them
+    // apart.
+    async function readyLeafBeads() {
+        const [ready, allInScope] = await Promise.all([
+            bdListScoped('--ready --json'),
+            bdListScoped('--json'),
+        ]);
+        const parentIds = new Set(allInScope.filter((b) => b.parent).map((b) => b.parent));
+        return ready.filter((b) => !parentIds.has(b.id));
+    }
+
     /**
      * N8 (apra-fleet-unw2.6, work items b/c): dispatches one reviewer round
      * and returns its schema-validated verdict, with the shared
@@ -1730,7 +1752,7 @@ export async function main(context) {
         // different streak-assignment prompt text between two runs) that
         // the older agentType-only sequence comparison in
         // test/advanced-mock-runner-test.mjs could not see.
-        const readyBeads = (await bdListScoped('--ready --json'))
+        const readyBeads = (await readyLeafBeads())
             .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
         // A5: an empty `--ready` list is NOT, by itself, evidence the sprint
@@ -1772,7 +1794,7 @@ export async function main(context) {
             // streak-assignment prompt and the doerPool round-robin index
             // below, so an unstable order here was directly observable as
             // prompt drift between two otherwise-identical runs.
-            const currentReady = (await bdListScoped('--ready --json'))
+            const currentReady = (await readyLeafBeads())
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
             if (currentReady.length === 0) break;
@@ -2107,27 +2129,33 @@ export async function main(context) {
                 // itself via a bare, unscoped `bd list --type=feature`. This
                 // dispatch used to hand it nothing but a generic instruction
                 // string -- the one input its own contract says it must
-                // never guess. Fetch the scope's open features here instead.
+                // never guess. Fetch the scope's open features here and name
+                // them explicitly -- always dispatch (even with zero open
+                // features this cycle: deploy succeeded and a playbook
+                // exists, so this phase runs regardless, per the fixed
+                // per-cycle phase sequence every other cycle-evaluation check
+                // in this file assumes).
                 const openFeatures = await bdListScoped('--type=feature --status=open --json');
                 const featurePrompt = openFeatures.length > 0
                     ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
                       `${openFeatures.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
                       `--parent ${targetIssues[0]}.`
-                    : `No open type=feature beads in scope -- nothing to test this cycle.`;
-                integResult = openFeatures.length > 0
-                    ? await agent(
-                        featurePrompt,
-                        {
-                            member_name: getMemberForRole('integ-test-runner'),
-                            agentType: 'integ-test-runner',
-                            schema: integReport,
-                            model: FIXED_ROLE_TIER['integ-test-runner'],
-                            // apra-fleet-j6i: runs a full test suite, plausibly
-                            // long-running.
-                            timeout_s: 900,
-                        }
-                    )
-                    : { featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: featurePrompt };
+                    : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
+                      `this cycle -- if the playbook still names concrete checks to run, run them; ` +
+                      `otherwise report nothing to test. Add bug beads if needed, filed under ` +
+                      `--parent ${targetIssues[0]}.`;
+                integResult = await agent(
+                    featurePrompt,
+                    {
+                        member_name: getMemberForRole('integ-test-runner'),
+                        agentType: 'integ-test-runner',
+                        schema: integReport,
+                        model: FIXED_ROLE_TIER['integ-test-runner'],
+                        // apra-fleet-j6i: runs a full test suite, plausibly
+                        // long-running.
+                        timeout_s: 900,
+                    }
+                );
             } catch (err) {
                 if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
