@@ -79,7 +79,7 @@ without `supersedes` never retires anything.
 - `kb_promote` the newly captured entry id.
 
 **D -- Delete both:**
-- `kb_capture` a retraction entry: `title=<original title>`, `content="Retracted: both entries were incorrect."`, `confidence=UNVERIFIED`, `supersedes=<original.id>`.
+- `kb_capture` a retraction entry: `title=<original title>`, `content="Retracted: neither entry describes current behavior."` (no contradiction keyword or polarity word, or AUDN will flag it again instead of updating), `confidence=UNVERIFIED`, `supersedes=<original.id>`.
 - `kb_capture` same for the challenger, with `supersedes=<challenger.id>`.
 
 **S -- Skip:**
