@@ -82,7 +82,7 @@ Re-running an import on the same bible therefore adds nothing.
 
 After the entry loop, `kb_import` runs a `freshnessSweep` so entries whose basis
 does not match THIS worktree are immediately staled rather than serving
-wrong-branch claims. It reports `{imported, skipped, superseded, flagged}` plus
+wrong-branch claims. It reports `{imported, skipped, linked, flagged}` plus
 the sweep's `{checked, staled, unstaled}`. It is exposed both as an MCP tool and
 as `apra-fleet kb import [--repo <path>] [--path <file>]` for post-merge use.
 
