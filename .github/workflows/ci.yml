@@ -321,6 +321,101 @@ jobs:
           echo "$LIST_OUT" | grep -q 'hello-world'
         shell: bash
 
+      # apra-fleet-7pm.15: hello-world (above) only proves the launcher's OWN
+      # import-trampoline mechanics. auto-sprint is the only built-in that
+      # exercises the full runtime tree the launcher installs: the workflow
+      # engine + apra-fleet-client + ajv + the vendored agent-role schemas
+      # (packages/apra-fleet-se/auto-sprint/contracts.mjs). `--help` short-
+      # circuits before any fleet-server dial (bin/cli.mjs's main() checks
+      # values.help immediately after parseCliArgs()), so this needs no
+      # server/network -- but contracts.mjs is a static import of cli.mjs's
+      # own import chain (cli.mjs -> auto-sprint/runner.js -> contracts.mjs),
+      # so by the time --help prints, module load has ALREADY (a) resolved
+      # every bare-specifier import from ~/.apra-fleet/node_modules/ and (b)
+      # ajv-compiled a validator for every role's output schema loaded from
+      # ~/.apra-fleet/schemas/ (contracts.mjs's top-level `VALIDATORS =
+      # ...ajv.compile(schema)`). A broken module resolution or an invalid
+      # vendored schema would throw during that import, before --help ever
+      # gets to print anything -- so a clean exit 0 with auto-sprint's own
+      # usage text on stdout is proof both succeeded. The absent dev-fallback
+      # warning proves APRA_FLEET_SE_SCHEMAS_DIR (set by the launcher's
+      # applyEnvDefaults) pointed contracts.mjs's resolveSchemasDir() at the
+      # installed ~/.apra-fleet/schemas/ tree rather than the (nonexistent in
+      # this packaged-binary context) monorepo vendor/apra-pm/ submodule.
+      - name: Smoke test - workflow auto-sprint --help (no system Node)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="$(pwd)/dist/${{ matrix.binary }}"
+          FAKEHOME="$(mktemp -d)"
+          export HOME="$FAKEHOME"
+          export APRA_FLEET_DATA_DIR="$FAKEHOME/data"
+          export PATH="/usr/bin:/bin"
+          ! command -v node
+          OUT="$("$BIN" workflow auto-sprint --help 2>stderr.log)"
+          ERR="$(cat stderr.log)"
+          echo "$OUT"
+          echo "--- stderr ---"
+          echo "$ERR"
+          echo "$OUT" | grep -qF 'Usage: fleet-se sprint [options]'
+          echo "$OUT" | grep -qF -- '--role-map <json|@file>'
+          ! echo "$ERR" | grep -qF '[contracts] Using the live vendor/apra-pm submodule'
+          ! echo "$ERR" | grep -qi 'cannot find module'
+          ! echo "$ERR" | grep -qi 'ERR_MODULE_NOT_FOUND'
+          test -f "$FAKEHOME/.apra-fleet/workflows/auto-sprint/bin/cli.mjs"
+
+      - name: Smoke test - workflow auto-sprint --help (no system Node) (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $FAKEHOME = Join-Path $env:RUNNER_TEMP "fakehome-as-$([guid]::NewGuid())"
+          New-Item -ItemType Directory -Path $FAKEHOME -Force | Out-Null
+          $env:HOME = $FAKEHOME
+          $env:USERPROFILE = $FAKEHOME
+          $env:APRA_FLEET_DATA_DIR = Join-Path $FAKEHOME "data"
+
+          $filtered = ($env:PATH -split ';') | Where-Object { $_ -notmatch 'hostedtoolcache.*node' -and $_ -notmatch '[\\/]nodejs' }
+          $env:PATH = ($filtered -join ';')
+          if (Get-Command node -ErrorAction SilentlyContinue) {
+            Write-Error "node is still resolvable on PATH after stripping"
+            exit 1
+          }
+
+          $bin = Join-Path $PWD "dist\${{ matrix.binary }}"
+          $out = & $bin workflow auto-sprint --help 2>"$env:RUNNER_TEMP\as-stderr.log"
+          $errText = Get-Content "$env:RUNNER_TEMP\as-stderr.log" -Raw -ErrorAction SilentlyContinue
+          $out | Write-Host
+          Write-Host "--- stderr ---"
+          Write-Host $errText
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "workflow auto-sprint --help exited $LASTEXITCODE"
+            exit 1
+          }
+          $outText = ($out -join "`n")
+          if (-not $outText.Contains('Usage: fleet-se sprint [options]')) {
+            Write-Error "unexpected stdout from workflow auto-sprint --help"
+            exit 1
+          }
+          if (-not $outText.Contains('--role-map <json|@file>')) {
+            Write-Error "unexpected stdout from workflow auto-sprint --help (missing --role-map)"
+            exit 1
+          }
+          if ($errText -and $errText.Contains('[contracts] Using the live vendor/apra-pm submodule')) {
+            Write-Error "schema dev-fallback warning present -- APRA_FLEET_SE_SCHEMAS_DIR did not resolve the installed schemas tree"
+            exit 1
+          }
+          if ($errText -and ($errText -match '(?i)cannot find module|ERR_MODULE_NOT_FOUND')) {
+            Write-Error "module-resolution error detected in stderr"
+            exit 1
+          }
+
+          $cliPath = Join-Path $FAKEHOME ".apra-fleet\workflows\auto-sprint\bin\cli.mjs"
+          if (-not (Test-Path $cliPath)) {
+            Write-Error "missing $cliPath"
+            exit 1
+          }
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
