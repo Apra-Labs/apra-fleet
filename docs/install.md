@@ -208,7 +208,16 @@ apra-fleet uninstall
 | `--force` | Automatically stop the running fleet server before uninstalling |
 | `--yes` | Skip the confirmation prompt |
 | `--llm <provider>` | Remove only a specific provider (`claude`, `agy`, `codex`, `copilot`, `gemini`) |
-| `--skill fleet\|pm\|all` | Remove only the specified skill directories (default: `all`) |
+| `--skill fleet\|pm\|workflows\|all` | Remove only the specified skill directories (default: `all`) |
+
+`--skill workflows` removes the shared workflow runtime and schemas
+(`~/.apra-fleet/node_modules/`, `~/.apra-fleet/schemas/`) plus only the
+built-in workflow subdirectories under `~/.apra-fleet/workflows/` (read from
+`workflows/.installed.json`'s `builtin` list, falling back to the static
+built-in name list if that manifest is missing). Any user-authored
+`workflows/<name>/` directories are left in place, and the command reports
+which ones it kept; the `workflows/` root itself is only removed if nothing
+user-authored remains in it.
 
 Examples:
 
@@ -224,6 +233,9 @@ apra-fleet uninstall --skill pm
 
 # Remove only Claude's fleet skills
 apra-fleet uninstall --llm claude --skill fleet
+
+# Remove only the workflow runtime + built-in workflows, keep user-authored ones
+apra-fleet uninstall --skill workflows
 ```
 
 If the fleet server is running, uninstall aborts and tells you to re-run with

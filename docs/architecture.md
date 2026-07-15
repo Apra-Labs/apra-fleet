@@ -231,15 +231,45 @@ manifest is not a trusted-by-construction input.
 dynamic `import()` of on-disk ESM works from inside a SEA main script on
 all three target OSes.
 
-**Known incomplete as of this sprint (feat/fleet-workflow-subsystem):** the
-epic `apra-fleet-7pm` shipped Phases 1-2 partially -- the launcher itself
-(`src/cli/workflow.ts`), the resolution ADR, and docs landed -- but Phase 1
-task 3 (`install.ts` additive workflow-install step) was left mid-flight as
-WIP commits with its owning issue still open, and Phases 3-4 (uninstall
-`--skill workflows`, update-flow re-install, build-binary smoke tests, the
-regression guard, and the auto-sprint-as-built-in-workflow e2e test) were
-not started. Treat `apra-fleet workflow` as not yet installable or
-uninstallable end-to-end until those land.
+**Install/uninstall/update lifecycle (Phases 1-3, closed this sprint,
+`apra-fleet-7pm`):** `install.ts`'s workflow-install step and its extraction
+logic (extract-to-temp-then-rename, with Windows EBUSY retry/backoff) were
+factored out into `src/cli/workflow-assets.ts` so more than one caller can
+share the exact same code path instead of re-implementing it:
+
+- `apra-fleet install` (fresh install) calls `extractWorkflowSubsystemAssets()`
+  to lay down `~/.apra-fleet/{node_modules,schemas,workflows/<builtin>}`.
+- `src/cli/workflow.ts`'s launcher self-heals: if a `workflow <name>`
+  invocation finds the on-disk payload missing or incomplete
+  (`hasWorkflowSubsystemAssets()` is false), it re-extracts from the same
+  embedded SEA assets before running, rather than failing with an opaque
+  module-not-found error.
+- `apra-fleet uninstall --skill workflows` removes the shared runtime/schema
+  dirs plus only the built-in workflow subdirectories recorded in
+  `workflows/.installed.json`'s `builtin` array (falling back to the static
+  `BUILTIN_WORKFLOW_NAMES` list if that manifest is missing, so a
+  partially-installed tree still cleans up). User-authored workflow
+  directories are left in place; `workflows/` itself is only removed if
+  nothing user-authored remains, and the command prints which user
+  workflows it kept.
+- `apra-fleet update` reads back the previously-persisted `--workflows` mode
+  and threads it into the re-invoked install, so an update refreshes
+  built-in workflow assets to the new version while preserving any
+  user-authored workflows already on disk.
+
+**CI coverage (Phase 4, closed this sprint):** `build:binary` smoke tests
+exercise the packaged SEA binary's `workflow` subcommand and the
+auto-sprint-as-built-in-workflow path end-to-end (not just the source
+`.ts`/`.mjs` files), and a regression-guard test suite
+(`tests/regression-command-surface.test.ts`) pins the full existing CLI
+command surface (`install --help`, `uninstall --dry-run`, `--version`,
+stdio handshake) against golden fixtures so future workflow-subsystem work
+can't silently change unrelated command output.
+
+The workflow subsystem is now installable, self-healing, uninstallable, and
+update-safe end-to-end; remaining gaps for this feature are tracked as
+individual open issues under `apra-fleet-7pm`, not as a phase-level
+placeholder.
 
 ## PM Skill Submodule
 
