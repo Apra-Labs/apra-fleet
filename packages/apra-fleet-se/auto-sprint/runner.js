@@ -2100,18 +2100,34 @@ export async function main(context) {
             phase(`Integ Test C${cycle}`);
             let integResult;
             try {
-                integResult = await agent(
-                    'Run tests using integ-test-playbook.md. Add bug beads if needed.',
-                    {
-                        member_name: getMemberForRole('integ-test-runner'),
-                        agentType: 'integ-test-runner',
-                        schema: integReport,
-                        model: FIXED_ROLE_TIER['integ-test-runner'],
-                        // apra-fleet-j6i: runs a full test suite, plausibly
-                        // long-running.
-                        timeout_s: 900,
-                    }
-                );
+                // apra-fleet-xbu.C3: integ-test-runner.md's own contract
+                // requires "an explicit list of feature ids ... already
+                // scoped for you by the orchestrator" as a required input,
+                // and explicitly forbids the agent from deriving that list
+                // itself via a bare, unscoped `bd list --type=feature`. This
+                // dispatch used to hand it nothing but a generic instruction
+                // string -- the one input its own contract says it must
+                // never guess. Fetch the scope's open features here instead.
+                const openFeatures = await bdListScoped('--type=feature --status=open --json');
+                const featurePrompt = openFeatures.length > 0
+                    ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
+                      `${openFeatures.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
+                      `--parent ${targetIssues[0]}.`
+                    : `No open type=feature beads in scope -- nothing to test this cycle.`;
+                integResult = openFeatures.length > 0
+                    ? await agent(
+                        featurePrompt,
+                        {
+                            member_name: getMemberForRole('integ-test-runner'),
+                            agentType: 'integ-test-runner',
+                            schema: integReport,
+                            model: FIXED_ROLE_TIER['integ-test-runner'],
+                            // apra-fleet-j6i: runs a full test suite, plausibly
+                            // long-running.
+                            timeout_s: 900,
+                        }
+                    )
+                    : { featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: featurePrompt };
             } catch (err) {
                 if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
