@@ -588,13 +588,40 @@ async function main() {
             budget,
         }));
         console.log('Sprint finished:', res);
-    } catch (err) {
-        console.error('Sprint failed:', err);
-        process.exitCode = 1;
-    } finally {
         server.close();
         transport.stop();
-        process.exit(process.exitCode || 0);
+        process.exit(0);
+    } catch (err) {
+        // apra-fleet-xbu.4: a caught sprint-level failure (Planner retries
+        // exhausted, a StalledSprintError, pre-sprint validation, etc.) used
+        // to tear the dashboard server down in the same tick as the error --
+        // the one moment an operator most needs to see the FAILED state and
+        // read why, the dashboard became unreachable. This is a legitimate,
+        // fully-handled outcome, not a crash: the dashboard has no reason to
+        // die with it. Keep the server up for a bounded grace window so
+        // `http://localhost:<port>` stays inspectable, then exit -- SIGINT
+        // (Ctrl-C) or the grace window elapsing both end it; this is not an
+        // indefinite hang.
+        console.error('Sprint failed:', err);
+        process.exitCode = 1;
+        const graceMs = Number(process.env.AUTO_SPRINT_FAILURE_GRACE_MS ?? 5 * 60 * 1000);
+        if (graceMs > 0) {
+            console.log(
+                `Sprint FAILED. Dashboard remains live at http://localhost:${viewerPort} for ` +
+                `${Math.round(graceMs / 1000)}s so you can inspect the final state -- press Ctrl-C to exit sooner.`
+            );
+            await new Promise((resolve) => {
+                const timer = setTimeout(resolve, graceMs);
+                timer.unref?.();
+                process.once('SIGINT', () => {
+                    clearTimeout(timer);
+                    resolve();
+                });
+            });
+        }
+        server.close();
+        transport.stop();
+        process.exit(process.exitCode || 1);
     }
 }
 
