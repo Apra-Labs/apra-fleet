@@ -263,6 +263,11 @@ jobs:
           echo "$OUT" | grep -qF '[OK] hello-world: args=one,two engine=resolved'
           test -f "$FAKEHOME/.apra-fleet/workflows/auto-sprint/auto-sprint/runner.js"
           test -f "$FAKEHOME/.apra-fleet/schemas/reviewer-output.json"
+          # Persist FAKEHOME so the arg/error-surface step below runs against
+          # this SAME already-self-healed HOME instead of a fresh/empty one --
+          # step-local `export` does not survive to the next step, so it has
+          # to be handed off explicitly via GITHUB_ENV.
+          echo "FAKEHOME=$FAKEHOME" >> "$GITHUB_ENV"
 
       - name: Smoke test - workflow hello-world (no system Node) (Windows)
         if: runner.os == 'Windows'
@@ -304,9 +309,24 @@ jobs:
             exit 1
           }
 
+          # Persist FAKEHOME so the arg/error-surface step below runs against
+          # this SAME already-self-healed HOME instead of a fresh/empty one --
+          # step-local $env: assignments do not survive to the next step, so
+          # it has to be handed off explicitly via GITHUB_ENV.
+          Add-Content -Path $env:GITHUB_ENV -Value "FAKEHOME=$FAKEHOME"
+
+      # `workflow --list` never self-heals by design (it only reports what's
+      # already on disk) -- so this step MUST reuse the FAKEHOME that the
+      # hello-world step above already self-healed via a real built-in
+      # invocation. Reusing a fresh/different HOME here reproduces
+      # "No workflows installed" even though self-heal is working correctly.
       - name: Smoke test - workflow arg/error surface
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
           set +e
+          export HOME="$FAKEHOME"
+          export APRA_FLEET_DATA_DIR="$FAKEHOME/data"
           OUT=$(./dist/${{ matrix.binary }} workflow does-not-exist 2>&1)
           CODE=$?
           set -e
@@ -319,7 +339,44 @@ jobs:
           echo "$LIST_OUT"
           echo "$LIST_OUT" | grep -q 'auto-sprint'
           echo "$LIST_OUT" | grep -q 'hello-world'
-        shell: bash
+
+      - name: Smoke test - workflow arg/error surface (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:HOME = $env:FAKEHOME
+          $env:USERPROFILE = $env:FAKEHOME
+          $env:APRA_FLEET_DATA_DIR = Join-Path $env:FAKEHOME "data"
+
+          $bin = Join-Path $PWD "dist\${{ matrix.binary }}"
+          $out = & $bin workflow does-not-exist 2>&1
+          $code = $LASTEXITCODE
+          $out | Write-Host
+          if ($code -ne 1) {
+            Write-Error "expected exit code 1 from workflow does-not-exist, got $code"
+            exit 1
+          }
+          $outText = ($out -join "`n")
+          if ($outText -notmatch '(?i)workflow "does-not-exist" not found in') {
+            Write-Error "missing not-found message in output"
+            exit 1
+          }
+          if ($outText -notmatch 'workflows') {
+            Write-Error "missing 'workflows' text in output"
+            exit 1
+          }
+
+          $listOut = & $bin workflow --list
+          $listOut | Write-Host
+          $listText = ($listOut -join "`n")
+          if ($listText -notmatch 'auto-sprint') {
+            Write-Error "workflow --list output missing auto-sprint"
+            exit 1
+          }
+          if ($listText -notmatch 'hello-world') {
+            Write-Error "workflow --list output missing hello-world"
+            exit 1
+          }
 
       # apra-fleet-7pm.15: hello-world (above) only proves the launcher's OWN
       # import-trampoline mechanics. auto-sprint is the only built-in that
