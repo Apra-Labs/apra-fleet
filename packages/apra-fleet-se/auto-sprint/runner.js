@@ -1381,6 +1381,20 @@ export async function main(context) {
         let sprintTasks = [];
         try {
             sprintTasks = await bdListScoped('--json');
+            // apra-fleet-xbu.C6: a bead whose stored `status` is 'open' but
+            // that is NOT in the scope's `--ready` set is blocked -- but the
+            // viewer only ever saw the stored status, so a deadlocked bead
+            // rendered identically (OPEN) to a genuinely-ready one, which
+            // was exactly the "why does the dashboard say OPEN but nothing
+            // is happening" confusion the C1/C4 incident's operator hit.
+            // Reuses `--ready` (the same signal dispatch decisions are
+            // already based on), so this is not a second source of truth.
+            try {
+                const readyIds = new Set((await bdListScoped('--ready --json')).map((b) => b.id));
+                sprintTasks = sprintTasks.map((t) => ({ ...t, ready: readyIds.has(t.id) }));
+            } catch (e) {
+                log(`updateDashboard: failed to compute ready/blocked badge data (non-fatal, status badges fall back to stored status): ${e.message}`);
+            }
         } catch (e) {
             // apra-fleet-nkg: this used to be a bare `catch (e) {}` -- a
             // failure here (e.g. the orchestrator member transiently

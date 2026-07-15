@@ -142,6 +142,27 @@ describe('renderBeadsHtml: status/type badges are defensive (never blank, never 
         assert.ok(withoutBracket.includes('MISC'));
     });
 
+    test('apra-fleet-xbu.C6: issue_type is read first for its own dedicated badge, even with no matching title prefix', () => {
+        const html = renderBeadsHtml([{ id: 1, title: 'fix the auth bug', status: 'open', issue_type: 'bug', dependencies: [] }]);
+        assert.ok(html.includes('>BUG<'), 'a bug-typed bead must badge as BUG from issue_type alone, not fall through to MISC');
+    });
+
+    test('apra-fleet-xbu.C6: a task/feature issue_type (no dedicated badge) still falls back to its [prefix] title convention', () => {
+        const html = renderBeadsHtml([{ id: 1, title: '[test] verify the fix', status: 'open', issue_type: 'task', dependencies: [] }]);
+        assert.ok(html.includes('>TEST<'), 'issue_type=task has no dedicated badge, so the [test] title prefix must still win, not a bare TASK badge');
+    });
+
+    test('apra-fleet-xbu.C6: an open bead explicitly marked not-ready renders BLOCKED, not OPEN', () => {
+        const html = renderBeadsHtml([{ id: 1, title: 'deadlocked task', status: 'open', ready: false, dependencies: [] }]);
+        assert.ok(html.includes('BLOCKED'), 'ready:false must render a distinct BLOCKED badge');
+        assert.ok(!html.includes('>OPEN<'), 'must not also render the plain OPEN badge for the same bead');
+    });
+
+    test('apra-fleet-xbu.C6: an open bead with no ready field at all (e.g. backlog) still renders plain OPEN, unchanged', () => {
+        const html = renderBeadsHtml([{ id: 1, title: 'plain open task', status: 'open', dependencies: [] }]);
+        assert.ok(html.includes('>OPEN<'), 'absence of the ready field must not be misread as blocked');
+    });
+
     test('priority and model metadata render with safe fallbacks when present or absent', () => {
         const withBoth = renderBeadsHtml([{ id: 1, title: 't', status: 'open', priority: 1, metadata: { model: 'premium' }, dependencies: [] }]);
         assert.ok(withBoth.includes('P1'));
