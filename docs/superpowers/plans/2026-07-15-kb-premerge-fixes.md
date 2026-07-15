@@ -481,15 +481,20 @@ Expected: FAIL -- roughly 7 tests across 6 files that used AUDN as a fixture to 
 
 Every one of these captures twice with overlapping symbol+file and then asserts the first entry vanished. That fixture no longer produces a superseded row. Replace it with a genuine contradiction pair plus `resolveContradiction`.
 
-The recipe -- inline it into each test file that needs it (do NOT create a shared test util; these files have no existing shared helper and each already defines its own local `makeInput`):
+The recipe. Call `resolveContradiction` directly -- do NOT wrap it in a helper.
+A one-line passthrough that only reorders arguments earns nothing and obscures
+which id is the winner:
 
 ```ts
 // AUDN no longer auto-supersedes, so a superseded row must be driven through
-// the explicit path: capture A, capture a CONTRADICTING B (AUDN flags it and
-// sets B.contradiction_of = A.id), then resolveContradiction(B, A) retires A.
-async function supersedeViaContradiction(p: SqliteProvider, a: string, b: string) {
-  await p.resolveContradiction(b, a, 'verified in test fixture');
-}
+// the explicit path:
+//   1. capture A (negative polarity, e.g. "X is broken")
+//   2. capture B (positive polarity, e.g. "X now works") sharing A's symbols
+//      -> AUDN returns 'flagged' and sets B.contradiction_of = A.id
+//   3. resolveContradiction(B.id, A.id, evidence) -> retires A
+// Step 2 MUST carry an opposite-polarity signal or AUDN returns 'update'
+// (linked, both live) and step 3 throws "ids do not form a genuine
+// contradiction pair".
 ```
 
 `tests/knowledge/kb-query.test.ts` -- `superseded entry excluded by default` (line ~99). Replace the body:
