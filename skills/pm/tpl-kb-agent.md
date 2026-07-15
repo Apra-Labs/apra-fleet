@@ -256,7 +256,7 @@ captured their own findings in Steps 2-3 -- this is what THEY missed):
 1. Run `kb_query({ query: "<title or key symbols>" })` -- one last near-duplicate check.
 2. If a matching entry exists:
    - Content is correct: call `kb_promote(id, reason="verified by KB agent -- {{sprint_name}}")` instead of creating a new entry.
-   - Content is wrong or outdated: call `kb_capture` with corrected content. AUDN will update the old one.
+   - Content is wrong or outdated: call `kb_capture` with corrected content and `supersedes=<id of the matching entry>` to retire it (supersede is opt-in; without it AUDN links the two and BOTH stay live, leaving the wrong entry in the bible).
 3. If no match: call `kb_capture` with:
    - `type`: knowledge / runbook / context-cache / learning
    - `confidence`: per the confidence decision table above (capped at INFERRED;
