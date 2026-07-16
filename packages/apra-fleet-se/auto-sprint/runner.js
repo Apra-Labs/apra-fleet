@@ -1242,6 +1242,7 @@ export async function main(context) {
                         // not a quick prompt -- same 300s-default gap as doer
                         // dispatch, observed live tripping on real review work.
                         timeout_s: 900,
+                        max_total_s: 3600,
                     }
                 );
             } catch (err) {
@@ -1981,6 +1982,7 @@ export async function main(context) {
                         // the fleet's generic execute_prompt default (300s) was
                         // observed live tripping repeatedly on real work.
                         timeout_s: 900,
+                        max_total_s: 3600,
                     }
                 );
 
@@ -2209,6 +2211,7 @@ export async function main(context) {
                         // apra-fleet-j6i: runs a full test suite, plausibly
                         // long-running.
                         timeout_s: 900,
+                        max_total_s: 3600,
                     }
                 );
             } catch (err) {
@@ -2388,6 +2391,7 @@ export async function main(context) {
                 // 300s-default gaps since a timeout here flips a whole
                 // sprint's outcome to FAIL.
                 timeout_s: 900,
+                max_total_s: 3600,
             }
         );
     } catch (err) {
