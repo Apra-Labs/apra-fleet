@@ -1,4 +1,6 @@
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
 import { escapeHtml } from './html-utils.mjs';
 
 const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
@@ -447,6 +449,60 @@ export function createDashboardViewer(workflow, opts = {}) {
         clients.forEach(c => c.write(msg));
     };
 
+    // Server-side persistence of the dashboard `state` object to
+    // sprint-logs/sprint_<HHMMSS>.json on every run-ending event (normal
+    // finish, cooperative /stop-triggered cancellation, or the CLI process
+    // itself being interrupted). This is the server-side equivalent of the
+    // client-side saveState() button (HTML_TEMPLATE above) -- that one only
+    // works if a human has the dashboard open in a browser; this one runs
+    // unconditionally so a sprint's final state is never lost just because
+    // nobody was watching. `saved` guards against writing twice for the same
+    // run (e.g. 'end' fires, then a SIGINT arrives moments later during the
+    // bin/cli.mjs failure grace-period wait).
+    let saved = false;
+    function persistState() {
+        if (saved) return;
+        saved = true;
+        try {
+            const dir = path.join(process.cwd(), 'sprint-logs');
+            fs.mkdirSync(dir, { recursive: true });
+            const now = new Date();
+            const pad2 = (n) => String(n).padStart(2, '0');
+            const hhmmss = `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+            const filePath = path.join(dir, `sprint_${hhmmss}.json`);
+            fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
+            console.log(`[Viewer] Sprint state saved to ${filePath}`);
+        } catch (e) {
+            // A failed save must never crash or block the sprint's own
+            // normal exit behavior -- log and move on.
+            console.warn(`[Viewer] Warning: failed to save sprint state: ${e.message}`);
+        }
+    }
+
+    // Covers reason 3 (CLI process interrupted): SIGINT/SIGTERM had NO
+    // handler at all today for a still-running or successfully-finished
+    // sprint (bin/cli.mjs only registers a SIGINT handler inside its
+    // failure-grace-window Promise). Registering a listener here removes
+    // Node's default immediate-exit behavior for the signal, so the handler
+    // must explicitly call process.exit() itself after the best-effort save
+    // to preserve that same "the process ultimately terminates" contract --
+    // it does not swallow the signal or turn it into a no-op.
+    // NOTE: signal listeners registered via process.on('SIGINT'/'SIGTERM', fn)
+    // do NOT receive the signal name as an argument (unlike a manually
+    // dispatched process.emit(name, ...args)), so a single shared handler
+    // can't tell them apart -- hence two small wrappers instead of one
+    // handler branching on an argument that would never actually arrive.
+    const handleSigint = () => {
+        persistState();
+        process.exit(130);
+    };
+    const handleSigterm = () => {
+        persistState();
+        process.exit(143);
+    };
+    process.on('SIGINT', handleSigint);
+    process.on('SIGTERM', handleSigterm);
+
     workflow.on('group:start', (data) => {
         currentGroup = { title: data.title, phases: [] };
         state.tree.push(currentGroup);
@@ -505,6 +561,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         state.status = res.status;
         state.stats.durationMs = Date.now() - state.stats.startTime;
         broadcast({ type: 'update' });
+        persistState();
     });
 
     const server = http.createServer((req, res) => {
@@ -547,6 +604,17 @@ export function createDashboardViewer(workflow, opts = {}) {
             }
             res.writeHead(200);
             res.end();
+        } else if (req.url === '/save_logs' && req.method === 'POST') {
+            // Manual/scriptable trigger for the same server-side save that
+            // 'end' and SIGINT/SIGTERM already perform (persistState() above)
+            // -- e.g. a future dashboard button, curl, or another tool. Shares
+            // the same idempotency guard (`saved`), so this is a no-op if the
+            // run has already been persisted (by 'end', a signal, or a prior
+            // call to this endpoint).
+            console.log('[Viewer] /save_logs requested -- persisting current dashboard state.');
+            persistState();
+            res.writeHead(200);
+            res.end();
         } else {
             res.writeHead(404);
             res.end();
@@ -561,6 +629,14 @@ export function createDashboardViewer(workflow, opts = {}) {
         setTimeout(() => {
             try { server.close(); } catch(e) {}
         }, 5000);
+    });
+
+    // Avoid leaking process-level signal listeners: each createDashboardViewer()
+    // call (one per test, one per real sprint run) adds its own SIGINT/SIGTERM
+    // handler above; remove it once this viewer's server is done.
+    server.on('close', () => {
+        process.removeListener('SIGINT', handleSigint);
+        process.removeListener('SIGTERM', handleSigterm);
     });
 
     return server;

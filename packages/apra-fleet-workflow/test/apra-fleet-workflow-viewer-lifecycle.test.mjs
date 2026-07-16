@@ -1,7 +1,9 @@
-import { test, describe } from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 import { FleetWorkflow, CancelledError, WorkflowError } from '../src/workflow/index.mjs';
 import { WorkflowEngine } from '../src/workflow/engine.mjs';
@@ -25,6 +27,26 @@ import { escapeHtml } from '../src/viewer/html-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => path.join(__dirname, 'fixtures', name);
+
+// File-wide cwd guard: createDashboardViewer() now persists sprint state to
+// sprint-logs/ under process.cwd() (see "server-side sprint-state
+// persistence" below) whenever a workflow's 'end' event fires -- which
+// several tests in THIS file trigger (e.g. the pre-existing "engine end
+// event" and "cooperative /stop" suites above), not just the ones written
+// specifically to exercise persistence. Without this, those tests would
+// write real sprint_HHMMSS.json files into this package's actual checkout
+// directory. Every test in this file runs against a fresh temp cwd instead.
+let __fileCwdGuardOriginal;
+let __fileCwdGuardTemp;
+beforeEach(() => {
+    __fileCwdGuardTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-viewer-test-cwd-'));
+    __fileCwdGuardOriginal = process.cwd();
+    process.chdir(__fileCwdGuardTemp);
+});
+afterEach(() => {
+    process.chdir(__fileCwdGuardOriginal);
+    fs.rmSync(__fileCwdGuardTemp, { recursive: true, force: true });
+});
 
 const KNOWN_MEMBERS = new Set(['fleet-dev']);
 
@@ -105,6 +127,28 @@ async function waitFor(predicate, { timeoutMs = 2000, intervalMs = 5 } = {}) {
         }
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
+}
+
+// Runs `fn` with process.cwd() pointed at a fresh temp directory, so tests
+// that exercise the sprint-logs/ auto-save feature never write into the real
+// repo checkout. Always restores the original cwd and removes the temp dir,
+// even if `fn` throws.
+async function withTempCwd(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-viewer-persist-'));
+    const originalCwd = process.cwd();
+    process.chdir(dir);
+    try {
+        return await fn(dir);
+    } finally {
+        process.chdir(originalCwd);
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+function readSprintLogFiles(dir) {
+    const sprintLogsDir = path.join(dir, 'sprint-logs');
+    if (!fs.existsSync(sprintLogsDir)) return [];
+    return fs.readdirSync(sprintLogsDir).filter((f) => /^sprint_\d{6}\.json$/.test(f));
 }
 
 async function withServer(server, fn) {
@@ -284,16 +328,195 @@ describe('apra-fleet-unw.19: poll error path terminal state check', () => {
 });
 
 describe('apra-fleet-unw.10: no process.exit in the /stop handler (source grep)', () => {
-    test('src/viewer/index.mjs contains no live process.exit() call', async () => {
+    test('the /stop request handler itself contains no live process.exit() call', async () => {
         const fs = await import('fs/promises');
         const source = await fs.readFile(path.join(__dirname, '../src/viewer/index.mjs'), 'utf-8');
-        // Filter out comment lines that merely reference process.exit for
-        // documentation purposes; only a real call site (i.e. `process.exit(`
-        // outside of a `//` comment) should fail this.
-        const liveCalls = source
+        // Scope the check to the /stop branch of the request handler only
+        // (from "req.url === '/stop'" up to the next "} else if"/"} else").
+        // The file as a whole now legitimately calls process.exit() elsewhere
+        // (the SIGINT/SIGTERM handlers added for server-side sprint-state
+        // persistence, which must still terminate the process per their own
+        // contract) -- this test's job is only to guard the /stop handler's
+        // own cooperative-cancellation contract, not the whole module.
+        const stopBranchMatch = source.match(/req\.url === '\/stop'[\s\S]*?\n\s*\} else if/);
+        assert.ok(stopBranchMatch, 'could not locate the /stop handler branch in src/viewer/index.mjs');
+        const stopBranchSource = stopBranchMatch[0];
+
+        const liveCalls = stopBranchSource
             .split('\n')
             .filter((line) => !line.trim().startsWith('//'))
             .filter((line) => /process\.exit\s*\(/.test(line));
-        assert.deepStrictEqual(liveCalls, [], `expected no live process.exit() calls, found: ${JSON.stringify(liveCalls)}`);
+        assert.deepStrictEqual(liveCalls, [], `expected no live process.exit() calls in the /stop handler, found: ${JSON.stringify(liveCalls)}`);
+    });
+});
+
+describe('server-side sprint-state persistence (auto-save on finish, stop, or exit)', () => {
+    test('a normal "end" event writes sprint-logs/sprint_HHMMSS.json whose content matches /state', async () => {
+        await withTempCwd(async (dir) => {
+            const wf = new FleetWorkflow(createMockFleetApi());
+            const engine = new WorkflowEngine(wf);
+            const server = createDashboardViewer(wf, { port: 18094, name: 'Persist Success Test' });
+
+            await withServer(server, async (port) => {
+                const result = await engine.executeFile(fixture('test-end-event-success.mjs'), {});
+                assert.deepStrictEqual(result, { result: 'echo: hello' });
+
+                const files = readSprintLogFiles(dir);
+                assert.strictEqual(files.length, 1, `expected exactly one sprint_HHMMSS.json file, found: ${JSON.stringify(files)}`);
+                assert.match(files[0], /^sprint_\d{6}\.json$/);
+
+                const savedContent = fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8');
+                const saved = JSON.parse(savedContent);
+
+                const liveState = JSON.parse(await httpGet(port, '/state'));
+                assert.deepStrictEqual(saved, liveState, 'saved file must match the in-memory state served at /state');
+                assert.strictEqual(saved.status, 'success');
+
+                // Formatting must match the client-side saveState()'s own
+                // JSON.stringify(globalState, null, 2) -- 2-space indent.
+                assert.ok(savedContent.includes('\n  "workflowName"'), 'saved JSON must be 2-space indented like the client-side Save button');
+            });
+        });
+    });
+
+    test('a /stop-triggered cancellation also results in a saved sprint-logs/ file', async () => {
+        await withTempCwd(async (dir) => {
+            const wf = new FleetWorkflow(createHangingFleetApi());
+            const engine = new WorkflowEngine(wf);
+
+            const activityStarts = [];
+            wf.on('activity:start', (meta) => activityStarts.push(meta));
+
+            const server = createDashboardViewer(wf, { port: 18095, name: 'Persist Stop Test' });
+
+            await withServer(server, async (port) => {
+                const runPromise = engine.executeFile(fixture('test-stop-pending-agent.mjs'), {});
+                runPromise.catch(() => {});
+
+                await waitFor(() => activityStarts.length > 0);
+
+                const { statusCode } = await httpPost(port, '/stop');
+                assert.strictEqual(statusCode, 200);
+
+                await assert.rejects(runPromise, () => true);
+
+                await waitFor(() => readSprintLogFiles(dir).length > 0);
+
+                const files = readSprintLogFiles(dir);
+                assert.strictEqual(files.length, 1);
+                const saved = JSON.parse(fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8'));
+                assert.strictEqual(saved.status, 'cancelled');
+            });
+        });
+    });
+
+    test('a SIGINT delivered before "end" fires also results in a saved file (process.exit mocked)', async () => {
+        await withTempCwd(async (dir) => {
+            const wf = new FleetWorkflow(createHangingFleetApi());
+            const engine = new WorkflowEngine(wf);
+
+            const activityStarts = [];
+            wf.on('activity:start', (meta) => activityStarts.push(meta));
+
+            const server = createDashboardViewer(wf, { port: 18096, name: 'Persist SIGINT Test' });
+
+            const originalExit = process.exit;
+            let exitCode = null;
+            process.exit = (code) => { exitCode = code; };
+
+            try {
+                await withServer(server, async (port) => {
+                    const runPromise = engine.executeFile(fixture('test-stop-pending-agent.mjs'), {});
+                    runPromise.catch(() => {});
+
+                    await waitFor(() => activityStarts.length > 0);
+
+                    // Simulate Ctrl-C arriving while the run is still live --
+                    // i.e. before the workflow's own 'end' event would fire.
+                    process.emit('SIGINT');
+
+                    const files = readSprintLogFiles(dir);
+                    assert.strictEqual(files.length, 1, 'SIGINT must trigger a best-effort save even mid-run');
+                    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8'));
+                    assert.strictEqual(saved.status, 'running', 'state was saved before the workflow had a chance to end');
+                    assert.strictEqual(exitCode, 130, 'SIGINT handler must still terminate the process (conventional 128+SIGINT code)');
+
+                    // The mocked process.exit() above is a no-op, so (unlike a
+                    // real SIGINT) the process keeps running past this point
+                    // and the hanging dispatch is still in flight. It would
+                    // never settle on its own (createHangingFleetApi() only
+                    // rejects when its AbortSignal fires) -- request a
+                    // cooperative stop so runPromise actually resolves and the
+                    // test process has no dangling pending work left over.
+                    wf.requestStop('test cleanup');
+                    await assert.rejects(runPromise, () => true);
+                });
+            } finally {
+                process.exit = originalExit;
+            }
+        });
+    });
+
+    test('POST /save_logs triggers the same save on demand (manual/scriptable trigger)', async () => {
+        await withTempCwd(async (dir) => {
+            const wf = new FleetWorkflow(createMockFleetApi());
+            const engine = new WorkflowEngine(wf);
+            const server = createDashboardViewer(wf, { port: 18098, name: 'Persist Manual Endpoint Test' });
+
+            await withServer(server, async (port) => {
+                // No 'end' yet -- run is still "running". A manual /save_logs
+                // call must still produce a file (on-demand, not just at
+                // finish/stop/exit).
+                const runPromise = engine.executeFile(fixture('test-end-event-success.mjs'), {});
+
+                assert.strictEqual(readSprintLogFiles(dir).length, 0, 'no file should exist before /save_logs or end');
+
+                const { statusCode } = await httpPost(port, '/save_logs');
+                assert.strictEqual(statusCode, 200);
+
+                const files = readSprintLogFiles(dir);
+                assert.strictEqual(files.length, 1, 'expected exactly one file after POST /save_logs');
+                const saved = JSON.parse(fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8'));
+                assert.strictEqual(typeof saved.workflowName, 'string');
+
+                await runPromise;
+
+                // The run's own 'end' event fires after /save_logs already
+                // persisted -- shares the idempotency guard, so still exactly
+                // one file (no duplicate write for the same run).
+                assert.deepStrictEqual(readSprintLogFiles(dir), files);
+            });
+        });
+    });
+
+    test('no double-write when both "end" and a subsequent SIGINT occur for the same run', async () => {
+        await withTempCwd(async (dir) => {
+            const wf = new FleetWorkflow(createMockFleetApi());
+            const engine = new WorkflowEngine(wf);
+            const server = createDashboardViewer(wf, { port: 18097, name: 'Persist Idempotency Test' });
+
+            const originalExit = process.exit;
+            let exitCalled = false;
+            process.exit = () => { exitCalled = true; };
+
+            try {
+                await withServer(server, async (port) => {
+                    await engine.executeFile(fixture('test-end-event-success.mjs'), {});
+
+                    const filesAfterEnd = readSprintLogFiles(dir);
+                    assert.strictEqual(filesAfterEnd.length, 1);
+
+                    // Mimic bin/cli.mjs's failure-grace-window race: a SIGINT
+                    // arriving moments after 'end' already fired for this run.
+                    process.emit('SIGINT');
+
+                    const filesAfterSignal = readSprintLogFiles(dir);
+                    assert.deepStrictEqual(filesAfterSignal, filesAfterEnd, 'must not write a second file for the same run');
+                    assert.ok(exitCalled, 'the SIGINT handler must still run (and attempt to exit) even when the save itself was skipped');
+                });
+            } finally {
+                process.exit = originalExit;
+            }
+        });
     });
 });
