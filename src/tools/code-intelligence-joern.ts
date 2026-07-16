@@ -2,7 +2,8 @@
 // Code Intelligence Provider: Joern (Code Property Graph)
 // ---------------------------------------------------------------------------
 //
-// STATUS: SUPERSEDED by CodebaseMemoryProvider
+// DEPRECATED: This provider has been superseded by CodebaseMemoryProvider.
+// See code-intelligence-codebase-memory.ts for the active implementation.
 //
 // Tool:     Joern (https://github.com/joernio/joern)
 // Version:  v4.x (latest stable as of 2026-07)

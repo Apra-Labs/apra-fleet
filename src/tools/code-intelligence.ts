@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
 import { GitNexusProvider } from './code-intelligence-gitnexus.js';
+import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -17,6 +18,7 @@ export interface CodeIntelligenceProvider {
 const CONFIG_PATH = join(homedir(), '.apra-fleet', 'data', 'code-intelligence', 'config.json');
 
 export const PROVIDERS: Record<string, CodeIntelligenceProvider> = {
+  'codebase-memory': new CodebaseMemoryProvider(),
   gitnexus: new GitNexusProvider(),
 };
 
@@ -60,13 +62,13 @@ export const codeTestsSchema = z.object({
 });
 
 export async function getProvider(): Promise<CodeIntelligenceProvider> {
-  let providerKey = 'gitnexus';
+  let providerKey = 'codebase-memory';
   try {
     const raw = await readFile(CONFIG_PATH, 'utf8');
     const config = JSON.parse(raw) as { provider?: string };
     if (config.provider) providerKey = config.provider;
   } catch {
-    // Config absent -- default to gitnexus
+    // Config absent -- default to codebase-memory
   }
 
   const provider = PROVIDERS[providerKey];

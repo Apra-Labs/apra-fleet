@@ -69,11 +69,11 @@ describe('getProvider()', () => {
     vi.clearAllMocks();
   });
 
-  it('falls back to gitnexus when config file is absent', async () => {
+  it('falls back to codebase-memory when config file is absent', async () => {
     mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
 
     const provider = await getProvider();
-    expect(provider).toBe(PROVIDERS.gitnexus);
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
   });
 
   it('reads provider key from config.json and returns matching provider', async () => {

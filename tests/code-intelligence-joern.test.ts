@@ -174,7 +174,7 @@ describe('Evaluation Document Verification', () => {
   // Test 1: SUPERSEDED/DEPRECATED notice referencing codebase-memory-mcp
   // ---------------------------------------------------------------------------
   it('Contains a SUPERSEDED/DEPRECATED notice referencing codebase-memory-mcp', () => {
-    expect(fileContent).toMatch(/STATUS:\s*SUPERSEDED.*CodebaseMemoryProvider/i);
+    expect(fileContent).toMatch(/DEPRECATED:.*CodebaseMemoryProvider/i);
     expect(fileContent).toMatch(/has been evaluated against codebase-memory-mcp/i);
   });
 
