@@ -1,58 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { StalledSprintError, ReviewerContractViolationError } from '../auto-sprint/errors.mjs';
+import { StalledSprintError } from '../auto-sprint/errors.mjs';
 import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
-
-// =============================================================================
-// apra-fleet-unw.17 (A5) acceptance criterion 2: stall-abort after 2
-// consecutive zero-progress cycles
-// =============================================================================
-// A doer that always claims success but never actually runs `bd close`
-// (so the assigned bead is never verified-closed -- see the "doer lies"
-// FAILED-streak handling in the Develop loop) keeps the same bead ready
-// forever: the closed-bead count in scope never changes cycle over
-// cycle. With max_cycles=5, the sprint must abort via a typed
-// StalledSprintError well before cycle 5 (after 2 consecutive
-// zero-progress cycles), rather than silently burning every remaining
-// cycle.
-test('mock sprint: zero-progress every cycle triggers a stall-abort well before max_cycles', async () => {
-    await withScenarioMarkers('stalled (stall-abort)', async () => {
-        console.log('Running mock sprint scenario (stall-abort: zero progress every cycle)...');
-        const stalled = await runDevelopLoopScenario('stalled', {
-            members: ['local'],
-            taskSpecs: [{ title: 'Task: Never actually closes' }],
-            maxCycles: 5,
-            doerHandler: async ({ opts }) => {
-                const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
-                const ids = match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
-                // Deliberately never runs `bd close` -- the bead stays ready
-                // forever and the closed-bead count in scope never advances.
-                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Claims done, never actually closes.' }) }] };
-            },
-            reviewerHandler: async () => ({
-                content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved (mock never inspects real state).', reopenIds: [], newTasks: [] }) }]
-            }),
-        });
-        check(!!stalled.error, 'Expected engine.executeFile() to reject with a stall abort, but it resolved successfully');
-        check(
-            stalled.error instanceof StalledSprintError,
-            `Expected a StalledSprintError, got: ${stalled.error ? stalled.error.constructor.name + ': ' + stalled.error.message : 'no error'}`
-        );
-        check(
-            stalled.error && stalled.error.staleCycles === 2,
-            `Expected the StalledSprintError to report staleCycles === 2, got: ${stalled.error ? JSON.stringify(stalled.error.staleCycles) : 'n/a'}`
-        );
-        // The abort must land well before the max_cycles=5 ceiling -- assert the
-        // "Sprint Cycle N" group-start count implied by the closed-count history
-        // recorded on the error is short (<=3 cycles), not 5.
-        check(
-            stalled.error && Array.isArray(stalled.error.closedCountHistory) && stalled.error.closedCountHistory.length <= 3,
-            `Expected the stall abort to fire within 3 cycles (well before max_cycles=5), got closedCountHistory: ${stalled.error ? JSON.stringify(stalled.error.closedCountHistory) : 'n/a'}`
-        );
-    });
-});
 
 // =============================================================================
 // apra-fleet-unw2.7 (N9): stall detection high-water-mark progress +
@@ -92,7 +43,7 @@ test('mock sprint: zero-progress every cycle triggers a stall-abort well before 
 // The mock reviewer's `bd update <id> --status=open` reopen of the
 // oscillator is applied by the ORCHESTRATOR (runner.js), never by the
 // mock itself (see the reopen-scenario test in
-// mock-sprint-develop-failures.test.mjs for the same reviewer-never-
+// mock-sprint-develop-reopen.test.mjs for the same reviewer-never-
 // mutates-beads contract) -- so this scenario exercises the real
 // per-bead reopen-count bookkeeping added for N9, work item (b), not
 // just a scripted mock side effect.
@@ -202,61 +153,6 @@ test('mock sprint: close/reopen oscillation drives a high-water-mark stall + reo
         check(
             oscillation.error && fillerTaskIds.every((id) => !oscillation.error.thrashIds.includes(id)),
             `Did NOT expect any filler bead to be flagged as thrash, got thrashIds: ${oscillation.error ? JSON.stringify(oscillation.error.thrashIds) : 'n/a'}, filler ids: ${JSON.stringify(fillerTaskIds)}`
-        );
-    });
-});
-
-// =============================================================================
-// apra-fleet-unw2.6 (N8) regression 2: CHANGES_NEEDED with empty
-// reopenIds AND empty newTasks (a schema-legal but self-contradictory
-// verdict -- nothing for the orchestrator to act on) must never
-// silently accumulate toward stall-abort even after every bead in scope
-// is already closed. It is retried once, then surfaced distinctly as a
-// ReviewerContractViolationError -- never misreported as
-// StalledSprintError (a finished sprint must not read as "stalled").
-// =============================================================================
-test('mock sprint: a self-contradictory CHANGES_NEEDED verdict surfaces as a distinct contract-violation error', async () => {
-    await withScenarioMarkers('contractviolation (reviewer contract violation)', async () => {
-        console.log('Running mock sprint scenario (reviewer contract violation: CHANGES_NEEDED with empty reopenIds/newTasks)...');
-        const contractViolation = await runDevelopLoopScenario('contractviolation', {
-            members: ['local'],
-            taskSpecs: [{ title: 'Task: Closes fine but reviewer contradicts itself' }],
-            maxCycles: 3,
-            // The doer does its job correctly and closes the bead; only the
-            // REVIEWER contradicts itself on every round.
-            reviewerHandler: async () => ({
-                content: [{
-                    text: JSON.stringify({
-                        verdict: 'CHANGES_NEEDED',
-                        notes: 'Contradictory: nothing to reopen, nothing new to create, yet not approved.',
-                        reopenIds: [],
-                        newTasks: [],
-                    })
-                }]
-            }),
-        });
-        check(!!contractViolation.error, 'Expected the reviewer contract violation to abort the sprint with a distinct error, but it resolved successfully');
-        check(
-            contractViolation.error instanceof ReviewerContractViolationError,
-            `Expected a ReviewerContractViolationError, got: ${contractViolation.error ? contractViolation.error.constructor.name + ': ' + contractViolation.error.message : 'no error'}`
-        );
-        check(
-            !(contractViolation.error instanceof StalledSprintError),
-            `A finished sprint (bead already closed) hitting a contract-violating reviewer round must never be misreported as StalledSprintError, got: ${contractViolation.error ? contractViolation.error.constructor.name : 'n/a'}`
-        );
-        const contractViolationTaskId = contractViolation.tasks[0].id;
-        check(
-            contractViolation.finalBeadsById.get(contractViolationTaskId) && contractViolation.finalBeadsById.get(contractViolationTaskId).status === 'closed',
-            `Expected the bead to actually be closed (the doer did its job; only the review contract was violated), got: ${JSON.stringify(contractViolation.finalBeadsById.get(contractViolationTaskId))}`
-        );
-        check(
-            contractViolation.logs.some((m) => m.includes('contract violation')),
-            `Expected a logged 'contract violation' warning, logs: ${JSON.stringify(contractViolation.logs)}`
-        );
-        const contractViolationReviewCalls = contractViolation.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
-        check(
-            contractViolationReviewCalls.length === 2,
-            `Expected exactly 2 reviewer dispatches (initial + one retry) before surfacing the contract violation distinctly, got ${contractViolationReviewCalls.length}`
         );
     });
 });
