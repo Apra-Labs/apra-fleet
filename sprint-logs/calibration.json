@@ -101,25 +101,25 @@
     "max_sprints_in_sample": 5,
     "sprints_sampled": 5,
     "last_updated": "2026-07-16",
-    "cycle_avg": 1.6,
+    "cycle_avg": 1.48,
     "reviewer_ratio_avg": 0.4157036813589812,
     "bucket_avg_tokens": {},
     "roles": {
       "setup": {
-        "avg_output_tokens": 4223.8,
-        "sample_n": 4
+        "avg_output_tokens": 4201.84,
+        "sample_n": 5
       },
       "sprint-meta": {
-        "avg_output_tokens": 802.2,
-        "sample_n": 4
+        "avg_output_tokens": 820.5600000000001,
+        "sample_n": 5
       },
       "cycle-state": {
-        "avg_output_tokens": 3951.8,
-        "sample_n": 8
+        "avg_output_tokens": 3595.84,
+        "sample_n": 9
       },
       "ready-streaks": {
-        "avg_output_tokens": 1959,
-        "sample_n": 16
+        "avg_output_tokens": 1854.8,
+        "sample_n": 17
       },
       "doer": {
         "avg_output_tokens": 9305.583333333334,
@@ -146,12 +146,12 @@
         "sample_n": 2
       },
       "check-blockers": {
-        "avg_output_tokens": 1742.1,
-        "sample_n": 4
+        "avg_output_tokens": 1698.28,
+        "sample_n": 5
       },
       "log-append-end": {
-        "avg_output_tokens": 2180.8666666666663,
-        "sample_n": 7
+        "avg_output_tokens": 2296.293333333333,
+        "sample_n": 8
       },
       "ci-watcher": {
         "avg_output_tokens": 1220,
@@ -162,68 +162,68 @@
         "sample_n": 1
       },
       "final-reviewer": {
-        "avg_output_tokens": 9066.2,
-        "sample_n": 5
-      },
-      "cycle-meta": {
-        "avg_output_tokens": 1235.2,
+        "avg_output_tokens": 8995.16,
         "sample_n": 6
       },
+      "cycle-meta": {
+        "avg_output_tokens": 1252.96,
+        "sample_n": 7
+      },
       "push-sha": {
-        "avg_output_tokens": 469.33333333333337,
-        "sample_n": 5
+        "avg_output_tokens": 484.8666666666667,
+        "sample_n": 6
       },
       "exit-check": {
-        "avg_output_tokens": 2360.6,
-        "sample_n": 5
+        "avg_output_tokens": 2265.08,
+        "sample_n": 6
       },
       "setup-shell": {
-        "avg_output_tokens": 1348.4,
-        "sample_n": 3
-      },
-      "state-read": {
-        "avg_output_tokens": 918,
-        "sample_n": 2
-      },
-      "preflight-bd-schema": {
-        "avg_output_tokens": 430.2,
-        "sample_n": 2
-      },
-      "state-init": {
-        "avg_output_tokens": 1390.2,
-        "sample_n": 2
-      },
-      "stamp-setup": {
-        "avg_output_tokens": 268.8,
-        "sample_n": 2
-      },
-      "stamp-plan": {
-        "avg_output_tokens": 298.6,
-        "sample_n": 2
-      },
-      "state": {
-        "avg_output_tokens": 1241.3,
+        "avg_output_tokens": 1562.92,
         "sample_n": 4
       },
+      "state-read": {
+        "avg_output_tokens": 934,
+        "sample_n": 3
+      },
+      "preflight-bd-schema": {
+        "avg_output_tokens": 444.76000000000005,
+        "sample_n": 3
+      },
+      "state-init": {
+        "avg_output_tokens": 1349.56,
+        "sample_n": 3
+      },
+      "stamp-setup": {
+        "avg_output_tokens": 273.24,
+        "sample_n": 3
+      },
+      "stamp-plan": {
+        "avg_output_tokens": 294.68,
+        "sample_n": 3
+      },
+      "state": {
+        "avg_output_tokens": 1210.84,
+        "sample_n": 6
+      },
       "stamp-develop": {
-        "avg_output_tokens": 255,
-        "sample_n": 2
+        "avg_output_tokens": 250.6,
+        "sample_n": 3
       },
       "heartbeat": {
-        "avg_output_tokens": 1694.4,
-        "sample_n": 2
+        "avg_output_tokens": 1573.92,
+        "sample_n": 3
       },
       "deadlock-diag": {
         "avg_output_tokens": 1206,
         "sample_n": 1
       },
       "stamp-harvest": {
-        "avg_output_tokens": 344.2,
-        "sample_n": 2
+        "avg_output_tokens": 382.76,
+        "sample_n": 3
       },
       "harvest-clean-process-files": {
-        "avg_output_tokens": 639,
-        "sample_n": 2
+        "avg_output_tokens": 693.8,
+        "sample_n": 3
       }
     }
   }
