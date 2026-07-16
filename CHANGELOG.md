@@ -2,6 +2,73 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Code intelligence provider abstraction: codebase-memory-mcp shipped as default
+
+Sprint goal (P1/P2): finish the CodeIntelligenceProvider abstraction begun in
+the prior sprint pass. Following the earlier evaluation, this sprint
+re-evaluated the field of candidates and selected codebase-memory-mcp (MIT,
+native MCP transport, 158-language tree-sitter coverage, single static
+binary) over Joern (Apache 2.0, deeper CPG-based data-flow analysis but JVM +
+Scala dependency and no native MCP support). `CodebaseMemoryProvider` now
+implements all seven `CodeIntelligenceProvider` methods against the
+codebase-memory-mcp MCP server, following the same client-lifecycle pattern
+as `GitNexusProvider` (shared singleton client, stdio transport, connection
+reset on death/failure, a pre-flight index check, and structured
+offline/missing-index error results). It is registered in the `PROVIDERS`
+map and is now the default provider; GitNexus remains selectable by name, and
+the Joern provider file is retained with a deprecation notice recording the
+evaluation rationale.
+
+#### Sprint cost analysis
+Calibration: historical (5 sprints)   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |     14,100 |     72,947 | +417% |   $0.185 |   $0.905 |
+| reviewer   |      5,859 |     23,306 | +298% |   $0.088 |   $0.350 |
+| overhead   |      7,150 |    116,540 | +1530% |   $0.121 |   $1.140 |
+| TOTAL      |     27,109 |    212,793 | +685% |   $0.393 |   $2.394 |
+True-cost estimate (output x 4x): $1.573
+
+Outliers (>200% variance): doer, reviewer, overhead
+Calibration failures (>500%): overhead
+
+### Review outcome
+
+All three sprint tasks meet their acceptance criteria. Build is clean (tsc
+passes), and the full test suite passes with zero failures.
+
+**Evaluation and decision.** The comparison covers all five dimensions (ease
+of integration, dependency weight, language breadth, analysis depth, and MCP
+tool coverage), with the decision and rationale documented directly in the
+Joern provider file's header and in
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+The decision is verified by dedicated unit tests asserting the header covers
+every comparison dimension.
+
+**Provider implementation.** `CodebaseMemoryProvider` implements all seven
+methods, follows the GitNexus MCP client lifecycle pattern exactly (shared
+singleton, stdio transport, identity-guarded death handler, failure-reset),
+and returns structured offline/missing-index results instead of throwing.
+Unit tests cover all methods, three connection-resilience scenarios, and the
+pre-flight index check.
+
+**Registration as default.** `CodebaseMemoryProvider` is registered in the
+`PROVIDERS` map and is now the default returned by `getProvider()`; GitNexus
+remains selectable by explicit configuration. The Joern file carries a clear
+deprecation notice. Default-fallback and explicit-selection tests were
+updated accordingly.
+
+**File hygiene note (non-blocking).** One commit in this sprint bundled a
+handful of unrelated tool-config files (Beads task-tracker configuration)
+alongside the sprint work. These appear to be legitimate project setup but
+are unrelated to the code intelligence tasks and would have been cleaner as
+a separate commit.
+
+### Carried forward
+
+None -- all sprint tasks met their acceptance criteria.
+
 ## [Unreleased] -- Code intelligence provider abstraction: review closeout
 
 Sprint goal (P1/P2): add a permissively-licensed CodeIntelligenceProvider and
