@@ -2,9 +2,73 @@
 // Code Intelligence Provider: Joern (Code Property Graph)
 // ---------------------------------------------------------------------------
 //
+// STATUS: SUPERSEDED by CodebaseMemoryProvider
+//
 // Tool:     Joern (https://github.com/joernio/joern)
 // Version:  v4.x (latest stable as of 2026-07)
 // License:  Apache 2.0
+//
+// NOTE: This provider has been evaluated against codebase-memory-mcp and
+// superseded. The implementation remains in source for historical reference.
+// See evaluation summary below.
+//
+// ---------------------------------------------------------------------------
+// Evaluation: codebase-memory-mcp vs Joern (5 comparison dimensions)
+// ---------------------------------------------------------------------------
+//
+// DECISION: codebase-memory-mcp selected; Joern superseded.
+//
+// Both tools were evaluated across 5 comparison dimensions. The evaluation
+// determined that codebase-memory-mcp is the superior choice.
+//
+// 1. EASE OF INTEGRATION
+//    - Joern: Requires JVM + Scala REPL + custom subprocess scripting; no
+//      native MCP support. High friction.
+//    - codebase-memory-mcp: Native MCP transport (stdio, JSON-RPC 2.0); same
+//      pattern as existing GitNexusProvider. Seamless integration.
+//    - WINNER: codebase-memory-mcp
+//
+// 2. DEPENDENCY WEIGHT
+//    - Joern: JVM (300+ MB) + Scala runtime + joern binary (~150 MB).
+//      Significant deployment footprint.
+//    - codebase-memory-mcp: Single static binary (~40 MB), no runtime
+//      dependencies. Minimal footprint.
+//    - WINNER: codebase-memory-mcp
+//
+// 3. LANGUAGE BREADTH
+//    - Joern: ~10 languages (JS/TS, Python, C/C++, Java, Go, PHP, Ruby,
+//      Kotlin, Swift)
+//    - codebase-memory-mcp: 158 languages via tree-sitter AST coverage.
+//    - WINNER: codebase-memory-mcp (15x broader)
+//
+// 4. ANALYSIS DEPTH
+//    - Joern: Deeper control-flow and data-flow analysis (CPG merges AST,
+//      CFG, PDG, call graph). Stronger at taint tracking and semantic
+//      pattern matching.
+//    - codebase-memory-mcp: Broader structural analysis (graph-based,
+//      BFS traversal, change detection, architecture mapping). Strong on
+//      relational queries and codebase-wide patterns.
+//    - WINNER: Joern for depth, codebase-memory-mcp for breadth
+//    - DECISION: Breadth is higher priority than maximum depth for this
+//      codebase's requirements.
+//
+// 5. MCP TOOL COVERAGE
+//    - codebase-memory-mcp provides 15 MCP tools with direct coverage for
+//      all 7 CodeIntelligenceProvider methods:
+//      * graph()    <- search_graph, trace_path
+//      * impact()   <- detect_changes
+//      * query()    <- query_graph, search_code
+//      * context()  <- get_code_snippet, search_graph
+//      * map()      <- get_architecture
+//      * flow()     <- trace_path
+//      * tests()    <- search_graph (test patterns)
+//    - Joern: No native MCP tools; requires custom CLI subprocess pattern.
+//    - WINNER: codebase-memory-mcp
+//
+// RATIONALE: Superior ease of integration, minimal dependencies, broad
+// language support, and native MCP alignment outweigh Joern's deeper
+// control-flow analysis. The codebase benefits more from breadth and
+// maintainability than maximum semantic depth.
 //
 // ---------------------------------------------------------------------------
 // Research summary -- 3 candidates evaluated
