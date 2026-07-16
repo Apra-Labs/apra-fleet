@@ -2,6 +2,83 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Code intelligence provider abstraction: review closeout
+
+Sprint goal (P1/P2): add a permissively-licensed CodeIntelligenceProvider and
+set it as the default, replacing GitNexus. This entry records the outcome of
+a formal review pass against the original acceptance criteria for the four
+planned tasks: research and select a candidate, implement the provider,
+register it as the default, and add unit tests.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| reviewer   |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| overhead   |      7,150 |     35,996 | +403% |   $0.121 |   $0.354 |
+| TOTAL      |      7,150 |     35,996 | +403% |   $0.121 |   $0.354 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): none
+
+### Overall assessment
+
+The branch builds cleanly and the full test suite passes with no failures.
+The codebase is in a releasable state.
+
+**Research and candidate selection -- fully met.** Three candidates (Joern,
+SCIP, tree-sitter) were evaluated against six criteria (license, native
+call-graph/relationship analysis, semantic or structured search, active
+maintenance, subprocess usability, and TypeScript/Python coverage). Joern was
+selected, with the rationale documented in the provider file's header comment
+and in [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
+**Provider implementation -- not met.** The acceptance criteria called for all
+seven `CodeIntelligenceProvider` methods to be implemented following the
+GitNexusProvider pattern (spawned child-process backend, structured error
+results, a pre-flight index check, output sanitization). What shipped is
+seven stub methods that each throw a "not implemented" error -- no subprocess
+spawning, no structured errors, no pre-flight check. This is a skeleton, not
+a working implementation.
+
+**Registration as default -- not met.** The acceptance criteria required the
+new provider to be imported and instantiated in the provider registry, with
+the provider-selection function defaulting to it. The registry still contains
+only the GitNexus provider, and the default selection is unchanged.
+
+**Unit tests -- not met.** The acceptance criteria called for happy-path tests
+of all seven methods, error/offline tests, a pre-flight test, and an updated
+default-provider test. The tests that shipped only regex-match strings inside
+the provider source file's comments (e.g. checking that a license string
+appears in the file); the provider class itself is never instantiated or
+called in the test suite. There are no behavioral tests.
+
+### Why this was judged releasable despite the gaps
+
+The new provider code is entirely inert: it is not imported anywhere outside
+its own test file, not registered in the provider registry, and not
+reachable from any tool handler. It introduces zero behavioral change and
+zero regression risk to the existing GitNexus-backed code intelligence
+tools. The documentation honestly records this status rather than presenting
+the work as complete.
+
+All files touched in this pass are scoped and justified: the new provider
+source file and its test file, the code-intelligence-providers documentation
+page, and the standard README/CHANGELOG updates. No temporary files,
+secrets, unrelated configuration, or security issues were introduced.
+
+### Carried forward
+
+Implementing the seven provider methods against a live Code Property Graph,
+registering the provider in the registry (and deciding whether it becomes
+the new default or an opt-in alternative alongside GitNexus), and writing
+real behavioral tests remain open work for a future sprint. The research and
+method-to-query-language mapping already documented provide a concrete
+implementation roadmap for that follow-up.
+
 ## [Unreleased] -- Code intelligence provider abstraction
 
 Sprint goal (P1/P2): add a permissively-licensed code-indexing provider as an
