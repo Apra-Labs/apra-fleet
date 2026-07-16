@@ -2,6 +2,7 @@ import { spawn, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
@@ -137,10 +138,16 @@ class LocalStrategy implements AgentStrategy {
       let stderrSpillStream: fs.WriteStream | null = null;
       let stdoutSpillPath: string | null = null;
       let stderrSpillPath: string | null = null;
+      // StringDecoder buffers a trailing incomplete multi-byte UTF-8 sequence
+      // across chunks instead of substituting U+FFFD for it — a naive
+      // per-chunk `.toString()` corrupts any multi-byte character that
+      // happens to straddle a stream chunk boundary (apra-fleet-grq).
+      const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
 
       child.stdout?.on('data', (data: Buffer) => {
         resetInactivityTimer();
-        let chunk = data.toString();
+        let chunk = stdoutDecoder.write(data);
         if (!pidExtracted) {
           const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
           if (m) {
@@ -168,7 +175,7 @@ class LocalStrategy implements AgentStrategy {
         resetInactivityTimer();
         stderrLen += data.length;
         if (stderrLen <= MAX_OUTPUT_BYTES) {
-          stderr += data.toString();
+          stderr += stderrDecoder.write(data);
         } else {
           if (!stderrSpillStream) {
             stderrSpillPath = path.join(os.tmpdir(), `fleet-local-stderr-${uuid()}.txt`);
@@ -181,6 +188,16 @@ class LocalStrategy implements AgentStrategy {
 
       child.on('close', (code) => {
         clearStoredPid(this.agent.id);
+        const stdoutTail = stdoutDecoder.end();
+        const stderrTail = stderrDecoder.end();
+        if (stdoutTail) {
+          if (stdoutSpillStream) stdoutSpillStream.write(stdoutTail);
+          else stdout += stdoutTail;
+        }
+        if (stderrTail) {
+          if (stderrSpillStream) stderrSpillStream.write(stderrTail);
+          else stderr += stderrTail;
+        }
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
