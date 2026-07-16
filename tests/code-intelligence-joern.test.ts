@@ -152,3 +152,85 @@ describe('Joern Provider Research Verification', () => {
     expect(fileContent).toMatch(/graph\(symbol\)|impact\(target|query\(query\)|context\(name\)|map\(top\)|flow\(from|tests\(symbol\)/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Evaluation Document Verification (apra-fleet-0um.1.2)
+//
+// This test suite validates that the evaluation document comparing
+// codebase-memory-mcp vs Joern covers all 5 required comparison dimensions
+// plus the decision statement. 7 test cases total.
+// ---------------------------------------------------------------------------
+
+describe('Evaluation Document Verification', () => {
+  const joernFilePath = join(__dirname, '../src/tools/code-intelligence-joern.ts');
+  let fileContent: string;
+
+  // Read the file once for all tests
+  beforeEach(() => {
+    fileContent = readFileSync(joernFilePath, 'utf-8');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 1: SUPERSEDED/DEPRECATED notice referencing codebase-memory-mcp
+  // ---------------------------------------------------------------------------
+  it('Contains a SUPERSEDED/DEPRECATED notice referencing codebase-memory-mcp', () => {
+    expect(fileContent).toMatch(/STATUS:\s*SUPERSEDED.*CodebaseMemoryProvider/i);
+    expect(fileContent).toMatch(/has been evaluated against codebase-memory-mcp/i);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 2: Mentions ease of integration (MCP stdio vs JVM)
+  // ---------------------------------------------------------------------------
+  it('Mentions ease of integration comparing MCP stdio vs JVM', () => {
+    expect(fileContent).toMatch(/1\.\s*EASE OF INTEGRATION/i);
+    expect(fileContent).toMatch(/JVM.*Scala REPL/i);
+    expect(fileContent).toMatch(/Native MCP transport.*stdio.*JSON-RPC/i);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 3: Mentions dependency weight (single binary vs JVM + Scala)
+  // ---------------------------------------------------------------------------
+  it('Mentions dependency weight comparing single binary vs JVM + Scala', () => {
+    expect(fileContent).toMatch(/2\.\s*DEPENDENCY WEIGHT/i);
+    expect(fileContent).toMatch(/Single static binary/i);
+    expect(fileContent).toMatch(/JVM.*Scala runtime/i);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 4: Mentions language breadth (158 languages or tree-sitter vs 10 languages)
+  // ---------------------------------------------------------------------------
+  it('Mentions language breadth comparing 158 languages vs 10 languages', () => {
+    expect(fileContent).toMatch(/3\.\s*LANGUAGE BREADTH/i);
+    expect(fileContent).toMatch(/158 languages.*tree-sitter/i);
+    expect(fileContent).toMatch(/~10 languages/i);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 5: Mentions analysis depth comparison
+  // ---------------------------------------------------------------------------
+  it('Mentions analysis depth comparison', () => {
+    expect(fileContent).toMatch(/4\.\s*ANALYSIS DEPTH/i);
+    expect(fileContent).toMatch(/control-flow.*data-flow analysis/i);
+    expect(fileContent).toMatch(/CPG.*AST.*CFG.*PDG/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 6: Mentions MCP tool coverage (15 tools mapped to 7 methods)
+  // ---------------------------------------------------------------------------
+  it('Mentions MCP tool coverage with 15 tools mapped to 7 methods', () => {
+    expect(fileContent).toMatch(/5\.\s*MCP TOOL COVERAGE/i);
+    expect(fileContent).toMatch(/15 MCP tools/i);
+    expect(fileContent).toMatch(/all 7 CodeIntelligenceProvider methods/i);
+    expect(fileContent).toMatch(/graph\(\).*search_graph.*trace_path/i);
+    expect(fileContent).toMatch(/impact\(\).*detect_changes/i);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 7: Decision is clearly stated (codebase-memory-mcp selected)
+  // ---------------------------------------------------------------------------
+  it('Clearly states that codebase-memory-mcp was selected', () => {
+    expect(fileContent).toMatch(/DECISION:\s*codebase-memory-mcp selected/i);
+    expect(fileContent).toMatch(/Joern superseded/i);
+    expect(fileContent).toMatch(/Breadth is higher priority/i);
+  });
+});
