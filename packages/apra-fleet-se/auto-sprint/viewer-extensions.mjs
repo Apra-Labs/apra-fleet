@@ -321,7 +321,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
 
 export const beadsExtension = {
     id: 'beads',
-    title: 'Beads Tasks',
+    title: 'Tasks',
     js: `
         ${escapeHtml.toString()}
         ${renderBeadsHtml.toString()}
