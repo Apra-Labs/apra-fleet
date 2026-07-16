@@ -60,6 +60,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 import { getProvider, PROVIDERS, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
+import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
 // ---------------------------------------------------------------------------
 // getProvider() tests
@@ -83,11 +84,23 @@ describe('getProvider()', () => {
     expect(provider).toBe(PROVIDERS.gitnexus);
   });
 
+  it('returns CodebaseMemoryProvider when config.json says codebase-memory', async () => {
+    mockReadFile.mockResolvedValue('{"provider":"codebase-memory"}');
+
+    const provider = await getProvider();
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+
   it('throws with a clear message when provider key is not in PROVIDERS map', async () => {
     mockReadFile.mockResolvedValue('{"provider":"no-such-provider"}');
 
     await expect(getProvider()).rejects.toThrow('no-such-provider');
     await expect(getProvider()).rejects.toThrow('not configured');
+  });
+
+  it('PROVIDERS map contains both gitnexus and codebase-memory entries', () => {
+    expect(PROVIDERS.gitnexus).toBeInstanceOf(GitNexusProvider);
+    expect(PROVIDERS['codebase-memory']).toBeInstanceOf(CodebaseMemoryProvider);
   });
 });
 
