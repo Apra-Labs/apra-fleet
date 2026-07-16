@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- feat/code-intelligence-abstraction
+
+Sprint goal (P1/P2): add an Apache 2.0-licensed code-indexing provider as a default alternative to GitNexus, implementing the full `CodeIntelligenceProvider` interface (graph, impact, query, context, map, flow, tests) and registering it as the default. Goal NOT met -- the sprint ended early on a task-graph deadlock where a parent research task's children were completed but the parent itself was never marked done, blocking every downstream implementation task.
+
+What shipped: a `JoernProvider` skeleton implementing all seven `CodeIntelligenceProvider` methods as stubs (each throws `not implemented`), backed by a documented evaluation of three Apache 2.0 / MIT candidates (Joern, SCIP, tree-sitter) that selected Joern for its native Code Property Graph support across all seven methods. A test suite verifies the research meets all six selection criteria and that all method stubs are present. The provider is not registered in the provider map and is not the default -- it is inert and carries no regression risk. See [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) for the full evaluation and current status.
+
+Carried forward: implementing the seven Joern methods against a live Code Property Graph, registering the provider and deciding its default-vs-opt-in status, and end-to-end tests covering the provider switch.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| reviewer   |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| overhead   |      7,150 |     29,951 | +319% |   $0.121 |   $0.269 |
+| TOTAL      |      7,150 |     29,951 | +319% |   $0.121 |   $0.269 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): none
+
 ## [v0.3.3] -- feat/install-default
 
 ### Breaking change -- MCP server start command changed
