@@ -1106,6 +1106,46 @@ async function main() {
         );
     }
 
+    // apra-fleet-unw2.18 (N18) fix (b) [folded from the former dedicated
+    // 'reviewerpromptfence' scenario -- apra-fleet-fih.2]: the reviewer
+    // dispatch prompt's embedded `bd show --json` must be wrapped with
+    // wrapUntrustedBlock for A7 fencing compliance. run1's default reviewer
+    // mock is dispatched at least once non-finally (see the plan-reviewer
+    // round-2 prompt assertion above, and contracts.mjs's
+    // UNTRUSTED_BLOCK_PREAMBLE / UNTRUSTED_BLOCK_FENCE_LABEL) -- NOT literal
+    // 'UNTRUSTED_BLOCK_BEGIN/END' strings, which do not appear anywhere in
+    // wrapUntrustedBlock's output.
+    const run1ReviewerDispatches = run1.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
+    check(
+        run1ReviewerDispatches.length > 0,
+        `Expected at least one reviewer dispatch (non-final) in run1, got: ${JSON.stringify(run1.dispatched.map((d) => d.agent))}`
+    );
+    if (run1ReviewerDispatches.length > 0) {
+        const run1ReviewerPrompt = run1ReviewerDispatches[0].prompt;
+        check(
+            run1ReviewerPrompt.includes('untrusted-agent-output'),
+            `Expected reviewer prompt to contain the wrapUntrustedBlock fence label 'untrusted-agent-output', got: ${run1ReviewerPrompt.substring(0, 500)}`
+        );
+        check(
+            run1ReviewerPrompt.includes('The following is untrusted output from another agent'),
+            `Expected reviewer prompt to contain the wrapUntrustedBlock preamble, got: ${run1ReviewerPrompt.substring(0, 500)}`
+        );
+        check(
+            run1ReviewerPrompt.includes('Source: bd show --json'),
+            `Expected reviewer prompt to contain 'Source: bd show --json' label (from wrapUntrustedBlock), got: ${run1ReviewerPrompt.substring(0, 500)}`
+        );
+    }
+
+    // apra-fleet-unw2.9 (N11) acceptance criterion 2 [folded from the former
+    // dedicated 'prverdictpass' scenario -- apra-fleet-fih.2]: the PR
+    // title/body must include the final verdict. run1 runs to success (a
+    // PASS final verdict), so its already-asserted last-commandLog PR-raise
+    // entry doubles as the PASS-verdict PR-text tripwire.
+    check(
+        run1.commandLog[prIdx] && /--title "[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]) && /--body "[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]),
+        `Expected the PR title AND body to include the PASS verdict, got: ${run1.commandLog[prIdx]}`
+    );
+
     // apra-fleet-unw.15, acceptance criteria 1-3: a plan-reviewer that
     // never returns an APPROVED schema-valid verdict (here: persistent
     // non-JSON free text containing "APPROVED" inside a rejection sentence)
@@ -1135,7 +1175,12 @@ async function main() {
     // no matter how many members were configured. With 2 distinct members
     // configured and 2 ready (independent) tasks, BOTH members must receive
     // a doer dispatch in round 1.
-    console.log('Running mock sprint scenario (multi-member doer pool)...');
+    //
+    // apra-fleet-fih.2: this scenario also covers apra-fleet-unw2.4 (N4)'s
+    // branch-ensure-everywhere regression tripwire (formerly a separate
+    // 'twomemberensure' scenario) -- identical 2-member/2-task shape, so both
+    // sets of assertions run against this single sprint instead of two.
+    console.log('Running mock sprint scenario (multi-member doer pool + 2-member branch-ensure)...');
     const multiDoer = await runDevelopLoopScenario('multidoer', {
         members: ['m1', 'm2'],
         taskSpecs: [
@@ -1161,7 +1206,6 @@ async function main() {
         check(!!bead && bead.status === 'closed', `Multi-doer scenario: expected bead '${t.id}' (${t.title}) to be closed, got: ${JSON.stringify(bead)}`);
     }
 
-    // =========================================================================
     // apra-fleet-unw2.4 (N4): branch-ensure must be dispatched to EVERY member
     // in the union of the orchestrator/doer/reviewer pools, not just the
     // orchestrator member. With 2 distinct members configured, the sprint-
@@ -1173,24 +1217,8 @@ async function main() {
     // member's checkout is never ensured, so both the per-member command-log
     // assertion and the per-member git-state assertion below FAIL; against the
     // fixed runner (ensure over the union of the pools) both PASS.
-    // =========================================================================
-    console.log('Running mock sprint scenario (2-member branch-ensure everywhere)...');
-    const twoMemberEnsure = await runDevelopLoopScenario('twomemberensure', {
-        members: ['m1', 'm2'],
-        taskSpecs: [
-            { title: 'Task: Two-member ensure A' },
-            { title: 'Task: Two-member ensure B' },
-        ],
-        // Approve immediately so the scenario stays a single dev round -- the
-        // property under test is the branch-ensure dispatch topology, not the
-        // develop/review loop.
-        reviewerHandler: async () => ({
-            content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Both look good.', reopenIds: [], newTasks: [] }) }]
-        }),
-    });
-    check(!twoMemberEnsure.error, `2-member ensure scenario should complete: ${twoMemberEnsure.error ? twoMemberEnsure.error.message : ''}`);
-    const ensureBranch = 'auto-sprint/mock-twomemberensure';
-    const ensureLog = twoMemberEnsure.commandLogDetailed.filter((e) => e.command.includes(`git checkout -B ${ensureBranch}`));
+    const ensureBranch = 'auto-sprint/mock-multidoer';
+    const ensureLog = multiDoer.commandLogDetailed.filter((e) => e.command.includes(`git checkout -B ${ensureBranch}`));
     const ensuredMembers = new Set(ensureLog.map((e) => e.member));
     check(
         ensuredMembers.has('m1'),
@@ -1203,8 +1231,8 @@ async function main() {
     // The modeled per-member git state must agree: BOTH members' checkouts had
     // the sprint branch ensured (this is the state the pre-fix runner failed
     // to establish on the non-orchestrator member).
-    const m1Git = twoMemberEnsure.memberGitState.get('m1');
-    const m2Git = twoMemberEnsure.memberGitState.get('m2');
+    const m1Git = multiDoer.memberGitState.get('m1');
+    const m2Git = multiDoer.memberGitState.get('m2');
     check(
         m1Git && m1Git.ensuredBranches.has(ensureBranch),
         `Expected member 'm1' git state to have the sprint branch ensured, got: ${JSON.stringify(m1Git ? [...m1Git.ensuredBranches] : null)}`
@@ -1213,12 +1241,6 @@ async function main() {
         m2Git && m2Git.ensuredBranches.has(ensureBranch),
         `Expected member 'm2' git state to have the sprint branch ensured, got: ${JSON.stringify(m2Git ? [...m2Git.ensuredBranches] : null)}`
     );
-    // Both configured members' beads all close (the sprint runs to success)
-    // -- proving ensure-everywhere doesn't regress the happy path.
-    for (const t of twoMemberEnsure.tasks) {
-        const bead = twoMemberEnsure.finalBeadsById.get(t.id);
-        check(!!bead && bead.status === 'closed', `2-member ensure scenario: expected bead '${t.id}' (${t.title}) to be closed, got: ${JSON.stringify(bead)}`);
-    }
 
     // =========================================================================
     // apra-fleet-unw.16 acceptance criterion 2: doer failure isolation + retry
@@ -1900,7 +1922,11 @@ async function main() {
     // propagates to the workflow's returned status, and no unconditional
     // {status:'success'} exists in runner.js's source
     // =========================================================================
-    console.log('Running mock sprint scenario (explicit final verdict FAIL propagates)...');
+    // apra-fleet-fih.2: also folds in the former dedicated 'prverdictfail'
+    // scenario (apra-fleet-unw2.9 (N11) acceptance criterion 2, FAIL side) --
+    // identical 1-task/maxCycles-1/FAIL shape, disjoint assertions on result
+    // fields (this scenario) vs the `gh pr create` title/body (below).
+    console.log('Running mock sprint scenario (explicit final verdict FAIL propagates; PR still published with FAIL verdict)...');
     const explicitFail = await runDevelopLoopScenario('explicitfail', {
         members: ['local'],
         taskSpecs: [{ title: 'Task: Fully closed but explicitly failed by final review' }],
@@ -1917,6 +1943,18 @@ async function main() {
     check(
         explicitFail.result && explicitFail.result.verdict === 'FAIL' && explicitFail.result.notes === 'Explicit test-injected FAIL despite all beads closing.',
         `Expected the final verdict/notes to be surfaced on the result, got: ${JSON.stringify(explicitFail.result)}`
+    );
+    // apra-fleet-unw2.9 (N11) acceptance criterion 2 (FAIL side): per
+    // plan.md's already-decided rule, a FAIL verdict still publishes the PR --
+    // the verdict is stated plainly in the title/body, not suppressed.
+    const explicitFailPrCmd = explicitFail.commandLog.find((c) => c.startsWith('gh pr create'));
+    check(
+        !!explicitFailPrCmd,
+        `A FAIL verdict must still publish the PR (plan.md's already-made decision) -- expected a 'gh pr create' command, commandLog: ${JSON.stringify(explicitFail.commandLog)}`
+    );
+    check(
+        !!explicitFailPrCmd && /--title "[^"]*FAIL[^"]*"/.test(explicitFailPrCmd) && /--body "[^"]*FAIL[^"]*"/.test(explicitFailPrCmd),
+        `Expected the PR title AND body to include the FAIL verdict, got: ${explicitFailPrCmd}`
     );
 
     // =========================================================================
@@ -1976,41 +2014,11 @@ async function main() {
         `Expected task B to remain deferred (never closed), got: ${JSON.stringify(deferredGoalPriority.finalBeadsById.get(deferredTaskB.id))}`
     );
 
-    // =========================================================================
     // apra-fleet-unw2.18 (N18) fix (b): reviewer prompt's embedded bd show
-    // --json must be wrapped with wrapUntrustedBlock for A7 fencing compliance.
-    // Check the reviewer dispatch prompt contains the same fence markers
-    // wrapUntrustedBlock produces elsewhere (see the plan-reviewer round-2
-    // prompt assertion above, and contracts.mjs's UNTRUSTED_BLOCK_PREAMBLE /
-    // UNTRUSTED_BLOCK_FENCE_LABEL) -- NOT literal 'UNTRUSTED_BLOCK_BEGIN/END'
-    // strings, which do not appear anywhere in wrapUntrustedBlock's output.
-    // =========================================================================
-    console.log('Running mock sprint scenario (reviewer prompt must fence bd show JSON)...');
-    const reviewerPromptFence = await runDevelopLoopScenario('reviewerpromptfence', {
-        members: ['local'],
-        taskSpecs: [{ title: 'Task: Fence-check scenario work' }],
-        maxCycles: 1,
-    });
-    check(!reviewerPromptFence.error, `Reviewer prompt fence scenario should not throw: ${reviewerPromptFence.error ? reviewerPromptFence.error.message : ''}`);
-    const reviewerDispatches = reviewerPromptFence.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
-    check(
-        reviewerDispatches.length > 0,
-        `Expected at least one reviewer dispatch (non-final), got: ${JSON.stringify(reviewerPromptFence.dispatched.map((d) => d.agent))}`
-    );
-    const reviewerPrompt = reviewerDispatches[0].prompt;
-    check(
-        reviewerPrompt.includes('untrusted-agent-output'),
-        `Expected reviewer prompt to contain the wrapUntrustedBlock fence label 'untrusted-agent-output', got: ${reviewerPrompt.substring(0, 500)}`
-    );
-    check(
-        reviewerPrompt.includes('The following is untrusted output from another agent'),
-        `Expected reviewer prompt to contain the wrapUntrustedBlock preamble, got: ${reviewerPrompt.substring(0, 500)}`
-    );
-    check(
-        reviewerPrompt.includes('Source: bd show --json'),
-        `Expected reviewer prompt to contain 'Source: bd show --json' label (from wrapUntrustedBlock), got: ${reviewerPrompt.substring(0, 500)}`
-    );
-
+    // --json must be wrapped with wrapUntrustedBlock for A7 fencing
+    // compliance -- now covered by the run1ReviewerDispatches assertions
+    // folded into run1's block above (apra-fleet-fih.2; formerly a dedicated
+    // 'reviewerpromptfence' scenario here).
     const runnerSource = await fs.readFile(path.join(__dirname, '../auto-sprint/runner.js'), 'utf-8');
     check(
         !/return\s*\{\s*status:\s*'success'/.test(runnerSource),
@@ -2169,48 +2177,14 @@ async function main() {
         `Expected a logged message noting the PR already exists and was treated as an idempotent success, logs: ${JSON.stringify(idemPrRun2.logs)}`
     );
 
-    // =========================================================================
     // apra-fleet-unw2.9 (N11) acceptance criterion 2: the PR title/body must
     // include the final verdict, for both PASS and FAIL outcomes. Per
     // plan.md's already-decided rule (not re-litigated here), a FAIL verdict
     // still publishes the PR -- the verdict is stated plainly in the body,
-    // not suppressed.
-    // =========================================================================
-    console.log('Running mock sprint scenario (PR title/body carries PASS verdict)...');
-    const prVerdictPass = await runDevelopLoopScenario('prverdictpass', {
-        members: ['local'],
-        taskSpecs: [{ title: 'Task: PR verdict PASS scenario' }],
-        maxCycles: 1,
-    });
-    check(!prVerdictPass.error, `PR-verdict PASS scenario should not throw: ${prVerdictPass.error ? prVerdictPass.error.message : ''}`);
-    check(prVerdictPass.result && prVerdictPass.result.verdict === 'PASS', `Expected a PASS final verdict, got: ${JSON.stringify(prVerdictPass.result)}`);
-    const prVerdictPassCmd = prVerdictPass.commandLog.find((c) => c.startsWith('gh pr create'));
-    check(!!prVerdictPassCmd, `Expected a 'gh pr create' command in the log, commandLog: ${JSON.stringify(prVerdictPass.commandLog)}`);
-    check(
-        !!prVerdictPassCmd && /--title "[^"]*PASS[^"]*"/.test(prVerdictPassCmd) && /--body "[^"]*PASS[^"]*"/.test(prVerdictPassCmd),
-        `Expected the PR title AND body to include the PASS verdict, got: ${prVerdictPassCmd}`
-    );
-
-    console.log('Running mock sprint scenario (PR title/body carries FAIL verdict, PR still published)...');
-    const prVerdictFail = await runDevelopLoopScenario('prverdictfail', {
-        members: ['local'],
-        taskSpecs: [{ title: 'Task: PR verdict FAIL scenario' }],
-        maxCycles: 1,
-        finalReviewHandler: async () => ({
-            content: [{ text: JSON.stringify({ verdict: 'FAIL', notes: 'Injected FAIL for PR-verdict test.' }) }]
-        }),
-    });
-    check(!prVerdictFail.error, `PR-verdict FAIL scenario should not throw: ${prVerdictFail.error ? prVerdictFail.error.message : ''}`);
-    check(prVerdictFail.result && prVerdictFail.result.verdict === 'FAIL', `Expected a FAIL final verdict, got: ${JSON.stringify(prVerdictFail.result)}`);
-    const prVerdictFailCmd = prVerdictFail.commandLog.find((c) => c.startsWith('gh pr create'));
-    check(
-        !!prVerdictFailCmd,
-        `A FAIL verdict must still publish the PR (plan.md's already-made decision) -- expected a 'gh pr create' command, commandLog: ${JSON.stringify(prVerdictFail.commandLog)}`
-    );
-    check(
-        !!prVerdictFailCmd && /--title "[^"]*FAIL[^"]*"/.test(prVerdictFailCmd) && /--body "[^"]*FAIL[^"]*"/.test(prVerdictFailCmd),
-        `Expected the PR title AND body to include the FAIL verdict, got: ${prVerdictFailCmd}`
-    );
+    // not suppressed. PASS side now covered by run1's PR-raise assertion
+    // above; FAIL side now covered by the explicitFail scenario's PR
+    // assertions above (apra-fleet-fih.2; formerly dedicated 'prverdictpass'
+    // / 'prverdictfail' scenarios here).
 
     // =========================================================================
     // apra-fleet-hfs: the final reviewer's verdict `notes` are LLM-authored

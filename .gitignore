@@ -45,3 +45,7 @@ COPILOT-INSTRUCTIONS.md
 # Local tool scaffolding, not project deliverables
 .agents/
 .codex/
+
+# Auto-sprint scaffold logs left in repo root (not under sprint-logs/)
+/auto-sprint-*.log
+/auto-sprint-*.err.log
