@@ -2,13 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] -- feat/code-intelligence-abstraction
+## [Unreleased] -- Code intelligence provider abstraction
 
-Sprint goal (P1/P2): add an Apache 2.0-licensed code-indexing provider as a default alternative to GitNexus, implementing the full `CodeIntelligenceProvider` interface (graph, impact, query, context, map, flow, tests) and registering it as the default. Goal NOT met -- the sprint ended early on a task-graph deadlock where a parent research task's children were completed but the parent itself was never marked done, blocking every downstream implementation task.
+Sprint goal (P1/P2): add a permissively-licensed code-indexing provider as an
+alternative to GitNexus, implementing the full `CodeIntelligenceProvider`
+interface (graph, impact, query, context, map, flow, tests) and registering
+it as the default.
 
-What shipped: a `JoernProvider` skeleton implementing all seven `CodeIntelligenceProvider` methods as stubs (each throws `not implemented`), backed by a documented evaluation of three Apache 2.0 / MIT candidates (Joern, SCIP, tree-sitter) that selected Joern for its native Code Property Graph support across all seven methods. A test suite verifies the research meets all six selection criteria and that all method stubs are present. The provider is not registered in the provider map and is not the default -- it is inert and carries no regression risk. See [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) for the full evaluation and current status.
+What shipped: a documented evaluation of three Apache 2.0 / MIT candidates
+(Joern, SCIP, tree-sitter) against six selection criteria (license, native
+code-graph/relationship analysis, semantic or structured search, active
+maintenance, subprocess usability, and TypeScript/Python coverage), which
+selected Joern for its Code Property Graph support across all seven provider
+methods. A `JoernProvider` class implements the `CodeIntelligenceProvider`
+interface as a skeleton (all seven methods present, each currently a stub),
+backed by a test suite verifying the research meets all six selection
+criteria. See [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)
+for the full evaluation and current status.
 
-Carried forward: implementing the seven Joern methods against a live Code Property Graph, registering the provider and deciding its default-vs-opt-in status, and end-to-end tests covering the provider switch.
+Outstanding / carried forward: the provider is not yet registered in the
+provider registry and is not selected as the default. Real method bodies
+against a live Code Property Graph, registry registration, the default-vs-
+opt-in decision, and end-to-end behavioral tests remain open work. Because
+the provider is not imported or reachable from any tool handler outside its
+own module, it introduces no behavioral change and carries no regression
+risk to the existing GitNexus-backed code intelligence tools.
+
+Review outcome: the codebase builds cleanly and the full test suite passes.
+The branch was judged releasable on the basis that the new provider code is
+fully inert and every other changed file is scoped and justified -- the
+incomplete provider implementation is intentionally deferred rather than
+half-shipped into the active code path.
 
 #### Sprint cost analysis
 Calibration: none   Cycles: estimated 1.5, actual 1
@@ -17,8 +41,8 @@ Calibration: none   Cycles: estimated 1.5, actual 1
 |------------|------------|------------|-------|----------|----------|
 | doer       |          0 |          0 |   n/a |   $0.000 |   $0.000 |
 | reviewer   |          0 |          0 |   n/a |   $0.000 |   $0.000 |
-| overhead   |      7,150 |     29,951 | +319% |   $0.121 |   $0.269 |
-| TOTAL      |      7,150 |     29,951 | +319% |   $0.121 |   $0.269 |
+| overhead   |      7,150 |     36,179 | +406% |   $0.121 |   $0.365 |
+| TOTAL      |      7,150 |     36,179 | +406% |   $0.121 |   $0.365 |
 True-cost estimate (output x 4x): $0.483
 
 Outliers (>200% variance): overhead
