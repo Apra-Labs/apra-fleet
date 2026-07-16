@@ -169,7 +169,21 @@ export function goalPriorityMax(goal) {
 // bug: `bd list --ready == []` used to be misread as "the sprint is done"
 // even when a bead was stuck blocked or left in_progress with no doer ever
 // finishing it).
-const NOT_DONE_STATUSES = 'open,in_progress,blocked,deferred';
+// Quoted (not a bare comma list): on Windows, commands dispatch via
+// `spawn(command, { shell: 'powershell.exe' })` -- PowerShell's own parser
+// treats an unquoted comma-separated value as an array literal and
+// re-stringifies it space-joined ($OFS) before invoking the native `bd`
+// command, silently turning `--status=open,in_progress,blocked,deferred`
+// into `--status=open in_progress blocked deferred`, which `bd` then
+// rejects as an invalid status. Confirmed via a direct spawn() repro
+// against the real bd.cmd shim. MUST be double quotes, not single: this
+// same string is also fed to real `bd` via plain `child_process.exec()`
+// (cmd.exe as the default shell, e.g. in test mocks) -- cmd.exe has no
+// concept of single-quote quoting, so single quotes would pass through
+// literally into argv (`invalid status "'open"`); double quotes are
+// stripped as real quoting by both PowerShell and cmd.exe, and are a
+// harmless no-op under POSIX shells too.
+const NOT_DONE_STATUSES = '"open,in_progress,blocked,deferred"';
 
 // Backlog panel (dashboard "Backlog" section): beads the sprint certainly
 // will NOT be addressing this run. Excludes 'closed' (done, not backlog)
@@ -181,7 +195,10 @@ const NOT_DONE_STATUSES = 'open,in_progress,blocked,deferred';
 // project-wide (no --parent filter) -- this can and should include beads
 // with no relation at all to the current sprint's target epic, so the
 // user sees the true state of unplanned/idle work.
-const BACKLOG_STATUSES = 'open,deferred,blocked';
+// Quoted -- see NOT_DONE_STATUSES above for why (PowerShell comma-array
+// mangling on Windows; must be double quotes, not single, so cmd.exe-based
+// dispatch strips them correctly too).
+const BACKLOG_STATUSES = '"open,deferred,blocked"';
 
 // We can import standard node modules in workflows if needed, or pass them in context.
 // For now, we'll assume we check runbooks via command() since we are in the workflow engine.
