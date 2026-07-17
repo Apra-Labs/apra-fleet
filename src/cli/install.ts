@@ -185,28 +185,16 @@ function buildDevManifest(root: string): AssetManifest {
   const pmSkillsDir = fs.existsSync(vendorPmSkills) ? vendorPmSkills : path.join(root, 'dist', 'skills', 'pm');
   const pmBase = fs.existsSync(vendorPmSkills) ? 'vendor/apra-pm/skills/pm' : 'dist/skills/pm';
 
-  // Agents are different: each vendor/apra-pm/agents/*.md file contains an
-  // unresolved `<!-- GRAPH-SEMANTICS -->` marker that only scripts/vendor-pm.mjs
-  // resolves (inlining agents/_shared/GRAPH-SEMANTICS.md) during its
-  // submodule -> dist/agents copy step. Reading the raw submodule here, as
-  // this used to do (preferring vendor/apra-pm/agents whenever the submodule
-  // was present on disk -- true for every dev-mode checkout), shipped that
-  // literal unresolved marker string into every non-SEA install. Prefer
-  // dist/agents (already build-resolved) whenever it exists; only fall back
-  // to the raw submodule -- with a warning -- if the build hasn't run yet.
-  const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
-  const distAgents = path.join(root, 'dist', 'agents');
-  const distAgentsExists = fs.existsSync(distAgents);
-  const agentsDir = distAgentsExists ? distAgents : vendorAgents;
-  const agentsBase = distAgentsExists ? 'dist/agents' : 'vendor/apra-pm/agents';
-  if (!distAgentsExists && fs.existsSync(vendorAgents)) {
-    console.warn(
-      'Warning: dist/agents not found -- installing agent contracts directly from ' +
-      'vendor/apra-pm/agents. Run `node scripts/vendor-pm.mjs` first (or `npm run build`) ' +
-      'so the <!-- GRAPH-SEMANTICS --> marker is resolved; otherwise installed agent files ' +
-      'will contain the literal, unresolved marker text.'
-    );
-  }
+  // Read straight from the submodule -- same as skills above. (Each
+  // vendor/apra-pm/agents/*.md file used to contain an unresolved
+  // `<!-- GRAPH-SEMANTICS -->` marker that only scripts/vendor-pm.mjs's
+  // submodule -> dist/agents copy step resolved, which is why this used to
+  // prefer dist/agents when present and warn on the raw-submodule fallback.
+  // apra-pm PR#29 replaced that marker with an explicit prose pointer to
+  // vendor/apra-pm/agents/_shared/GRAPH-SEMANTICS.md in every agent file, so
+  // there is nothing left to resolve and no dist/agents dependency here.)
+  const agentsDir = path.join(root, 'vendor', 'apra-pm', 'agents');
+  const agentsBase = 'vendor/apra-pm/agents';
 
   const skills = collectFilesRec(pmSkillsDir, pmBase, pmBase);
   const agents = collectFilesRec(agentsDir, agentsBase, agentsBase);
@@ -1005,11 +993,9 @@ Then re-run:  apra-fleet install`);
       }
     } else {
       const root = findProjectRoot();
-      // Same dist/agents-first preference as the manifest-building step
-      // above (and for the same reason: only dist/agents has the
-      // <!-- GRAPH-SEMANTICS --> marker resolved).
-      const distAgentsSrc = path.join(root, 'dist', 'agents');
-      const agentsSrc = fs.existsSync(distAgentsSrc) ? distAgentsSrc : path.join(root, 'vendor', 'apra-pm', 'agents');
+      // Read straight from the submodule, same as the manifest-building
+      // step above -- no dist/agents dependency (see that step's comment).
+      const agentsSrc = path.join(root, 'vendor', 'apra-pm', 'agents');
       for (const entry of fs.readdirSync(agentsSrc, { withFileTypes: true })) {
         if (entry.isDirectory()) continue;
         let content = fs.readFileSync(path.join(agentsSrc, entry.name), 'utf-8');
