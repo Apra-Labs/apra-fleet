@@ -209,6 +209,19 @@ Tier totals: CRIT 3 (523.8s) / HIGH 32 (2,145.0s) / MED 25 (~214.6s) / LOW 10 (~
    scenario -- removes the (likely most expensive) Dolt store creation from every
    scenario without faking anything.
 
+   **IMPLEMENTED (2026-07-17), with one deliberate design change**: instead of a
+   hand-written in-memory bd emulator returning "byte-plausible" JSON, the shim is
+   a record/replay layer (`test/helpers/bd-replay.mjs`) -- every response it can
+   ever return is a byte-for-byte capture from a real `bd` run of these same
+   tests, so nothing is fabricated and format drift cannot be introduced by the
+   shim itself. `APRA_FLEET_BD_MOCK` selects the mode: replay (default; recorded
+   fixtures under `test/fixtures/bd-recordings/`, see the README there),
+   `0`/`real` (real bd CLI, the pre-shim behavior; `npm run test:integration`),
+   or `record` (real bd + refresh the fixtures; `npm run test:record`).
+   `test/bd-recordings-fidelity.test.mjs` guards the recordings' integrity. The
+   real-bd canary recommendation stands: `npm run test:integration` runs the WHOLE
+   suite (including happy-path #49 and golden main #33) against real bd.
+
 3. **Demote the three determinism second-runs to a nightly lane** (#32, #34, and
    run2 inside #49): each re-executes an identical full sprint purely to prove
    run-to-run stability, ~490s cumulative. Per-commit, the snapshot comparisons
