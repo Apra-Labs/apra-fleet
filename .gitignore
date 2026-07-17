@@ -50,5 +50,8 @@ COPILOT-INSTRUCTIONS.md
 /auto-sprint-*.log
 /auto-sprint-*.err.log
 
-# Per-suite integration-test progress state (scripts/run-integ-suites-sequentially.mjs)
+# Per-file integration-test progress state (scripts/run-integ-suites.mjs)
 /integ-suite-status.json
+/integ-suite-status.json.tmp
+/integ-suite-heartbeat.json
+/integ-suite-run.log
