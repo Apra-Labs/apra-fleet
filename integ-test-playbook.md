@@ -37,7 +37,7 @@ Commands below require these prefixes in `.claude/settings.json` under
 - `Bash(git clone *)`
 - `Bash(git -C ~/temp/.apra-fleet-tests* *)`
 - `Bash(node scripts/run-integ-suites.mjs *)` (for the
-  "Run the apra-fleet-se suite against real bd" section only)
+  "Unit-suite timing check" section only)
 
 ## Setup
 
@@ -128,7 +128,7 @@ registration, git topology checks, planner/doer/reviewer dispatch, and
 harvest -- the same layers a real sprint depends on -- without touching
 production state.
 
-## Run the apra-fleet-se suite against real bd
+## Unit-suite timing check (apra-fleet-se)
 
 Runs the full `packages/apra-fleet-se` test suite against the real `bd`
 CLI (not the recorded mock) and files `[integ]` bug beads for any failure.
