@@ -171,7 +171,7 @@ describe('apra-fleet-unw.10: engine end event', () => {
         const endEvents = [];
         wf.on('end', (res) => endEvents.push(res));
 
-        const server = createDashboardViewer(wf, { port: 18091, name: 'Lifecycle Success Test' });
+        const server = createDashboardViewer(wf, { port: 0, name: 'Lifecycle Success Test' });
         await withServer(server, async (port) => {
             const before = JSON.parse(await httpGet(port, '/state'));
             assert.strictEqual(before.status, 'running', 'dashboard must start in the running/LIVE state');
@@ -197,7 +197,7 @@ describe('apra-fleet-unw.10: engine end event', () => {
         const endEvents = [];
         wf.on('end', (res) => endEvents.push(res));
 
-        const server = createDashboardViewer(wf, { port: 18092, name: 'Lifecycle Failure Test' });
+        const server = createDashboardViewer(wf, { port: 0, name: 'Lifecycle Failure Test' });
         await withServer(server, async (port) => {
             await assert.rejects(() => engine.executeFile(fixture('test-end-event-failure.mjs'), {}));
 
@@ -223,7 +223,7 @@ describe('apra-fleet-unw.10: cooperative /stop', () => {
         const endEvents = [];
         wf.on('end', (res) => endEvents.push(res));
 
-        const server = createDashboardViewer(wf, { port: 18093, name: 'Stop Test' });
+        const server = createDashboardViewer(wf, { port: 0, name: 'Stop Test' });
 
         const originalExit = process.exit;
         let exitCalled = false;
@@ -355,7 +355,7 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
         await withTempCwd(async (dir) => {
             const wf = new FleetWorkflow(createMockFleetApi());
             const engine = new WorkflowEngine(wf);
-            const server = createDashboardViewer(wf, { port: 18094, name: 'Persist Success Test' });
+            const server = createDashboardViewer(wf, { port: 0, name: 'Persist Success Test' });
 
             await withServer(server, async (port) => {
                 const result = await engine.executeFile(fixture('test-end-event-success.mjs'), {});
@@ -387,7 +387,7 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
             const activityStarts = [];
             wf.on('activity:start', (meta) => activityStarts.push(meta));
 
-            const server = createDashboardViewer(wf, { port: 18095, name: 'Persist Stop Test' });
+            const server = createDashboardViewer(wf, { port: 0, name: 'Persist Stop Test' });
 
             await withServer(server, async (port) => {
                 const runPromise = engine.executeFile(fixture('test-stop-pending-agent.mjs'), {});
@@ -418,7 +418,7 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
             const activityStarts = [];
             wf.on('activity:start', (meta) => activityStarts.push(meta));
 
-            const server = createDashboardViewer(wf, { port: 18096, name: 'Persist SIGINT Test' });
+            const server = createDashboardViewer(wf, { port: 0, name: 'Persist SIGINT Test' });
 
             const originalExit = process.exit;
             let exitCode = null;
@@ -461,7 +461,7 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
         await withTempCwd(async (dir) => {
             const wf = new FleetWorkflow(createMockFleetApi());
             const engine = new WorkflowEngine(wf);
-            const server = createDashboardViewer(wf, { port: 18098, name: 'Persist Manual Endpoint Test' });
+            const server = createDashboardViewer(wf, { port: 0, name: 'Persist Manual Endpoint Test' });
 
             await withServer(server, async (port) => {
                 // No 'end' yet -- run is still "running". A manual /save_logs
@@ -493,7 +493,7 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
         await withTempCwd(async (dir) => {
             const wf = new FleetWorkflow(createMockFleetApi());
             const engine = new WorkflowEngine(wf);
-            const server = createDashboardViewer(wf, { port: 18097, name: 'Persist Idempotency Test' });
+            const server = createDashboardViewer(wf, { port: 0, name: 'Persist Idempotency Test' });
 
             const originalExit = process.exit;
             let exitCalled = false;
