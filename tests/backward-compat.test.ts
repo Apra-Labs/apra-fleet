@@ -69,9 +69,10 @@ describe('sprint state-file names are preserved', () => {
     });
   }
 
-  it('tpl-progress.json template exists', () => {
-    expect(existsSync(join(SKILL_DIR, 'tpl-progress.json'))).toBe(true);
-  });
+  // tpl-progress.json was removed upstream (apra-pm PR#29): it was an
+  // unreferenced template in a skill whose docs state repeatedly that no
+  // progress.json is used, so its "existence" was never a real backward-
+  // compat guarantee -- deleting it is the fix, not a regression.
 });
 
 // -- (c) Beads lifecycle hooks unchanged ----------------------------------------
@@ -144,7 +145,6 @@ describe('pm skill sub-documents are present', () => {
     'worktrees.md',
     'simple-sprint.md',
     'fleet-addendum.md',
-    'tpl-progress.json',
   ];
 
   for (const doc of docs) {
