@@ -4,10 +4,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import fsSync from 'fs';
-import { exec } from 'child_process';
 import os from 'os';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
+// bd record/replay-aware runCmd -- same (cmd, cwd) signature, and in real
+// mode (APRA_FLEET_BD_MOCK=0) byte-for-byte the local exec() copy this
+// replaced; see test/helpers/bd-replay.mjs for the APRA_FLEET_BD_MOCK
+// contract.
+import { runCmd } from './helpers/bd-replay.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,12 +79,6 @@ function mockCmdResult(code, stdout, stderr) {
         structuredContent: { exitCode: code, stdout: stdout ?? '', stderr: stderr ?? '' },
     };
 }
-
-const runCmd = (cmd, cwd) => new Promise((resolve) => {
-    exec(cmd, { cwd, env: { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' } }, (err, stdout, stderr) => {
-        resolve({ err, stdout, stderr });
-    });
-});
 
 // Titles chosen so alphabetical (title) order DIFFERS from creation order
 // (and from `bd list --ready`'s undocumented, created_at-derived default
