@@ -246,21 +246,19 @@ function summarizeExtractionAttempts(attempts) {
 }
 
 /**
- * Builds the self-contained repair re-ask prompt sent to the SAME member
- * after an invalid structured-output attempt. Deliberately does NOT rely on
- * `resume: true` (see AgentOptions.resume / F10 note in agent() below) --
- * every field the member needs (the original prompt+schema, its own invalid
- * output, and the validation errors) is embedded directly in the prompt
- * text so the re-ask stands alone even in a fresh, non-resumed session.
- * @param {string} originalPrompt
- * @param {string} invalidOutput
+ * Builds the lean repair re-ask prompt sent to the SAME member after an
+ * invalid structured-output attempt. apra-fleet-02s.3: repair re-asks now
+ * force `resume: true` (see the payload construction below), so the member's
+ * session already has the original prompt/schema and its own invalid
+ * output in context -- re-embedding all of that here would just re-spend
+ * tokens re-sending what the resumed session already has. Only the
+ * validation errors plus a short corrected-JSON instruction are needed.
  * @param {string} errorsText
  */
-function buildRepairPrompt(originalPrompt, invalidOutput, errorsText) {
-    return `${originalPrompt}\n\n` +
-        `Your previous response could not be used:\n${invalidOutput}\n\n` +
+function buildRepairPrompt(errorsText) {
+    return `Your previous response could not be used.\n\n` +
         `Validation errors:\n${errorsText}\n\n` +
-        `Please respond again with corrected JSON only, strictly conforming to the schema above. ` +
+        `Please respond again with corrected JSON only, strictly conforming to the schema from your previous instructions. ` +
         `Do not include any commentary, explanation, or text outside the JSON.`;
 }
 
@@ -310,10 +308,12 @@ function buildRepairPrompt(originalPrompt, invalidOutput, errorsText) {
  * @property {number} [schemaRetries] - Only meaningful when `schema` is set. Bounded number
  *   of repair re-asks to the SAME member after a parse/validation failure, before giving up
  *   and throwing AgentOutputError. Defaults to 2 (so up to 3 total dispatches: 1 original +
- *   2 repairs). Each repair re-ask is a fresh, self-contained prompt (does not rely on
- *   `resume: true`) containing the original prompt, the member's own invalid output, and the
- *   ajv validation/parse errors. Each attempt emits its own activity:start/activity:end pair
- *   and is cost-accounted individually. (apra-fleet-unw.8)
+ *   2 repairs). Each repair re-ask FORCES `resume: true` (apra-fleet-02s.3) so the member's
+ *   session already has the original prompt/schema and its own invalid output in context --
+ *   the re-ask itself is a lean reminder containing only the ajv validation/parse errors
+ *   plus a corrected-JSON instruction, not a re-embedding of the full original prompt/output.
+ *   Each attempt emits its own activity:start/activity:end pair and is cost-accounted
+ *   individually. (apra-fleet-unw.8)
  */
 
 /**
@@ -753,12 +753,16 @@ export class FleetWorkflow extends EventEmitter {
                 effort: opts.effort,
                 agent: opts.agentType,
                 // F10: default to a self-contained (non-resumed) session for
-                // workflow-authored prompts, including every repair re-ask --
-                // buildRepairPrompt() embeds the original prompt + invalid
-                // output + errors directly, so it never depends on
-                // resume:true to carry context forward. See AgentOptions
-                // .resume above and apra-fleet-unw.3.
-                resume: opts.resume ?? false,
+                // the INITIAL dispatch of a workflow-authored prompt. See
+                // AgentOptions.resume above and apra-fleet-unw.3.
+                // apra-fleet-02s.3: a schema-repair re-ask (isRepair===true)
+                // is a different case -- it now FORCES resume:true,
+                // regardless of opts.resume, so the member's session already
+                // has the original prompt/schema and its own invalid output
+                // in context; buildRepairPrompt() was shrunk accordingly to a
+                // lean reminder (validation errors only), since re-sending
+                // that context fresh every repair round would waste tokens.
+                resume: isRepair ? true : (opts.resume ?? false),
                 // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
                 timeoutMs: opts.timeoutMs,
                 // apra-fleet-unw.10: defaults to the active run's cooperative
@@ -867,7 +871,7 @@ export class FleetWorkflow extends EventEmitter {
                         // dashboard's structured activity data.
                         console.error(`[Agent API Error]`, repairMsg);
                         this.emit('activity:end', { ...activityMeta, error: repairMsg, output: text, duration, usage: result.usage, cost, success: false });
-                        currentPrompt = buildRepairPrompt(initialPrompt, text, errorsText);
+                        currentPrompt = buildRepairPrompt(errorsText);
                         continue;
                     }
 

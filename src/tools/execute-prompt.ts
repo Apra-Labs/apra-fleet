@@ -9,7 +9,7 @@ import { getProvider } from '../providers/index.js';
 import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { isRetryable, authErrorAdvice } from '../utils/prompt-errors.js';
+import { isRetryable, authErrorAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
@@ -29,10 +29,11 @@ import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
+import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'dispatch_failed' | 'nonzero_exit';
+  reason?: 'busy' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted';
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
   sessionId?: string;
   [key: string]: unknown;
@@ -73,9 +74,17 @@ export const executePromptSchema = z.object({
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
 
-function buildFailureMessage(agentName: string, result: SSHExecResult, provider: ProviderAdapter): string {
+function buildFailureMessage(agentName: string, result: SSHExecResult, provider: ProviderAdapter, parsed?: ParsedResponse): string {
   const output = result.stderr || result.stdout;
-  const category = provider.classifyError(output);
+  // apra-fleet-p4f.2: prefer the already-parsed structured signal over the
+  // stderr/stdout regex scan -- a max_turns-exhausted transcript can still
+  // have auth-like noise in stderr (a stale warning, an unrelated retry
+  // message, etc.) that would otherwise misclassify it as an auth failure.
+  const category: PromptErrorCategory = parsed?.terminalReason === 'max_turns' ? 'max_turns' : provider.classifyError(output);
+  if (category === 'max_turns') {
+    return `❌ Prompt on "${agentName}" was stopped after exhausting its turn limit (max_turns), not a genuine failure -- the model ran out of turns before finishing:
+${output}`;
+  }
   return category === 'auth'
     ? authErrorAdvice(agentName)
     : `❌ Prompt failed on "${agentName}":
@@ -418,7 +427,26 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
   let _epOffline = false;
   try {
-    let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+    let result;
+    try {
+      result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+    } catch (dispatchErr: any) {
+      // apra-fleet-02s.1: a genuine command-execution exception (e.g. an
+      // inactivity timeout, or any other error strategy.execCommand throws)
+      // used to be unconditionally unretried here -- it bypasses both retry
+      // mechanisms below, since those only fire on a non-throwing nonzero
+      // exit, never on a thrown exception. Retry once with a fresh session
+      // before giving up, mirroring the stale-session/server-overloaded
+      // retries' bounded, single-attempt shape. Skip the retry if the client
+      // itself cancelled the request -- there is nothing to recover from a
+      // deliberate cancellation.
+      if (extra?.signal?.aborted) throw dispatchErr;
+      scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
+      await tryKillPid(agent, strategy, cmds);
+      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+    }
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
 
@@ -448,8 +476,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     _epExitCode = result.code;
     if (result.code !== 0) {
       return {
-        text: buildFailureMessage(agent.friendlyName, result, provider),
-        structuredContent: { isError: true, reason: 'nonzero_exit' },
+        text: buildFailureMessage(agent.friendlyName, result, provider, parsed),
+        structuredContent: { isError: true, reason: parsed.terminalReason === 'max_turns' ? 'max_turns_exhausted' : 'nonzero_exit' },
       };
     }
 

@@ -1246,11 +1246,19 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+                if (err instanceof AgentOutputError) {
                     log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
                         notes: `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                        reopenIds: [],
+                        newTasks: [],
+                    };
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
+                    verdict = {
+                        verdict: 'CHANGES_NEEDED',
+                        notes: `Reviewer dispatch failed: ${err.message}`,
                         reopenIds: [],
                         newTasks: [],
                     };
@@ -1541,24 +1549,47 @@ export async function main(context) {
             }
             if (cyclePairs.length > 0) {
                 const fixCommands = cyclePairs.map((p) => `  bd dep remove ${p.blockedIssue} ${p.blockedBy}`);
-                throw new Error(
+                const cycleMessage =
                     `Pre-sprint validation failed: scope '${sprintFilter}' is deadlocked by ${cyclePairs.length} ` +
                     `parent-child + blocks cycle(s) (a bead has a 'blocks' dependency on its own --parent ` +
                     `ancestor/descendant, which fully blocks both beads even though 'bd dep cycles' will not ` +
-                    `flag it). Fix by removing the offending 'blocks' edge(s):\n${fixCommands.join('\n')}`
-                );
+                    `flag it). Fix by removing the offending 'blocks' edge(s):\n${fixCommands.join('\n')}`;
+
+                // apra-fleet-xbu.2.1: this exact shape is mechanically
+                // repairable -- the block above already computed the precise
+                // edge(s) to remove, so auto-repair (one pass, no loop, no
+                // Planner dispatch) instead of just throwing a diagnosis. If
+                // the repair itself fails, fall back to the original throw
+                // (never silently swallow a failed repair attempt).
+                try {
+                    for (const pair of cyclePairs) {
+                        await command(`bd dep remove ${pair.blockedIssue} ${pair.blockedBy}`, { member_name: orchestratorMember, silent: true });
+                        log(`Pre-sprint auto-repair (apra-fleet-xbu.2.1): removed the 'blocks' edge between ${pair.blockedIssue} and ${pair.blockedBy} (parent-child + blocks cycle) -- auto-removed via bd dep remove.`);
+                    }
+                } catch (repairErr) {
+                    throw new Error(`${cycleMessage}\n\n(Auto-repair attempt itself failed: ${repairErr.message})`);
+                }
+
+                initialBeads = await bdListScoped('--ready --json');
+                // Repair didn't unblock anything further -- one pass only, so
+                // fall through to the existing generic deadlock diagnostics
+                // below (do not loop, do not repair twice) when still empty.
+                // Otherwise the sprint continues normally with the now-ready
+                // beads, skipping the generic diagnostics entirely.
             }
 
-            const diagnostics = notDoneBeads.map((b) => {
-                const blockers = unmetBlockers(b);
-                return blockers.length > 0
-                    ? `  - ${b.id} [${b.status}] -- blocked by: ${blockers.join(', ')}`
-                    : `  - ${b.id} [${b.status}] -- unblocked but status excludes it from --ready`;
-            });
-            throw new Error(
-                `Pre-sprint validation failed: No ready beads found for scope '${sprintFilter}', and ${notDoneBeads.length} ` +
-                `not-done bead(s) remain deadlocked:\n${diagnostics.join('\n')}`
-            );
+            if (initialBeads.length === 0) {
+                const diagnostics = notDoneBeads.map((b) => {
+                    const blockers = unmetBlockers(b);
+                    return blockers.length > 0
+                        ? `  - ${b.id} [${b.status}] -- blocked by: ${blockers.join(', ')}`
+                        : `  - ${b.id} [${b.status}] -- unblocked but status excludes it from --ready`;
+                });
+                throw new Error(
+                    `Pre-sprint validation failed: No ready beads found for scope '${sprintFilter}', and ${notDoneBeads.length} ` +
+                    `not-done bead(s) remain deadlocked:\n${diagnostics.join('\n')}`
+                );
+            }
         }
     }
 
@@ -1737,14 +1768,21 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
-                    // Persistent non-JSON/non-schema-compliant output FAILS
-                    // this plan round -- it must never be treated as an
-                    // approval.
+                // Persistent non-JSON/non-schema-compliant output, or a failed
+                // dispatch, both FAIL this plan round -- neither must ever be
+                // treated as an approval.
+                if (err instanceof AgentOutputError) {
                     log(`Plan Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
                         notes: `Plan reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                        taskAssignments: [],
+                    };
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Plan Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
+                    verdict = {
+                        verdict: 'CHANGES_NEEDED',
+                        notes: `Plan reviewer dispatch failed: ${err.message}`,
                         taskAssignments: [],
                     };
                 } else {
@@ -1822,6 +1860,7 @@ export async function main(context) {
         // registered, and each parallel() doer branch below round-robins
         // across the full pool instead of collapsing to member #1.
         let devRounds = 0;
+        let lastStillOpenCount = 0;  // Track for round-cap detection at loop exit
 
         // beadId -> reviewer feedback text for the NEXT round, populated
         // only for beads actually named in a CHANGES_NEEDED verdict's
@@ -1992,12 +2031,21 @@ export async function main(context) {
                 try {
                     report = await dispatchDoer();
                 } catch (err) {
-                    log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
-                    wasRetried = true;
-                    try {
-                        report = await dispatchDoer();
-                    } catch (err2) {
-                        dispatchError = err2;
+                    // apra-fleet-p4f.3: a blind identical retry is pointless
+                    // for max_turns exhaustion -- the doer will deterministically
+                    // run out of turns again on the SAME prompt/max_turns.
+                    // Flag it as too-complex/needs-decomposition instead.
+                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                        log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- not retrying identically (would deterministically exhaust again); flagging as too-complex-for-one-streak.`);
+                        dispatchError = err;
+                    } else {
+                        log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
+                        wasRetried = true;
+                        try {
+                            report = await dispatchDoer();
+                        } catch (err2) {
+                            dispatchError = err2;
+                        }
                     }
                 }
 
@@ -2116,12 +2164,19 @@ export async function main(context) {
             await updateDashboard();
 
             const stillOpen = await bdListScoped('--ready --json');
+            lastStillOpenCount = stillOpen.length;  // Track for post-loop round-cap detection
 
             if (stillOpen.length === 0) {
+                log('All beads processed this cycle -- cycle organically complete.');
                 break;
             } else {
                 log(`System found ${stillOpen.length} beads still open/ready. Looping back to develop.`);
             }
+        }
+
+        // Check if we exited due to round cap (devRounds === 3) with work still pending
+        if (devRounds === 3 && lastStillOpenCount > 0) {
+            log(`Develop/Review round cap (3) reached this cycle with ${lastStillOpenCount} bead(s) still open/reopened -- deferring to next cycle.`);
         }
         } // end Develop & Review loop (skipped when readyBeads.length === 0)
 
@@ -2158,9 +2213,12 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+                if (err instanceof AgentOutputError) {
                     log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
                     deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Deployer: agent dispatch failed, treating as deployed:false: ${err.message}`);
+                    deployResult = { deployed: false, notes: `Deployer dispatch failed: ${err.message}` };
                 } else {
                     throw err;
                 }
@@ -2215,9 +2273,12 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+                if (err instanceof AgentOutputError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Integ Test Runner: agent dispatch failed, treating as passed:false: ${err.message}`);
+                    integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner dispatch failed: ${err.message}` };
                 } else {
                     throw err;
                 }
@@ -2366,40 +2427,63 @@ export async function main(context) {
     const finalClosedCount = (await bdListScoped('--status=closed --json')).length;
 
     let finalVerdictResult;
+    const dispatchFinalReview = () => agent(
+        buildFinalVerdictPrompt({
+            targetIssues,
+            branch: validated.branch,
+            baseBranch: validated.baseBranch,
+            goal: validated.goal,
+            cyclesRun: finalCycleLabel,
+            closedCount: finalClosedCount,
+            openAtGoalCount: finalOpenAtGoal.length,
+            deployFailures,
+            integFailures,
+            rejectedNewTasks,
+        }),
+        {
+            member_name: getMemberForRole('reviewer'),
+            agentType: 'reviewer',
+            schema: finalVerdict,
+            label: 'Final Review',
+            model: FIXED_ROLE_TIER.reviewer,
+            // apra-fleet-j6i: reviews the full diff/evidence across an
+            // entire epic's worth of closed tasks -- most costly of the
+            // 300s-default gaps since a timeout here flips a whole
+            // sprint's outcome to FAIL.
+            timeout_s: 900,
+            max_total_s: 3600,
+        }
+    );
+    // apra-fleet-j6i.2: unlike every other combined-catch dispatch site in
+    // this file, Final Review is the LAST dispatch of the sprint -- a
+    // single transient AgentDispatchError/AgentOutputError here used to
+    // flip an otherwise fully-successful sprint straight to verdict:FAIL
+    // with zero retry. Mirror the Planner retry-once wrapper (~line 1717):
+    // retry once before falling back to the hardcoded FAIL verdict. The
+    // fuller AgentDispatchError-vs-AgentOutputError type distinction is
+    // apra-fleet-02s's scope; this only adds the retry.
     try {
-        finalVerdictResult = await agent(
-            buildFinalVerdictPrompt({
-                targetIssues,
-                branch: validated.branch,
-                baseBranch: validated.baseBranch,
-                goal: validated.goal,
-                cyclesRun: finalCycleLabel,
-                closedCount: finalClosedCount,
-                openAtGoalCount: finalOpenAtGoal.length,
-                deployFailures,
-                integFailures,
-                rejectedNewTasks,
-            }),
-            {
-                member_name: getMemberForRole('reviewer'),
-                agentType: 'reviewer',
-                schema: finalVerdict,
-                label: 'Final Review',
-                model: FIXED_ROLE_TIER.reviewer,
-                // apra-fleet-j6i: reviews the full diff/evidence across an
-                // entire epic's worth of closed tasks -- most costly of the
-                // 300s-default gaps since a timeout here flips a whole
-                // sprint's outcome to FAIL.
-                timeout_s: 900,
-                max_total_s: 3600,
-            }
-        );
+        finalVerdictResult = await dispatchFinalReview();
     } catch (err) {
-        if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
-            log(`Final Review: schema-repair exhausted, treating as FAIL: ${err.message}`);
-            finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}` };
+        if (err instanceof AgentOutputError) {
+            log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
+        } else if (err instanceof AgentDispatchError) {
+            log(`Final Review: dispatch failed (agent dispatch error: ${err.message}). Retrying once.`);
         } else {
             throw err;
+        }
+        try {
+            finalVerdictResult = await dispatchFinalReview();
+        } catch (retryErr) {
+            if (retryErr instanceof AgentOutputError) {
+                log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
+                finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
+            } else if (retryErr instanceof AgentDispatchError) {
+                log(`Final Review: agent dispatch failed after retry, treating as FAIL: ${retryErr.message}`);
+                finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after repair attempts (including one retry): ${retryErr.message}` };
+            } else {
+                throw retryErr;
+            }
         }
     }
     log(`Final Verdict: ${JSON.stringify(finalVerdictResult)}`);
@@ -2459,8 +2543,10 @@ export async function main(context) {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
         }
     } catch (err) {
-        if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+        if (err instanceof AgentOutputError) {
             log(`Harvester: schema-repair exhausted, proceeding without a validated harvester report: ${err.message}`);
+        } else if (err instanceof AgentDispatchError) {
+            log(`Harvester: agent dispatch failed, proceeding without a validated harvester report: ${err.message}`);
         } else {
             throw err;
         }

@@ -25,6 +25,13 @@ const KNOWN_MEMBERS = new Set(['fleet-dev', 'apra-pm']);
  * executePrompt()/executeCommand(). No network or external process involved.
  */
 function createMockFleetApi() {
+    // apra-fleet-02s.3: a schema-repair re-ask now FORCES resume:true and
+    // sends a lean reminder prompt (validation errors only), no longer a
+    // self-contained echo of the original prompt -- so the prompt-prefix
+    // matches below cannot classify a repair round's dispatch. Stick to
+    // whichever branch the last FRESH (non-repair) call matched, mirroring
+    // what a real resumed session actually is: the same logical exchange.
+    let lastFreshBranch = null;
     return {
         async executePrompt(payload) {
             const memberKey = payload.member_name || payload.member_id;
@@ -35,13 +42,27 @@ function createMockFleetApi() {
             const usage = { prompt_tokens: 30, completion_tokens: 12, total_tokens: 42 };
             const prompt = payload.prompt || '';
 
-            if (prompt.includes('DO NOT OUTPUT VALID JSON')) {
+            let branch;
+            if (payload.resume === true && lastFreshBranch) {
+                branch = lastFreshBranch;
+            } else if (prompt.includes('DO NOT OUTPUT VALID JSON')) {
+                branch = 'garbage';
+            } else if (prompt.startsWith('Output exactly {"test": 1}')) {
+                branch = 'schema-post';
+            } else if (prompt.includes('Give me a JSON object with a test parameter')) {
+                branch = 'ok-value';
+            } else {
+                branch = 'default';
+            }
+            if (payload.resume !== true) lastFreshBranch = branch;
+
+            if (branch === 'garbage') {
                 return { content: [{ text: '{{{ [[[ "test": garbage ,,,' }], usage };
             }
-            if (prompt.startsWith('Output exactly {"test": 1}')) {
+            if (branch === 'schema-post') {
                 return { content: [{ text: '{"test": 1}' }], usage };
             }
-            if (prompt.includes('Give me a JSON object with a test parameter')) {
+            if (branch === 'ok-value') {
                 return { content: [{ text: JSON.stringify({ test: 'ok-value' }) }], usage };
             }
 

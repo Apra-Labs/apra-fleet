@@ -300,6 +300,16 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     let planRound = 0;
     let reviewRound = 0;
     let extraTaskAdded = false;
+    // apra-fleet-02s.3: a schema-repair re-ask now FORCES resume:true and
+    // sends a lean reminder prompt (no longer a self-contained echo of the
+    // original prompt) -- so opts.prompt.startsWith('Final review for sprint
+    // scope issue id(s):') can no longer distinguish a Final Review repair
+    // round from a regular dev-loop Reviewer repair round; both share
+    // agentType 'reviewer' and neither's repair prompt carries that prefix
+    // anymore. Track the last FRESH (non-repair) 'reviewer' dispatch's
+    // classification and reuse it for any resumed continuation, mirroring
+    // what a real resumed session actually is: the same logical exchange.
+    let lastFreshReviewerWasFinalReview = false;
 
     const defaultDoerHandler = async ({ opts }) => {
         const match = opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
@@ -448,7 +458,21 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // 'reviewer'; distinguish by the (fixed, runner.js-authored)
             // prompt text instead -- apra-fleet-unw.17's buildFinalVerdictPrompt()
             // always starts with this exact prefix.
-            const isFinalReview = opts.agent === 'reviewer' && opts.prompt.startsWith('Final review for sprint scope issue id(s):');
+            //
+            // apra-fleet-02s.3: that prefix is only present on a FRESH
+            // dispatch (opts.resume === false). A schema-repair round now
+            // forces resume:true with a lean reminder prompt that carries no
+            // such prefix, so a resumed 'reviewer' call falls back to
+            // whichever classification the last fresh dispatch had --
+            // see lastFreshReviewerWasFinalReview above.
+            const isFinalReview = opts.agent === 'reviewer' && (
+                opts.resume === true
+                    ? lastFreshReviewerWasFinalReview
+                    : opts.prompt.startsWith('Final review for sprint scope issue id(s):')
+            );
+            if (opts.agent === 'reviewer' && opts.resume !== true) {
+                lastFreshReviewerWasFinalReview = isFinalReview;
+            }
             // No longer gated on opts.agent === 'planner': this dispatch has
             // no vendored persona of its own (see the streakAssignment
             // schema comment in contracts.mjs) and runner.js deliberately

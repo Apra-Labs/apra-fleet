@@ -13,8 +13,10 @@ import { FleetWorkflow, WorkflowError, AgentOutputError } from '../src/workflow/
 //   3. Persistent garbage across all repair attempts throws AgentOutputError
 //      (instanceof check) with `.details` carrying ajv errors, and every
 //      attempt is visible as its own activity event.
-//   4. The repair re-ask prompt is self-contained and resume stays false by
-//      default on every dispatch, including repairs.
+//   4. (apra-fleet-02s.3) The repair re-ask FORCES resume:true (so the
+//      member's session already has the original prompt/invalid output in
+//      context) and is a lean reminder -- validation/parse errors only, not
+//      a re-embedding of the original prompt or the invalid output.
 
 const KNOWN_MEMBER = 'fleet-dev';
 const SCHEMA = {
@@ -116,7 +118,7 @@ describe('apra-fleet-unw.8: bounded schema-repair loop', () => {
         assert.strictEqual(activityEvents[1].repairAttempt, 1);
     });
 
-    test('the repair re-ask prompt is self-contained: includes original prompt, invalid output, and errors, without relying on resume:true', async () => {
+    test('apra-fleet-02s.3: the repair re-ask forces resume:true and is a lean reminder (no re-embedded original prompt/invalid output)', async () => {
         let calls = 0;
         const capturedPayloads = [];
         const wf = new FleetWorkflow(createMockFleetApi(async (payload) => {
@@ -131,15 +133,39 @@ describe('apra-fleet-unw.8: bounded schema-repair loop', () => {
         await wf.agent('ORIGINAL_PROMPT_MARKER', { member_name: KNOWN_MEMBER, schema: SCHEMA });
 
         assert.strictEqual(capturedPayloads.length, 2);
-        // Every dispatch, including the repair, defaults resume to false --
-        // the repair prompt does not lean on session continuity.
+        // The initial dispatch stays self-contained/non-resumed by default...
         assert.strictEqual(capturedPayloads[0].resume, false);
-        assert.strictEqual(capturedPayloads[1].resume, false);
+        // ...but the repair re-ask FORCES resume:true, since the session
+        // already has the original prompt/invalid output in context.
+        assert.strictEqual(capturedPayloads[1].resume, true);
 
         const repairPrompt = capturedPayloads[1].prompt;
-        assert.ok(repairPrompt.includes('ORIGINAL_PROMPT_MARKER'), 'repair prompt must embed the original prompt');
-        assert.ok(repairPrompt.includes('garbage {{{'), 'repair prompt must embed the previous invalid output');
-        assert.ok(/error/i.test(repairPrompt), 'repair prompt must embed the validation/parse errors');
+        assert.ok(!repairPrompt.includes('ORIGINAL_PROMPT_MARKER'), 'repair prompt must NOT re-embed the original prompt (relies on resume:true instead)');
+        // NOTE: the errorsText itself may still quote a short snippet of the
+        // invalid output as part of a JSON.parse error message (e.g. Node's
+        // `Unexpected token 'g', "garbage {{{" is not valid JSON`) -- that's
+        // inherent diagnostic content of the validation error, not the prompt
+        // re-embedding the full original prompt/output the way the old
+        // self-contained buildRepairPrompt() used to.
+        assert.ok(/error/i.test(repairPrompt), 'repair prompt must still include the validation/parse errors');
+    });
+
+    test('apra-fleet-02s.3: an explicit opts.resume is honored on the initial dispatch but overridden to true on repair', async () => {
+        let calls = 0;
+        const capturedPayloads = [];
+        const wf = new FleetWorkflow(createMockFleetApi(async (payload) => {
+            calls++;
+            capturedPayloads.push(payload);
+            if (calls === 1) {
+                return { content: [{ text: 'garbage {{{' }], usage: { total_tokens: 5 } };
+            }
+            return { content: [{ text: JSON.stringify({ value: 'ok' }) }], usage: { total_tokens: 5 } };
+        }));
+
+        await wf.agent('give me json', { member_name: KNOWN_MEMBER, schema: SCHEMA, resume: false });
+
+        assert.strictEqual(capturedPayloads[0].resume, false, 'caller explicitly asked for resume:false on the initial dispatch');
+        assert.strictEqual(capturedPayloads[1].resume, true, 'the repair dispatch still forces resume:true regardless of opts.resume');
     });
 
     test('persistent garbage across all repair attempts throws AgentOutputError with ajv/parse errors in .details, one activity event per attempt', async () => {

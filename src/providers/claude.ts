@@ -89,6 +89,8 @@ export class ClaudeProvider implements ProviderAdapter {
         isError: obj.is_error === true || obj.subtype === 'error' || result.code !== 0,
         raw,
         usage: extractUsage(obj.usage),
+        subtype: obj.subtype,
+        terminalReason: obj.terminal_reason,
       };
     };
 
@@ -108,6 +110,8 @@ export class ClaudeProvider implements ProviderAdapter {
           isError: parsed.is_error === true || result.code !== 0,
           raw,
           usage: extractUsage(parsed.usage),
+          subtype: parsed.subtype,
+          terminalReason: parsed.terminal_reason,
         };
       }
     } catch { /* not valid JSON - try line-by-line JSONL below */ }

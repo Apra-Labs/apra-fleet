@@ -9,11 +9,11 @@
   "properties": {
     "operation": {
       "type": "string",
-      "enum": ["deploy", "setup", "reset", "teardown"]
+      "enum": ["deploy"]
     },
     "repoRoot": {
       "type": "string",
-      "description": "Repo root path where deploy.md and integ-test-playbook.md live."
+      "description": "Repo root path where deploy.md lives."
     }
   }
 }
