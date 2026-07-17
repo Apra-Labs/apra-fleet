@@ -2,6 +2,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { escapeHtml } from './html-utils.mjs';
+import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS } from './debounced-writer.mjs';
 
 const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
 <html lang="en">
@@ -447,7 +448,30 @@ export function createDashboardViewer(workflow, opts = {}) {
     const broadcast = (data) => {
         const msg = `data: ${JSON.stringify(data)}\n\n`;
         clients.forEach(c => c.write(msg));
+        // apra-fleet-eft.2.1: schedule (debounced) continuous state
+        // persistence on every event that already drives the SSE
+        // broadcast. The target path/filename here is a placeholder --
+        // apra-fleet-eft.2.3 rewires it to
+        // <serviceDataDir>/running/<sprintId>.json with a move to
+        // old_sprints/ on completion; apra-fleet-eft.2.2 enriches the
+        // persisted payload itself. This task only wires the debounced
+        // write mechanism and its flush-on-exit contract.
+        debouncedWriter.schedule();
     };
+
+    // apra-fleet-eft.2.1: debounced writer, additive to persistState()
+    // above -- that write-once-on-end path (sprint-logs/sprint_HHMMSS.json)
+    // stays exactly as-is as the child crash-safety net. This one coalesces
+    // bursts of rapid state changes into a single write per debounce window
+    // (default DEFAULT_DEBOUNCE_MS, configurable via
+    // opts.debounceMs, must be within 200-500ms) and is flushed
+    // synchronously on every exit path below.
+    const debouncedWriter = new DebouncedStateWriter({
+        getState: () => state,
+        filePath: opts.debouncedStatePath ||
+            path.join(process.cwd(), 'sprint-logs', '.debounced-state.json'),
+        debounceMs: opts.debounceMs || DEFAULT_DEBOUNCE_MS
+    });
 
     // Server-side persistence of the dashboard `state` object to
     // sprint-logs/sprint_<HHMMSS>.json on every run-ending event (normal
@@ -494,10 +518,15 @@ export function createDashboardViewer(workflow, opts = {}) {
     // handler branching on an argument that would never actually arrive.
     const handleSigint = () => {
         persistState();
+        // apra-fleet-eft.2.1: flush any coalesced-but-not-yet-written
+        // debounced state synchronously before the process actually exits,
+        // so at most one debounce window of progress is ever lost.
+        debouncedWriter.flushSync();
         process.exit(130);
     };
     const handleSigterm = () => {
         persistState();
+        debouncedWriter.flushSync();
         process.exit(143);
     };
     process.on('SIGINT', handleSigint);
@@ -562,6 +591,10 @@ export function createDashboardViewer(workflow, opts = {}) {
         state.stats.durationMs = Date.now() - state.stats.startTime;
         broadcast({ type: 'update' });
         persistState();
+        // apra-fleet-eft.2.1: synchronous flush-on-exit -- a run ending is
+        // one of the process-exit-adjacent paths this writer must never
+        // lose more than one debounce window against.
+        debouncedWriter.flushSync();
     });
 
     const server = http.createServer((req, res) => {
@@ -602,6 +635,13 @@ export function createDashboardViewer(workflow, opts = {}) {
             if (typeof workflow.requestStop === 'function') {
                 workflow.requestStop('Stop requested via dashboard /stop endpoint');
             }
+            // apra-fleet-eft.2.1: /stop is one of the required flush-on-exit
+            // paths -- the workflow itself unwinds asynchronously afterward
+            // (and its own 'end' handler above will flush again once it
+            // fires), but flush eagerly here too so the debounced state
+            // file reflects the stop request itself without waiting on that
+            // unwind.
+            debouncedWriter.flushSync();
             res.writeHead(200);
             res.end();
         } else if (req.url === '/save_logs' && req.method === 'POST') {
