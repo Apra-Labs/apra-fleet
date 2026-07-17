@@ -80,7 +80,7 @@ Traces the complete PM workflow for a Gemini member. Each step is marked with it
 | VERIFY checkpoint -- doer stops | [OK] | Instruction file (`GEMINI.md`) contains the same checkpoint protocol |
 | PM dispatches reviewer | [OK] | Reviewer is a separate member; provider-agnostic |
 | Reviewer instruction file (`GEMINI.md` or other) | [OK] | Each member uses their own provider's instruction filename |
-| `agents/reviewer.md` content is provider-agnostic | [OK] | No Claude-specific content |
+| `vendor/apra-pm/agents/reviewer.md` content is provider-agnostic | [OK] | No Claude-specific content |
 | Pre-merge cleanup removes `GEMINI.md` | [OK] | Cleanup command: `rm -f CLAUDE.md GEMINI.md AGENTS.md COPILOT.md` |
 
 ---

@@ -774,8 +774,9 @@ a role elevation -- role is looked up from the registry, not from the session's 
 ## 10. The "Almost Never Ask" Behavioral Contract
 
 Autonomous remote sessions run without a human on stdin. The behavioral contract baked
-into agent definitions (`agents/doer.md`, `agents/reviewer.md`, `agents/planner.md`,
-`agents/plan-reviewer.md`) addresses the tension between autonomy and safety.
+into agent definitions (`vendor/apra-pm/agents/doer.md`, `vendor/apra-pm/agents/reviewer.md`,
+`vendor/apra-pm/agents/planner.md`, `vendor/apra-pm/agents/plan-reviewer.md`) addresses the
+tension between autonomy and safety.
 
 The core principle: questions are expensive. A question blocks the session, interrupts
 PM, and surfaces to a human who may not be available. An autonomous session must make
