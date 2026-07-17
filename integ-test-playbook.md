@@ -132,6 +132,17 @@ test-suite-speedup sprint needs, not just "tests still pass." A non-zero
 exit code is a real regression: file a bug bead the same way any other
 integration-test failure would be filed, do not silently continue.
 
+Note (bd record/replay shim): plain `npm test` for this workspace now runs
+in bd REPLAY mode by default (bd CLI responses served from recorded
+fixtures under `packages/apra-fleet-se/test/fixtures/bd-recordings/`; see
+the README there), so it completes in seconds. The unmocked, real-bd run
+-- the pre-shim behavior, and the right lane for validating bd CLI
+compatibility or re-measuring real-bd wall time -- is:
+
+```bash
+npm run test:integration --workspace=@apralabs/apra-fleet-se
+```
+
 ## Adding new features to this test
 
 When auto-sprint or the installer gains a new capability that changes what
