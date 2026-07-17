@@ -24,6 +24,8 @@ Commands below require these prefixes in `.claude/settings.json` under
 - `Bash(node dist/index.js *)`
 - `Bash(git clone *)`
 - `Bash(git -C ~/temp/.apra-fleet-tests* *)`
+- `Bash(node scripts/run-integ-suites-sequentially.mjs *)` (for the
+  "Unit-suite timing check" section only)
 
 ## Setup
 
@@ -116,21 +118,65 @@ A separate, optional Bash-only step -- run this in addition to the
 refactor). It does not require the sandbox from `## Setup` and does not
 touch the sandbox's HOME/port -- run it from the repo checkout directly.
 
-```bash
-cd "<repo-root>"
-START_TS=$(date +%s)
-npm test --workspace=@apralabs/apra-fleet-se
-EXIT_CODE=$?
-END_TS=$(date +%s)
-ELAPSED=$((END_TS - START_TS))
-echo "apra-fleet-se test suite: exit=$EXIT_CODE elapsed=${ELAPSED}s ($((ELAPSED/60))m $((ELAPSED%60))s)"
-```
+The full suite is ~38 files and takes on the order of 16 minutes end to end.
+Do NOT run it as one blocking `npm test --workspace=@apralabs/apra-fleet-se`
+call: that is exactly the failure mode `integ-test-runner.md` warns about
+under "Waiting on a long-running test run" (a long silent Bash call looks
+like a hang to the dispatch watchdog and gets the whole run killed), except
+worse -- a timeout partway through the monolithic call loses ALL prior
+progress with no record of which suites already passed.
 
-Report the printed `exit=`/`elapsed=` line verbatim in your summary/notes back
-to the orchestrator -- this is the concrete before/after evidence a
-test-suite-speedup sprint needs, not just "tests still pass." A non-zero
-exit code is a real regression: file a bug bead the same way any other
-integration-test failure would be filed, do not silently continue.
+**Real bd, not the mock**: this step MUST run against real `bd`, not the
+mocked default. The bd-mock-shim work makes the mocked bd the DEFAULT for
+plain `npm test`, so bare `npm test` is the WRONG command here -- it would
+silently test the mock instead of the real integration path. The helper
+script below already forces the real mode (currently by setting
+`APRA_FLEET_BD_MOCK=0`; TODO: confirm the exact flag/npm-script name --
+e.g. a `test:integration` script -- against the bd-mock-shim branch when it
+lands, and update both this sentence and the script). Do not copy-paste a
+bare `npm test` invocation into this step.
+
+Instead, run the suite ONE test file at a time via the helper script, which
+keeps every invocation short enough to finish within a single turn and keeps
+a durable record so an interrupted pass resumes instead of starting over:
+
+1. Check state / resume point:
+   `node scripts/run-integ-suites-sequentially.mjs --status`
+   This enumerates every `packages/apra-fleet-se/test/*.test.mjs` file and
+   prints `discovered=/done=/pending=/failed=` counts plus the next pending
+   file, read from the durable status file `integ-suite-status.json` at the
+   repo root (gitignored throwaway state -- never commit it). If discovery
+   finds zero test files, or the status file records results for files that
+   no longer exist (test dir changed mid-pass), the script exits 2: fail
+   loud, file a bug bead, do not continue.
+2. Run one suite per Bash call:
+   `node scripts/run-integ-suites-sequentially.mjs --one`
+   Each call runs exactly the next pending file (via `node --test` with the
+   package's own timestamped reporter, scoped to that one file), records
+   `{exitCode, passed, elapsedSeconds, finishedAt}` in the status file, and
+   exits with that suite's exit code. Repeat the call until step 3 reports
+   the pass complete. Between calls, narrate progress explicitly ("suite
+   N/M done, K pending") -- same liveness discipline as
+   `integ-test-runner.md`'s long-running-test guidance; never fold multiple
+   suites back into one long silent call. If any single file takes more
+   than ~5 minutes, that file is itself a watchdog risk: file a bug bead to
+   split it (precedent: the four slowest files were already split once).
+3. Completion check: the pass is complete ONLY when `--status` prints
+   `pass COMPLETE` (every discovered file has a recorded result). A run
+   that stops with `pending > 0` is a partial pass -- resume it (step 2
+   picks up where the status file left off) or report it as interrupted;
+   never report partial coverage as a completed pass.
+4. Report the final `discovered=/done=/failed=/elapsedTotal=` summary line
+   verbatim in your summary/notes back to the orchestrator -- the summed
+   `elapsedTotal` is the concrete before/after evidence a test-suite-speedup
+   sprint needs, not just "tests still pass."
+5. A non-zero exit from any individual suite is a real regression: file a
+   bug bead the same way any other integration-test failure would be filed
+   (the failing file, its `exit=`/`elapsed=` line, and its output), do not
+   silently continue, and do not re-run it hoping it goes green without
+   first recording the failure. The status file keeps the failure recorded;
+   `--fresh` (which clears the status file for a brand-new pass) is for
+   starting a new measured run, never for erasing an inconvenient result.
 
 ## Adding new features to this test
 

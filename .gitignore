@@ -49,3 +49,6 @@ COPILOT-INSTRUCTIONS.md
 # Auto-sprint scaffold logs left in repo root (not under sprint-logs/)
 /auto-sprint-*.log
 /auto-sprint-*.err.log
+
+# Per-suite integration-test progress state (scripts/run-integ-suites-sequentially.mjs)
+/integ-suite-status.json
