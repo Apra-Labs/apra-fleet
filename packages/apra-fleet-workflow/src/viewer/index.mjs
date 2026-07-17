@@ -415,7 +415,7 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
 </html>`;
 
 export function createDashboardViewer(workflow, opts = {}) {
-    const port = opts.port || 8080;
+    const port = (typeof opts.port === 'number') ? opts.port : 8080;
     const dashboardExtensions = opts.dashboardExtensions || [];
     
     const state = {
@@ -622,7 +622,7 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     server.listen(port, () => {
-        console.log(`[Viewer] Workflow Dashboard live at http://localhost:${port}`);
+        console.log(`[Viewer] Workflow Dashboard live at http://localhost:${server.address().port}`);
     });
 
     workflow.on('end', () => {

@@ -193,11 +193,7 @@ describe('WorkflowEngine executing fixture scripts against a mock fleet API', ()
 describe('createDashboardViewer', () => {
     test('serves the dashboard and reflects workflow activity over loopback only', async () => {
         const wf = new FleetWorkflow(createMockFleetApi());
-        // NOTE: createDashboardViewer uses `opts.port || 8080`, so port: 0 would
-        // silently fall back to the default port rather than an OS-assigned
-        // ephemeral one. Use a fixed high port on loopback instead; nothing
-        // external is involved.
-        const server = createDashboardViewer(wf, { port: 18080, name: 'Test Dashboard' });
+        const server = createDashboardViewer(wf, { port: 0, name: 'Test Dashboard' });
 
         try {
             await new Promise((resolve, reject) => {
