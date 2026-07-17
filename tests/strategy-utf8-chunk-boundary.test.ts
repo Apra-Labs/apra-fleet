@@ -44,9 +44,17 @@ describe('LocalStrategy stdout UTF-8 chunk-boundary handling (apra-fleet-grq)', 
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // maxRetries/retryDelay: on Windows, the just-exited `node` child process
+    // spawned below can hold an OS-level file handle open for a brief window
+    // after Node reports it exited -- rmSync would otherwise intermittently
+    // fail with EBUSY.
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
+  // Generous timeout (vitest default is 5000ms): this spawns a real `node`
+  // child process and waits on a deliberate 50ms cross-chunk delay plus real
+  // process-startup overhead, which is measurably slower on Windows CI
+  // runners than the default budget allows.
   it('does not corrupt a multi-byte UTF-8 character split across two stdout chunks', async () => {
     const member = makeTestLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(member);
@@ -59,5 +67,5 @@ describe('LocalStrategy stdout UTF-8 chunk-boundary handling (apra-fleet-grq)', 
     // decoded independently (see strategy.ts stdout 'data' handler).
     expect(result.stdout).not.toContain('�');
     expect(result.stdout).toContain('\u{1F4CB} Response from fleet-reorg: done');
-  });
+  }, 20000);
 });

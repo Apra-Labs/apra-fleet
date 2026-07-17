@@ -26,11 +26,21 @@ describe('register-member interactive bootstrap gate', () => {
 
   afterEach(() => {
     restoreRegistry();
-    fs.rmSync(workFolder, { recursive: true, force: true });
+    // maxRetries/retryDelay: on Windows, a just-exited child process (spawned
+    // during registerMember()'s real connection/version/auth checks) can hold
+    // an OS-level file handle open for a brief window after Node reports it
+    // exited -- rmSync would otherwise intermittently fail with EBUSY.
+    fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     delete process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP;
     vi.resetModules();
   });
 
+  // Generous timeout (vitest default is 5000ms): registerMember() for a
+  // local member runs real subprocess-based connection/version/auth checks
+  // unconditionally (strategy.testConnection(), uname/version/ps, etc.) --
+  // this test only mocks the interactive-bootstrap piece being asserted on,
+  // not those checks. That real subprocess work is measurably slower on
+  // Windows CI runners than the default budget allows.
   it('does NOT call checkRunningInstance or spawn a process by default under NODE_ENV=test', async () => {
     expect(process.env.NODE_ENV).toBe('test');
     delete process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP;
@@ -60,8 +70,9 @@ describe('register-member interactive bootstrap gate', () => {
     } finally {
       __resetInteractiveBootstrapDeps();
     }
-  });
+  }, 20000);
 
+  // Same real-subprocess-work rationale as the test above.
   it('uses injected fakes (no real network/spawn/CLI call) when explicitly opted in via env', async () => {
     process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP = '1';
 
@@ -124,5 +135,5 @@ describe('register-member interactive bootstrap gate', () => {
     } finally {
       __resetInteractiveBootstrapDeps();
     }
-  });
+  }, 20000);
 });
