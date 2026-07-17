@@ -1,8 +1,8 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
-import { exec } from 'child_process';
 import os from 'os';
+import { runCmd as bdRunCmd } from './bd-replay.mjs';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 
@@ -37,11 +37,12 @@ export function mockCmdResult(code, stdout, stderr) {
     };
 }
 
-export const runCmd = (cmd, cwd) => new Promise((resolve) => {
-    exec(cmd, { cwd, env: { ...process.env, BD_ALLOW_REMOTE_MIGRATE: '1' } }, (err, stdout, stderr) => {
-        resolve({ err, stdout, stderr });
-    });
-});
+// Same (cmd, cwd) => Promise<{ err, stdout, stderr }> signature as always,
+// but `bd ...` commands are now routed through the record/replay layer in
+// ./bd-replay.mjs (APRA_FLEET_BD_MOCK: replay recorded real-bd responses by
+// default; =0 to run the real bd CLI exactly as before; =record to run real
+// bd AND capture fixtures). Non-bd commands always exec for real.
+export const runCmd = (cmd, cwd) => bdRunCmd(cmd, cwd);
 
 export const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 
