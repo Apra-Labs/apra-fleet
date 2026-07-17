@@ -1,18 +1,27 @@
 # Fleet Integration Test Playbook
 
-Brings up a throwaway, fully isolated `apra-fleet` install for integration
-testing. It never touches the real `~/.apra-fleet` (production) install or
-its credentials/registry. The sandbox lives at a fixed, well-known path
-(not a random per-run directory) so `integ-test-runner` can find it
-without any hand-off file.
+This playbook is run by the `integ-test-runner` agent. (The `deployer`
+agent is a different role: it follows `deploy.md` to install the software
+on a target. It does not run this file.)
 
-**Who runs what**: two different agents use this file.
-- A `deployer` agent executes the three contractual sections -- `## Setup`,
-  `## Reset`, `## Teardown` -- exactly as written. It has only Bash and
-  Read tools, no MCP, so those sections must stay shell-only.
-- A separate `integ-test-runner` agent, which does have MCP tools, then
-  runs the actual test. `## Test scenario` documents what it does; the
-  deployer never executes that section.
+The playbook has two parts, and a full integration pass runs BOTH:
+
+1. **Real functional tests** (`## Run the apra-fleet-se suite against real
+   bd`): the full `apra-fleet-se` test suite, unmocked, against the real
+   `bd` CLI. These are the real functional tests, and they grow over time.
+2. **Smoke test** (`## Setup` / `## Reset` / `## Teardown` +
+   `## Test scenario`): one tiny toy sprint end to end in a throwaway
+   sandbox, proving every basic usage of apra-fleet-se works -- install,
+   server boot, member registration, sprint, harvest.
+
+Together they give stakeholders confidence in working functionality: the
+first that the product's behavior is correct against the real backend, the
+second that the product as installed actually runs.
+
+The smoke test's sandbox is fully isolated: it never touches the real
+`~/.apra-fleet` (production) install or its credentials/registry, and it
+lives at a fixed, well-known path (not a random per-run directory) so no
+hand-off file is needed between steps.
 
 Conventions used below:
 - Sandbox root: `~/temp/.apra-fleet-tests` (`$HOME/temp/.apra-fleet-tests`
@@ -23,9 +32,9 @@ Conventions used below:
   containing this playbook. The executing agent substitutes its actual
   checkout path.
 
-Target end-to-end time: under 10 minutes (Setup + one `max_cycles:1` toy
-sprint + Teardown). Any single step over 2 minutes is a bug in its own
-right, not just a slow test.
+Target time for the smoke test: under 10 minutes (Setup + one
+`max_cycles:1` toy sprint + Teardown). Any single step over 2 minutes is a
+bug in its own right, not just a slow test.
 
 ## Permissions
 
@@ -37,15 +46,38 @@ Commands below require these prefixes in `.claude/settings.json` under
 - `Bash(git clone *)`
 - `Bash(git -C ~/temp/.apra-fleet-tests* *)`
 - `Bash(node scripts/run-integ-suites.mjs *)` (for the
-  "Unit-suite timing check" section only)
+  "Run the apra-fleet-se suite against real bd" section only)
+
+## Run the apra-fleet-se suite against real bd
+
+Part 1 of the pass. Runs the full `packages/apra-fleet-se` test suite
+against the real `bd` CLI (not the recorded mock) and files `[integ]` bug
+beads for any failure. It is Bash-only and independent of the smoke-test
+sandbox below. Follow the step-by-step procedure in
+`packages/apra-fleet-se/test/INTEG-SUITE.md`, which drives
+`scripts/run-integ-suites.mjs` (start a background run, poll with bounded
+waits, report the final summary). Never substitute a bare `npm test` here
+-- that would test the mock.
+
+Note (bd record/replay shim): plain `npm test` for this workspace now runs
+in bd REPLAY mode by default (bd CLI responses served from recorded
+fixtures under `packages/apra-fleet-se/test/fixtures/bd-recordings/`; see
+the README there), so it completes in seconds. The unmocked, real-bd run
+-- the pre-shim behavior, and the right lane for validating bd CLI
+compatibility or re-measuring real-bd wall time -- is:
+
+```bash
+npm run test:integration --workspace=@apralabs/apra-fleet-se
+```
 
 ## Setup
 
-Brings the sandbox up from nothing: fresh HOME, fresh install, server
-running on the scratch port, toy repo cloned. It does NOT register a fleet
-member and does NOT start a sprint. Those are the first steps of the test
-itself (see `## Test scenario`), because member registration is one of the
-things under test.
+First of the three sandbox-lifecycle sections for the smoke test (part 2
+of the pass). Brings the sandbox up from nothing: fresh HOME, fresh
+install, server running on the scratch port, toy repo cloned. It does NOT
+register a fleet member and does NOT start a sprint. Those are the first
+steps of the test itself (see `## Test scenario`), because member
+registration is one of the things under test.
 
 ```bash
 export HOME=~/temp/.apra-fleet-tests
@@ -103,10 +135,9 @@ rm -rf ~/temp/.apra-fleet-tests
 
 ## Test scenario (informational)
 
-This section is informational: it documents what `integ-test-runner` does
-with the environment `## Setup` provides. The deployer does not execute it
-(see "Who runs what" at the top). It is recorded here so the sandbox's
-purpose stays clear to whoever maintains this file.
+The smoke test itself: what `integ-test-runner` does with the environment
+`## Setup` provides. Marked informational because it uses MCP tools and
+judgment, not copy-paste shell commands like the three lifecycle sections.
 
 1. Register one member (`register_member` MCP tool, not a shell command)
    pointed at `$HOME/toy-repo`, using the isolated `HOME`/`APRA_FLEET_PORT`
@@ -128,29 +159,6 @@ registration, git topology checks, planner/doer/reviewer dispatch, and
 harvest -- the same layers a real sprint depends on -- without touching
 production state.
 
-## Unit-suite timing check (apra-fleet-se)
-
-Runs the full `packages/apra-fleet-se` test suite against the real `bd`
-CLI (not the recorded mock) and files `[integ]` bug beads for any failure.
-Run it only when the sprint's changes touch
-`packages/apra-fleet-se/test/**`. It is Bash-only and independent of the
-sandbox above. Follow the step-by-step procedure in
-`packages/apra-fleet-se/test/INTEG-SUITE.md`, which drives
-`scripts/run-integ-suites.mjs` (start a background run, poll with bounded
-waits, report the final summary). Never substitute a bare `npm test` here
--- that would test the mock.
-
-Note (bd record/replay shim): plain `npm test` for this workspace now runs
-in bd REPLAY mode by default (bd CLI responses served from recorded
-fixtures under `packages/apra-fleet-se/test/fixtures/bd-recordings/`; see
-the README there), so it completes in seconds. The unmocked, real-bd run
--- the pre-shim behavior, and the right lane for validating bd CLI
-compatibility or re-measuring real-bd wall time -- is:
-
-```bash
-npm run test:integration --workspace=@apralabs/apra-fleet-se
-```
-
 ## Adding new features to this test
 
 When auto-sprint or the installer gains a capability that changes what "a
@@ -170,6 +178,6 @@ ad-hoc script:
 4. Keep the <10-minute budget. If the new step is inherently slow, gate it
    behind an opt-in flag documented here rather than making every run pay
    for it.
-5. Never add MCP tool calls to `## Setup` / `## Reset` / `## Teardown` --
-   the deployer executing them has only Bash and Read. Anything needing
-   MCP belongs in `## Test scenario`, run by `integ-test-runner`.
+5. Keep `## Setup` / `## Reset` / `## Teardown` shell-only: their command
+   blocks must stay copy-paste runnable in a plain shell with no MCP
+   tools. Anything needing MCP belongs in `## Test scenario`.
