@@ -24,6 +24,8 @@ Commands below require these prefixes in `.claude/settings.json` under
 - `Bash(node dist/index.js *)`
 - `Bash(git clone *)`
 - `Bash(git -C ~/temp/.apra-fleet-tests* *)`
+- `Bash(node scripts/run-integ-suites.mjs *)` (for the
+  "Unit-suite timing check" section only)
 
 ## Setup
 
@@ -110,27 +112,12 @@ production state.
 
 ## Unit-suite timing check (apra-fleet-se)
 
-A separate, optional Bash-only step -- run this in addition to the
-`## Test scenario` above whenever this sprint's own changes touch
-`packages/apra-fleet-se/test/**` (e.g. a test-suite performance/redundancy
-refactor). It does not require the sandbox from `## Setup` and does not
-touch the sandbox's HOME/port -- run it from the repo checkout directly.
-
-```bash
-cd "<repo-root>"
-START_TS=$(date +%s)
-npm test --workspace=@apralabs/apra-fleet-se
-EXIT_CODE=$?
-END_TS=$(date +%s)
-ELAPSED=$((END_TS - START_TS))
-echo "apra-fleet-se test suite: exit=$EXIT_CODE elapsed=${ELAPSED}s ($((ELAPSED/60))m $((ELAPSED%60))s)"
-```
-
-Report the printed `exit=`/`elapsed=` line verbatim in your summary/notes back
-to the orchestrator -- this is the concrete before/after evidence a
-test-suite-speedup sprint needs, not just "tests still pass." A non-zero
-exit code is a real regression: file a bug bead the same way any other
-integration-test failure would be filed, do not silently continue.
+Separate, optional, Bash-only, and independent of the sandbox above. Run it
+only when the sprint's changes touch `packages/apra-fleet-se/test/**`.
+Follow `packages/apra-fleet-se/test/INTEG-SUITE.md`: it drives
+`scripts/run-integ-suites.mjs` (start a background run, poll with bounded
+waits, file `[integ]` beads on failure). The script forces real bd -- never
+substitute a bare `npm test` here, which would test the mock.
 
 Note (bd record/replay shim): plain `npm test` for this workspace now runs
 in bd REPLAY mode by default (bd CLI responses served from recorded
