@@ -1013,3 +1013,57 @@ describe('dispatch-exception retry (apra-fleet-02s.1)', () => {
   });
 });
 
+describe('max_turns classification (apra-fleet-p4f.2)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('classifies a max_turns-exhausted transcript as max_turns_exhausted even when stderr has auth-like noise', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-with-auth-noise' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt',
+        }),
+        // Auth-like noise unrelated to the real failure -- the structured
+        // terminalReason must take priority over this regex-bait.
+        stderr: 'warning: Not logged in to an unrelated helper tool',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+    expect(resultText(result)).toContain('max_turns');
+    expect(resultText(result)).not.toContain('/login');
+  });
+
+  it('still classifies a genuine auth error as nonzero_exit with login advice when there is no max_turns signal', async () => {
+    const member = makeTestAgent({ friendlyName: 'genuine-auth-fail' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'Not logged in', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'nonzero_exit' });
+    expect(resultText(result)).toContain('/login');
+  });
+});
+

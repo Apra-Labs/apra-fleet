@@ -2031,12 +2031,21 @@ export async function main(context) {
                 try {
                     report = await dispatchDoer();
                 } catch (err) {
-                    log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
-                    wasRetried = true;
-                    try {
-                        report = await dispatchDoer();
-                    } catch (err2) {
-                        dispatchError = err2;
+                    // apra-fleet-p4f.3: a blind identical retry is pointless
+                    // for max_turns exhaustion -- the doer will deterministically
+                    // run out of turns again on the SAME prompt/max_turns.
+                    // Flag it as too-complex/needs-decomposition instead.
+                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                        log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- not retrying identically (would deterministically exhaust again); flagging as too-complex-for-one-streak.`);
+                        dispatchError = err;
+                    } else {
+                        log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
+                        wasRetried = true;
+                        try {
+                            report = await dispatchDoer();
+                        } catch (err2) {
+                            dispatchError = err2;
+                        }
                     }
                 }
 

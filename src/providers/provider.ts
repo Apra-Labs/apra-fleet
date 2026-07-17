@@ -45,6 +45,10 @@ export interface ParsedResponse {
   isError: boolean;
   raw: string;
   usage?: { input_tokens: number; output_tokens: number };
+  /** e.g. 'error_max_turns' -- the CLI result event's own subtype, when present. */
+  subtype?: string;
+  /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */
+  terminalReason?: string;
 }
 
 export interface RegisterMcpEndpointOptions {
