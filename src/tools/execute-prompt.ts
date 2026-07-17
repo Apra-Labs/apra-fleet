@@ -418,7 +418,26 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
   let _epOffline = false;
   try {
-    let result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+    let result;
+    try {
+      result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+    } catch (dispatchErr: any) {
+      // apra-fleet-02s.1: a genuine command-execution exception (e.g. an
+      // inactivity timeout, or any other error strategy.execCommand throws)
+      // used to be unconditionally unretried here -- it bypasses both retry
+      // mechanisms below, since those only fire on a non-throwing nonzero
+      // exit, never on a thrown exception. Retry once with a fresh session
+      // before giving up, mirroring the stale-session/server-overloaded
+      // retries' bounded, single-attempt shape. Skip the retry if the client
+      // itself cancelled the request -- there is nothing to recover from a
+      // deliberate cancellation.
+      if (extra?.signal?.aborted) throw dispatchErr;
+      scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
+      await tryKillPid(agent, strategy, cmds);
+      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+    }
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
 

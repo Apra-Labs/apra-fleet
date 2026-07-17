@@ -669,12 +669,16 @@ describe('busy-state clear on all exit paths (T5)', () => {
     )).toBe(true);
   });
 
-  it('clears inFlightAgents and sets offline after SSH connection failure', async () => {
+  it('clears inFlightAgents and sets offline after SSH connection failure survives the apra-fleet-02s.1 dispatch-exception retry', async () => {
     const member = makeTestAgent({ friendlyName: 'ep-exception' });
     memberId = member.id;
     addAgent(member);
+    // apra-fleet-02s.1 gives the main execCommand call one bounded retry on a
+    // thrown exception -- a persistent SSH failure must reject BOTH attempts
+    // (not just the first) to still reach the outer catch's offline marking.
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockRejectedValueOnce(new Error('ssh connection lost'))
       .mockRejectedValueOnce(new Error('ssh connection lost'))
       .mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
@@ -910,6 +914,102 @@ describe('MCP disconnect cleanup (T10)', () => {
     expect(vi.mocked(writeStatusline).mock.calls.some(
       c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
     )).toBe(true);
+  });
+});
+
+describe('dispatch-exception retry (apra-fleet-02s.1)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  it('retries once with a fresh session after the main execCommand throws, and succeeds', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-ok' });
+    memberId = member.id;
+    addAgent(member);
+    // no PID stored, so the pre-check tryKillPid at the top of executePrompt is a no-op.
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockRejectedValueOnce(new Error('inactivity timeout'))       // main execCommand throws
+      // no kill call here: onPidCaptured never fired since the main call rejected
+      // before invoking it, so tryKillPid inside the catch is also a no-op
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 }) // retry execCommand succeeds
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('ok-on-retry');
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it('uses a fresh, non-resumed session on the retry command', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-fresh-session', sessionId: 'old-sess' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockRejectedValueOnce(new Error('inactivity timeout'))       // main execCommand throws
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    await executePrompt({ member_id: memberId, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    // calls[2] is the retry command -- it must not carry the `--resume old-sess`
+    // flag a resumed dispatch would otherwise use, since the retry starts a
+    // deliberately fresh session rather than continuing the failed one.
+    const retryCmd = mockExecCommand.mock.calls[2][0];
+    expect(retryCmd).not.toContain('old-sess');
+  });
+
+  it('still returns a dispatch_failed structured error if the retry also throws', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-fails-too' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockRejectedValueOnce(new Error('inactivity timeout'))       // main execCommand throws
+      .mockRejectedValueOnce(new Error('inactivity timeout again')); // retry execCommand also throws
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    expect(resultText(result)).toContain('inactivity timeout again');
+  });
+
+  it('does not retry when the client already cancelled the request (signal aborted)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-skip-on-abort' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockRejectedValueOnce(new Error('Command aborted by client')) // main execCommand throws
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile (finally block)
+
+    const result = await executePrompt(
+      { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
+      { signal: controller.signal },
+    );
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    // 3 calls: writePromptFile + the one failed main call (no retry attempt) +
+    // deletePromptFile in the finally block.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 });
 

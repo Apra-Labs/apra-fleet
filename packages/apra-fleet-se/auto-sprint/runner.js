@@ -1246,11 +1246,19 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+                if (err instanceof AgentOutputError) {
                     log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
                         notes: `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                        reopenIds: [],
+                        newTasks: [],
+                    };
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
+                    verdict = {
+                        verdict: 'CHANGES_NEEDED',
+                        notes: `Reviewer dispatch failed: ${err.message}`,
                         reopenIds: [],
                         newTasks: [],
                     };
@@ -1737,14 +1745,21 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
-                    // Persistent non-JSON/non-schema-compliant output FAILS
-                    // this plan round -- it must never be treated as an
-                    // approval.
+                // Persistent non-JSON/non-schema-compliant output, or a failed
+                // dispatch, both FAIL this plan round -- neither must ever be
+                // treated as an approval.
+                if (err instanceof AgentOutputError) {
                     log(`Plan Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
                         notes: `Plan reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                        taskAssignments: [],
+                    };
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Plan Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
+                    verdict = {
+                        verdict: 'CHANGES_NEEDED',
+                        notes: `Plan reviewer dispatch failed: ${err.message}`,
                         taskAssignments: [],
                     };
                 } else {
@@ -2166,9 +2181,12 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+                if (err instanceof AgentOutputError) {
                     log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
                     deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Deployer: agent dispatch failed, treating as deployed:false: ${err.message}`);
+                    deployResult = { deployed: false, notes: `Deployer dispatch failed: ${err.message}` };
                 } else {
                     throw err;
                 }
@@ -2223,9 +2241,12 @@ export async function main(context) {
                     }
                 );
             } catch (err) {
-                if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+                if (err instanceof AgentOutputError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
+                } else if (err instanceof AgentDispatchError) {
+                    log(`Integ Test Runner: agent dispatch failed, treating as passed:false: ${err.message}`);
+                    integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner dispatch failed: ${err.message}` };
                 } else {
                     throw err;
                 }
@@ -2412,20 +2433,25 @@ export async function main(context) {
     try {
         finalVerdictResult = await dispatchFinalReview();
     } catch (err) {
-        if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
-            log(`Final Review: dispatch failed (${err.message}). Retrying once.`);
-            try {
-                finalVerdictResult = await dispatchFinalReview();
-            } catch (retryErr) {
-                if (retryErr instanceof AgentOutputError || retryErr instanceof AgentDispatchError) {
-                    log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
-                    finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
-                } else {
-                    throw retryErr;
-                }
-            }
+        if (err instanceof AgentOutputError) {
+            log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
+        } else if (err instanceof AgentDispatchError) {
+            log(`Final Review: dispatch failed (agent dispatch error: ${err.message}). Retrying once.`);
         } else {
             throw err;
+        }
+        try {
+            finalVerdictResult = await dispatchFinalReview();
+        } catch (retryErr) {
+            if (retryErr instanceof AgentOutputError) {
+                log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
+                finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
+            } else if (retryErr instanceof AgentDispatchError) {
+                log(`Final Review: agent dispatch failed after retry, treating as FAIL: ${retryErr.message}`);
+                finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after repair attempts (including one retry): ${retryErr.message}` };
+            } else {
+                throw retryErr;
+            }
         }
     }
     log(`Final Verdict: ${JSON.stringify(finalVerdictResult)}`);
@@ -2485,8 +2511,10 @@ export async function main(context) {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
         }
     } catch (err) {
-        if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
+        if (err instanceof AgentOutputError) {
             log(`Harvester: schema-repair exhausted, proceeding without a validated harvester report: ${err.message}`);
+        } else if (err instanceof AgentDispatchError) {
+            log(`Harvester: agent dispatch failed, proceeding without a validated harvester report: ${err.message}`);
         } else {
             throw err;
         }
