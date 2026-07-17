@@ -1089,6 +1089,128 @@ export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysi
     ].join('\n\n');
 }
 
+// ---------------------------------------------------------------------------
+// Abort-path PR publish (apra-fleet-eft.1 / eft.1.1)
+// ---------------------------------------------------------------------------
+//
+// Today a PR is only raised on the two "the sprint ran to a final verdict"
+// outcomes (PASS/FAIL, see the Publish PR step in main() below). A sprint
+// that instead ABORTS by throwing a typed error (StalledSprintError,
+// SprintPlanRejectedError, ReviewerContractViolationError, budget-exceeded,
+// pre-sprint validation errors -- all extend WorkflowError, see errors.mjs)
+// propagates straight to bin/cli.mjs's top-level catch today: grace window,
+// exit 1, no branch push, no PR -- so any real work a doer committed before
+// the abort is invisible to a human unless they know to go dig through the
+// sprint's git history by hand. finalizeAbort() is the fix for that: it is
+// called from the typed-abort catch site (apra-fleet-eft.1.2, a separate
+// task) with the error that caused the abort, and:
+//   1. counts commits on the sprint branch beyond base (this is what decides
+//      whether there is anything for a human to look at -- a zero-commit
+//      abort has produced no diff, so an [ABORTED] PR for it would be pure
+//      noise per the already-resolved zero-commit-abort policy decision);
+//   2. iff >=1 commit: pushes the branch and raises an idempotent
+//      'Auto-sprint [ABORTED]: <branch>' PR whose body carries the typed
+//      error's evidence (code/message/details), sanitized the exact same
+//      way the PASS/FAIL Publish PR step below sanitizes reviewer notes
+//      (sanitizePrText -- see the comment above its definition: this is
+//      LLM/error-surfaced free text landing in a double-quoted `gh pr
+//      create` command() string, the same injection class as N11/hfs);
+//   3. iff 0 commits: raises no PR at all and says so in the return value,
+//      so the caller can still write a terminal history record (eft.1.2)
+//      without a dangling/empty-diff PR.
+// `command` (and, for logging, `log`) are dependency-injected rather than
+// closed over `context` -- this function is called both from main()'s catch
+// site (where `context`'s destructured `command`/`log` are already in
+// scope) and directly from unit tests (eft.1.3) with a mock `command`, with
+// no need to spin up a full sprint run to exercise it either way.
+/**
+ * @param {{
+ *   error: { code?: string, message?: string, details?: unknown },
+ *   branch: string,
+ *   baseBranch: string,
+ *   member: string,
+ *   command: (cmd: string, opts: object) => Promise<any>,
+ *   log?: (msg: string) => void,
+ * }} opts
+ * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
+ */
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {} }) {
+    // 1. How many commits (if any) does the sprint branch carry beyond base?
+    // Every command() call below passes an explicit `member_name: member` --
+    // this runner never lets a git/gh dispatch fall back to an implicit/
+    // ambient member (see the SUPPORTED-TOPOLOGY NOTE near orchestratorMember
+    // above for why that matters in a multi-member fleet).
+    const revListRaw = await command(
+        `git rev-list --count ${baseBranch}..${branch}`,
+        { member_name: member, silent: true, label: `Count commits beyond base for abort-path branch '${branch}'` }
+    );
+    const commitCount = parseInt(String(revListRaw).trim(), 10) || 0;
+
+    if (commitCount < 1) {
+        log(`finalizeAbort: branch '${branch}' has 0 commits beyond '${baseBranch}' -- no [ABORTED] PR raised (zero-commit-abort policy).`);
+        return { prUrl: null, reason: 'zero-commit-abort', pushed: false, commitCount };
+    }
+
+    // 2. There is real work on the branch -- publish it and raise the PR.
+    await command(
+        `git push -u origin ${branch}`,
+        { member_name: member, silent: true, label: `Push abort-path sprint branch '${branch}'` }
+    );
+
+    const prTitle = `Auto-sprint [ABORTED]: ${branch}`;
+    // Same sanitization rationale as the PASS/FAIL Publish PR step below:
+    // the typed error's message/details/code can originate from agent
+    // output or other untrusted-ish sources upstream, and this text is
+    // interpolated into a double-quoted `gh pr create` command() string.
+    const safeCode = sanitizePrText(error && error.code);
+    const safeMessage = sanitizePrText(error && error.message);
+    const safeDetails = sanitizePrText(
+        error && error.details !== undefined ? JSON.stringify(error.details) : ''
+    );
+    const prBody = [
+        `Automated apra-fleet-se sprint ABORTED before reaching a final PASS/FAIL verdict.`,
+        '',
+        safeCode ? `Error code: ${safeCode}` : null,
+        safeMessage ? `Error message: ${safeMessage}` : null,
+        safeDetails ? `Error details: ${safeDetails}` : null,
+        '',
+        'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
+    ].filter((line) => line !== null).join('\n');
+
+    const prCreateRes = await command(
+        `gh pr create --base "${baseBranch}" --head "${branch}" --title "${prTitle}" --body "${prBody}"`,
+        {
+            member_name: member,
+            silent: true,
+            failSoft: true,
+            label: `Raise [ABORTED] PR to '${baseBranch}' (not merged)`,
+        }
+    );
+
+    if (!prCreateRes.ok) {
+        if (/already exists/i.test(prCreateRes.error || '')) {
+            // N11-style idempotency (see the PASS/FAIL Publish PR step
+            // below): the desired end state (a PR is open for this branch)
+            // already holds, so this is swallowed rather than thrown. The
+            // real `gh`/mock error text carries the existing PR's URL
+            // inline (e.g. "... already exists: https://.../pull/1 ...");
+            // pull it out so the caller/history record can still surface a
+            // usable link rather than just `null`.
+            const urlMatch = /https?:\/\/\S+/.exec(prCreateRes.error || '');
+            const existingUrl = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : null;
+            log(`finalizeAbort: an [ABORTED] PR for branch '${branch}' already exists -- treating as idempotent success (${prCreateRes.error}).`);
+            return { prUrl: existingUrl, reason: 'already-exists', pushed: true, commitCount };
+        }
+        throw new CommandError(
+            `[Publish Abort PR Failed] gh pr create failed for branch '${branch}' -> '${baseBranch}': ${prCreateRes.error}`,
+            { details: { branch, baseBranch, error: prCreateRes.error } }
+        );
+    }
+
+    const createdUrl = String(prCreateRes.output || '').trim().split('\n').pop() || null;
+    return { prUrl: createdUrl, reason: 'aborted-pr-created', pushed: true, commitCount };
+}
+
 // Mechanical migration to the WorkflowEngine's ES-module entry-point contract
 // (apra-fleet-unw.7): the engine now calls `main(context)` instead of
 // injecting bare globals into an AsyncFunction scope. This destructure is the
