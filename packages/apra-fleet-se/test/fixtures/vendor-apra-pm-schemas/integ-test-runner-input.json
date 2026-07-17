@@ -1,15 +1,20 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "apra-pm/integ-test-runner-input@1",
-  "version": 1,
+  "$id": "apra-pm/integ-test-runner-input@2",
+  "version": 2,
   "title": "integ-test-runner input",
-  "description": "Required dispatch-context keys for the integ-test-runner role, per agents/integ-test-runner.md Inputs section. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
+  "description": "Required dispatch-context keys for the integ-test-runner role, per agents/integ-test-runner.md Inputs section. The runner owns the integ-test-playbook.md sandbox lifecycle (Setup/Reset/Teardown) itself; the product deploy (deploy.md) has already been done by the deployer. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
   "type": "object",
-  "required": ["environmentReady"],
+  "required": ["repoRoot", "featureIds"],
   "properties": {
-    "environmentReady": {
-      "type": "boolean",
-      "description": "True once the deployer has brought the integration test environment up and it is reachable; the integ-test-runner does not bring the environment up itself."
+    "repoRoot": {
+      "type": "string",
+      "description": "Repo root path where integ-test-playbook.md lives."
+    },
+    "featureIds": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Explicit list of open feature ids in this sprint's subtree, scoped by the orchestrator. An empty array is a valid dispatch (the playbook still runs as the sprint's standing confidence check); the runner never derives this list itself."
     }
   }
 }
