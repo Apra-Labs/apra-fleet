@@ -1822,6 +1822,7 @@ export async function main(context) {
         // registered, and each parallel() doer branch below round-robins
         // across the full pool instead of collapsing to member #1.
         let devRounds = 0;
+        let lastStillOpenCount = 0;  // Track for round-cap detection at loop exit
 
         // beadId -> reviewer feedback text for the NEXT round, populated
         // only for beads actually named in a CHANGES_NEEDED verdict's
@@ -2116,12 +2117,19 @@ export async function main(context) {
             await updateDashboard();
 
             const stillOpen = await bdListScoped('--ready --json');
+            lastStillOpenCount = stillOpen.length;  // Track for post-loop round-cap detection
 
             if (stillOpen.length === 0) {
+                log('All beads processed this cycle -- cycle organically complete.');
                 break;
             } else {
                 log(`System found ${stillOpen.length} beads still open/ready. Looping back to develop.`);
             }
+        }
+
+        // Check if we exited due to round cap (devRounds === 3) with work still pending
+        if (devRounds === 3 && lastStillOpenCount > 0) {
+            log(`Develop/Review round cap (3) reached this cycle with ${lastStillOpenCount} bead(s) still open/reopened -- deferring to next cycle.`);
         }
         } // end Develop & Review loop (skipped when readyBeads.length === 0)
 
@@ -2366,38 +2374,56 @@ export async function main(context) {
     const finalClosedCount = (await bdListScoped('--status=closed --json')).length;
 
     let finalVerdictResult;
+    const dispatchFinalReview = () => agent(
+        buildFinalVerdictPrompt({
+            targetIssues,
+            branch: validated.branch,
+            baseBranch: validated.baseBranch,
+            goal: validated.goal,
+            cyclesRun: finalCycleLabel,
+            closedCount: finalClosedCount,
+            openAtGoalCount: finalOpenAtGoal.length,
+            deployFailures,
+            integFailures,
+            rejectedNewTasks,
+        }),
+        {
+            member_name: getMemberForRole('reviewer'),
+            agentType: 'reviewer',
+            schema: finalVerdict,
+            label: 'Final Review',
+            model: FIXED_ROLE_TIER.reviewer,
+            // apra-fleet-j6i: reviews the full diff/evidence across an
+            // entire epic's worth of closed tasks -- most costly of the
+            // 300s-default gaps since a timeout here flips a whole
+            // sprint's outcome to FAIL.
+            timeout_s: 900,
+            max_total_s: 3600,
+        }
+    );
+    // apra-fleet-j6i.2: unlike every other combined-catch dispatch site in
+    // this file, Final Review is the LAST dispatch of the sprint -- a
+    // single transient AgentDispatchError/AgentOutputError here used to
+    // flip an otherwise fully-successful sprint straight to verdict:FAIL
+    // with zero retry. Mirror the Planner retry-once wrapper (~line 1717):
+    // retry once before falling back to the hardcoded FAIL verdict. The
+    // fuller AgentDispatchError-vs-AgentOutputError type distinction is
+    // apra-fleet-02s's scope; this only adds the retry.
     try {
-        finalVerdictResult = await agent(
-            buildFinalVerdictPrompt({
-                targetIssues,
-                branch: validated.branch,
-                baseBranch: validated.baseBranch,
-                goal: validated.goal,
-                cyclesRun: finalCycleLabel,
-                closedCount: finalClosedCount,
-                openAtGoalCount: finalOpenAtGoal.length,
-                deployFailures,
-                integFailures,
-                rejectedNewTasks,
-            }),
-            {
-                member_name: getMemberForRole('reviewer'),
-                agentType: 'reviewer',
-                schema: finalVerdict,
-                label: 'Final Review',
-                model: FIXED_ROLE_TIER.reviewer,
-                // apra-fleet-j6i: reviews the full diff/evidence across an
-                // entire epic's worth of closed tasks -- most costly of the
-                // 300s-default gaps since a timeout here flips a whole
-                // sprint's outcome to FAIL.
-                timeout_s: 900,
-                max_total_s: 3600,
-            }
-        );
+        finalVerdictResult = await dispatchFinalReview();
     } catch (err) {
         if (err instanceof AgentOutputError || err instanceof AgentDispatchError) {
-            log(`Final Review: schema-repair exhausted, treating as FAIL: ${err.message}`);
-            finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}` };
+            log(`Final Review: dispatch failed (${err.message}). Retrying once.`);
+            try {
+                finalVerdictResult = await dispatchFinalReview();
+            } catch (retryErr) {
+                if (retryErr instanceof AgentOutputError || retryErr instanceof AgentDispatchError) {
+                    log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
+                    finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
+                } else {
+                    throw retryErr;
+                }
+            }
         } else {
             throw err;
         }
