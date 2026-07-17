@@ -55,3 +55,7 @@ COPILOT-INSTRUCTIONS.md
 /integ-suite-status.json.tmp
 /integ-suite-heartbeat.json
 /integ-suite-run.log
+
+# Per-run sprint state dumps (bin/cli.mjs writes one automatically on every
+# sprint exit) -- local scratch, not a project deliverable.
+/sprint-logs/
