@@ -1,7 +1,8 @@
 // integ-file-results-reporter.mjs
 //
-// Checkpoint reporter for scripts/run-integ-suites.mjs (the "Unit-suite
-// timing check" runner in integ-test-playbook.md). Attached as a second
+// Checkpoint reporter for scripts/run-integ-suites.mjs (the "Run the
+// apra-fleet-se suite against real bd" runner in integ-test-playbook.md).
+// Attached as a second
 // node:test reporter alongside the package's timestamped-reporter.mjs, it
 // streams each FILE's result into the durable status file the instant that
 // file finishes -- per-file crash-safe checkpoints from inside one

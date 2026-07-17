@@ -1,19 +1,31 @@
 # Fleet Integration Test Playbook
 
 Brings up a throwaway, fully isolated `apra-fleet` install for integration
-testing. Never touches the real `~/.apra-fleet` (production) install or its
-credentials/registry. Uses a fixed, well-known sandbox path (not a random
-per-run directory) so `integ-test-runner` can reference the same location
+testing. It never touches the real `~/.apra-fleet` (production) install or
+its credentials/registry. The sandbox lives at a fixed, well-known path
+(not a random per-run directory) so `integ-test-runner` can find it
 without any hand-off file.
 
-Sandbox root: `~/temp/.apra-fleet-tests` (i.e. `$HOME/temp/.apra-fleet-tests`
-on POSIX, `%USERPROFILE%\temp\.apra-fleet-tests` on Windows).
-Scratch port: `18700` (`APRA_FLEET_PORT`), chosen off the beaten path from
-the default `7523` and from the `18300`-series auto-sprint dashboard ports.
+**Who runs what**: two different agents use this file.
+- A `deployer` agent executes the three contractual sections -- `## Setup`,
+  `## Reset`, `## Teardown` -- exactly as written. It has only Bash and
+  Read tools, no MCP, so those sections must stay shell-only.
+- A separate `integ-test-runner` agent, which does have MCP tools, then
+  runs the actual test. `## Test scenario` documents what it does; the
+  deployer never executes that section.
+
+Conventions used below:
+- Sandbox root: `~/temp/.apra-fleet-tests` (`$HOME/temp/.apra-fleet-tests`
+  on POSIX, `%USERPROFILE%\temp\.apra-fleet-tests` on Windows).
+- Scratch port: `18700` (`APRA_FLEET_PORT`) -- kept away from the default
+  `7523` and the `18300`-series auto-sprint dashboard ports.
+- `<repo-root>`: the root of this apra-fleet checkout -- the directory
+  containing this playbook. The executing agent substitutes its actual
+  checkout path.
 
 Target end-to-end time: under 10 minutes (Setup + one `max_cycles:1` toy
-sprint + Teardown). If any single step exceeds 2 minutes, treat that as a
-bug in its own right, not just a slow test.
+sprint + Teardown). Any single step over 2 minutes is a bug in its own
+right, not just a slow test.
 
 ## Permissions
 
@@ -30,10 +42,10 @@ Commands below require these prefixes in `.claude/settings.json` under
 ## Setup
 
 Brings the sandbox up from nothing: fresh HOME, fresh install, server
-running on the scratch port, toy repo cloned. Does NOT register a fleet
-member and does NOT seed/trigger a sprint -- that is the first step of the
-actual test, run separately by `integ-test-runner` (member registration is
-itself one of the things under test).
+running on the scratch port, toy repo cloned. It does NOT register a fleet
+member and does NOT start a sprint. Those are the first steps of the test
+itself (see `## Test scenario`), because member registration is one of the
+things under test.
 
 ```bash
 export HOME=~/temp/.apra-fleet-tests
@@ -46,13 +58,14 @@ node dist/index.js start
 git clone https://github.com/Apra-Labs/fleet-e2e-toy "$HOME/toy-repo"
 ```
 
-Verify before proceeding to the actual test: `node dist/index.js status`
-exits 0 and reports the server listening on `18700`.
+Before handing off to the test: verify `node dist/index.js status` exits 0
+and reports the server listening on `18700`.
 
 ## Reset
 
-Faster path between consecutive test runs in the same session: restores the
-toy repo and beads state to pristine without a full reinstall/re-clone.
+A faster alternative to Teardown + Setup between test runs in the same
+session. It restores the toy repo and its beads state to pristine without
+reinstalling or re-cloning.
 
 ```bash
 export HOME=~/temp/.apra-fleet-tests
@@ -64,18 +77,21 @@ git reset --hard origin/main
 git clean -fdx
 ```
 
-The toy repo maintains a permanent, always-open canary issue
-(convention: tagged `integ-canary` in its beads DB) for exactly this
-purpose -- `git reset --hard` plus `bd` being reset along with the rest of
-the tracked repo state re-opens it. If the canary issue has been
-renamed/removed, re-seed one before continuing and update this file's
-"Test scenario" section below with the new ID.
+The toy repo keeps one permanent, always-open canary issue for exactly
+this purpose, identified by its `integ-canary` tag in the repo's beads DB.
+This file deliberately does not hard-code the issue's ID: the test looks
+it up by tag at run time, and the `<canary-id>` token in `## Test
+scenario` is a placeholder for whatever that lookup returns -- not a real
+ID someone forgot to fill in. The `git reset --hard` above restores the
+beads DB along with the rest of the tracked repo state, which re-opens the
+canary. If the canary issue has been renamed or removed upstream, re-seed
+one in `fleet-e2e-toy` (tagged `integ-canary`) before continuing.
 
 ## Teardown
 
-Runs after every integration test run, regardless of pass/fail. Full
-cleanup -- stops the server and deletes the sandbox entirely so it never
-accumulates state or drifts from a fresh install across runs.
+Runs after every test run, pass or fail. It stops the server and deletes
+the sandbox entirely, so no state accumulates or drifts from a fresh
+install between runs.
 
 ```bash
 export HOME=~/temp/.apra-fleet-tests
@@ -85,39 +101,44 @@ node dist/index.js stop
 rm -rf ~/temp/.apra-fleet-tests
 ```
 
-## Test scenario (informational -- not a deployer.md-executed section)
+## Test scenario (informational)
 
-This section documents what `integ-test-runner` does with the environment
-`## Setup` hands it. It is not one of the three contractual sections above
-and the deployer agent does not execute it -- record it here purely so the
-sandbox's purpose stays legible to whoever maintains this file.
+This section is informational: it documents what `integ-test-runner` does
+with the environment `## Setup` provides. The deployer does not execute it
+(see "Who runs what" at the top). It is recorded here so the sandbox's
+purpose stays clear to whoever maintains this file.
 
 1. Register one member (`register_member` MCP tool, not a shell command)
    pointed at `$HOME/toy-repo`, using the isolated `HOME`/`APRA_FLEET_PORT`
    from Setup.
-2. Confirm the canary issue is open (`bd show <canary-id>`).
+2. Find the canary issue by its `integ-canary` tag and confirm it is open
+   (`bd show <canary-id>`, where `<canary-id>` is whatever ID the tag
+   lookup returned).
 3. Run `apra-fleet workflow auto-sprint` against the canary issue with
    `max_cycles: 1` and `skip_dolt_push: true` (never write to the real Dolt
    remote from a sandbox run).
-4. Assert the canary issue closed and the toy repo's sprint branch has a
-   commit. Fail loud (file a bug bead) if not -- do not silently reset and
-   move on, per this repo's [[project-goal-auto-sprint-ruggedization]]
-   convention of treating sprint-run surprises as signal.
+4. Assert the canary issue is now closed and the toy repo's sprint branch
+   has a commit. If not, fail loud: file a bug bead. Do not silently reset
+   and move on -- this repo treats sprint-run surprises as signal
+   ([[project-goal-auto-sprint-ruggedization]]).
 5. Hand off to Teardown regardless of the assertion's outcome.
 
-This exercises, in one ~10-minute pass: fresh install, server boot, member
+One ~10-minute pass exercises fresh install, server boot, member
 registration, git topology checks, planner/doer/reviewer dispatch, and
-harvest -- the same layers a real sprint depends on, without touching
+harvest -- the same layers a real sprint depends on -- without touching
 production state.
 
 ## Unit-suite timing check (apra-fleet-se)
 
-Separate, optional, Bash-only, and independent of the sandbox above. Run it
-only when the sprint's changes touch `packages/apra-fleet-se/test/**`.
-Follow `packages/apra-fleet-se/test/INTEG-SUITE.md`: it drives
+Runs the full `packages/apra-fleet-se` test suite against the real `bd`
+CLI (not the recorded mock) and files `[integ]` bug beads for any failure.
+Run it only when the sprint's changes touch
+`packages/apra-fleet-se/test/**`. It is Bash-only and independent of the
+sandbox above. Follow the step-by-step procedure in
+`packages/apra-fleet-se/test/INTEG-SUITE.md`, which drives
 `scripts/run-integ-suites.mjs` (start a background run, poll with bounded
-waits, file `[integ]` beads on failure). The script forces real bd -- never
-substitute a bare `npm test` here, which would test the mock.
+waits, report the final summary). Never substitute a bare `npm test` here
+-- that would test the mock.
 
 Note (bd record/replay shim): plain `npm test` for this workspace now runs
 in bd REPLAY mode by default (bd CLI responses served from recorded
@@ -132,26 +153,23 @@ npm run test:integration --workspace=@apralabs/apra-fleet-se
 
 ## Adding new features to this test
 
-When auto-sprint or the installer gains a new capability that changes what
-"a working install" means (e.g. a new required member role, a new
-pre-sprint gate, a new CLI subcommand), extend the test scenario rather
-than writing a separate ad-hoc script:
+When auto-sprint or the installer gains a capability that changes what "a
+working install" means (a new required member role, a new pre-sprint gate,
+a new CLI subcommand), extend this test rather than writing a separate
+ad-hoc script:
 
-1. Add the new precondition/step to the "Test scenario" list above, keeping
-   it numbered and in the order it actually executes.
-2. If the new feature needs its own fixture (e.g. a second toy issue with
-   specific dependency shape), add it to `fleet-e2e-toy` directly, tagged
-   consistently with the existing `integ-canary` convention, and note the
-   new tag/ID here.
-3. If the new feature needs a genuinely different environment shape (a
-   second member, a different port, a different topology), prefer adding a
-   second `## Setup`-adjacent step over forking this file -- multiple
-   playbook files would drift independently and defeat the point of having
-   one source of truth.
-4. Keep the <10-minute budget. If a new feature's test step is inherently
-   slow, gate it behind an opt-in flag documented here rather than making
-   every run pay for it.
-5. Never modify `## Setup` / `## Reset` / `## Teardown` to include MCP tool
-   calls -- the deployer agent executing this file only has Bash/Read
-   access. Anything requiring MCP tools belongs in the "Test scenario"
-   section, run by `integ-test-runner`.
+1. Add the new step to the `## Test scenario` list above, numbered, in the
+   order it actually runs.
+2. If it needs its own fixture (e.g. a second toy issue with a specific
+   dependency shape), add that to `fleet-e2e-toy` directly, tag it the
+   same way as `integ-canary`, and note the new tag here.
+3. If it needs a genuinely different environment (a second member, a
+   different port, a different topology), add another `## Setup`-adjacent
+   step here rather than forking this file -- separate playbook files
+   would drift apart and defeat the point of one source of truth.
+4. Keep the <10-minute budget. If the new step is inherently slow, gate it
+   behind an opt-in flag documented here rather than making every run pay
+   for it.
+5. Never add MCP tool calls to `## Setup` / `## Reset` / `## Teardown` --
+   the deployer executing them has only Bash and Read. Anything needing
+   MCP belongs in `## Test scenario`, run by `integ-test-runner`.

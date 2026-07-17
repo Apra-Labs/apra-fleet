@@ -2,8 +2,8 @@
 // run-integ-suites.mjs
 //
 // Background supervisor + checkpoint runner for the apra-fleet-se real-bd
-// test suite, used by the "Unit-suite timing check" section of
-// integ-test-playbook.md.
+// test suite, used by the "Unit-suite timing check"
+// section of integ-test-playbook.md.
 //
 // Design: ONE detached background run of
 //   node --test --test-concurrency=8 <all pending files>
