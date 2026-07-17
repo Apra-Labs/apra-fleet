@@ -1549,24 +1549,47 @@ export async function main(context) {
             }
             if (cyclePairs.length > 0) {
                 const fixCommands = cyclePairs.map((p) => `  bd dep remove ${p.blockedIssue} ${p.blockedBy}`);
-                throw new Error(
+                const cycleMessage =
                     `Pre-sprint validation failed: scope '${sprintFilter}' is deadlocked by ${cyclePairs.length} ` +
                     `parent-child + blocks cycle(s) (a bead has a 'blocks' dependency on its own --parent ` +
                     `ancestor/descendant, which fully blocks both beads even though 'bd dep cycles' will not ` +
-                    `flag it). Fix by removing the offending 'blocks' edge(s):\n${fixCommands.join('\n')}`
-                );
+                    `flag it). Fix by removing the offending 'blocks' edge(s):\n${fixCommands.join('\n')}`;
+
+                // apra-fleet-xbu.2.1: this exact shape is mechanically
+                // repairable -- the block above already computed the precise
+                // edge(s) to remove, so auto-repair (one pass, no loop, no
+                // Planner dispatch) instead of just throwing a diagnosis. If
+                // the repair itself fails, fall back to the original throw
+                // (never silently swallow a failed repair attempt).
+                try {
+                    for (const pair of cyclePairs) {
+                        await command(`bd dep remove ${pair.blockedIssue} ${pair.blockedBy}`, { member_name: orchestratorMember, silent: true });
+                        log(`Pre-sprint auto-repair (apra-fleet-xbu.2.1): removed the 'blocks' edge between ${pair.blockedIssue} and ${pair.blockedBy} (parent-child + blocks cycle) -- auto-removed via bd dep remove.`);
+                    }
+                } catch (repairErr) {
+                    throw new Error(`${cycleMessage}\n\n(Auto-repair attempt itself failed: ${repairErr.message})`);
+                }
+
+                initialBeads = await bdListScoped('--ready --json');
+                // Repair didn't unblock anything further -- one pass only, so
+                // fall through to the existing generic deadlock diagnostics
+                // below (do not loop, do not repair twice) when still empty.
+                // Otherwise the sprint continues normally with the now-ready
+                // beads, skipping the generic diagnostics entirely.
             }
 
-            const diagnostics = notDoneBeads.map((b) => {
-                const blockers = unmetBlockers(b);
-                return blockers.length > 0
-                    ? `  - ${b.id} [${b.status}] -- blocked by: ${blockers.join(', ')}`
-                    : `  - ${b.id} [${b.status}] -- unblocked but status excludes it from --ready`;
-            });
-            throw new Error(
-                `Pre-sprint validation failed: No ready beads found for scope '${sprintFilter}', and ${notDoneBeads.length} ` +
-                `not-done bead(s) remain deadlocked:\n${diagnostics.join('\n')}`
-            );
+            if (initialBeads.length === 0) {
+                const diagnostics = notDoneBeads.map((b) => {
+                    const blockers = unmetBlockers(b);
+                    return blockers.length > 0
+                        ? `  - ${b.id} [${b.status}] -- blocked by: ${blockers.join(', ')}`
+                        : `  - ${b.id} [${b.status}] -- unblocked but status excludes it from --ready`;
+                });
+                throw new Error(
+                    `Pre-sprint validation failed: No ready beads found for scope '${sprintFilter}', and ${notDoneBeads.length} ` +
+                    `not-done bead(s) remain deadlocked:\n${diagnostics.join('\n')}`
+                );
+            }
         }
     }
 
