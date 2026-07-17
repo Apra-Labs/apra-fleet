@@ -71,6 +71,15 @@ describe('bd recordings fidelity', () => {
                 );
             }
 
+            // Public-repo hygiene: the recorder scrubs the recording
+            // machine's temp-dir prefix (which embeds the local OS username
+            // on Windows) to <TMPDIR>; no user-profile path may ever appear
+            // in a committed recording.
+            assert.ok(
+                !/[A-Za-z]:\\+Users\\+/i.test(raw) && !raw.includes('/home/') && !raw.includes('/Users/'),
+                `${file}: contains a user-profile path -- recordings must be captured with the path scrub in bd-replay.mjs (re-record via 'npm run test:record')`,
+            );
+
             const entries = loadRecording(fullPath);
             assert.ok(entries.length > 0, `${file}: recording is empty`);
 

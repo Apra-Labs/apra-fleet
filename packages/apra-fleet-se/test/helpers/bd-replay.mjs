@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 
@@ -90,6 +91,23 @@ export function toAsciiJsonLine(obj) {
     return JSON.stringify(obj).replace(/[\u007f-\uffff]/g, (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
 }
 
+// Recordings are committed to a public repository: strip the recording
+// machine's absolute temp-dir prefix (which embeds the local OS username on
+// Windows, e.g. C:\Users\<name>\AppData\Local\Temp) from captured output.
+// Only `bd init`'s human-readable stdout ever contains these paths and
+// nothing parses it, so the substitution is behavior-neutral for replay.
+// Both native and forward-slash spellings are scrubbed.
+export function scrubMachinePaths(text) {
+    if (!text) return text;
+    const tmp = os.tmpdir();
+    const variants = [tmp, tmp.replace(/\\/g, '/')];
+    let out = text;
+    for (const v of variants) {
+        out = out.split(v).join('<TMPDIR>');
+    }
+    return out;
+}
+
 const RE_RECORD_HELP =
     'To refresh recordings, re-run the real-bd suite in record mode and commit the result:\n' +
     '  npm run test:record --workspace=@apralabs/apra-fleet-se\n' +
@@ -120,9 +138,9 @@ async function recordBd(cmd, cwd) {
 
     const res = await execCmd(cmd, cwd);
     entry.exitCode = res.err ? (typeof res.err.code === 'number' ? res.err.code : 1) : 0;
-    entry.stdout = res.stdout ?? '';
-    entry.stderr = res.stderr ?? '';
-    if (res.err) entry.errMessage = res.err.message;
+    entry.stdout = scrubMachinePaths(res.stdout ?? '');
+    entry.stderr = scrubMachinePaths(res.stderr ?? '');
+    if (res.err) entry.errMessage = scrubMachinePaths(res.err.message);
 
     // Flush the whole session after every completion (test-sized data, so
     // rewriting is cheap) -- the file is always complete once the process
