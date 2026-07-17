@@ -656,7 +656,21 @@ export function validateVerdict(name, data) {
 // runner.js -- that is left to whichever issue rebuilds each phase's
 // dispatch call sites.
 
-const INPUT_SCHEMA_MAJOR_VERSION = 1;
+// Per-role, not a single global: apra-pm/PR#29 bumped doer/reviewer/
+// integ-test-runner/ci-watcher input contracts to @2 (new required fields)
+// while deployer/harvester/plan-reviewer stayed at @1. Each role's expected
+// major must be pinned independently so a future bump of any one role's
+// contract still fails loudly via assertVersionPin instead of silently
+// passing under a stale shared constant.
+const INPUT_SCHEMA_MAJOR_VERSIONS = Object.freeze({
+    'plan-reviewer': 1,
+    doer: 2,
+    reviewer: 2,
+    deployer: 1,
+    'integ-test-runner': 2,
+    'ci-watcher': 2,
+    harvester: 1,
+});
 const inputValidatorCache = new Map();
 
 /**
@@ -676,7 +690,14 @@ function getInputValidator(role) {
         inputValidatorCache.set(role, null);
         return null;
     }
-    assertVersionPin(`${role}-input`, schema, INPUT_SCHEMA_MAJOR_VERSION);
+    const expectedMajor = INPUT_SCHEMA_MAJOR_VERSIONS[role];
+    if (expectedMajor === undefined) {
+        throw new Error(
+            `[contracts] getInputValidator: role "${role}" has a vendored input schema but no entry in ` +
+                `INPUT_SCHEMA_MAJOR_VERSIONS -- add its expected major version before trusting the schema.`,
+        );
+    }
+    assertVersionPin(`${role}-input`, schema, expectedMajor);
     const validator = ajv.compile(schema);
     inputValidatorCache.set(role, validator);
     return validator;

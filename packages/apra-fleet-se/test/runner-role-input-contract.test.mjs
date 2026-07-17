@@ -76,7 +76,7 @@ const RUNNER_SOURCE = fs.readFileSync(RUNNER_PATH, 'utf-8');
 // verdict changes when runner.js changes (that is the whole point).
 
 // Maps a prompt-builder's destructured JS parameter name to the vendored
-// input-schema key it satisfies. Params not in this map (beadIds, feedback,
+// input-schema key it satisfies. Params not in this map (feedback,
 // acceptanceCriteriaJson, targetIssues, ...) are non-contract context and
 // are intentionally ignored.
 const PARAM_TO_SCHEMA_KEY = Object.freeze({
@@ -92,6 +92,17 @@ const PARAM_TO_SCHEMA_KEY = Object.freeze({
     costAnalysis: 'costAnalysis',
 });
 
+// apra-pm PR#29 bumped doer-input/reviewer-input to @2, both adding a
+// required bead-id list -- but each schema names it differently
+// (assignedBeadIds vs beadIds), and both builders destructure the SAME JS
+// param name (`beadIds`). PARAM_TO_SCHEMA_KEY is global across builders, so
+// it cannot express "same param, different schema key depending on role" --
+// hence this small per-builder override, consulted first.
+const BUILDER_PARAM_OVERRIDES = Object.freeze({
+    buildDoerPrompt: { beadIds: 'assignedBeadIds' },
+    buildReviewerPrompt: { beadIds: 'beadIds' },
+});
+
 // A schema-valid placeholder value per input-schema key. Only presence and
 // type matter to validateRoleInput; concrete values are illustrative.
 const PLACEHOLDER = Object.freeze({
@@ -105,6 +116,9 @@ const PLACEHOLDER = Object.freeze({
     analysisArtifactFile: 'docs/sprint-logs/unw2.md',
     analysisText: 'Sprint analysis text.',
     costAnalysis: '$0.00 (estimate)',
+    assignedBeadIds: ['apra-fleet-abc'],
+    beadIds: ['apra-fleet-abc'],
+    featureIds: ['apra-fleet-def'],
 });
 
 /**
@@ -130,9 +144,10 @@ function extractBuilderParams(fnName) {
 function contextFromBuilder(fnName) {
     const params = extractBuilderParams(fnName);
     if (params === null) return null;
+    const overrides = BUILDER_PARAM_OVERRIDES[fnName] || {};
     const ctx = {};
     for (const p of params) {
-        const key = PARAM_TO_SCHEMA_KEY[p];
+        const key = overrides[p] || PARAM_TO_SCHEMA_KEY[p];
         if (key) ctx[key] = PLACEHOLDER[key];
     }
     return ctx;
@@ -206,11 +221,13 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
     });
 
     // -- doer ------------------------------------------------------------
-    // buildDoerPrompt must consume `branch` (vendored doer-input.json
-    // required: ["branch"]). It currently consumes only { beadIds, feedback }.
-    // EXPECTED RED pre-unw2.1.
+    // buildDoerPrompt consumes { beadIds, branch, feedback }, satisfying
+    // doer-input@2's required: ["branch", "assignedBeadIds"] (apra-pm PR#29
+    // bumped this schema; `beadIds` maps to `assignedBeadIds` via
+    // BUILDER_PARAM_OVERRIDES, since the doer's entire work list IS its
+    // assignedBeadIds). EXPECTED GREEN.
     describe('doer', () => {
-        test('buildDoerPrompt supplies the required `branch` input (N1 divergence 3)', () => {
+        test('buildDoerPrompt supplies branch and assignedBeadIds', () => {
             const ctx = contextFromBuilder('buildDoerPrompt');
             assert.ok(ctx !== null, 'buildDoerPrompt not found in runner.js');
 
@@ -218,18 +235,20 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
             assert.strictEqual(
                 result.valid,
                 true,
-                'buildDoerPrompt must supply `branch` (vendored doer-input.json required: '
-                    + `["branch"]); it does not -- N1 divergence 3. errors=${JSON.stringify(result.errors)}`,
+                `doer context ${JSON.stringify(ctx)} must satisfy doer-input.json; `
+                    + `errors=${JSON.stringify(result.errors)}`,
             );
         });
     });
 
     // -- reviewer --------------------------------------------------------
-    // buildReviewerPrompt already consumes { baseBranch, branch }, satisfying
-    // reviewer-input.json required: ["base-branch", "branch"]. Included so a
-    // future regression that drops either input is caught. EXPECTED GREEN.
+    // buildReviewerPrompt consumes { beadIds, acceptanceCriteriaJson,
+    // baseBranch, branch }, satisfying reviewer-input@2's required:
+    // ["base-branch", "branch", "beadIds"] (apra-pm PR#29 bumped this
+    // schema; `beadIds` maps straight through via BUILDER_PARAM_OVERRIDES).
+    // EXPECTED GREEN.
     describe('reviewer', () => {
-        test('buildReviewerPrompt supplies base-branch and branch', () => {
+        test('buildReviewerPrompt supplies base-branch, branch, and beadIds', () => {
             const ctx = contextFromBuilder('buildReviewerPrompt');
             assert.ok(ctx !== null, 'buildReviewerPrompt not found in runner.js');
 
@@ -259,13 +278,26 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
     });
 
     // -- integ-test-runner ----------------------------------------------
-    // Dispatched inline; its single required input `environmentReady` is
-    // GUARANTEED true by the runner's dispatch gate (integ runs only inside
-    // `if (hasPlaybook && deployedThisCycle)`). Not an N1 divergence for the
-    // same structural reason as the deployer. EXPECTED GREEN.
+    // Dispatched inline (no builder). apra-pm PR#29 bumped
+    // integ-test-runner-input to @2, replacing the inverted `environmentReady`
+    // contract with required: ["repoRoot", "featureIds"] -- the runner already
+    // satisfies this in substance: it fetches the sprint's open features via
+    // bdListScoped() and names them explicitly in the prompt (never derives
+    // them via a bare `bd list`), and only dispatches once repoRoot's
+    // equivalent (the member's checkout) is known, gated by
+    // `if (hasPlaybook && deployedThisCycle)`. We model that
+    // dispatch-determined context and assert the schema accepts it (including
+    // the zero-open-features case, which the runner dispatches explicitly
+    // rather than skipping). EXPECTED GREEN.
     describe('integ-test-runner', () => {
-        test('dispatch-gated context satisfies integ-test-runner-input.json', () => {
-            const ctx = { environmentReady: PLACEHOLDER.environmentReady };
+        test('dispatch-determined context satisfies integ-test-runner-input.json', () => {
+            const ctx = { repoRoot: PLACEHOLDER.repoRoot, featureIds: PLACEHOLDER.featureIds };
+            const result = validateRoleInput('integ-test-runner', ctx);
+            assert.strictEqual(result.valid, true, JSON.stringify(result.errors));
+        });
+
+        test('an empty featureIds list is still a valid dispatch', () => {
+            const ctx = { repoRoot: PLACEHOLDER.repoRoot, featureIds: [] };
             const result = validateRoleInput('integ-test-runner', ctx);
             assert.strictEqual(result.valid, true, JSON.stringify(result.errors));
         });
@@ -274,8 +306,10 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
     // -- ci-watcher ------------------------------------------------------
     // runner.js does NOT dispatch ci-watcher anywhere, so there is no context
     // to validate. We assert that absence explicitly: if a future runner
-    // change starts dispatching ci-watcher, this documents that its
-    // branch/expectedHeadSha inputs must then be wired and this file extended.
+    // change starts dispatching ci-watcher, this documents that it must now
+    // satisfy ci-watcher-input@2's `oneOf` (branch + expectedHeadSha, OR
+    // prNumber -- apra-pm PR#29 added the PR-scoped form) and this file
+    // extended.
     describe('ci-watcher', () => {
         test('runner.js does not dispatch ci-watcher (documented no-op today)', () => {
             assert.ok(

@@ -60,7 +60,7 @@ describe('loadSchemaFileFrom (loader primitive)', () => {
 
         const reviewerInput = loadSchemaFileFrom(FIXTURES_DIR, 'reviewer-input');
         assert.ok(reviewerInput);
-        assert.deepStrictEqual(reviewerInput.required, ['base-branch', 'branch']);
+        assert.deepStrictEqual(reviewerInput.required, ['base-branch', 'branch', 'beadIds']);
     });
 
     test('AC3: returns null (not a throw) when the file is absent -- the fallback-shim signal', () => {
@@ -181,7 +181,11 @@ describe('SCHEMAS / validateRoleInput resolved against a fixture vendor/apra-pm'
         });
 
         test('reviewer: accepts a complete context', () => {
-            const result = wired.validateRoleInput('reviewer', { 'base-branch': 'main', branch: 'feat/x' });
+            const result = wired.validateRoleInput('reviewer', {
+                'base-branch': 'main',
+                branch: 'feat/x',
+                beadIds: ['apra-fleet-abc'],
+            });
             assert.strictEqual(result.valid, true, JSON.stringify(result.errors));
         });
 
