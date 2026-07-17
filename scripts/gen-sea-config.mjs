@@ -88,14 +88,14 @@ for (const [name, assetPath] of Object.entries(allScripts)) {
 
 const skills = collectFiles(join(root, 'vendor', 'apra-pm', 'skills', 'pm'), 'vendor/apra-pm/skills/pm', 'vendor/apra-pm/skills/pm');
 const fleetSkills = collectFiles(join(root, 'skills', 'fleet'), 'skills/fleet');
-// Agents are sourced from dist/agents, NOT vendor/apra-pm/agents directly -- unlike
-// skills, the agent role files contain a `<!-- GRAPH-SEMANTICS -->` marker that
-// scripts/vendor-pm.mjs resolves (inlining vendor/apra-pm/agents/_shared/GRAPH-SEMANTICS.md)
-// during its submodule -> dist/agents copy step. Reading straight from the submodule here
-// would embed the literal, unresolved marker into the SEA binary. Requires vendor-pm.mjs to
-// have already run (prepublishOnly already sequences it first for this reason).
-const distAgentsDir = join(root, 'dist', 'agents');
-const agents = collectFiles(distAgentsDir, 'dist/agents', 'dist/agents');
+// Sourced straight from the submodule, same as agentSchemas below -- no dist/agents
+// copy step required. (Used to read from dist/agents so scripts/vendor-pm.mjs could
+// inline a `<!-- GRAPH-SEMANTICS -->` marker into each agent file first; apra-pm
+// PR#29 replaced that marker with an explicit prose pointer to
+// vendor/apra-pm/agents/_shared/GRAPH-SEMANTICS.md in every agent file, so there is
+// nothing left for vendor-pm.mjs to resolve here.)
+const agentsDir = join(root, 'vendor', 'apra-pm', 'agents');
+const agents = collectFiles(agentsDir, 'vendor/apra-pm/agents', 'vendor/apra-pm/agents');
 
 if (Object.keys(skills).length === 0) {
   console.error('Error: vendor/apra-pm submodule is not initialized (skills/pm is empty).');
@@ -103,8 +103,8 @@ if (Object.keys(skills).length === 0) {
   process.exit(1);
 }
 if (Object.keys(agents).length === 0) {
-  console.error('Error: dist/agents is empty or missing.');
-  console.error('Run: node scripts/vendor-pm.mjs (must run before gen-sea-config.mjs)');
+  console.error('Error: vendor/apra-pm submodule is not initialized (agents is empty).');
+  console.error('Run: git submodule update --init');
   process.exit(1);
 }
 
