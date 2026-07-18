@@ -11,7 +11,8 @@
     ".": "./src/workflow/index.mjs",
     "./engine": "./src/workflow/engine.mjs",
     "./viewer": "./src/viewer/index.mjs",
-    "./viewer/html-utils": "./src/viewer/html-utils.mjs"
+    "./viewer/html-utils": "./src/viewer/html-utils.mjs",
+    "./viewer/sprint-state-paths": "./src/viewer/sprint-state-paths.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
