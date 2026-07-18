@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import { createHash } from 'crypto';
-import { AgentOutputError, AgentDispatchError, CommandError } from '@apralabs/apra-fleet-workflow';
+import { AgentOutputError, AgentDispatchError, CommandError, WorkflowError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
 import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
@@ -1090,6 +1090,35 @@ export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysi
 }
 
 // ---------------------------------------------------------------------------
+// Typed sprint-abort detection (apra-fleet-eft.1.2)
+// ---------------------------------------------------------------------------
+//
+// The single predicate that decides whether an error thrown out of
+// runSprintCycle() (renamed from main() below) is a "sprint-abort" the
+// caller should route through finalizeAbort() + a terminal history record,
+// as opposed to a genuinely unexpected/untyped failure that must keep
+// today's behavior (grace window, exit 1, no PR, no history-record write).
+// Covers:
+//   - every WorkflowError subclass this runner throws itself
+//     (StalledSprintError, SprintPlanRejectedError,
+//     ReviewerContractViolationError -- errors.mjs) or that the workflow
+//     package throws on its behalf (BudgetExceededError);
+//   - the plain `Error` pre-sprint validation failures thrown above (they
+//     predate errors.mjs and are not WorkflowError subclasses, but the
+//     plan explicitly scopes them as sprint-abort paths too) -- identified
+//     by their stable 'Pre-sprint validation failed:' message prefix, the
+//     same string every one of those throw sites already uses.
+// Deliberately excludes CancelledError: a cooperative /stop-triggered
+// cancellation is a normal, requested shutdown, not an aborted sprint, and
+// must keep flowing through its own existing 'cancelled' status path
+// untouched.
+export function isTypedAbortError(err) {
+    if (!err || err instanceof CancelledError) return false;
+    if (err instanceof WorkflowError) return true;
+    return typeof err.message === 'string' && err.message.startsWith('Pre-sprint validation failed:');
+}
+
+// ---------------------------------------------------------------------------
 // Abort-path PR publish (apra-fleet-eft.1 / eft.1.1)
 // ---------------------------------------------------------------------------
 //
@@ -1218,7 +1247,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
 // parallel, log, phase, group, endGroup, publishState, args) is the exact
 // same binding the old bare-global version referred to; no control-flow or
 // dispatch-order changes.
-export async function main(context) {
+async function runSprintCycle(context) {
     const { agent, command, parallel, log, phase, group, endGroup, publishState, args, budget } = context;
 
     // Validate BEFORE any agent()/command() dispatch (apra-fleet-unw.14,
@@ -2871,4 +2900,84 @@ export async function main(context) {
         goal: validated.goal,
         maxCycles: validated.maxCycles,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Engine entry point + typed-abort routing (apra-fleet-eft.1.2)
+// ---------------------------------------------------------------------------
+//
+// `main()` is the WorkflowEngine entry point (see the "Mechanical migration"
+// comment above runSprintCycle()): it simply runs the sprint and, on a typed
+// sprint-abort error (isTypedAbortError() -- StalledSprintError,
+// SprintPlanRejectedError, ReviewerContractViolationError,
+// BudgetExceededError, or a pre-sprint validation Error), routes it through
+// finalizeAbort() (push + idempotent [ABORTED] PR iff the branch carries
+// real work beyond base) and always writes a terminal history record before
+// re-throwing. Re-throwing (rather than swallowing) is deliberate: it keeps
+// bin/cli.mjs's existing top-level catch -- console.error, exit code 1, and
+// the dashboard grace window -- completely unchanged; this function only
+// adds work that happens BEFORE the error reaches that catch, it does not
+// change how the error is ultimately handled there.
+//
+// A genuinely unexpected/untyped error (isTypedAbortError() === false, e.g.
+// CancelledError from a cooperative /stop, or any error this runner did not
+// anticipate) is re-thrown immediately with no finalizeAbort()/history-record
+// side effects, preserving today's behavior for that case exactly.
+//
+// branch/baseBranch/member are re-derived here (rather than threaded out of
+// runSprintCycle(), which may throw before or after computing `validated`)
+// by calling the same pure, side-effect-free validateArgs() the sprint
+// itself already validated its args with. Some typed-abort paths (a
+// pre-sprint validation Error on e.g. an invalid branch name) mean that
+// re-validation ALSO throws -- in that case there is no usable branch to
+// push or inspect, so finalizeAbort() is skipped entirely and the terminal
+// history record is written with a null branch/baseBranch and no PR lookup;
+// this is still a "zero-commit-abort"-shaped outcome (prUrl null), just one
+// that never had a resolvable branch to count commits on in the first
+// place.
+export async function main(context) {
+    const { command, log = () => {}, publishState } = context;
+    try {
+        return await runSprintCycle(context);
+    } catch (err) {
+        if (!isTypedAbortError(err)) {
+            throw err;
+        }
+
+        let branch = null;
+        let baseBranch = null;
+        let abortResult = { prUrl: null, reason: 'unresolvable-branch', pushed: false, commitCount: 0 };
+        try {
+            const validated = validateArgs(context.args);
+            branch = validated.branch;
+            baseBranch = validated.baseBranch;
+            const member = (validated.roleMap && validated.roleMap[ROLE_ORCHESTRATOR] && validated.roleMap[ROLE_ORCHESTRATOR].length > 0)
+                ? validated.roleMap[ROLE_ORCHESTRATOR][0]
+                : validated.members[0];
+            abortResult = await finalizeAbort({ error: err, branch, baseBranch, member, command, log });
+        } catch (resolveErr) {
+            log(
+                `[Terminal History] Could not resolve a branch/member to run finalizeAbort() for this abort ` +
+                `(${resolveErr.message}); writing the terminal history record with no PR lookup.`
+            );
+        }
+
+        // Always write a terminal history record, even for a zero-commit or
+        // unresolvable-branch abort (only the PR itself is conditional on
+        // there being real work to publish).
+        if (typeof publishState === 'function') {
+            publishState('terminal', {
+                verdict: 'ABORTED',
+                terminalReason: (err && (err.code || err.name)) || 'UNKNOWN_ABORT',
+                message: (err && err.message) || null,
+                branch,
+                baseBranch,
+                prUrl: abortResult.prUrl,
+                pushed: abortResult.pushed,
+                commitCount: abortResult.commitCount,
+            });
+        }
+
+        throw err;
+    }
 }
