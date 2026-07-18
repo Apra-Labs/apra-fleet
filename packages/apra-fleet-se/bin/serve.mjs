@@ -19,6 +19,9 @@
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT } from '../src/supervisor/server.mjs';
+import { createLedger } from '../src/supervisor/ledger.mjs';
+import { createHistory } from '../src/supervisor/history.mjs';
+import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -64,7 +67,17 @@ export async function serveMain(argv = process.argv.slice(2)) {
         }
     }
 
-    const supervisor = createSupervisor({ port });
+    // The durable reservation ledger (eft.5.1) and its terminal-event history
+    // (eft.5.4) are the restart-surviving source of truth. Wire them as real
+    // collaborators so a restarted supervisor reconciles against on-disk state.
+    const ledger = createLedger();
+    const history = createHistory();
+    const reconciler = createReconciler({ ledger, history });
+
+    const supervisor = createSupervisor({ port, ledger });
+
+    // eft.5.4: operator force-release of a wedged reservation.
+    registerReservationRoutes(supervisor, reconciler);
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.
@@ -76,6 +89,13 @@ export async function serveMain(argv = process.argv.slice(2)) {
     process.once('SIGTERM', () => onSignal('SIGTERM'));
 
     await supervisor.start();
+
+    // Restart reconciliation (eft.5.4, pairs with eft.4.5 re-adoption): the
+    // ledger seam has now loaded from disk. Start the history log, then
+    // PID-probe every reloaded entry -- dead children release both axes and are
+    // marked aborted-by-restart; live children are retained for re-adoption.
+    await history.start();
+    await reconciler.reconcile();
 
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.

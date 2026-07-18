@@ -149,12 +149,50 @@ export function createSupervisor(deps = {}) {
         dashboard: deps.dashboard ?? makeSeamStub('dashboard'),
     };
 
-    /** @type {Map<string, Function>} keyed by `METHOD path`. */
+    /** @type {Map<string, Function>} keyed by `METHOD path` (exact paths). */
     const routes = new Map();
     const routeKey = (method, path) => `${method.toUpperCase()} ${path}`;
 
+    // Pattern routes carry `:param` segments (e.g. /api/reservations/:sprintId/
+    // force-release). They are kept separate from the exact-match Map and only
+    // consulted when an exact match misses, so existing exact routes are
+    // unaffected. Each `:name` segment matches exactly one non-empty path
+    // segment and is surfaced to the handler via ctx.params.
+    /** @type {Array<{ method: string, regex: RegExp, paramNames: string[], handler: Function }>} */
+    const patternRoutes = [];
+
+    function compilePattern(method, path) {
+        const paramNames = [];
+        const source = path.split('/').map((seg) => {
+            if (seg.startsWith(':')) {
+                paramNames.push(seg.slice(1));
+                return '([^/]+)';
+            }
+            // Escape regex metacharacters in literal segments.
+            return seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }).join('/');
+        return { method: method.toUpperCase(), regex: new RegExp(`^${source}$`), paramNames };
+    }
+
     function route(method, path, handler) {
+        if (path.includes('/:')) {
+            const { method: m, regex, paramNames } = compilePattern(method, path);
+            patternRoutes.push({ method: m, regex, paramNames, handler });
+            return;
+        }
         routes.set(routeKey(method, path), handler);
+    }
+
+    function matchPattern(method, path) {
+        for (const pr of patternRoutes) {
+            if (pr.method !== method) continue;
+            const m = pr.regex.exec(path);
+            if (!m) continue;
+            const params = {};
+            pr.paramNames.forEach((name, i) => { params[name] = decodeURIComponent(m[i + 1]); });
+            return { handler: pr.handler, params };
+        }
+        return null;
     }
 
     let server;
@@ -180,11 +218,16 @@ export function createSupervisor(deps = {}) {
 
         try {
             const handler = routes.get(routeKey(method, path));
-            if (!handler) {
+            if (handler) {
+                await handler(req, res, { url, params: {} });
+                return;
+            }
+            const matched = matchPattern(method, path);
+            if (!matched) {
                 sendJson(res, 404, { error: `no route for ${method} ${path}` });
                 return;
             }
-            await handler(req, res, { url });
+            await matched.handler(req, res, { url, params: matched.params });
         } catch (err) {
             // Isolate the failure: log it, answer 500 if we still can, and
             // keep the process alive.
