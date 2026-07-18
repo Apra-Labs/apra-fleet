@@ -47,21 +47,22 @@ const __dirname = path.dirname(__filename);
 // =============================================================================
 
 const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
-// This file (and its "20 command() sites" baseline comment above) originated
-// on auto-sprint/eft-service, which has several eft-feature-specific
-// runner.js additions (e.g. finalizeAbort()'s dispatch sites) not present on
-// feat/fleet-reorg's own runner.js history. When the three auto-sprint
-// stabilization fixes (auto-sprint-9's branch-adopt fix, auto-sprint-3's
-// bdListScoped rewrite, and the failSoft-discrimination follow-up) were
-// cherry-picked onto feat/fleet-reorg per the eft-service/reorg branch split
-// (fixes stabilize reorg, eft-service carries feature work and rebases onto
-// reorg to absorb them), the count on THIS branch came out to 18, not 21 --
-// verified by manual review that all 18 sites here are the ones the three
-// cherry-picked fixes actually touch/added, with no site silently missing
-// member_name/member_id. This baseline is intentionally branch-specific: do
-// not "fix" it back to 21 by comparing against eft-service without checking
-// why the counts differ first (see the header comment above).
-const EXPECTED_COMMAND_COUNT = 18;
+// Branch-split convention (established when the three auto-sprint
+// stabilization fixes -- auto-sprint-9's branch-adopt fix, auto-sprint-3's
+// bdListScoped rewrite, and the failSoft-discrimination follow-up -- were
+// moved to feat/fleet-reorg and this branch was rebased on top of it):
+// feat/fleet-reorg carries only those stabilization fixes and has NO
+// eft-feature-specific runner.js additions, so ITS copy of this test asserts
+// 18 command() sites. THIS branch (auto-sprint/eft-service) additionally
+// carries eft-feature work (e.g. finalizeAbort()'s two dispatch sites,
+// supervisor-skeleton additions) on top of that same base, bringing the
+// count back to 21 here -- verified by manual review that every site is
+// accounted for by either the base fixes or an eft-specific feature commit,
+// with none silently missing member_name/member_id. Do not resolve a future
+// count mismatch between the two branches by just copying one branch's
+// number into the other -- confirm which commits actually introduced the
+// delta first.
+const EXPECTED_COMMAND_COUNT = 21;
 const EXPECTED_AGENT_COUNT = 9;
 
 /**
