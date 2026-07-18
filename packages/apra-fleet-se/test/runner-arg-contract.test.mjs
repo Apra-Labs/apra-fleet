@@ -235,7 +235,19 @@ function mockCmdResult(code, stdout, stderr = '') {
     };
 }
 
-function buildSpyFleetApi() {
+// apra-fleet-eft.6.7: `allBeadsJson`/`readyJson`/`backlogJson` let a caller
+// substitute the canned `bd list --all --limit 0 --json` / `--ready` /
+// backlog-fetch responses (default: the existing single-level bd-1 ->
+// bd-1-child fixture every other test in this suite already relies on),
+// so a test can exercise a deeper hierarchy (e.g. a 3-level
+// epic->feature->task tree) without duplicating the whole spy.
+function buildSpyFleetApi(overrides = {}) {
+    const {
+        allBeadsJson = '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]',
+        readyJson = '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]',
+        backlogJson = null,
+    } = overrides;
+
     const calls = { executeCommand: 0, executePrompt: 0 };
     const commandLog = [];
     const promptLog = [];
@@ -264,7 +276,7 @@ function buildSpyFleetApi() {
             // every test in this suite), not 'bd-1' itself, or it falls
             // outside scope and every downstream call sees nothing.
             if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
-                return mockCmdResult(0, '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]');
+                return mockCmdResult(0, allBeadsJson);
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // The first TWO ready-list calls return one bead so the
@@ -280,7 +292,26 @@ function buildSpyFleetApi() {
                 // real check and hard-fails as if there were no work at all.
                 const readyCallsSoFar = commandLog.filter((c) => /^bd list .*--ready/.test(c)).length;
                 const alreadyReturnedReady = readyCallsSoFar > 2;
-                return mockCmdResult(0, alreadyReturnedReady ? '[]' : '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]');
+                return mockCmdResult(0, alreadyReturnedReady ? '[]' : readyJson);
+            }
+            // bdListScoped(rest)'s plain, non-empty-but-non---ready/--status
+            // filterLabel branch (e.g. updateDashboard()'s
+            // `bdListScoped('--json')` for sprintTasks): rest is truthy
+            // ('--json'), so bdListScoped skips its cheap in-memory-only
+            // path and issues a second project-wide `bd list --json --limit
+            // 0` query, then intersects it with the structurally-discovered
+            // scope. Mirror the same open-bead set as allBeadsJson so that
+            // intersection is non-empty, same as a real `bd` would return.
+            if (/^bd list --json --limit 0$/.test(opts.command)) {
+                return mockCmdResult(0, allBeadsJson);
+            }
+            // updateDashboard()'s backlog panel fetch: project-wide,
+            // status-only, no --parent scoping (see BACKLOG_STATUSES in
+            // runner.js). Only intercepted when a test supplies backlogJson;
+            // otherwise it falls through to the generic '[]' handler below,
+            // same as every other `bd list` call.
+            if (backlogJson !== null && /^bd list --status="open,deferred,blocked" --json$/.test(opts.command)) {
+                return mockCmdResult(0, backlogJson);
             }
             if (/^bd list /.test(opts.command)) {
                 return mockCmdResult(0, '[]');
@@ -528,5 +559,66 @@ describe('runner.js mock-level execution', () => {
             spy.promptLog.every((p) => p.agent !== 'orchestrator'),
             'orchestrator must never be dispatched as an agent (it is not a member of contracts.ROLES)'
         );
+    });
+
+    // -------------------------------------------------------------------
+    // apra-fleet-eft.6.7: bdListScoped()'s BFS (auto-sprint-3) must recurse
+    // through every level of the sprint's target tree, not just one -- and
+    // updateDashboard()'s sprintTasks/backlogTasks split (built on top of
+    // bdListScoped) must reflect that: a leaf TASK two levels below the
+    // sprint's epic (epic -> feature -> task) belongs under Sprint, never
+    // Backlog, even though the dashboard's separate backlog fetch is
+    // project-wide and would otherwise see it too.
+    // -------------------------------------------------------------------
+
+    test('a grandchild task two levels below the sprint epic renders under Sprint (sprintTasks), never Backlog', async () => {
+        const spy = buildSpyFleetApi({
+            // bd-1 is the sprint's target epic (never itself returned by
+            // `bd list --all`'s BFS -- see the comment above); feat-1 is its
+            // direct feature child; task-1 is feat-1's own task child, i.e.
+            // a grandchild of bd-1 -- exactly the depth a single-level
+            // `bd list --parent` cannot see.
+            allBeadsJson: JSON.stringify([
+                { id: 'feat-1', parent: 'bd-1', status: 'open', title: 'Feature' },
+                { id: 'task-1', parent: 'feat-1', status: 'open', title: 'Task' },
+            ]),
+            readyJson: JSON.stringify([
+                { id: 'task-1', parent: 'feat-1', status: 'open', title: 'Task' },
+            ]),
+            // The dashboard's backlog fetch has no --parent scoping, so a
+            // real bd would return task-1 here too -- return it alongside a
+            // genuinely unrelated backlog bead so the assertion below
+            // actually exercises updateDashboard()'s sprintIds subtraction,
+            // not just an absence in the canned data.
+            backlogJson: JSON.stringify([
+                { id: 'task-1', parent: 'feat-1', status: 'open', title: 'Task' },
+                { id: 'unrelated-1', status: 'open', title: 'Unrelated backlog item' },
+            ]),
+        });
+        const workflow = new FleetWorkflow(spy);
+        const publishedStates = [];
+        workflow.on('state', (evt) => publishedStates.push(evt));
+        const engine = new WorkflowEngine(workflow);
+
+        const result = await engine.executeFile(RUNNER_SCRIPT_PATH, {
+            target_issue: 'bd-1',
+            members: ['local'],
+            branch: 'auto-sprint/dashboard-grandchild-test',
+            base_branch: 'main',
+            max_cycles: 1,
+        }, true);
+
+        assert.strictEqual(result.status, 'success');
+
+        const beadsStates = publishedStates.filter((e) => e.namespace === 'beads');
+        assert.ok(beadsStates.length > 0, 'expected at least one publishState("beads", ...) call');
+        const lastBeads = beadsStates[beadsStates.length - 1];
+
+        const sprintIds = lastBeads.data.sprintTasks.map((t) => t.id);
+        const backlogIds = lastBeads.data.backlogTasks.map((t) => t.id);
+
+        assert.ok(sprintIds.includes('task-1'), `expected grandchild task-1 in sprintTasks, got: ${JSON.stringify(sprintIds)}`);
+        assert.ok(!backlogIds.includes('task-1'), `expected grandchild task-1 NOT in backlogTasks, got: ${JSON.stringify(backlogIds)}`);
+        assert.ok(backlogIds.includes('unrelated-1'), 'expected an unrelated backlog bead to remain classified as backlog');
     });
 });
