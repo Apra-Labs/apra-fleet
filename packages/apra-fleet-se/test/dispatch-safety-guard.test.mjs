@@ -47,10 +47,21 @@ const __dirname = path.dirname(__filename);
 // =============================================================================
 
 const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
-// auto-sprint-9: bumped 20 -> 21 for the new failSoft `git fetch origin
-// <branch>` call site added to the Ensure Sprint Branch phase (verified it
-// passes member_name, same loop/pattern as the existing fetch/checkout calls).
-const EXPECTED_COMMAND_COUNT = 21;
+// This file (and its "20 command() sites" baseline comment above) originated
+// on auto-sprint/eft-service, which has several eft-feature-specific
+// runner.js additions (e.g. finalizeAbort()'s dispatch sites) not present on
+// feat/fleet-reorg's own runner.js history. When the three auto-sprint
+// stabilization fixes (auto-sprint-9's branch-adopt fix, auto-sprint-3's
+// bdListScoped rewrite, and the failSoft-discrimination follow-up) were
+// cherry-picked onto feat/fleet-reorg per the eft-service/reorg branch split
+// (fixes stabilize reorg, eft-service carries feature work and rebases onto
+// reorg to absorb them), the count on THIS branch came out to 18, not 21 --
+// verified by manual review that all 18 sites here are the ones the three
+// cherry-picked fixes actually touch/added, with no site silently missing
+// member_name/member_id. This baseline is intentionally branch-specific: do
+// not "fix" it back to 21 by comparing against eft-service without checking
+// why the counts differ first (see the header comment above).
+const EXPECTED_COMMAND_COUNT = 18;
 const EXPECTED_AGENT_COUNT = 9;
 
 /**
