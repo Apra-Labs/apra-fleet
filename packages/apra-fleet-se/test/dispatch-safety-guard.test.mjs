@@ -55,15 +55,49 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // eft-feature-specific runner.js additions, so ITS copy of this test asserts
 // 18 command() sites. THIS branch (auto-sprint/eft-service) additionally
 // carries eft-feature work (e.g. finalizeAbort()'s two dispatch sites,
-// supervisor-skeleton additions) on top of that same base, bringing the
-// count back to 21 here -- verified by manual review that every site is
-// accounted for by either the base fixes or an eft-specific feature commit,
-// with none silently missing member_name/member_id. Do not resolve a future
-// count mismatch between the two branches by just copying one branch's
-// number into the other -- confirm which commits actually introduced the
-// delta first.
-const EXPECTED_COMMAND_COUNT = 21;
+// supervisor-skeleton additions) on top of that same base. Do not resolve a
+// future count mismatch between the two branches by just copying one
+// branch's number into the other -- confirm which commits actually
+// introduced the delta first.
+//
+// Bumped 21 -> 22 (2026-07-18): commit 6d348f1a (apra-fleet-eft.8.1,
+// syncMemberBefore/syncMemberAfter G-pull/G-push helpers) added exactly one
+// new real command() call site (the injected `command(cmd, { member_name:
+// member, ... })` inside runGitStep()), verified compliant. That commit's
+// two `throw new Error("... requires an injected command() in opts")`
+// lines are NOT call sites -- they were a false-positive in this test's own
+// parser (the literal text "command()" inside a plain string), fixed here
+// via isInsideSameLineString().
+const EXPECTED_COMMAND_COUNT = 22;
 const EXPECTED_AGENT_COUNT = 9;
+
+/**
+ * Returns true if `col` (0-based index into `lineText`) sits inside an open
+ * `"..."` or `'...'` string that started earlier on the SAME line -- i.e. an
+ * odd number of unescaped quote characters of the currently-open type
+ * precede it. Deliberately scoped to a single line (not a whole-file quote
+ * scan): a whole-file scan misfires on stray apostrophes in prose comments
+ * (e.g. "doesn't", "it's"), which would otherwise be misread as opening a
+ * string and swallow everything up to the next quote -- including real
+ * command()/agent() call sites many lines later. Backticks are deliberately
+ * NOT tracked here: template literals legitimately span multiple lines (git
+ * command strings) and are not a source of the false positive this guards
+ * against (a real call site's own leading backtick is never itself inside a
+ * string).
+ */
+function isInsideSameLineString(lineText, col) {
+    let quote = null;
+    for (let i = 0; i < col; i++) {
+        const ch = lineText[i];
+        if (ch === '\\') { i++; continue; }
+        if (quote) {
+            if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'") {
+            quote = ch;
+        }
+    }
+    return quote !== null;
+}
 
 /**
  * Scans `src` for `command(`/`agent(` call sites, skipping call-site tokens
@@ -107,6 +141,12 @@ function findCallSites(src) {
         const openParenIdx = m.index + m[0].length - 1; // index of the '(' itself
         const line = lineNumberForIndex(m.index);
         if (isCommentLine(line)) continue;
+        // Reject matches where the literal text "command(" / "agent(" sits
+        // inside a same-line quoted string (e.g. a `throw new Error("...
+        // command() ...")` message) -- not a real dispatch call site.
+        const lineText = lines[line - 1] || '';
+        const col = m.index - lineStarts[line - 1];
+        if (isInsideSameLineString(lineText, col)) continue;
         const callText = extractBalancedCall(src, openParenIdx);
         sites.push({ fnName, line, callText });
     }
