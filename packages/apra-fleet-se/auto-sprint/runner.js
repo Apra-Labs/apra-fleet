@@ -1158,30 +1158,93 @@ export async function main(context) {
 
     // apra-fleet-xbu.C1: `bd list --parent` accepts exactly one id per
     // invocation -- a comma-joined multi-target list (`--parent a,b`) is
-    // silently treated as one nonexistent id and returns `[]`, which used
-    // to be masked because this sprint only ever had one target issue in
-    // practice. This helper is the general fix: for a single target it
-    // behaves identically to the old string-interpolated call; for multiple
-    // targets it issues one `bd list --parent <id> <restArgs>` per target
-    // and unions the results by `id` (a bead cannot have more than one
-    // parent, so no id can appear under two different targets).
+    // silently treated as one nonexistent id and returns `[]`.
+    //
+    // auto-sprint-3: `bd list --parent <id>` is ALSO single-level only -- it
+    // returns direct children, never grandchildren. The old implementation
+    // (one `bd list --parent <target> <restArgs>` per target issue) could
+    // therefore never see a level-3+ descendant (a feature's own task/test
+    // children), which fed straight into readyLeafBeads()'s actual dispatch
+    // scope, not just the dashboard tree -- confirmed empirically:
+    // `bd list --parent <epic>` returns only the epic's direct
+    // feature/bug children, never their own task/test children.
+    //
+    // Fix: pull the full project bead list ONCE per call (`--all` because
+    // `bd list` excludes closed issues by default, which would silently drop
+    // a closed node's parent link and orphan its whole subtree from
+    // discovery -- e.g. a closed feature with still-open children; `--limit
+    // 0` because the default 50-row cap could silently truncate a
+    // larger-than-50-bead scope), build a parent->children map locally, then
+    // BFS from every target issue in memory to find every descendant at any
+    // depth, regardless of status. This also naturally subsumes the
+    // multi-target union case (the BFS frontier simply starts with all
+    // target issues) without a separate code path.
+    //
+    // Trade-off: this fetches the whole project's beads on every call
+    // (373 beads project-wide as of 2026-07-18) rather than just this
+    // scope's ~13-60 beads. Correctness for a P1 dispatch-scope bug was
+    // judged worth the extra payload.
+    //
+    // `fetchAllBeadsShared` coalesces concurrent callers onto a single
+    // in-flight request instead of letting each fire its own `bd list --all`
+    // (the command text is always identical, so N concurrent callers would
+    // otherwise issue N indistinguishable commands -- harmless against a
+    // real `bd` CLI, but the bd-replay test shim matches recorded responses
+    // FIFO per exact command string, and concurrent callers' real
+    // completion order during recording is timing-dependent, not the same
+    // as replay's queue order. Coalescing means only one command is ever
+    // actually issued for a given overlapping window, so there is nothing
+    // for the replay queue to misorder.
+    let allBeadsInFlight = null;
+    async function fetchAllBeadsShared() {
+        if (!allBeadsInFlight) {
+            const allLabel = 'bd list --all --limit 0 --json';
+            allBeadsInFlight = command(allLabel, { member_name: orchestratorMember, silent: true })
+                .then((raw) => parseBdJson(raw, allLabel))
+                .finally(() => { allBeadsInFlight = null; });
+        }
+        return allBeadsInFlight;
+    }
+
     async function bdListScoped(restArgs) {
         const rest = restArgs ? restArgs.trim() : '';
-        if (targetIssues.length <= 1) {
-            const filter = targetIssues.length === 1 ? `--parent ${targetIssues[0]}` : '';
-            const label = [`bd list`, filter, rest].filter(Boolean).join(' ');
-            const raw = await command(label, { member_name: orchestratorMember, silent: true });
-            return parseBdJson(raw, label);
-        }
-        const merged = new Map();
-        for (const id of targetIssues) {
-            const label = [`bd list`, `--parent ${id}`, rest].filter(Boolean).join(' ');
-            const raw = await command(label, { member_name: orchestratorMember, silent: true });
-            for (const item of parseBdJson(raw, label)) {
-                if (item && item.id !== undefined) merged.set(item.id, item);
+
+        const allBeads = await fetchAllBeadsShared();
+
+        const childrenOf = new Map();
+        for (const b of allBeads) {
+            if (b && b.parent !== undefined && b.parent !== null && b.parent !== '') {
+                if (!childrenOf.has(b.parent)) childrenOf.set(b.parent, []);
+                childrenOf.get(b.parent).push(b);
             }
         }
-        return [...merged.values()];
+
+        const scopeIds = new Set();
+        const frontier = [...targetIssues];
+        while (frontier.length > 0) {
+            const id = frontier.shift();
+            for (const child of (childrenOf.get(id) || [])) {
+                if (!scopeIds.has(child.id)) {
+                    scopeIds.add(child.id);
+                    frontier.push(child.id);
+                }
+            }
+        }
+
+        if (scopeIds.size === 0) return [];
+
+        if (!rest) {
+            return allBeads.filter((b) => b && scopeIds.has(b.id));
+        }
+
+        // The caller's filter flags (--ready/--status/--type/--priority-max/
+        // etc) express bd-side computed properties -- readiness in
+        // particular -- that a plain in-memory filter over `allBeads` cannot
+        // reliably replicate. Issue a second project-wide query with those
+        // flags, then intersect with the structurally-discovered scope.
+        const filterLabel = `bd list ${rest} --limit 0`;
+        const filterRaw = await command(filterLabel, { member_name: orchestratorMember, silent: true });
+        return parseBdJson(filterRaw, filterLabel).filter((b) => b && scopeIds.has(b.id));
     }
 
     // apra-fleet-xbu.C5: a bead that has been decomposed into subtasks

@@ -255,8 +255,16 @@ function buildSpyFleetApi() {
             commandLog.push(opts.command);
             dispatchLog.push({ command: opts.command, member_name: opts.member_name });
 
-            if (/^(git|gh)\s/.test(opts.command)) {
-                return mockCmdResult(0, 'ok');
+            // auto-sprint-3: bdListScoped now issues a project-wide
+            // `bd list --all --limit 0 --json` first and computes scope via
+            // an in-memory parent/child BFS from targetIssues -- it never
+            // includes a target issue itself, only its descendants (same
+            // semantics `bd list --parent <target>` always had). So this
+            // canned bead must be a CHILD of 'bd-1' (the target used by
+            // every test in this suite), not 'bd-1' itself, or it falls
+            // outside scope and every downstream call sees nothing.
+            if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
+                return mockCmdResult(0, '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]');
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // The first TWO ready-list calls return one bead so the
@@ -272,7 +280,7 @@ function buildSpyFleetApi() {
                 // real check and hard-fails as if there were no work at all.
                 const readyCallsSoFar = commandLog.filter((c) => /^bd list .*--ready/.test(c)).length;
                 const alreadyReturnedReady = readyCallsSoFar > 2;
-                return mockCmdResult(0, alreadyReturnedReady ? '[]' : '[{"id":"bd-1","title":"Task"}]');
+                return mockCmdResult(0, alreadyReturnedReady ? '[]' : '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]');
             }
             if (/^bd list /.test(opts.command)) {
                 return mockCmdResult(0, '[]');
