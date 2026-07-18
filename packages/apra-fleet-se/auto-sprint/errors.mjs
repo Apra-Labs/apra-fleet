@@ -124,3 +124,76 @@ export class ReviewerContractViolationError extends WorkflowError {
         this.notes = notes;
     }
 }
+
+/**
+ * apra-fleet-eft.8.1 (Plan Part 3.1/3.3, risk 2) -- thrown when an
+ * orchestrator-bracketed git sync (G-pull / G-push) discovers that a member
+ * has DIVERGED from the shared sprint branch: a `git merge --ff-only` that
+ * could not fast-forward, an unmerged/conflicted `git pull --rebase`, or a
+ * `git push` still rejected as non-fast-forward AFTER the single bounded
+ * pull-rebase retry.
+ *
+ * Divergence is the hard, non-retryable failure class in the single-writer
+ * token-passing model: because the writer pushes and the next reader pulls,
+ * every intra-sprint merge is fast-forward BY CONSTRUCTION, so a non-FF state
+ * means the invariant is already broken. It MUST NEVER be auto-resolved or
+ * retried blindly -- the whole point of a distinct typed error (vs a generic
+ * CommandError) is that the classifier can tell "diverged -> abort" apart from
+ * "transient -> retry" and route the two differently.
+ *
+ * @property {string|null} member - the member whose checkout diverged
+ * @property {string|null} gitOutput - the raw git stderr/stdout that proved divergence
+ * @property {string|null} operation - which bracket step diverged
+ *   ('pull' | 'push' | 'push-rebase')
+ */
+export class GitDivergedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, gitOutput?: string|null, operation?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, gitOutput = null, operation = null, details, cause } = opts;
+        super(message, {
+            code: 'GIT_DIVERGED',
+            details: { member, gitOutput, operation, ...details },
+            cause,
+        });
+        this.member = member;
+        this.gitOutput = gitOutput;
+        this.operation = operation;
+    }
+}
+
+/**
+ * apra-fleet-eft.8.1 -- thrown when an orchestrator-bracketed git sync
+ * (G-pull / G-push) fails for a reason that is NOT divergence and that
+ * SURVIVED the bounded transient-retry budget: a transient class failure
+ * (network unreachable, an index/ref lock) that kept failing after its
+ * allowed retries, or an unclassifiable git failure that must not be retried
+ * blindly.
+ *
+ * This is the counterpart to {@link GitDivergedError}: both extend
+ * WorkflowError and both carry the member and raw git output, but they are
+ * deliberately distinct types so a caller/test can assert the two failure
+ * classifications (transient-retry-exhausted vs diverged-abort) SEPARATELY,
+ * which is the crux of risk 2 in the plan.
+ *
+ * @property {string|null} member - the member whose sync failed
+ * @property {string|null} gitOutput - the raw git stderr/stdout of the failure
+ */
+export class GitSyncError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, gitOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, gitOutput = null, details, cause } = opts;
+        super(message, {
+            code: 'GIT_SYNC_FAILED',
+            details: { member, gitOutput, ...details },
+            cause,
+        });
+        this.member = member;
+        this.gitOutput = gitOutput;
+    }
+}

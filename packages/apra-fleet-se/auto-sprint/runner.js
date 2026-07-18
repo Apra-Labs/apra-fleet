@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop (apra-fleet-unw.16)
@@ -361,6 +361,244 @@ export async function checkMemberTopology({ members, getIdentity }) {
         identities,
         message: `[Topology] All ${members.length} configured members share the same identity signal (${distinct[0]}) -- shared-state precondition satisfied.`,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator-bracketed git sync helpers (apra-fleet-eft.8.1, Plan 3.1/3.3)
+// ---------------------------------------------------------------------------
+//
+// Stance: SINGLE-WRITER TOKEN PASSING. The writer pushes, then the next reader
+// pulls, so every intra-sprint git merge is fast-forward BY CONSTRUCTION. A
+// non-FF result is therefore not a merge to resolve -- it is proof the
+// invariant is already broken, so it is a HARD, TYPED error
+// (GitDivergedError), never auto-resolved.
+//
+// risk 2 in the plan: every bracket must fail-soft-with-retry in a way that
+// DISTINGUISHES transient-retry (network unreachable, an index/ref lock) from
+// diverged-abort (non-FF, unmerged/conflicted paths). A diverged state must
+// NEVER be retried blindly. classifyGitFailure() below is that classifier; the
+// two failure classes surface as two distinct WorkflowError subclasses
+// (GitSyncError vs GitDivergedError) so callers/tests can assert them apart.
+//
+// (3.2) Every git command is issued via the injected command() with an
+// explicit `member_name` -- agents never run sync themselves; the
+// orchestrator brackets each dispatch. `command` is dependency-injected (like
+// finalizeAbort) so unit tests can drive these helpers with a mock command()
+// and no live fleet.
+
+// Substrings that mark a git failure as a DIVERGENCE (non-FF / unmerged /
+// conflict). Never retried -- see the single-writer stance above.
+const GIT_DIVERGED_PATTERNS = [
+    /not possible to fast-forward/i,
+    /non-fast-forward/i,
+    /fast-forwards? are not allowed/i,
+    /\[rejected\]/i,
+    /failed to push some refs/i,
+    /updates were rejected/i,
+    /unmerged/i,
+    /needs merge/i,
+    /would be overwritten/i,
+    /^conflict/im,
+    /automatic merge failed/i,
+    /have diverged/i,
+];
+
+// Substrings that mark a git failure as TRANSIENT (network / lock) -- safe to
+// retry a bounded number of times.
+const GIT_TRANSIENT_PATTERNS = [
+    /could not resolve host/i,
+    /unable to access/i,
+    /connection (timed out|reset|refused)/i,
+    /operation timed out/i,
+    /\btimed out\b/i,
+    /\btimeout\b/i,
+    /temporary failure/i,
+    /early eof/i,
+    /rpc failed/i,
+    /the remote end hung up/i,
+    /index\.lock/i,
+    /unable to create '.*lock'/i,
+    /cannot lock ref/i,
+    /ssh_exchange_identification/i,
+];
+
+/**
+ * Classify a failed git command's output into the two failure classes the
+ * sync brackets must route differently (plan risk 2). Divergence is checked
+ * FIRST: a non-FF/unmerged state must never be misread as transient and
+ * retried blindly, even if its message happens to also contain a lock/network
+ * word.
+ *
+ * @param {string} output - the raw git stderr/stdout of the failed command
+ * @returns {'diverged'|'transient'|'unknown'}
+ */
+export function classifyGitFailure(output) {
+    const text = String(output == null ? '' : output);
+    for (const re of GIT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
+    for (const re of GIT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
+    return 'unknown';
+}
+
+/**
+ * Run a single git command via the injected command() with failSoft, retrying
+ * ONLY transient failures up to `maxTransientRetries` times. A diverged (or
+ * unknown) failure is returned immediately, never retried.
+ *
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'transient'|'unknown' }>}
+ */
+async function runGitStep({ command, member, cmd, label, log, maxTransientRetries }) {
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
+        if (res && res.ok) return res;
+        const error = res ? res.error : 'unknown command failure';
+        const kind = classifyGitFailure(error);
+        if (kind === 'transient' && attempt < maxTransientRetries) {
+            attempt += 1;
+            log(`[Sync] transient git failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
+            continue;
+        }
+        return { ok: false, output: res ? res.output : '', error, kind };
+    }
+}
+
+/**
+ * G-pull (Plan 3.1): bring `member` up to the shared branch tip before it does
+ * any work -- `git fetch` then `git merge --ff-only`. Because of single-writer
+ * token passing this merge is fast-forward by construction; a non-FF result is
+ * a distinct typed GitDivergedError (NOT a generic failure), never
+ * auto-merged. Transient (network/lock) failures are retried up to
+ * `maxTransientRetries`; divergence is never retried.
+ *
+ * Every git command is issued via the injected command() with an explicit
+ * member_name (3.2).
+ *
+ * @param {string} member
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string }} opts
+ * @returns {Promise<{ ok: true, member: string }>}
+ */
+export async function syncMemberBefore(member, opts = {}) {
+    const { command, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch } = opts;
+    if (typeof command !== 'function') {
+        throw new Error("syncMemberBefore requires an injected command() in opts");
+    }
+
+    const fetchCmd = branch ? `git fetch ${remote} ${branch}` : `git fetch ${remote}`;
+    const fetch = await runGitStep({
+        command, member, cmd: fetchCmd,
+        label: `G-pull fetch for '${member}'`, log, maxTransientRetries,
+    });
+    if (!fetch.ok) {
+        // A fetch cannot "diverge" -- any failure here is transient-exhausted
+        // or unknown; surface it as a (non-diverged) sync error.
+        throw new GitSyncError(
+            `[Sync] G-pull fetch failed for member '${member}': ${fetch.error}`,
+            { member, gitOutput: fetch.error },
+        );
+    }
+
+    const mergeCmd = branch ? `git merge --ff-only ${remote}/${branch}` : 'git merge --ff-only';
+    const merge = await runGitStep({
+        command, member, cmd: mergeCmd,
+        label: `G-pull ff-only merge for '${member}'`, log, maxTransientRetries,
+    });
+    if (!merge.ok) {
+        if (merge.kind === 'diverged') {
+            throw new GitDivergedError(
+                `[Sync] G-pull for member '${member}' could not fast-forward -- it has DIVERGED from the shared branch and must not be auto-merged: ${merge.error}`,
+                { member, gitOutput: merge.error, operation: 'pull' },
+            );
+        }
+        throw new GitSyncError(
+            `[Sync] G-pull ff-only merge failed for member '${member}': ${merge.error}`,
+            { member, gitOutput: merge.error },
+        );
+    }
+
+    return { ok: true, member };
+}
+
+/**
+ * G-push (Plan 3.3): publish `member`'s committed work to the shared branch
+ * after a dispatch -- `git push` with ONE bounded pull-rebase retry. If the
+ * push is rejected as non-FF (another writer got there first), do a single
+ * `git pull --rebase` and re-push exactly once; if it is STILL rejected, raise
+ * a typed GitDivergedError -- the single-writer invariant is violated and the
+ * push must never be retried further/blindly. Transient (network/lock)
+ * failures are retried up to `maxTransientRetries`; divergence is never
+ * retried beyond the one bounded rebase.
+ *
+ * `pushCode: false` makes this a no-op (a read-only bracket has nothing to
+ * publish). Every git command is issued via the injected command() with an
+ * explicit member_name (3.2).
+ *
+ * @param {string} member
+ * @param {{ command: Function, pushCode?: boolean, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string }} opts
+ * @returns {Promise<{ ok: true, member: string, pushed: boolean, rebased: boolean }>}
+ */
+export async function syncMemberAfter(member, opts = {}) {
+    const { command, pushCode = true, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch } = opts;
+    if (typeof command !== 'function') {
+        throw new Error("syncMemberAfter requires an injected command() in opts");
+    }
+
+    if (!pushCode) {
+        return { ok: true, member, pushed: false, rebased: false };
+    }
+
+    const pushCmd = branch ? `git push ${remote} ${branch}` : 'git push';
+
+    let push = await runGitStep({
+        command, member, cmd: pushCmd,
+        label: `G-push for '${member}'`, log, maxTransientRetries,
+    });
+    if (push.ok) {
+        return { ok: true, member, pushed: true, rebased: false };
+    }
+
+    if (push.kind !== 'diverged') {
+        // Transient-exhausted or unknown non-FF failure -- not a divergence,
+        // so no rebase retry; surface the (non-diverged) sync error.
+        throw new GitSyncError(
+            `[Sync] G-push for member '${member}' failed: ${push.error}`,
+            { member, gitOutput: push.error },
+        );
+    }
+
+    // Non-FF push: attempt EXACTLY ONE pull --rebase then re-push.
+    log(`[Sync] G-push for member '${member}' was rejected as non-fast-forward; attempting a single pull --rebase then one re-push.`);
+    const rebaseCmd = branch ? `git pull --rebase ${remote} ${branch}` : 'git pull --rebase';
+    const rebase = await runGitStep({
+        command, member, cmd: rebaseCmd,
+        label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries,
+    });
+    if (!rebase.ok) {
+        if (rebase.kind === 'diverged') {
+            throw new GitDivergedError(
+                `[Sync] G-push pull-rebase for member '${member}' hit unmergeable divergence (conflict) -- must not be retried blindly: ${rebase.error}`,
+                { member, gitOutput: rebase.error, operation: 'push-rebase' },
+            );
+        }
+        throw new GitSyncError(
+            `[Sync] G-push pull-rebase for member '${member}' failed: ${rebase.error}`,
+            { member, gitOutput: rebase.error },
+        );
+    }
+
+    push = await runGitStep({
+        command, member, cmd: pushCmd,
+        label: `G-push re-push after rebase for '${member}'`, log, maxTransientRetries,
+    });
+    if (push.ok) {
+        return { ok: true, member, pushed: true, rebased: true };
+    }
+
+    // Still rejected after the one bounded rebase -- diverged, never retried further.
+    throw new GitDivergedError(
+        `[Sync] G-push for member '${member}' still rejected after one pull-rebase retry -- the single-writer token invariant is violated; refusing to retry further: ${push.error}`,
+        { member, gitOutput: push.error, operation: 'push' },
+    );
 }
 
 /**
