@@ -1448,6 +1448,21 @@ export async function main(context) {
                 label: `Fetch existing '${validated.branch}' (if any) on member '${member}'`,
             }
         );
+        // A failed fetch is only safe to treat as "branch doesn't exist yet"
+        // when git says exactly that (`fatal: couldn't find remote ref
+        // <branch>`, exit 128) -- any other failure (network blip, auth
+        // token expiry, DNS hiccup) must NOT silently fall back to
+        // origin/<baseBranch>, or a transient error would trigger the exact
+        // destructive reset this fix exists to prevent, with nothing logged
+        // to explain why. Abort loudly instead so the operator can retry.
+        if (!branchFetch.ok && !/couldn't find remote ref/i.test(branchFetch.error || '')) {
+            throw new Error(
+                `Ensure Sprint Branch: fetch of existing branch 'origin/${validated.branch}' on member '${member}' ` +
+                `failed for a reason other than "branch doesn't exist" (${branchFetch.error || 'unknown error'}) -- ` +
+                `refusing to silently fall back to resetting to base, since the branch may actually exist with real ` +
+                `pushed work and this fetch failure could be transient. Investigate and retry.`
+            );
+        }
         const startPoint = branchFetch.ok
             ? `origin/${validated.branch}`
             : `origin/${validated.baseBranch}`;
