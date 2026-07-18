@@ -1357,12 +1357,44 @@ export async function main(context) {
                 label: `Fetch '${validated.baseBranch}' on member '${member}'`,
             }
         );
-        await command(
-            `git checkout -B ${validated.branch} origin/${validated.baseBranch}`,
+
+        // auto-sprint-9: this phase used to ALWAYS checkout -B from
+        // origin/<baseBranch>, regardless of whether origin already had a
+        // <branch> with real, pushed sprint work on it -- silently
+        // force-resetting the branch to base's tip on every single launch
+        // (old commits survive only via reflog/dangling objects, not the
+        // ref) and, since the reset start-point was a remote-tracking ref,
+        // leaving the local branch's upstream pointed at origin/<baseBranch>
+        // instead of origin/<branch>. That's a data-loss risk on every
+        // relaunch and, on any member whose local branch predates this run
+        // (e.g. a freshly-registered member that has never worked this
+        // branch before), leaves it structurally unable to ever see the
+        // sprint's own history. Fetching <branch> itself first (failSoft --
+        // a brand-new sprint branch legitimately doesn't exist on origin
+        // yet, and that must never abort the run) and adopting it as the
+        // checkout start-point when it exists fixes both: real origin
+        // history is never discarded, and `checkout -B <branch>
+        // origin/<branch>` naturally sets up correct tracking. Falls back to
+        // origin/<baseBranch> only when the branch is genuinely new.
+        const branchFetch = await command(
+            `git fetch origin ${validated.branch} --quiet`,
             {
                 member_name: member,
                 silent: true,
-                label: `Ensure sprint branch '${validated.branch}' from '${validated.baseBranch}' on member '${member}'`,
+                failSoft: true,
+                label: `Fetch existing '${validated.branch}' (if any) on member '${member}'`,
+            }
+        );
+        const startPoint = branchFetch.ok
+            ? `origin/${validated.branch}`
+            : `origin/${validated.baseBranch}`;
+
+        await command(
+            `git checkout -B ${validated.branch} ${startPoint}`,
+            {
+                member_name: member,
+                silent: true,
+                label: `Ensure sprint branch '${validated.branch}' from '${startPoint}' on member '${member}'`,
             }
         );
     }

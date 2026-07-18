@@ -32,16 +32,25 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // apra-fleet-zzu: the fetch + checkout used to be one `a && b` shell
         // string (a single commandLog entry) -- split into two sequential
         // command() calls so this phase works on Windows PowerShell 5.1, which
-        // rejects `&&` outright. Assert the same fetch-then-checkout semantics
-        // across the now-separate first two commandLog entries instead of one
-        // combined string.
+        // rejects `&&` outright.
+        // auto-sprint-9: a THIRD command was added -- a failSoft fetch of the
+        // sprint branch itself (origin/<branch>), so real pushed sprint work
+        // is adopted instead of always being force-reset to base. The mock's
+        // git/gh interceptor succeeds for any command by default (it's a
+        // hermetic tempDir, not a real git remote -- see mock-sprint-harness.mjs),
+        // so this fetch "succeeds" here and the checkout adopts origin/<branch>
+        // as its start point, not origin/<baseBranch>.
         check(
-            run1.commandLog.length >= 4 && /^git fetch /.test(run1.commandLog[0]),
-            `Expected first commandLog entry to be the sprint-branch fetch, got: ${JSON.stringify(run1.commandLog[0])}`
+            run1.commandLog.length >= 5 && /^git fetch /.test(run1.commandLog[0]),
+            `Expected first commandLog entry to be the base-branch fetch, got: ${JSON.stringify(run1.commandLog[0])}`
         );
         check(
-            run1.commandLog[1] && run1.commandLog[1].includes('git checkout -B auto-sprint/mock-sprint'),
-            `Expected second commandLog entry to be the sprint-branch checkout, got: ${JSON.stringify(run1.commandLog[1])}`
+            run1.commandLog[1] && /^git fetch origin auto-sprint\/mock-sprint\b/.test(run1.commandLog[1]),
+            `Expected second commandLog entry to be the sprint-branch fetch, got: ${JSON.stringify(run1.commandLog[1])}`
+        );
+        check(
+            run1.commandLog[2] && run1.commandLog[2].includes('git checkout -B auto-sprint/mock-sprint'),
+            `Expected third commandLog entry to be the sprint-branch checkout, got: ${JSON.stringify(run1.commandLog[2])}`
         );
         const pushIdx = run1.commandLog.length - 2;
         const prIdx = run1.commandLog.length - 1;

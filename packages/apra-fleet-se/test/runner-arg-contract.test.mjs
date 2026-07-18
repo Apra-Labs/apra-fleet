@@ -368,8 +368,15 @@ describe('runner.js mock-level execution', () => {
         // apra-fleet-zzu: fetch + checkout are two sequential command()
         // calls (not one `a && b` shell string, which PowerShell 5.1
         // rejects) -- assert across the two now-separate entries.
+        // auto-sprint-9: a THIRD command was added -- a failSoft fetch of
+        // origin/<branch> itself, so real pushed sprint work is adopted
+        // instead of always being force-reset to base. This spy's git/gh
+        // interceptor succeeds for any command by default, so the fetch
+        // "succeeds" here and the checkout adopts origin/<branch> as its
+        // start point, not origin/<baseBranch>.
         assert.match(spy.commandLog[0], /^git fetch origin develop/);
-        assert.ok(spy.commandLog[1].includes('git checkout -B auto-sprint/reach-test origin/develop'));
+        assert.match(spy.commandLog[1], /^git fetch origin auto-sprint\/reach-test\b/);
+        assert.ok(spy.commandLog[2].includes('git checkout -B auto-sprint/reach-test origin/auto-sprint/reach-test'));
         const last2 = spy.commandLog.slice(-2);
         assert.match(last2[0], /^git push -u origin auto-sprint\/reach-test/);
         assert.match(last2[1], /^gh pr create --base "develop" --head "auto-sprint\/reach-test"/);
