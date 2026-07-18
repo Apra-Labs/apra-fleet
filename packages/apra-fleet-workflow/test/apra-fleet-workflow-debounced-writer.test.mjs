@@ -217,7 +217,12 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
 
     test('a SIGINT delivered mid-run flushes the debounced writer synchronously before process.exit (mocked)', async () => {
         await withTempCwd(async (dir) => {
-            const hang = () => new Promise((resolve, reject) => {});
+            const hang = (payload) => new Promise((resolve, reject) => {
+                const signal = payload && payload.signal;
+                if (!signal) return;
+                if (signal.aborted) { reject(new Error('aborted')); return; }
+                signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+            });
             const wf = new FleetWorkflow({ executePrompt: hang, executeCommand: hang });
             const engine = new WorkflowEngine(wf);
 
