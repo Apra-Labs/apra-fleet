@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/doer-input@2",
+  "version": 2,
+  "title": "doer input",
+  "description": "Required dispatch-context keys for the doer role, per agents/doer.md Inputs section. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
+  "type": "object",
+  "required": ["branch", "assignedBeadIds"],
+  "properties": {
+    "branch": {
+      "type": "string",
+      "description": "Sprint track branch to work on."
+    },
+    "assignedBeadIds": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "The exact bead ids the doer is to work this run, chosen by the orchestrator. This is the doer's entire work list; it never discovers work via bare 'bd ready'."
+    },
+    "modelTier": {
+      "type": "string",
+      "description": "Informational: the model tier this doer runs as (cheap/standard/premium), assigned by the orchestrator from the task's beads metadata."
+    }
+  }
+}
