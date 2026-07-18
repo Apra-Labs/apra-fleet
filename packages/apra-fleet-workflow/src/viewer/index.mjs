@@ -1,8 +1,10 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { escapeHtml } from './html-utils.mjs';
 import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS } from './debounced-writer.mjs';
+import { getRunningSprintStatePath, getOldSprintStatePath } from './sprint-state-paths.mjs';
 
 const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
 <html lang="en">
@@ -418,10 +420,46 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
 export function createDashboardViewer(workflow, opts = {}) {
     const port = (typeof opts.port === 'number') ? opts.port : 8080;
     const dashboardExtensions = opts.dashboardExtensions || [];
-    
+
+    // apra-fleet-eft.2.3: stable per-sprint id, NOT an HHMMSS-style clock
+    // key (see sprint-state-paths.mjs) -- this is what running/<id>.json /
+    // old_sprints/<id>.json are keyed by, so two sprints started in the same
+    // second on different days never collide. Callers that already know a
+    // meaningful id (e.g. the auto-sprint runner's own runId) can pass
+    // opts.sprintId; otherwise one is generated here.
+    const env = opts.env || process.env;
+    const sprintId = opts.sprintId || randomUUID();
+
+    // apra-fleet-eft.2.3: the debounced writer's target defaults to
+    // <serviceDataDir>/running/<sprintId>.json (outside the repo checkout --
+    // see getFleetDataDir()/APRA_FLEET_DATA_DIR), NOT sprint-logs/. Only when
+    // a caller passes an explicit opts.debouncedStatePath (tests, or a
+    // future caller with its own layout) do we skip the running/->
+    // old_sprints/ move-on-completion below, since we can no longer assume
+    // that path lives under a running/ directory we're allowed to rename out
+    // of.
+    const usingDefaultStatePath = !opts.debouncedStatePath;
+    const runningStatePath = opts.debouncedStatePath || getRunningSprintStatePath(sprintId, env);
+
+    const nowIso = () => new Date().toISOString();
+    const startedAtIso = nowIso();
+
     const state = {
         workflowName: opts.name || 'Apra Fleet Workflow',
         status: 'running',
+        // apra-fleet-eft.2.2: fields enriching the persisted state file
+        // beyond the terminal-only sprint-logs/ snapshot -- populated (where
+        // known) from construction, and updated as the sprint progresses so
+        // a mid-sprint read of the file shows in-progress state, not just
+        // the terminal shape.
+        sprintId,
+        args: opts.launchArgs ?? null,
+        verdict: null,
+        prUrl: null,
+        terminalReason: null,
+        startedAt: startedAtIso,
+        updatedAt: startedAtIso,
+        endedAt: null,
         stats: {
             activitiesCount: 0,
             totalTokens: 0,
@@ -448,30 +486,49 @@ export function createDashboardViewer(workflow, opts = {}) {
     const broadcast = (data) => {
         const msg = `data: ${JSON.stringify(data)}\n\n`;
         clients.forEach(c => c.write(msg));
-        // apra-fleet-eft.2.1: schedule (debounced) continuous state
-        // persistence on every event that already drives the SSE
-        // broadcast. The target path/filename here is a placeholder --
-        // apra-fleet-eft.2.3 rewires it to
-        // <serviceDataDir>/running/<sprintId>.json with a move to
-        // old_sprints/ on completion; apra-fleet-eft.2.2 enriches the
-        // persisted payload itself. This task only wires the debounced
-        // write mechanism and its flush-on-exit contract.
+        // apra-fleet-eft.2.2: every event that already drives the SSE
+        // broadcast (group:start, phase, activity:start/end, log, state)
+        // also schedules a debounced state write and bumps updatedAt, so a
+        // mid-sprint read of the persisted file reflects in-progress state
+        // rather than only the terminal snapshot.
+        state.updatedAt = nowIso();
         debouncedWriter.schedule();
     };
 
-    // apra-fleet-eft.2.1: debounced writer, additive to persistState()
+    // apra-fleet-eft.2.1/2.3: debounced writer, additive to persistState()
     // above -- that write-once-on-end path (sprint-logs/sprint_HHMMSS.json)
     // stays exactly as-is as the child crash-safety net. This one coalesces
     // bursts of rapid state changes into a single write per debounce window
     // (default DEFAULT_DEBOUNCE_MS, configurable via
-    // opts.debounceMs, must be within 200-500ms) and is flushed
-    // synchronously on every exit path below.
+    // opts.debounceMs, must be within 200-500ms), is flushed synchronously
+    // on every exit path below, and (apra-fleet-eft.2.3) targets
+    // running/<sprintId>.json under the service data directory by default --
+    // never the repo checkout.
     const debouncedWriter = new DebouncedStateWriter({
         getState: () => state,
-        filePath: opts.debouncedStatePath ||
-            path.join(process.cwd(), 'sprint-logs', '.debounced-state.json'),
+        filePath: runningStatePath,
         debounceMs: opts.debounceMs || DEFAULT_DEBOUNCE_MS
     });
+
+    // apra-fleet-eft.2.3: on terminal completion, move (not copy) the live
+    // running/<sprintId>.json to old_sprints/<sprintId>.json so "is this
+    // sprint live" is a directory-membership check, never a stale field on
+    // the state object itself. Only applies to the default path layout --
+    // see usingDefaultStatePath above.
+    function moveStateToOldSprints() {
+        if (!usingDefaultStatePath) return;
+        try {
+            if (!fs.existsSync(runningStatePath)) return;
+            const oldPath = getOldSprintStatePath(sprintId, env);
+            fs.mkdirSync(path.dirname(oldPath), { recursive: true });
+            fs.renameSync(runningStatePath, oldPath);
+        } catch (e) {
+            // Must never crash or block the sprint's own normal exit
+            // behavior -- log and move on, same contract as persistState()
+            // and the debounced writer itself.
+            console.warn(`[Viewer] Warning: failed to move sprint state to old_sprints/: ${e.message}`);
+        }
+    }
 
     // Server-side persistence of the dashboard `state` object to
     // sprint-logs/sprint_<HHMMSS>.json on every run-ending event (normal
@@ -517,16 +574,27 @@ export function createDashboardViewer(workflow, opts = {}) {
     // can't tell them apart -- hence two small wrappers instead of one
     // handler branching on an argument that would never actually arrive.
     const handleSigint = () => {
+        state.endedAt = nowIso();
+        state.terminalReason = state.terminalReason || 'SIGINT';
         persistState();
         // apra-fleet-eft.2.1: flush any coalesced-but-not-yet-written
         // debounced state synchronously before the process actually exits,
         // so at most one debounce window of progress is ever lost.
         debouncedWriter.flushSync();
+        // apra-fleet-eft.2.3: SIGINT/SIGTERM are a graceful (not hard-kill)
+        // shutdown path, so the file is still moved to old_sprints/ here --
+        // it's only an unhandled SIGKILL/OOM that leaves it behind in
+        // running/ (that gap is what apra-fleet-eft.2.4's hard-kill test
+        // covers).
+        moveStateToOldSprints();
         process.exit(130);
     };
     const handleSigterm = () => {
+        state.endedAt = nowIso();
+        state.terminalReason = state.terminalReason || 'SIGTERM';
         persistState();
         debouncedWriter.flushSync();
+        moveStateToOldSprints();
         process.exit(143);
     };
     process.on('SIGINT', handleSigint);
@@ -589,12 +657,27 @@ export function createDashboardViewer(workflow, opts = {}) {
     workflow.on('end', (res) => {
         state.status = res.status;
         state.stats.durationMs = Date.now() - state.stats.startTime;
+        // apra-fleet-eft.2.2: enrich the terminal state with whatever the
+        // workflow script's own return value (res.result, e.g. the
+        // auto-sprint runner's { verdict, notes, ... }) or thrown error
+        // surfaced -- both are best-effort/optional since not every
+        // workflow script returns a verdict/prUrl.
+        state.verdict = res.result && res.result.verdict !== undefined ? res.result.verdict : state.verdict;
+        state.prUrl = res.result && res.result.prUrl !== undefined ? res.result.prUrl : state.prUrl;
+        state.endedAt = nowIso();
+        state.terminalReason = res.error
+            ? (res.error.message || res.error.name || res.status)
+            : res.status;
         broadcast({ type: 'update' });
         persistState();
         // apra-fleet-eft.2.1: synchronous flush-on-exit -- a run ending is
         // one of the process-exit-adjacent paths this writer must never
         // lose more than one debounce window against.
         debouncedWriter.flushSync();
+        // apra-fleet-eft.2.3: terminal completion -- move running/<id>.json
+        // to old_sprints/<id>.json (directory membership, not a stale field,
+        // is what makes "is this sprint live" authoritative).
+        moveStateToOldSprints();
     });
 
     const server = http.createServer((req, res) => {
