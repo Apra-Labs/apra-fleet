@@ -110,6 +110,11 @@ export function buildOptionsSpec() {
         'role-map': { type: 'string' },
         'viewer-port': { type: 'string', default: String(DEFAULT_VIEWER_PORT) },
         budget: { type: 'string' },
+        // apra-fleet-eft.8.5: explicitly opt a multi-member run into synced
+        // topology mode (orchestrator-bracketed git sync -- same-origin +
+        // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
+        // shared-workspace mode (same-HEAD). Mode is never inferred silently.
+        sync: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -132,6 +137,10 @@ Options:
       --viewer-port <port>     Port for the local dashboard viewer. Default: 8080.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
+      --sync                   Use synced topology mode (orchestrator-bracketed git sync):
+                                members may sit on differing HEADs but must share the same
+                                origin URL and pass a 'bd dolt pull' probe. Omitted (default)
+                                uses legacy shared-workspace mode (all members on the same HEAD).
   -h, --help                   Show this help message.
 `.trim();
 
@@ -510,26 +519,35 @@ async function main() {
 
     // 4. N4 (apra-fleet-unw2.4) multi-member topology precondition.
     //
-    // The auto-sprint runner has NO cross-member bd/git sync layer this round
-    // (deferred -- see docs/plan.md section 5 and docs/architecture.md
-    // "Multi-member topology (auto-sprint)"). Every orchestrator-side `bd`
+    // LEGACY mode (default): the runner's cross-member coherence relies on
+    // every member sharing one workspace/DB -- every orchestrator-side `bd`
     // command runs against the orchestrator member's beads DB, and the sprint
-    // git branch is only coherent if every member operates on the same
-    // working state -- so a genuine multi-member fleet is supported ONLY when
-    // all members share one workspace/DB. Enforce that here, BEFORE standing
-    // up the sprint: compare `git rev-parse HEAD` across the configured
-    // members and refuse to start on a mismatch. Single-member trivially
-    // passes (checkMemberTopology short-circuits with nothing to compare).
+    // git branch is only coherent if every member operates on the same working
+    // state. Enforce that by comparing `git rev-parse HEAD` across members and
+    // refusing to start on a mismatch.
+    //
+    // SYNCED mode (apra-fleet-eft.8.5, `--sync`): with the orchestrator-
+    // bracketed git sync layer, members are reconciled per-dispatch by
+    // fast-forward pull/push, so differing HEADs are expected and allowed. The
+    // precondition instead requires every member to share the same `git remote
+    // get-url origin` AND pass a `bd dolt pull` probe. Mode is chosen
+    // EXPLICITLY here (never inferred). Single-member trivially passes in
+    // either mode.
+    const syncedMode = Boolean(values.sync);
+    const runCommand = async (cmd, member) => {
+        const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
+        if (res && res.isError) {
+            const errText = res.content && res.content[0] ? res.content[0].text : 'unknown error';
+            throw new Error(errText);
+        }
+        return res && res.content && res.content[0] ? res.content[0].text : '';
+    };
     const topology = await checkMemberTopology({
         members: validMembers,
-        getIdentity: async (member) => {
-            const res = await fleetApi.executeCommand({ command: 'git rev-parse HEAD', member_name: member });
-            if (res && res.isError) {
-                const errText = res.content && res.content[0] ? res.content[0].text : 'unknown error';
-                throw new Error(errText);
-            }
-            return res && res.content && res.content[0] ? res.content[0].text : '';
-        },
+        mode: syncedMode ? 'synced' : 'legacy',
+        getIdentity: (member) => runCommand('git rev-parse HEAD', member),
+        getOriginUrl: (member) => runCommand('git remote get-url origin', member),
+        doltProbe: (member) => runCommand('bd dolt pull', member),
     });
     if (!topology.ok) {
         console.error(`Error: ${topology.message}`);

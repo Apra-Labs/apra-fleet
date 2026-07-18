@@ -294,21 +294,149 @@ export function validateBranchName(name, label) {
 // state -- two independent checkouts that merely happen to sit on the same
 // commit right now would pass. Fully validating (and reconciling) per-member
 // state across a running sprint needs the deferred cross-member sync layer.
+//
+// apra-fleet-eft.8.5 (Plan 3.3) -- SYNCED mode. The orchestrator-bracketed git
+// sync layer (eft.8.1's G-pull/G-push) removes the "all members must sit on
+// the same HEAD" requirement: with per-dispatch sync brackets, members are
+// EXPECTED to have different HEADs between brackets and are reconciled by
+// fast-forward pull/push, so a shared single workspace is no longer required.
+// In synced mode the precondition instead becomes: every member reports the
+// SAME `git remote get-url origin` (they push/pull the same remote branch) AND
+// passes a working `bd dolt pull` probe (their beads DB can actually sync).
+// Legacy shared-workspace mode keeps the same-HEAD identity check unchanged.
+//
+// Mode selection is EXPLICIT (`opts.mode`), never inferred silently: the
+// caller must state which contract it is standing the sprint up under. An
+// unknown mode is a hard refusal rather than a silent fallback.
 /**
- * @param {{ members: string[], getIdentity: (member: string) => Promise<string> }} opts
- * @returns {Promise<{ ok: boolean, singleMember: boolean, identities: Array<{member: string, signal: string|null, error: string|null}>, message: string }>}
+ * @param {{
+ *   members: string[],
+ *   getIdentity?: (member: string) => Promise<string>,
+ *   mode?: 'legacy'|'synced',
+ *   getOriginUrl?: (member: string) => Promise<string>,
+ *   doltProbe?: (member: string) => Promise<unknown>,
+ * }} opts
+ * @returns {Promise<{ ok: boolean, singleMember: boolean, mode: string, identities?: Array<object>, probes?: Array<object>, message: string }>}
  */
-export async function checkMemberTopology({ members, getIdentity }) {
+export async function checkMemberTopology({ members, getIdentity, mode = 'legacy', getOriginUrl, doltProbe }) {
     if (!Array.isArray(members) || members.length === 0) {
-        return { ok: false, singleMember: false, identities: [], message: '[Topology] Refusing to start: no members configured.' };
+        return { ok: false, singleMember: false, mode, identities: [], message: '[Topology] Refusing to start: no members configured.' };
+    }
+
+    if (mode !== 'legacy' && mode !== 'synced') {
+        return {
+            ok: false,
+            singleMember: members.length === 1,
+            mode,
+            message: `[Topology] Refusing to start: unknown topology mode '${mode}'. Mode must be selected explicitly as 'legacy' (shared-workspace, same-HEAD) or 'synced' (orchestrator-bracketed git sync, same-origin + dolt probe).`,
+        };
     }
 
     if (members.length === 1) {
         return {
             ok: true,
             singleMember: true,
+            mode,
             identities: [{ member: members[0], signal: null, error: null }],
-            message: `[Topology] Single-member sprint ('${members[0]}') -- shared-state precondition trivially satisfied (nothing to compare).`,
+            message: `[Topology] Single-member ${mode} sprint ('${members[0]}') -- shared-state precondition trivially satisfied (nothing to compare).`,
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // SYNCED mode (apra-fleet-eft.8.5): same-origin + dolt-probe precondition.
+    // HEADs are ALLOWED to differ -- reconciliation is the sync layer's job.
+    // -----------------------------------------------------------------------
+    if (mode === 'synced') {
+        if (typeof getOriginUrl !== 'function' || typeof doltProbe !== 'function') {
+            return {
+                ok: false,
+                singleMember: false,
+                mode,
+                message: '[Topology] Refusing to start the synced-mode sprint: getOriginUrl and doltProbe must both be provided so the same-origin and dolt-pull preconditions can be checked.',
+            };
+        }
+
+        const probes = [];
+        for (const member of members) {
+            let originUrl = null;
+            let originError = null;
+            let doltOk = false;
+            let doltError = null;
+            try {
+                const raw = await getOriginUrl(member);
+                const url = (typeof raw === 'string' ? raw : String(raw)).trim();
+                if (url) originUrl = url; else originError = 'empty origin URL';
+            } catch (err) {
+                originError = (err && err.message) ? err.message : String(err);
+            }
+            try {
+                await doltProbe(member);
+                doltOk = true;
+            } catch (err) {
+                doltError = (err && err.message) ? err.message : String(err);
+            }
+            probes.push({ member, originUrl, originError, doltOk, doltError });
+        }
+
+        // A member that failed EITHER precondition (origin URL unavailable, or
+        // a failing dolt probe) is rejected, naming the member and which
+        // precondition failed.
+        const failedPrecondition = probes.filter((p) => p.originError !== null || !p.doltOk);
+        if (failedPrecondition.length > 0) {
+            const detail = failedPrecondition.map((p) => {
+                const reasons = [];
+                if (p.originError !== null) reasons.push(`origin URL unavailable (${p.originError})`);
+                if (!p.doltOk) reasons.push(`bd dolt pull probe failed (${p.doltError})`);
+                return `${p.member}: ${reasons.join('; ')}`;
+            }).join(', ');
+            return {
+                ok: false,
+                singleMember: false,
+                mode,
+                probes,
+                message:
+                    '[Topology] Refusing to start the synced-mode sprint: one or more members failed a sync precondition -- ' +
+                    detail +
+                    '. In synced mode every member must report the same origin URL AND pass a `bd dolt pull` probe. ' +
+                    'See docs/architecture.md "Multi-member topology (auto-sprint)".',
+            };
+        }
+
+        // All members pass the dolt probe -- now they must share ONE origin.
+        const distinctOrigins = [...new Set(probes.map((p) => p.originUrl))];
+        if (distinctOrigins.length > 1) {
+            return {
+                ok: false,
+                singleMember: false,
+                mode,
+                probes,
+                message:
+                    '[Topology] Refusing to start the synced-mode sprint: the configured members report DIVERGENT origin URLs, so ' +
+                    'they do not push/pull the same remote branch and the git sync layer cannot reconcile them. Per-member origins: ' +
+                    probes.map((p) => `${p.member}=${p.originUrl}`).join(', ') +
+                    '. Every member must report the same `git remote get-url origin`. ' +
+                    'See docs/architecture.md "Multi-member topology (auto-sprint)".',
+            };
+        }
+
+        return {
+            ok: true,
+            singleMember: false,
+            mode,
+            probes,
+            message: `[Topology] Synced mode: all ${members.length} configured members share origin '${distinctOrigins[0]}' and passed the dolt-pull probe -- differing HEADs are reconciled by the git sync layer.`,
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // LEGACY mode: shared-workspace same-HEAD identity check (unchanged).
+    // -----------------------------------------------------------------------
+    if (typeof getIdentity !== 'function') {
+        return {
+            ok: false,
+            singleMember: false,
+            mode,
+            message: '[Topology] Refusing to start the legacy-mode sprint: getIdentity must be provided so the same-HEAD precondition can be checked.',
         };
     }
 
@@ -328,6 +456,7 @@ export async function checkMemberTopology({ members, getIdentity }) {
         return {
             ok: false,
             singleMember: false,
+            mode,
             identities,
             message:
                 '[Topology] Refusing to start the multi-member sprint: could not obtain an identity signal from every ' +
@@ -343,6 +472,7 @@ export async function checkMemberTopology({ members, getIdentity }) {
         return {
             ok: false,
             singleMember: false,
+            mode,
             identities,
             message:
                 '[Topology] Refusing to start the multi-member sprint: the configured members disagree on their identity ' +
@@ -358,6 +488,7 @@ export async function checkMemberTopology({ members, getIdentity }) {
     return {
         ok: true,
         singleMember: false,
+        mode,
         identities,
         message: `[Topology] All ${members.length} configured members share the same identity signal (${distinct[0]}) -- shared-state precondition satisfied.`,
     };
