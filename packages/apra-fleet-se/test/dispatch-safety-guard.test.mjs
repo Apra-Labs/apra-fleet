@@ -47,26 +47,61 @@ const __dirname = path.dirname(__filename);
 // =============================================================================
 
 const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
-// This file (and its "20 command() sites" baseline comment above) originated
-// on auto-sprint/eft-service, which has several eft-feature-specific
-// runner.js additions (e.g. finalizeAbort()'s dispatch sites) not present on
-// feat/fleet-reorg's own runner.js history. When the three auto-sprint
-// stabilization fixes (auto-sprint-9's branch-adopt fix, auto-sprint-3's
-// bdListScoped rewrite, and the failSoft-discrimination follow-up) were
-// cherry-picked onto feat/fleet-reorg per the eft-service/reorg branch split
-// (fixes stabilize reorg, eft-service carries feature work and rebases onto
-// reorg to absorb them), the count on THIS branch came out to 18, not 21 --
-// verified by manual review that all 18 sites here are the ones the three
-// cherry-picked fixes actually touch/added, with no site silently missing
-// member_name/member_id. This baseline is intentionally branch-specific: do
-// not "fix" it back to 21 by comparing against eft-service without checking
-// why the counts differ first (see the header comment above).
-const EXPECTED_COMMAND_COUNT = 18;
+// Branch-split convention (established when the three auto-sprint
+// stabilization fixes -- auto-sprint-9's branch-adopt fix, auto-sprint-3's
+// bdListScoped rewrite, and the failSoft-discrimination follow-up -- were
+// moved to feat/fleet-reorg and this branch was rebased on top of it):
+// feat/fleet-reorg carries only those stabilization fixes and has NO
+// eft-feature-specific runner.js additions, so ITS copy of this test asserts
+// 18 command() sites. THIS branch (auto-sprint/eft-service) additionally
+// carries eft-feature work (e.g. finalizeAbort()'s two dispatch sites,
+// supervisor-skeleton additions) on top of that same base. Do not resolve a
+// future count mismatch between the two branches by just copying one
+// branch's number into the other -- confirm which commits actually
+// introduced the delta first.
+//
+// Bumped 21 -> 22 (2026-07-18): commit 6d348f1a (apra-fleet-eft.8.1,
+// syncMemberBefore/syncMemberAfter G-pull/G-push helpers) added exactly one
+// new real command() call site (the injected `command(cmd, { member_name:
+// member, ... })` inside runGitStep()), verified compliant. That commit's
+// two `throw new Error("... requires an injected command() in opts")`
+// lines are NOT call sites -- they were a false-positive in this test's own
+// parser (the literal text "command()" inside a plain string), fixed here
+// via isInsideSameLineString().
+const EXPECTED_COMMAND_COUNT = 22;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
 // with member_name.
 const EXPECTED_AGENT_COUNT = 10;
+
+/**
+ * Returns true if `col` (0-based index into `lineText`) sits inside an open
+ * `"..."` or `'...'` string that started earlier on the SAME line -- i.e. an
+ * odd number of unescaped quote characters of the currently-open type
+ * precede it. Deliberately scoped to a single line (not a whole-file quote
+ * scan): a whole-file scan misfires on stray apostrophes in prose comments
+ * (e.g. "doesn't", "it's"), which would otherwise be misread as opening a
+ * string and swallow everything up to the next quote -- including real
+ * command()/agent() call sites many lines later. Backticks are deliberately
+ * NOT tracked here: template literals legitimately span multiple lines (git
+ * command strings) and are not a source of the false positive this guards
+ * against (a real call site's own leading backtick is never itself inside a
+ * string).
+ */
+function isInsideSameLineString(lineText, col) {
+    let quote = null;
+    for (let i = 0; i < col; i++) {
+        const ch = lineText[i];
+        if (ch === '\\') { i++; continue; }
+        if (quote) {
+            if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'") {
+            quote = ch;
+        }
+    }
+    return quote !== null;
+}
 
 /**
  * Scans `src` for `command(`/`agent(` call sites, skipping call-site tokens
@@ -110,6 +145,12 @@ function findCallSites(src) {
         const openParenIdx = m.index + m[0].length - 1; // index of the '(' itself
         const line = lineNumberForIndex(m.index);
         if (isCommentLine(line)) continue;
+        // Reject matches where the literal text "command(" / "agent(" sits
+        // inside a same-line quoted string (e.g. a `throw new Error("...
+        // command() ...")` message) -- not a real dispatch call site.
+        const lineText = lines[line - 1] || '';
+        const col = m.index - lineStarts[line - 1];
+        if (isInsideSameLineString(lineText, col)) continue;
         const callText = extractBalancedCall(src, openParenIdx);
         sites.push({ fnName, line, callText });
     }
