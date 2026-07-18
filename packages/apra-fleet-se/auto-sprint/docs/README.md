@@ -13,12 +13,12 @@ Workflow invocation.
 
 ```bash
 node packages/apra-fleet-se/bin/cli.mjs \
-  --issue apra-fleet-xbu \
+  --issue apra-fleet-eft \
   --members fleet-reorg \
-  --branch feat/fleet-reorg \
-  --base main \
+  --branch auto-sprint/eft-service \
+  --base feat/fleet-reorg \
   --viewer-port 18300 \
-  > /path/to/auto-sprint.log 2>&1 &
+  > ./sprint-logs/auto-sprint.log 2>&1 &
 disown
 ```
 
