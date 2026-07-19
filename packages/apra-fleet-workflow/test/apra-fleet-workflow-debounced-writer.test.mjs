@@ -185,11 +185,18 @@ describe('apra-fleet-eft.2.1: DebouncedStateWriter unit behavior', () => {
 });
 
 describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ regression', () => {
+    // NOTE: these tests exercise the debounced writer's flush-on-exit wiring
+    // in isolation, so they pass an explicit opts.debouncedStatePath (a fixed
+    // location under the test's own temp cwd) rather than relying on the
+    // default running/<sprintId>.json-under-the-service-data-dir layout --
+    // that default path resolution is apra-fleet-eft.2.3's concern and is
+    // covered by its own dedicated suite (apra-fleet-workflow-sprint-state.test.mjs).
     test('a normal "end" event flushes the debounced writer AND leaves sprint-logs/ byte-for-byte as before', async () => {
         await withTempCwd(async (dir) => {
             const wf = new FleetWorkflow(createMockFleetApi());
             const engine = new WorkflowEngine(wf);
-            const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer End Test', debounceMs: 200 });
+            const debouncedStatePath = path.join(dir, 'sprint-logs', '.debounced-state.json');
+            const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer End Test', debounceMs: 200, debouncedStatePath });
 
             await withServer(server, async (port) => {
                 const result = await engine.executeFile(fixture('test-end-event-success.mjs'), {});
@@ -207,9 +214,8 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
 
                 // New: the debounced writer's own file must exist and be flushed
                 // synchronously by the time 'end' handling completes.
-                const debouncedPath = path.join(dir, 'sprint-logs', '.debounced-state.json');
-                assert.ok(fs.existsSync(debouncedPath), 'debounced writer must have flushed a file on the "end" event');
-                const debouncedSaved = JSON.parse(fs.readFileSync(debouncedPath, 'utf-8'));
+                assert.ok(fs.existsSync(debouncedStatePath), 'debounced writer must have flushed a file on the "end" event');
+                const debouncedSaved = JSON.parse(fs.readFileSync(debouncedStatePath, 'utf-8'));
                 assert.strictEqual(debouncedSaved.status, 'success');
             });
         });
@@ -229,7 +235,8 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
             const activityStarts = [];
             wf.on('activity:start', (meta) => activityStarts.push(meta));
 
-            const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer SIGINT Test', debounceMs: 200 });
+            const debouncedStatePath = path.join(dir, 'sprint-logs', '.debounced-state.json');
+            const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer SIGINT Test', debounceMs: 200, debouncedStatePath });
 
             const originalExit = process.exit;
             let exitCode = null;
@@ -244,8 +251,7 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
 
                     process.emit('SIGINT');
 
-                    const debouncedPath = path.join(dir, 'sprint-logs', '.debounced-state.json');
-                    assert.ok(fs.existsSync(debouncedPath), 'SIGINT must synchronously flush the debounced writer even mid-run');
+                    assert.ok(fs.existsSync(debouncedStatePath), 'SIGINT must synchronously flush the debounced writer even mid-run');
                     assert.strictEqual(exitCode, 130);
 
                     wf.requestStop('test cleanup');
@@ -271,7 +277,8 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
             const activityStarts = [];
             wf.on('activity:start', (meta) => activityStarts.push(meta));
 
-            const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer Stop Test', debounceMs: 200 });
+            const debouncedStatePath = path.join(dir, 'sprint-logs', '.debounced-state.json');
+            const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer Stop Test', debounceMs: 200, debouncedStatePath });
 
             await withServer(server, async (port) => {
                 const runPromise = engine.executeFile(fixture('test-stop-pending-agent.mjs'), {});
@@ -282,8 +289,7 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
                 const { statusCode } = await httpPost(port, '/stop');
                 assert.strictEqual(statusCode, 200);
 
-                const debouncedPath = path.join(dir, 'sprint-logs', '.debounced-state.json');
-                assert.ok(fs.existsSync(debouncedPath), '/stop must flush the debounced writer');
+                assert.ok(fs.existsSync(debouncedStatePath), '/stop must flush the debounced writer');
 
                 await assert.rejects(runPromise, () => true);
             });
