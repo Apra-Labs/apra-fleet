@@ -34,6 +34,7 @@
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
+import { renderLaunchFormHtml } from './launch-form.mjs';
 
 /** Badge color per four-status classifier value; unknown values fall back to grey. */
 const STATUS_BADGE_COLORS = Object.freeze({
@@ -137,18 +138,22 @@ export function renderSprintStackHtml(views) {
 /**
  * Renders the full index page (`GET /` document). The sprint-stack section
  * (Plan Part 2.3, first block) is rendered FIRST; the Backlog-last tree
- * (eft.6.2) is rendered ALWAYS LAST, after every running sprint's section, so
- * the operator reads live sprints top-down and the free/backlog picker sits at
- * the bottom. The Launch Sprint form (eft.6.3) and History link (eft.6.5) are
- * separate tasks that attach to this same single page.
+ * (eft.6.2) is rendered after every running sprint's section, so the operator
+ * reads live sprints top-down and the free/backlog picker sits below them.
+ * The Launch Sprint form (eft.6.3) attaches LAST, after the Backlog it picks
+ * issues from -- the operator clicks a Backlog row, then fills in the form
+ * beneath it. The History link (eft.6.5) is a separate task that attaches to
+ * this same single page.
  * @param {SprintView[]} [views]
  * @param {string} [backlogHtml] - pre-rendered Backlog tree HTML (eft.6.2)
+ * @param {string} [launchFormHtml] - pre-rendered Launch Sprint form HTML (eft.6.3)
  * @returns {string}
  */
-export function renderIndexPageHtml(views, backlogHtml) {
+export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
     const backlogSection = typeof backlogHtml === 'string'
         ? backlogHtml
         : '<p style="color:#71717a; font-style: italic;">No unclaimed work in the backlog.</p>';
+    const launchFormSection = typeof launchFormHtml === 'string' ? launchFormHtml : renderLaunchFormHtml();
     return (
         '<!DOCTYPE html>\n' +
         '<html lang="en">\n' +
@@ -161,9 +166,12 @@ export function renderIndexPageHtml(views, backlogHtml) {
         '<body>\n' +
         '<h1>Sprint Stack</h1>\n' +
         '<div id="sprint-stack">\n' + renderSprintStackHtml(views) + '\n</div>\n' +
-        // Backlog is ALWAYS LAST on the page (eft.6.2 acceptance criterion).
+        // Backlog comes after the sprint stack (eft.6.2 acceptance criterion).
         '<h1>Backlog</h1>\n' +
         '<div id="backlog">\n' + backlogSection + '\n</div>\n' +
+        // Launch Sprint form (eft.6.3) is LAST: it consumes Backlog clicks above it.
+        '<h1>Launch Sprint</h1>\n' +
+        '<div id="launch-form">\n' + launchFormSection + '\n</div>\n' +
         '</body>\n' +
         '</html>\n'
     );
@@ -274,8 +282,10 @@ export function createDashboard(deps = {}) {
         buildSprintViews,
         async renderIndexPage() {
             // Render the sprint stack and the Backlog concurrently; the Backlog
-            // is placed LAST by renderIndexPageHtml. A Backlog render failure is
-            // isolated so it can never take the whole page down.
+            // is placed after the stack, and the Launch Sprint form (eft.6.3,
+            // static/dependency-free -- see launch-form.mjs) after that, by
+            // renderIndexPageHtml. A Backlog render failure is isolated so it
+            // can never take the whole page down.
             let backlogHtml;
             if (backlog && typeof backlog.renderHtml === 'function') {
                 try {
