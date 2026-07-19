@@ -4,6 +4,21 @@ This doc exists because it is easy to reach for the wrong launcher. There are
 two different things in this repo/session that are both called "auto-sprint",
 and only one of them is the real thing.
 
+## Supported user-facing interfaces
+
+The service HTTP API and web dashboard are the **single supported user-facing
+interfaces** for Fleet. Users launch sprints via:
+
+- The **service API** (HTTP on port 7523, with SSE server-push)
+- The **web dashboard** in Claude Code (`/mcp` loader)
+- The **PM skill commands** in Claude Code (`/pm start`, `/pm status`, etc.)
+
+The `bin/cli.mjs` CLI below is an **internal implementation detail only** --
+it is used exclusively by the supervisor process to execute workflows. Manual
+direct invocation of `cli.mjs` bypasses the reservation ledger and is
+unsupported for user-facing workflows. Always use the service API or dashboard
+instead.
+
 ## The only correct way to launch a real sprint
 
 Run `packages/apra-fleet-se/bin/cli.mjs` directly with a real Node.js process,

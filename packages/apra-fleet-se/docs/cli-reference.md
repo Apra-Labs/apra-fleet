@@ -1,5 +1,22 @@
 # CLI Reference
 
+## INTERNAL USE ONLY -- Unsupported for Direct Invocation
+
+WARNING: The `cli.mjs` entry point below is an **internal implementation
+detail** used exclusively by the Fleet supervisor process to orchestrate
+agent workflows. It is **NOT** a supported user-facing interface and direct
+manual invocation is unsupported.
+
+**Hazard:** Running `cli.mjs` directly bypasses the reservation ledger, which
+tracks which members are currently executing work and prevents concurrent
+conflicting workflows. Manual CLI invocation can cause race conditions, task
+corruption, and silent failures across the fleet.
+
+**Supported interfaces:** Use the **service HTTP API** and **web dashboard**
+instead (see docs/overview.md and parent README.md). The service API manages
+reservations correctly and is the only supported way for users to launch
+sprints.
+
 Entry point: `packages/apra-fleet-se/bin/cli.mjs` (installed as the
 `fleet-se sprint` command; also runnable directly with `node bin/cli.mjs`).
 

@@ -366,6 +366,21 @@ registers and starts the OS service automatically -- no extra step.
 Service registration failures are non-fatal: a warning is printed and the install
 continues.
 
+## Supported user-facing interfaces
+
+Fleet exposes exactly one supported user-facing interface: the **service HTTP
+API** and its **web dashboard**. Users interact with Fleet exclusively through:
+
+- The **HTTP API** and Server-Sent Events (SSE) transport on port 7523
+- The **web dashboard** in Claude Code via the `/mcp` loader
+- The PM skill commands in Claude Code (`/pm`)
+
+The `bin/cli.mjs` entry point in the auto-sprint package is an **internal
+implementation detail** -- it is used only by the supervisor process to
+orchestrate agent workflows and does NOT bypass the reservation ledger. Direct
+manual invocation of `cli.mjs` circumvents the reservation system and is
+unsupported; use the service API and dashboard instead.
+
 ## The PM skill
 
 The **PM skill** is Fleet's reference workflow for **software development**
