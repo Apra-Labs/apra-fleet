@@ -4,6 +4,7 @@ import {
     classifyGitFailure,
     syncMemberBefore,
     syncMemberAfter,
+    parseUnmergedPaths,
 } from '../auto-sprint/runner.js';
 import { GitDivergedError, GitSyncError } from '../auto-sprint/errors.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
@@ -156,6 +157,81 @@ test('syncMemberAfter: a transient push failure is retried (not treated as diver
     check(res.ok && res.pushed && !res.rebased, 'transient push failure retried without a rebase');
     const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
     check(rebaseCalls.length === 0, 'transient failure must not trigger a pull --rebase');
+});
+
+// =============================================================================
+// apra-fleet-eft.8.6 -- Tier 1 SCRIPTED conflict detection + clean-state
+// restore. parseUnmergedPaths() reads git's own porcelain status; a failed
+// pull --rebase whose porcelain shows unmerged paths triggers a scripted
+// `git rebase --abort` BEFORE the typed GitDivergedError propagates, and that
+// error carries the unmerged paths so callers/tests can assert on them.
+// =============================================================================
+test('parseUnmergedPaths: only unmerged XY codes are picked, other statuses ignored', () => {
+    const porcelain = [
+        'UU conflicted-both-modified.txt',
+        'AA conflicted-both-added.txt',
+        'M  staged-modified.txt',
+        '?? untracked.txt',
+        ' M working-tree-modified.txt',
+    ].join('\n');
+    const paths = parseUnmergedPaths(porcelain);
+    check(paths.length === 2, `expected exactly 2 unmerged paths, got ${JSON.stringify(paths)}`);
+    check(paths.includes('conflicted-both-modified.txt'), 'UU path must be reported');
+    check(paths.includes('conflicted-both-added.txt'), 'AA path must be reported');
+});
+
+test('parseUnmergedPaths: clean/empty porcelain yields no unmerged paths', () => {
+    check(parseUnmergedPaths('').length === 0, 'empty porcelain has no unmerged paths');
+    check(parseUnmergedPaths('M  some-file.txt\n?? new.txt').length === 0, 'no unmerged codes present');
+});
+
+test('syncMemberAfter: a rebase conflict is detected via porcelain, rebase --abort restores a clean tree, and the typed GitDivergedError carries the unmerged paths', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(' ! [rejected] (non-fast-forward)')], // always rejected
+        'git pull --rebase': [fail('CONFLICT (content): Merge conflict in a.txt')],
+        'git status --porcelain': [
+            { ok: true, output: 'UU a.txt\n', error: null }, // conflict-detection check
+            { ok: true, output: '', error: null },           // post-abort clean-state check
+        ],
+        'git rebase --abort': [OK],
+    });
+    let err = null;
+    try { await syncMemberAfter('m1', { command }); } catch (e) { err = e; }
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    check(Array.isArray(err.details && err.details.unmergedPaths), 'GitDivergedError details must carry unmergedPaths');
+    check(
+        err.details.unmergedPaths.length === 1 && err.details.unmergedPaths[0] === 'a.txt',
+        `expected unmergedPaths ['a.txt'], got ${JSON.stringify(err.details && err.details.unmergedPaths)}`,
+    );
+
+    const abortCalls = calls.filter((c) => /git rebase --abort/.test(c.cmd));
+    check(abortCalls.length === 1, `expected exactly one 'git rebase --abort', saw ${abortCalls.length}`);
+    check(abortCalls[0].opts.member_name === 'm1', 'rebase --abort must carry explicit member_name');
+
+    // The abort must run BEFORE the typed error is thrown: assert ordering by
+    // call index (abort must precede the last porcelain re-check, which is
+    // itself the last call before the throw).
+    const abortIdx = calls.findIndex((c) => /git rebase --abort/.test(c.cmd));
+    const statusIdxs = calls.reduce((acc, c, i) => (/git status --porcelain/.test(c.cmd) ? [...acc, i] : acc), []);
+    check(statusIdxs.length === 2, `expected two porcelain checks (before + after abort), saw ${statusIdxs.length}`);
+    check(statusIdxs[0] < abortIdx && abortIdx < statusIdxs[1], 'porcelain check -> abort -> re-check ordering must hold');
+
+    // Tier 1 is script-only: no dispatch/agent-related command is ever issued.
+    check(calls.every((c) => !/dispatch|agent/i.test(c.cmd)), 'no agent dispatch may occur at Tier 1');
+});
+
+test('syncMemberAfter: a pull --rebase failure with a CLEAN porcelain (no unmerged paths) does not run rebase --abort but still raises GitDivergedError when classified as diverged', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(' ! [rejected] (non-fast-forward)')],
+        'git pull --rebase': [fail('CONFLICT (content): Merge conflict in a.txt')],
+        'git status --porcelain': [{ ok: true, output: '', error: null }],
+    });
+    let err = null;
+    try { await syncMemberAfter('m1', { command }); } catch (e) { err = e; }
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    check(Array.isArray(err.details.unmergedPaths) && err.details.unmergedPaths.length === 0, 'no unmerged paths were found');
+    const abortCalls = calls.filter((c) => /git rebase --abort/.test(c.cmd));
+    check(abortCalls.length === 0, 'rebase --abort must not run when porcelain reports nothing unmerged');
 });
 
 // =============================================================================

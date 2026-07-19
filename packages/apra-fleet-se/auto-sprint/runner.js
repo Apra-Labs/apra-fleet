@@ -817,7 +817,7 @@ export async function syncMemberAfter(member, opts = {}) {
         if (rebase.kind === 'diverged' || unmergedPaths.length > 0) {
             throw new GitDivergedError(
                 `[Sync] G-push pull-rebase for member '${member}' hit unmergeable divergence (conflict) -- must not be retried blindly: ${rebase.error}`,
-                { member, gitOutput: rebase.error, operation: 'push-rebase', unmergedPaths },
+                { member, gitOutput: rebase.error, operation: 'push-rebase', details: { unmergedPaths } },
             );
         }
         throw new GitSyncError(
