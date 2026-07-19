@@ -33,7 +33,14 @@ async function main() {
     const engine = new WorkflowEngine(wf);
     // createDashboardViewer returns a plain http.Server; there is no
     // markComplete()/stop() API (that was the original dead-import bug).
-    const viewer = createDashboardViewer(wf, { port: 18081, name: 'E2E Fleet Harness' });
+    const viewer = createDashboardViewer(wf, { port: 0, name: 'E2E Fleet Harness' });
+
+    // Ephemeral port: wait for the server to start listening and read the
+    // actual bound port from server.address().port
+    await new Promise((resolve, reject) => {
+        viewer.once('listening', resolve);
+        viewer.once('error', reject);
+    });
 
     try {
         console.log('\n--- Discovering Members ---');
