@@ -232,6 +232,13 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
+// Agent provisioning is exercised in tests/agent-provisioner.test.ts and the
+// dedicated register/update-member provisioning tests -- stub it out here so
+// these unrelated cloud tests don't attempt real SFTP uploads.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+}));
+
 // Partially mock aws.js: keep the real AwsCloudProvider class but replace the
 // awsProvider singleton so registerMember tests can control instance state.
 vi.mock('../src/services/cloud/aws.js', async (importOriginal) => {

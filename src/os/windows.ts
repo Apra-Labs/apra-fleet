@@ -314,4 +314,13 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   parseDisk(stdout: string): string {
     return stdout.trim().substring(0, 200);
   }
+
+  // --- Agent provisioning ---
+
+  hashFilesRecursive(dir: string): string {
+    const winDir = dir.replace(/\//g, '\\').replace(/'/g, "''");
+    const psScript = `$b = Join-Path $HOME '${winDir}'; if (Test-Path $b) { Get-ChildItem -Path $b -Recurse -File | ForEach-Object { $h = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower(); $r = $_.FullName.Substring($b.Length + 1).Replace('\\', '/'); "$h  ./$r" } }`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    return `powershell -EncodedCommand ${encoded}`;
+  }
 }

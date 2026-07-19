@@ -68,4 +68,8 @@ export interface OsCommands {
   // --- Resource output parsing ---
   parseMemory(stdout: string): string;
   parseDisk(stdout: string): string;
+
+  // --- Agent provisioning ---
+  /** List "<sha256>  ./<relpath>" for every file under a home-relative dir (recursive). Empty output if dir is missing/empty. */
+  hashFilesRecursive(dir: string): string;
 }

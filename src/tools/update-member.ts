@@ -10,6 +10,8 @@ import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
+import { provisionAgents } from '../services/agent-provisioner.js';
+import { getStrategy } from '../services/strategy.js';
 
 export const updateMemberSchema = z.object({
   ...memberIdentifier,
@@ -214,6 +216,21 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   logLine('update_member', `id=${updated.id} name=${updated.friendlyName}`, updated);
   writeStatusline();
 
+  // --- Re-provision role-agent files for remote members ---
+  // Cheap (one probe round trip when up to date); also doubles as the manual retry
+  // path when a prior registration/update left agent files stale or unprovisioned.
+  // Does NOT start a stopped cloud member -- testConnection() failure just skips.
+  let agentProvisionResult: { pushed: string[]; skippedReason?: string; warning?: string } | undefined;
+  if (updated.agentType === 'remote') {
+    const conn = await getStrategy(updated).testConnection();
+    if (!conn.ok) {
+      warnings.push(`Could not reach member -- agent files not re-provisioned: ${conn.error ?? 'connection failed'}`);
+    } else {
+      agentProvisionResult = await provisionAgents(updated);
+      if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
+    }
+  }
+
   let result = `✅ Member "${updated.friendlyName}" updated.\n\n`;
   result += `  Icon:    ${updated.icon ?? DEFAULT_ICON}\n`;
   result += `  ID:      ${updated.id}\n`;
@@ -230,6 +247,15 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (updated.modelCheap) result += `  Model Cheap: ${updated.modelCheap}\n`;
   if (updated.modelStandard) result += `  Model Standard: ${updated.modelStandard}\n`;
   if (updated.modelPremium) result += `  Model Premium: ${updated.modelPremium}\n`;
+  if (agentProvisionResult) {
+    if (agentProvisionResult.skippedReason) {
+      result += `  Agents:  skipped (${agentProvisionResult.skippedReason})\n`;
+    } else if (agentProvisionResult.pushed.length > 0) {
+      result += `  Agents:  ${agentProvisionResult.pushed.length} file(s) provisioned\n`;
+    } else {
+      result += `  Agents:  up to date\n`;
+    }
+  }
   if (updated.modelTiers) {
     const mt = updated.modelTiers;
     result += `  Model Tiers: cheap=${mt.cheap ?? '-'} standard=${mt.standard ?? '-'} premium=${mt.premium ?? '-'}\n`;

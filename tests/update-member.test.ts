@@ -1,12 +1,37 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { updateMember } from '../src/tools/update-member.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
+import type { SSHExecResult } from '../src/types.js';
+
+const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
+const mockTestConnection = vi.fn();
+
+// Default: connection "fails" so provisionAgents is skipped for tests that don't
+// care about it -- keeps the many pre-existing update-member tests from making
+// real network calls now that update_member re-provisions agent files for remote
+// members. Dedicated provisioning tests below override this per-case.
+vi.mock('../src/services/strategy.js', () => ({
+  getStrategy: () => ({
+    execCommand: mockExecCommand,
+    testConnection: mockTestConnection,
+  }),
+}));
+
+const mockUploadContentToHome = vi.fn();
+vi.mock('../src/services/sftp.js', () => ({
+  uploadContentToHome: (...args: any[]) => mockUploadContentToHome(...args),
+}));
 
 describe('updateMember', () => {
   beforeEach(() => {
     backupAndResetRegistry();
+    mockExecCommand.mockReset();
+    mockTestConnection.mockReset();
+    mockUploadContentToHome.mockReset();
+    mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
+    mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
   });
 
   afterEach(() => {
@@ -181,5 +206,91 @@ describe('updateMember', () => {
 
     expect(result).not.toContain('Warning:');
     expect(result).toContain('Member "test-agent" updated.');
+  });
+});
+
+describe('updateMember -- agent re-provisioning (remote members)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    mockExecCommand.mockReset();
+    mockTestConnection.mockReset();
+    mockUploadContentToHome.mockReset();
+    mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
+    mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('re-provisions agent files once connectivity is confirmed', async () => {
+    const member = makeTestAgent({ llmProvider: 'claude' });
+    addAgent(member);
+
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 }); // empty remote dir -> push everything
+    mockUploadContentToHome.mockResolvedValue({ success: ['planner.md', 'doer.md'], failed: [] });
+
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(result).toContain('Member "test-agent" updated.');
+    expect(mockUploadContentToHome).toHaveBeenCalled();
+    expect(result).toMatch(/Agents:\s+\d+ file\(s\) provisioned/);
+  });
+
+  it('appends a warning but still updates when the provisioning probe fails', async () => {
+    const member = makeTestAgent({ llmProvider: 'claude' });
+    addAgent(member);
+
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: 'boom', code: 1 }); // probe fails
+
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(result).toContain('Member "test-agent" updated.');
+    expect(result).toContain('Could not verify remote agent files');
+    expect(mockUploadContentToHome).not.toHaveBeenCalled();
+  });
+
+  it('re-provisions at the new provider path when llm_provider is switched', async () => {
+    const member = makeTestAgent({ llmProvider: 'claude' });
+    addAgent(member);
+
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    // New provider's remote dir has never been provisioned -- empty probe -> push everything.
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+    mockUploadContentToHome.mockResolvedValue({ success: ['planner.md'], failed: [] });
+
+    const result = await updateMember({ member_id: member.id, llm_provider: 'gemini' });
+
+    expect(result).toContain('Provider: gemini');
+    expect(mockUploadContentToHome).toHaveBeenCalledTimes(1);
+    const [, , calledDir] = mockUploadContentToHome.mock.calls[0];
+    expect(calledDir).toBe('.gemini/agents');
+  });
+
+  it('skips provisioning with a warning when unreachable, but still applies the update', async () => {
+    const member = makeTestAgent();
+    addAgent(member);
+
+    mockTestConnection.mockResolvedValue({ ok: false, error: 'connection timed out' });
+
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(result).toContain('Member "test-agent" updated.');
+    expect(result).toContain('Could not reach member -- agent files not re-provisioned: connection timed out');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(mockUploadContentToHome).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt provisioning for local members', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(result).toContain('updated');
+    expect(mockTestConnection).not.toHaveBeenCalled();
+    expect(mockUploadContentToHome).not.toHaveBeenCalled();
   });
 });
