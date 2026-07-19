@@ -2791,12 +2791,19 @@ async function runSprintCycle(context) {
             // transport failures are inherently transient given a short wait
             // (unlike a genuine schema or logic error), so retry a few times
             // with a backoff delay before finally giving up.
-            const PLANNER_DISPATCH_RETRY_DELAYS_MS = [0, 5000, 15000];
+            //
+            // Bumped from [0, 5000, 15000] (3 attempts, ~20s total headroom)
+            // after that budget still wasn't enough live: a real busy-lock on
+            // fleet-rev outlasted all 3 attempts and re-crashed the sprint,
+            // but `fleet_status` moments later showed the member already back
+            // to idle -- the lock was genuinely transient, just slower to
+            // clear than 20s. Give it real headroom: 5 attempts, ~110s total.
+            const PLANNER_DISPATCH_RETRY_DELAYS_MS = [0, 5000, 15000, 30000, 60000];
             let plannerRes;
             let plannerErr = null;
             for (let i = 0; i < PLANNER_DISPATCH_RETRY_DELAYS_MS.length; i++) {
                 if (PLANNER_DISPATCH_RETRY_DELAYS_MS[i] > 0) {
-                    log(`Planner dispatch: waiting ${PLANNER_DISPATCH_RETRY_DELAYS_MS[i] / 1000}s before retry attempt ${i + 1}/${PLANNER_DISPATCH_RETRY_DELAYS_MS.length - 1}...`);
+                    log(`Planner dispatch: waiting ${PLANNER_DISPATCH_RETRY_DELAYS_MS[i] / 1000}s before retry attempt ${i + 1}/${PLANNER_DISPATCH_RETRY_DELAYS_MS.length}...`);
                     await new Promise((resolve) => setTimeout(resolve, PLANNER_DISPATCH_RETRY_DELAYS_MS[i]));
                 }
                 try {
