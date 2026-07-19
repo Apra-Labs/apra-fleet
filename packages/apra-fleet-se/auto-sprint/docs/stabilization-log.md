@@ -496,6 +496,18 @@ deduplicated DAG -- the plan gate working as designed.
   deployer/integ-test roles, or a pre-Deploy permission-ensure step in
   the runner; deferred until Integ Test is observed actually running.
 
+### Run 11 outcome: StalledSprintError, reopen-thrash on the deferred P3 trio
+
+- Run 11 ended at Deploy C4 with StalledSprintError: closed-count history
+  [57, 62, 62, 62], reopen-thrash detected on apra-fleet-eft.10/.11/.12
+  (each reopened more than 3 times). This is exactly the Issue 17
+  oscillation -- the stall detector (correctly) refused to burn cycle 5
+  on it. It also means Deploy C4 never ran, so the Issue 18 permission
+  fix gets its first live test in run 12. finalizeAbort worked as
+  designed (idempotent [ABORTED] PR, terminal history record). Run 11's
+  content record: 4 cycles, zero infrastructure failures, closed beads
+  57->62, every P1/P2 feature at all-children-closed pending closure.
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":
