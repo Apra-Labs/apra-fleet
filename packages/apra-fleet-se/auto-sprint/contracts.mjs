@@ -517,6 +517,25 @@ export const finalVerdict = {
     properties: {
         verdict: { type: 'string', enum: ['PASS', 'FAIL'] },
         notes: { type: 'string' },
+        // Stabilization log iteration 5: on FAIL, the final reviewer's
+        // actionable findings must land in BEADS (the only artifact the
+        // NEXT sprint's planner reads) -- notes alone only reach the PR
+        // body and the analysis doc. Same item shape as reviewerVerdict's
+        // newTasks; validated by the same validateNewTask() allowlist and
+        // created by the orchestrator (the reviewer never touches bd
+        // itself). Optional so a PASS needs no boilerplate.
+        newTasks: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    title: { type: 'string' },
+                    description: { type: 'string' },
+                    priority: { type: 'string' },
+                },
+                required: ['title', 'description', 'priority'],
+            },
+        },
     },
     required: ['verdict', 'notes'],
 };

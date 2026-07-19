@@ -292,7 +292,9 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // gained the same max_turns-exhaustion resume path
     // (dispatchReviewerResume) -- a READ-side bracket (pushCode: false, no
     // pushBeads), so the pushBeads count below is unchanged.
-    assert.equal(sites.length, 10, `expected 10 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 10 -> 11 (stabilization log iteration 5): Final Review resume bracket
+    // (read-side, no pushBeads -- pushBeads count below unchanged).
+    assert.equal(sites.length, 11, `expected 11 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     const hasPushBeads = (t) => /\{\s*pushBeads:\s*true\s*\}/.test(t);
     const pushBeadsSites = sites.filter(hasPushBeads);

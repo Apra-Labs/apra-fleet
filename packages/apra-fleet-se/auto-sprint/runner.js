@@ -2016,6 +2016,13 @@ function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cycle
         'Return a PASS/FAIL verdict per your agent contract, grounded in the evidence above -- ' +
         'never rubber-stamp PASS regardless of open goal-priority beads or deploy/integration failures.'
     );
+    lines.push(
+        'If your verdict is FAIL: also return your actionable findings as `newTasks` ' +
+        '(title, description, priority each) so they persist in beads for the next sprint -- ' +
+        'notes alone do not reach the backlog. One task per distinct finding; reference ' +
+        'concrete files/tests in each description. NEVER touch beads yourself (no bd create/update); ' +
+        'the orchestrator applies your newTasks. On PASS, omit newTasks or return [].'
+    );
     return lines.join('\n\n');
 }
 
@@ -4278,9 +4285,32 @@ async function runSprintCycle(context) {
     const finalClosedCount = (await bdListScoped('--status=closed --json')).length;
 
     let finalVerdictResult;
+    // Stabilization log iteration 5: the Final Review covers an entire
+    // epic's worth of work -- categorically LARGER than the per-round
+    // review that already proved 50 fleet-default turns insufficient (run
+    // 6). Explicit budget + the same same-session resume-and-continue
+    // treatment as the doer and per-round reviewer; without it, a large
+    // sprint's final review deterministically dies at the default turn
+    // limit twice and flips the whole sprint to a FAIL whose notes carry
+    // no findings at all.
+    const FINAL_REVIEW_MAX_TURNS = 60;
     // apra-fleet-eft.8.2: Final Review is the same 'reviewer' role as
     // dispatchReview above (read-side, pushCode: false) -- G-pull before,
     // no-op G-push after every attempt (including the retry below).
+    const finalReviewDispatchOpts = {
+        member_name: getMemberForRole('reviewer'),
+        agentType: 'reviewer',
+        schema: finalVerdict,
+        label: 'Final Review',
+        model: FIXED_ROLE_TIER.reviewer,
+        // apra-fleet-j6i: reviews the full diff/evidence across an
+        // entire epic's worth of closed tasks -- most costly of the
+        // 300s-default gaps since a timeout here flips a whole
+        // sprint's outcome to FAIL.
+        timeout_s: 3600,
+        max_total_s: 3600,
+        max_turns: FINAL_REVIEW_MAX_TURNS,
+    };
     const dispatchFinalReview = () => withGitSync(getMemberForRole('reviewer'), false, () => agent(
         buildFinalVerdictPrompt({
             targetIssues,
@@ -4294,20 +4324,35 @@ async function runSprintCycle(context) {
             integFailures,
             rejectedNewTasks,
         }),
+        // member_name is repeated literally here -- not only via the
+        // shared opts object -- so the source-level call-site parse in
+        // dispatch-safety-guard can verify it.
+        { ...finalReviewDispatchOpts, member_name: getMemberForRole('reviewer') }
+    ));
+    const dispatchFinalReviewResume = () => withGitSync(getMemberForRole('reviewer'), false, () => agent(
+        'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
         {
+            ...finalReviewDispatchOpts,
             member_name: getMemberForRole('reviewer'),
-            agentType: 'reviewer',
-            schema: finalVerdict,
-            label: 'Final Review',
-            model: FIXED_ROLE_TIER.reviewer,
-            // apra-fleet-j6i: reviews the full diff/evidence across an
-            // entire epic's worth of closed tasks -- most costly of the
-            // 300s-default gaps since a timeout here flips a whole
-            // sprint's outcome to FAIL.
-            timeout_s: 3600,
-            max_total_s: 3600,
+            label: `Final Review (resume, max_turns=${FINAL_REVIEW_MAX_TURNS * 2})`,
+            resume: true,
+            max_turns: FINAL_REVIEW_MAX_TURNS * 2,
         }
     ));
+    // One logical final-review attempt: on max_turns exhaustion, resume the
+    // SAME session with a doubled budget instead of restarting (a fresh
+    // retry would deterministically die at the same limit).
+    const runFinalReviewAttempt = async () => {
+        try {
+            return await dispatchFinalReview();
+        } catch (err) {
+            if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                log(`Final Review exhausted its turn limit (max_turns=${FINAL_REVIEW_MAX_TURNS}) -- resuming the same session with max_turns=${FINAL_REVIEW_MAX_TURNS * 2} instead of restarting the review.`);
+                return await dispatchFinalReviewResume();
+            }
+            throw err;
+        }
+    };
     // apra-fleet-j6i.2: unlike every other combined-catch dispatch site in
     // this file, Final Review is the LAST dispatch of the sprint -- a
     // single transient AgentDispatchError/AgentOutputError here used to
@@ -4317,7 +4362,7 @@ async function runSprintCycle(context) {
     // fuller AgentDispatchError-vs-AgentOutputError type distinction is
     // apra-fleet-02s's scope; this only adds the retry.
     try {
-        finalVerdictResult = await dispatchFinalReview();
+        finalVerdictResult = await runFinalReviewAttempt();
     } catch (err) {
         if (err instanceof AgentOutputError) {
             log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
@@ -4327,7 +4372,7 @@ async function runSprintCycle(context) {
             throw err;
         }
         try {
-            finalVerdictResult = await dispatchFinalReview();
+            finalVerdictResult = await runFinalReviewAttempt();
         } catch (retryErr) {
             if (retryErr instanceof AgentOutputError) {
                 log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
@@ -4341,6 +4386,38 @@ async function runSprintCycle(context) {
         }
     }
     log(`Final Verdict: ${JSON.stringify(finalVerdictResult)}`);
+
+    // Stabilization log iteration 5: persist a FAIL's actionable findings
+    // to BEADS -- the only artifact the next sprint's planner reads (notes
+    // reach only the PR body and the analysis doc). Same orchestrator-
+    // applies contract, allowlist validation, and id-allocator path as the
+    // per-round reviewer's newTasks; a rejected finding is logged and
+    // recorded, never sprint-fatal.
+    const finalNewTasks = Array.isArray(finalVerdictResult.newTasks) ? finalVerdictResult.newTasks : [];
+    if (finalVerdictResult.verdict === 'FAIL' && finalNewTasks.length > 0) {
+        let createdCount = 0;
+        for (const newTask of finalNewTasks) {
+            const validation = validateNewTask(newTask);
+            if (!validation.ok) {
+                log(`Final Review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
+                rejectedNewTasks.push({ cycle: finalCycleLabel, reason: validation.reason, raw: newTask });
+                continue;
+            }
+            const { title, description, priority } = validation;
+            const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
+            await createChildBeadWithAllocatedId({
+                command, allocator: childIdAllocator, member: orchestratorMember,
+                title, description, priority, parentId: targetIssues[0],
+                sprintId: sprintMutexId, floor, log,
+                label: `Create follow-up task from Final Review FAIL findings: ${title}`,
+            });
+            createdCount += 1;
+        }
+        if (createdCount > 0) {
+            log(`Final Review: persisted ${createdCount} FAIL finding(s) to beads as follow-up task(s) under ${targetIssues[0]}.`);
+            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+        }
+    }
 
     phase(`Harvest C${finalCycleLabel}`);
     // N12 (apra-fleet-unw2.10): wire the harvester's five vendored-required

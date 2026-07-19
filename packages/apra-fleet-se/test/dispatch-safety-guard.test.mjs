@@ -124,7 +124,10 @@ const EXPECTED_COMMAND_COUNT = 28;
 // 10 -> 11: dispatchReview() gained a reviewer resume-and-continue agent()
 // site (stabilization log Issue 9, mirrors the doer's dispatchDoerResume);
 // member_name confirmed present via shared reviewerDispatchOpts.
-const EXPECTED_AGENT_COUNT = 11;
+// 11 -> 12 (stabilization log iteration 5): Final Review gained a
+// resume-and-continue agent() site (dispatchFinalReviewResume), same
+// shape as the doer/reviewer resume paths; member_name literal confirmed.
+const EXPECTED_AGENT_COUNT = 12;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in

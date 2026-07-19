@@ -63,8 +63,11 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // the SAME logical review continuing in the same session, wrapped in its
 // own read-side (pushCode: false) withGitSync(...) bracket. One new
 // agent() call site, one new withGitSync(...) call site.
-const EXPECTED_AGENT_COUNT = 11;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 10;
+// 11 -> 12 agent()/10 -> 11 withGitSync (stabilization log iteration 5):
+// Final Review resume-and-continue (dispatchFinalReviewResume), a
+// read-side bracket like the per-round reviewer resume.
+const EXPECTED_AGENT_COUNT = 12;
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 11;
 const STREAK_ASSIGNMENT_MARKER = "label: 'Streak Assignment'";
 
 /** Same helper as dispatch-safety-guard.test.mjs: is `col` inside an open same-line quote? */

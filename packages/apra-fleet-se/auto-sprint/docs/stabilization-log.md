@@ -342,6 +342,39 @@ eft.9.7 claim-loop restructure of dispatchDoer -- conflict resolved
 keeping the doer's structure with the new timeouts applied). se suite
 759 pass / 2 fail (both the beaded Windows lifecycle bug); client 22/22.
 
+## Loop iteration 5 (2026-07-19)
+
+Run 9 aborted at planning (SprintPlanRejectedError, 3 rounds): R1-R2
+flagged all-children-closed features as undecomposed (the planner resolved
+this itself by R3 -- no runner change needed), and R3's sole blocker was
+an operator-injected bug bead (eft.4.7) missing the `model` metadata the
+plan contract requires. Operator lesson recorded (bead injections must
+carry model metadata and be created member-side + dolt-pushed; the
+orchestrator's local clone is stale/conflicted outside sprint brackets).
+Run 10 relaunched after fixing the metadata; its plan R1 caught the run-9
+planner's duplicate re-creations of closed eft.13 work and R2 approved a
+deduplicated DAG -- the plan gate working as designed.
+
+### Final Review hardening (turn budget, resume, feedback-to-beads)
+
+- **Gap 1**: dispatchFinalReview had no explicit max_turns and no resume
+  path -- an epic-wide review would deterministically die at the fleet
+  default (50 turns) twice (the retry restarts from scratch) and flip the
+  sprint to a FAIL whose notes carry only the error text.
+- **Gap 2**: the finalVerdict schema was {verdict, notes} only; a FAIL's
+  actionable findings reached the PR body and analysis doc but NEVER
+  beads -- invisible to the next sprint's planner, which reads only
+  beads.
+- **Fix** (runner.js + contracts.mjs): FINAL_REVIEW_MAX_TURNS = 60 with
+  one same-session resume at 120 turns (mirrors doer/reviewer);
+  finalVerdict gains optional newTasks (same item shape as
+  reviewerVerdict), the prompt instructs findings-as-newTasks on FAIL,
+  and the orchestrator applies them via the same validateNewTask
+  allowlist + child-id allocator + D-push path as per-round reviewer
+  newTasks. Structural baselines 12 agent sites / 11 brackets; goldens
+  regenerated (diff = the Final Review prompt/schema line only); se
+  suite 759 pass / 2 fail (the beaded Windows lifecycle bug).
+
 ### Still open / watched
 
 - **apra-fleet-eft.14 (server)**: why does the provider CLI sometimes exit
