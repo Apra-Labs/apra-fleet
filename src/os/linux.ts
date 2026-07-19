@@ -252,8 +252,20 @@ export class LinuxCommands implements OsCommands {
 
   // --- Process management ---
 
+  // apra-fleet-eft.13.3: `kill -9 <pid>` alone only signals that single
+  // process. A backgrounded child of an abandoned CLI invocation (e.g. a
+  // fixed-port test/dev server the doer started with `&`) keeps running as
+  // an orphan holding its port across the dispatch-exception retry
+  // (apra-fleet-02s.1, src/tools/execute-prompt.ts), so the retry collides
+  // with it and times out again -- the cascade apra-fleet-eft.13 exists to
+  // fix. Recursively kill the whole descendant tree (post-order: children
+  // before the pid itself), then the pid. Every step is best-effort: pgrep
+  // failures (no such pid, pgrep missing) redirect to /dev/null so the loop
+  // just sees no children, kill failures (already-exited process) redirect
+  // to /dev/null too, and the trailing `; true` guarantees this command
+  // never reports a non-zero exit even when the whole tree is already gone.
   killPid(pid: number): string {
-    return `kill -9 ${pid}`;
+    return `_fleet_kill_tree() { for _fleet_child in $(pgrep -P "$1" 2>/dev/null); do _fleet_kill_tree "$_fleet_child"; done; kill -9 "$1" 2>/dev/null; }; _fleet_kill_tree ${pid}; true`;
   }
 
   // --- GPU activity ---
