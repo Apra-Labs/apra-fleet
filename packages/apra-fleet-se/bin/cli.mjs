@@ -7,12 +7,13 @@ import { existsSync } from 'node:fs';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
-import { StdioTransport } from '@apralabs/apra-fleet-client/transport';
+import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import {
     resolveFleetServerCommand as sharedResolveFleetServerCommand,
     resolveFleetServerConnection as sharedResolveFleetServerConnection,
+    getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension } from '../auto-sprint/viewer-extensions.mjs';
 import { validateIssueId, validateBranchName, checkMemberTopology } from '../auto-sprint/runner.js';
@@ -54,12 +55,41 @@ export function resolveFleetServerCommand(deps = {}) {
 
 /**
  * The full ADR resolution order (HTTP-singleton attach first, stdio self-spawn
- * fallback) for callers that want it. auto-sprint's own main() keeps its current
- * stdio behavior; this is exported so the resolution order has exactly one home.
+ * fallback) for callers that want it. This is exported so the resolution
+ * order has exactly one home.
+ *
+ * NOTE (apra-fleet-eft.7.1): auto-sprint's own main() below calls this too,
+ * but treats anything other than `{ mode: 'http' }` as a hard failure -- see
+ * `FleetServerUnreachableError`. Plan Part 2.1 retired the per-invocation
+ * stdio self-spawn for cli.mjs specifically (it is now the supervisor's
+ * internal execution vehicle, launched once per sprint by the spawner), so
+ * the stdio branches this function can still return remain here only for
+ * other consumers (e.g. `apra-fleet workflow`) that intentionally allow them.
  * @param {object} [deps]
  */
 export function resolveFleetServerConnection(deps = {}) {
     return sharedResolveFleetServerConnection({ dirname: __dirname, exists: existsSync, ...deps });
+}
+
+/**
+ * Typed error thrown by main() (apra-fleet-eft.7.1) when no reachable fleet
+ * HTTP singleton is configured. cli.mjs deliberately does NOT fall back to
+ * self-spawning a stdio MCP server here -- under the service, every sprint
+ * child must share the one already-running fleet-server process, so a
+ * missing/unreachable singleton is a hard, explicit failure naming exactly
+ * what is missing rather than a silent private-server fallback.
+ */
+export class FleetServerUnreachableError extends Error {
+    /**
+     * @param {string} message
+     * @param {{ code?: string, details?: object }} [opts]
+     */
+    constructor(message, { code, details } = {}) {
+        super(message);
+        this.name = 'FleetServerUnreachableError';
+        this.code = code || 'FLEET_SERVER_UNREACHABLE';
+        this.details = details;
+    }
 }
 
 /**
@@ -449,27 +479,42 @@ async function main() {
 
     // --- Precondition Validations ---
 
-    // 1. Stand up the fleet MCP transport FIRST, so member validation, the
+    // 1. Attach to the fleet MCP transport FIRST, so member validation, the
     // "bd show" issue precondition (below), and the sprint itself all run
     // against the same live client/connection -- and so the issue
     // precondition can target the orchestrator MEMBER rather than the local
     // machine (apra-fleet-unw2.16, N14 (d): the sprint's own `bd` commands
     // run on the member via the fleet transport, which can be a different
     // database than whatever is local to this CLI process).
-    const { command: serverCommand, args: serverArgs } = resolveFleetServerCommand();
-    const transport = new StdioTransport(serverCommand, serverArgs);
+    //
+    // apra-fleet-eft.7.1 (Plan Part 2.1 TRANSPORT decision): no per-sprint
+    // stdio MCP transport. cli.mjs is now the supervisor's internal execution
+    // vehicle -- every child it runs as (one per concurrent sprint) must
+    // attach to the EXISTING fleet singleton over streamable HTTP via
+    // resolveFleetServerConnection() rather than each spawning its own
+    // fleet-server process. If no reachable HTTP singleton is configured,
+    // fail fast with a typed error naming the missing connection config --
+    // silently self-spawning a private stdio server here would defeat the
+    // whole point of sharing one fleet-server connection across N children.
+    const connection = await resolveFleetServerConnection();
+    if (connection.mode !== 'http') {
+        const err = new FleetServerUnreachableError(
+            'No reachable apra-fleet HTTP singleton was found. cli.mjs no longer ' +
+                'self-spawns a per-invocation stdio MCP server (Plan Part 2.1) -- ' +
+                `resolution said: "${connection.reason}". Start the fleet server ` +
+                "('apra-fleet start' or 'apra-fleet install'), or check " +
+                `${getServerInfoPath()} (pid alive + GET /health) and the ` +
+                'APRA_FLEET_TRANSPORT / APRA_FLEET_SERVER_CMD / APRA_FLEET_SERVER_BIN ' +
+                'env vars for a stray override forcing stdio.',
+            { code: 'FLEET_SERVER_UNREACHABLE', details: { reason: connection.reason, mode: connection.mode } },
+        );
+        console.error(`Error: ${err.message}`);
+        process.exit(1);
+        return;
+    }
+    const transport = new StreamableHttpTransport(connection.url);
     await transport.start();
     const mcpClient = new McpClient(transport);
-    await mcpClient.request('initialize', {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'apra-fleet-se', version: '1.0.0' }
-    });
-    await transport.send({
-        jsonrpc: '2.0',
-        method: 'notifications/initialized',
-        params: {}
-    });
 
     const fleetApi = new ApraFleet(mcpClient);
 
