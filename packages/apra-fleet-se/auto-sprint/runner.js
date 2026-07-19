@@ -2212,31 +2212,73 @@ async function runSprintCycle(context) {
      */
     async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
+        // Stabilization log Issue 9: a full-cycle review is big -- run 6's
+        // reviewer genuinely ran out of the fleet's default turn budget
+        // (num_turns=51 after ~12 minutes of legitimate review work), and a
+        // fresh retry deterministically hits the same wall. Make the budget
+        // explicit and, on max_turns exhaustion, RESUME the same session with
+        // a doubled budget (mirrors the doer's resume-and-continue rationale
+        // at dispatchDoerResume: the session already holds the full review
+        // context, so a short continue-nudge finishes the job instead of
+        // restarting it).
+        const BASE_REVIEWER_MAX_TURNS = 60;
+        const reviewerDispatchOpts = {
+            member_name: reviewerPool[0],
+            agentType: 'reviewer',
+            schema: reviewerVerdict,
+            model: FIXED_ROLE_TIER.reviewer,
+            // apra-fleet-aw8: reviewer inspects a real diff/branch,
+            // not a quick prompt -- same 300s-default gap as doer
+            // dispatch, observed live tripping on real review work.
+            timeout_s: 900,
+            max_total_s: 3600,
+            max_turns: BASE_REVIEWER_MAX_TURNS,
+        };
+        const dispatchReviewerOnce = () => withGitSync(reviewerPool[0], false, () => agent(
+            buildReviewerPrompt({
+                beadIds,
+                acceptanceCriteriaJson,
+                baseBranch: validated.baseBranch,
+                branch: validated.branch,
+            }),
+            // member_name is repeated literally here -- not only via the
+            // shared opts object -- so the source-level call-site parse in
+            // dispatch-safety-guard can verify it.
+            { ...reviewerDispatchOpts, member_name: reviewerPool[0] }
+        ));
+        const dispatchReviewerResume = () => withGitSync(reviewerPool[0], false, () => agent(
+            'Continue your review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Finish evaluating the remaining acceptance criteria and return your final verdict now.',
+            {
+                ...reviewerDispatchOpts,
+                member_name: reviewerPool[0],
+                label: `Review (resume, max_turns=${BASE_REVIEWER_MAX_TURNS * 2})`,
+                resume: true,
+                max_turns: BASE_REVIEWER_MAX_TURNS * 2,
+            }
+        ));
         let verdict;
         for (let reviewAttempt = 1; reviewAttempt <= 2; reviewAttempt++) {
             try {
                 // apra-fleet-eft.8.2: reviewer is a read-side role (pushCode:
                 // false) -- G-pull before, no-op G-push after.
-                verdict = await withGitSync(reviewerPool[0], false, () => agent(
-                    buildReviewerPrompt({
-                        beadIds,
-                        acceptanceCriteriaJson,
-                        baseBranch: validated.baseBranch,
-                        branch: validated.branch,
-                    }),
-                    {
-                        member_name: reviewerPool[0],
-                        agentType: 'reviewer',
-                        schema: reviewerVerdict,
-                        model: FIXED_ROLE_TIER.reviewer,
-                        // apra-fleet-aw8: reviewer inspects a real diff/branch,
-                        // not a quick prompt -- same 300s-default gap as doer
-                        // dispatch, observed live tripping on real review work.
-                        timeout_s: 900,
-                        max_total_s: 3600,
+                try {
+                    verdict = await dispatchReviewerOnce();
+                } catch (err) {
+                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                        log(`Reviewer exhausted its turn limit (max_turns=${BASE_REVIEWER_MAX_TURNS}) -- resuming the same session with max_turns=${BASE_REVIEWER_MAX_TURNS * 2} instead of restarting the review.`);
+                        verdict = await dispatchReviewerResume();
+                    } else {
+                        throw err;
                     }
-                ));
+                }
             } catch (err) {
+                // Stabilization log Issue 9: these synthesized verdicts are
+                // INFRASTRUCTURE failures, not the reviewer contradicting
+                // itself -- mark them dispatchFailed so the contract-violation
+                // guard below never mistakes a dispatch failure for a
+                // self-contradictory LLM verdict (observed live aborting run 6:
+                // max_turns exhaustion + a client timeout were counted as two
+                // contract violations and threw ReviewerContractViolationError).
                 if (err instanceof AgentOutputError) {
                     log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
                     verdict = {
@@ -2244,6 +2286,7 @@ async function runSprintCycle(context) {
                         notes: `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
                         reopenIds: [],
                         newTasks: [],
+                        dispatchFailed: true,
                     };
                 } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
                     // A transport-level failure (e.g. a dropped connection mid-dispatch)
@@ -2255,6 +2298,7 @@ async function runSprintCycle(context) {
                         notes: `Reviewer dispatch failed: ${err.message}`,
                         reopenIds: [],
                         newTasks: [],
+                        dispatchFailed: true,
                     };
                 } else {
                     throw err;
@@ -2262,6 +2306,18 @@ async function runSprintCycle(context) {
             }
             log(`Reviewer: ${JSON.stringify(verdict)}`);
 
+            if (verdict.dispatchFailed) {
+                if (reviewAttempt < 2) {
+                    // One more infrastructure attempt (transport blips and
+                    // orphaned-lock busy waits are transient), then degrade.
+                    log(`Reviewer: dispatch-level failure on attempt ${reviewAttempt} of 2 -- retrying the review once before degrading the round.`);
+                    continue;
+                }
+                // A degraded round counts toward the bounded stall-abort
+                // budget like every other role's dispatch failure -- it is
+                // NOT a reviewer contract violation.
+                return verdict;
+            }
             if (!isReviewerContractViolation(verdict)) {
                 return verdict;
             }

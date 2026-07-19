@@ -286,7 +286,16 @@ function buildRepairPrompt(errorsText) {
  * @property {string} [member_name] - Apra-fleet member to dispatch to
  * @property {string} [member_id] - Specific member UUID
  * @property {Record<string, string>} [substitutions] - Template substitutions for prompt
- * @property {number} [timeout_s] - Execution timeout
+ * @property {number} [timeout_s] - Execution timeout (server-side INACTIVITY timeout:
+ *   resets on every output chunk from the member CLI)
+ * @property {number} [max_total_s] - Server-side HARD wall-clock ceiling for the dispatch,
+ *   independent of activity. Also drives the derived client-side request timeout:
+ *   deriveTimeoutMs (packages/apra-fleet-client/src/client/api.mjs) prefers max_total_s
+ *   over timeout_s, so omitting it here caps the whole dispatch at timeout_s+grace
+ *   client-side even when the caller intended a much larger total budget. Observed live
+ *   (stabilization log Issue 10): this option was silently DROPPED from the payload, so a
+ *   legitimate 15+ minute reviewer dispatch was client-timed-out at 930s while the remote
+ *   session kept running.
  * @property {number} [max_turns] - Max turns for conversational tools
  * @property {'low'|'medium'|'high'|'xhigh'|'max'} [effort] - Effort parameter for fleet routing
  * @property {string} [agentType] - Agent persona to activate on the member
@@ -760,6 +769,7 @@ export class FleetWorkflow extends EventEmitter {
                 member_id: opts.member_id,
                 substitutions: opts.substitutions,
                 timeout_s: opts.timeout_s,
+                max_total_s: opts.max_total_s,
                 max_turns: opts.max_turns,
                 effort: opts.effort,
                 agent: opts.agentType,

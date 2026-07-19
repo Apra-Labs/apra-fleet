@@ -57,8 +57,14 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // responsibilities), so it is wrapped in its own withGitSync(...) bracket
 // identical in shape to the original dispatchDoer -- one new agent() call
 // site, one new withGitSync(...) call site.
-const EXPECTED_AGENT_COUNT = 10;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 9;
+// Bumped 10 -> 11 agent()/9 -> 10 withGitSync (2026-07-19, stabilization
+// log Issue 9): dispatchReview() gained a reviewer max_turns-exhaustion
+// resume path (dispatchReviewerResume), the same shape as the doer's --
+// the SAME logical review continuing in the same session, wrapped in its
+// own read-side (pushCode: false) withGitSync(...) bracket. One new
+// agent() call site, one new withGitSync(...) call site.
+const EXPECTED_AGENT_COUNT = 11;
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 10;
 const STREAK_ASSIGNMENT_MARKER = "label: 'Streak Assignment'";
 
 /** Same helper as dispatch-safety-guard.test.mjs: is `col` inside an open same-line quote? */

@@ -94,7 +94,10 @@ const EXPECTED_COMMAND_COUNT = 26;
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
 // with member_name.
-const EXPECTED_AGENT_COUNT = 10;
+// 10 -> 11: dispatchReview() gained a reviewer resume-and-continue agent()
+// site (stabilization log Issue 9, mirrors the doer's dispatchDoerResume);
+// member_name confirmed present via shared reviewerDispatchOpts.
+const EXPECTED_AGENT_COUNT = 11;
 
 /**
  * Returns true if `col` (0-based index into `lineText`) sits inside an open

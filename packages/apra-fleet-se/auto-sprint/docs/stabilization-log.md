@@ -202,6 +202,59 @@ changes stashed; they belong to the in-flight eft.2.1 feature work).
   kills live member sessions -- deferred to a natural stop; the workflow
   layer's Issue 3 detection handles it in the meantime.
 
+## Loop iteration 3 (2026-07-19)
+
+Run 6 (the first on the Issue 8 transport fix) got dramatically further
+than any prior run: Plan C1 approved in round 1 (the previously
+empty-response-prone plan-reviewer completed normally), the full Develop
+C1 R1 phase ran multi-minute doer streaks back-to-back with ZERO transport
+failures (beads closed: eft.6.4, 9.1, 4.6, more; one streak correctly
+degraded on a VERIFY/still-open mismatch), and the sprint reached Review
+C1 R1 -- where it found the next two systemic issues:
+
+### Issue 9: reviewer budgets undersized for a full-cycle review + infra failures tripped the contract-violation guard
+
+- **Symptom** (run 6): the reviewer ran out of turns (num_turns=51 after
+  ~12 min of legitimate review work, typed max_turns_exhausted); the retry
+  then hit the 930s client-side request timeout. BOTH synthesized
+  CHANGES_NEEDED fallback verdicts had empty reopenIds/newTasks, so
+  isReviewerContractViolation() -- designed to catch a GENUINE
+  self-contradictory LLM verdict -- counted two "contract violations" and
+  aborted the sprint with ReviewerContractViolationError.
+- **Root cause**: two distinct gaps. (a) The reviewer dispatch had no
+  explicit max_turns and no resume path, so a big-cycle review
+  deterministically dies at the fleet default and a fresh retry re-dies
+  the same way. (b) dispatchReview() synthesized infrastructure-failure
+  verdicts in the same shape as LLM verdicts, so the contract-violation
+  guard could not tell them apart.
+- **Fix** (runner.js dispatchReview): explicit
+  `max_turns: BASE_REVIEWER_MAX_TURNS (60)`; on max_turns_exhausted the
+  SAME session is resumed once with a doubled budget (mirrors
+  dispatchDoerResume -- the session already holds the review context).
+  Synthesized failure verdicts now carry `dispatchFailed: true` and are
+  returned as a DEGRADED round (counting toward the bounded stall budget
+  like every other role) after one infrastructure retry -- they can no
+  longer throw ReviewerContractViolationError, which is reserved for
+  genuine schema-valid self-contradicting LLM verdicts. Structural test
+  baselines bumped (11 agent sites / 10 withGitSync brackets), reviewer
+  scenario recordings re-recorded; se suite 602/602.
+
+### Issue 10: agent() silently dropped max_total_s from the dispatch payload
+
+- **Symptom** (run 6): the reviewer retry timed out client-side at exactly
+  930000ms despite the runner passing `max_total_s: 3600` (which
+  deriveTimeoutMs prefers -- it should have produced a 3630s request
+  timeout).
+- **Root cause**: the payload object built inside
+  `packages/apra-fleet-workflow/src/workflow/index.mjs` agent() forwarded
+  timeout_s/max_turns/etc. but NOT max_total_s, so (a) the server never
+  received the hard wall-clock ceiling for ANY workflow dispatch, and (b)
+  the derived client timeout always fell back to timeout_s+30s = 930s,
+  killing any legitimately-slow dispatch at ~15.5 min while the remote
+  session kept running (orphan + busy lock).
+- **Fix**: `max_total_s: opts.max_total_s` added to the payload, with
+  JSDoc documenting both server- and client-side effects.
+
 ### Still open / watched
 
 - **apra-fleet-eft.14 (server)**: why does the provider CLI sometimes exit
