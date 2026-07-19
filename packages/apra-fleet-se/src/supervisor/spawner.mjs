@@ -255,6 +255,37 @@ export function createSpawner(deps = {}) {
 
         spawnSprint,
 
+        /**
+         * Registers a RE-ADOPTED child (apra-fleet-eft.4.5): a live process
+         * this supervisor instance did not itself spawn -- typically a sprint
+         * recovered by PID from the persisted ledger after a supervisor
+         * restart, whose --viewer-port has since been recovered from its own
+         * command line. This makes the pid known to getLiveEntry()/livePorts
+         * for exactly the same reasons a freshly-spawned child is: watchdog
+         * HTTP-reachability probing and API port resolution both key off this
+         * bookkeeping.
+         *
+         * There is no ChildProcess handle for a re-adopted pid (this process
+         * never spawned it), so unlike spawnSprint() no 'exit'/'error'
+         * listener is wired here -- nothing in this process can be notified
+         * the moment it exits. The watchdog's own periodic PID-liveness probe
+         * is what eventually detects the pid going away; adopt() itself does
+         * NOT re-verify liveness (the caller -- eft.4.5's re-adopter -- has
+         * already PID-probed via the restart reconciler before calling this).
+         * Idempotent: adopting the same pid again simply overwrites its port.
+         * @param {number} pid
+         * @param {number} port
+         */
+        adopt(pid, port) {
+            if (!Number.isInteger(pid) || pid <= 0) {
+                throw new TypeError('adopt() requires a positive integer pid');
+            }
+            if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+                throw new TypeError('adopt() requires an integer port in [1, 65535]');
+            }
+            live.set(pid, { port, child: null });
+        },
+
         /** Number of sprints spawned by this process that haven't exited yet. */
         get liveCount() { return live.size; },
         /** The set of --viewer-port values currently in use by live sprints. */

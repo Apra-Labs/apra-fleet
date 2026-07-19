@@ -21,7 +21,9 @@ import { pathToFileURL } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { createHistory } from '../src/supervisor/history.mjs';
+import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
+import { createReadopter } from '../src/supervisor/readopt.mjs';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -72,9 +74,15 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // collaborators so a restarted supervisor reconciles against on-disk state.
     const ledger = createLedger();
     const history = createHistory();
+    const spawner = createSpawner();
     const reconciler = createReconciler({ ledger, history });
+    // eft.4.5: re-adopts still-live children by PID at startup (see below),
+    // registering their recovered --viewer-port with the spawner seam so
+    // they are tracked/watchdog-monitored/HTTP-proxyable exactly like a
+    // freshly-spawned child.
+    const readopter = createReadopter({ ledger, spawner, reconciler });
 
-    const supervisor = createSupervisor({ port, ledger });
+    const supervisor = createSupervisor({ port, ledger, spawner });
 
     // eft.5.4: operator force-release of a wedged reservation.
     registerReservationRoutes(supervisor, reconciler);
@@ -90,12 +98,16 @@ export async function serveMain(argv = process.argv.slice(2)) {
 
     await supervisor.start();
 
-    // Restart reconciliation (eft.5.4, pairs with eft.4.5 re-adoption): the
-    // ledger seam has now loaded from disk. Start the history log, then
-    // PID-probe every reloaded entry -- dead children release both axes and are
-    // marked aborted-by-restart; live children are retained for re-adoption.
+    // Restart reconciliation (eft.5.4) + re-adoption (eft.4.5): the ledger
+    // seam has now loaded from disk. Start the history log, then PID-probe
+    // every reloaded entry -- dead children release both axes and are marked
+    // aborted-by-restart; live children are retained AND re-adopted (their
+    // --viewer-port recovered from the live process's own command line and
+    // registered with the spawner seam) so they resume being tracked,
+    // watchdog-monitored, and HTTP-reachable exactly like a freshly-spawned
+    // child.
     await history.start();
-    await reconciler.reconcile();
+    await readopter.readopt();
 
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
