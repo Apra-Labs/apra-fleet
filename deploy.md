@@ -6,8 +6,10 @@ Commands below require these prefixes in `.claude/settings.json` under `permissi
 - `Bash(gh run *)`
 - `Bash(gh release *)`
 - `Bash(mkdir *)`
+- `Bash(rm -rf /tmp/fleet-deploy*)`
+- `Bash(chmod +x /tmp/fleet-deploy*)`
 - `Bash(*apra-fleet-installer-* install *)`
-- `Bash(*apra-fleet-installer-* --version)`
+- `Bash(*apra-fleet* --version)`
 
 ## Prerequisites
 - `gh` CLI authenticated with access to Apra-Labs/apra-fleet
@@ -19,19 +21,32 @@ Deploys the latest successful CI build from `main` to this machine's real,
 day-to-day `apra-fleet` install (`~/.apra-fleet`). This is NOT the isolated
 integration-test sandbox -- see `integ-test-playbook.md` for that.
 
+The runbook is platform-agnostic: pick the artifact for the OS this runbook
+is executing on (see the Platform binaries table at the bottom), and clean
+the work dir first so re-runs never collide with a previous download.
+
 ```bash
+case "$(uname -s)" in
+  Darwin) ARTIFACT=apra-fleet-installer-darwin-arm64 ;;
+  Linux)  ARTIFACT=apra-fleet-installer-linux-x64 ;;
+  *)      ARTIFACT=apra-fleet-installer-win-x64.exe ;;
+esac
+rm -rf /tmp/fleet-deploy
 mkdir -p /tmp/fleet-deploy
 RUN_ID=$(gh run list --repo Apra-Labs/apra-fleet --branch main --workflow "CI - Build & Test" --status success --limit 1 --json databaseId -q '.[0].databaseId')
-gh run download "$RUN_ID" --repo Apra-Labs/apra-fleet --name apra-fleet-installer-win-x64.exe --dir /tmp/fleet-deploy
-/tmp/fleet-deploy/apra-fleet-installer-win-x64.exe install --force
+gh run download "$RUN_ID" --repo Apra-Labs/apra-fleet --name "$ARTIFACT" --dir /tmp/fleet-deploy
+chmod +x "/tmp/fleet-deploy/$ARTIFACT"
+"/tmp/fleet-deploy/$ARTIFACT" install --force
 ```
 
 This handles shutdown, binary replacement, skill installation, and restart in one step.
 
 ## Smoke test
 
+The installed binary is `apra-fleet.exe` on Windows and `apra-fleet` elsewhere:
+
 ```bash
-~/.apra-fleet/bin/apra-fleet.exe --version
+"$HOME/.apra-fleet/bin/apra-fleet" --version || "$HOME/.apra-fleet/bin/apra-fleet.exe" --version
 ```
 
 Exit 0 = healthy. After a manual deploy, also run `/mcp` in Claude Code to
@@ -43,7 +58,8 @@ not part of the exit-code smoke test above).
 
 The automated `## Deploy` section above always targets `main`'s latest green
 build. To deploy a specific branch or a tagged release instead (e.g. testing
-a PR build, or rolling forward to a named release):
+a PR build, or rolling forward to a named release), substitute the artifact
+name for your platform from the table below:
 
 ```bash
 # Latest CI run on a specific branch
@@ -51,8 +67,10 @@ gh run list --repo Apra-Labs/apra-fleet --branch <branch> --limit 1
 
 # Or from a release tag
 gh release list --repo Apra-Labs/apra-fleet --limit 5
-gh release download <tag> --repo Apra-Labs/apra-fleet -p "apra-fleet-installer-win-x64.exe" -D /tmp/fleet-deploy
-/tmp/fleet-deploy/apra-fleet-installer-win-x64.exe install --force
+rm -rf /tmp/fleet-deploy && mkdir -p /tmp/fleet-deploy
+gh release download <tag> --repo Apra-Labs/apra-fleet -p "<artifact-for-this-platform>" -D /tmp/fleet-deploy
+chmod +x /tmp/fleet-deploy/<artifact-for-this-platform>
+/tmp/fleet-deploy/<artifact-for-this-platform> install --force
 ```
 
 ## Rollback
@@ -61,11 +79,12 @@ The installer does not create a backup -- to rollback, download the previous
 release and re-run the installer with `--force`:
 
 ```bash
-# Download previous version (replace <tag> with the version to roll back to, e.g. v0.1.8.1)
-gh release download <tag> --repo Apra-Labs/apra-fleet -p "apra-fleet-installer-win-x64.exe" -D /tmp/fleet-rollback
-
-# Re-install
-/tmp/fleet-rollback/apra-fleet-installer-win-x64.exe install --force
+# Download previous version (replace <tag> with the version to roll back to,
+# e.g. v0.1.8.1, and <artifact-for-this-platform> from the table below)
+rm -rf /tmp/fleet-rollback
+gh release download <tag> --repo Apra-Labs/apra-fleet -p "<artifact-for-this-platform>" -D /tmp/fleet-rollback
+chmod +x /tmp/fleet-rollback/<artifact-for-this-platform>
+/tmp/fleet-rollback/<artifact-for-this-platform> install --force
 ```
 
 After rollback, run `/mcp` in Claude Code to reconnect, then `fleet_status`

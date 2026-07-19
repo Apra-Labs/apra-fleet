@@ -508,6 +508,33 @@ deduplicated DAG -- the plan gate working as designed.
   content record: 4 cycles, zero infrastructure failures, closed beads
   57->62, every P1/P2 feature at all-children-closed pending closure.
 
+### Issue 19: deploy.md is non-idempotent and hardcodes the Windows artifact
+
+- **Symptom**: run 12 Deploy C1 -- with Issue 18's permissions in place the
+  deployer executed deploy.md for the first time ever, and failed mid-run:
+  `gh run download ... error extracting "apra-fleet-installer-win-x64.exe":
+  file exists` (/tmp/fleet-deploy already held the artifact from the same
+  deploy session's earlier attempt).
+- **Root cause**, two content defects in the sprint-authored playbook:
+  (a) NON-IDEMPOTENT: `mkdir -p /tmp/fleet-deploy` then download -- any
+  re-run (or step retry) collides with the previous download, and gh run
+  download has no overwrite flag. (b) WRONG PLATFORM: the Deploy and smoke
+  test sections hardcode apra-fleet-installer-win-x64.exe and
+  apra-fleet.exe -- authored from the orchestrator's Windows viewpoint,
+  but the runbook executes ON THE MEMBER (fleet-rev is macOS ARM). Even a
+  clean download would have died at the install step. The playbook's own
+  Platform binaries table already listed the right artifact names.
+- **Fix** (deploy.md, committed to the sprint branch): Deploy section now
+  selects the artifact by `uname -s` (Darwin/Linux/fallback-Windows),
+  does `rm -rf /tmp/fleet-deploy` before mkdir, and `chmod +x` before
+  install; smoke test tries both binary names; manual/rollback sections
+  parameterized on the platform table. Permissions section gains
+  `Bash(rm -rf /tmp/fleet-deploy*)`, `Bash(chmod +x /tmp/fleet-deploy*)`,
+  and widens the version check to `Bash(*apra-fleet* --version)` (the old
+  prefix only covered the installer, not the installed binary the smoke
+  test runs). Same prefixes added live to fleet-rev's settings files, and
+  the stale /tmp/fleet-deploy was removed on the member.
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":
