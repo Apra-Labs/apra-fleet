@@ -2454,14 +2454,52 @@ async function runSprintCycle(context) {
             ? `origin/${validated.branch}`
             : `origin/${validated.baseBranch}`;
 
-        await command(
+        // Stabilization log Issue 11: any infrastructure-killed dispatch
+        // (transport drop, timeout, stop_prompt) predictably leaves the
+        // member's working tree DIRTY with whatever the agent had in flight,
+        // and `checkout -B` then fails with "Your local changes ... would be
+        // overwritten" -- observed live killing run 7 at Setup. That orphaned
+        // WIP belongs to a bead that is still open (a future streak redoes it
+        // properly), so the right move is to PRESERVE it in a named stash and
+        // proceed -- not to abort the sprint, and never to discard it. The
+        // happy path (clean tree) is unchanged: no extra commands issued.
+        const checkoutResult = await command(
             `git checkout -B ${validated.branch} ${startPoint}`,
             {
                 member_name: member,
                 silent: true,
+                failSoft: true,
                 label: `Ensure sprint branch '${validated.branch}' from '${startPoint}' on member '${member}'`,
             }
         );
+        if (!checkoutResult.ok) {
+            if (!/would be overwritten/i.test(checkoutResult.error || '')) {
+                throw new Error(
+                    `Ensure Sprint Branch: checkout of '${validated.branch}' on member '${member}' failed for a ` +
+                    `reason other than a dirty working tree (${checkoutResult.error || 'unknown error'}) -- aborting.`
+                );
+            }
+            log(
+                `Ensure Sprint Branch: member '${member}' has uncommitted changes (likely orphaned WIP from an ` +
+                `interrupted prior dispatch) blocking checkout -- preserving them in a named stash and retrying.`
+            );
+            await command(
+                `git stash push -u -m "auto-sprint[${validated.branch}] auto-stash of orphaned WIP blocking branch ensure"`,
+                {
+                    member_name: member,
+                    silent: true,
+                    label: `Stash orphaned WIP on member '${member}'`,
+                }
+            );
+            await command(
+                `git checkout -B ${validated.branch} ${startPoint}`,
+                {
+                    member_name: member,
+                    silent: true,
+                    label: `Ensure sprint branch '${validated.branch}' from '${startPoint}' on member '${member}' (post-stash retry)`,
+                }
+            );
+        }
     }
     publishState('sprint-args', {
         branch: validated.branch,

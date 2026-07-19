@@ -89,7 +89,11 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // LOCAL ref on the abort-path member -- a real abort hit exit 128 ("unknown
 // revision") when the member never had that base branch checked out
 // locally under that exact name, verified compliant.
-const EXPECTED_COMMAND_COUNT = 26;
+// 26 -> 28: Ensure Sprint Branch gained a dirty-tree recovery path
+// (stabilization log Issue 11) -- one `git stash push -u` site and one
+// post-stash checkout retry site, both with explicit member_name. The
+// happy path issues neither.
+const EXPECTED_COMMAND_COUNT = 28;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

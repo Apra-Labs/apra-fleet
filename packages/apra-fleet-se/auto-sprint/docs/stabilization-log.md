@@ -255,6 +255,37 @@ C1 R1 -- where it found the next two systemic issues:
 - **Fix**: `max_total_s: opts.max_total_s` added to the payload, with
   JSDoc documenting both server- and client-side effects.
 
+### Issue 11: dirty member working tree kills the next sprint at Setup
+
+- **Symptom** (run 7): `Ensure Sprint Branch` died immediately with
+  `error: Your local changes to the following files would be overwritten
+  by checkout` -- fleet-rev had an uncommitted runner.js modification left
+  by an interrupted dispatch from run 5/6.
+- **Root cause**: any infrastructure-killed dispatch (transport drop,
+  timeout, stop_prompt) predictably leaves the member's tree dirty with
+  whatever the agent had in flight; `git checkout -B` refuses to proceed.
+  A stabilized sprint loop guarantees such orphans will keep happening, so
+  Setup must expect them.
+- **Fix** (runner.js Ensure Sprint Branch): the checkout is now failSoft;
+  on the specific "would be overwritten" failure the orphaned WIP is
+  preserved in a named stash (`git stash push -u -m "auto-sprint[branch]
+  auto-stash of orphaned WIP..."`) and the checkout retried once. Any
+  other checkout failure still aborts loudly. Happy path (clean tree)
+  issues no extra commands. The run-7 orphan itself (a one-line eft.8.x
+  error-shape WIP) was inspected and hand-stashed on fleet-rev with a
+  descriptive message; its bead is still open so a future streak redoes
+  it properly. Command-count baseline 26 -> 28.
+
+### Feature bug found by the loop, routed to the sprint backlog
+
+- The run-6 doer's new supervisor-lifecycle test (eft.4.6, written and
+  verified on macOS fleet-rev) fails on Windows: live-child re-adoption
+  recovers the port from the process command line via a ps reader that
+  returns nothing usable on Windows. Filed as a P1 bug bead under
+  apra-fleet-eft.4 (2026-07-19) so the sprint's own doers fix it --
+  stabilization-loop scope stays on the sprint machinery, not the eft
+  feature. se suite otherwise green (667 pass / 2 fail, both this bug).
+
 ### Still open / watched
 
 - **apra-fleet-eft.14 (server)**: why does the provider CLI sometimes exit
