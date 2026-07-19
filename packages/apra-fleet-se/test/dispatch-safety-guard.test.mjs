@@ -98,7 +98,17 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // orchestratorMember, silent: true })` call site (the `bd update <id>
 // --claim` issued per bead before a doer streak dispatch), verified
 // compliant.
-const EXPECTED_COMMAND_COUNT = 29;
+// 29 -> 28 (apra-fleet-eft.8.12, git conflict ladder Tier 2): the Tier 1
+// scripted detect-and-abort helper (detectAndAbortRebaseConflict, with its
+// `git rebase --abort` and post-abort `git status --porcelain` command()
+// pair) moved out of runner.js entirely into ./conflict-ladder.mjs (-2 real
+// sites from THIS file's count -- conflict-ladder.mjs is outside
+// RUNNER_PATH's scan scope, not a regression); runner.js gained exactly one
+// new real command() site in its place, the Tier 2 post-resolution
+// clean-state check `command('git status --porcelain', { member_name:
+// member, silent: true, failSoft: true, label })` inside syncMemberAfter
+// (+1), net -1. Verified compliant (explicit member_name).
+const EXPECTED_COMMAND_COUNT = 28;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

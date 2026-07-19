@@ -6,6 +6,14 @@ import {
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError } from './errors.mjs';
+import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
+
+// apra-fleet-eft.8.12: parseUnmergedPaths is re-exported here (rather than
+// only living in conflict-ladder.mjs) so existing imports of it from
+// runner.js -- e.g. test/mock-sprint-git-sync-brackets.test.mjs -- keep
+// working unchanged; conflict-ladder.mjs is the single source of truth for
+// its implementation.
+export { parseUnmergedPaths };
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop (apra-fleet-unw.16)
@@ -592,78 +600,12 @@ export function classifyGitFailure(output) {
     return 'unknown';
 }
 
-// Two-letter `git status --porcelain` XY codes git reserves EXCLUSIVELY for
-// an unresolved merge/rebase conflict (see `git status` docs). Used by
-// parseUnmergedPaths() below to prove an ACTUAL conflict from git's own
-// working-tree state, never inferred from a failing command's exit
-// code/message alone.
-const UNMERGED_STATUS_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
-
-/**
- * Parses `git status --porcelain` output and returns the paths whose XY
- * status code marks them as unmerged (conflicted). Any other status
- * (staged/modified/untracked/etc.) is deliberately ignored -- only these
- * codes are unambiguous proof of an in-progress conflict.
- *
- * @param {string} porcelainOutput
- * @returns {string[]}
- */
-export function parseUnmergedPaths(porcelainOutput) {
-    const text = String(porcelainOutput == null ? '' : porcelainOutput);
-    const paths = [];
-    for (const line of text.split('\n')) {
-        if (!line) continue;
-        const code = line.slice(0, 2);
-        if (UNMERGED_STATUS_CODES.has(code)) {
-            paths.push(line.slice(3).trim());
-        }
-    }
-    return paths;
-}
-
-/**
- * apra-fleet-eft.8.6 (Plan 3.4 git ladder) -- Tier 1 SCRIPTED conflict
- * detection + clean-state restore. Called only after a `git pull --rebase`
- * command has already failed (its exit code is why we're here at all).
- * Never trusts that failing command's own exit code/message classification
- * alone to decide whether a rebase is actually mid-conflict -- confirms via
- * git's OWN porcelain status first (a rebase that failed for some other,
- * non-conflict reason before ever touching the tree has nothing to abort).
- * If unmerged paths ARE found, runs `git rebase --abort` to restore a clean
- * working tree BEFORE the caller raises its typed GitDivergedError, then
- * re-checks porcelain to confirm the abort actually worked (a loud log
- * warning, never a second thrown error, if it somehow did not -- the
- * caller's GitDivergedError immediately after this returns is the single,
- * documented Tier 1 -> Tier 2 escalation point). Script-only: no agent is
- * ever dispatched here. Tier 2 (an agent-with-runbook dispatch, reserved for
- * semantically-overlapping edits a fixed ours/theirs policy cannot
- * arbitrate) is a distinct, later escalation this task deliberately does not
- * build.
- *
- * @param {{ command: Function, member: string, log: Function, maxTransientRetries: number }} opts
- * @returns {Promise<string[]>} unmerged paths found (empty array if none)
- */
-async function detectAndAbortRebaseConflict({ command, member, log, maxTransientRetries }) {
-    const statusBefore = await runGitStep({
-        command, member, cmd: 'git status --porcelain',
-        label: `rebase-conflict status check for '${member}'`, log, maxTransientRetries,
-    });
-    const unmergedPaths = parseUnmergedPaths(statusBefore.output);
-    if (unmergedPaths.length === 0) {
-        return unmergedPaths;
-    }
-
-    log(`[Sync] G-push pull-rebase for member '${member}' left unmerged path(s) (${unmergedPaths.join(', ')}) -- running 'git rebase --abort' to restore a clean working tree (Tier 1, script-only; no agent dispatched).`);
-    await command('git rebase --abort', { member_name: member, silent: true, failSoft: true, label: `G-push rebase --abort for '${member}'` });
-
-    const statusAfter = await command('git status --porcelain', { member_name: member, silent: true, failSoft: true, label: `post-abort clean-state check for '${member}'` });
-    const remaining = statusAfter && statusAfter.output ? String(statusAfter.output).trim() : '';
-    if (remaining !== '') {
-        log(`[Sync] WARNING: 'git rebase --abort' for member '${member}' did not fully restore a clean working tree -- porcelain still shows: ${remaining}`);
-    }
-
-    return unmergedPaths;
-}
+// apra-fleet-eft.8.12: parseUnmergedPaths and the Tier 1 scripted
+// detect-and-abort helper (detectAndAbortRebaseConflict) now live in
+// ./conflict-ladder.mjs, alongside the new Tier 2 (agent-with-runbook)
+// escalation -- see that module's header comment for the full ladder. Both
+// are imported at the top of this file; parseUnmergedPaths is re-exported
+// there for backward compatibility.
 
 /**
  * Run a single git command via the injected command() with failSoft, retrying
@@ -773,12 +715,31 @@ export async function syncMemberBefore(member, opts = {}) {
  * publish). Every git command is issued via the injected command() with an
  * explicit member_name (3.2).
  *
+ * apra-fleet-eft.8.12 (Tier 2 of the git conflict ladder): when the pull-
+ * rebase retry above hits a REAL content conflict (unmerged paths, not just
+ * a plain non-FF race), an optional injected `agent()` gets exactly ONE
+ * bounded Tier 2 attempt -- a conflict-resolution-runbook dispatch -- before
+ * this function gives up and throws the typed GitDivergedError. The agent's
+ * own claim of success is never trusted: this function mechanically
+ * re-checks `git status --porcelain` for a clean tree and then attempts one
+ * real re-push; only that observed outcome decides whether Tier 2 actually
+ * resolved the conflict. Omitting `agent` (the default) preserves the exact
+ * pre-8.12 Tier-1-only behavior -- every existing caller/test that does not
+ * pass `agent` sees the same throws as before.
+ *
  * @param {string} member
- * @param {{ command: Function, pushCode?: boolean, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string }} opts
- * @returns {Promise<{ ok: true, member: string, pushed: boolean, rebased: boolean }>}
+ * @param {{
+ *   command: Function, pushCode?: boolean, log?: Function,
+ *   maxTransientRetries?: number, remote?: string, branch?: string,
+ *   agent?: Function, resolveConflictModel?: string,
+ * }} opts
+ * @returns {Promise<{ ok: true, member: string, pushed: boolean, rebased: boolean, tier2Resolved?: boolean }>}
  */
 export async function syncMemberAfter(member, opts = {}) {
-    const { command, pushCode = true, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch } = opts;
+    const {
+        command, pushCode = true, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch,
+        agent, resolveConflictModel,
+    } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberAfter requires an injected command() in opts");
     }
@@ -821,7 +782,43 @@ export async function syncMemberAfter(member, opts = {}) {
         // `git rebase --abort` BEFORE the typed divergence error below
         // propagates. See detectAndAbortRebaseConflict()'s own doc comment
         // for why this is the single Tier 1 -> Tier 2 escalation point.
-        const unmergedPaths = await detectAndAbortRebaseConflict({ command, member, log, maxTransientRetries });
+        const unmergedPaths = await detectAndAbortRebaseConflict({ command, member, log, maxTransientRetries, runGitStep });
+
+        // apra-fleet-eft.8.12 (Tier 2): unmergedPaths.length > 0 is exactly
+        // the ladder's documented escalation point -- a real content
+        // conflict, not just a non-FF race. Attempt exactly ONE bounded
+        // Tier 2 agent-with-runbook dispatch (when an agent() was injected)
+        // before falling back to the typed GitDivergedError below. Every
+        // outcome (agent throws, agent returns, or agent unavailable) is
+        // mechanically re-verified against real git state -- never the
+        // agent's own claim.
+        if (unmergedPaths.length > 0 && typeof agent === 'function') {
+            try {
+                await dispatchConflictResolutionAgent({
+                    agent, member, branch, unmergedPaths, log, model: resolveConflictModel, remote,
+                });
+            } catch (tier2Err) {
+                log(`[Sync] Tier 2 conflict-resolution dispatch for member '${member}' threw and will not be retried (script-first: no further escalation): ${tier2Err.message}`);
+            }
+
+            const postTier2Status = await command('git status --porcelain', { member_name: member, silent: true, failSoft: true, label: `Tier 2 post-resolution clean-state check for '${member}'` });
+            const stillUnmerged = parseUnmergedPaths(postTier2Status && postTier2Status.output ? postTier2Status.output : '');
+            if (stillUnmerged.length === 0) {
+                const rePush = await runGitStep({
+                    command, member, cmd: pushCmd,
+                    label: `G-push after Tier 2 conflict resolution for '${member}'`, log, maxTransientRetries,
+                });
+                if (rePush.ok) {
+                    log(`[Sync] Tier 2 conflict resolution for member '${member}' succeeded -- working tree clean and the resolved code was pushed.`);
+                    return { ok: true, member, pushed: true, rebased: true, tier2Resolved: true };
+                }
+                log(`[Sync] Tier 2 conflict resolution for member '${member}' left a clean tree but the re-push still failed: ${rePush.error}`);
+            } else {
+                log(`[Sync] Tier 2 conflict resolution for member '${member}' did not fully resolve -- porcelain still shows unmerged path(s): ${stillUnmerged.join(', ')}. Restoring a clean tree before failing this streak.`);
+                await detectAndAbortRebaseConflict({ command, member, log, maxTransientRetries, runGitStep });
+            }
+        }
+
         if (rebase.kind === 'diverged' || unmergedPaths.length > 0) {
             throw new GitDivergedError(
                 `[Sync] G-push pull-rebase for member '${member}' hit unmergeable divergence (conflict) -- must not be retried blindly: ${rebase.error}`,
@@ -1133,12 +1130,17 @@ export async function doltPushAfter(member, opts = {}) {
  * pushCode guard), so D-push always still runs unaffected by this ordering
  * rule.
  *
+ * apra-fleet-eft.8.12: `agent`/`resolveConflictModel` (both optional) are
+ * threaded straight through to syncMemberAfter's Tier 2 conflict-resolution
+ * escalation -- see that function's own doc comment. Omitting `agent`
+ * preserves the exact pre-8.12 behavior.
+ *
  * @param {string} member
  * @param {{
  *   command: Function, pushCode?: boolean, pushBeads?: boolean,
  *   log?: Function, mutex?: { acquire: Function, release: Function },
  *   sprintId?: string, branch?: string, maxTransientRetries?: number,
- *   remote?: string,
+ *   remote?: string, agent?: Function, resolveConflictModel?: string,
  * }} opts
  * @returns {Promise<{ ok: true, member: string, gPush: object, dPush: object }>}
  */
@@ -1146,11 +1148,12 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     const {
         command, pushCode = true, pushBeads = true, log = () => {},
         mutex, sprintId, branch, maxTransientRetries = 1, remote = 'origin',
+        agent, resolveConflictModel,
     } = opts;
 
     let gPush;
     try {
-        gPush = await syncMemberAfter(member, { command, pushCode, log, branch, maxTransientRetries, remote });
+        gPush = await syncMemberAfter(member, { command, pushCode, log, branch, maxTransientRetries, remote, agent, resolveConflictModel });
     } catch (gPushErr) {
         log(`[Sync] G-push failed for member '${member}' -- skipping D-push and failing this streak rather than advertising an unreachable close (a beads close whose justifying code never reached the shared branch): ${gPushErr.message}`);
         throw gPushErr;
@@ -2495,6 +2498,16 @@ async function runSprintCycle(context) {
     // that dispatch carries no `agentType`/persona of its own (see its own
     // call-site comment) and is not one of the seven dispatch types this
     // bracket covers.
+    //
+    // apra-fleet-eft.8.12: `agent` (already in scope in this closure, from
+    // context) is passed through to syncMemberAfterOrdered so a G-push that
+    // hits a real content conflict can attempt exactly one Tier 2
+    // agent-with-runbook resolution before failing the streak -- see
+    // syncMemberAfter's own doc comment for the full ladder and its
+    // mechanical (never agent-trusted) re-verification. This is a no-op for
+    // non-code-writing roles (pushCode:false short-circuits before the
+    // conflict path is ever reached) and never fires for a plain, non-
+    // conflict divergence.
     async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false } = {}) {
         await syncMemberBefore(member, { command, log, branch: validated.branch });
         await doltPullBefore(member, { command, log });
@@ -2509,7 +2522,7 @@ async function runSprintCycle(context) {
             // coverage of this ordering.
             await syncMemberAfterOrdered(member, {
                 command, pushCode, pushBeads, log, branch: validated.branch,
-                mutex: doltPushMutex, sprintId: sprintMutexId,
+                mutex: doltPushMutex, sprintId: sprintMutexId, agent,
             });
         }
     }
