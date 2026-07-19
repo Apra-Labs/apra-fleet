@@ -93,7 +93,12 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // (stabilization log Issue 11) -- one `git stash push -u` site and one
 // post-stash checkout retry site, both with explicit member_name. The
 // happy path issues neither.
-const EXPECTED_COMMAND_COUNT = 28;
+// 28 -> 29 (apra-fleet-eft.9.7): per-bead work-claiming inside the D-pull/
+// D-push brackets gained one new `command(claimLabel, { member_name:
+// orchestratorMember, silent: true })` call site (the `bd update <id>
+// --claim` issued per bead before a doer streak dispatch), verified
+// compliant.
+const EXPECTED_COMMAND_COUNT = 29;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

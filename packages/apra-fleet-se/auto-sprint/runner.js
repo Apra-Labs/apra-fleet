@@ -1106,6 +1106,53 @@ export async function doltPushAfter(member, opts = {}) {
 }
 
 /**
+ * apra-fleet-eft.8.4 (Plan 3.3 push ordering) -- the ordered post-dispatch
+ * sync step every withGitSync() bracket's `finally` runs: G-push (code)
+ * BEFORE D-push (beads).
+ *
+ * For the code-writing roles (pushCode:true -- doer, harvester ONLY), G-push
+ * MUST succeed before D-push is ever attempted. If G-push cannot be resolved
+ * (a typed GitSyncError/GitDivergedError, or any other thrown error),
+ * D-push is skipped ENTIRELY and the G-push error is rethrown (never
+ * swallowed) -- closing a bead in dolt while the code that justifies that
+ * close never left this member's checkout would advertise an UNREACHABLE
+ * CLOSE: a reviewer, or the next streak's G-pull, would see the bead as done
+ * and find no matching commit on the shared branch. This is exactly the
+ * failure this ordering rule prevents.
+ *
+ * For non-code-writing roles (pushCode:false), syncMemberAfter is a
+ * documented no-op that never touches git and cannot throw (see its own
+ * pushCode guard), so D-push always still runs unaffected by this ordering
+ * rule.
+ *
+ * @param {string} member
+ * @param {{
+ *   command: Function, pushCode?: boolean, pushBeads?: boolean,
+ *   log?: Function, mutex?: { acquire: Function, release: Function },
+ *   sprintId?: string, branch?: string, maxTransientRetries?: number,
+ *   remote?: string,
+ * }} opts
+ * @returns {Promise<{ ok: true, member: string, gPush: object, dPush: object }>}
+ */
+export async function syncMemberAfterOrdered(member, opts = {}) {
+    const {
+        command, pushCode = true, pushBeads = true, log = () => {},
+        mutex, sprintId, branch, maxTransientRetries = 1, remote = 'origin',
+    } = opts;
+
+    let gPush;
+    try {
+        gPush = await syncMemberAfter(member, { command, pushCode, log, branch, maxTransientRetries, remote });
+    } catch (gPushErr) {
+        log(`[Sync] G-push failed for member '${member}' -- skipping D-push and failing this streak rather than advertising an unreachable close (a beads close whose justifying code never reached the shared branch): ${gPushErr.message}`);
+        throw gPushErr;
+    }
+
+    const dPush = await doltPushAfter(member, { command, pushBeads, log, mutex, sprintId });
+    return { ok: true, member, gPush, dPush };
+}
+
+/**
  * apra-fleet-eft.9.2 (Plan 3.4) -- the child-side HTTP client for the
  * supervisor-owned global dolt push mutex (src/supervisor/dolt-mutex.mjs).
  *
@@ -2257,8 +2304,16 @@ async function runSprintCycle(context) {
         try {
             return await dispatchFn();
         } finally {
-            await doltPushAfter(member, { command, pushBeads, log, mutex: doltPushMutex, sprintId: sprintMutexId });
-            await syncMemberAfter(member, { command, pushCode, log, branch: validated.branch });
+            // apra-fleet-eft.8.4 (Plan 3.3 push ordering): G-push (code)
+            // before D-push (beads), for code-writing roles only. See
+            // syncMemberAfterOrdered()'s own doc comment for the full
+            // rationale (unreachable-close prevention) and unit tests in
+            // mock-sprint-git-sync-brackets.test.mjs for the scripted-mock
+            // coverage of this ordering.
+            await syncMemberAfterOrdered(member, {
+                command, pushCode, pushBeads, log, branch: validated.branch,
+                mutex: doltPushMutex, sprintId: sprintMutexId,
+            });
         }
     }
 
@@ -3457,7 +3512,7 @@ async function runSprintCycle(context) {
                     // with no `model` metadata at all (pre-N1 data, or a
                     // planner that forgot the convention) resolves to
                     // `undefined`, which FleetWorkflow treats the same as never
-                    // passing `model` -- the dispatch still runs, it's just not
+                    // passing `model` -- the dispatch still runs, it is simply not
                     // priced (calculateCost() returns null; see pricing.mjs).
                     // CAVEAT: this is the model the PLANNER ASKED the doer to
                     // run on -- the fleet does not currently echo back the
@@ -3482,7 +3537,7 @@ async function runSprintCycle(context) {
                             model: doerModel,
                             // apra-fleet-aw8: doer streaks run a full impl+test+commit
                             // cycle, categorically heavier than a one-shot prompt --
-                            // the fleet's generic execute_prompt default (300s) was
+                            // the fleet generic execute_prompt default (300s) was
                             // observed live tripping repeatedly on real work.
                             timeout_s: 900,
                             max_total_s: 3600,

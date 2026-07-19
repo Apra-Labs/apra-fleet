@@ -4,6 +4,7 @@ import {
     classifyGitFailure,
     syncMemberBefore,
     syncMemberAfter,
+    syncMemberAfterOrdered,
     parseUnmergedPaths,
 } from '../auto-sprint/runner.js';
 import { GitDivergedError, GitSyncError } from '../auto-sprint/errors.mjs';
@@ -248,4 +249,100 @@ test('syncMemberAfter: a transient failure that exhausts retries raises GitSyncE
     check(!(err instanceof GitDivergedError), 'transient-exhausted must NOT be a divergence error');
     check(err instanceof WorkflowError, 'GitSyncError must extend WorkflowError');
     check(err.member === 'm1' && /timed out/i.test(err.gitOutput || ''), 'sync error carries member and git output');
+});
+
+// =============================================================================
+// apra-fleet-eft.8.4 -- syncMemberAfterOrdered: G-push (code) before D-push
+// (beads), for code-writing roles. If G-push cannot be resolved, D-push must
+// be skipped ENTIRELY and the streak's caller must see the (typed) G-push
+// error -- never a silently-swallowed failure that lets a beads close get
+// D-pushed with no matching code on the shared branch (an "unreachable
+// close").
+// =============================================================================
+test('syncMemberAfterOrdered: clean G-push publishes, then D-push runs (both succeed)', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: true });
+    check(res.ok === true, 'expected ok:true result');
+    check(res.gPush && res.gPush.pushed === true, 'G-push must have run and pushed');
+    check(res.dPush && res.dPush.pushed === true, 'D-push must have run and pushed');
+    const pushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(pushCalls.length === 1, `expected exactly one git push, saw ${pushCalls.length}`);
+    check(doltPushCalls.length === 1, `expected exactly one bd dolt push, saw ${doltPushCalls.length}`);
+    // Ordering: the git push call must precede the bd dolt push call.
+    const gIdx = calls.findIndex((c) => /^git push/.test(c.cmd));
+    const dIdx = calls.findIndex((c) => c.cmd.includes('bd dolt push'));
+    check(gIdx !== -1 && dIdx !== -1 && gIdx < dIdx, 'G-push must be issued before D-push');
+});
+
+test('syncMemberAfterOrdered: a G-push failure (code-writing role) skips D-push entirely -- ZERO bd dolt push calls -- and rethrows the typed G-push error', async () => {
+    const { command, calls } = makeCommandMock({
+        // Always rejected, never a transient/rebase-recoverable failure --
+        // syncMemberAfter exhausts its bounded rebase-retry and raises
+        // GitDivergedError.
+        'git push': [fail(' ! [rejected] (non-fast-forward)')],
+        'git pull --rebase': [fail(' ! [rejected] (non-fast-forward), still diverged')],
+        'git status --porcelain': [{ ok: true, output: '', error: null }],
+    });
+    const logs = [];
+    let err = null;
+    try {
+        await syncMemberAfterOrdered('m1', {
+            command, pushCode: true, pushBeads: true, log: (msg) => logs.push(msg),
+        });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitDivergedError, `expected the typed G-push GitDivergedError to be rethrown, got ${err && err.constructor.name}`);
+
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 0, `D-push must never be invoked when G-push fails, saw ${doltPushCalls.length} bd dolt push call(s)`);
+
+    check(
+        logs.some((m) => /G-push failed for member 'm1'/.test(m) && /skipping D-push/.test(m) && /unreachable close/.test(m)),
+        `expected the explicit not-advertising-an-unreachable-close log message, got: ${JSON.stringify(logs)}`
+    );
+});
+
+test('syncMemberAfterOrdered: a transient-exhausted G-push failure (GitSyncError, not diverged) also skips D-push', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail('fatal: unable to access ... Connection timed out')], // never recovers
+    });
+    let err = null;
+    try {
+        await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: true, maxTransientRetries: 0 });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitSyncError, `expected GitSyncError, got ${err && err.constructor.name}`);
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 0, `D-push must never be invoked when G-push fails (transient-exhausted), saw ${doltPushCalls.length}`);
+});
+
+test('syncMemberAfterOrdered: non-code-writing roles (pushCode:false) are unaffected -- G-push is a documented no-op and D-push always still runs', async () => {
+    const { command, calls } = makeCommandMock({});
+    const res = await syncMemberAfterOrdered('m1', { command, pushCode: false, pushBeads: true });
+    check(res.ok === true, 'expected ok:true result');
+    check(res.gPush && res.gPush.pushed === false, 'G-push must be a no-op for pushCode:false');
+    const gitPushCalls = calls.filter((c) => /^git push/.test(c.cmd));
+    check(gitPushCalls.length === 0, 'no git push should be issued for pushCode:false');
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 1, `D-push must still run for a non-code-writing role, saw ${doltPushCalls.length}`);
+});
+
+test('syncMemberAfterOrdered: pushBeads:false (read-only bracket) with a G-push failure still skips D-push (nothing to push anyway) and rethrows', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(' ! [rejected] (non-fast-forward)')],
+        'git pull --rebase': [fail(' ! [rejected] (non-fast-forward), still diverged')],
+        'git status --porcelain': [{ ok: true, output: '', error: null }],
+    });
+    let err = null;
+    try {
+        await syncMemberAfterOrdered('m1', { command, pushCode: true, pushBeads: false });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    const doltPushCalls = calls.filter((c) => c.cmd.includes('bd dolt push'));
+    check(doltPushCalls.length === 0, `D-push must not be invoked, saw ${doltPushCalls.length}`);
 });
