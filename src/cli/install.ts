@@ -19,6 +19,44 @@ import {
 } from './config.js';
 import { transformAgentForOpenCode } from './agent-transform.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
+import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
+
+// --- Dolt CLI install step: injectable deps + explicit gate ---
+//
+// The dolt install step below does a REAL network download (~40MB from
+// GitHub) and, unless already installed, a real `dolt version` / scratch
+// `dolt sql-server` smoke test (see dolt-install.ts verifyDolt). That is
+// correct behavior in production but far too slow and non-hermetic to run
+// unconditionally from every unit test that happens to call runInstall()
+// without caring about dolt at all. Mirrors the interactive-bootstrap gate
+// in register-member.ts:
+// 1. Dependency injection: doltStepDeps.downloadAndExtractDolt / .verifyDolt
+//    default to the real implementations but can be swapped for fakes in tests.
+// 2. Explicit gate: in NODE_ENV=test (set globally by tests/setup.ts), the
+//    whole step is skipped (dolt reported as "not available", non-fatal, same
+//    as a real failure) UNLESS APRA_FLEET_ENABLE_DOLT_INSTALL=1 is also set --
+//    an explicit, opt-in escape hatch for tests that specifically want to
+//    exercise this path (and are expected to inject fakes via
+//    _setDoltStepDeps when they do).
+export interface DoltStepDeps {
+  downloadAndExtractDolt: typeof downloadAndExtractDolt;
+  verifyDolt: typeof verifyDolt;
+}
+const realDoltStepDeps: DoltStepDeps = { downloadAndExtractDolt, verifyDolt };
+let doltStepDeps: DoltStepDeps = realDoltStepDeps;
+/** Test-only: inject fakes for the dolt CLI install step's download/verify calls. */
+export function _setDoltStepDeps(overrides: Partial<DoltStepDeps>): void {
+  doltStepDeps = { ...realDoltStepDeps, ...overrides };
+}
+/** Test-only: restore the real (non-mocked) dolt step dependencies. */
+export function _resetDoltStepDeps(): void {
+  doltStepDeps = realDoltStepDeps;
+}
+
+function doltStepEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'test') return true;
+  return process.env.APRA_FLEET_ENABLE_DOLT_INSTALL === '1';
+}
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
@@ -718,6 +756,7 @@ Options:
   if (installAgents) totalSteps++;
   if (installPm) totalSteps++; // cost.js extraction + workflow copy step
   if (installWorkflows) totalSteps++; // workflow-subsystem runtime/schemas/built-ins step
+  totalSteps++; // dolt CLI install step (apra-fleet-ire.3) -- unconditional, mirrors Beads step
   if (serviceStep) totalSteps++;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
@@ -1011,7 +1050,8 @@ Then re-run:  apra-fleet install`);
   // Writes ~/.apra-fleet/{node_modules,schemas,workflows/{auto-sprint,hello-world}}.
   // See docs/workflow-subsystem-plan.md Section 6 / Section 2.1 for the layout.
   if (installWorkflows) {
-    const workflowsStepNum = serviceStep ? totalSteps - 2 : totalSteps - 1;
+    // Two steps follow workflows (dolt, then Beads) before the optional service step.
+    const workflowsStepNum = serviceStep ? totalSteps - 3 : totalSteps - 2;
     console.log(`  [${workflowsStepNum}/${totalSteps}] Installing workflow runtime...`);
     // Extraction itself (node_modules / schemas / built-in workflows / .installed.json)
     // lives in workflow-assets.ts -- the SAME code path workflow.ts's self-heal
@@ -1021,6 +1061,41 @@ Then re-run:  apra-fleet install`);
       extractAssetBuffer,
       version: serverVersion,
     });
+  }
+
+  // --- Dolt CLI install step (apra-fleet-ire.3) ---
+  // Portable dolt binary, downloaded straight into BIN_DIR (never system PATH).
+  // Mirrors the Beads install step immediately below: already-installed check
+  // first, download+extract+verify otherwise. NON-FATAL, same as Beads -- a
+  // missing/broken dolt must never fail "apra-fleet install".
+  const doltStep = serviceStep ? totalSteps - 2 : totalSteps - 1;
+  console.log(`  [${doltStep}/${totalSteps}] Installing Dolt CLI...`);
+  let doltVersion = 'not available';
+  if (doltStepEnabled()) {
+    try {
+      const doltBinaryName = process.platform === 'win32' ? 'dolt.exe' : 'dolt';
+      const doltPath = path.join(BIN_DIR, doltBinaryName);
+      let installed = false;
+      // Check if already installed
+      if (fs.existsSync(doltPath)) {
+        try {
+          const result = await doltStepDeps.verifyDolt(doltPath);
+          doltVersion = result.version;
+          installed = true;
+        } catch {
+          // existing binary is broken/unusable -- fall through and (re)download
+        }
+      }
+      if (!installed) {
+        // not installed (or broken) -- download and verify it
+        const extractedPath = await doltStepDeps.downloadAndExtractDolt(BIN_DIR);
+        const result = await doltStepDeps.verifyDolt(extractedPath);
+        doltVersion = result.version;
+      }
+    } catch (err) {
+      // non-fatal: warn but don't fail the install
+      console.warn(`  Dolt install skipped -- ${(err as Error).message}`);
+    }
   }
 
   // --- Beads install step ---
@@ -1092,7 +1167,8 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
-  Beads:       ${beadsVersion}${serviceLine}
+  Beads:       ${beadsVersion}
+  Dolt:        ${doltVersion}${serviceLine}
 
 ${instructions}${forceNote}
 `);

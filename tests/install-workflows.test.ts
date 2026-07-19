@@ -157,8 +157,9 @@ describe('runInstall --workflows none: byte-identical existing-step behavior', (
     await runInstall(['--skill', 'none', '--workflows', 'none']);
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).not.toContain('Installing workflow runtime');
-    // Pre-workflow-subsystem numbering preserved: base=6 steps (no skills, no service in dev mode).
-    expect(logs).toContain('[6/6]');
+    // Pre-workflow-subsystem numbering preserved: base=6 steps (no skills, no service in dev
+    // mode) +1 dolt (apra-fleet-ire.3, unconditional) = 7.
+    expect(logs).toContain('[7/7]');
 
     const writeCalls = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString());
     expect(writeCalls.some(p => p.startsWith(NODE_MODULES_DIR))).toBe(false);
