@@ -26,6 +26,7 @@ vi.mock('../src/services/statusline.js', () => ({
 // these unrelated OOB tests don't attempt real SFTP uploads.
 vi.mock('../src/services/agent-provisioner.js', () => ({
   provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: () => '.claude/agents',
 }));
 
 const mockCollectOobPassword = vi.fn<(name: string, tool: string, opts?: any) => Promise<{ password?: string; fallback?: string; persist?: boolean }>>();

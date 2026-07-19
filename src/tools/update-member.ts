@@ -10,7 +10,7 @@ import { logLine } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
-import { provisionAgents } from '../services/agent-provisioner.js';
+import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.js';
 import { getStrategy } from '../services/strategy.js';
 
 export const updateMemberSchema = z.object({
@@ -220,8 +220,10 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // Cheap (one probe round trip when up to date); also doubles as the manual retry
   // path when a prior registration/update left agent files stale or unprovisioned.
   // Does NOT start a stopped cloud member -- testConnection() failure just skips.
+  // Short-circuits before the connectivity check for providers with no agents dir
+  // (codex, copilot) -- no point spending a real SSH round trip just to skip.
   let agentProvisionResult: { pushed: string[]; skippedReason?: string; warning?: string } | undefined;
-  if (updated.agentType === 'remote') {
+  if (updated.agentType === 'remote' && remoteAgentsDir(updated.llmProvider ?? 'claude') !== null) {
     const conn = await getStrategy(updated).testConnection();
     if (!conn.ok) {
       warnings.push(`Could not reach member -- agent files not re-provisioned: ${conn.error ?? 'connection failed'}`);

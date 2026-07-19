@@ -237,6 +237,7 @@ vi.mock('../src/services/strategy.js', () => ({
 // these unrelated cloud tests don't attempt real SFTP uploads.
 vi.mock('../src/services/agent-provisioner.js', () => ({
   provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: () => '.claude/agents',
 }));
 
 // Partially mock aws.js: keep the real AwsCloudProvider class but replace the

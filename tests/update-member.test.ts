@@ -293,4 +293,31 @@ describe('updateMember -- agent re-provisioning (remote members)', () => {
     expect(mockTestConnection).not.toHaveBeenCalled();
     expect(mockUploadContentToHome).not.toHaveBeenCalled();
   });
+
+  it('does not attempt a connection or emit a provisioning warning for a codex remote member (no agents dir)', async () => {
+    const member = makeTestAgent({ llmProvider: 'codex' });
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(result).toContain('Member "test-agent" updated.');
+    expect(mockTestConnection).not.toHaveBeenCalled();
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(mockUploadContentToHome).not.toHaveBeenCalled();
+    expect(result).not.toContain('Could not reach member');
+    expect(result).not.toContain('Agents:');
+  });
+
+  it('does not attempt a connection or emit a provisioning warning for a copilot remote member (no agents dir)', async () => {
+    const member = makeTestAgent({ llmProvider: 'copilot' });
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(result).toContain('Member "test-agent" updated.');
+    expect(mockTestConnection).not.toHaveBeenCalled();
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(mockUploadContentToHome).not.toHaveBeenCalled();
+    expect(result).not.toContain('Could not reach member');
+  });
 });

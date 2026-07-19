@@ -276,9 +276,11 @@ describe('provisionAgents', () => {
     const plannerHash = canonical.find(f => f.relPath === 'planner.md')!.sha256;
     const doerHash = canonical.find(f => f.relPath === 'doer.md')!.sha256;
 
-    // planner.md is already up to date; doer.md is missing entirely; the other two are stale.
+    // planner.md is already up to date; doer.md is missing entirely; _shared/conventions.md
+    // is present but its hash doesn't match canonical (a valid 64-char hex hash, just the wrong one).
+    const wrongHash = 'deadbeef'.repeat(8);
     mockExecCommand.mockResolvedValue({
-      stdout: `${plannerHash}  ./planner.md\nstalehashstalehashstalehashstalehashstalehashstalehashstalehas  ./_shared/conventions.md\n`,
+      stdout: `${plannerHash}  ./planner.md\n${wrongHash}  ./_shared/conventions.md\n`,
       stderr: '',
       code: 0,
     });

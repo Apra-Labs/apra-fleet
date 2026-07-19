@@ -32,6 +32,7 @@ vi.mock('../src/services/strategy.js', () => ({
 // these unrelated model-tier tests don't attempt real SFTP uploads.
 vi.mock('../src/services/agent-provisioner.js', () => ({
   provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: () => '.claude/agents',
 }));
 
 // -- resolveModelForTier unit tests --
