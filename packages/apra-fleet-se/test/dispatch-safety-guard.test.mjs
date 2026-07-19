@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fs from 'fs';
+import { checkPath } from '../auto-sprint/dispatch-safety-guard.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +44,14 @@ const __dirname = path.dirname(__filename);
 // (bump the count, after confirming member_name/member_id is present) or
 // one was silently dropped (an actual regression -- do NOT just bump the
 // count without checking why).
+//
+// apra-fleet-eft.3.3: the checker itself (findCallSites/checkPath) now lives
+// in ../auto-sprint/dispatch-safety-guard.mjs, exported and parameterizable
+// by file path, so it can be pointed at a fixture that deliberately violates
+// the invariant -- proving the guard actually fails on a non-compliant call
+// site rather than vacuously passing -- WITHOUT mutating runner.js to
+// manufacture that failure case. See the fixture-driven tests below, which
+// exercise test/fixtures/dispatch-safety/{non-compliant,member-id-only}.mjs.
 // =============================================================================
 
 const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
@@ -118,134 +126,14 @@ const EXPECTED_COMMAND_COUNT = 28;
 // member_name confirmed present via shared reviewerDispatchOpts.
 const EXPECTED_AGENT_COUNT = 11;
 
-/**
- * Returns true if `col` (0-based index into `lineText`) sits inside an open
- * `"..."` or `'...'` string that started earlier on the SAME line -- i.e. an
- * odd number of unescaped quote characters of the currently-open type
- * precede it. Deliberately scoped to a single line (not a whole-file quote
- * scan): a whole-file scan misfires on stray apostrophes in prose comments
- * (e.g. "doesn't", "it's"), which would otherwise be misread as opening a
- * string and swallow everything up to the next quote -- including real
- * command()/agent() call sites many lines later. Backticks are deliberately
- * NOT tracked here: template literals legitimately span multiple lines (git
- * command strings) and are not a source of the false positive this guards
- * against (a real call site's own leading backtick is never itself inside a
- * string).
- */
-function isInsideSameLineString(lineText, col) {
-    let quote = null;
-    for (let i = 0; i < col; i++) {
-        const ch = lineText[i];
-        if (ch === '\\') { i++; continue; }
-        if (quote) {
-            if (ch === quote) quote = null;
-        } else if (ch === '"' || ch === "'") {
-            quote = ch;
-        }
-    }
-    return quote !== null;
-}
-
-/**
- * Scans `src` for `command(`/`agent(` call sites, skipping call-site tokens
- * that only appear inside a full-line comment. Returns an array of
- * { fnName, line, callText } for every real call site found.
- */
-function findCallSites(src) {
-    const lines = src.split('\n');
-    // Byte offset of the start of each line, so a regex match index into
-    // the whole-file string can be mapped back to a 1-based line number.
-    const lineStarts = [];
-    let offset = 0;
-    for (const line of lines) {
-        lineStarts.push(offset);
-        offset += line.length + 1; // +1 for the '\n' stripped by split()
-    }
-    function lineNumberForIndex(idx) {
-        // Binary search would be overkill for a single source file; linear
-        // scan is fine here.
-        let ln = 0;
-        for (let i = 0; i < lineStarts.length; i++) {
-            if (lineStarts[i] > idx) break;
-            ln = i;
-        }
-        return ln + 1; // 1-based
-    }
-    function isCommentLine(ln) {
-        const text = lines[ln - 1] ? lines[ln - 1].trim() : '';
-        return text.startsWith('//') || text.startsWith('*') || text.startsWith('/*');
-    }
-
-    // Matches `command(` / `agent(` NOT preceded by a `.` or word character
-    // (so e.g. `dispatchCommand(` or `.command(` -- neither of which occurs
-    // for the fleet dispatch primitives, but this guards against false
-    // positives from unrelated identifiers ending in the same substring).
-    const callRe = /(?<![.\w])(command|agent)\(/g;
-    const sites = [];
-    let m;
-    while ((m = callRe.exec(src)) !== null) {
-        const fnName = m[1];
-        const openParenIdx = m.index + m[0].length - 1; // index of the '(' itself
-        const line = lineNumberForIndex(m.index);
-        if (isCommentLine(line)) continue;
-        // Reject matches where the literal text "command(" / "agent(" sits
-        // inside a same-line quoted string (e.g. a `throw new Error("...
-        // command() ...")` message) -- not a real dispatch call site.
-        const lineText = lines[line - 1] || '';
-        const col = m.index - lineStarts[line - 1];
-        if (isInsideSameLineString(lineText, col)) continue;
-        const callText = extractBalancedCall(src, openParenIdx);
-        sites.push({ fnName, line, callText });
-    }
-    return sites;
-}
-
-/**
- * Given the index of an opening '(' in `src`, returns the full call-site
- * text from that '(' through its matching ')', tracking paren depth and
- * skipping over string/template-literal contents (so parens embedded in
- * string/template content, e.g. `bd show ${ids.join(' ')}`, never disturb
- * the depth count).
- */
-function extractBalancedCall(src, openParenIdx) {
-    let depth = 0;
-    let i = openParenIdx;
-    for (; i < src.length; i++) {
-        const ch = src[i];
-        if (ch === '(') {
-            depth++;
-        } else if (ch === ')') {
-            depth--;
-            if (depth === 0) {
-                return src.slice(openParenIdx, i + 1);
-            }
-        } else if (ch === '"' || ch === "'" || ch === '`') {
-            i = skipStringLiteral(src, i, ch);
-        }
-    }
-    // Unbalanced -- should never happen against real, syntactically-valid
-    // source; return what we found so the caller's member_name check still
-    // has something to inspect rather than throwing mid-scan.
-    return src.slice(openParenIdx, i);
-}
-
-/** Returns the index of the closing quote char matching the one at `start`. */
-function skipStringLiteral(src, start, quoteChar) {
-    let i = start + 1;
-    for (; i < src.length; i++) {
-        const ch = src[i];
-        if (ch === '\\') {
-            i++; // skip escaped char
-            continue;
-        }
-        if (ch === quoteChar) return i;
-    }
-    return i;
-}
+// findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
+// and the path-parameterized checkPath() checker now live in
+// ../auto-sprint/dispatch-safety-guard.mjs (apra-fleet-eft.3.3), imported
+// above, so they can be reused against fixture files below without
+// duplicating the parser here.
 
 test('every command()/agent() call site in runner.js passes member_name or member_id', () => {
-    const src = fs.readFileSync(RUNNER_PATH, 'utf8');
-    const sites = findCallSites(src);
+    const { sites, violations } = checkPath(RUNNER_PATH);
 
     const commandSites = sites.filter((s) => s.fnName === 'command');
     const agentSites = sites.filter((s) => s.fnName === 'agent');
@@ -270,14 +158,36 @@ test('every command()/agent() call site in runner.js passes member_name or membe
         `every site still passes member_name/member_id.`
     );
 
-    const memberRe = /\b(member_name|member_id)\b/;
-    const violations = sites
-        .filter((s) => !memberRe.test(s.callText))
-        .map((s) => `runner.js:${s.line} (${s.fnName}()) is missing member_name/member_id`);
-
     assert.deepStrictEqual(
         violations,
         [],
         `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
     );
+});
+
+// =============================================================================
+// apra-fleet-eft.3.3 -- prove the guard can actually FAIL, not just pass
+// vacuously against a hand-verified-compliant runner.js. These tests point
+// the same checkPath() checker at fixtures under test/fixtures/dispatch-
+// safety/ instead of runner.js.
+// =============================================================================
+
+const NON_COMPLIANT_FIXTURE = path.join(__dirname, 'fixtures/dispatch-safety/non-compliant.mjs');
+const MEMBER_ID_ONLY_FIXTURE = path.join(__dirname, 'fixtures/dispatch-safety/member-id-only.mjs');
+
+test('checker reports a violation naming the fixture and its line for a member_name-less call site', () => {
+    const { sites, violations } = checkPath(NON_COMPLIANT_FIXTURE);
+
+    assert.strictEqual(sites.length, 1, 'expected exactly one call site in the fixture');
+    assert.strictEqual(sites[0].fnName, 'command');
+
+    assert.strictEqual(violations.length, 1, `expected exactly one violation, got: ${JSON.stringify(violations)}`);
+    assert.match(violations[0], /^non-compliant\.mjs:13 \(command\(\)\) is missing member_name\/member_id$/);
+});
+
+test('checker accepts a call site carrying member_id only (not a violation)', () => {
+    const { sites, violations } = checkPath(MEMBER_ID_ONLY_FIXTURE);
+
+    assert.strictEqual(sites.length, 1, 'expected exactly one call site in the fixture');
+    assert.deepStrictEqual(violations, [], `expected no violations, got: ${JSON.stringify(violations)}`);
 });
