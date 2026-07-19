@@ -556,6 +556,32 @@ deduplicated DAG -- the plan gate working as designed.
   uname -s/-m), which is self-contained on the branch. Being P2 it
   correctly holds the completion gate open until Deploy actually works.
 
+### Issue 21: childless bug beads are planned as directly-dispatchable, but doers refuse non-task beads
+
+- **Symptom**: run 12 C3 -- the planner assigned the injected bug bead
+  apra-fleet-eft.15 directly to a doer streak and the plan-reviewer
+  APPROVED that plan; the doer then skipped it per its contract ("doers
+  may only claim issue_type=task"), reporting BLOCKED, and the runner
+  marked the streak FAILED. Left alone this repeats every cycle the bug
+  stays open and the stall detector eventually kills the run -- the same
+  thrash shape as Issue 17, one layer down.
+- **Root cause**: a planning-side blind spot symmetric to Issue 14.
+  Features get decomposed into task children, but an injected bug that
+  arrives mid-sprint as a childless leaf is treated as dispatchable
+  as-is by both planner and plan-reviewer; only the doer contract knows
+  it is not.
+- **Fix** (runner.js, mirror-image prompt pins): buildPlannerPrompt now
+  states that doers can only claim task-type beads and any open childless
+  bug in scope must be decomposed into task-type children (with model
+  metadata and a [test] task where testable) during planning;
+  buildPlanReviewerPrompt gains the matching DISPATCHABILITY criterion --
+  a plan leaving an open childless bug-type leaf is CHANGES_NEEDED, with
+  an explicit carve-out for pending-closure features. Goldens
+  regenerated; full se suite green (863/0).
+- **Rollout**: the pin reaches the sprint at the next relaunch. Run 12's
+  C4 planner may still self-correct from the doer's BLOCKED note, which
+  recommended exactly this decomposition.
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":

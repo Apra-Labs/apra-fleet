@@ -1658,6 +1658,18 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
     lines.push(`Sprint root issue id(s) (--parent scope for this sprint): ${targetIssues.join(', ')}.`);
     lines.push(`Goal priority for this sprint: ${goal}.`);
     lines.push(
+        // Stabilization log Issue 21 -- see buildPlanReviewerPrompt's
+        // matching criterion. Doers may only claim issue_type=task, so a
+        // bug left as a childless leaf is assigned directly and skipped
+        // every round (observed run 12 C3: apra-fleet-eft.15 -> BLOCKED).
+        'Doers can only claim issue_type=task beads. Any OPEN bug-type bead in scope ' +
+        'that has no task-type children yet must be decomposed during planning into ' +
+        'one or more task-type children (with acceptance criteria and model metadata, ' +
+        'including a [test] task where the fix is testable) -- the bug bead itself is ' +
+        'never dispatched directly and stays open as the parent until its children ' +
+        'are done and verified.'
+    );
+    lines.push(
         'For every task: set clear acceptance criteria in its description, and set its ' +
         'model tier as beads metadata at creation time via ' +
         '`bd create ... --metadata \'{"model": "<tier>"}\'` (tier is EXACTLY one of ' +
@@ -1724,6 +1736,18 @@ function buildPlanReviewerPrompt({ targetIssues, goal }) {
         'must NOT fail coverage/decomposition/test-task/model-metadata criteria, and ' +
         'must NOT be re-decomposed. Mention such features as non-blocking notes only. ' +
         'Never ask the planner to create tasks that duplicate closed work.',
+        // Stabilization log Issue 21: the C3 plan of run 12 assigned a
+        // childless bug-type bead (apra-fleet-eft.15) directly and was
+        // approved -- but doers may only claim issue_type=task, so the doer
+        // skipped it as BLOCKED and the streak burned. The mirror-image of
+        // the pending-closure rule above: bugs must be decomposed before
+        // they are dispatchable.
+        'DISPATCHABILITY -- doers can only claim issue_type=task beads. If any OPEN ' +
+        'bug-type bead in scope is a childless leaf (no task-type children, so it ' +
+        'would be dispatched to a doer directly), the plan is NOT approvable: return ' +
+        'CHANGES_NEEDED asking the planner to decompose that bug into task-type ' +
+        'children. This does not apply to features covered by the pending-closure ' +
+        'rule above.',
     ].join('\n\n');
 }
 
