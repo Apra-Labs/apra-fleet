@@ -230,6 +230,20 @@ const GOAL_PATTERN = /^P[1-3](\/P[1-3]){0,2}$/;
 const KNOWN_ARG_KEYS = new Set([
     'target_issues', 'target_issue', 'members', 'branch', 'base_branch',
     'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'budget',
+    // apra-fleet-eft.9.2 / eft.9.3 / eft.9.7: the always-on supervisor's base
+    // HTTP URL (e.g. http://127.0.0.1:8787). Set by bin/cli.mjs from the
+    // FLEET_SE_SERVICE_URL env var the supervisor's spawner injects into each
+    // detached child; absent for supervisor-less (single-process/dev/test)
+    // runs. When present it enables the cross-sprint coordination layers: the
+    // global dolt push mutex (9.2), the child-id allocator (9.3), and the
+    // per-bead work-claiming (9.7). All three are no-ops without it -- a lone
+    // sprint has no sibling to coordinate with.
+    'serviceUrl',
+    // apra-fleet-eft.9.7: the assignee identity this sprint claims beads as and
+    // filters ready work by (`bd update --claim` / `bd ready --assignee`).
+    // Optional; when omitted the per-bead work-claiming prevention layer stays
+    // dormant and bead selection uses the legacy unassigned `bd list --ready`.
+    'assignee',
 ]);
 
 /**
@@ -993,12 +1007,23 @@ export async function doltPullBefore(member, opts = {}) {
  * plan-reviewer, deployer -- has nothing to publish). Every command is issued
  * via the injected command() with an explicit member_name (3.2).
  *
+ * apra-fleet-eft.9.2 (Plan 3.4): the ACTUAL dolt push is serialized through the
+ * supervisor-owned global push mutex. Constraints C.2 (row-level conflicts) and
+ * C.3 (one unresolved conflict wedges the entire clone sync) make this a
+ * load-bearing v1 requirement: two sprints must NEVER execute a dolt push at the
+ * same time. `opts.mutex` is a client with acquire()/release() (see
+ * dolt-mutex.mjs nullDoltPushMutexClient for the no-supervisor default). The
+ * mutex is acquired before the first push attempt and released in a `finally` on
+ * EVERY terminal path -- success, transient-exhaustion, and divergence -- so a
+ * failed push can never leak the mutex. A crashed holder is separately reclaimed
+ * by the mutex's own lease expiry, so this bracket does not need to.
+ *
  * @param {string} member
- * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number }} opts
+ * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string }} opts
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1 } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -1007,6 +1032,25 @@ export async function doltPushAfter(member, opts = {}) {
         return { ok: true, member, pushed: false, reconciled: false };
     }
 
+    // apra-fleet-eft.9.2: serialize this push behind the global mutex. Acquire
+    // (waiting our FIFO turn) before touching the remote; release on every exit.
+    let grant = null;
+    if (mutex && typeof mutex.acquire === 'function') {
+        grant = await mutex.acquire(sprintId || member, { pid: process.pid });
+    }
+    try {
+        return await doltPushGuarded();
+    } finally {
+        if (grant && mutex && typeof mutex.release === 'function') {
+            try {
+                await mutex.release(grant.token);
+            } catch (relErr) {
+                log(`[Dolt] mutex release after D-push for member '${member}' failed (non-fatal; lease will expire): ${relErr.message}`);
+            }
+        }
+    }
+
+    async function doltPushGuarded() {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
         label: `D-push for '${member}'`, log, maxTransientRetries,
@@ -1058,6 +1102,82 @@ export async function doltPushAfter(member, opts = {}) {
         `[Dolt] D-push for member '${member}' still rejected after one reconcile pull -- refusing to retry further: ${push.error}`,
         { member, doltOutput: push.error, operation: 'push' },
     );
+    } // end doltPushGuarded
+}
+
+/**
+ * apra-fleet-eft.9.2 (Plan 3.4) -- the child-side HTTP client for the
+ * supervisor-owned global dolt push mutex (src/supervisor/dolt-mutex.mjs).
+ *
+ * This is the missing wire that makes the mutex LOAD-BEARING end to end: the
+ * mutex object itself lives in the always-on supervisor process, but each
+ * detached sprint child runs in its OWN process and can only reach it over
+ * HTTP. This client speaks the exact routes registerDoltMutexRoutes() exposes:
+ *
+ *   POST {serviceUrl}/api/dolt-push-mutex/{sprintId}/acquire  body { pid }
+ *   POST {serviceUrl}/api/dolt-push-mutex/{sprintId}/release  body { token }
+ *
+ * The acquire route long-polls -- it does not answer until this sprint
+ * genuinely owns the mutex (FIFO after every earlier waiter) -- so a resolved
+ * acquire() means this child now holds it and no sibling sprint is pushing.
+ *
+ * It is deliberately implemented INLINE here (not imported from
+ * src/supervisor/dolt-mutex.mjs) because runner.js is copied verbatim next to
+ * the bundle (scripts/bundle-se.mjs) and loaded via engine.executeFile(), never
+ * bundled -- a cross-package relative import would not resolve in the shipped
+ * layout. The surface it exposes ({ acquire, release }) is exactly what
+ * doltPushAfter() calls.
+ *
+ * @param {{ serviceUrl: string, sprintId: string, fetch?: typeof fetch, log?: Function }} opts
+ * @returns {{ acquire: (sprintId: string, o?: { pid?: number|null }) => Promise<{ token: string|null }>, release: (token: string|null) => Promise<boolean> }}
+ */
+export function createHttpDoltPushMutexClient(opts = {}) {
+    const base = String(opts.serviceUrl || '').replace(/\/+$/, '');
+    if (!base) throw new Error('createHttpDoltPushMutexClient requires a serviceUrl');
+    const boundSprintId = opts.sprintId;
+    const fetchImpl = opts.fetch ?? globalThis.fetch;
+    if (typeof fetchImpl !== 'function') {
+        throw new Error('createHttpDoltPushMutexClient requires a fetch implementation (Node >=18 global fetch or an injected one)');
+    }
+    const log = opts.log ?? (() => {});
+    const routeFor = (sprintId, action) =>
+        `${base}/api/dolt-push-mutex/${encodeURIComponent(sprintId)}/${action}`;
+
+    async function postJson(url, body) {
+        const res = await fetchImpl(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body ?? {}),
+        });
+        if (!res || !res.ok) {
+            const status = res ? res.status : 'no-response';
+            throw new Error(`[dolt-mutex] ${url} returned HTTP ${status}`);
+        }
+        return res.json();
+    }
+
+    return {
+        async acquire(sprintId, o = {}) {
+            const id = sprintId || boundSprintId;
+            if (!id) throw new Error('[dolt-mutex] acquire requires a sprintId');
+            const payload = await postJson(routeFor(id, 'acquire'), { pid: o.pid ?? null });
+            return { token: payload.token ?? null, sprintId: payload.sprintId, expiresAt: payload.expiresAt };
+        },
+        async release(token) {
+            if (token == null) return true;
+            const id = boundSprintId;
+            if (!id) throw new Error('[dolt-mutex] release requires a bound sprintId');
+            try {
+                const payload = await postJson(routeFor(id, 'release'), { token });
+                return Boolean(payload.released);
+            } catch (err) {
+                // Non-fatal: the holder's lease expiry will reclaim the mutex
+                // even if this release never lands. Surface it for diagnostics.
+                log(`[dolt-mutex] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+    };
 }
 
 /**
@@ -1212,6 +1332,38 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid budget "${args.budget}": must be a non-negative finite number (USD ceiling).`);
     }
 
+    // --- serviceUrl (optional; apra-fleet-eft.9.2/9.3/9.7) ----------------
+    // The always-on supervisor's base HTTP URL. Validated as an http(s) URL so
+    // a malformed value fails fast rather than silently disabling the
+    // cross-sprint coordination layers or, worse, being interpolated somewhere
+    // unsafe. Omitted (single-process/dev/test): the coordination layers stay
+    // dormant (a lone sprint has no sibling to serialize against).
+    if (args.serviceUrl !== undefined) {
+        if (typeof args.serviceUrl !== 'string' || args.serviceUrl.length === 0) {
+            throw new Error('[Arg Contract] Invalid serviceUrl: must be a non-empty http(s) URL string.');
+        }
+        let parsed;
+        try {
+            parsed = new URL(args.serviceUrl);
+        } catch {
+            throw new Error(`[Arg Contract] Invalid serviceUrl "${args.serviceUrl}": must be a valid http(s) URL.`);
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            throw new Error(`[Arg Contract] Invalid serviceUrl "${args.serviceUrl}": must use the http: or https: scheme.`);
+        }
+    }
+
+    // --- assignee (optional; apra-fleet-eft.9.7) --------------------------
+    // The work-claiming identity. Constrained to a shell-injection-safe pattern
+    // because it is interpolated into `bd update --claim` / `bd ready
+    // --assignee` command strings, matching the same defense-in-depth posture
+    // as issue ids and branch names above.
+    if (args.assignee !== undefined) {
+        if (typeof args.assignee !== 'string' || args.assignee.length === 0 || !ISSUE_ID_PATTERN.test(args.assignee)) {
+            throw new Error(`[Arg Contract] Invalid assignee "${args.assignee}": must match ${ISSUE_ID_PATTERN} (letters, digits, '.', '_', '-' only).`);
+        }
+    }
+
     return {
         targetIssues,
         members: args.members,
@@ -1222,6 +1374,8 @@ export function validateArgs(args) {
         requirementsFile: args.requirementsFile,
         roleMap: normalizedRoleMap,
         budget: args.budget,
+        serviceUrl: args.serviceUrl,
+        assignee: args.assignee,
     };
 }
 
@@ -1986,6 +2140,32 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
 async function runSprintCycle(context) {
     const { agent, command, parallel, log, phase, group, endGroup, publishState, args, budget } = context;
 
+    // A stable per-sprint id for mutex fairness/introspection: the sprint branch
+    // is unique per concurrent sprint on the shared remote.
+    const sprintMutexId = (args && args.branch) ? String(args.branch) : 'sprint';
+
+    // apra-fleet-eft.9.2 (Plan 3.4): the supervisor-owned global dolt push mutex
+    // client. Every D-push below serializes through it so two sprints never push
+    // at the same time (constraints C.2/C.3). Three sources, in precedence:
+    //   1. `context.doltPushMutex` -- an explicitly-injected client (tests wire
+    //      an in-process one here to prove the bracket serializes without HTTP).
+    //   2. `args.serviceUrl` present -- the REAL end-to-end path: build an
+    //      HTTP-backed client that acquires/releases against the always-on
+    //      supervisor's mutex routes, so two independently-detached sprint
+    //      children genuinely serialize their pushes through one supervisor.
+    //   3. neither -- a no-op client: a lone sprint (single-process/dev/test)
+    //      has, by definition, no second sprint to conflict with, so the push
+    //      is safely unguarded and the D-push call sites stay uniform (they
+    //      always acquire/release; only the wiring differs).
+    const doltPushMutex = context.doltPushMutex ?? (
+        (args && args.serviceUrl)
+            ? createHttpDoltPushMutexClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log })
+            : {
+                async acquire() { return { token: null }; },
+                async release() { return true; },
+            }
+    );
+
     // Validate BEFORE any agent()/command() dispatch (apra-fleet-unw.14,
     // A7 defense in depth): a rejected/malformed arg must result in zero
     // fleet dispatches.
@@ -2077,7 +2257,7 @@ async function runSprintCycle(context) {
         try {
             return await dispatchFn();
         } finally {
-            await doltPushAfter(member, { command, pushBeads, log });
+            await doltPushAfter(member, { command, pushBeads, log, mutex: doltPushMutex, sprintId: sprintMutexId });
             await syncMemberAfter(member, { command, pushCode, log, branch: validated.branch });
         }
     }
@@ -2168,7 +2348,15 @@ async function runSprintCycle(context) {
         // particular -- that a plain in-memory filter over `allBeads` cannot
         // reliably replicate. Issue a second project-wide query with those
         // flags, then intersect with the structurally-discovered scope.
-        const filterLabel = `bd list ${rest} --limit 0`;
+        // apra-fleet-eft.9.7: when assignee is provided, add --assignee flag
+        // to the bd command to enable per-bead work-claiming within the
+        // brackets. This prevents multiple sprints from selecting the same
+        // bead (prevention layer per plan 3.4).
+        let filterArgs = rest;
+        if (validated.assignee) {
+            filterArgs = `${rest} --assignee ${validated.assignee}`;
+        }
+        const filterLabel = `bd list ${filterArgs} --limit 0`;
         const filterRaw = await command(filterLabel, { member_name: orchestratorMember, silent: true });
         return parseBdJson(filterRaw, filterLabel).filter((b) => b && scopeIds.has(b.id));
     }
@@ -3172,13 +3360,50 @@ async function runSprintCycle(context) {
             let globalDoerTurn = Promise.resolve();
             const streakOutcomes = [];
             await parallel(streaks, async (streak, index) => {
-                const beadIds = streak.map((b) => b.id);
+                let beadIds = streak.map((b) => b.id);
                 const doerMember = doerPool[index % doerPool.length];
                 const priorTurn = globalDoerTurn;
                 let releaseTurn;
                 globalDoerTurn = new Promise((resolve) => { releaseTurn = resolve; });
                 await priorTurn;
                 try {
+                // apra-fleet-eft.9.7: per-bead work-claiming inside the brackets
+                // (prevention layer per plan 3.4). When assignee is provided, try to
+                // claim each bead before dispatching. If a bead is already claimed,
+                // skip it rather than crashing. Only dispatch if we have at least
+                // one bead to work on.
+                if (validated.assignee) {
+                    const claimedBeadIds = [];
+                    const skippedBeadIds = [];
+                    for (const beadId of beadIds) {
+                        try {
+                            const claimLabel = `bd update ${beadId} --claim`;
+                            await command(claimLabel, { member_name: orchestratorMember, silent: true });
+                            claimedBeadIds.push(beadId);
+                        } catch (claimErr) {
+                            // A claim can fail if the bead is already claimed by another
+                            // sprint/assignee. Skip this bead instead of crashing.
+                            skippedBeadIds.push(beadId);
+                            log(`Doer streak: bead ${beadId} already claimed (skipping): ${claimErr.message}`);
+                        }
+                    }
+                    if (claimedBeadIds.length === 0) {
+                        // All beads in this streak are already claimed by other sprints.
+                        // Skip this streak entirely.
+                        log(`Doer streak: all beads [${beadIds.join(', ')}] are already claimed by other sprints -- skipping this streak.`);
+                        streakOutcomes.push({
+                            beadIds,
+                            status: 'skipped',
+                            reason: 'all-beads-already-claimed',
+                        });
+                        return; // Skip to the next streak
+                    }
+                    if (skippedBeadIds.length > 0) {
+                        log(`Doer streak: claimed ${claimedBeadIds.length} bead(s) [${claimedBeadIds.join(', ')}]; skipped ${skippedBeadIds.length} already-claimed bead(s) [${skippedBeadIds.join(', ')}].`);
+                        beadIds = claimedBeadIds; // Update beadIds to only the successfully claimed ones
+                    }
+                }
+
                 const feedbackForStreak = beadIds
                     .map((id) => perBeadFeedback.get(id))
                     .filter(Boolean)
@@ -3442,7 +3667,7 @@ async function runSprintCycle(context) {
             // apra-fleet-eft.9.1 (Plan 3.3): the orchestrator just MUTATED
             // beads (reopens + newTask creates) in its own clone -- D-push so
             // members observe them on their next dispatch's D-pull.
-            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log });
+            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
 
             await updateDashboard();
 
@@ -3699,7 +3924,7 @@ async function runSprintCycle(context) {
             // apra-fleet-eft.9.1 (Plan 3.3): D-push the orchestrator's applied
             // re-review reopens/newTask creates, same as the Develop/Review
             // transition site above.
-            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log });
+            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
         }
 
         if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED') {
