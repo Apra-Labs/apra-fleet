@@ -33,7 +33,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted';
+  reason?: 'busy' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response';
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
   sessionId?: string;
   [key: string]: unknown;
@@ -478,6 +478,24 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       return {
         text: buildFailureMessage(agent.friendlyName, result, provider, parsed),
         structuredContent: { isError: true, reason: parsed.terminalReason === 'max_turns' ? 'max_turns_exhausted' : 'nonzero_exit' },
+      };
+    }
+
+    // Exit 0 but the provider parser extracted NOTHING (no result text)
+    // -- observed live (apra-fleet-eft.14, 2026-07-19 stabilization loop):
+    // the claude CLI can die silently mid-turn (member-side session
+    // transcript stops at a tool_result with no final assistant message)
+    // and still exit 0 with EMPTY stdout, so parseResponse falls through
+    // to its plain-text fallback with result: ''. Returning that as a
+    // success used to hand callers a display wrapper with nothing inside,
+    // which schema-extraction layers then misreported as "LLM returned
+    // invalid JSON". Classify it at the source as a typed dispatch error
+    // instead, with stderr's tail attached for diagnosis.
+    if (!parsed.result || parsed.result.trim() === '') {
+      const stderrTail = (result.stderr || '').trim().slice(-500);
+      return {
+        text: `❌ execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
+        structuredContent: { isError: true, reason: 'empty_response' },
       };
     }
 

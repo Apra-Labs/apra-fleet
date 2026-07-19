@@ -1065,5 +1065,39 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'nonzero_exit' });
     expect(resultText(result)).toContain('/login');
   });
+
+  // apra-fleet-eft.14 (2026-07-19 stabilization loop): the member CLI can
+  // die silently mid-turn -- its session transcript stops at a tool_result
+  // with no final assistant message -- and still exit 0 with EMPTY stdout.
+  // parseResponse then falls through to its plain-text fallback with
+  // result: ''. That must be classified as a typed dispatch failure at the
+  // source, never returned as a wrapper-only "success".
+  it('classifies exit-0-with-empty-stdout as a typed empty_response dispatch error', async () => {
+    const member = makeTestAgent({ friendlyName: 'silent-death' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'some late unrelated warning', code: 0 })  // main: exit 0, NO output
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'review the plan', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response' });
+    expect(resultText(result)).toContain('no parseable output');
+    expect(resultText(result)).toContain('some late unrelated warning');
+  });
+
+  it('a whitespace-only parsed result is also empty_response, not a success', async () => {
+    const member = makeTestAgent({ friendlyName: 'whitespace-death' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ type: 'result', result: '   \n  ', session_id: 'sess-ws' }), stderr: '', code: 0 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response' });
+  });
 });
 
