@@ -59,3 +59,6 @@ COPILOT-INSTRUCTIONS.md
 # Per-run sprint state dumps (bin/cli.mjs writes one automatically on every
 # sprint exit) -- local scratch, not a project deliverable.
 /sprint-logs/
+
+# Per-member installed agent role files -- must stay on disk, never committed
+.claude/agents/
