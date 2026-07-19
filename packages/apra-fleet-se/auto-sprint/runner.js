@@ -2780,12 +2780,37 @@ async function runSprintCycle(context) {
             // Mirror the doer-streak retry-once pattern (line ~1844) as an
             // interim mitigation; apra-fleet-j6i.2/j6i.3 cover the fuller
             // dispatch-vs-schema-error distinction this really deserves.
+            //
+            // apra-fleet-eft: a single IMMEDIATE blind retry isn't enough for
+            // a "busy" AgentDispatchError ("execute_prompt is already running
+            // for <member>") -- observed live after a prior round's dispatch
+            // hit a transport-level failure: the fleet server's own busy-lock
+            // for that member did not clear immediately, so the immediate
+            // retry hit the exact same "busy" error with nothing to catch it,
+            // and that propagated uncaught and killed the whole sprint. Busy/
+            // transport failures are inherently transient given a short wait
+            // (unlike a genuine schema or logic error), so retry a few times
+            // with a backoff delay before finally giving up.
+            const PLANNER_DISPATCH_RETRY_DELAYS_MS = [0, 5000, 15000];
             let plannerRes;
-            try {
-                plannerRes = await dispatchPlanner();
-            } catch (err) {
-                log(`Planner dispatch threw: ${err.message}. Retrying once.`);
-                plannerRes = await dispatchPlanner();
+            let plannerErr = null;
+            for (let i = 0; i < PLANNER_DISPATCH_RETRY_DELAYS_MS.length; i++) {
+                if (PLANNER_DISPATCH_RETRY_DELAYS_MS[i] > 0) {
+                    log(`Planner dispatch: waiting ${PLANNER_DISPATCH_RETRY_DELAYS_MS[i] / 1000}s before retry attempt ${i + 1}/${PLANNER_DISPATCH_RETRY_DELAYS_MS.length - 1}...`);
+                    await new Promise((resolve) => setTimeout(resolve, PLANNER_DISPATCH_RETRY_DELAYS_MS[i]));
+                }
+                try {
+                    plannerRes = await dispatchPlanner();
+                    plannerErr = null;
+                    break;
+                } catch (err) {
+                    plannerErr = err;
+                    const isLastAttempt = i === PLANNER_DISPATCH_RETRY_DELAYS_MS.length - 1;
+                    log(`Planner dispatch threw: ${err.message}.${isLastAttempt ? ' Retries exhausted.' : ' Retrying.'}`);
+                }
+            }
+            if (plannerErr) {
+                throw plannerErr;
             }
             log(`Planner: ${plannerRes}`);
 
