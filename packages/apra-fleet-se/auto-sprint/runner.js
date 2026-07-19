@@ -3367,72 +3367,9 @@ async function runSprintCycle(context) {
                 globalDoerTurn = new Promise((resolve) => { releaseTurn = resolve; });
                 await priorTurn;
                 try {
-                // apra-fleet-eft.9.7: per-bead work-claiming inside the brackets
-                // (prevention layer per plan 3.4). When assignee is provided, try to
-                // claim each bead before dispatching. If a bead is already claimed,
-                // skip it rather than crashing. Only dispatch if we have at least
-                // one bead to work on.
-                if (validated.assignee) {
-                    const claimedBeadIds = [];
-                    const skippedBeadIds = [];
-                    for (const beadId of beadIds) {
-                        try {
-                            const claimLabel = `bd update ${beadId} --claim`;
-                            await command(claimLabel, { member_name: orchestratorMember, silent: true });
-                            claimedBeadIds.push(beadId);
-                        } catch (claimErr) {
-                            // A claim can fail if the bead is already claimed by another
-                            // sprint/assignee. Skip this bead instead of crashing.
-                            skippedBeadIds.push(beadId);
-                            log(`Doer streak: bead ${beadId} already claimed (skipping): ${claimErr.message}`);
-                        }
-                    }
-                    if (claimedBeadIds.length === 0) {
-                        // All beads in this streak are already claimed by other sprints.
-                        // Skip this streak entirely.
-                        log(`Doer streak: all beads [${beadIds.join(', ')}] are already claimed by other sprints -- skipping this streak.`);
-                        streakOutcomes.push({
-                            beadIds,
-                            status: 'skipped',
-                            reason: 'all-beads-already-claimed',
-                        });
-                        return; // Skip to the next streak
-                    }
-                    if (skippedBeadIds.length > 0) {
-                        log(`Doer streak: claimed ${claimedBeadIds.length} bead(s) [${claimedBeadIds.join(', ')}]; skipped ${skippedBeadIds.length} already-claimed bead(s) [${skippedBeadIds.join(', ')}].`);
-                        beadIds = claimedBeadIds; // Update beadIds to only the successfully claimed ones
-                    }
-                }
-
-                const feedbackForStreak = beadIds
-                    .map((id) => perBeadFeedback.get(id))
-                    .filter(Boolean)
-                    .join('\n\n');
-
-                // N10: resolve the model to price this dispatch against.
-                // Beads are normally streaked one-per-model (the planner
-                // assigns tiers per task), but when a streak DOES span
-                // beads with different declared models, this deterministically
-                // picks the first (by streak/bead-id order, not dispatch
-                // completion order) and logs the discrepancy rather than
-                // silently averaging or guessing a blended price. A bead
-                // with no `model` metadata at all (pre-N1 data, or a
-                // planner that forgot the convention) resolves to
-                // `undefined`, which FleetWorkflow treats the same as never
-                // passing `model` -- the dispatch still runs, it's just not
-                // priced (calculateCost() returns null; see pricing.mjs).
-                // CAVEAT: this is the model the PLANNER ASKED the doer to
-                // run on -- the fleet does not currently echo back the
-                // model it actually resolved/ran with alongside usage, so
-                // this (and therefore budget._spent / BudgetExceededError)
-                // is honestly an ESTIMATE, not a verified actual, until that
-                // server-side echo lands (explicitly descoped -- see
-                // docs/plan.md and the pricing.mjs header comment).
-                const streakModels = [...new Set(beadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
-                if (streakModels.length > 1) {
-                    log(`Doer streak [${beadIds.join(', ')}] spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${streakModels[0]}'.`);
-                }
-                const doerModel = streakModels[0];
+                // Setup phase: variables for dispatch
+                let actualBeadIds = [...beadIds];  // May be reduced by claiming if assignee is set
+                let hasClaimedBeads = false;  // Track whether we've done claiming yet
 
                 // apra-fleet base doer max_turns: made explicit (rather than
                 // relying on the fleet's own default of 50) so the
@@ -3463,23 +3400,96 @@ async function runSprintCycle(context) {
                 // beads, which must be D-pushed (pushBeads:true) so the
                 // orchestrator's verification D-pull+bd show below sees the
                 // closes instead of falsely reporting the streak FAILED.
-                const dispatchDoer = () => withGitSync(doerMember, true, () => agent(
-                    buildDoerPrompt({ beadIds, branch: validated.branch, feedback: feedbackForStreak || null }),
-                    {
-                        member_name: doerMember,
-                        agentType: 'doer',
-                        label: `Streak [${beadIds.join(', ')}]`,
-                        schema: doerReport,
-                        model: doerModel,
-                        // apra-fleet-aw8: doer streaks run a full impl+test+commit
-                        // cycle, categorically heavier than a one-shot prompt --
-                        // the fleet's generic execute_prompt default (300s) was
-                        // observed live tripping repeatedly on real work.
-                        timeout_s: 900,
-                        max_total_s: 3600,
-                        max_turns: BASE_DOER_MAX_TURNS,
+                // apra-fleet-eft.9.7 (Plan 3.4): per-bead work-claiming happens
+                // INSIDE the D-pull/D-push brackets, immediately after the D-pull
+                // brings in the latest state of which beads are already claimed
+                // by other sprints. This is the prevention layer that reduces
+                // row-level conflicts (C.2) by claiming beads based on the
+                // current remote state.
+                const dispatchDoer = () => withGitSync(doerMember, true, async () => {
+                    // apra-fleet-eft.9.7: per-bead work-claiming inside the brackets,
+                    // after D-pull brings in the latest claim state. Only claim once.
+                    if (!hasClaimedBeads) {
+                        hasClaimedBeads = true;
+                        if (validated.assignee) {
+                            const claimedBeadIds = [];
+                            const skippedBeadIds = [];
+                            for (const beadId of actualBeadIds) {
+                                try {
+                                    const claimLabel = `bd update ${beadId} --claim`;
+                                    await command(claimLabel, { member_name: orchestratorMember, silent: true });
+                                    claimedBeadIds.push(beadId);
+                                } catch (claimErr) {
+                                    // A claim can fail if the bead is already claimed by another
+                                    // sprint/assignee. Skip this bead instead of crashing.
+                                    skippedBeadIds.push(beadId);
+                                    log(`Doer streak: bead ${beadId} already claimed (skipping): ${claimErr.message}`);
+                                }
+                            }
+                            if (claimedBeadIds.length === 0) {
+                                // All beads in this streak are already claimed by other sprints.
+                                // Skip this streak entirely.
+                                log(`Doer streak: all beads [${actualBeadIds.join(', ')}] are already claimed by other sprints -- skipping this streak.`);
+                                throw new WorkflowError(
+                                    `All beads already claimed by other sprints`,
+                                    { beadIds: actualBeadIds, reason: 'all-beads-already-claimed' }
+                                );
+                            }
+                            if (skippedBeadIds.length > 0) {
+                                log(`Doer streak: claimed ${claimedBeadIds.length} bead(s) [${claimedBeadIds.join(', ')}]; skipped ${skippedBeadIds.length} already-claimed bead(s) [${skippedBeadIds.join(', ')}].`);
+                                actualBeadIds = claimedBeadIds; // Update to only the successfully claimed ones
+                            }
+                        }
                     }
-                ), { pushBeads: true });
+
+                    const feedbackForStreak = actualBeadIds
+                        .map((id) => perBeadFeedback.get(id))
+                        .filter(Boolean)
+                        .join('\n\n');
+
+                    // N10: resolve the model to price this dispatch against.
+                    // Beads are normally streaked one-per-model (the planner
+                    // assigns tiers per task), but when a streak DOES span
+                    // beads with different declared models, this deterministically
+                    // picks the first (by streak/bead-id order, not dispatch
+                    // completion order) and logs the discrepancy rather than
+                    // silently averaging or guessing a blended price. A bead
+                    // with no `model` metadata at all (pre-N1 data, or a
+                    // planner that forgot the convention) resolves to
+                    // `undefined`, which FleetWorkflow treats the same as never
+                    // passing `model` -- the dispatch still runs, it's just not
+                    // priced (calculateCost() returns null; see pricing.mjs).
+                    // CAVEAT: this is the model the PLANNER ASKED the doer to
+                    // run on -- the fleet does not currently echo back the
+                    // model it actually resolved/ran with alongside usage, so
+                    // this (and therefore budget._spent / BudgetExceededError)
+                    // is honestly an ESTIMATE, not a verified actual, until that
+                    // server-side echo lands (explicitly descoped -- see
+                    // docs/plan.md and the pricing.mjs header comment).
+                    const streakModels = [...new Set(actualBeadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
+                    if (streakModels.length > 1) {
+                        log(`Doer streak [${actualBeadIds.join(', ')}] spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${streakModels[0]}'.`);
+                    }
+                    const doerModel = streakModels[0];
+
+                    return agent(
+                        buildDoerPrompt({ beadIds: actualBeadIds, branch: validated.branch, feedback: feedbackForStreak || null }),
+                        {
+                            member_name: doerMember,
+                            agentType: 'doer',
+                            label: `Streak [${actualBeadIds.join(', ')}]`,
+                            schema: doerReport,
+                            model: doerModel,
+                            // apra-fleet-aw8: doer streaks run a full impl+test+commit
+                            // cycle, categorically heavier than a one-shot prompt --
+                            // the fleet's generic execute_prompt default (300s) was
+                            // observed live tripping repeatedly on real work.
+                            timeout_s: 900,
+                            max_total_s: 3600,
+                            max_turns: BASE_DOER_MAX_TURNS,
+                        }
+                    );
+                }, { pushBeads: true });
 
                 // The resume-and-continue retry is the SAME logical doer
                 // streak continuing (same session, same code/bead-writing
@@ -3490,9 +3500,9 @@ async function runSprintCycle(context) {
                     {
                         member_name: doerMember,
                         agentType: 'doer',
-                        label: `Streak [${beadIds.join(', ')}] (resume, max_turns=${maxTurns})`,
+                        label: `Streak [${actualBeadIds.join(', ')}] (resume, max_turns=${maxTurns})`,
                         schema: doerReport,
-                        model: doerModel,
+                        model: undefined,  // Model is resolved in main dispatch
                         timeout_s: 900,
                         max_total_s: 3600,
                         resume: true,
@@ -3513,7 +3523,7 @@ async function runSprintCycle(context) {
                         dispatchError = err;
                         while (resumeAttempt < MAX_TURN_RESUME_ATTEMPTS) {
                             resumeAttempt += 1;
-                            log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=${currentMaxTurns} (attempt ${resumeAttempt}/${MAX_TURN_RESUME_ATTEMPTS}) instead of giving up or regrouping.`);
+                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=${currentMaxTurns} (attempt ${resumeAttempt}/${MAX_TURN_RESUME_ATTEMPTS}) instead of giving up or regrouping.`);
                             try {
                                 report = await dispatchDoerResume(currentMaxTurns);
                                 dispatchError = null;
@@ -3531,10 +3541,10 @@ async function runSprintCycle(context) {
                             }
                         }
                         if (dispatchError) {
-                            log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
+                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
                         }
                     } else {
-                        log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
+                        log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
                         wasRetried = true;
                         try {
                             report = await dispatchDoer();
@@ -3546,8 +3556,8 @@ async function runSprintCycle(context) {
 
                 if (dispatchError) {
                     streakOutcomes.push({
-                        beadIds, doerMember, outcome: 'failed', wasRetried,
-                        report: null, unclosedIds: beadIds, error: dispatchError.message,
+                        beadIds: actualBeadIds, doerMember, outcome: 'failed', wasRetried,
+                        report: null, unclosedIds: actualBeadIds, error: dispatchError.message,
                     });
                     // Rethrow so parallel()'s continueOnError:true isolates
                     // this failure from sibling streaks (the outcome above
@@ -3556,7 +3566,7 @@ async function runSprintCycle(context) {
                     throw dispatchError;
                 }
 
-                log(`Doer [${beadIds.join(', ')}] on [${doerMember}]: ${JSON.stringify(report)}`);
+                log(`Doer [${actualBeadIds.join(', ')}] on [${doerMember}]: ${JSON.stringify(report)}`);
 
                 // CRITICAL (Work item 3): never trust the doer's own
                 // success claim -- verify via `bd show` that the assigned
@@ -3573,15 +3583,15 @@ async function runSprintCycle(context) {
                 // marked FAILED -- the single most divergence-sensitive read in
                 // the file.
                 const unclosedIds = await verifyDoerStreakClosed({
-                    command, orchestratorMember, beadIds, log,
+                    command, orchestratorMember, beadIds: actualBeadIds, log,
                 });
 
                 if (unclosedIds.length > 0) {
-                    log(`Doer streak [${beadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
+                    log(`Doer streak [${actualBeadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
                 }
 
                 streakOutcomes.push({
-                    beadIds, doerMember, wasRetried, report, unclosedIds,
+                    beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds,
                     outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
                 });
                 await updateDashboard();
