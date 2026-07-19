@@ -157,6 +157,51 @@ conditions confirmed NOT caused by this work (debounced-writer 3 failures,
 sprint-state file-level exit hang -- both reproduce with all stabilization
 changes stashed; they belong to the in-flight eft.2.1 feature work).
 
+## Loop iteration 2 (2026-07-19)
+
+### Issue 8: POST-stream idle timeout kills every >300s-silent dispatch ("terminated")
+
+- **Symptom** (run 5, `sprint-logs/auto-sprint-relaunch5.log`): long
+  dispatches failed with `[Agent API Error] terminated`, then the retry hit
+  `busy`, busy-waited out the orphan, re-dispatched -- and the redo ALSO
+  died with `terminated`. The sprint survived (Issues 1-3 fixes all held)
+  but ground in a terminated -> retry -> busy-wait -> duplicate-dispatch
+  loop, doing each long planner run twice and discarding the results.
+- **Root cause**: the Issue 1 fix covered the persistent GET stream, but
+  each POST's own SSE response stream has the same undici ~300s idle
+  bodyTimeout. `claude -p` prints nothing until the turn completes, so any
+  dispatch quieter than 300s+ loses its response stream mid-flight
+  ("terminated" is undici's body-timeout error message). Server log
+  evidence: planner R2 pid 15590 ran 675s (00:44:40 -> 00:55:55, exit=0
+  out=16285) -- client stream killed at ~00:49:40, full result discarded,
+  duplicate planner pid 18865 dispatched 00:55:55 by the busy-waiting
+  retry, which then also exceeded 300s and got terminated in turn.
+- **Fix**: `packages/apra-fleet-client` now depends on `undici` explicitly
+  and `transport.mjs` routes ALL StreamableHttpTransport fetches (init
+  POST, persistent GET, send POST) through undici's fetch with a shared
+  `Agent({ headersTimeout: 0, bodyTimeout: 0 })` dispatcher. No unbounded
+  hangs result: McpClient's per-request timeout still bounds every
+  JSON-RPC call, and the GET stream keeps its reconnect loop. Guard test:
+  `packages/apra-fleet-client/test/transport-idle-timeout-guard.test.mjs`
+  (asserts the wiring at source level -- a behavioral test would need a
+  >300s silent stream; the existing reconnect test exercises the undici
+  fetch path against a real server).
+- **Decision note**: server-side SSE keepalives on POST responses would fix
+  this for ALL clients and remain a good hardening follow-up, but need a
+  fleet-server rebuild+redeploy; the client-side dispatcher fix is
+  deterministic and deploy-free, so it ships first.
+
+### Server-side eft.14 classification (committed, deploy deferred)
+
+- `src/tools/execute-prompt.ts` now classifies an exit-0-with-empty-result
+  dispatch as a typed failure (`structuredContent: { isError: true,
+  reason: 'empty_response' }` + stderr tail in the text) instead of
+  returning a bare display wrapper as success. Tests added in
+  `tests/execute-prompt.test.ts`; full root vitest suite green (2318
+  passed). Deployment needs a fleet-server rebuild+reinstall+restart, which
+  kills live member sessions -- deferred to a natural stop; the workflow
+  layer's Issue 3 detection handles it in the meantime.
+
 ### Still open / watched
 
 - **apra-fleet-eft.14 (server)**: why does the provider CLI sometimes exit
@@ -166,12 +211,9 @@ changes stashed; they belong to the in-flight eft.2.1 feature work).
 - **apra-fleet-eft.15 (perf)**: repeated near-identical project-wide
   `bd list` dumps within a phase (clearly visible in the fleet server log,
   ~1.5-2s each); P2, not sprint-fatal.
-- **POST-stream idle timeout risk**: a >300s-silent execute_prompt POST
-  response stream would hit the same undici bodyTimeout as Issue 1. Not yet
-  observed (dispatch responses arrive as single final SSE events; observed
-  long dispatches were 204s/235s). If it appears, fix with server-side SSE
-  keepalives on POST responses (src/, needs fleet server rebuild+reinstall)
-  or an explicit undici dependency with bodyTimeout: 0.
+- **POST-stream idle timeout risk**: OBSERVED in run 5 and fixed as Issue
+  8 (iteration 2). Server-side SSE keepalives remain an optional hardening
+  follow-up.
 - **apra-fleet-qv1**: parallel doer streaks to a single member are unsafe
   (pre-existing bead, visible in the server log's bead dumps); single-member
   sprints serialize doers so not currently hit.

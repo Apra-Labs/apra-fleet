@@ -1,6 +1,22 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
+import { fetch as undiciFetch, Agent as UndiciAgent } from 'undici';
+
+// Node's built-in fetch enforces a default ~300s idle bodyTimeout on
+// response bodies. MCP streamable-HTTP responses arrive over SSE streams
+// that can legitimately sit silent for far longer than that (a long
+// execute_prompt dispatch prints nothing until the member CLI finishes --
+// observed live: a 675s planner run whose POST response stream was killed
+// at ~300s, losing a 16k-token result and forcing a duplicate dispatch).
+// Use undici's own fetch with an explicit dispatcher that disables the
+// header/body idle timeouts. This does NOT create unbounded hangs: every
+// JSON-RPC request still has McpClient's own per-request timeout, and the
+// persistent GET stream has its own reconnect loop.
+const sseDispatcher = new UndiciAgent({
+    headersTimeout: 0,
+    bodyTimeout: 0,
+});
 
 export class StdioTransport extends EventEmitter {
     constructor(command, args, options = {}) {
@@ -96,11 +112,12 @@ export class StreamableHttpTransport extends EventEmitter {
                 ...(this.options.headers || {})
             };
 
-            const postResponse = await fetch(this.url, {
+            const postResponse = await undiciFetch(this.url, {
                 method: 'POST',
                 headers: postHeaders,
                 body: JSON.stringify(initMsg),
-                signal: this.controller.signal
+                signal: this.controller.signal,
+                dispatcher: sseDispatcher
             });
             
             if (!postResponse.ok) {
@@ -140,14 +157,15 @@ export class StreamableHttpTransport extends EventEmitter {
         let consecutiveFailures = 0;
         while (this.controller && !this.controller.signal.aborted) {
             try {
-                const getResponse = await fetch(this.url, {
+                const getResponse = await undiciFetch(this.url, {
                     method: 'GET',
                     headers: {
                         'Accept': 'text/event-stream',
                         'mcp-session-id': this.sessionId,
                         ...(this.options.headers || {})
                     },
-                    signal: this.controller.signal
+                    signal: this.controller.signal,
+                    dispatcher: sseDispatcher
                 });
                 if (!getResponse.ok) {
                     throw new Error(`Stream GET error! status: ${getResponse.status}`);
@@ -236,10 +254,16 @@ export class StreamableHttpTransport extends EventEmitter {
             'mcp-protocol-version': '2024-11-05',
             ...(this.options.headers || {})
         };
-        const response = await fetch(this.url, {
+        // dispatcher disables undici's ~300s idle bodyTimeout: this POST's
+        // SSE response stream stays silent for the full duration of a long
+        // dispatch (e.g. an execute_prompt that thinks for 10+ minutes) and
+        // must not be idle-killed -- that would emit 'error', reject every
+        // pending request, and orphan the still-running remote session.
+        const response = await undiciFetch(this.url, {
             method: 'POST',
             headers,
-            body: JSON.stringify(message)
+            body: JSON.stringify(message),
+            dispatcher: sseDispatcher
         });
         
         if (!response.ok) {
