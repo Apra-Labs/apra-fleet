@@ -62,7 +62,11 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // not "fix" it back to 21 by comparing against eft-service without checking
 // why the counts differ first (see the header comment above).
 const EXPECTED_COMMAND_COUNT = 18;
-const EXPECTED_AGENT_COUNT = 9;
+// Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
+// (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
+// dispatch on the SAME session with an escalated max_turns, verified compliant
+// with member_name.
+const EXPECTED_AGENT_COUNT = 10;
 
 /**
  * Scans `src` for `command(`/`agent(` call sites, skipping call-site tokens

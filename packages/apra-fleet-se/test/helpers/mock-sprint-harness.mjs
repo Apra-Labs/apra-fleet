@@ -603,7 +603,14 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // the branch from buildDoerPrompt, no bead is ever
                 // worked/closed and the sprint fails, tripping this
                 // regression.
-                if (!/Sprint track branch to work on:\s*\S+/.test(opts.prompt)) {
+                //
+                // Skipped on a RESUMED dispatch (opts.resume === true): the
+                // max_turns-exhaustion resume path sends a short
+                // "continue where you left off" nudge, not a fresh prompt --
+                // the branch was already established in the session being
+                // resumed, so this gate would otherwise misfire on every
+                // resume attempt regardless of what the real prompt said.
+                if (opts.resume !== true && !/Sprint track branch to work on:\s*\S+/.test(opts.prompt)) {
                     return {
                         content: [{
                             text: JSON.stringify({

@@ -2118,6 +2118,25 @@ export async function main(context) {
                 }
                 const doerModel = streakModels[0];
 
+                // apra-fleet base doer max_turns: made explicit (rather than
+                // relying on the fleet's own default of 50) so the
+                // max-turns-exhaustion resume path below has a known
+                // baseline to escalate from.
+                const BASE_DOER_MAX_TURNS = 50;
+                // Bounded resume-and-continue attempts after a max_turns
+                // exhaustion, each doubling the turn budget. A blind
+                // identical retry is pointless (the doer would
+                // deterministically run out of turns again on the SAME
+                // prompt/max_turns) -- but SESSION RESUME is not identical:
+                // it continues the SAME session (full context of what was
+                // already done) with just a short "continue" nudge and a
+                // larger turn budget, which is what actually lets a
+                // longer-than-expected streak finish instead of dying every
+                // round. Bounded (not unlimited) so a genuinely too-large
+                // streak still fails after a few escalations rather than
+                // burning unbounded budget.
+                const MAX_TURN_RESUME_ATTEMPTS = 2;
+
                 const dispatchDoer = () => agent(
                     buildDoerPrompt({ beadIds, branch: validated.branch, feedback: feedbackForStreak || null }),
                     {
@@ -2132,6 +2151,22 @@ export async function main(context) {
                         // observed live tripping repeatedly on real work.
                         timeout_s: 900,
                         max_total_s: 3600,
+                        max_turns: BASE_DOER_MAX_TURNS,
+                    }
+                );
+
+                const dispatchDoerResume = (maxTurns) => agent(
+                    'Continue exactly where you left off on your assigned bead ids from this same session -- do not restart, re-read from scratch, or re-plan. Pick up from your last action and proceed to the VERIFY checkpoint.',
+                    {
+                        member_name: doerMember,
+                        agentType: 'doer',
+                        label: `Streak [${beadIds.join(', ')}] (resume, max_turns=${maxTurns})`,
+                        schema: doerReport,
+                        model: doerModel,
+                        timeout_s: 900,
+                        max_total_s: 3600,
+                        resume: true,
+                        max_turns: maxTurns,
                     }
                 );
 
@@ -2141,13 +2176,33 @@ export async function main(context) {
                 try {
                     report = await dispatchDoer();
                 } catch (err) {
-                    // apra-fleet-p4f.3: a blind identical retry is pointless
-                    // for max_turns exhaustion -- the doer will deterministically
-                    // run out of turns again on the SAME prompt/max_turns.
-                    // Flag it as too-complex/needs-decomposition instead.
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- not retrying identically (would deterministically exhaust again); flagging as too-complex-for-one-streak.`);
+                        wasRetried = true;
+                        let currentMaxTurns = BASE_DOER_MAX_TURNS * 2;
+                        let resumeAttempt = 0;
                         dispatchError = err;
+                        while (resumeAttempt < MAX_TURN_RESUME_ATTEMPTS) {
+                            resumeAttempt += 1;
+                            log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=${currentMaxTurns} (attempt ${resumeAttempt}/${MAX_TURN_RESUME_ATTEMPTS}) instead of giving up or regrouping.`);
+                            try {
+                                report = await dispatchDoerResume(currentMaxTurns);
+                                dispatchError = null;
+                                break;
+                            } catch (resumeErr) {
+                                dispatchError = resumeErr;
+                                if (resumeErr instanceof AgentDispatchError && resumeErr.details?.reason === 'max_turns_exhausted') {
+                                    currentMaxTurns *= 2;
+                                    continue;
+                                }
+                                // A non-max_turns failure on resume (e.g. stale
+                                // session, transport error) isn't something
+                                // more turns can fix -- stop escalating.
+                                break;
+                            }
+                        }
+                        if (dispatchError) {
+                            log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
+                        }
                     } else {
                         log(`Doer streak [${beadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
                         wasRetried = true;
