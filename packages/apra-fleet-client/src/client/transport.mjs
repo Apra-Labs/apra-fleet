@@ -115,34 +115,65 @@ export class StreamableHttpTransport extends EventEmitter {
             // Read the init response body so fetch doesn't hold the connection
             const initResponseText = await postResponse.text();
             
-            // 2. Open the persistent SSE stream via GET using the session ID
-            const getHeaders = {
-                'Accept': 'text/event-stream',
-                'mcp-session-id': this.sessionId,
-                ...(this.options.headers || {})
-            };
+            // 2. Open the persistent SSE stream via GET using the session ID.
+            // Run it as a self-reconnecting background loop rather than a
+            // single fetch: this stream is normally SILENT (JSON-RPC
+            // responses arrive over each POST's own SSE response, not here),
+            // and Node's built-in fetch (undici) enforces a default
+            // ~300s idle bodyTimeout on response bodies -- so a single-shot
+            // GET stream deterministically dies ~5 minutes into every
+            // session, which used to emit 'close' and reject EVERY in-flight
+            // request (observed live killing auto-sprint runs mid-dispatch,
+            // always at start+~304s). An idle timeout on a keepalive channel
+            // is an expected, recoverable event: quietly reopen the stream
+            // and only surface 'close'/'error' on deliberate stop() or
+            // persistent (5x consecutive) reconnect failure.
+            this._runPersistentStream().catch(() => { /* loop handles its own errors */ });
 
-            const getResponse = await fetch(this.url, {
-                method: 'GET',
-                headers: getHeaders,
-                signal: this.controller.signal
-            });
-
-            if (!getResponse.ok) {
-                throw new Error(`Stream GET error! status: ${getResponse.status}`);
-            }
-
-            // We must start reading the stream in the background
-            this.readStream(getResponse.body, true).catch(err => {
-                if (err.name !== 'AbortError') {
-                    this.emit('error', err);
-                }
-            });
-            
             this.emit('ready');
         } catch (error) {
             this.emit('error', error);
         }
+    }
+
+    async _runPersistentStream() {
+        let consecutiveFailures = 0;
+        while (this.controller && !this.controller.signal.aborted) {
+            try {
+                const getResponse = await fetch(this.url, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'text/event-stream',
+                        'mcp-session-id': this.sessionId,
+                        ...(this.options.headers || {})
+                    },
+                    signal: this.controller.signal
+                });
+                if (!getResponse.ok) {
+                    throw new Error(`Stream GET error! status: ${getResponse.status}`);
+                }
+                consecutiveFailures = 0;
+                // Returns when the stream ends (server closed it, or undici's
+                // idle bodyTimeout fired as a thrown error caught below).
+                await this.readStream(getResponse.body);
+            } catch (err) {
+                if (err.name === 'AbortError' || (this.controller && this.controller.signal.aborted)) {
+                    break;
+                }
+                consecutiveFailures += 1;
+                if (consecutiveFailures >= 5) {
+                    const giveUp = new Error(`Persistent SSE stream failed ${consecutiveFailures} consecutive reconnect attempts: ${err.message}`);
+                    this.emit('error', giveUp);
+                    this.emit('close');
+                    return;
+                }
+            }
+            // Small backoff before reopening (also on clean stream end --
+            // an immediately-dying stream must not become a hot loop).
+            await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** consecutiveFailures, 15000)));
+        }
+        // Deliberate stop(): reject in-flight requests exactly as before.
+        this.emit('close');
     }
 
     async readStream(body, emitClose = false) {

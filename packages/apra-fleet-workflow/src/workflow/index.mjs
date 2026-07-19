@@ -314,6 +314,17 @@ function buildRepairPrompt(errorsText) {
  *   plus a corrected-JSON instruction, not a re-embedding of the full original prompt/output.
  *   Each attempt emits its own activity:start/activity:end pair and is cost-accounted
  *   individually. (apra-fleet-unw.8)
+ * @property {number} [busyWaitMs] - How long (ms) to keep waiting-and-retrying when the
+ *   fleet server reports the member is busy ("execute_prompt is already running") before
+ *   surfacing the busy AgentDispatchError. Defaults to 10 minutes. A busy member is
+ *   almost always TRANSIENT-but-slow: observed live, a client-side transport drop
+ *   orphans the in-flight remote session, which keeps running (and holding the member's
+ *   one-dispatch-at-a-time lock) for however long its work takes -- minutes, not
+ *   seconds -- then completes and releases the lock. A blind fixed backoff loses that
+ *   race; polling until the lock actually frees wins it. Set 0 to disable (immediate
+ *   throw, the pre-existing behavior). Each poll is a cheap re-dispatch attempt (the
+ *   server rejects busy calls in milliseconds with no side effects).
+ * @property {number} [busyPollMs] - Poll interval (ms) for the busy-wait above. Default 15s.
  */
 
 /**
@@ -772,7 +783,29 @@ export class FleetWorkflow extends EventEmitter {
             };
 
             try {
-                const result = await this.fleetApi.executePrompt(payload);
+                let result = await this.fleetApi.executePrompt(payload);
+
+                // Busy-wait (see AgentOptions.busyWaitMs): a busy member is
+                // transient-but-slow -- an orphaned prior session can hold
+                // the per-member dispatch lock for minutes before finishing.
+                // Poll (cheap, side-effect-free re-dispatch) until the lock
+                // frees or the budget runs out, instead of failing the whole
+                // step on the first busy rejection.
+                const busyWaitMs = opts.busyWaitMs ?? 600000;
+                const busyPollMs = opts.busyPollMs ?? 15000;
+                if (busyWaitMs > 0) {
+                    const busyDeadline = Date.now() + busyWaitMs;
+                    while (
+                        result && result.structuredContent && result.structuredContent.isError
+                        && result.structuredContent.reason === 'busy'
+                        && Date.now() < busyDeadline
+                        && !(payload.signal && payload.signal.aborted)
+                    ) {
+                        console.error(`[Agent Busy-Wait] member '${opts.member_name || opts.member_id}' is busy (a prior dispatch still holds its lock); retrying in ${Math.round(busyPollMs / 1000)}s (up to ${Math.round((busyDeadline - Date.now()) / 1000)}s left)...`);
+                        await new Promise((resolve) => setTimeout(resolve, busyPollMs));
+                        result = await this.fleetApi.executePrompt(payload);
+                    }
+                }
 
                 // execute_prompt's dispatch-level structuredContent (added
                 // alongside the display text -- see src/tools/execute-prompt.ts)
@@ -835,6 +868,32 @@ export class FleetWorkflow extends EventEmitter {
                         console.error(`[Agent API Error]`, text);
                         this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
                         throw new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } });
+                    }
+
+                    // Empty-response detection (observed live, apra-fleet-eft.14):
+                    // the fleet server can return success (exit 0, isError
+                    // absent) whose text is ONLY the display wrapper -- e.g.
+                    // exactly "\u{1F4CB} Response from <member>:\n\n" with an empty
+                    // parsed result (the member CLI produced no parseable
+                    // output; the server-side log line for such a dispatch
+                    // also lacks its usual in=/out= token counts). Feeding
+                    // that to schema extraction misclassifies it as "LLM
+                    // returned invalid JSON" (and its repair re-ask wastes a
+                    // dispatch); for no-schema calls it silently becomes a
+                    // garbage "successful" result. It is a DISPATCH-level
+                    // failure: surface it typed so callers' existing
+                    // AgentDispatchError handling (retry / degrade the
+                    // round) applies.
+                    const withoutWrapper = text
+                        .replace(/^\u{1F4CB} Response from [^\n:]+:\s*/u, '')
+                        .replace(/^Tokens: input=\d+ output=\d+\s*$/mu, '')
+                        .replace(/^---\s*$/mu, '')
+                        .replace(/^session: \S+\s*$/mu, '');
+                    if (withoutWrapper.trim() === '') {
+                        const emptyMsg = `execute_prompt returned an empty response (display wrapper only, no LLM output) from member '${opts.member_name || opts.member_id}'.`;
+                        console.error(`[Agent API Error]`, emptyMsg);
+                        this.emit('activity:end', { ...activityMeta, error: emptyMsg, output: text, duration, usage: result.usage, cost, success: false });
+                        throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (empty_response): ${emptyMsg}`, { details: { text, reason: 'empty_response', member: opts.member_name || opts.member_id } });
                     }
 
                     if (!opts.schema) {

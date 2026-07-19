@@ -47,3 +47,25 @@ export class AbortError extends ClientError {
         super(message, { code: 'ABORTED', ...opts });
     }
 }
+
+/**
+ * Thrown (as the rejection for every in-flight request) when the underlying
+ * transport closes -- deliberate stop(), or the persistent SSE stream dying
+ * past its reconnect budget. Previously a bare `new Error('Transport
+ * closed')`, indistinguishable downstream from any other failure; typed so
+ * callers can classify it as a connectivity event (retryable at their
+ * discretion) rather than a request-level failure.
+ *
+ * CONVENTION (2026-07-19 stabilization): when execute_prompt /
+ * execute_command surface a NEW kind of failure that downstream code needs
+ * to branch on, add a typed error class HERE (transport/request-level
+ * failures) or a `reason` code on the workflow layer's AgentDispatchError
+ * (dispatch-level failures reported via structuredContent.isError, e.g.
+ * 'busy', 'empty_response', 'max_turns_exhausted') -- never a bare Error
+ * with only a message string to sniff.
+ */
+export class TransportClosedError extends ClientError {
+    constructor(message, opts = {}) {
+        super(message, { code: 'TRANSPORT_CLOSED', ...opts });
+    }
+}
