@@ -62,8 +62,19 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('gh pr create') && run1.commandLog[prIdx].includes('--base "main"') && run1.commandLog[prIdx].includes('--head "auto-sprint/mock-sprint"'),
             `Expected last commandLog entry to be the PR-raise (not merge) command, got: ${JSON.stringify(run1.commandLog[prIdx])}`
         );
+        // apra-fleet-eft.8.x (syncMemberBefore/G-pull) legitimately issues
+        // `git merge --ff-only <remote>/<branch>` to bring a member's own
+        // checkout up to the shared sprint branch's tip before it works --
+        // `--ff-only` makes this incapable of ever creating a merge commit
+        // (it fast-forwards cleanly or fails outright with a typed
+        // GitDivergedError, never silently reconciling divergent history),
+        // so it is not the operation R12 forbids. R12 is specifically about
+        // never merging the sprint's PR into base/main without human review
+        // -- a real (non-ff-only) `git merge` or any `gh pr merge` call.
+        // Exclude the safe, ff-only self-sync explicitly rather than
+        // widening the check to miss a genuine violation.
         check(
-            !run1.commandLog.some((c) => /^git\s+merge|gh\s+pr\s+merge/.test(c)),
+            !run1.commandLog.some((c) => (/^git\s+merge/.test(c) && !/^git\s+merge\s+--ff-only\b/.test(c)) || /gh\s+pr\s+merge/.test(c)),
             `Runner must never auto-merge (pm skill R12); found a merge command in the log: ${JSON.stringify(run1.commandLog)}`
         );
 

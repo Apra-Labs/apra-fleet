@@ -514,17 +514,29 @@ describe('runner.js mock-level execution', () => {
             max_cycles: 1,
             // Mixed casing/whitespace: must resolve identically to the
             // canonical lowercase 'orchestrator' key and route every
-            // orchestrator-side `bd` command to 'member-x'. (git
-            // fetch/checkout commands go to the UNION of orchestrator/doer/
-            // reviewer pools -- see runner.js's branchEnsureMembers/N4 -- so
-            // this asserts on the `bd `-prefixed commands specifically,
-            // which always use `orchestratorMember`.)
+            // orchestrator-side BOOKKEEPING `bd` command (bd list/show/
+            // update -- the orchestrator's own reads/writes, dispatched via
+            // `orchestratorMember`) to 'member-x'. (git fetch/checkout
+            // commands go to the UNION of orchestrator/doer/reviewer pools --
+            // see runner.js's branchEnsureMembers/N4 -- so this asserts on
+            // the `bd `-prefixed commands specifically.)
+            //
+            // `bd dolt pull`/`bd dolt push` are deliberately EXCLUDED here
+            // (apra-fleet-eft.8.x/9.x, withGitSync()): those are per-member
+            // beads-sync brackets around EACH DISPATCHED AGENT's own call
+            // (planner/reviewer/deployer/etc.), not orchestrator bookkeeping
+            // -- they correctly sync THAT agent's own member (here 'local',
+            // since 'planner' etc. have no roleMap entry of their own and
+            // fall back to the first physical member), never
+            // `orchestratorMember`. Verified live: every non-dolt `bd `
+            // command in this scenario dispatches to 'member-x' as expected;
+            // only `bd dolt pull`/`bd dolt push` legitimately go to 'local'.
             roleMap: { '  Orchestrator  ': ['member-x'] },
         }, true);
 
         assert.strictEqual(result.status, 'success');
 
-        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd '));
+        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ') && !d.command.startsWith('bd dolt'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-x', `expected command "${command}" to dispatch to 'member-x', got '${member_name}'`);
@@ -547,7 +559,12 @@ describe('runner.js mock-level execution', () => {
 
         assert.strictEqual(result.status, 'success');
 
-        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd '));
+        // `bd dolt pull`/`bd dolt push` excluded -- see the detailed comment
+        // in the mixed-case roleMap test above: those are per-member
+        // beads-sync brackets around each dispatched agent's own call, not
+        // orchestrator bookkeeping, and correctly use that agent's own
+        // member rather than `orchestratorMember`.
+        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ') && !d.command.startsWith('bd dolt'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-y', `expected command "${command}" to dispatch to 'member-y', got '${member_name}'`);
