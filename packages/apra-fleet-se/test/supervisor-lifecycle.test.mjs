@@ -5,10 +5,10 @@ import net from 'node:net';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { createWatchdog, WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
+import { createWatchdog, WATCHDOG_STATUS, readProcessCmdline } from '../src/supervisor/watchdog.mjs';
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
 import { createReconciler, isPidAlive } from '../src/supervisor/reconcile.mjs';
@@ -157,14 +157,6 @@ function firstLine(child) {
             if (idx !== -1) resolve(buf.slice(0, idx).trim());
         });
     });
-}
-
-/** Cross-platform read of a process's real command line via `ps` (macOS + Linux). */
-function psCmdline(pid) {
-    const r = spawnSync('ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf-8' });
-    if (r.status !== 0) return null;
-    const out = (r.stdout || '').trim();
-    return out.length > 0 ? out : null;
 }
 
 // -- minimal HTTP client against the supervisor -------------------------------
@@ -326,9 +318,10 @@ describe('supervisor lifecycle -- restart re-adopts a live child by PID', () => 
             ledger: ledgerB,
             spawner,
             reconciler,
-            // Cross-platform read of the REAL process's command line (macOS has
-            // no /proc); this recovers the genuine --viewer-port it launched with.
-            readCmdline: psCmdline,
+            // Per-platform read of the REAL process's command line (Linux /proc,
+            // Windows WMIC/CIM, macOS `ps`); this recovers the genuine
+            // --viewer-port it launched with on every supported platform.
+            readCmdline: readProcessCmdline,
             logger: { log() {}, warn() {} },
         });
 

@@ -37,6 +37,7 @@
 
 import http from 'node:http';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { isPidAlive } from './reconcile.mjs';
 import { getOldSprintStatePath } from '@apralabs/apra-fleet-workflow/viewer/sprint-state-paths';
 
@@ -55,22 +56,99 @@ export const WATCHDOG_DEFAULT_INTERVAL_MS = 5000;
 export const WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS = 1500;
 
 /**
- * Best-effort read of a process's command line, for the PID-reuse guard. On
- * Linux `/proc/<pid>/cmdline` is a NUL-separated argv; we join it with spaces.
- * Returns `null` when the command line cannot be read (no /proc, permission
- * denied, or the pid is gone) -- callers treat `null` as "cannot verify".
+ * `ps`-based command-line reader for POSIX platforms with no `/proc` (macOS,
+ * and a fallback for any other POSIX system where the `/proc` read fails).
+ * @param {number} pid
+ * @returns {string|null}
+ */
+function readCmdlineViaPs(pid) {
+    try {
+        const r = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' });
+        if (r.error || r.status !== 0) return null;
+        const out = (r.stdout || '').trim();
+        return out.length > 0 ? out : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Windows command-line reader via WMIC (`wmic process where ProcessId=<pid>
+ * get CommandLine`). WMIC's output is a header line ("CommandLine") followed
+ * by the value line(s); we drop the header and join the rest.
+ * @param {number} pid
+ * @returns {string|null}
+ */
+function readCmdlineViaWmic(pid) {
+    try {
+        const r = spawnSync(
+            'wmic',
+            ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'],
+            { encoding: 'utf-8' },
+        );
+        if (r.error || r.status !== 0) return null;
+        const lines = (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        // First non-empty line is the "CommandLine" header; the rest is the value.
+        if (lines.length < 2) return null;
+        const value = lines.slice(1).join(' ').trim();
+        return value.length > 0 ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Windows command-line reader via PowerShell's `Get-CimInstance`, used as a
+ * fallback where WMIC is unavailable (WMIC is deprecated/absent on some
+ * modern Windows builds; CIM is the supported replacement).
+ * @param {number} pid
+ * @returns {string|null}
+ */
+function readCmdlineViaCim(pid) {
+    try {
+        const r = spawnSync(
+            'powershell',
+            ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+            { encoding: 'utf-8' },
+        );
+        if (r.error || r.status !== 0) return null;
+        const out = (r.stdout || '').trim();
+        return out.length > 0 ? out : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Best-effort, per-platform read of a process's command line, for the
+ * PID-reuse guard:
+ *   - Linux: `/proc/<pid>/cmdline` (NUL-separated argv, joined with spaces).
+ *   - Windows: WMIC (`wmic process ... get CommandLine`), falling back to
+ *     PowerShell's `Get-CimInstance` when WMIC is unavailable.
+ *   - Everything else (macOS and other POSIX platforms without `/proc`): `ps`.
+ * Returns `null` when the command line cannot be read on the current
+ * platform (missing tool, permission denied, or the pid is gone) -- callers
+ * treat `null` as "cannot verify", never as a false negative.
  * @param {number} pid
  * @returns {string|null}
  */
 export function readProcessCmdline(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return null;
-    try {
-        const raw = fs.readFileSync(`/proc/${pid}/cmdline`);
-        // argv entries are NUL-separated (and NUL-terminated); normalize to spaces.
-        return raw.toString('utf-8').replace(/\0/g, ' ').trim();
-    } catch {
-        return null;
+    if (process.platform === 'linux') {
+        try {
+            const raw = fs.readFileSync(`/proc/${pid}/cmdline`);
+            // argv entries are NUL-separated (and NUL-terminated); normalize to spaces.
+            const cmd = raw.toString('utf-8').replace(/\0/g, ' ').trim();
+            if (cmd.length > 0) return cmd;
+        } catch {
+            // fall through to the `ps` fallback below (e.g. /proc unreadable)
+        }
+        return readCmdlineViaPs(pid);
     }
+    if (process.platform === 'win32') {
+        return readCmdlineViaWmic(pid) ?? readCmdlineViaCim(pid);
+    }
+    return readCmdlineViaPs(pid);
 }
 
 /**
