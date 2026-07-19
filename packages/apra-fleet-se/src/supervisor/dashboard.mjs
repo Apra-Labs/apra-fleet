@@ -135,15 +135,20 @@ export function renderSprintStackHtml(views) {
 }
 
 /**
- * Renders the full index page (`GET /` document). Only the sprint-stack
- * section (Plan Part 2.3, first block) is populated by this task; the
- * Backlog-last tree (eft.6.2), Launch Sprint form (eft.6.3), and History link
- * (eft.6.5) are separate tasks and are left as placeholders here so this page
- * remains the single entry point they attach to.
+ * Renders the full index page (`GET /` document). The sprint-stack section
+ * (Plan Part 2.3, first block) is rendered FIRST; the Backlog-last tree
+ * (eft.6.2) is rendered ALWAYS LAST, after every running sprint's section, so
+ * the operator reads live sprints top-down and the free/backlog picker sits at
+ * the bottom. The Launch Sprint form (eft.6.3) and History link (eft.6.5) are
+ * separate tasks that attach to this same single page.
  * @param {SprintView[]} [views]
+ * @param {string} [backlogHtml] - pre-rendered Backlog tree HTML (eft.6.2)
  * @returns {string}
  */
-export function renderIndexPageHtml(views) {
+export function renderIndexPageHtml(views, backlogHtml) {
+    const backlogSection = typeof backlogHtml === 'string'
+        ? backlogHtml
+        : '<p style="color:#71717a; font-style: italic;">No unclaimed work in the backlog.</p>';
     return (
         '<!DOCTYPE html>\n' +
         '<html lang="en">\n' +
@@ -156,6 +161,9 @@ export function renderIndexPageHtml(views) {
         '<body>\n' +
         '<h1>Sprint Stack</h1>\n' +
         '<div id="sprint-stack">\n' + renderSprintStackHtml(views) + '\n</div>\n' +
+        // Backlog is ALWAYS LAST on the page (eft.6.2 acceptance criterion).
+        '<h1>Backlog</h1>\n' +
+        '<div id="backlog">\n' + backlogSection + '\n</div>\n' +
         '</body>\n' +
         '</html>\n'
     );
@@ -183,6 +191,7 @@ export function renderIndexPageHtml(views) {
  *   listChildren?: (parentId: string) => Promise<string[]>,
  *   expandScope?: (roots: string[]) => Promise<Set<string>>,
  *   getSprintMeta?: (sprintId: string) => Promise<{ branch?: string, goal?: string, roles?: Record<string,string> }>|{ branch?: string, goal?: string, roles?: Record<string,string> },
+ *   backlog?: { renderHtml: () => Promise<string>|string },
  *   logger?: { log?: Function, error?: Function },
  * }} [deps]
  * @returns {{
@@ -210,6 +219,10 @@ export function createDashboard(deps = {}) {
     // module doc for why this defaults to an empty object rather than
     // reaching into the ledger's current on-disk schema.
     const getSprintMeta = deps.getSprintMeta ?? (() => ({}));
+    // Backlog-last tree (eft.6.2). Injected so the dashboard renders it as the
+    // final page section without owning its full-tracker/claim computation. When
+    // absent, renderIndexPageHtml() falls back to an explicit empty state.
+    const backlog = deps.backlog ?? null;
 
     /**
      * Builds every RUNNING sprint's view model. A sprint classified `finished`
@@ -260,7 +273,18 @@ export function createDashboard(deps = {}) {
         async stop() {},
         buildSprintViews,
         async renderIndexPage() {
-            return renderIndexPageHtml(await buildSprintViews());
+            // Render the sprint stack and the Backlog concurrently; the Backlog
+            // is placed LAST by renderIndexPageHtml. A Backlog render failure is
+            // isolated so it can never take the whole page down.
+            let backlogHtml;
+            if (backlog && typeof backlog.renderHtml === 'function') {
+                try {
+                    backlogHtml = await backlog.renderHtml();
+                } catch (err) {
+                    logError('[dashboard] backlog render failed:', err);
+                }
+            }
+            return renderIndexPageHtml(await buildSprintViews(), backlogHtml);
         },
     };
 }
