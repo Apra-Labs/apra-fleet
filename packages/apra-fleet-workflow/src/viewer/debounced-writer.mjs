@@ -98,7 +98,20 @@ export class DebouncedStateWriter {
         try {
             const dir = path.dirname(this._filePath);
             fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(this._filePath, JSON.stringify(this._getState(), null, 2));
+            // Write atomically: a concurrent reader (watchdog/dashboard/
+            // history views, or this package's own tests) must never observe
+            // a partially-written file, and a SIGKILL landing mid-write must
+            // never corrupt the previous, still-valid state on disk. Writing
+            // to a sibling temp path and renaming into place is atomic on
+            // POSIX (rename is a single filesystem operation), so readers see
+            // either the old complete file or the new complete file, never a
+            // truncated one.
+            const tmpPath = path.join(
+                dir,
+                `.${path.basename(this._filePath)}.${process.pid}.${Date.now()}.tmp`
+            );
+            fs.writeFileSync(tmpPath, JSON.stringify(this._getState(), null, 2));
+            fs.renameSync(tmpPath, this._filePath);
             this._writeCount += 1;
         } catch (e) {
             // A failed write must never crash or block the sprint's own
