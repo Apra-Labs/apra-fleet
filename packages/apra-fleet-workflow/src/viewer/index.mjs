@@ -48,13 +48,19 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     .btn-stop { background: var(--danger); color: #fff; }
     .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
     
-    .main-content { display: flex; flex: 1; overflow: hidden; }
-    
-    .content-area { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; }
-    .panel { background: var(--bg-glass); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+    /* min-height: 0 on every rung of the flex chain: a flex item's default
+       min-height is content-sized, which lets a tall Activity list push the
+       panel past its parent instead of the inner .stream-list scrolling.
+       overflow: hidden alone is not reliable across the nested flex levels
+       here -- without the explicit 0, large sprints ended up with a clipped,
+       unscrollable activity widget. */
+    .main-content { display: flex; flex: 1; overflow: hidden; min-height: 0; }
+
+    .content-area { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+    .panel { background: var(--bg-glass); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
     .panel-header { flex-shrink: 0; padding: 10px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); text-transform: uppercase; letter-spacing: 0.5px; }
     
-    .stream-list { flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; background: #000; }
+    .stream-list { flex: 1; min-height: 0; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; background: #000; }
     
     /* Tree Group */
     .tree-group { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
@@ -123,7 +129,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
        activity instead of the inner list scrolling -- collapsing items was
        the only way to shrink total height. Flex here still wins on
        specificity but no longer conflicts with .panel's own flex layout. */
-    .tab-content.active { display: flex; }
+    .tab-content.active { display: flex; min-height: 0; }
   </style>
 </head>
 <body data-view="${isHistory ? 'history' : 'live'}">
@@ -152,7 +158,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       ${dashboardExtensions.map(ext => `
         <div id="tab-${ext.id}" class="tab-content panel">
           <div class="panel-header">${ext.title}</div>
-          <div id="extension-${ext.id}" style="padding: 12px; overflow-y: auto;"></div>
+          <div id="extension-${ext.id}" style="flex: 1; min-height: 0; padding: 12px; overflow-y: auto;"></div>
         </div>
       `).join('\\n')}
     </div>
@@ -228,6 +234,17 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     });
 
     ${isHistory ? '' : `
+    // Coalesce SSE-triggered refreshes: a busy sprint broadcasts one event
+    // per log line / activity tick, and refetching + re-rendering the full
+    // (potentially multi-MB) /state payload for each of them is what made
+    // large sprints sluggish. One trailing refresh per window is enough --
+    // renderState() always paints the latest snapshot, not a delta.
+    const POLL_COALESCE_MS = 400;
+    let pollTimer = null;
+    function schedulePoll() {
+        if (pollTimer) return;
+        pollTimer = setTimeout(() => { pollTimer = null; poll(); }, POLL_COALESCE_MS);
+    }
     const source = new EventSource('/events');
     source.onmessage = (e) => {
         const ev = JSON.parse(e.data);
@@ -235,7 +252,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
             const extEvent = new CustomEvent('workflow:state:' + ev.payload.namespace, { detail: ev.payload.data });
             document.dispatchEvent(extEvent);
         }
-        poll();
+        schedulePoll();
     };
     `}
 
@@ -333,7 +350,17 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                             }
                             phaseBody.appendChild(evEl);
                         }
-                        
+
+                        // A finished activity's data never changes again
+                        // (activity:end merges its meta exactly once), so
+                        // re-render it exactly once. Rewriting every
+                        // activity's innerHTML on every tick -- thousands of
+                        // DOM subtrees, some holding megabyte agent outputs
+                        // -- is the other half of what made large sprints
+                        // sluggish, and the constant churn also fought the
+                        // user's own scrolling and text selection.
+                        if (evEl.dataset.rendered === 'done') return;
+
                         // Update contents every tick to catch status changes
                         const dateObj = new Date(act.startTime || Date.now());
                         const t = isNaN(dateObj.getTime()) ? '-' : dateObj.toLocaleTimeString([], { hour12: false });
@@ -378,6 +405,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                           </summary>
                           \${childrenHtml ? \`<div class="activity-body">\${childrenHtml}</div>\` : ''}
                         \`;
+                        if (!act.isRunning) evEl.dataset.rendered = 'done';
                     }
                 });
             });
