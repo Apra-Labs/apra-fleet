@@ -535,6 +535,27 @@ deduplicated DAG -- the plan gate working as designed.
   test runs). Same prefixes added live to fleet-rev's settings files, and
   the stale /tmp/fleet-deploy was removed on the member.
 
+### Issue 20: no deployable artifact exists for darwin-x64 members at all
+
+- **Symptom**: run 12 Deploy C2 -- the Issue 19 platform selection worked,
+  but install failed with exit 127 'bad CPU type in executable':
+  fleet-rev is an INTEL Mac (Darwin x86_64) and main's CI matrix builds
+  only win-x64, linux-x64, darwin-arm64. There is no working deploy path
+  for this member: the arm64 binary cannot execute, and the fallback
+  apra-fleet-tarball flow is broken on main (the tarball omits
+  install.cjs and scripts/ which install.sh requires, and the legacy
+  tarball installer never creates ~/.apra-fleet/bin/, so the smoke test
+  could never pass) -- a main-repo packaging defect worth its own bead
+  on that backlog.
+- **Disposition**: this is eft CONTENT (the deploy/integ runbooks are the
+  epic's own deliverables), not sprint-process infrastructure, so it was
+  filed as a sprint-scoped P2 bug bead apra-fleet-eft.15 per the bead
+  injection contract (created member-side with model metadata, dolt
+  pushed). The bead's preferred option is a build-from-source fallback
+  in deploy.md (npm run build:binary when no artifact matches
+  uname -s/-m), which is self-contained on the branch. Being P2 it
+  correctly holds the completion gate open until Deploy actually works.
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":
