@@ -24,6 +24,7 @@ import { createHistory } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
+import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -86,6 +87,14 @@ export async function serveMain(argv = process.argv.slice(2)) {
 
     // eft.5.4: operator force-release of a wedged reservation.
     registerReservationRoutes(supervisor, reconciler);
+
+    // eft.6.4: live-detail reverse proxy at /sprints/:id/live. Resolves each
+    // sprint's child --viewer-port from the ledger's childPid + the spawner's
+    // live pid->port bookkeeping, proxies HTTP + SSE through the supervisor
+    // port, and falls through to the read-only historical view once a sprint
+    // finishes.
+    const liveProxy = createLiveProxy({ ledger, spawner });
+    registerLiveRoutes(supervisor, liveProxy);
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.
