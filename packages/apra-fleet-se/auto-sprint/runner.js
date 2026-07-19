@@ -1643,7 +1643,13 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
             'approved and at least one develop/review cycle has since run. Per the ' +
             '"Re-planning behaviour" section of your agent contract: address GAPS ONLY. ' +
             'Do NOT re-plan or recreate issues that are already closed. Do NOT add scope ' +
-            'beyond the original sprint goals and any open bugs/enhancements already in beads.'
+            'beyond the original sprint goals and any open bugs/enhancements already in beads. ' +
+            // Stabilization log Issue 14 -- see buildPlanReviewerPrompt's matching guard.
+            'A feature whose children are ALL closed is pending feature-closure ' +
+            '(the integration-test phase closes verified features): leave it exactly as it ' +
+            'is -- do not decompose it again and do not create tasks duplicating its closed ' +
+            'children, even if review feedback appears to ask for decomposition of such a ' +
+            'feature (verify with bd list --parent <feature> --all first).'
         );
     } else {
         lines.push('Analyze the sprint scope below and build a features+tasks DAG in beads, per your agent contract.');
@@ -1698,6 +1704,26 @@ function buildPlanReviewerPrompt({ targetIssues, goal }) {
         `Sprint root / scope to review (the open beads subtree this review pass covers): ` +
         `sprint root issue id(s) ${targetIssues.join(', ')}, goal priority ${goal}. ` +
         'Review only the features and tasks under this scope.',
+        // Stabilization log Issue 14: mid-sprint, a feature whose children
+        // are ALL closed is in the pending-feature-closure state -- feature
+        // closure is the integ-test phase's job, not the planner's. Two runs
+        // (9 and 10) burned entire 3-round plan phases because a reviewer
+        // dispatch read such features as "undecomposed" (its child queries
+        // returned only OPEN children) and demanded re-decomposition, which
+        // the planner cannot sensibly satisfy without recreating closed
+        // work (observed: run 9's planner did exactly that and the NEXT
+        // review round correctly rejected the duplicates). Other dispatches
+        // of the same reviewer read the same state correctly as
+        // "eligible for closure, non-blocking" -- so pin the correct
+        // interpretation here.
+        'IMPORTANT -- pending-closure features: before flagging any feature as ' +
+        'undecomposed (no child tasks / no [test] task) or as missing model metadata, ' +
+        'check its CLOSED children too (bd list --parent <feature> --all). A feature ' +
+        'whose children are all closed is PENDING FEATURE-CLOSURE housekeeping (the ' +
+        'integration-test phase closes verified features) -- it is NOT undecomposed, ' +
+        'must NOT fail coverage/decomposition/test-task/model-metadata criteria, and ' +
+        'must NOT be re-decomposed. Mention such features as non-blocking notes only. ' +
+        'Never ask the planner to create tasks that duplicate closed work.',
     ].join('\n\n');
 }
 

@@ -400,6 +400,41 @@ deduplicated DAG -- the plan gate working as designed.
   sites; the repair re-ask is the second documented no-bracket exemption
   (same pure-compute grouping task as the first).
 
+### Issue 14: pending-closure features misread as "undecomposed" burn entire plan phases
+
+- **Symptom**: run 9 (cycle 1) and run 10 (cycle 2) each exhausted all 3
+  planning rounds -- SprintPlanRejectedError -- because plan-reviewer
+  dispatches flagged features whose children are ALL CLOSED (eft.1/3/4/5/
+  7/8 by run 10) as "undecomposed, zero child tasks, no model metadata"
+  and demanded re-decomposition. The planner cannot sensibly satisfy that
+  without recreating closed work -- run 9's planner did exactly that, and
+  the NEXT review round correctly rejected the duplicates (thrash both
+  ways).
+- **Root cause**: verdict inconsistency across reviewer dispatches on the
+  same DAG state. The reviewer's child queries default to OPEN issues, so
+  an all-children-closed feature looks childless; some dispatches
+  correctly read it as "eligible for closure, non-blocking" (run 8 C2),
+  others fail hard criteria on it. Feature closure belongs to the
+  integ-test phase, so mid-sprint this state is NORMAL and long-lived.
+- **Fix** (runner.js): pin the interpretation in both prompts.
+  buildPlanReviewerPrompt now instructs: check closed children (bd list
+  --all) before flagging a feature undecomposed; all-children-closed =
+  pending feature-closure = non-blocking note only, never a criteria
+  failure, never a re-decomposition demand. buildPlannerPrompt's
+  re-planning preamble gets the symmetric guard: leave such features
+  alone even if review feedback appears to demand decomposition.
+
+### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
+
+- fleet-dev's execute_prompt lock returned {"isError":true,"reason":
+  "busy"} for ~20 minutes while the member session was idle with no live
+  process (token counts frozen); stop_prompt reported "no active session
+  was running" and cleared it. A dispatch-layer lock leak on the fleet
+  server (v0.3.5_8a1ef3) -- likely left by an earlier abandoned/killed
+  dispatch. Watch for recurrence; if it repeats, file a server bead (lock
+  release on child-process reap, or a TTL/liveness check on
+  inFlightAgents).
+
 ### Still open / watched
 
 - **apra-fleet-eft.14 (server)**: why does the provider CLI sometimes exit
