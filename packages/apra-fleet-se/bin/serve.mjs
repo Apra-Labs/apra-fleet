@@ -25,6 +25,7 @@ import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
+import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 
@@ -107,13 +108,25 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // eft.5.4: operator force-release of a wedged reservation.
     registerReservationRoutes(supervisor, reconciler);
 
+    // eft.6.5: process-free History view. Always renders a finished sprint's
+    // persisted old_sprints/<sprintId>.json through the SAME HTML template the
+    // live viewer serves, fed a frozen state object -- no live process, no
+    // /state or /events polling, Save/Stop hidden. Constructed before the live
+    // proxy below so its renderForSprint() can be wired in as that proxy's
+    // history-fallthrough renderer too (see next block).
+    const historyView = createHistoryView();
+
     // eft.6.4: live-detail reverse proxy at /sprints/:id/live. Resolves each
     // sprint's child --viewer-port from the ledger's childPid + the spawner's
     // live pid->port bookkeeping, proxies HTTP + SSE through the supervisor
-    // port, and falls through to the read-only historical view once a sprint
-    // finishes.
-    const liveProxy = createLiveProxy({ ledger, spawner });
+    // port, and falls through to the historical view (eft.6.5's full
+    // template-based renderer, not just a minimal placeholder) once a sprint
+    // finishes -- so the SAME template serves live and history at the SAME
+    // URL. A dedicated /sprints/:id/history link (registered below) reaches
+    // the identical rendering regardless of whether the sprint is still live.
+    const liveProxy = createLiveProxy({ ledger, spawner, renderHistory: (sprintId) => historyView.renderForSprint(sprintId) });
     registerLiveRoutes(supervisor, liveProxy);
+    registerHistoryViewRoutes(supervisor, historyView);
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.

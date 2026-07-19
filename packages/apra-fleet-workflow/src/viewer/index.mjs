@@ -6,7 +6,21 @@ import { escapeHtml } from './html-utils.mjs';
 import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS } from './debounced-writer.mjs';
 import { getRunningSprintStatePath, getOldSprintStatePath } from './sprint-state-paths.mjs';
 
-const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
+// apra-fleet-eft.6.5: the SAME template serves both the live view and the
+// process-free History view -- `opts.history` (true) feeds a FROZEN state
+// object directly into the page instead of the live view's
+// fetch('/state') + EventSource('/events') polling loop, and hides the Save
+// / Stop controls (there is no live workflow left to save/stop, and nothing
+// to stream: a finished sprint's child process, and therefore those
+// endpoints, no longer exists). `opts.state` is embedded as a JSON literal;
+// any literal `</script>`-like sequence inside it is escaped so it can never
+// terminate the embedding <script> tag early.
+const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
+    const isHistory = !!opts.history;
+    const frozenStateLiteral = isHistory
+        ? JSON.stringify(opts.state ?? null).replace(/</g, '\\u003c')
+        : 'null';
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -112,14 +126,14 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
     .tab-content.active { display: flex; }
   </style>
 </head>
-<body>
+<body data-view="${isHistory ? 'history' : 'live'}">
   <div class="header">
     <h1><span id="workflow-name">Loading...</span></h1>
     <div class="header-actions">
       <div class="stats-banner" id="stats-banner"></div>
       <div id="status-indicator" style="font-size: 12px; font-weight: 600; min-width: 70px; text-align: center;"></div>
-      <button class="btn btn-save" onclick="saveState()">Save</button>
-      <button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>
+      ${isHistory ? '' : '<button class="btn btn-save" onclick="saveState()">Save</button>'}
+      ${isHistory ? '' : '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>'}
     </div>
   </div>
   <div class="main-content">
@@ -213,6 +227,7 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
       isAutoScrolling = (streamEl.scrollTop + streamEl.clientHeight >= streamEl.scrollHeight - 30);
     });
 
+    ${isHistory ? '' : `
     const source = new EventSource('/events');
     source.onmessage = (e) => {
         const ev = JSON.parse(e.data);
@@ -222,6 +237,7 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
         }
         poll();
     };
+    `}
 
     function renderTreeIncremental(tree) {
         tree.forEach((group, gIdx) => {
@@ -368,20 +384,22 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
         });
     }
 
-    async function poll() {
-      try {
-        const res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
-        const state = await res.json();
+    // apra-fleet-eft.6.5: the DOM-update half of what used to be poll()'s try
+    // block, factored out so the History view can feed it a FROZEN state
+    // object directly (see the bottom of this script) without ever calling
+    // fetch('/state') itself -- poll() (live view only) still drives it from
+    // the network.
+    function renderState(state) {
         globalState = state;
-        
+
         document.getElementById('workflow-name').textContent = state.workflowName;
-        
+
         const ind = document.getElementById('status-indicator');
         if (state.status === 'running') { ind.innerHTML = '<div class="status-live-indicator"><div class="led"></div> LIVE</div>'; }
         else if (state.status === 'success') { ind.innerHTML = '<span style="color:var(--success)">DONE</span>'; }
         else if (state.status === 'cancelled') { ind.innerHTML = '<span style="color:var(--warning)">CANCELLED</span>'; }
         else { ind.innerHTML = '<span style="color:var(--danger)">FAILED</span>'; }
-        
+
         const dur = state.status === 'running' ? Date.now() - state.stats.startTime : state.stats.durationMs;
         const unknownCostSuffix = state.stats.unknownCostCount > 0 ? \` <span style="color:var(--warning)">(+\${state.stats.unknownCostCount} unknown)</span>\` : '';
         document.getElementById('stats-banner').innerHTML =
@@ -389,19 +407,26 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
            <span><strong class="spent">$\${state.stats.totalCost.toFixed(3)}</strong> Spent\${unknownCostSuffix}</span>
            <span><strong>\${state.stats.totalTokens.toLocaleString()}</strong> Tokens</span>
            <span><strong>\${formatUptime(dur)}</strong> Uptime</span>\`;
-        
+
         renderTreeIncremental(state.tree);
-        
+
         if (state.extensions) {
             for (const [ns, data] of Object.entries(state.extensions)) {
                 const extEvent = new CustomEvent('workflow:state:' + ns, { detail: data });
                 document.dispatchEvent(extEvent);
             }
         }
-        
+
         if (isAutoScrolling) {
           streamEl.scrollTop = streamEl.scrollHeight;
         }
+    }
+
+    async function poll() {
+      try {
+        const res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
+        const state = await res.json();
+        renderState(state);
       } catch(e) {
           console.error("Poll Error:", e);
           if (globalState && (globalState.status === 'success' || globalState.status === 'failed' || globalState.status === 'cancelled')) {
@@ -411,11 +436,26 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
           }
       }
     }
-    
-    poll();
+
+    ${isHistory
+        ? `// History view: render the frozen state ONCE, directly -- no
+    // fetch('/state') and no EventSource('/events') (asserted: zero polling
+    // requests for a finished sprint with zero running processes).
+    renderState(${frozenStateLiteral});`
+        : 'poll();'}
   </script>
 </body>
 </html>`;
+};
+
+// apra-fleet-eft.6.5: exported so the supervisor's process-free History view
+// (packages/apra-fleet-se/src/supervisor/history-view.mjs) can render a
+// finished sprint's persisted terminal state through the SAME template the
+// live viewer serves, fed a frozen state object (opts.history / opts.state)
+// instead of standing up a whole createDashboardViewer() (which owns a live
+// http.createServer + workflow event wiring this read-only view has no use
+// for).
+export { HTML_TEMPLATE };
 
 export function createDashboardViewer(workflow, opts = {}) {
     const port = (typeof opts.port === 'number') ? opts.port : 8080;
