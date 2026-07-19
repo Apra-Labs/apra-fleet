@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import { createHash } from 'crypto';
-import { AgentOutputError, AgentDispatchError, CommandError, WorkflowError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
+import { AgentOutputError, AgentDispatchError, FleetTransportError, CommandError, WorkflowError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
 import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
@@ -1877,8 +1877,22 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     // this runner never lets a git/gh dispatch fall back to an implicit/
     // ambient member (see the SUPPORTED-TOPOLOGY NOTE near orchestratorMember
     // above for why that matters in a multi-member fleet).
+    //
+    // `member` (the abort-path diff runner) is not necessarily the same
+    // member that ever created/checked out a LOCAL branch literally named
+    // `baseBranch` -- it may only have the sprint branch itself checked out.
+    // A bare `git rev-list base..branch` then fails with exit 128 ("unknown
+    // revision or path not in the working tree"), observed live on a real
+    // abort (apra-fleet-eft). Fetch it and diff against the remote-tracking
+    // ref instead, which is always resolvable as long as origin has the
+    // branch (true by construction -- baseBranch is the same ref the sprint
+    // branch itself was validated/created from).
+    await command(
+        `git fetch origin ${baseBranch}`,
+        { member_name: member, silent: true, label: `Fetch base branch '${baseBranch}' for abort-path diff` }
+    );
     const revListRaw = await command(
-        `git rev-list --count ${baseBranch}..${branch}`,
+        `git rev-list --count origin/${baseBranch}..${branch}`,
         { member_name: member, silent: true, label: `Count commits beyond base for abort-path branch '${branch}'` }
     );
     const commitCount = parseInt(String(revListRaw).trim(), 10) || 0;
@@ -2217,7 +2231,10 @@ async function runSprintCycle(context) {
                         reopenIds: [],
                         newTasks: [],
                     };
-                } else if (err instanceof AgentDispatchError) {
+                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                    // A transport-level failure (e.g. a dropped connection mid-dispatch)
+                    // is exactly as transient/non-schema as an AgentDispatchError -- must
+                    // not be allowed to propagate and abort the whole sprint (apra-fleet-eft).
                     log(`Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
@@ -2798,7 +2815,12 @@ async function runSprintCycle(context) {
                         notes: `Plan reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
                         taskAssignments: [],
                     };
-                } else if (err instanceof AgentDispatchError) {
+                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                    // A transport-level failure (e.g. a dropped connection mid schema-repair
+                    // retry) is exactly as transient/non-schema as an AgentDispatchError --
+                    // must not be allowed to propagate and abort the whole sprint. Observed
+                    // live: the schema-repair loop's resumed retry hit "Transport closed"
+                    // and, uncaught here, killed the entire sprint run (apra-fleet-eft).
                     log(`Plan Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
@@ -2937,7 +2959,7 @@ async function runSprintCycle(context) {
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
-                } else if (err instanceof AgentDispatchError) {
+                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
                     log(`Streak Assignment: agent dispatch failed, falling back to one-bead-per-streak: ${err.message}`);
                 } else {
                     throw err;
@@ -3340,7 +3362,7 @@ async function runSprintCycle(context) {
                 if (err instanceof AgentOutputError) {
                     log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
                     deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
-                } else if (err instanceof AgentDispatchError) {
+                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
                     log(`Deployer: agent dispatch failed, treating as deployed:false: ${err.message}`);
                     deployResult = { deployed: false, notes: `Deployer dispatch failed: ${err.message}` };
                 } else {
@@ -3406,7 +3428,7 @@ async function runSprintCycle(context) {
                 if (err instanceof AgentOutputError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
-                } else if (err instanceof AgentDispatchError) {
+                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
                     log(`Integ Test Runner: agent dispatch failed, treating as passed:false: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner dispatch failed: ${err.message}` };
                 } else {
@@ -3616,7 +3638,7 @@ async function runSprintCycle(context) {
     } catch (err) {
         if (err instanceof AgentOutputError) {
             log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
-        } else if (err instanceof AgentDispatchError) {
+        } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
             log(`Final Review: dispatch failed (agent dispatch error: ${err.message}). Retrying once.`);
         } else {
             throw err;
@@ -3627,7 +3649,7 @@ async function runSprintCycle(context) {
             if (retryErr instanceof AgentOutputError) {
                 log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
                 finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
-            } else if (retryErr instanceof AgentDispatchError) {
+            } else if (retryErr instanceof AgentDispatchError || retryErr instanceof FleetTransportError) {
                 log(`Final Review: agent dispatch failed after retry, treating as FAIL: ${retryErr.message}`);
                 finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after repair attempts (including one retry): ${retryErr.message}` };
             } else {
@@ -3701,7 +3723,7 @@ async function runSprintCycle(context) {
     } catch (err) {
         if (err instanceof AgentOutputError) {
             log(`Harvester: schema-repair exhausted, proceeding without a validated harvester report: ${err.message}`);
-        } else if (err instanceof AgentDispatchError) {
+        } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
             log(`Harvester: agent dispatch failed, proceeding without a validated harvester report: ${err.message}`);
         } else {
             throw err;

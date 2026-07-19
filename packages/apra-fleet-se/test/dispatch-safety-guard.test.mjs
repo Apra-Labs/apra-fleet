@@ -82,7 +82,14 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // injected command() in opts")` lines added alongside the dolt helpers are,
 // as before, string-literal false positives excluded by
 // isInsideSameLineString(), not call sites.
-const EXPECTED_COMMAND_COUNT = 25;
+// Bumped 25 -> 26 (2026-07-19): finalizeAbort() gained a `git fetch origin
+// ${baseBranch}` command() site (member_name: member) so its subsequent
+// `git rev-list --count origin/${baseBranch}..${branch}` diffs against a
+// remote-tracking ref instead of assuming `baseBranch` is a resolvable
+// LOCAL ref on the abort-path member -- a real abort hit exit 128 ("unknown
+// revision") when the member never had that base branch checked out
+// locally under that exact name, verified compliant.
+const EXPECTED_COMMAND_COUNT = 26;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
