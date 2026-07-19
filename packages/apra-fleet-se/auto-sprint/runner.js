@@ -1228,6 +1228,171 @@ export function createHttpDoltPushMutexClient(opts = {}) {
 }
 
 /**
+ * apra-fleet-eft.9.3 (Plan Part 3.4) -- the child-id allocator HTTP client the
+ * orchestrator's bead-creation path uses to reach the supervisor-owned global
+ * allocator (src/supervisor/id-allocator.mjs).
+ *
+ * This is the missing wire that makes the allocator LOAD-BEARING end to end: the
+ * allocator lives in the always-on supervisor process, but each detached sprint
+ * child runs in its OWN dolt clone and can only reach it over HTTP. Without it,
+ * two sprints that each `bd create --parent X` in their own clone independently
+ * derive the SAME next child id (PoC constraint C.4) and their D-pushes then
+ * hard-conflict. With it, one authority mints an EXPLICIT distinct id per
+ * creator, passed to `bd create --id <childId>`, so the two creates target
+ * different rows and never collide.
+ *
+ * This client speaks the exact routes registerIdAllocatorRoutes() exposes:
+ *
+ *   POST {serviceUrl}/api/child-id-allocator/{parentId}/allocate  body { pid, sprintId, floor }
+ *   POST {serviceUrl}/api/child-id-allocator/confirm              body { token }
+ *   POST {serviceUrl}/api/child-id-allocator/release              body { token }
+ *
+ * It is deliberately implemented INLINE here (not imported from
+ * src/supervisor/id-allocator.mjs) for the same reason as the dolt push mutex
+ * client above: runner.js is copied verbatim next to the bundle and loaded via
+ * engine.executeFile(), never bundled -- a cross-package relative import would
+ * not resolve in the shipped layout. The surface it exposes
+ * ({ allocate, confirm, release }) is exactly what the bead-creation path calls.
+ *
+ * @param {{ serviceUrl: string, sprintId?: string, fetch?: typeof fetch, log?: Function }} opts
+ * @returns {{ allocate: Function, confirm: Function, release: Function }}
+ */
+export function createHttpChildIdAllocatorClient(opts = {}) {
+    const base = String(opts.serviceUrl || '').replace(/\/+$/, '');
+    if (!base) throw new Error('createHttpChildIdAllocatorClient requires a serviceUrl');
+    const boundSprintId = opts.sprintId;
+    const fetchImpl = opts.fetch ?? globalThis.fetch;
+    if (typeof fetchImpl !== 'function') {
+        throw new Error('createHttpChildIdAllocatorClient requires a fetch implementation (Node >=18 global fetch or an injected one)');
+    }
+    const log = opts.log ?? (() => {});
+
+    async function postJson(url, body) {
+        const res = await fetchImpl(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body ?? {}),
+        });
+        if (!res || !res.ok) {
+            const status = res ? res.status : 'no-response';
+            throw new Error(`[id-allocator] ${url} returned HTTP ${status}`);
+        }
+        return res.json();
+    }
+
+    return {
+        async allocate(parentId, o = {}) {
+            if (!parentId) throw new Error('[id-allocator] allocate requires a parentId');
+            const url = `${base}/api/child-id-allocator/${encodeURIComponent(parentId)}/allocate`;
+            const payload = await postJson(url, {
+                pid: o.pid ?? null,
+                sprintId: o.sprintId ?? boundSprintId ?? null,
+                floor: o.floor,
+            });
+            return { childId: payload.childId ?? null, seq: payload.seq, token: payload.token ?? null, expiresAt: payload.expiresAt };
+        },
+        async confirm(token) {
+            if (token == null) return true;
+            try {
+                const payload = await postJson(`${base}/api/child-id-allocator/confirm`, { token });
+                return Boolean(payload.confirmed);
+            } catch (err) {
+                // Non-fatal: the reservation's lease expiry reclaims it even if
+                // this confirm never lands. Surface it for diagnostics.
+                log(`[id-allocator] confirm failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+        async release(token) {
+            if (token == null) return true;
+            try {
+                const payload = await postJson(`${base}/api/child-id-allocator/release`, { token });
+                return Boolean(payload.released);
+            } catch (err) {
+                log(`[id-allocator] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+    };
+}
+
+/**
+ * apra-fleet-eft.9.3 -- create a child bead under `parentId` using a
+ * supervisor-allocated, collision-free explicit id. This is the single
+ * bead-creation seam every reviewer-proposed newTask flows through so that two
+ * concurrent sprints never mint the same child id.
+ *
+ * Sequence (mirrors the allocator's reserve -> confirm/release contract):
+ *   1. allocate() reserves the next distinct child id under the shared parent.
+ *   2. `bd create` runs with `--id <childId>` (or, under the null client where
+ *      childId is null and there is no second sprint, lets bd derive the id).
+ *   3. confirm() on success (the id is now durably used) or release() on failure
+ *      (the reserved id returns to the pool so it is never a permanent gap).
+ *
+ * @param {{
+ *   command: Function, allocator: { allocate: Function, confirm: Function, release: Function },
+ *   member: string, title: string, description: string, priority: string,
+ *   parentId: string, sprintId?: string, floor?: number, label?: string,
+ *   log?: Function,
+ * }} opts
+ * @returns {Promise<{ childId: string|null }>}
+ */
+/**
+ * apra-fleet-eft.9.3 -- the count of children a parent ALREADY has, i.e. the
+ * highest trailing `.N` segment across its direct children. Passed to the
+ * allocator as `floor` so that on its FIRST allocation under a parent it never
+ * mints an id colliding with a child created before the allocator existed (or
+ * before this supervisor's persisted state was seeded). Best-effort: a failed
+ * or unparseable list yields 0 (the allocator's persisted high-water still
+ * guards against re-minting within a supervisor's lifetime).
+ *
+ * @param {{ command: Function, member: string, parentId: string }} opts
+ * @returns {Promise<number>}
+ */
+export async function computeChildFloor({ command, member, parentId }) {
+    try {
+        const label = `bd list --parent ${parentId} --json`;
+        const raw = await command(label, { member_name: member, silent: true });
+        const beads = parseBdJson(raw, label);
+        let max = 0;
+        const prefix = `${parentId}.`;
+        for (const b of beads) {
+            if (!b || typeof b.id !== 'string' || !b.id.startsWith(prefix)) continue;
+            const tail = b.id.slice(prefix.length);
+            // Only a DIRECT child (single trailing numeric segment) counts.
+            if (!/^\d+$/.test(tail)) continue;
+            const n = Number(tail);
+            if (Number.isInteger(n) && n > max) max = n;
+        }
+        return max;
+    } catch {
+        return 0;
+    }
+}
+
+export async function createChildBeadWithAllocatedId(opts) {
+    const { command, allocator, member, title, description, priority, parentId, sprintId, floor, label, log = () => {} } = opts;
+    const grant = await allocator.allocate(parentId, { pid: process.pid, sprintId, floor });
+    const idFlag = grant.childId ? ` --id ${grant.childId}` : '';
+    try {
+        await command(
+            `bd create "${title}" -d "${description}" -p "${priority}" --parent ${parentId}${idFlag} --silent`,
+            { member_name: member, silent: true, label: label ?? `Create follow-up task: ${title}` }
+        );
+    } catch (err) {
+        // The create did NOT land -- return the reserved id to the pool so the
+        // next allocation reuses it (no permanent gap), then re-throw.
+        await allocator.release(grant.token);
+        log(`[id-allocator] bd create failed for '${grant.childId ?? '(bd-derived)'}'; released reservation: ${err.message}`);
+        throw err;
+    }
+    // The create landed locally -- durably commit the id BEFORE the D-push, so a
+    // crash after this point can never reclaim an id that now genuinely exists.
+    await allocator.confirm(grant.token);
+    return { childId: grant.childId ?? null };
+}
+
+/**
  * apra-fleet-eft.9.1 (Plan Part 3.3) -- the orchestrator's post-streak
  * verification read, with its mandatory D-pull. This is the single most
  * divergence-sensitive read in the file: a remote doer closes its assigned
@@ -2209,6 +2374,30 @@ async function runSprintCycle(context) {
             ? createHttpDoltPushMutexClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log })
             : {
                 async acquire() { return { token: null }; },
+                async release() { return true; },
+            }
+    );
+
+    // apra-fleet-eft.9.3 (Plan 3.4): the supervisor-owned global child-id
+    // allocator client. Every reviewer-proposed newTask create below mints its
+    // id through it so two sprints creating children under the SAME parent never
+    // derive the same child id (constraint C.4). Same three-source precedence as
+    // the push mutex above:
+    //   1. `context.idAllocator` -- an explicitly-injected client (tests wire an
+    //      in-process one to prove the create path allocates without HTTP).
+    //   2. `args.serviceUrl` present -- the REAL end-to-end path: an HTTP-backed
+    //      client that allocates/confirms against the always-on supervisor's
+    //      allocator routes, so two detached sprint children genuinely serialize
+    //      their id minting through one supervisor authority.
+    //   3. neither -- a no-op client: a lone sprint has, by definition, no second
+    //      sprint that could mint a colliding id, so bd derives the id itself
+    //      (childId null -> no `--id` flag). The create call sites stay uniform.
+    const childIdAllocator = context.idAllocator ?? (
+        (args && args.serviceUrl)
+            ? createHttpChildIdAllocatorClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log })
+            : {
+                async allocate() { return { childId: null, token: null }; },
+                async confirm() { return true; },
                 async release() { return true; },
             }
     );
@@ -3723,10 +3912,19 @@ async function runSprintCycle(context) {
                 const { title, description, priority } = validation;
                 // A bead can only have one parent -- see the matching
                 // comment on the re-review newTasks site below.
-                await command(
-                    `bd create "${title}" -d "${description}" -p "${priority}" --parent ${targetIssues[0]} --silent`,
-                    { member_name: orchestratorMember, silent: true, label: `Create follow-up task from reviewer newTasks: ${title}` }
-                );
+                //
+                // apra-fleet-eft.9.3 (Plan 3.4): mint the child id through the
+                // supervisor-owned allocator so two concurrent sprints creating
+                // follow-up work under the SAME parent never derive the same
+                // child id (constraint C.4). Under the null client (lone sprint)
+                // childId is null and bd derives the id as before.
+                const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
+                await createChildBeadWithAllocatedId({
+                    command, allocator: childIdAllocator, member: orchestratorMember,
+                    title, description, priority, parentId: targetIssues[0],
+                    sprintId: sprintMutexId, floor, log,
+                    label: `Create follow-up task from reviewer newTasks: ${title}`,
+                });
             }
 
             // apra-fleet-eft.9.1 (Plan 3.3): the orchestrator just MUTATED
@@ -3980,10 +4178,18 @@ async function runSprintCycle(context) {
                 // first one (apra-fleet-xbu.C1: --parent never accepts a
                 // comma-joined list, so `targetIssues.join(',')` here was
                 // silently creating an unparented/misparented bead).
-                await command(
-                    `bd create "${title}" -d "${description}" -p "${priority}" --parent ${targetIssues[0]} --silent`,
-                    { member_name: orchestratorMember, silent: true, label: `Create follow-up task from re-review newTasks: ${title}` }
-                );
+                //
+                // apra-fleet-eft.9.3 (Plan 3.4): same allocator-minted id path
+                // as the Develop/Review newTasks site above -- concurrent
+                // sprints must never mint the same child id under a shared
+                // parent (constraint C.4).
+                const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
+                await createChildBeadWithAllocatedId({
+                    command, allocator: childIdAllocator, member: orchestratorMember,
+                    title, description, priority, parentId: targetIssues[0],
+                    sprintId: sprintMutexId, floor, log,
+                    label: `Create follow-up task from re-review newTasks: ${title}`,
+                });
             }
 
             // apra-fleet-eft.9.1 (Plan 3.3): D-push the orchestrator's applied
