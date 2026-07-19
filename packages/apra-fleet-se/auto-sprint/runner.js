@@ -565,6 +565,14 @@ const GIT_TRANSIENT_PATTERNS = [
     /unable to create '.*lock'/i,
     /cannot lock ref/i,
     /ssh_exchange_identification/i,
+    // Stabilization log Issue 13: a failSoft command() resolves a
+    // FleetTransportError (client <-> fleet-server connection blip, e.g.
+    // undici 'fetch failed' on a dead pooled socket) into its error string.
+    // That is a transient infrastructure failure of the DISPATCH CHANNEL,
+    // not a git failure at all -- retrying is exactly right, and 'unknown'
+    // (never retried, observed sprint-fatal live in run 8) is exactly wrong.
+    /transport failure while executing command/i,
+    /fetch failed/i,
 ];
 
 /**
@@ -2662,7 +2670,7 @@ async function runSprintCycle(context) {
             // apra-fleet-aw8: reviewer inspects a real diff/branch,
             // not a quick prompt -- same 300s-default gap as doer
             // dispatch, observed live tripping on real review work.
-            timeout_s: 900,
+            timeout_s: 3600,
             max_total_s: 3600,
             max_turns: BASE_REVIEWER_MAX_TURNS,
         };
@@ -2720,7 +2728,21 @@ async function runSprintCycle(context) {
                         newTasks: [],
                         dispatchFailed: true,
                     };
-                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                } else if (
+                    err instanceof AgentDispatchError
+                    || err instanceof FleetTransportError
+                    // Stabilization log Issue 13: the review's own read-side
+                    // sync bracket can fail for the same transient
+                    // infrastructure reasons as the dispatch itself (run 8
+                    // died on a G-pull GitSyncError wrapping a client
+                    // 'fetch failed'). Degrade those identically. A REAL
+                    // divergence (GitDivergedError / DoltDivergedError --
+                    // separate classes, deliberately NOT listed here) still
+                    // propagates: that is a branch integrity problem, not a
+                    // blip.
+                    || err instanceof GitSyncError
+                    || err instanceof DoltSyncError
+                ) {
                     // A transport-level failure (e.g. a dropped connection mid-dispatch)
                     // is exactly as transient/non-schema as an AgentDispatchError -- must
                     // not be allowed to propagate and abort the whole sprint (apra-fleet-eft).
@@ -3309,7 +3331,8 @@ async function runSprintCycle(context) {
                     model: FIXED_ROLE_TIER.planner,
                     // apra-fleet-j6i: plans the entire epic DAG, comparably
                     // heavy to a doer streak -- same 300s-default gap.
-                    timeout_s: 900,
+                    timeout_s: 3600,
+                    max_total_s: 3600,
                 }
             ), { pushBeads: true });
             // apra-fleet-j6i: unlike every other dispatch site in this file,
@@ -3373,7 +3396,8 @@ async function runSprintCycle(context) {
                         schema: planReviewerVerdict,
                         model: FIXED_ROLE_TIER['plan-reviewer'],
                         // apra-fleet-j6i: same 300s-default gap as Planner.
-                        timeout_s: 900,
+                        timeout_s: 3600,
+                        max_total_s: 3600,
                     }
                 ));
             } catch (err) {
@@ -3619,7 +3643,13 @@ async function runSprintCycle(context) {
                 // relying on the fleet's own default of 50) so the
                 // max-turns-exhaustion resume path below has a known
                 // baseline to escalate from.
-                const BASE_DOER_MAX_TURNS = 50;
+                // 50 -> 100 (stabilization log iteration 4): in run 8 EVERY
+                // doer streak -- including single-bead ones -- exhausted 50
+                // turns and paid a resume round-trip (an extra dispatch plus
+                // sync brackets each time). 100 lets the common eft-scale
+                // streak finish in one dispatch; resume stays the exception
+                // (escalating 200 -> 400).
+                const BASE_DOER_MAX_TURNS = 100;
                 // Bounded resume-and-continue attempts after a max_turns
                 // exhaustion, each doubling the turn budget. A blind
                 // identical retry is pointless (the doer would
@@ -3728,7 +3758,10 @@ async function runSprintCycle(context) {
                             // cycle, categorically heavier than a one-shot prompt --
                             // the fleet generic execute_prompt default (300s) was
                             // observed live tripping repeatedly on real work.
-                            timeout_s: 900,
+                            // Inactivity == total runtime for a silent-until-done
+                            // CLI, so the inactivity timer must match the
+                            // max_total_s ceiling (stabilization log Issue 12).
+                            timeout_s: 3600,
                             max_total_s: 3600,
                             max_turns: BASE_DOER_MAX_TURNS,
                         }
@@ -3747,7 +3780,7 @@ async function runSprintCycle(context) {
                         label: `Streak [${actualBeadIds.join(', ')}] (resume, max_turns=${maxTurns})`,
                         schema: doerReport,
                         model: undefined,  // Model is resolved in main dispatch
-                        timeout_s: 900,
+                        timeout_s: 3600,
                         max_total_s: 3600,
                         resume: true,
                         max_turns: maxTurns,
@@ -3983,7 +4016,8 @@ async function runSprintCycle(context) {
                         model: FIXED_ROLE_TIER.deployer,
                         // apra-fleet-j6i: runs real deploy commands per a
                         // runbook, plausibly long-running.
-                        timeout_s: 900,
+                        timeout_s: 3600,
+                        max_total_s: 3600,
                     }
                 ));
             } catch (err) {
@@ -4048,7 +4082,7 @@ async function runSprintCycle(context) {
                         model: FIXED_ROLE_TIER['integ-test-runner'],
                         // apra-fleet-j6i: runs a full test suite, plausibly
                         // long-running.
-                        timeout_s: 900,
+                        timeout_s: 3600,
                         max_total_s: 3600,
                     }
                 ), { pushBeads: true });
@@ -4257,7 +4291,7 @@ async function runSprintCycle(context) {
             // entire epic's worth of closed tasks -- most costly of the
             // 300s-default gaps since a timeout here flips a whole
             // sprint's outcome to FAIL.
-            timeout_s: 900,
+            timeout_s: 3600,
             max_total_s: 3600,
         }
     ));
@@ -4349,7 +4383,8 @@ async function runSprintCycle(context) {
                 model: FIXED_ROLE_TIER.harvester,
                 // apra-fleet-j6i: writes docs/changelog/sprint-analysis
                 // across the whole epic, plausibly long-running.
-                timeout_s: 900,
+                timeout_s: 3600,
+                max_total_s: 3600,
             }
         ), { pushBeads: true });
         log(`Harvester: ${JSON.stringify(harvesterResult)}`);

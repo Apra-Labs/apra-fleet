@@ -33,11 +33,11 @@ test('mock sprint: a max_turns-exhausted doer streak resumes with escalated max_
         });
 
         check(
-            result.logs.some((m) => m.includes('exhausted its turn limit (max_turns)') && m.includes('resuming the same session with max_turns=100 (attempt 1/2)')),
+            result.logs.some((m) => m.includes('exhausted its turn limit (max_turns)') && m.includes('resuming the same session with max_turns=200 (attempt 1/2)')),
             `Expected the first resume attempt's log line, logs: ${JSON.stringify(result.logs)}`
         );
         check(
-            result.logs.some((m) => m.includes('resuming the same session with max_turns=200 (attempt 2/2)')),
+            result.logs.some((m) => m.includes('resuming the same session with max_turns=400 (attempt 2/2)')),
             `Expected the second (escalated) resume attempt's log line, logs: ${JSON.stringify(result.logs)}`
         );
         check(
@@ -107,16 +107,16 @@ test('mock sprint: a max_turns-exhausted doer streak that succeeds on its first 
         check(calls >= 2, `expected at least 2 doer dispatches (original + first resume), got ${calls}`);
         check(observedOpts[0]?.resume !== true, `first dispatch should not be a resume, got resume=${observedOpts[0]?.resume}`);
         check(observedOpts[1]?.resume === true, `the retry after max_turns exhaustion must be a session resume, not a fresh dispatch, got resume=${observedOpts[1]?.resume}`);
-        check(observedOpts[1]?.max_turns === 100, `expected the first resume to escalate max_turns to 100, got ${observedOpts[1]?.max_turns}`);
+        check(observedOpts[1]?.max_turns === 200, `expected the first resume to escalate max_turns to 200, got ${observedOpts[1]?.max_turns}`);
         check(
-            result.logs.some((m) => m.includes('resuming the same session with max_turns=100 (attempt 1/2)')),
+            result.logs.some((m) => m.includes('resuming the same session with max_turns=200 (attempt 1/2)')),
             `Expected the resume attempt's log line, logs: ${JSON.stringify(result.logs)}`
         );
         // The first resume succeeded (a normal VERIFY, not another
         // max_turns_exhausted throw), so it must NOT escalate to a second
         // resume attempt or report a give-up within that same round.
         check(
-            !result.logs.some((m) => m.includes('resuming the same session with max_turns=200 (attempt 2/2)')),
+            !result.logs.some((m) => m.includes('resuming the same session with max_turns=400 (attempt 2/2)')),
             `Did NOT expect a second (escalated) resume attempt when the first resume succeeded, logs: ${JSON.stringify(result.logs)}`
         );
         check(

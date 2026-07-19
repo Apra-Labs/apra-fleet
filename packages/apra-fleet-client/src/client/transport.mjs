@@ -16,7 +16,28 @@ import { fetch as undiciFetch, Agent as UndiciAgent } from 'undici';
 const sseDispatcher = new UndiciAgent({
     headersTimeout: 0,
     bodyTimeout: 0,
+    // Stay BELOW Node's http-server default keepAliveTimeout (5000ms): a
+    // pooled connection the server has just decided to close can otherwise
+    // be picked for reuse in the race window, failing the request at the
+    // socket level ("fetch failed", cause ECONNRESET) -- observed live as
+    // sporadic command/dispatch failures (stabilization log Issue 13).
+    keepAliveTimeout: 4000,
 });
+
+// Connection-level fetch rejections that are safe to retry: the request
+// never produced a response (nothing was streamed back), and the dominant
+// cause is the dead-socket-reuse race above or a momentary listen-queue
+// blip on the local fleet server. Deliberately narrow -- protocol-level
+// failures (non-ok status, malformed response) are NOT retried here.
+function isTransientFetchError(err) {
+    if (!err) return false;
+    if (err.name === 'AbortError') return false;
+    const causeCode = err.cause && err.cause.code;
+    if (causeCode && ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED'].includes(causeCode)) {
+        return true;
+    }
+    return /fetch failed/i.test(err.message || '');
+}
 
 export class StdioTransport extends EventEmitter {
     constructor(command, args, options = {}) {
@@ -259,12 +280,31 @@ export class StreamableHttpTransport extends EventEmitter {
         // dispatch (e.g. an execute_prompt that thinks for 10+ minutes) and
         // must not be idle-killed -- that would emit 'error', reject every
         // pending request, and orphan the still-running remote session.
-        const response = await undiciFetch(this.url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(message),
-            dispatcher: sseDispatcher
-        });
+        //
+        // Bounded retry on connection-level rejections only (see
+        // isTransientFetchError): when fetch itself rejects, no response was
+        // received and the server almost certainly never processed the
+        // request, so a re-send is safe. Observed live (stabilization log
+        // Issue 13): sporadic 'fetch failed' on an otherwise-healthy local
+        // server was surfacing as sprint-fatal sync errors.
+        const SEND_RETRY_DELAYS_MS = [500, 2000];
+        let response;
+        for (let attempt = 0; ; attempt++) {
+            try {
+                response = await undiciFetch(this.url, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(message),
+                    dispatcher: sseDispatcher
+                });
+                break;
+            } catch (err) {
+                if (attempt >= SEND_RETRY_DELAYS_MS.length || !isTransientFetchError(err)) {
+                    throw err;
+                }
+                await new Promise((resolve) => setTimeout(resolve, SEND_RETRY_DELAYS_MS[attempt]));
+            }
+        }
         
         if (!response.ok) {
             throw new Error(`Failed to send message: HTTP ${response.status}`);

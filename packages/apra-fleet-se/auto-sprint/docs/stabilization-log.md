@@ -286,6 +286,62 @@ C1 R1 -- where it found the next two systemic issues:
   stabilization-loop scope stays on the sprint machinery, not the eft
   feature. se suite otherwise green (667 pass / 2 fail, both this bug).
 
+## Loop iteration 4 (2026-07-19)
+
+Run 8 was the best run yet: TWO full cycles of plan -> develop -> review,
+with the plan approved first-round both times, every reviewer round up to
+C2 returning a genuine actionable verdict (real catches: a red test suite
+from a doer regression, uncommitted freshest work, a stale guard-test
+baseline), the doer resume path recovering every turn-limit exhaustion,
+and Cycle 1 evaluation rolling into Cycle 2 cleanly. It died in Review C2
+R1 on two NEW issue types:
+
+### Issue 12: server inactivity timeout (900s) makes max_total_s unreachable for silent CLIs
+
+- **Symptom** (run 8): the C2 reviewer was killed with "Command timed out
+  after 900000ms of inactivity" despite max_total_s: 3600.
+- **Root cause**: `claude -p` prints nothing until the turn completes, so
+  server-side INACTIVITY == total runtime for every agent dispatch; the
+  900s inactivity timer always fires before the 3600s wall-clock ceiling
+  can matter. Earlier reviews survived only by finishing under 15 min.
+- **Fix**: every agent dispatch site in runner.js now sets
+  `timeout_s: 3600` equal to its `max_total_s: 3600` -- the hard ceiling
+  is the real limit; inactivity adds nothing for a silent-until-done CLI.
+  (Also: BASE_DOER_MAX_TURNS 50 -> 100, since in run 8 EVERY streak --
+  even single-bead ones -- exhausted 50 turns and paid a resume
+  round-trip; resumes now escalate 200 -> 400. Assertion ladder updated in
+  mock-sprint-doer-max-turns.test.mjs.)
+
+### Issue 13: sporadic client 'fetch failed' + sync-bracket failures are sprint-fatal at the review site
+
+- **Symptom** (run 8): sporadic `[Command API Error] fetch failed`
+  throughout the run (dashboard badge computation, a doer bracket, and
+  finally the review-retry G-pull). The last one surfaced as GitSyncError
+  from dispatchReview's sync bracket -- which the reviewer catch did not
+  handle -- and killed the sprint. The fleet server was healthy the whole
+  time.
+- **Root cause**: three stacked gaps. (a) The pooled undici dispatcher
+  (Issue 8 fix) can reuse a socket the server just decided to close
+  (Node http default keepAliveTimeout 5000ms) -- the request then fails at
+  the socket level as 'fetch failed'. (b) classifyGitFailure() rated
+  "Transport failure while executing command: fetch failed" as 'unknown'
+  (never retried) instead of transient. (c) dispatchReview degraded
+  dispatch/transport errors but not sync-bracket GitSyncError/
+  DoltSyncError.
+- **Fix**: (a) transport.mjs -- dispatcher keepAliveTimeout: 4000 (below
+  the server's 5000ms) plus a bounded connection-level retry in send()
+  (2 retries, 500ms/2s; only for rejections where no response was
+  received, so a re-send cannot double-execute). (b) the transport-failure
+  strings added to GIT_TRANSIENT_PATTERNS so runGitStep retries them.
+  (c) dispatchReview's catch now also degrades GitSyncError/DoltSyncError
+  (dispatchFailed round); GitDivergedError/DoltDivergedError still
+  propagate -- real divergence is an integrity problem, not a blip.
+
+Rebased over 10 doer commits from run 8 (including the doer's own
+eft.9.7 claim-loop restructure of dispatchDoer -- conflict resolved
+keeping the doer's structure with the new timeouts applied). se suite
+759 pass / 2 fail (both the beaded Windows lifecycle bug); client 22/22.
+
 ### Still open / watched
 
 - **apra-fleet-eft.14 (server)**: why does the provider CLI sometimes exit
