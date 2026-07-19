@@ -68,7 +68,21 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // lines are NOT call sites -- they were a false-positive in this test's own
 // parser (the literal text "command()" inside a plain string), fixed here
 // via isInsideSameLineString().
-const EXPECTED_COMMAND_COUNT = 22;
+// Bumped 22 -> 25 (2026-07-18, apra-fleet-eft.9.1 + eft.8.x sync helpers):
+// three new real command() call sites, each verified to carry an explicit
+// member_name (3.2): (1) runDoltStep()'s injected `command(cmd, { member_name:
+// member, silent: true, failSoft: true, label })` -- the single site every
+// D-pull/D-push bracket funnels through; (2) verifyDoerStreakClosed()'s
+// post-D-pull `command(label, { member_name: orchestratorMember, silent:
+// true })` verification read; and (3) the syncMemberAfter clean-state restore
+// `command('git rebase --abort', { member_name: member, ... })` /
+// `command('git status --porcelain', { member_name: member, ... })` pair
+// (these two land on adjacent lines but the parser counts them as the two
+// distinct call sites they are). The `throw new Error("... requires an
+// injected command() in opts")` lines added alongside the dolt helpers are,
+// as before, string-literal false positives excluded by
+// isInsideSameLineString(), not call sites.
+const EXPECTED_COMMAND_COUNT = 25;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

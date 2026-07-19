@@ -61,8 +61,11 @@ export const LEDGER_FILENAME = 'reservations.json';
  * @property {string} reservedAt     ISO-8601 timestamp of the claim.
  *
  * @typedef {object} LedgerDocument
- * @property {number} version                          Equals LEDGER_VERSION.
- * @property {Record<string, Reservation>} reservations Keyed by sprintId.
+ * @property {number} version                              Equals LEDGER_VERSION.
+ * @property {Record<string, Reservation>} reservations    Keyed by sprintId.
+ * @property {string|null} [scopeFreshness.lastSyncedAt]   ISO-8601 timestamp of
+ *                                                         the last successful bd sync,
+ *                                                         or null if never synced.
  */
 export const LEDGER_SCHEMA = Object.freeze({
     $id: 'apra-fleet-se/supervisor-reservation-ledger@1',
@@ -85,12 +88,19 @@ export const LEDGER_SCHEMA = Object.freeze({
                 },
             },
         },
+        scopeFreshness: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                lastSyncedAt: { type: ['string', 'null'] },
+            },
+        },
     },
 });
 
 /** An empty, well-formed ledger document. */
 export function emptyLedgerDocument() {
-    return { version: LEDGER_VERSION, reservations: {} };
+    return { version: LEDGER_VERSION, reservations: {}, scopeFreshness: { lastSyncedAt: null } };
 }
 
 /**
@@ -173,6 +183,8 @@ export function createLedger(deps = {}) {
     /** @type {Map<string, Reservation>} */
     let reservations = new Map();
     let loaded = false;
+    // Track the timestamp of the last successful bd sync for scope freshness.
+    let lastSyncedAt = null;
 
     // Serialize every transaction (draft build + atomic write + commit) so
     // concurrent claim()/release() calls can never build a stale draft, nor
@@ -184,6 +196,7 @@ export function createLedger(deps = {}) {
         for (const [sprintId, r] of map) {
             doc.reservations[sprintId] = cloneReservation(r);
         }
+        doc.scopeFreshness.lastSyncedAt = lastSyncedAt;
         return doc;
     }
 
@@ -237,6 +250,7 @@ export function createLedger(deps = {}) {
         } catch (err) {
             if (err && err.code === 'ENOENT') {
                 reservations = new Map();
+                lastSyncedAt = null;
                 loaded = true;
                 return;
             }
@@ -256,6 +270,7 @@ export function createLedger(deps = {}) {
             next.set(sprintId, normalizeReservation(r, now));
         }
         reservations = next;
+        lastSyncedAt = (doc.scopeFreshness && doc.scopeFreshness.lastSyncedAt) || null;
         loaded = true;
     }
 
@@ -350,5 +365,34 @@ export function createLedger(deps = {}) {
 
         /** Number of live reservations. */
         get size() { return reservations.size; },
+
+        /**
+         * Get the scope freshness information: timestamp of last successful bd sync
+         * and derived age in seconds, or 'never-synced' marker if unknown.
+         * @param {() => number} getNow optional function to get current timestamp in ms
+         * @returns {{ lastSyncedAt: string|null, ageSeconds: number|string }}
+         */
+        getScopeFreshness(getNow) {
+            if (lastSyncedAt === null) {
+                return { lastSyncedAt: null, ageSeconds: 'never-synced' };
+            }
+            const lastTime = new Date(lastSyncedAt).getTime();
+            const currentTime = (getNow && getNow()) || Date.now();
+            const ageSeconds = Math.max(0, Math.floor((currentTime - lastTime) / 1000));
+            return { lastSyncedAt, ageSeconds };
+        },
+
+        /**
+         * Update the scope freshness timestamp to record a successful bd sync/pull.
+         * @param {string} [timestamp] ISO-8601 timestamp; defaults to current time
+         * @returns {Promise<{ lastSyncedAt: string, ageSeconds: number }>}
+         */
+        async setScopeFreshness(timestamp) {
+            const newTimestamp = timestamp || now();
+            return transact(() => {
+                lastSyncedAt = newTimestamp;
+                return { lastSyncedAt: newTimestamp, ageSeconds: 0 };
+            });
+        },
     };
 }

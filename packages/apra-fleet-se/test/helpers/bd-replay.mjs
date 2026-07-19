@@ -78,6 +78,22 @@ export const execCmd = (cmd, cwd) => new Promise((resolve) => {
 
 const isBdCommand = (cmd) => /^\s*bd(\s|$)/.test(cmd);
 
+// `bd dolt pull` / `bd dolt push` are the Plan 3.3 D-pull/D-push sync brackets
+// (apra-fleet-eft.9.1): the orchestrator issues them around every
+// beads-reading dispatch and after every beads-mutating one. In this
+// single-clone mock harness there is NO shared dolt remote, so these are pure
+// infrastructure no-ops with no meaningful per-scenario output. They are
+// intercepted as synthetic successes in the mocked (replay/record) modes -- so
+// every existing scenario tolerates the brackets WITHOUT needing (or drifting)
+// a recorded response for them, and so they never bloat the committed
+// recordings. Real/integration mode still runs them against the real `bd`
+// CLI. The dolt bracket behavior itself (retry/reconcile/divergence, exact
+// insertion points) is covered directly by the unit tests in
+// dolt-sync-brackets.test.mjs / mock-sprint-git-sync-brackets.test.mjs, which
+// drive the helpers with an injected command() mock rather than through this
+// record/replay layer.
+const isDoltSyncCommand = (cmd) => /^\s*bd\s+dolt\s+(pull|push)\b/.test(cmd);
+
 export function scenarioKeyFromCwd(cwd) {
     return path.basename(cwd).replace(/-\d+-\d+$/, '');
 }
@@ -223,6 +239,9 @@ export function runCmd(cmd, cwd) {
     if (!isBdCommand(cmd)) return execCmd(cmd, cwd);
     const mode = bdMode();
     if (mode === 'real') return execCmd(cmd, cwd);
+    // Dolt sync brackets are mock-mode no-ops (see isDoltSyncCommand above):
+    // synthesize a clean success WITHOUT recording or requiring a recording.
+    if (isDoltSyncCommand(cmd)) return Promise.resolve({ err: null, stdout: '', stderr: '' });
     if (mode === 'record') return recordBd(cmd, cwd);
     return replayBd(cmd, cwd);
 }

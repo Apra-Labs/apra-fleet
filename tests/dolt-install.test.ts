@@ -6,8 +6,10 @@ import zlib from 'node:zlib';
 import {
   resolveDoltAsset,
   downloadAndExtractDolt,
+  verifyDolt,
   UnsupportedDoltPlatformError,
   type DoltInstallDeps,
+  type DoltVerifyDeps,
 } from '../src/cli/dolt-install.js';
 
 /** Builds a minimal single-entry, STORE-method (uncompressed) .zip fixture. */
@@ -242,5 +244,162 @@ describe('downloadAndExtractDolt (apra-fleet-ire.1)', () => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+/** Minimal EventEmitter-like stand-in for a ChildProcess, enough for verifyDolt's use. */
+function fakeChild(pid = 4242) {
+  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+  const child = {
+    pid,
+    killed: false,
+    once: (event: string, cb: (...args: unknown[]) => void) => {
+      (listeners[event] ||= []).push(cb);
+      return child;
+    },
+    emit: (event: string, ...args: unknown[]) => {
+      (listeners[event] || []).forEach((cb) => cb(...args));
+    },
+  };
+  return child;
+}
+
+function fakeVerifyDeps(overrides: Partial<DoltVerifyDeps> = {}): DoltVerifyDeps {
+  return {
+    execFileSync: vi.fn().mockReturnValue('dolt version 2.2.0\n') as any,
+    spawn: vi.fn().mockReturnValue(fakeChild()) as any,
+    fs: {
+      mkdtempSync: vi.fn().mockReturnValue('/tmp/dolt-verify-fake'),
+      rmSync: vi.fn(),
+    },
+    net: {
+      isPortFree: vi.fn().mockResolvedValue(true),
+      getEphemeralPort: vi.fn().mockResolvedValue(54321),
+      waitForConnect: vi.fn().mockResolvedValue(true),
+    },
+    killChild: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe('verifyDolt (apra-fleet-ire.2)', () => {
+  it('returns { version, serverOk: true } when the server accepts a connection', async () => {
+    const deps = fakeVerifyDeps();
+
+    const result = await verifyDolt('/fake/path/dolt', {}, deps);
+
+    expect(result).toEqual({ version: '2.2.0', serverOk: true });
+    expect(deps.execFileSync).toHaveBeenCalledWith('/fake/path/dolt', ['version'], expect.objectContaining({
+      stdio: 'pipe',
+      encoding: 'utf-8',
+    }));
+  });
+
+  it('parses the version string out of noisier `dolt version` output', async () => {
+    const deps = fakeVerifyDeps({
+      execFileSync: vi.fn().mockReturnValue('dolt version 2.2.0\ngo1.22\n') as any,
+    });
+
+    const result = await verifyDolt('/fake/path/dolt', {}, deps);
+
+    expect(result.version).toBe('2.2.0');
+  });
+
+  it('propagates a `dolt version` failure (broken/missing binary should fail the install)', async () => {
+    const deps = fakeVerifyDeps({
+      execFileSync: vi.fn().mockImplementation(() => {
+        throw new Error('spawn dolt ENOENT');
+      }) as any,
+    });
+
+    await expect(verifyDolt('/fake/path/dolt', {}, deps)).rejects.toThrow(/ENOENT/);
+    expect(deps.spawn).not.toHaveBeenCalled();
+  });
+
+  it('falls back to an ephemeral port when the requested port is busy, without hanging', async () => {
+    const deps = fakeVerifyDeps({
+      net: {
+        isPortFree: vi.fn().mockResolvedValue(false),
+        getEphemeralPort: vi.fn().mockResolvedValue(54321),
+        waitForConnect: vi.fn().mockResolvedValue(true),
+      },
+    });
+
+    const result = await verifyDolt('/fake/path/dolt', { port: 3306 }, deps);
+
+    expect(result.serverOk).toBe(true);
+    expect(deps.net.getEphemeralPort).toHaveBeenCalled();
+    expect(deps.spawn).toHaveBeenCalledWith(
+      '/fake/path/dolt',
+      expect.arrayContaining(['sql-server', '--port', '54321']),
+      expect.anything(),
+    );
+  });
+
+  it('returns serverOk:false with a reason (does not throw or hang) when the server never accepts a connection', async () => {
+    const deps = fakeVerifyDeps({
+      net: {
+        isPortFree: vi.fn().mockResolvedValue(true),
+        getEphemeralPort: vi.fn().mockResolvedValue(54321),
+        waitForConnect: vi.fn().mockResolvedValue(false),
+      },
+    });
+
+    const result = await verifyDolt('/fake/path/dolt', {}, deps);
+
+    expect(result.serverOk).toBe(false);
+    expect(result.reason).toMatch(/did not accept connections/);
+    expect(result.version).toBe('2.2.0');
+  });
+
+  it('reports a spawn error via serverOk:false rather than throwing', async () => {
+    const child = fakeChild();
+    const deps = fakeVerifyDeps({
+      spawn: vi.fn().mockReturnValue(child) as any,
+      net: {
+        isPortFree: vi.fn().mockResolvedValue(true),
+        getEphemeralPort: vi.fn().mockResolvedValue(54321),
+        waitForConnect: vi.fn().mockImplementation(async () => {
+          child.emit('error', new Error('spawn EACCES'));
+          return false;
+        }),
+      },
+    });
+
+    const result = await verifyDolt('/fake/path/dolt', {}, deps);
+
+    expect(result.serverOk).toBe(false);
+    expect(result.reason).toMatch(/EACCES/);
+  });
+
+  it('always terminates the child and removes the scratch dir, even on failure (try/finally)', async () => {
+    const deps = fakeVerifyDeps({
+      net: {
+        isPortFree: vi.fn().mockResolvedValue(true),
+        getEphemeralPort: vi.fn().mockResolvedValue(54321),
+        waitForConnect: vi.fn().mockResolvedValue(false),
+      },
+    });
+
+    await verifyDolt('/fake/path/dolt', {}, deps);
+
+    expect(deps.killChild).toHaveBeenCalledTimes(1);
+    expect(deps.fs.rmSync).toHaveBeenCalledWith('/tmp/dolt-verify-fake', { recursive: true, force: true });
+  });
+
+  it('always cleans up even when an unexpected error is thrown mid-verification', async () => {
+    const deps = fakeVerifyDeps({
+      net: {
+        isPortFree: vi.fn().mockRejectedValue(new Error('boom')),
+        getEphemeralPort: vi.fn(),
+        waitForConnect: vi.fn(),
+      },
+    });
+
+    const result = await verifyDolt('/fake/path/dolt', {}, deps);
+
+    expect(result.serverOk).toBe(false);
+    expect(result.reason).toMatch(/boom/);
+    expect(deps.fs.rmSync).toHaveBeenCalledWith('/tmp/dolt-verify-fake', { recursive: true, force: true });
   });
 });

@@ -25,9 +25,11 @@
 // COLLABORATOR SEAMS: every side-effecting collaborator (spawner, ledger,
 // history, member/backlog sources, and the child HTTP proxies) is injected, so
 // this module is unit-testable without real processes, sockets, or a live
-// fleet transport. eft.5.2 layers its all-or-nothing member-union overlap check
-// (409 on conflict) in via the `beforeLaunch` hook below -- this module leaves
-// that seam explicit rather than baking overlap policy into the launch path.
+// fleet transport. eft.5.2's all-or-nothing member-union overlap check (409 on
+// conflict, see defaultMemberOverlapGuard() below) is the DEFAULT `beforeLaunch`
+// -- it runs unless a caller injects its own, e.g. to compose it with the
+// eft.5.3 issue-scope guard. The check runs strictly BEFORE ledger.claim(), so
+// a rejected launch never touches the ledger (byte-identical, no partial claim).
 // =============================================================================
 
 import http from 'node:http';
@@ -86,6 +88,47 @@ function memberUnion(members, roleMap) {
     return out;
 }
 
+/**
+ * Human-readable rejection message naming every conflicting sprint and the
+ * overlapping member names, for surfacing to the launch caller / API response.
+ * @param {Array<{ sprintId: string, members: string[] }>} conflicts
+ * @returns {string}
+ */
+export function formatMemberConflict(conflicts) {
+    const parts = conflicts.map(
+        (c) => `sprint '${c.sprintId}' already claims [${c.members.join(', ')}]`,
+    );
+    return `member overlap rejects launch: ${parts.join('; ')}`;
+}
+
+/**
+ * apra-fleet-eft.5.2: the DEFAULT member-axis overlap guard used as
+ * `beforeLaunch` when the caller does not inject its own. All-or-nothing:
+ * ANY member in the incoming union (members + every roleMap value, INCLUDING
+ * the orchestrator role -- memberUnion() already folds that in) that is also
+ * held by any OTHER active reservation rejects the ENTIRE launch with a 409,
+ * naming the conflicting sprint id(s) and the specific overlapping member
+ * names. This throws BEFORE ledger.claim() is ever called, so a rejected
+ * launch leaves the ledger byte-identical -- no partial claim.
+ * @param {{ list: () => Array<{ sprintId: string, members?: string[] }> }} ledger
+ * @returns {(ctx: { members: string[], issueRoots: string[] }) => Promise<void>}
+ */
+export function defaultMemberOverlapGuard(ledger) {
+    return async ({ members: requestMembers }) => {
+        const requestSet = new Set(requestMembers ?? []);
+        const conflicts = [];
+        for (const reservation of ledger.list()) {
+            const overlapping = (reservation.members ?? []).filter((m) => requestSet.has(m));
+            if (overlapping.length > 0) {
+                conflicts.push({ sprintId: reservation.sprintId, members: overlapping.sort() });
+            }
+        }
+        if (conflicts.length > 0) {
+            throw new ApiError(409, formatMemberConflict(conflicts), 'members');
+        }
+    };
+}
+
 /** Default child HTTP proxy: GET the child's viewer `/state` and JSON-parse it. */
 export function proxyChildState(port, opts = {}) {
     const host = opts.host ?? '127.0.0.1';
@@ -142,6 +185,9 @@ export function proxyChildStop(port, opts = {}) {
  *   proxyStop?: (port: number) => Promise<object>,
  *   resolvePort?: (pid: number|null) => number|undefined,
  *   beforeLaunch?: (ctx: { members: string[], issueRoots: string[] }) => Promise<void>|void,
+ *     Defaults to defaultMemberOverlapGuard(ledger) (eft.5.2): rejects with a
+ *     409 ApiError on any member overlap with an active reservation. Inject to
+ *     override or compose (e.g. with the eft.5.3 issue-scope guard).
  *   generateSprintId?: (issue: string) => string,
  *   resolveRoleMap?: (raw: string|undefined) => Promise<object|undefined>,
  * }} deps
@@ -160,7 +206,11 @@ export function createSprintController(deps = {}) {
     const proxyState = deps.proxyState ?? proxyChildState;
     const proxyStop = deps.proxyStop ?? proxyChildStop;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
-    const beforeLaunch = deps.beforeLaunch ?? (async () => {});
+    // eft.5.2: the default beforeLaunch is the all-or-nothing member-axis
+    // overlap guard (409 on conflict), not a no-op. Callers may still inject
+    // their own beforeLaunch (e.g. to compose it with the eft.5.3 issue-scope
+    // guard) -- this default is what runs when nothing is injected.
+    const beforeLaunch = deps.beforeLaunch ?? defaultMemberOverlapGuard(ledger);
     const generateSprintId = deps.generateSprintId ?? ((issue) => `${issue}-${randomUUID()}`);
     const resolvePort = deps.resolvePort
         ?? ((pid) => (pid != null && spawner.getLiveEntry ? spawner.getLiveEntry(pid)?.port : undefined));
@@ -206,7 +256,9 @@ export function createSprintController(deps = {}) {
 
     // -- GET /api/backlog -----------------------------------------------------
     async function backlog() {
-        return getBacklog();
+        const result = await getBacklog();
+        const freshness = ledger.getScopeFreshness();
+        return { ...result, scopeFreshness: freshness };
     }
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
@@ -252,6 +304,7 @@ export function createSprintController(deps = {}) {
 
     // -- GET /api/sprints : every live sprint ---------------------------------
     async function listSprints() {
+        const freshness = ledger.getScopeFreshness();
         return {
             sprints: ledger.list().map((r) => ({
                 sprintId: r.sprintId,
@@ -260,6 +313,7 @@ export function createSprintController(deps = {}) {
                 childPid: r.childPid ?? null,
                 port: resolvePort(r.childPid ?? null) ?? null,
             })),
+            scopeFreshness: freshness,
         };
     }
 

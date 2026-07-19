@@ -14,6 +14,8 @@ import {
     registerSprintRoutes,
     proxyChildState,
     proxyChildStop,
+    defaultMemberOverlapGuard,
+    formatMemberConflict,
     ApiError,
 } from '../src/supervisor/api.mjs';
 
@@ -207,6 +209,116 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         });
         assert.deepEqual([...r.members].sort(), ['alice', 'bob', 'carol']);
         await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLaunch)', () => {
+    test('a directly-overlapping member => 409 naming the conflicting sprint id and the overlapping member', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s-active', { members: ['alice', 'bob'], issueRoots: ['R1'], childPid: 1 });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-2', members: ['bob', 'carol'], branch: 'feat/y', base: 'main' }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.field === 'members'
+                && err.message.includes('s-active')
+                && err.message.includes('bob'),
+        );
+        // No child was spawned on a rejected launch.
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('an orchestrator-only overlap (member appears only via roleMap.orchestrator) is caught', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        // s-active previously claimed 'orch1' purely through its own orchestrator role.
+        await ledger.claim('s-active', { members: ['alice', 'orch1'], issueRoots: ['R1'], childPid: 1 });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({
+                issue: 'PROJ-2', members: ['dave'], branch: 'feat/y', base: 'main',
+                // 'orch1' never appears in `members`, only in roleMap.orchestrator.
+                roleMap: { orchestrator: ['orch1'] },
+            }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.message.includes('s-active')
+                && err.message.includes('orch1'),
+        );
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a rejected launch leaves the ledger byte-identical (no partial claim)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s-active', { members: ['alice'], issueRoots: ['R1'], childPid: 1 });
+        const before = ledger.toDocument();
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-2', members: ['alice'], branch: 'feat/y', base: 'main' }),
+        );
+        const after = ledger.toDocument();
+        assert.deepEqual(after, before);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a non-overlapping launch claims every member in the union', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s-active', { members: ['alice'], issueRoots: ['R1'], childPid: 1 });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        const r = await controller.launch({
+            issue: 'PROJ-2', members: ['bob'], branch: 'feat/y', base: 'main',
+            roleMap: { doer: ['carol'], orchestrator: ['dave'] },
+        });
+        assert.deepEqual([...r.members].sort(), ['bob', 'carol', 'dave']);
+        const reservation = ledger.get(r.sprintId);
+        assert.deepEqual([...reservation.members].sort(), ['bob', 'carol', 'dave']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('defaultMemberOverlapGuard / formatMemberConflict directly: multiple conflicting sprints are all named', async () => {
+        const ledgerStub = {
+            list: () => [
+                { sprintId: 's1', members: ['alice', 'bob'] },
+                { sprintId: 's2', members: ['carol'] },
+            ],
+        };
+        const guard = defaultMemberOverlapGuard(ledgerStub);
+        await assert.rejects(
+            () => guard({ members: ['alice', 'carol', 'dave'] }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.field === 'members'
+                && err.message === formatMemberConflict([
+                    { sprintId: 's1', members: ['alice'] },
+                    { sprintId: 's2', members: ['carol'] },
+                ]),
+        );
+    });
+
+    test('defaultMemberOverlapGuard: no overlap resolves without throwing', async () => {
+        const ledgerStub = { list: () => [{ sprintId: 's1', members: ['alice'] }] };
+        const guard = defaultMemberOverlapGuard(ledgerStub);
+        await assert.doesNotReject(() => guard({ members: ['bob', 'carol'] }));
     });
 });
 

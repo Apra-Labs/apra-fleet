@@ -211,7 +211,7 @@ describe('ledger -- exported schema/contract', () => {
         assert.equal(LEDGER_VERSION, 1);
         assert.equal(LEDGER_SCHEMA.properties.version.const, LEDGER_VERSION);
         assert.equal(Object.isFrozen(LEDGER_SCHEMA), true);
-        assert.deepEqual(emptyLedgerDocument(), { version: 1, reservations: {} });
+        assert.deepEqual(emptyLedgerDocument(), { version: 1, reservations: {}, scopeFreshness: { lastSyncedAt: null } });
     });
 
     test('createLedger seam exposes start/stop lifecycle hooks and a name', () => {

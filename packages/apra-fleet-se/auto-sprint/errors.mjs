@@ -197,3 +197,75 @@ export class GitSyncError extends WorkflowError {
         this.gitOutput = gitOutput;
     }
 }
+
+/**
+ * apra-fleet-eft.9.1 (Plan Part 3.3) -- thrown when an orchestrator-bracketed
+ * DOLT sync (D-pull / D-push of the shared beads database) discovers a
+ * divergence that the fixed, mechanical conflict policy could NOT close: a
+ * `bd dolt pull` that reports a data/merge conflict outside a push-loser's
+ * reconcile, or a `bd dolt push` STILL rejected after the single bounded
+ * pull-then-repush reconcile.
+ *
+ * This is the Dolt counterpart of {@link GitDivergedError}. The beads-sync
+ * conflict policy is deliberately NOT per-conflict judgment: it is
+ * first-successful-pusher-wins, with ours/theirs decided mechanically by which
+ * clone is doing the resolving (the push loser reconciles by pulling the
+ * winner's state, then re-pushes). A divergence that outlives that one bounded
+ * reconcile is a hard, non-retryable failure -- surfacing it as a distinct
+ * typed error lets callers/tests tell "diverged -> abort" apart from
+ * "transient -> retry", exactly as the git brackets do.
+ *
+ * @property {string|null} member - the member whose beads clone diverged
+ * @property {string|null} doltOutput - the raw `bd dolt` stderr/stdout that proved divergence
+ * @property {string|null} operation - which bracket step diverged
+ *   ('pull' | 'push' | 'push-reconcile')
+ */
+export class DoltDivergedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, operation?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, doltOutput = null, operation = null, details, cause } = opts;
+        super(message, {
+            code: 'DOLT_DIVERGED',
+            details: { member, doltOutput, operation, ...details },
+            cause,
+        });
+        this.member = member;
+        this.doltOutput = doltOutput;
+        this.operation = operation;
+    }
+}
+
+/**
+ * apra-fleet-eft.9.1 (Plan Part 3.3) -- thrown when an orchestrator-bracketed
+ * DOLT sync (D-pull / D-push) fails for a reason that is NOT divergence and
+ * that SURVIVED the bounded transient-retry budget: a transient-class failure
+ * (network unreachable, a server/lock hiccup) that kept failing after its
+ * allowed retries, or an unclassifiable `bd dolt` failure that must not be
+ * retried blindly.
+ *
+ * The Dolt counterpart of {@link GitSyncError}: deliberately a distinct type
+ * from {@link DoltDivergedError} so a caller/test can assert the two failure
+ * classifications (transient-retry-exhausted vs diverged-abort) SEPARATELY.
+ *
+ * @property {string|null} member - the member whose beads sync failed
+ * @property {string|null} doltOutput - the raw `bd dolt` stderr/stdout of the failure
+ */
+export class DoltSyncError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, doltOutput = null, details, cause } = opts;
+        super(message, {
+            code: 'DOLT_SYNC_FAILED',
+            details: { member, doltOutput, ...details },
+            cause,
+        });
+        this.member = member;
+        this.doltOutput = doltOutput;
+    }
+}

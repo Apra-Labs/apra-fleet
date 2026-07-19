@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop (apra-fleet-unw.16)
@@ -570,6 +570,79 @@ export function classifyGitFailure(output) {
     return 'unknown';
 }
 
+// Two-letter `git status --porcelain` XY codes git reserves EXCLUSIVELY for
+// an unresolved merge/rebase conflict (see `git status` docs). Used by
+// parseUnmergedPaths() below to prove an ACTUAL conflict from git's own
+// working-tree state, never inferred from a failing command's exit
+// code/message alone.
+const UNMERGED_STATUS_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+
+/**
+ * Parses `git status --porcelain` output and returns the paths whose XY
+ * status code marks them as unmerged (conflicted). Any other status
+ * (staged/modified/untracked/etc.) is deliberately ignored -- only these
+ * codes are unambiguous proof of an in-progress conflict.
+ *
+ * @param {string} porcelainOutput
+ * @returns {string[]}
+ */
+export function parseUnmergedPaths(porcelainOutput) {
+    const text = String(porcelainOutput == null ? '' : porcelainOutput);
+    const paths = [];
+    for (const line of text.split('\n')) {
+        if (!line) continue;
+        const code = line.slice(0, 2);
+        if (UNMERGED_STATUS_CODES.has(code)) {
+            paths.push(line.slice(3).trim());
+        }
+    }
+    return paths;
+}
+
+/**
+ * apra-fleet-eft.8.6 (Plan 3.4 git ladder) -- Tier 1 SCRIPTED conflict
+ * detection + clean-state restore. Called only after a `git pull --rebase`
+ * command has already failed (its exit code is why we're here at all).
+ * Never trusts that failing command's own exit code/message classification
+ * alone to decide whether a rebase is actually mid-conflict -- confirms via
+ * git's OWN porcelain status first (a rebase that failed for some other,
+ * non-conflict reason before ever touching the tree has nothing to abort).
+ * If unmerged paths ARE found, runs `git rebase --abort` to restore a clean
+ * working tree BEFORE the caller raises its typed GitDivergedError, then
+ * re-checks porcelain to confirm the abort actually worked (a loud log
+ * warning, never a second thrown error, if it somehow did not -- the
+ * caller's GitDivergedError immediately after this returns is the single,
+ * documented Tier 1 -> Tier 2 escalation point). Script-only: no agent is
+ * ever dispatched here. Tier 2 (an agent-with-runbook dispatch, reserved for
+ * semantically-overlapping edits a fixed ours/theirs policy cannot
+ * arbitrate) is a distinct, later escalation this task deliberately does not
+ * build.
+ *
+ * @param {{ command: Function, member: string, log: Function, maxTransientRetries: number }} opts
+ * @returns {Promise<string[]>} unmerged paths found (empty array if none)
+ */
+async function detectAndAbortRebaseConflict({ command, member, log, maxTransientRetries }) {
+    const statusBefore = await runGitStep({
+        command, member, cmd: 'git status --porcelain',
+        label: `rebase-conflict status check for '${member}'`, log, maxTransientRetries,
+    });
+    const unmergedPaths = parseUnmergedPaths(statusBefore.output);
+    if (unmergedPaths.length === 0) {
+        return unmergedPaths;
+    }
+
+    log(`[Sync] G-push pull-rebase for member '${member}' left unmerged path(s) (${unmergedPaths.join(', ')}) -- running 'git rebase --abort' to restore a clean working tree (Tier 1, script-only; no agent dispatched).`);
+    await command('git rebase --abort', { member_name: member, silent: true, failSoft: true, label: `G-push rebase --abort for '${member}'` });
+
+    const statusAfter = await command('git status --porcelain', { member_name: member, silent: true, failSoft: true, label: `post-abort clean-state check for '${member}'` });
+    const remaining = statusAfter && statusAfter.output ? String(statusAfter.output).trim() : '';
+    if (remaining !== '') {
+        log(`[Sync] WARNING: 'git rebase --abort' for member '${member}' did not fully restore a clean working tree -- porcelain still shows: ${remaining}`);
+    }
+
+    return unmergedPaths;
+}
+
 /**
  * Run a single git command via the injected command() with failSoft, retrying
  * ONLY transient failures up to `maxTransientRetries` times. A diverged (or
@@ -705,10 +778,18 @@ export async function syncMemberAfter(member, opts = {}) {
         label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries,
     });
     if (!rebase.ok) {
-        if (rebase.kind === 'diverged') {
+        // apra-fleet-eft.8.6 (Tier 1 scripted detection): confirm from git's
+        // own porcelain status -- not just this failing command's exit
+        // code/message classification -- whether the rebase actually left
+        // unmerged paths, and if so restore a clean tree via
+        // `git rebase --abort` BEFORE the typed divergence error below
+        // propagates. See detectAndAbortRebaseConflict()'s own doc comment
+        // for why this is the single Tier 1 -> Tier 2 escalation point.
+        const unmergedPaths = await detectAndAbortRebaseConflict({ command, member, log, maxTransientRetries });
+        if (rebase.kind === 'diverged' || unmergedPaths.length > 0) {
             throw new GitDivergedError(
                 `[Sync] G-push pull-rebase for member '${member}' hit unmergeable divergence (conflict) -- must not be retried blindly: ${rebase.error}`,
-                { member, gitOutput: rebase.error, operation: 'push-rebase' },
+                { member, gitOutput: rebase.error, operation: 'push-rebase', unmergedPaths },
             );
         }
         throw new GitSyncError(
@@ -730,6 +811,264 @@ export async function syncMemberAfter(member, opts = {}) {
         `[Sync] G-push for member '${member}' still rejected after one pull-rebase retry -- the single-writer token invariant is violated; refusing to retry further: ${push.error}`,
         { member, gitOutput: push.error, operation: 'push' },
     );
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-eft.9.1 (Plan Part 3.3) -- Dolt sync brackets: D-pull / D-push
+// ---------------------------------------------------------------------------
+//
+// The beads database is a Dolt database that every member syncs through a
+// shared remote, orthogonally to the git code branch. Where the git brackets
+// (8.1) keep each member's *code checkout* current, these keep each member's
+// *beads clone* current: a D-pull before every dispatch/read that consumes
+// beads state, and a D-push after every step that mutates it.
+//
+// THE single most divergence-sensitive read in this whole file is the
+// orchestrator's post-streak `bd show` verification (see verifyDoerStreakClosed
+// below): a remote doer closes its beads in ITS OWN clone and D-pushes them;
+// without an orchestrator-side D-pull immediately before that read, the
+// orchestrator reads its own stale (still-open) copy and falsely marks every
+// remote doer streak FAILED. That D-pull is the reason this task exists.
+//
+// Conflict policy (deliberately NOT per-conflict judgment): D-push is
+// first-successful-pusher-wins. The first member to push wins; a member whose
+// push is rejected is the loser and reconciles MECHANICALLY -- it D-pulls the
+// winner's state (ours/theirs fixed by which clone is resolving, never a
+// human/LLM decision) then re-pushes exactly once. A divergence that outlives
+// that one bounded reconcile is a hard DoltDivergedError, never retried
+// blindly -- the exact mirror of the git single-writer stance.
+//
+// (3.2) Every `bd dolt` command is issued via the injected command() with an
+// explicit member_name -- agents never sync beads themselves; the orchestrator
+// brackets each dispatch. `command` is dependency-injected so unit tests can
+// drive these helpers with a mock command() and no live Dolt server.
+
+// Substrings that mark a `bd dolt` failure as a DIVERGENCE (the remote moved
+// under us / a data or merge conflict). Reconciled once by the push loser, or
+// surfaced as DoltDivergedError -- never retried blindly.
+const DOLT_DIVERGED_PATTERNS = [
+    /conflict/i,
+    /would (be )?overwrit/i,
+    /cannot fast[- ]forward/i,
+    /not possible to fast[- ]forward/i,
+    /non-fast-forward/i,
+    /\[rejected\]/i,
+    /failed to push/i,
+    /updates were rejected/i,
+    /remote (is )?ahead/i,
+    /behind the remote/i,
+    /not up[- ]to[- ]date/i,
+    /have diverged/i,
+    /merge (is )?required/i,
+    /working set (is )?not clean/i,
+];
+
+// Substrings that mark a `bd dolt` failure as TRANSIENT (network / server /
+// lock) -- safe to retry a bounded number of times.
+const DOLT_TRANSIENT_PATTERNS = [
+    /could not resolve host/i,
+    /unable to (access|connect)/i,
+    /connection (timed out|reset|refused)/i,
+    /operation timed out/i,
+    /\btimed out\b/i,
+    /\btimeout\b/i,
+    /temporary failure/i,
+    /early eof/i,
+    /rpc failed/i,
+    /the remote end hung up/i,
+    /server (is )?(starting|not ready|unavailable)/i,
+    /connection refused/i,
+    /dial tcp/i,
+    /i\/o timeout/i,
+    /database is locked/i,
+    /lock/i,
+];
+
+/**
+ * Classify a failed `bd dolt` command's output into the two failure classes
+ * the Dolt brackets route differently. Divergence is checked FIRST: a
+ * remote-moved/conflict state must never be misread as transient and retried
+ * blindly, even if its message also happens to contain a lock/network word.
+ *
+ * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
+ * @returns {'diverged'|'transient'|'unknown'}
+ */
+export function classifyDoltFailure(output) {
+    const text = String(output == null ? '' : output);
+    for (const re of DOLT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
+    for (const re of DOLT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
+    return 'unknown';
+}
+
+/**
+ * Run a single `bd dolt` command via the injected command() with failSoft,
+ * retrying ONLY transient failures up to `maxTransientRetries` times. A
+ * diverged (or unknown) failure is returned immediately, never retried.
+ *
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'transient'|'unknown' }>}
+ */
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries }) {
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
+        if (res && res.ok) return res;
+        const error = res ? res.error : 'unknown command failure';
+        const kind = classifyDoltFailure(error);
+        if (kind === 'transient' && attempt < maxTransientRetries) {
+            attempt += 1;
+            log(`[Dolt] transient failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
+            continue;
+        }
+        return { ok: false, output: res ? res.output : '', error, kind };
+    }
+}
+
+/**
+ * D-pull (Plan 3.3): bring `member`'s beads clone up to the shared remote
+ * before it reads or is dispatched -- `bd dolt pull`. Transient (network /
+ * server / lock) failures are retried up to `maxTransientRetries`; a
+ * divergence (a conflict that a plain pull cannot fast-forward) is a distinct
+ * typed DoltDivergedError, never retried blindly.
+ *
+ * Every command is issued via the injected command() with an explicit
+ * member_name (3.2).
+ *
+ * @param {string} member
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number }} opts
+ * @returns {Promise<{ ok: true, member: string }>}
+ */
+export async function doltPullBefore(member, opts = {}) {
+    const { command, log = () => {}, maxTransientRetries = 1 } = opts;
+    if (typeof command !== 'function') {
+        throw new Error("doltPullBefore requires an injected command() in opts");
+    }
+
+    const pull = await runDoltStep({
+        command, member, cmd: 'bd dolt pull',
+        label: `D-pull for '${member}'`, log, maxTransientRetries,
+    });
+    if (!pull.ok) {
+        if (pull.kind === 'diverged') {
+            throw new DoltDivergedError(
+                `[Dolt] D-pull for member '${member}' hit an unmergeable beads conflict and must not be auto-resolved by judgment: ${pull.error}`,
+                { member, doltOutput: pull.error, operation: 'pull' },
+            );
+        }
+        throw new DoltSyncError(
+            `[Dolt] D-pull failed for member '${member}': ${pull.error}`,
+            { member, doltOutput: pull.error },
+        );
+    }
+
+    return { ok: true, member };
+}
+
+/**
+ * D-push (Plan 3.3): publish `member`'s committed beads changes to the shared
+ * remote after a beads-mutating step -- `bd dolt push` with the mechanical,
+ * first-successful-pusher-wins reconcile. If the push is rejected because the
+ * remote moved first (another writer won the race), do EXACTLY ONE `bd dolt
+ * pull` (which reconciles ours/theirs mechanically by which clone resolves --
+ * never per-conflict judgment) and re-push once; if it is STILL rejected,
+ * raise a typed DoltDivergedError. Transient (network / server / lock)
+ * failures are retried up to `maxTransientRetries`; divergence is never
+ * retried beyond the one bounded reconcile.
+ *
+ * `pushBeads: false` makes this a no-op (a read-only bracket -- reviewer,
+ * plan-reviewer, deployer -- has nothing to publish). Every command is issued
+ * via the injected command() with an explicit member_name (3.2).
+ *
+ * @param {string} member
+ * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number }} opts
+ * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean }>}
+ */
+export async function doltPushAfter(member, opts = {}) {
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1 } = opts;
+    if (typeof command !== 'function') {
+        throw new Error("doltPushAfter requires an injected command() in opts");
+    }
+
+    if (!pushBeads) {
+        return { ok: true, member, pushed: false, reconciled: false };
+    }
+
+    let push = await runDoltStep({
+        command, member, cmd: 'bd dolt push',
+        label: `D-push for '${member}'`, log, maxTransientRetries,
+    });
+    if (push.ok) {
+        return { ok: true, member, pushed: true, reconciled: false };
+    }
+
+    if (push.kind !== 'diverged') {
+        // Transient-exhausted or unknown failure -- not a divergence, so no
+        // reconcile; surface the (non-diverged) sync error.
+        throw new DoltSyncError(
+            `[Dolt] D-push for member '${member}' failed: ${push.error}`,
+            { member, doltOutput: push.error },
+        );
+    }
+
+    // Push loser: reconcile MECHANICALLY with EXACTLY ONE D-pull (ours/theirs
+    // fixed by which clone resolves -- first-successful-pusher-wins), then one
+    // re-push.
+    log(`[Dolt] D-push for member '${member}' was rejected (another writer pushed first); reconciling with a single D-pull then one re-push (first-successful-pusher-wins).`);
+    const reconcile = await runDoltStep({
+        command, member, cmd: 'bd dolt pull',
+        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries,
+    });
+    if (!reconcile.ok) {
+        if (reconcile.kind === 'diverged') {
+            throw new DoltDivergedError(
+                `[Dolt] D-push reconcile pull for member '${member}' hit an unmergeable beads conflict -- must not be retried blindly: ${reconcile.error}`,
+                { member, doltOutput: reconcile.error, operation: 'push-reconcile' },
+            );
+        }
+        throw new DoltSyncError(
+            `[Dolt] D-push reconcile pull for member '${member}' failed: ${reconcile.error}`,
+            { member, doltOutput: reconcile.error },
+        );
+    }
+
+    push = await runDoltStep({
+        command, member, cmd: 'bd dolt push',
+        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries,
+    });
+    if (push.ok) {
+        return { ok: true, member, pushed: true, reconciled: true };
+    }
+
+    // Still rejected after the one bounded reconcile -- diverged, never retried further.
+    throw new DoltDivergedError(
+        `[Dolt] D-push for member '${member}' still rejected after one reconcile pull -- refusing to retry further: ${push.error}`,
+        { member, doltOutput: push.error, operation: 'push' },
+    );
+}
+
+/**
+ * apra-fleet-eft.9.1 (Plan Part 3.3) -- the orchestrator's post-streak
+ * verification read, with its mandatory D-pull. This is the single most
+ * divergence-sensitive read in the file: a remote doer closes its assigned
+ * beads in its OWN clone and D-pushes them, so the orchestrator MUST D-pull
+ * its own clone here BEFORE the `bd show` -- otherwise it reads stale
+ * (still-open) status and every remote doer streak is falsely reported FAILED.
+ *
+ * Returns the ids that are NOT closed after the D-pull-then-read. An empty
+ * array means the streak genuinely closed everything it was assigned.
+ *
+ * @param {{ command: Function, orchestratorMember: string, beadIds: string[], log?: Function }} opts
+ * @returns {Promise<string[]>} the still-unclosed bead ids
+ */
+export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {} }) {
+    // D-pull FIRST so the orchestrator's clone observes the doer's just-pushed
+    // closes -- the whole reason this function (and this task) exists.
+    await doltPullBefore(orchestratorMember, { command, log });
+    const label = `bd show ${beadIds.join(' ')} --json`;
+    const showRes = await command(label, { member_name: orchestratorMember, silent: true });
+    const showBeads = parseBdJson(showRes, label);
+    const statusById = new Map(showBeads.map((b) => [b.id, b.status]));
+    return beadIds.filter((id) => statusById.get(id) !== 'closed');
 }
 
 /**
@@ -1676,6 +2015,45 @@ async function runSprintCycle(context) {
     // pseudo-role, deliberately outside contracts.ROLES.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
+    // apra-fleet-eft.8.2 + eft.9.1 (Plan 3.3 insertion-point table): ONE shared
+    // bracket wrapping EVERY role-identified agent() dispatch below -- planner,
+    // plan-reviewer, doer, reviewer, deployer, integ-test-runner, harvester.
+    // No phase-based exemptions: a deployer or integ-test-runner running
+    // against a stale checkout/beads clone is exactly as damaging as a stale
+    // doer/reviewer diff, so every one of the seven is bracketed identically.
+    //
+    // Two orthogonal sync axes, each pulled before and (optionally) pushed
+    // after:
+    //   - CODE (git, 8.1): `pushCode` is true ONLY for the code-writing roles
+    //     (doer, harvester); every other role is read-side (G-pull before, a
+    //     no-op G-push after -- see syncMemberAfter's short-circuit).
+    //   - BEADS (dolt, 9.1): `pushBeads` is true for every role that MUTATES
+    //     beads -- planner (creates tasks), doer (closes them),
+    //     integ-test-runner (closes features / files bugs), harvester (defers
+    //     issues). The pure read-side roles (reviewer, plan-reviewer, deployer)
+    //     D-pull before and no-op D-push after. Note integ-test-runner is
+    //     D-push WITHOUT git push (pushCode:false, pushBeads:true): it never
+    //     touches code, only beads.
+    //
+    // The orchestrator's OWN beads mutations/reads (post-streak verification
+    // D-pull, reopen/newTask D-push, cycle-eval/final-review D-pull) are NOT
+    // dispatches and are bracketed separately at their own call sites below.
+    //
+    // Deliberately NOT applied to the Streak Assignment call further below:
+    // that dispatch carries no `agentType`/persona of its own (see its own
+    // call-site comment) and is not one of the seven dispatch types this
+    // bracket covers.
+    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false } = {}) {
+        await syncMemberBefore(member, { command, log, branch: validated.branch });
+        await doltPullBefore(member, { command, log });
+        try {
+            return await dispatchFn();
+        } finally {
+            await doltPushAfter(member, { command, pushBeads, log });
+            await syncMemberAfter(member, { command, pushCode, log, branch: validated.branch });
+        }
+    }
+
     // apra-fleet-xbu.C1: `bd list --parent` accepts exactly one id per
     // invocation -- a comma-joined multi-target list (`--parent a,b`) is
     // silently treated as one nonexistent id and returns `[]`.
@@ -1809,7 +2187,9 @@ async function runSprintCycle(context) {
         let verdict;
         for (let reviewAttempt = 1; reviewAttempt <= 2; reviewAttempt++) {
             try {
-                verdict = await agent(
+                // apra-fleet-eft.8.2: reviewer is a read-side role (pushCode:
+                // false) -- G-pull before, no-op G-push after.
+                verdict = await withGitSync(reviewerPool[0], false, () => agent(
                     buildReviewerPrompt({
                         beadIds,
                         acceptanceCriteriaJson,
@@ -1827,7 +2207,7 @@ async function runSprintCycle(context) {
                         timeout_s: 900,
                         max_total_s: 3600,
                     }
-                );
+                ));
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
@@ -2356,7 +2736,15 @@ async function runSprintCycle(context) {
                 requirementsContent,
                 feedback: plannerFeedback,
             });
-            const dispatchPlanner = () => agent(
+            // apra-fleet-eft.8.2: planner is a read-side role (pushCode:
+            // false) -- G-pull before, no-op G-push after; each retried
+            // attempt gets its own bracket since a retry may follow a
+            // meaningful gap.
+            // apra-fleet-eft.9.1: planner MUTATES beads (creates the task DAG)
+            // -- pushBeads:true so its new tasks are D-pushed to the shared
+            // remote for the next dispatch/read to observe. It writes no code
+            // (pushCode:false).
+            const dispatchPlanner = () => withGitSync(getMemberForRole('planner'), false, () => agent(
                 plannerPrompt,
                 {
                     member_name: getMemberForRole('planner'),
@@ -2366,7 +2754,7 @@ async function runSprintCycle(context) {
                     // heavy to a doer streak -- same 300s-default gap.
                     timeout_s: 900,
                 }
-            );
+            ), { pushBeads: true });
             // apra-fleet-j6i: unlike every other dispatch site in this file,
             // the Planner call had no error handling at all -- a single
             // AgentDispatchError (e.g. a timeout) propagated uncaught all the
@@ -2386,7 +2774,9 @@ async function runSprintCycle(context) {
 
             let verdict;
             try {
-                verdict = await agent(
+                // apra-fleet-eft.8.2: plan-reviewer is a read-side role
+                // (pushCode: false) -- G-pull before, no-op G-push after.
+                verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
                     buildPlanReviewerPrompt({ targetIssues, goal: validated.goal }),
                     {
                         member_name: getMemberForRole('plan-reviewer'),
@@ -2396,7 +2786,7 @@ async function runSprintCycle(context) {
                         // apra-fleet-j6i: same 300s-default gap as Planner.
                         timeout_s: 900,
                     }
-                );
+                ));
             } catch (err) {
                 // Persistent non-JSON/non-schema-compliant output, or a failed
                 // dispatch, both FAIL this plan round -- neither must ever be
@@ -2593,19 +2983,38 @@ async function runSprintCycle(context) {
             // execute_prompt per member (inFlightAgents guard) -- every streak
             // but the first to arrive gets rejected instantly with a
             // "busy"/AgentDispatchError, deterministically, every time (not a
-            // flaky race). memberLocks below chains same-member dispatches
-            // into a queue (one in flight at a time per member) while leaving
-            // streaks assigned to DIFFERENT members fully concurrent -- true
-            // multi-member fleets see no behavior change since their locks
-            // are never contended.
-            const memberLocks = new Map();
+            // flaky race).
+            //
+            // apra-fleet-eft.8.3 (related known-bug context: apra-fleet-qv1):
+            // a PER-MEMBER lock chain alone is not enough -- the token-passing
+            // stance requires doer streak dispatch to be GLOBALLY sequential
+            // across DIFFERENT members too, because concurrent writers (even
+            // exactly two, on a heterogeneous x86 + ARM64 hand-off) break the
+            // fast-forward-by-construction invariant the git/beads sync
+            // brackets depend on. `globalDoerTurn` below is a single
+            // process-wide queue (not one per member) that every streak --
+            // regardless of which member it's assigned to -- chains onto in
+            // dispatch order, so at most one doer streak is ever in flight at
+            // a time this devRound. `parallel()` still invokes every streak's
+            // callback synchronously up to its first `await` in `streaks`
+            // order (see the streak-assignment ordering comments above), so
+            // capturing `globalDoerTurn` and immediately replacing it happens
+            // deterministically in that same order before any streak's actual
+            // work begins. Same-member serialization is trivially still held
+            // (a global gate is strictly stronger). The gate is released in
+            // the `finally` below on EVERY terminal path -- including a
+            // thrown/failed streak -- so a failure can never deadlock the
+            // next streak's turn. This is intentionally just a strict FIFO
+            // queue, not a merger/parallel-streak mechanism -- true
+            // parallel/merger dispatch is explicitly deferred to Phase 3+.
+            let globalDoerTurn = Promise.resolve();
             const streakOutcomes = [];
             await parallel(streaks, async (streak, index) => {
                 const beadIds = streak.map((b) => b.id);
                 const doerMember = doerPool[index % doerPool.length];
-                const priorTurn = memberLocks.get(doerMember) || Promise.resolve();
+                const priorTurn = globalDoerTurn;
                 let releaseTurn;
-                memberLocks.set(doerMember, new Promise((resolve) => { releaseTurn = resolve; }));
+                globalDoerTurn = new Promise((resolve) => { releaseTurn = resolve; });
                 await priorTurn;
                 try {
                 const feedbackForStreak = beadIds
@@ -2657,7 +3066,17 @@ async function runSprintCycle(context) {
                 // burning unbounded budget.
                 const MAX_TURN_RESUME_ATTEMPTS = 2;
 
-                const dispatchDoer = () => agent(
+                // apra-fleet-eft.8.2: doer is a code-writing role (pushCode:
+                // true) -- G-pull before, G-push after every attempt
+                // (including the resume-and-continue retry below) so the
+                // shared branch always reflects this member's committed work
+                // before the next dispatch reads it.
+                // apra-fleet-eft.9.1: doer writes BOTH code and beads -- it
+                // commits+pushes code (pushCode:true) AND closes its assigned
+                // beads, which must be D-pushed (pushBeads:true) so the
+                // orchestrator's verification D-pull+bd show below sees the
+                // closes instead of falsely reporting the streak FAILED.
+                const dispatchDoer = () => withGitSync(doerMember, true, () => agent(
                     buildDoerPrompt({ beadIds, branch: validated.branch, feedback: feedbackForStreak || null }),
                     {
                         member_name: doerMember,
@@ -2673,9 +3092,13 @@ async function runSprintCycle(context) {
                         max_total_s: 3600,
                         max_turns: BASE_DOER_MAX_TURNS,
                     }
-                );
+                ), { pushBeads: true });
 
-                const dispatchDoerResume = (maxTurns) => agent(
+                // The resume-and-continue retry is the SAME logical doer
+                // streak continuing (same session, same code/bead-writing
+                // responsibilities), so it gets the identical git+dolt sync
+                // bracket treatment as the original dispatch above.
+                const dispatchDoerResume = (maxTurns) => withGitSync(doerMember, true, () => agent(
                     'Continue exactly where you left off on your assigned bead ids from this same session -- do not restart, re-read from scratch, or re-plan. Pick up from your last action and proceed to the VERIFY checkpoint.',
                     {
                         member_name: doerMember,
@@ -2688,7 +3111,7 @@ async function runSprintCycle(context) {
                         resume: true,
                         max_turns: maxTurns,
                     }
-                );
+                ), { pushBeads: true });
 
                 let report = null;
                 let wasRetried = false;
@@ -2753,10 +3176,18 @@ async function runSprintCycle(context) {
                 // bead ids are actually closed. A doer that returns
                 // success-looking text/report but leaves a bead open is
                 // treated as a FAILED streak regardless of what it said.
-                const showRes = await command(`bd show ${beadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true });
-                const showBeads = parseBdJson(showRes, `bd show ${beadIds.join(' ')} --json`);
-                const statusById = new Map(showBeads.map((b) => [b.id, b.status]));
-                const unclosedIds = beadIds.filter((id) => statusById.get(id) !== 'closed');
+                //
+                // apra-fleet-eft.9.1 (Plan 3.3): verifyDoerStreakClosed()
+                // D-pulls the orchestrator's OWN beads clone BEFORE this read.
+                // The doer closed its beads in ITS clone and D-pushed them; on
+                // a multi-member (remote) sprint the orchestrator's clone is a
+                // DIFFERENT clone, so without that D-pull this read sees stale
+                // (still-open) status and EVERY remote doer streak is falsely
+                // marked FAILED -- the single most divergence-sensitive read in
+                // the file.
+                const unclosedIds = await verifyDoerStreakClosed({
+                    command, orchestratorMember, beadIds, log,
+                });
 
                 if (unclosedIds.length > 0) {
                     log(`Doer streak [${beadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
@@ -2846,6 +3277,11 @@ async function runSprintCycle(context) {
                 );
             }
 
+            // apra-fleet-eft.9.1 (Plan 3.3): the orchestrator just MUTATED
+            // beads (reopens + newTask creates) in its own clone -- D-push so
+            // members observe them on their next dispatch's D-pull.
+            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log });
+
             await updateDashboard();
 
             const stillOpen = await bdListScoped('--ready --json');
@@ -2885,7 +3321,10 @@ async function runSprintCycle(context) {
             phase(`Deploy C${cycle}`);
             let deployResult;
             try {
-                deployResult = await agent(
+                // apra-fleet-eft.8.2: deployer is a read-side role (pushCode:
+                // false) -- a deployer on a stale checkout is as damaging as
+                // a stale reviewer diff, so no phase-based exemption here.
+                deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
                     'Deploy to test env using deploy.md.',
                     {
                         member_name: getMemberForRole('deployer'),
@@ -2896,7 +3335,7 @@ async function runSprintCycle(context) {
                         // runbook, plausibly long-running.
                         timeout_s: 900,
                     }
-                );
+                ));
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
@@ -2944,7 +3383,13 @@ async function runSprintCycle(context) {
                       `this cycle -- if the playbook still names concrete checks to run, run them; ` +
                       `otherwise report nothing to test. Add bug beads if needed, filed under ` +
                       `--parent ${targetIssues[0]}.`;
-                integResult = await agent(
+                // apra-fleet-eft.8.2: integ-test-runner does NOT touch code
+                // (pushCode: false, no git push) but it DOES mutate beads --
+                // it closes passing features and files bug beads. Per Plan 3.3
+                // (apra-fleet-eft.9.1) it must therefore D-push those beads
+                // mutations to the shared remote (pushBeads: true), a D-push
+                // with no git push. G-pull before, no-op G-push after.
+                integResult = await withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(
                     featurePrompt,
                     {
                         member_name: getMemberForRole('integ-test-runner'),
@@ -2956,7 +3401,7 @@ async function runSprintCycle(context) {
                         timeout_s: 900,
                         max_total_s: 3600,
                     }
-                );
+                ), { pushBeads: true });
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
@@ -2993,6 +3438,12 @@ async function runSprintCycle(context) {
         // was APPROVED" -- deliberately NOT `bd list --ready == []`, which
         // reads a permanently-blocked or orphaned in_progress bead as
         // success (A5 bug). See goalPriorityMax()/NOT_DONE_STATUSES above.
+        //
+        // apra-fleet-eft.9.1 (Plan 3.3): D-pull the orchestrator's beads clone
+        // BEFORE the cycle-evaluation counts so the completion/stall math reads
+        // the current cross-member beads state (every member's D-pushed closes)
+        // rather than the orchestrator's stale local copy.
+        await doltPullBefore(orchestratorMember, { command, log });
         const openAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
 
         // Stall detection: track the closed-bead count for the WHOLE sprint
@@ -3082,6 +3533,11 @@ async function runSprintCycle(context) {
                     { member_name: orchestratorMember, silent: true, label: `Create follow-up task from re-review newTasks: ${title}` }
                 );
             }
+
+            // apra-fleet-eft.9.1 (Plan 3.3): D-push the orchestrator's applied
+            // re-review reopens/newTask creates, same as the Develop/Review
+            // transition site above.
+            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log });
         }
 
         if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED') {
@@ -3108,11 +3564,19 @@ async function runSprintCycle(context) {
     group('Finalization');
     phase(`Final Review C${finalCycleLabel}`);
 
+    // apra-fleet-eft.9.1 (Plan 3.3): D-pull the orchestrator's beads clone
+    // BEFORE the final-review counts so the sprint's closing evidence
+    // (finalOpenAtGoal / finalClosedCount) reflects every member's D-pushed
+    // beads state, not the orchestrator's stale local copy.
+    await doltPullBefore(orchestratorMember, { command, log });
     const finalOpenAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
     const finalClosedCount = (await bdListScoped('--status=closed --json')).length;
 
     let finalVerdictResult;
-    const dispatchFinalReview = () => agent(
+    // apra-fleet-eft.8.2: Final Review is the same 'reviewer' role as
+    // dispatchReview above (read-side, pushCode: false) -- G-pull before,
+    // no-op G-push after every attempt (including the retry below).
+    const dispatchFinalReview = () => withGitSync(getMemberForRole('reviewer'), false, () => agent(
         buildFinalVerdictPrompt({
             targetIssues,
             branch: validated.branch,
@@ -3138,7 +3602,7 @@ async function runSprintCycle(context) {
             timeout_s: 900,
             max_total_s: 3600,
         }
-    );
+    ));
     // apra-fleet-j6i.2: unlike every other combined-catch dispatch site in
     // this file, Final Review is the LAST dispatch of the sprint -- a
     // single transient AgentDispatchError/AgentOutputError here used to
@@ -3211,7 +3675,14 @@ async function runSprintCycle(context) {
     });
     let harvesterResult = null;
     try {
-        harvesterResult = await agent(
+        // apra-fleet-eft.8.2: harvester is a code-writing role (pushCode:
+        // true) alongside doer -- G-pull before, G-push after so the docs/
+        // changelog/sprint-analysis commits it makes are published before
+        // anything downstream (Publish PR, below) reads the branch. It ALSO
+        // mutates beads (issue-defer of low-priority items), so per Plan 3.3
+        // (apra-fleet-eft.9.1) it must D-push those beads mutations after
+        // (pushBeads: true) alongside its git push.
+        harvesterResult = await withGitSync(getMemberForRole('harvester'), true, () => agent(
             harvesterPrompt,
             {
                 member_name: getMemberForRole('harvester'),
@@ -3222,7 +3693,7 @@ async function runSprintCycle(context) {
                 // across the whole epic, plausibly long-running.
                 timeout_s: 900,
             }
-        );
+        ), { pushBeads: true });
         log(`Harvester: ${JSON.stringify(harvesterResult)}`);
         if (harvesterResult.status !== 'OK') {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);

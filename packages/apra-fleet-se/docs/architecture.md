@@ -431,3 +431,53 @@ journal written. The mechanism is available to any direct caller of
 a test, or a future CLI flag), and this package's own tests exercise it
 (see `packages/apra-fleet-se/test/`), but there is no supported way to
 resume a crashed `fleet-se sprint` invocation from the CLI today.
+
+## Supervisor: reservation ledger and scope freshness (apra-fleet-eft.5)
+
+`fleet-se serve` (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
+process from the per-sprint `bin/cli.mjs` invocation described above. It owns
+one combined reservation ledger (`src/supervisor/ledger.mjs`) that claims two
+axes per launched sprint in lockstep -- the reserved member set and the
+issue-scope root id(s) -- in a single atomic disk write, so both axes always
+claim and release together.
+
+**Member-axis overlap** (`src/supervisor/api.mjs`, `defaultMemberOverlapGuard`):
+`POST /api/sprints` computes the full member union (`--members` plus every
+`roleMap` value, including the orchestrator role) and rejects the whole launch
+with a 409 if that union intersects any other active reservation's members,
+naming the conflicting sprint id and the specific overlapping member names.
+The check runs strictly before `ledger.claim()`, so a rejected launch never
+touches the ledger.
+
+**Issue-scope overlap** (`src/supervisor/scope-overlap.mjs`): re-expands each
+sprint's live parent-child subtree (via `bd list --parent`, one id at a time,
+walked breadth-first) at every launch attempt rather than trusting a
+launch-time snapshot, so a bead created mid-sprint under an already-claimed
+root is still detected.
+
+**Known best-effort limitation -- scope freshness.** Both overlap checks above
+reason over the supervisor process's OWN service-local view of `bd` state.
+Pre-Phase-2 there is no cross-member synchronization guarantee backing that
+view: if another member's `bd` writes have not yet reached the supervisor's
+local beads DB, an overlap involving that write can go undetected until the
+next sync. This is a deliberate, surfaced (not hidden) limitation -- the
+ledger records the timestamp of the last successful sync used for scope
+expansion and exposes it, rather than presenting overlap checks as
+authoritative:
+
+- `ledger.getScopeFreshness()` returns `{ lastSyncedAt, ageSeconds }`, derived
+  from an internally tracked `lastSyncedAt` (updated via
+  `ledger.setScopeFreshness()` after a successful sync/pull).
+- When no sync has ever happened, `lastSyncedAt` is `null` and `ageSeconds` is
+  the literal string `'never-synced'` -- the field is never silently absent.
+- `GET /api/backlog` and `GET /api/sprints` both include this as
+  `scopeFreshness: { lastSyncedAt, ageSeconds }` on every response, so a
+  dashboard/operator can render "last synced N minutes ago" (or
+  "never synced") rather than assuming the overlap check just ran against
+  live truth.
+
+Server-side enforcement of a guaranteed-fresh, cross-member-authoritative view
+is out of scope for v1 and deferred to a later phase; likewise a manual
+`bin/cli.mjs` run bypasses the supervisor's ledger entirely (it does not go
+through `POST /api/sprints`) -- this is confirmed acceptable for v1, not a
+bug.
