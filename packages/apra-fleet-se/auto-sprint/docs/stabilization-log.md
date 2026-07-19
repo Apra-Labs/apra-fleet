@@ -424,6 +424,78 @@ deduplicated DAG -- the plan gate working as designed.
   re-planning preamble gets the symmetric guard: leave such features
   alone even if review feedback appears to demand decomposition.
 
+### Issue 16: closed beads invisible in the viewer sprint tree
+
+- **Symptom** (operator-reported): the sprint viewer showed only open
+  items under the sprint tree, making progress impossible to judge -- by
+  run 11 most eft work was CLOSED, so the tree looked nearly empty.
+- **Root cause**: updateDashboard fetched beads via bdListScoped('--json').
+  Any non-empty argument string routes to a second plain `bd list`
+  invocation, which defaults to open/in_progress only. The no-args path
+  bdListScoped('') reuses the shared `bd list --all --limit 0 --json`
+  fetch, which includes closed beads.
+- **Fix** (runner.js): updateDashboard now calls bdListScoped('') so the
+  dashboard payload carries the full DAG including closed items. Golden
+  transcripts regenerated (the dashboard section of every golden changed).
+
+### Issue 17: reviewer pins CHANGES_NEEDED by reopening deferred P3 features
+
+- **Symptom**: run 11 cycles 2-3 -- reviews returned CHANGES_NEEDED with
+  reopenIds ['apra-fleet-eft.10','apra-fleet-eft.11' (,'.12')] round
+  after round. Those are P3 features, deferred by design under the sprint
+  goal constraint (P1/P2). The completion gate needs zero open
+  goal-priority beads AND a final APPROVED verdict, so a reviewer that
+  keeps reopening below-goal beads pins the verdict and starves the gate.
+- **Root cause**: buildReviewerPrompt never told the reviewer what the
+  sprint goal was. The reviewer read the epic's full child list, found P3
+  features with no commits, and (correctly, from its blind viewpoint)
+  demanded the missing work.
+- **Fix** (runner.js), two layers:
+  (a) buildReviewerPrompt now takes the goal and carries a SPRINT SCOPE
+  instruction: features/beads below the goal priority are deferred by
+  design, must not fail the verdict, must not appear in reopenIds.
+  (b) Deterministic guard at the reopen loop: when reopenIds is
+  non-empty, fetch the scoped DAG once (bdListScoped('')) and SKIP any
+  id whose bead priority is numerically below the goal (priority >
+  goalMax), logging the skip. The lookup is conditional on reopenIds
+  being non-empty so the common empty path issues no extra bd call.
+- **Test fallout lesson**: the first (unconditional) lookup shape caused
+  35 bd-replay drift failures; the conditional shape confined drift to
+  the 14 scenario files that genuinely exercise reopenIds. Those were
+  re-recorded (SUMMARY pass=37 fail=0) and the golden bd recordings +
+  transcripts re-recorded/regenerated; full suite green (789/789).
+
+### Issue 18: Deploy fails every cycle on a permission self-check; Integ Test never runs, so features can never close
+
+- **Symptom**: run 11 C1-C3 -- "Deploy FAILED this cycle: Stopped at
+  Step 0 (permission check)... Skipping Integration Test phase." Every
+  cycle evaluation then reports the same ~11 open P2+ beads. Those 11
+  are the pending-closure FEATURE nodes themselves (all children
+  closed): the integ-test-runner is the only role that closes verified
+  features, so with Deploy failing its pre-flight, the completion gate
+  (zero open goal beads + APPROVED) is mathematically unreachable and
+  every run rides to maxCycles.
+- **Root cause**: deploy.md's Permissions section requires Bash(gh run *),
+  Bash(gh release *), Bash(mkdir *), Bash(*apra-fleet-installer-*
+  install *), Bash(*apra-fleet-installer-* --version) in the member's
+  permissions.allow. fleet-rev's .claude/settings.json had no
+  permissions key at all, and settings.local.json (composed at
+  onboarding, BEFORE deploy.md existed -- the playbook is sprint-authored
+  content) covered only Bash(gh:*). Nothing re-composes member
+  permissions when the sprint's own doers author a playbook that carries
+  new permission requirements.
+- **Fix** (member-side, live, no sprint restart): added the five
+  deploy.md prefixes (plus a colon-syntax mkdir variant) to BOTH
+  .claude/settings.json and .claude/settings.local.json in fleet-rev's
+  sprint workspace. Both files are gitignored, so the member's working
+  tree stays clean. Applied while run 11 was in Review C4 R1, before
+  Deploy C4 fired.
+- **Durability caveat (watched)**: if fleet-rev's permissions are ever
+  re-composed (compose_permissions / re-onboarding), these entries are
+  lost. The structural fix belongs in the permission profile for the
+  deployer/integ-test roles, or a pre-Deploy permission-ensure step in
+  the runner; deferred until Integ Test is observed actually running.
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":

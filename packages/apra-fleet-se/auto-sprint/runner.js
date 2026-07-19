@@ -1868,12 +1868,26 @@ function buildDoerPrompt({ beadIds, branch, feedback }) {
  * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string }} opts
  * @returns {string}
  */
-function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch }) {
+function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal }) {
     return [
         `Review the work just done for the following bead id(s): ${beadIds.join(', ')}.`,
         'Full task detail (including acceptance criteria), from `bd show --json`:',
         wrapUntrustedBlock('bd show --json', acceptanceCriteriaJson),
         `Diff range to review: ${baseBranch}..${branch} (base_branch..branch).`,
+        // Stabilization log Issue 17: run 11's cycle-3 reviewer judged the
+        // whole epic diff and blocked on the DEFERRED out-of-goal P3
+        // features (eft.10/11/12) not being delivered -- work this sprint
+        // deliberately does not do. That verdict can never reach APPROVED,
+        // which starves the completion gate (zero open goal beads AND an
+        // APPROVED verdict). Scope the verdict to the sprint's goal.
+        ...(goal ? [
+            `SPRINT SCOPE: this sprint's goal priority is ${goal}. Judge your verdict ` +
+            `ONLY against the named bead id(s) above and other work at or above that ` +
+            `goal priority. Features/beads BELOW the goal priority (e.g. P3 when the ` +
+            `goal is P1/P2) are DEFERRED BY DESIGN to a later sprint: their absence ` +
+            `from the diff is correct, must not block APPROVED, must not appear in ` +
+            `reopenIds, and may be mentioned in notes only.`,
+        ] : []),
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
@@ -2735,6 +2749,7 @@ async function runSprintCycle(context) {
                 acceptanceCriteriaJson,
                 baseBranch: validated.baseBranch,
                 branch: validated.branch,
+                goal: validated.goal,
             }),
             // member_name is repeated literally here -- not only via the
             // shared opts object -- so the source-level call-site parse in
@@ -4014,7 +4029,27 @@ async function runSprintCycle(context) {
             // newTasks via `bd create`. The reviewer's dispatch prompt above
             // explicitly forbade it from mutating beads itself; this is the
             // enforcement side of that contract (V1 resolution, SKILL.md).
+            // Stabilization log Issue 17: deterministic goal-scope guard on
+            // reopenIds -- the prompt-side instruction (buildReviewerPrompt)
+            // asks the reviewer not to reopen below-goal beads, but the
+            // orchestrator enforces it: reopening a DEFERRED P3 feature in a
+            // P1/P2 sprint injects out-of-scope work and pins the verdict at
+            // CHANGES_NEEDED forever (observed live, run 11 cycle 3).
+            let reopenAllowlist = null;
+            if (verdict.reopenIds.length > 0) {
+                try {
+                    const inScopeNow = await bdListScoped('');
+                    reopenAllowlist = new Map(inScopeNow.map((b) => [b.id, b]));
+                } catch {
+                    reopenAllowlist = null; // lookup failed -- apply reopens unguarded rather than dropping them
+                }
+            }
             for (const id of verdict.reopenIds) {
+                const bead = reopenAllowlist ? reopenAllowlist.get(id) : null;
+                if (reopenAllowlist && bead && typeof bead.priority === 'number' && bead.priority > goalMax) {
+                    log(`Reviewer reopenIds: SKIPPED '${id}' (priority P${bead.priority} is below this sprint's goal ${validated.goal} -- deferred scope, not reopened).`);
+                    continue;
+                }
                 await command(
                     `bd update ${id} --status=open`,
                     { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per reviewer verdict` }
