@@ -375,6 +375,31 @@ deduplicated DAG -- the plan gate working as designed.
   regenerated (diff = the Final Review prompt/schema line only); se
   suite 759 pass / 2 fail (the beaded Windows lifecycle bug).
 
+### Issue 15: streak-assignment candidates with shortened bead ids silently lose the whole grouping
+
+- **Symptom** (run 8, Develop C2 R1; operator-reported): the streak
+  assignment LLM returned suffix-stripped ids
+  (`{"streaks":[["8.4","8.6"],["9.3","9.7"],...]}` for
+  apra-fleet-eft.8.4 etc.). selectStreaks() correctly rejected the
+  candidate (`unknown/non-ready bead id '8.4'`) and fell back to
+  one-bead-per-streak -- safe, but the model's sequencing intent
+  (8.4+8.6 same-doer, 9.3+9.7 same-doer) was silently discarded. On a
+  multi-doer fleet that fallback would PARALLELIZE beads the model said
+  must run sequentially.
+- **Design stance (per operator)**: bead ids from different scopes need
+  not share any prefix, so suffix-matching/prefix-inference repair is
+  forbidden -- a shortened id is genuinely ambiguous and must stay
+  rejected. The fix is to stop the model shortening ids and to recover
+  via RE-ASK, never via guessing.
+- **Fix** (runner.js): (a) buildStreakAssignmentPrompt now demands
+  verbatim ids (full prefix, character for character, explicit warning
+  that shortened ids are rejected); (b) one bounded semantic-repair
+  re-ask -- when a schema-VALID candidate fails selectStreaks(), the
+  agent is re-asked once with the exact rejection reason before the
+  one-bead-per-streak fallback engages. Structural baselines: 13 agent
+  sites; the repair re-ask is the second documented no-bracket exemption
+  (same pure-compute grouping task as the first).
+
 ### Still open / watched
 
 - **apra-fleet-eft.14 (server)**: why does the provider CLI sometimes exit

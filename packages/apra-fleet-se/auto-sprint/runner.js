@@ -1719,6 +1719,15 @@ function buildStreakAssignmentPrompt({ readyBeadIds }) {
         `Ready bead ids: ${readyBeadIds.join(', ')}`,
         'Every ready bead id listed above must appear in exactly one streak -- ' +
         'no bead id may be omitted, duplicated, or invented.',
+        // Observed live (run 8, Develop C2 R1): the model returned
+        // suffix-stripped ids ("8.4" for "apra-fleet-eft.8.4"), which are
+        // rejected wholesale and silently cost the entire grouping. Bead ids
+        // from different scopes need not share any prefix, so a shortened id
+        // is not merely sloppy -- it is ambiguous and unrecoverable.
+        'Return every bead id EXACTLY as listed above, character for character, ' +
+        'including its full prefix. Never shorten, abbreviate, or strip a ' +
+        'common-looking prefix: ids from different scopes do not necessarily ' +
+        'share one, and any id that does not match the list verbatim is rejected.',
         'This is the complete input. Do not run bd, git, or any other command, ' +
         'and do not read any files to investigate further -- respond immediately ' +
         'using only the schema, based solely on the bead ids given above.',
@@ -3581,7 +3590,39 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            const { streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady);
+            let { streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady);
+            // Semantic-repair re-ask (one bounded attempt): agent()'s own
+            // schema-repair only fixes JSON-shape problems -- a candidate can
+            // be schema-valid yet semantically invalid (observed live in run
+            // 8: suffix-stripped ids like "8.4", rejected wholesale). Losing
+            // the whole grouping to the one-bead-per-streak fallback silently
+            // discards sequencing intent, which on a multi-doer fleet would
+            // PARALLELIZE beads the model said must run sequentially. Re-ask
+            // once with the exact validation failure; only then fall back.
+            if (usedFallback && streakCandidate) {
+                log(`Streak Assignment: candidate rejected (${reason}) -- re-asking once with the validation failure before falling back.`);
+                try {
+                    streakCandidate = await agent(
+                        buildStreakAssignmentPrompt({ readyBeadIds: currentReady.map((b) => b.id) })
+                        + `\n\nYour previous answer was REJECTED: ${reason}. `
+                        + 'Return the bead ids exactly as listed -- verbatim, full prefix included.',
+                        {
+                            member_name: getMemberForRole('planner'),
+                            label: 'Streak Assignment (semantic repair)',
+                            schema: streakAssignment,
+                            model: FIXED_ROLE_TIER.streakAssignment,
+                        }
+                    );
+                    log(`Streak Assignment (semantic repair): ${JSON.stringify(streakCandidate)}`);
+                    ({ streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady));
+                } catch (repairErr) {
+                    if (repairErr instanceof AgentOutputError || repairErr instanceof AgentDispatchError || repairErr instanceof FleetTransportError) {
+                        log(`Streak Assignment (semantic repair): dispatch failed (${repairErr.message}) -- falling back.`);
+                    } else {
+                        throw repairErr;
+                    }
+                }
+            }
             if (usedFallback) {
                 log(`Streak Assignment: using one-bead-per-streak fallback (${reason}).`);
             }

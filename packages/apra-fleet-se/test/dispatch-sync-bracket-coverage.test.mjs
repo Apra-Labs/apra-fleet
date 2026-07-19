@@ -66,9 +66,15 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // 11 -> 12 agent()/10 -> 11 withGitSync (stabilization log iteration 5):
 // Final Review resume-and-continue (dispatchFinalReviewResume), a
 // read-side bracket like the per-round reviewer resume.
-const EXPECTED_AGENT_COUNT = 12;
+// 12 -> 13: Streak Assignment semantic-repair re-ask -- the second
+// documented exemption (same pure-compute grouping task as the first;
+// no repo access, so no sync bracket).
+const EXPECTED_AGENT_COUNT = 13;
 const EXPECTED_WITHGITSYNC_CALL_COUNT = 11;
-const STREAK_ASSIGNMENT_MARKER = "label: 'Streak Assignment'";
+const STREAK_ASSIGNMENT_MARKERS = [
+    "label: 'Streak Assignment'",
+    "label: 'Streak Assignment (semantic repair)'",
+];
 
 /** Same helper as dispatch-safety-guard.test.mjs: is `col` inside an open same-line quote? */
 function isInsideSameLineString(lineText, col) {
@@ -190,20 +196,20 @@ test('every agent() dispatch call site is either wrapped by withGitSync(...) or 
         `non-dispatch exceptions like Streak Assignment, this count should stay unchanged).`
     );
 
-    const exemptSites = agentSites.filter((s) => s.callText.includes(STREAK_ASSIGNMENT_MARKER));
+    const exemptSites = agentSites.filter((s) => STREAK_ASSIGNMENT_MARKERS.some((m) => s.callText.includes(m)));
     assert.strictEqual(
         exemptSites.length,
-        1,
-        `Expected exactly ONE documented agent() exemption (the Streak Assignment dispatch, identified by ` +
-        `${STREAK_ASSIGNMENT_MARKER}), found ${exemptSites.length}. A new unbracketed dispatch must not silently ` +
-        `reuse this marker to escape coverage, and the real Streak Assignment call site must not have been renamed ` +
-        `without updating this test.`
+        STREAK_ASSIGNMENT_MARKERS.length,
+        `Expected exactly ${STREAK_ASSIGNMENT_MARKERS.length} documented agent() exemptions (the Streak Assignment ` +
+        `dispatch and its semantic-repair re-ask, identified by ${STREAK_ASSIGNMENT_MARKERS.join(' / ')}), found ` +
+        `${exemptSites.length}. A new unbracketed dispatch must not silently reuse these markers to escape ` +
+        `coverage, and the real call sites must not have been renamed without updating this test.`
     );
 
     const coveredSites = agentSites.filter((s) => !exemptSites.includes(s));
     assert.strictEqual(
         coveredSites.length,
-        EXPECTED_AGENT_COUNT - 1,
+        EXPECTED_AGENT_COUNT - STREAK_ASSIGNMENT_MARKERS.length,
         'Every agent() call site other than the one documented Streak Assignment exemption must be a dispatch this test checks for withGitSync coverage.'
     );
 
