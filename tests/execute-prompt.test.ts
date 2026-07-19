@@ -3,8 +3,9 @@ import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } fr
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt, inFlightAgents } from '../src/tools/execute-prompt.js';
 import { getStallDetector } from '../src/services/stall/index.js';
-import { setStoredPid, clearStoredPid, getStoredPid } from '../src/utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getStoredPid, getAgentOS } from '../src/utils/agent-helpers.js';
 import { writeStatusline } from '../src/services/statusline.js';
+import { getOsCommands } from '../src/os/index.js';
 import type { SSHExecResult } from '../src/types.js';
 
 vi.mock('../src/services/statusline.js', () => ({
@@ -1010,6 +1011,89 @@ describe('dispatch-exception retry (apra-fleet-02s.1)', () => {
     // 3 calls: writePromptFile + the one failed main call (no retry attempt) +
     // deletePromptFile in the finally block.
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('dispatch-exception retry -- process-tree termination on kill (apra-fleet-eft.13.4)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  it('invokes process-tree termination of the prior CLI invocation before retrying on a simulated timeout', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-tree-kill' });
+    memberId = member.id;
+    addAgent(member);
+
+    // Real (unmocked) OS commands -- lets us assert the exact kill command
+    // the retry path issues, not just a loose substring match.
+    const cmds = getOsCommands(getAgentOS(member));
+    const expectedKillCmd = cmds.killPid(9001);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _timeout?: number, _maxTotal?: number, onPidCaptured?: (pid: number) => void) => {
+        // Simulate the prior CLI invocation's PID being captured mid-flight
+        // (as the real ssh strategy does via setStoredPid + onPidCaptured,
+        // src/services/strategy.ts), then the call times out before the
+        // process exits -- mirroring a backgrounded server left running as
+        // an orphan across the retry (the apra-fleet-eft.13 cascade).
+        setStoredPid(memberId, 9001);
+        onPidCaptured?.(9001);
+        return Promise.reject(new Error('inactivity timeout'));
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // tryKillPid inside the catch -> process-tree kill
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 }) // retry succeeds
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('ok-on-retry');
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    // 5 calls: writePromptFile, main (throws), kill, retry, deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(5);
+
+    const killCall = mockExecCommand.mock.calls[2][0];
+    expect(killCall).toBe(expectedKillCmd);
+    // Assert it is a genuine process-tree termination (apra-fleet-eft.13.3),
+    // not a bare `kill -9 <pid>`: it must recurse through descendants via
+    // pgrep -P before killing the pid itself, so a backgrounded child of the
+    // abandoned CLI invocation (e.g. a fixed-port test/dev server) doesn't
+    // survive the retry still holding its port.
+    expect(killCall).toContain('pgrep -P');
+    expect(killCall).toContain('9001');
+  });
+
+  it('tolerates a failed kill (process-tree termination rejects) without throwing -- the retry still proceeds and succeeds', async () => {
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-kill-fails' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _timeout?: number, _maxTotal?: number, onPidCaptured?: (pid: number) => void) => {
+        setStoredPid(memberId, 9002);
+        onPidCaptured?.(9002);
+        return Promise.reject(new Error('inactivity timeout'));
+      })
+      .mockRejectedValueOnce(new Error('kill: no such process'))  // tryKillPid's process-tree kill command fails
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 }) // retry still proceeds
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('ok-on-retry');
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(mockExecCommand).toHaveBeenCalledTimes(5);
   });
 });
 
