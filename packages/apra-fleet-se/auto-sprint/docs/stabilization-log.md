@@ -582,6 +582,22 @@ deduplicated DAG -- the plan gate working as designed.
   C4 planner may still self-correct from the doer's BLOCKED note, which
   recommended exactly this decomposition.
 
+### Run 12 outcome: StalledSprintError (flat closed count), Issues 19-21 discovered
+
+- Run 12 ended at the C3 evaluation with StalledSprintError: closed-count
+  history [62, 62, 62], no reopen-thrash. C1 was a clean sweep (plan +
+  3 reviews APPROVED first try -- Issues 14 and 17 both holding), and
+  Deploy executed deploy.md for the first time in the campaign (Issue 18
+  fix working), which surfaced Issues 19 (non-idempotent, Windows-only
+  playbook) and 20 (no darwin-x64 artifact exists; filed as bead
+  apra-fleet-eft.15). C2/C3 then closed nothing: the only non-feature
+  open bead was eft.15, which doers refused every round as issue_type=
+  bug (Issue 21), and the stall detector correctly aborted before Plan
+  C4 could decompose it. Run 13 launches with the Issue 21 planner/
+  plan-reviewer pins, so its FIRST planning pass must decompose eft.15
+  into workable task children -- unblocking Deploy, then Integ Test,
+  then feature closure.
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":
