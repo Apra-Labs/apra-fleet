@@ -15,7 +15,7 @@
     "./viewer/sprint-state-paths": "./src/viewer/sprint-state-paths.mjs"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test --test-timeout=60000 test/*.test.mjs"
   },
   "type": "module",
   "dependencies": {

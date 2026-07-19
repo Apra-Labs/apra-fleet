@@ -84,14 +84,36 @@ function httpGet(port, urlPath) {
 }
 
 async function withServer(server, fn) {
-    await new Promise((resolve, reject) => {
-        server.once('listening', resolve);
-        server.once('error', reject);
-    });
+    // createDashboardViewer() already calls server.listen(port, cb)
+    // synchronously before returning the server to us, so the 'listening'
+    // event can (and, when a second server is created back-to-back --
+    // see the concurrent-sprints test below -- reliably does) fire and get
+    // consumed by that internal callback before we ever get a chance to
+    // attach our own listener here. EventEmitter never replays a past
+    // event to a listener added after the fact, so attaching
+    // .once('listening', ...) unconditionally raced this and hung forever
+    // (until --test-timeout) whenever the event had already fired.
+    // server.listening is the documented idempotent guard for exactly this
+    // race: only wait for the event if it hasn't already happened.
+    if (!server.listening) {
+        await new Promise((resolve, reject) => {
+            server.once('listening', resolve);
+            server.once('error', reject);
+        });
+    }
     try {
         return await fn(server.address().port);
     } finally {
-        await new Promise((resolve) => server.close(resolve));
+        // Belt-and-suspenders: server.close()'s callback only fires once
+        // every connection is gone. The http.get() calls above ride the
+        // global keep-alive agent, which can in principle leave an idle
+        // socket open -- closeAllConnections() forces both active and idle
+        // sockets shut so close() always resolves promptly rather than
+        // potentially hanging on a leftover connection.
+        await new Promise((resolve) => {
+            server.close(resolve);
+            server.closeAllConnections();
+        });
     }
 }
 
