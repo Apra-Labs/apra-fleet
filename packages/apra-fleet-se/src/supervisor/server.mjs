@@ -147,6 +147,15 @@ export function createSupervisor(deps = {}) {
         spawner: deps.spawner ?? makeSeamStub('spawner'),
         watchdog: deps.watchdog ?? makeSeamStub('watchdog'),
         dashboard: deps.dashboard ?? makeSeamStub('dashboard'),
+        // apra-fleet-eft.9.2/9.3: the cross-sprint coordination seams -- the
+        // global dolt push mutex (serializes every cross-sprint `bd dolt push`)
+        // and the child-id allocator (serial-per-parent id minting). Both are
+        // supervisor-owned singletons whose start()/stop() lifecycle (lease
+        // sweep timers, state persistence) is driven by the same seam machinery
+        // as every other collaborator; their HTTP routes are registered by
+        // their own register*Routes() helpers (see bin/serve.mjs).
+        doltMutex: deps.doltMutex ?? makeSeamStub('doltMutex'),
+        idAllocator: deps.idAllocator ?? makeSeamStub('idAllocator'),
     };
 
     /** @type {Map<string, Function>} keyed by `METHOD path` (exact paths). */
@@ -279,7 +288,7 @@ export function createSupervisor(deps = {}) {
             });
             // Stop seams in reverse of a natural start order; isolate each so
             // one failing seam cannot block the others' teardown.
-            for (const seam of [seams.dashboard, seams.watchdog, seams.spawner, seams.ledger]) {
+            for (const seam of [seams.idAllocator, seams.doltMutex, seams.dashboard, seams.watchdog, seams.spawner, seams.ledger]) {
                 try { await seam.stop?.(); } catch (err) { logError(`[supervisor] seam ${seam.name ?? ''} stop failed:`, err); }
             }
             shutdownResolve();
@@ -294,7 +303,7 @@ export function createSupervisor(deps = {}) {
     async function start() {
         // Start seams first so the API never serves before its collaborators
         // are ready. Stubs are no-ops.
-        for (const seam of [seams.ledger, seams.spawner, seams.watchdog, seams.dashboard]) {
+        for (const seam of [seams.ledger, seams.spawner, seams.watchdog, seams.dashboard, seams.doltMutex, seams.idAllocator]) {
             await seam.start?.();
         }
 

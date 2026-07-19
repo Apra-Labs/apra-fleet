@@ -18,13 +18,15 @@
 
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { createSupervisor, DEFAULT_SERVICE_PORT } from '../src/supervisor/server.mjs';
+import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { createHistory } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
+import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
+import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -83,7 +85,24 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // freshly-spawned child.
     const readopter = createReadopter({ ledger, spawner, reconciler });
 
-    const supervisor = createSupervisor({ port, ledger, spawner });
+    // eft.9.3: the supervisor-owned global child-id allocator. Its start()/stop()
+    // (load persisted high-water marks + the abandoned-reservation sweep) is
+    // driven by the seam machinery; its HTTP routes let detached sprint children
+    // mint collision-free child ids under a shared parent (constraint C.4).
+    const idAllocator = createIdAllocator();
+
+    // eft.9.2: the supervisor-owned global dolt push mutex -- a LOAD-BEARING v1
+    // requirement (PoC constraints C.2/C.3). Every cross-sprint `bd dolt push`
+    // serializes through this ONE instance so two sprints never push at the same
+    // time; its lease-sweep start()/stop() is driven by the seam machinery, and
+    // its HTTP routes let independent detached sprint children acquire/release
+    // over the supervisor port. Without this wiring a child's acquire() would
+    // POST to an unregistered route (404) and wedge the D-push bracket.
+    const doltMutex = createDoltMutex();
+
+    const supervisor = createSupervisor({ port, ledger, spawner, idAllocator, doltMutex });
+    registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
+    registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
 
     // eft.5.4: operator force-release of a wedged reservation.
     registerReservationRoutes(supervisor, reconciler);
