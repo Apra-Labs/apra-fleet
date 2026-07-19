@@ -42,16 +42,20 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // =============================================================================
 
 // Builds a minimal, hermetic mock `command(cmd, opts)` for finalizeAbort()'s
-// three call sites (`git rev-list --count`, `git push`, `gh pr create`).
-// Mirrors the exact return-value CONTRACT finalizeAbort() actually relies on
-// (see FleetWorkflow.command() in apra-fleet-workflow/src/workflow/index.mjs):
-// a non-failSoft call (rev-list, push) resolves to a plain string (or throws
-// on failure); a failSoft call (gh pr create) resolves to
-// `{ ok, output, error }` and never throws.
+// four call sites (`git fetch origin`, `git rev-list --count`, `git push`,
+// `gh pr create`). Mirrors the exact return-value CONTRACT finalizeAbort()
+// actually relies on (see FleetWorkflow.command() in
+// apra-fleet-workflow/src/workflow/index.mjs): a non-failSoft call (fetch,
+// rev-list, push) resolves to a plain string (or throws on failure); a
+// failSoft call (gh pr create) resolves to `{ ok, output, error }` and never
+// throws.
 function buildMockCommand({ commitCount, pushShouldFail = false, ghOutcome = 'created', ghUrl = 'https://github.com/mock-org/mock-repo/pull/99' } = {}) {
     const log = [];
     const command = async (cmd) => {
         log.push(cmd);
+        if (/^git fetch origin\b/.test(cmd)) {
+            return '';
+        }
         if (/^git rev-list --count\b/.test(cmd)) {
             return String(commitCount);
         }
