@@ -3061,7 +3061,16 @@ async function runSprintCycle(context) {
     async function updateDashboard() {
         let sprintTasks = [];
         try {
-            sprintTasks = await bdListScoped('--json');
+            // Stabilization log Issue 16: this used to be
+            // bdListScoped('--json'), whose non-empty rest args route through
+            // a SECOND `bd list --json` query -- and plain `bd list` defaults
+            // to open/in_progress only, so CLOSED beads never reached the
+            // dashboard's sprint tree (operator-reported: progress was
+            // invisible; the viewer's CLOSED badge/grey rendering existed but
+            // never received a closed row). The no-args path returns the
+            // shared `bd list --all` fetch filtered to scope -- every status,
+            // one query fewer.
+            sprintTasks = await bdListScoped('');
             // apra-fleet-xbu.C6: a bead whose stored `status` is 'open' but
             // that is NOT in the scope's `--ready` set is blocked -- but the
             // viewer only ever saw the stored status, so a deadlocked bead
