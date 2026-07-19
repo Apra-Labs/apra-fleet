@@ -342,6 +342,57 @@ describe('api -- GET /api/members overlay', () => {
     });
 });
 
+describe('api -- apra-fleet-eft.5.5 scope-freshness indicator on claimed-scope responses', () => {
+    test('GET /api/backlog includes scopeFreshness with an explicit never-synced marker when unknown', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({ tasks: ['t1'] }),
+        });
+        const out = await controller.backlog();
+        assert.deepEqual(out.tasks, ['t1']);
+        assert.deepEqual(out.scopeFreshness, { lastSyncedAt: null, ageSeconds: 'never-synced' });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('GET /api/sprints includes scopeFreshness alongside the live reservation list', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42 });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+        const out = await controller.listSprints();
+        assert.equal(out.sprints.length, 1);
+        assert.deepEqual(out.scopeFreshness, { lastSyncedAt: null, ageSeconds: 'never-synced' });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('scopeFreshness on both endpoints reflects the recorded sync and updates after a later sync', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+        });
+
+        await ledger.setScopeFreshness('2026-07-18T00:00:00.000Z');
+        const backlogOut = await controller.backlog();
+        const sprintsOut = await controller.listSprints();
+        assert.equal(backlogOut.scopeFreshness.lastSyncedAt, '2026-07-18T00:00:00.000Z');
+        assert.equal(typeof backlogOut.scopeFreshness.ageSeconds, 'number');
+        assert.equal(sprintsOut.scopeFreshness.lastSyncedAt, '2026-07-18T00:00:00.000Z');
+
+        // A subsequent sync moves lastSyncedAt forward on both endpoints.
+        await ledger.setScopeFreshness('2026-07-18T00:10:00.000Z');
+        const backlogOut2 = await controller.backlog();
+        assert.equal(backlogOut2.scopeFreshness.lastSyncedAt, '2026-07-18T00:10:00.000Z');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
 describe('api -- GET /api/sprints and /api/sprints/:id', () => {
     test('GET /api/sprints/:id returns LIVE child state when running (proxied /state)', async () => {
         const dir = await tmpDir();

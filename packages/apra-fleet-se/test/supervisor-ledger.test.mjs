@@ -206,6 +206,67 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
     });
 });
 
+describe('ledger -- apra-fleet-eft.5.5 scope-freshness indicator', () => {
+    test('never-synced ledger reports lastSyncedAt=null and the literal never-synced marker (never silently absent)', async () => {
+        const dir = await tmpDir();
+        const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME) });
+        await ledger.start();
+        assert.deepEqual(ledger.getScopeFreshness(), { lastSyncedAt: null, ageSeconds: 'never-synced' });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('setScopeFreshness records lastSyncedAt and getScopeFreshness derives ageSeconds from it', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+
+        const result = await ledger.setScopeFreshness('2026-07-19T00:00:00.000Z');
+        assert.deepEqual(result, { lastSyncedAt: '2026-07-19T00:00:00.000Z', ageSeconds: 0 });
+
+        // 90s after the recorded sync -> ageSeconds reflects elapsed time.
+        const laterMs = new Date('2026-07-19T00:01:30.000Z').getTime();
+        assert.deepEqual(
+            ledger.getScopeFreshness(() => laterMs),
+            { lastSyncedAt: '2026-07-19T00:00:00.000Z', ageSeconds: 90 },
+        );
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('setScopeFreshness defaults to now() when no timestamp is given, and updates on each successful sync', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        let clock = '2026-07-19T00:00:00.000Z';
+        const ledger = createLedger({ filePath, now: () => clock });
+        await ledger.start();
+
+        await ledger.setScopeFreshness();
+        assert.deepEqual(ledger.getScopeFreshness(() => new Date(clock).getTime()), { lastSyncedAt: clock, ageSeconds: 0 });
+
+        // A second sync moves lastSyncedAt forward -- the value UPDATES after a sync.
+        clock = '2026-07-19T00:05:00.000Z';
+        await ledger.setScopeFreshness();
+        assert.deepEqual(ledger.getScopeFreshness(() => new Date(clock).getTime()), { lastSyncedAt: clock, ageSeconds: 0 });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('scopeFreshness.lastSyncedAt persists across a reload (survives restart)', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+        await ledger.setScopeFreshness('2026-07-19T00:00:00.000Z');
+
+        const reloaded = createLedger({ filePath });
+        await reloaded.start();
+        assert.deepEqual(reloaded.getScopeFreshness(() => new Date('2026-07-19T00:00:00.000Z').getTime()), {
+            lastSyncedAt: '2026-07-19T00:00:00.000Z',
+            ageSeconds: 0,
+        });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
 describe('ledger -- exported schema/contract', () => {
     test('LEDGER_SCHEMA and version are stable and frozen', () => {
         assert.equal(LEDGER_VERSION, 1);
