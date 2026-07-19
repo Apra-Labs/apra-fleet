@@ -189,7 +189,7 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
         await withTempCwd(async (dir) => {
             const wf = new FleetWorkflow(createMockFleetApi());
             const engine = new WorkflowEngine(wf);
-            const server = createDashboardViewer(wf, { port: 18099, name: 'Debounced Writer End Test', debounceMs: 200 });
+            const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer End Test', debounceMs: 200 });
 
             await withServer(server, async (port) => {
                 const result = await engine.executeFile(fixture('test-end-event-success.mjs'), {});
@@ -229,7 +229,7 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
             const activityStarts = [];
             wf.on('activity:start', (meta) => activityStarts.push(meta));
 
-            const server = createDashboardViewer(wf, { port: 18100, name: 'Debounced Writer SIGINT Test', debounceMs: 200 });
+            const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer SIGINT Test', debounceMs: 200 });
 
             const originalExit = process.exit;
             let exitCode = null;
@@ -271,7 +271,7 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
             const activityStarts = [];
             wf.on('activity:start', (meta) => activityStarts.push(meta));
 
-            const server = createDashboardViewer(wf, { port: 18101, name: 'Debounced Writer Stop Test', debounceMs: 200 });
+            const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer Stop Test', debounceMs: 200 });
 
             await withServer(server, async (port) => {
                 const runPromise = engine.executeFile(fixture('test-stop-pending-agent.mjs'), {});
