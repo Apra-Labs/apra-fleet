@@ -694,6 +694,20 @@ export async function syncMemberBefore(member, opts = {}) {
         label: `G-pull fetch for '${member}'`, log, maxTransientRetries,
     });
     if (!fetch.ok) {
+        // A brand-new sprint branch that has not been pushed to the remote
+        // yet (created locally from base by Ensure Sprint Branch; first
+        // G-push hasn't happened) makes this fetch fail with "couldn't find
+        // remote ref <branch>". That is a benign, expected state -- there is
+        // nothing on the remote to pull, so the bracket's pull half is a
+        // no-op, NOT an error (observed as a real sprint-killing failure in
+        // mock-sprint-ensure-branch-fetch-failure before this guard; same
+        // exact-match rationale as Ensure Sprint Branch's own fetch
+        // fallback: only this precise git message may be treated as
+        // branch-doesn't-exist, anything else still surfaces).
+        if (/couldn't find remote ref/i.test(fetch.error || '')) {
+            log(`[Sync] G-pull for member '${member}': branch '${branch}' does not exist on '${remote}' yet (not pushed); skipping pull (nothing to sync down).`);
+            return { ok: true, member };
+        }
         // A fetch cannot "diverge" -- any failure here is transient-exhausted
         // or unknown; surface it as a (non-diverged) sync error.
         throw new GitSyncError(
