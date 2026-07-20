@@ -2744,6 +2744,71 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     return { prUrl: createdUrl, reason: 'aborted-pr-created', pushed: true, commitCount };
 }
 
+// ---------------------------------------------------------------------------
+// Client-side dispatch-timeout watchdog for the interactive Planner path
+// (apra-fleet-eft.28.3)
+// ---------------------------------------------------------------------------
+//
+// apra-fleet-eft.28 RECURRED (integ cycle 6) despite eft.28.1's fix (dead-PID
+// fast-fail on execute_prompt's interactive-session reuse check, both at
+// pre-dispatch time and via the 5s liveness poll racing the response wait --
+// src/tools/execute-prompt.ts) and eft.28.2 (proving runner.js's own retry
+// loop surfaces that fast-fail as a bounded, logged+persisted terminal
+// failure). Both of those only fire when the member's claude PID is actually
+// DEAD. The recurrence was a member process that stayed ALIVE but produced
+// zero further output after the prompt was delivered -- a frozen-but-alive
+// interactive/elicitation session -- which no PID check can ever catch, and
+// which is exactly the failure mode `dispatch_timeout_s` exists to bound.
+// `timeout_s`/`max_total_s` are already threaded to execute_prompt on every
+// dispatch (including the Planner's, see DISPATCH_TIMEOUT_S usage below),
+// but the live symptom (state.json frozen for 2m15s+, zero further log
+// lines, no watchdog firing) means that server-side enforcement cannot be
+// trusted as the ONLY backstop for this specific pre-plan dispatch. This adds
+// a second, client-side one that does not depend on the server noticing
+// anything at all.
+//
+// withDispatchWatchdog() races an already-in-flight dispatch promise against
+// a LOCAL timer set to `timeoutS` seconds plus a small fixed grace period
+// (so the server's own timeout_s-driven rejection -- the normal, already-
+// logged/tested path -- gets first refusal at producing a clean error). If
+// the dispatch has not settled by the time the local timer fires, this
+// rejects with a typed AgentDispatchError (reason: 'watchdog_timeout')
+// instead of leaving the caller awaiting silently: the SAME typed-error
+// plumbing eft.28.2 already proved flows through runner.js's Planner retry
+// loop, isTypedAbortError()'s typed-abort routing in main(), AND (via
+// bin/cli.mjs's unconditional catch-block release) the per-sprint member
+// reservation release -- so a watchdog-timeout abort is logged, persisted to
+// sprint state as a terminal failure, and releases every reserved member,
+// exactly like every other typed dispatch failure this file already handles.
+// The abandoned underlying dispatch promise is never left dangling
+// un-awaited (Promise.race() attaches its own rejection handler to it), so a
+// late resolution/rejection after the watchdog has already fired is safely
+// dropped rather than becoming an unhandled rejection.
+const DISPATCH_WATCHDOG_GRACE_S = 30;
+
+/**
+ * @param {Promise<any>} dispatchPromise - an ALREADY-STARTED dispatch (e.g. an agent() call).
+ * @param {{ timeoutS: number, member?: string, label?: string, log?: (msg: string) => void }} opts
+ * @returns {Promise<any>}
+ */
+export function withDispatchWatchdog(dispatchPromise, opts = {}) {
+    const { timeoutS, member = 'unknown', label = 'dispatch', log = () => {} } = opts;
+    const budgetMs = (timeoutS + DISPATCH_WATCHDOG_GRACE_S) * 1000;
+    let timer;
+    const watchdogPromise = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+            const message = `[dispatch-watchdog] ${label} to member '${member}' produced no result within ${timeoutS}s (+${DISPATCH_WATCHDOG_GRACE_S}s grace) -- treating this attempt as a stalled/dead session and aborting it (no code path may leave this orchestrator alive-but-silent past its configured dispatch_timeout_s).`;
+            log(message);
+            reject(new AgentDispatchError(
+                `[Workflow Error] ${label} timed out (watchdog): no response from '${member}' within ${timeoutS}s (+${DISPATCH_WATCHDOG_GRACE_S}s grace).`,
+                { details: { reason: 'watchdog_timeout', member, timeoutS, graceS: DISPATCH_WATCHDOG_GRACE_S } }
+            ));
+        }, budgetMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+    });
+    return Promise.race([dispatchPromise, watchdogPromise]).finally(() => clearTimeout(timer));
+}
+
 // Mechanical migration to the WorkflowEngine's ES-module entry-point contract
 // (apra-fleet-unw.7): the engine now calls `main(context)` instead of
 // injecting bare globals into an AsyncFunction scope. This destructure is the
@@ -3814,19 +3879,31 @@ async function runSprintCycle(context) {
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: PLANNER_MAX_TURNS,
             };
-            const dispatchPlannerOnce = () => withGitSync(getMemberForRole('planner'), false, () => agent(
-                plannerPrompt,
-                { ...plannerDispatchOpts, member_name: getMemberForRole('planner') }
+            // apra-fleet-eft.28.3: every interactive Planner dispatch attempt
+            // (the FIRST/pre-plan one included -- withDispatchWatchdog wraps
+            // dispatchPlannerOnce() too, not just the resume path) is raced
+            // against a client-side dispatch_timeout_s watchdog so a frozen-
+            // but-alive member session can never leave this await silently
+            // hanging past its configured budget. See withDispatchWatchdog's
+            // own doc comment above for why this is needed in addition to
+            // (not instead of) the server-side timeout_s/max_total_s already
+            // passed via plannerDispatchOpts below.
+            const dispatchPlannerOnce = () => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
+                agent(plannerPrompt, { ...plannerDispatchOpts, member_name: getMemberForRole('planner') }),
+                { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Plan (interactive)', log }
             ), { pushBeads: true });
-            const dispatchPlannerResume = () => withGitSync(getMemberForRole('planner'), false, () => agent(
-                'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
-                {
-                    ...plannerDispatchOpts,
-                    member_name: getMemberForRole('planner'),
-                    label: `Plan (resume, max_turns=${PLANNER_MAX_TURNS * 2})`,
-                    resume: true,
-                    max_turns: PLANNER_MAX_TURNS * 2,
-                }
+            const dispatchPlannerResume = () => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
+                agent(
+                    'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
+                    {
+                        ...plannerDispatchOpts,
+                        member_name: getMemberForRole('planner'),
+                        label: `Plan (resume, max_turns=${PLANNER_MAX_TURNS * 2})`,
+                        resume: true,
+                        max_turns: PLANNER_MAX_TURNS * 2,
+                    }
+                ),
+                { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: `Plan (resume, max_turns=${PLANNER_MAX_TURNS * 2})`, log }
             ), { pushBeads: true });
             const dispatchPlanner = async () => {
                 try {
