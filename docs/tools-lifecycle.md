@@ -1,10 +1,10 @@
 # Lifecycle Tools
 
-Tools that manage the fleet roster — adding, listing, updating, and removing members.
+Tools that manage the fleet roster -- adding, listing, updating, and removing members.
 
 ## register_member
 
-Registers a new machine as a fleet member. This is the entry point for every member — nothing else works until a member is registered.
+Registers a new machine as a fleet member. This is the entry point for every member -- nothing else works until a member is registered.
 
 **Parameters:**
 
@@ -23,21 +23,22 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 
 **What it does, step by step:**
 
-1. **Validates required fields** — remote members must have `host`, `username`, and `auth_type`. Local members skip all SSH fields.
-2. **Duplicate folder check** — rejects if another member already uses the same folder on the same device (same host for remote, same machine for local).
-3. **Tests connectivity** — remote members get an SSH connection test with latency measurement. Local members always pass (they're on the same machine).
-4. **Detects OS** — remote members run `uname -s` and `cmd /c ver` to determine Linux/macOS/Windows. Local members read `process.platform` directly.
-5. **Checks provider CLI** — runs `<provider> --version` (e.g. `claude --version`, `gemini --version`) to verify the LLM CLI is installed and capture the version.
-6. **Auth test (remote only)** — for Claude members, runs a quick `claude -p "hello"` to verify authentication. For non-Claude providers, the version check from step 5 serves as the CLI availability check; auth is verified separately via `provision_llm_auth`. Skipped for local members since they inherit the current session's auth.
-7. **Creates working folder** — `mkdir -p` (or equivalent) on the target.
-8. **Persists** — saves the member to `~/.apra-fleet/data/registry.json` with a generated UUID, including the `llmProvider` field.
+1. **Validates required fields** -- remote members must have `host`, `username`, and `auth_type`. Local members skip all SSH fields.
+2. **Duplicate folder check** -- rejects if another member already uses the same folder on the same device (same host for remote, same machine for local).
+3. **Tests connectivity** -- remote members get an SSH connection test with latency measurement. Local members always pass (they're on the same machine).
+4. **Detects OS** -- remote members run `uname -s` and `cmd /c ver` to determine Linux/macOS/Windows. Local members read `process.platform` directly.
+5. **Checks provider CLI** -- runs `<provider> --version` (e.g. `claude --version`, `gemini --version`) to verify the LLM CLI is installed and capture the version.
+6. **Auth test (remote only)** -- for Claude members, runs a quick `claude -p "hello"` to verify authentication. For non-Claude providers, the version check from step 5 serves as the CLI availability check; auth is verified separately via `provision_llm_auth`. Skipped for local members since they inherit the current session's auth.
+7. **Creates working folder** -- `mkdir -p` (or equivalent) on the target.
+8. **Provisions role-agent files (remote only)** -- hashes the canonical set of PM role-agent files (planner, doer, reviewer, etc., plus `_shared/` and `schemas/`) against what is already on the remote box and uploads anything missing or stale. Skipped for local members (they share the operator's home directory) and for providers with no agents directory (codex, copilot). A provisioning failure is reported as a warning but never blocks registration.
+9. **Persists** -- saves the member to `~/.apra-fleet/data/registry.json` with a generated UUID, including the `llmProvider` field.
 
-**Output:** Member ID, name, type, OS, folder, auth method, provider, latency, and any warnings (e.g. CLI not found, auth failed).
+**Output:** Member ID, name, type, OS, folder, auth method, provider, latency, agent-file provisioning result, and any warnings (e.g. CLI not found, auth failed).
 
 **Failure modes:**
-- SSH connection fails → member is NOT registered, error returned
-- Duplicate folder → member is NOT registered
-- Claude CLI missing → member IS registered, but with a warning
+- SSH connection fails: member is NOT registered, error returned
+- Duplicate folder: member is NOT registered
+- Claude CLI missing: member IS registered, but with a warning
 
 ## list_members
 
@@ -53,7 +54,7 @@ Reads the registry and formats every member into a display block showing: ID, ty
 
 ## update_member
 
-Modifies an existing member's registration. All fields except `member_id` are optional — only provided fields are changed.
+Modifies an existing member's registration. All fields except `member_id` are optional -- only provided fields are changed.
 
 **Parameters:**
 
@@ -73,9 +74,10 @@ Modifies an existing member's registration. All fields except `member_id` are op
 **What it does:**
 
 1. Looks up the member by ID.
-2. If `work_folder` is changing, runs the duplicate folder check (same logic as `register_member`) — rejects if the new folder is already in use by another member on the same device. The check excludes the current member's own ID so "updating to the same folder" doesn't falsely trigger.
+2. If `work_folder` is changing, runs the duplicate folder check (same logic as `register_member`) -- rejects if the new folder is already in use by another member on the same device. The check excludes the current member's own ID so "updating to the same folder" doesn't falsely trigger.
 3. Encrypts password if provided (AES-256-GCM).
 4. Applies updates and persists to registry.
+5. **Re-provisions role-agent files (remote only)** -- same hash-diff-and-upload check as `register_member`, so a member that was registered before an agent file was added or changed picks it up. Skipped for local members and providers with no agents directory (codex, copilot); a provisioning failure is returned as a warning and does not fail the update.
 
 **Output:** Updated member details.
 
@@ -94,8 +96,8 @@ Unregisters a fleet member and cleans up its connection.
 **What it does:**
 
 1. Looks up the member by ID.
-2. **Best-effort auth cleanup** — tests connectivity to the member, and if reachable: removes the provider's credential file (e.g. `~/.claude/.credentials.json` for Claude) if the provider supports OAuth copy, and removes the provider's auth env var (e.g. `ANTHROPIC_API_KEY` for Claude, `GEMINI_API_KEY` for Gemini) from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
-3. Calls `strategy.close()` — for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
+2. **Best-effort auth cleanup** -- tests connectivity to the member, and if reachable: removes the provider's credential file (e.g. `~/.claude/.credentials.json` for Claude) if the provider supports OAuth copy, and removes the provider's auth env var (e.g. `ANTHROPIC_API_KEY` for Claude, `GEMINI_API_KEY` for Gemini) from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
+3. Calls `strategy.close()` -- for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
 4. Removes the member from the registry file.
 
 **Output:** Confirmation message with member name and ID. Includes warnings if the token could not be cleared (e.g. member was offline).
@@ -104,7 +106,7 @@ Unregisters a fleet member and cleans up its connection.
 
 ## shutdown_server
 
-Gracefully shuts down the MCP server process. Since MCP servers communicate over stdio, the server cannot self-restart — the client owns the process lifecycle.
+Gracefully shuts down the MCP server process. Since MCP servers communicate over stdio, the server cannot self-restart -- the client owns the process lifecycle.
 
 **Parameters:** None.
 
