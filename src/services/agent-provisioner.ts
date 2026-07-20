@@ -52,8 +52,12 @@ export function loadCanonicalAgentSet(provider: LlmProvider): CanonicalAgentFile
   });
 }
 
-/** Home-relative agents dir for a provider, or null when the provider has no agent files (codex, copilot). */
+/** Home-relative agents dir for a provider, or null when the provider has no agent files (codex, copilot, none). */
 export function remoteAgentsDir(provider: LlmProvider): string | null {
+  // 'none' (apra-fleet-us9.14, no-LLM executor members) postdates this
+  // provisioner's provider map: such members run no agent CLI at all, so
+  // there is nothing to provision and no dir to probe.
+  if (provider === 'none') return null;
   return getAgentsDirRelative(provider) ?? null;
 }
 

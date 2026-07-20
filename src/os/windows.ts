@@ -98,11 +98,15 @@ export class WindowsCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv, agentName } = opts;
     const escapedFolder = escapeWindowsArg(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
+    }
+    // Gemini and AGY activate a subagent via @<name> prepended to the prompt on EVERY dispatch.
+    if (agentName && (provider.name === 'gemini' || provider.name === 'agy')) {
+      instruction = `@${agentName} ${instruction}`;
     }
 
     // Setup: working directory + PATH so the CLI executable is resolvable
@@ -113,6 +117,10 @@ export class WindowsCommands implements OsCommands {
 
     // Build argument list (everything that follows the executable)
     let argList = `${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`;
+    // Claude activates a subagent via --agent <name> flag.
+    if (agentName && provider.name === 'claude') {
+      argList = `--agent "${escapeWindowsArg(agentName)}" ${argList}`;
+    }
     if (provider.supportsMaxTurns()) {
       argList += ` --max-turns ${maxTurns ?? 50}`;
     }

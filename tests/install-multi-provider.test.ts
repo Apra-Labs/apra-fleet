@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { parse as parseToml } from 'smol-toml';
 import { runInstall } from '../src/cli/install.js';
+import { normalizeCommandSurfaceOutput, readCommandSurfaceFixture } from './helpers/regression-command-surface.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -378,8 +379,30 @@ describe('runInstall multi-provider', () => {
     expect(defaultModelWrite![1].toString()).toContain('gpt-5.4');
   });
 
-  it('Codex config.toml is valid TOML — every scalar string is properly double-quoted (#115)', async () => {
+  it('Codex config.toml is valid TOML (HTTP transport, url key)', async () => {
     await runInstall(['--llm', 'codex']);
+
+    const codexConfig = path.join(mockHome, '.codex', 'config.toml');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(codexConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const finalContent = writes.at(-1)![1].toString();
+
+    // Regression guard for #115: no bare/backslash-prefixed scalars.
+    expect(finalContent).not.toMatch(/=\s*\\/);
+    expect(finalContent).toMatch(/defaultModel\s*=\s*"gpt-5\.4"/);
+
+    // Parsing back with smol-toml must succeed and round-trip.
+    const parsed = parseToml(finalContent) as any;
+    expect(parsed.defaultModel).toBe('gpt-5.4');
+    // HTTP transport: url key, no command/args.
+    expect(typeof parsed.mcp_servers['apra-fleet'].url).toBe('string');
+    expect(parsed.mcp_servers['apra-fleet'].url).toContain('/mcp');
+  });
+
+  it('Codex config.toml is valid TOML — command/args for stdio transport (#115)', async () => {
+    await runInstall(['--llm', 'codex', '--transport', 'stdio']);
 
     const codexConfig = path.join(mockHome, '.codex', 'config.toml');
     const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
@@ -396,7 +419,7 @@ describe('runInstall multi-provider', () => {
     // Parsing back with smol-toml must succeed and round-trip defaultModel.
     const parsed = parseToml(finalContent) as any;
     expect(parsed.defaultModel).toBe('gpt-5.4');
-    // mcp_servers.apra-fleet.command should be a plain string (proper TOML string literal).
+    // stdio transport: mcp_servers.apra-fleet.command should be a plain string (proper TOML string literal).
     expect(typeof parsed.mcp_servers['apra-fleet'].command).toBe('string');
     expect(Array.isArray(parsed.mcp_servers['apra-fleet'].args)).toBe(true);
   });
@@ -627,6 +650,23 @@ describe('runInstall multi-provider', () => {
     expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain('apra-fleet install');
     // No file writes should have occurred
     expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  // Regression guard (apra-fleet-7pm.14): install --help output must stay
+  // byte-for-byte unchanged versus tests/fixtures/regression-command-surface/install-help.txt
+  // after this epic's install.ts/uninstall.ts/update.ts/index.ts edits land.
+  it('--help output is byte-for-byte unchanged versus its fixture (apra-fleet-7pm.14)', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(runInstall(['--help'])).rejects.toThrow('exit');
+
+    const actual = normalizeCommandSurfaceOutput(logSpy.mock.calls.map(c => c.join(' ')).join('\n'));
+    const expected = readCommandSurfaceFixture('install-help.txt');
+    expect(actual).toBe(expected);
 
     exitSpy.mockRestore();
     logSpy.mockRestore();
@@ -1186,7 +1226,7 @@ describe('runInstall multi-provider', () => {
       fileState.set(p.toString(), content.toString());
     });
 
-    await runInstall(['--llm', 'opencode']);
+    await runInstall(['--llm', 'opencode', '--transport', 'stdio']);
 
     const opencodeSettings = path.join(mockHome, '.config', 'opencode', 'opencode.json');
     const finalContent = fileState.get(opencodeSettings);
@@ -1197,6 +1237,24 @@ describe('runInstall multi-provider', () => {
     expect(parsed.mcp['apra-fleet']).toBeDefined();
     expect(parsed.mcp['apra-fleet'].type).toBe('local');
     expect(Array.isArray(parsed.mcp['apra-fleet'].command)).toBe(true);
+    expect(parsed.mcp['apra-fleet'].enabled).toBe(true);
+  });
+
+  it('opencode MCP defaults to type:remote with fleet URL for http transport', async () => {
+    const fileState = new Map<string, string>();
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, content: any) => {
+      fileState.set(p.toString(), content.toString());
+    });
+
+    await runInstall(['--llm', 'opencode']);
+
+    const opencodeSettings = path.join(mockHome, '.config', 'opencode', 'opencode.json');
+    const finalContent = fileState.get(opencodeSettings);
+    expect(finalContent).toBeDefined();
+    const parsed = JSON.parse(finalContent!);
+
+    expect(parsed.mcp['apra-fleet'].type).toBe('remote');
+    expect(parsed.mcp['apra-fleet'].url).toBe('http://localhost:7523/mcp');
     expect(parsed.mcp['apra-fleet'].enabled).toBe(true);
   });
 
@@ -1232,5 +1290,132 @@ describe('runInstall multi-provider', () => {
     expect(parsed).toHaveProperty('hooks');
     expect(parsed).toHaveProperty('statusLine');
     expect(parsed).toHaveProperty('permissions');
+  });
+
+  // -- Transport flag tests --
+
+  it('--transport http (default) uses URL-based Claude MCP registration', async () => {
+    await runInstall([]);
+
+    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
+    const addCall = calls.find(c => c.includes('claude mcp add'));
+    expect(addCall).toBeDefined();
+    expect(addCall).toContain('--transport http');
+    expect(addCall).toContain('http://localhost:7523/mcp');
+  });
+
+  it('--transport stdio uses command+args Claude MCP registration', async () => {
+    await runInstall(['--transport', 'stdio']);
+
+    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
+    const addCall = calls.find(c => c.includes('claude mcp add'));
+    expect(addCall).toBeDefined();
+    expect(addCall).not.toContain('--transport http');
+    expect(addCall).not.toContain('http://localhost:7523/mcp');
+  });
+
+  it('--transport http writes httpUrl for Gemini', async () => {
+    await runInstall(['--llm', 'gemini']);
+
+    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(geminiSettings)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    const parsed = JSON.parse(lastWrite);
+    expect(parsed.mcpServers['apra-fleet'].httpUrl).toBe('http://localhost:7523/mcp');
+    expect(parsed.mcpServers['apra-fleet'].trust).toBe(true);
+  });
+
+  it('--transport stdio writes command+args for Gemini', async () => {
+    await runInstall(['--llm', 'gemini', '--transport', 'stdio']);
+
+    const geminiSettings = path.join(mockHome, '.gemini', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(geminiSettings)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    const parsed = JSON.parse(lastWrite);
+    expect(parsed.mcpServers['apra-fleet'].command).toBeDefined();
+    expect(parsed.mcpServers['apra-fleet'].httpUrl).toBeUndefined();
+  });
+
+  it('--transport http writes url+type for Copilot', async () => {
+    await runInstall(['--llm', 'copilot']);
+
+    const copilotSettings = path.join(mockHome, '.copilot', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(copilotSettings)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    const parsed = JSON.parse(lastWrite);
+    expect(parsed.mcpServers['apra-fleet'].url).toBe('http://localhost:7523/mcp');
+    expect(parsed.mcpServers['apra-fleet'].type).toBe('http');
+  });
+
+  it('--transport stdio writes command+args for Copilot', async () => {
+    await runInstall(['--llm', 'copilot', '--transport', 'stdio']);
+
+    const copilotSettings = path.join(mockHome, '.copilot', 'settings.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(copilotSettings)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    const parsed = JSON.parse(lastWrite);
+    expect(parsed.mcpServers['apra-fleet'].command).toBeDefined();
+    expect(parsed.mcpServers['apra-fleet'].url).toBeUndefined();
+  });
+
+  it('--transport http writes url for Codex', async () => {
+    await runInstall(['--llm', 'codex']);
+
+    const codexConfig = path.join(mockHome, '.codex', 'config.toml');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(codexConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const finalContent = writes.at(-1)![1].toString();
+    const parsed = parseToml(finalContent) as any;
+    expect(parsed.mcp_servers['apra-fleet'].url).toBe('http://localhost:7523/mcp');
+    expect(parsed.mcp_servers['apra-fleet'].command).toBeUndefined();
+  });
+
+  it('--transport http writes url for agy', async () => {
+    await runInstall(['--llm', 'agy']);
+
+    const agyMcpConfig = path.join(mockHome, '.gemini', 'config', 'mcp_config.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(agyMcpConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    const parsed = JSON.parse(lastWrite);
+    expect(parsed.mcpServers['apra-fleet'].url).toBe('http://localhost:7523/mcp');
+  });
+
+  it('--transport stdio writes command+args for agy', async () => {
+    await runInstall(['--llm', 'agy', '--transport', 'stdio']);
+
+    const agyMcpConfig = path.join(mockHome, '.gemini', 'config', 'mcp_config.json');
+    const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c =>
+      c[0].toString().includes(agyMcpConfig)
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const lastWrite = writes.at(-1)![1].toString();
+    const parsed = JSON.parse(lastWrite);
+    expect(parsed.mcpServers['apra-fleet'].command).toBeDefined();
+    expect(parsed.mcpServers['apra-fleet'].url).toBeUndefined();
+  });
+
+  it('--transport=invalid exits with error', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--transport=invalid'])).rejects.toThrow('exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    exitSpy.mockRestore();
   });
 });

@@ -141,6 +141,28 @@ describe('ClaudeProvider', () => {
     expect(resp.usage).toBeUndefined();
   });
 
+  // apra-fleet-p4f.1: ParsedResponse must carry subtype/terminalReason from
+  // a max_turns-exhausted result event, so callers can classify it distinctly
+  // instead of misreporting it as an auth/unknown failure.
+  it('extracts subtype and terminalReason from a max_turns result event', () => {
+    const payload = JSON.stringify({
+      type: 'result',
+      subtype: 'error_max_turns',
+      terminal_reason: 'max_turns',
+      result: 'stopped after max turns',
+      session_id: 'sid-mt',
+    });
+    const resp = p.parseResponse(makeResult(payload));
+    expect(resp.subtype).toBe('error_max_turns');
+    expect(resp.terminalReason).toBe('max_turns');
+  });
+
+  it('leaves subtype and terminalReason undefined for a normal success response', () => {
+    const resp = p.parseResponse(makeResult(JSON.stringify({ result: 'done', session_id: 'sid-1' })));
+    expect(resp.subtype).toBeUndefined();
+    expect(resp.terminalReason).toBeUndefined();
+  });
+
   it('supports resume and maxTurns', () => {
     expect(p.supportsResume()).toBe(true);
     expect(p.supportsMaxTurns()).toBe(true);

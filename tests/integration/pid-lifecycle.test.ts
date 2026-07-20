@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'node:os';
-import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
+import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from '../test-helpers.js';
 import { addAgent } from '../../src/services/registry.js';
 import { executePrompt } from '../../src/tools/execute-prompt.js';
 import { getStoredPid, clearStoredPid, setStoredPid } from '../../src/utils/agent-helpers.js';
@@ -65,7 +65,7 @@ describe('PID lifecycle — integration (T12)', () => {
     });
 
     const first = await executePrompt({ member_id: memberId, prompt: 'first', resume: false, timeout_s: 5 });
-    expect(first).toContain('failed');
+    expect(resultText(first)).toContain('failed');
     // PID stored by real extractAndStorePid — not cleared because the call failed
     expect(getStoredPid(memberId)).toBe(1111);
 
@@ -79,7 +79,7 @@ describe('PID lifecycle — integration (T12)', () => {
       });
 
     const second = await executePrompt({ member_id: memberId, prompt: 'second', resume: false, timeout_s: 5 });
-    expect(second).toContain('ok');
+    expect(resultText(second)).toContain('ok');
 
     // 3 total calls:
     //   calls[0] = first executePrompt's main cmd (returns FLEET_PID:1111 + non-retryable error)
@@ -132,7 +132,7 @@ describe('PID lifecycle — integration (T12)', () => {
     await vi.advanceTimersByTimeAsync(5000);  // advance past SERVER_RETRY_DELAY_MS
     const result = await promise;
 
-    expect(result).toContain('retried');
+    expect(resultText(result)).toContain('retried');
 
     // Call sequence:
     //   calls[0] = kill(3333)        — pre-stored PID from prior run

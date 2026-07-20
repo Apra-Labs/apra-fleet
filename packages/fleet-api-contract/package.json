@@ -1,0 +1,43 @@
+{
+  "name": "@apralabs/fleet-api-contract",
+  "version": "0.1.0",
+  "description": "Shared Zod schemas + generated OpenAPI 3.1 contract for the apra-fleet hub<->dashboard API (JWTClaims is the anchor schema; every auth-gated entity/endpoint references it).",
+  "author": "Apra Labs",
+  "homepage": "https://github.com/Apra-Labs/apra-fleet",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Apra-Labs/apra-fleet.git",
+    "directory": "packages/fleet-api-contract"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./openapi": {
+      "types": "./dist/openapi.d.ts",
+      "import": "./dist/openapi.js"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "gen:openapi": "npm run build && node dist/scripts/gen-openapi.js"
+  },
+  "dependencies": {
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@asteasolutions/zod-to-openapi": "^7.3.0",
+    "typescript": "^5.6.0"
+  }
+}

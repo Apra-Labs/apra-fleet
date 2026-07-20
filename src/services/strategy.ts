@@ -1,7 +1,8 @@
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
@@ -12,6 +13,7 @@ import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
 import { uploadFiles, downloadFiles } from './file-transfer.js';
+import { RelayStrategy } from './relay-strategy.js';
 
 export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult>;
@@ -74,6 +76,27 @@ class LocalStrategy implements AgentStrategy {
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
       const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
 
+      // child.kill() only signals the immediate spawned process (the shell
+      // wrapper -- powershell.exe / sh). The actual provider CLI runs as a
+      // CHILD of that shell, so killing just the shell can leave the CLI
+      // (and anything it's mid-editing, e.g. a git rebase) running as an
+      // orphan -- this was the root cause of the apra-fleet-kwx data-loss
+      // incident. Always tree-kill via child.pid, which recurses to every
+      // descendant (taskkill /T on Windows, kill -9 on the process itself
+      // on POSIX where the shell typically execs into the real command).
+      function killTree() {
+        if (child.pid === undefined) return;
+        // Synchronous and BEFORE the immediate child.kill() below: taskkill
+        // needs the wrapper's PID to still be alive to recurse from it.
+        // exec() (async) loses this race -- by the time its spawned cmd.exe
+        // gets around to running taskkill, child.kill('SIGKILL') has often
+        // already terminated the wrapper, and taskkill can't traverse from
+        // an already-dead PID, silently leaving descendants running.
+        try {
+          execSync(cmds.killPid(child.pid), { stdio: 'ignore' });
+        } catch { /* best-effort; process may already be dead */ }
+      }
+
       let settled = false;
       function settle(fn: () => void) {
         if (settled) return;
@@ -88,7 +111,8 @@ class LocalStrategy implements AgentStrategy {
       function resetInactivityTimer() {
         clearTimeout(inactivityTimer);
         inactivityTimer = setTimeout(() => {
-          child.kill('SIGKILL'); // maps to TerminateProcess() on Windows via Node.js — intentional cross-platform
+          killTree();
+          child.kill('SIGKILL'); // belt-and-suspenders signal to the shell itself
           settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
         }, timeoutMs);
         inactivityTimer.unref();
@@ -99,7 +123,8 @@ class LocalStrategy implements AgentStrategy {
       let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
       if (maxTotalMs !== undefined) {
         maxTotalTimer = setTimeout(() => {
-          child.kill('SIGKILL'); // maps to TerminateProcess() on Windows via Node.js — intentional cross-platform
+          killTree();
+          child.kill('SIGKILL'); // belt-and-suspenders signal to the shell itself
           settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
         }, maxTotalMs);
         maxTotalTimer.unref();
@@ -113,10 +138,16 @@ class LocalStrategy implements AgentStrategy {
       let stderrSpillStream: fs.WriteStream | null = null;
       let stdoutSpillPath: string | null = null;
       let stderrSpillPath: string | null = null;
+      // StringDecoder buffers a trailing incomplete multi-byte UTF-8 sequence
+      // across chunks instead of substituting U+FFFD for it — a naive
+      // per-chunk `.toString()` corrupts any multi-byte character that
+      // happens to straddle a stream chunk boundary (apra-fleet-grq).
+      const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
 
       child.stdout?.on('data', (data: Buffer) => {
         resetInactivityTimer();
-        let chunk = data.toString();
+        let chunk = stdoutDecoder.write(data);
         if (!pidExtracted) {
           const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
           if (m) {
@@ -144,7 +175,7 @@ class LocalStrategy implements AgentStrategy {
         resetInactivityTimer();
         stderrLen += data.length;
         if (stderrLen <= MAX_OUTPUT_BYTES) {
-          stderr += data.toString();
+          stderr += stderrDecoder.write(data);
         } else {
           if (!stderrSpillStream) {
             stderrSpillPath = path.join(os.tmpdir(), `fleet-local-stderr-${uuid()}.txt`);
@@ -157,6 +188,16 @@ class LocalStrategy implements AgentStrategy {
 
       child.on('close', (code) => {
         clearStoredPid(this.agent.id);
+        const stdoutTail = stdoutDecoder.end();
+        const stderrTail = stderrDecoder.end();
+        if (stdoutTail) {
+          if (stdoutSpillStream) stdoutSpillStream.write(stdoutTail);
+          else stdout += stdoutTail;
+        }
+        if (stderrTail) {
+          if (stderrSpillStream) stderrSpillStream.write(stderrTail);
+          else stderr += stderrTail;
+        }
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
@@ -177,6 +218,7 @@ class LocalStrategy implements AgentStrategy {
 
       if (abortSignal) {
         const onAbort = () => {
+          killTree();
           child.kill('SIGKILL');
           settle(() => reject(new Error('Command aborted by client')));
         };
@@ -256,6 +298,9 @@ class LocalStrategy implements AgentStrategy {
 export function getStrategy(agent: Agent): AgentStrategy {
   if (agent.agentType === 'local') {
     return new LocalStrategy(agent);
+  }
+  if (agent.agentType === 'relay') {
+    return new RelayStrategy(agent);
   }
   return new RemoteStrategy(agent);
 }

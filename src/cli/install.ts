@@ -4,6 +4,8 @@ import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
+import { DEFAULT_PORT, LOG_FILE_PATH } from '../paths.js';
+import { getServiceManager } from '../services/service-manager/index.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
@@ -16,6 +18,7 @@ import {
   ProviderInstallConfig
 } from './config.js';
 import { transformAgentForOpenCode } from './agent-transform.js';
+import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
@@ -83,7 +86,15 @@ interface AssetManifest {
   fleetSkills: Record<string, string>;
   agents: Record<string, string>;
   workflows: Record<string, string>;
-  autoSprintArgsSkill: Record<string, string>;
+  // Optional: added for the workflow subsystem (apra-fleet workflow <name>).
+  // Older manifests / existing tests that don't know about these keys still
+  // work unmodified since they are additive-only.
+  workflowRuntime?: Record<string, string>;
+  agentSchemas?: Record<string, string>;
+  builtinWorkflows?: Record<string, string>;
+  // Optional for the same additive-only reason (0.3.5's installer shipped it
+  // required, but every consumer already guards with `?? {}`).
+  autoSprintArgsSkill?: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -118,6 +129,51 @@ function collectFilesRec(dir: string, base: string, rootBase?: string): Record<s
   return results;
 }
 
+// Directory names excluded (recursively) when collecting a package tree for
+// the workflow-runtime / agent-schemas / built-in-workflow sections -- mirrors
+// scripts/gen-sea-config.mjs's PACKAGE_TREE_EXCLUDE_DIRS.
+const PACKAGE_TREE_EXCLUDE_DIRS = new Set(['test', 'docs', 'scripts', 'examples']);
+
+function collectFilesFilteredRec(
+  dir: string, base: string, rootBase: string, excludeDirs: Set<string>
+): Record<string, string> {
+  const results: Record<string, string> = {};
+  if (!fs.existsSync(dir)) return results;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && excludeDirs.has(entry.name)) continue;
+    const fullPath = path.join(dir, entry.name);
+    const relPath = path.join(base, entry.name).replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      Object.assign(results, collectFilesFilteredRec(fullPath, relPath, rootBase, excludeDirs));
+    } else {
+      results[path.relative(rootBase, relPath).replace(/\\/g, '/')] = relPath;
+    }
+  }
+  return results;
+}
+
+/**
+ * Collects a package/module tree using its real root-relative path (so values
+ * stay valid `join(root, value)` disk paths -- and thus valid dev-mode
+ * extractAsset() keys), then re-keys the result under `manifestPrefix` so
+ * multiple trees merge into one manifest section without key collisions.
+ * Mirrors scripts/gen-sea-config.mjs's collectPackageTree exactly, so the
+ * namespaced keys install.ts's workflow-install step consumes are identical
+ * in dev mode and SEA mode.
+ */
+function collectPackageTree(
+  root: string, sourceDir: string, manifestPrefix: string,
+  excludeDirs: Set<string> = PACKAGE_TREE_EXCLUDE_DIRS
+): Record<string, string> {
+  const rootRelBase = path.relative(root, sourceDir).replace(/\\/g, '/');
+  const raw = collectFilesFilteredRec(sourceDir, rootRelBase, rootRelBase, excludeDirs);
+  const results: Record<string, string> = {};
+  for (const [shortKey, diskPath] of Object.entries(raw)) {
+    results[`${manifestPrefix}/${shortKey}`] = diskPath;
+  }
+  return results;
+}
+
 function buildDevManifest(root: string): AssetManifest {
   const hooks: Record<string, string> = {};
   for (const entry of fs.readdirSync(path.join(root, 'hooks'))) {
@@ -129,14 +185,23 @@ function buildDevManifest(root: string): AssetManifest {
     scripts[entry] = `scripts/${entry}`;
   }
 
-  // Source PM skills and agents from vendor/apra-pm submodule (dev mode),
-  // fall back to dist/ for npm global installs where submodule is absent.
+  // Source PM skills from vendor/apra-pm submodule (dev mode), fall back to
+  // dist/ for npm global installs where submodule is absent. Skills have no
+  // build-time resolution step, so reading the submodule directly is safe.
   const vendorPmSkills = path.join(root, 'vendor', 'apra-pm', 'skills', 'pm');
-  const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
   const pmSkillsDir = fs.existsSync(vendorPmSkills) ? vendorPmSkills : path.join(root, 'dist', 'skills', 'pm');
-  const agentsDir = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
   const pmBase = fs.existsSync(vendorPmSkills) ? 'vendor/apra-pm/skills/pm' : 'dist/skills/pm';
-  const agentsBase = fs.existsSync(vendorAgents) ? 'vendor/apra-pm/agents' : 'dist/agents';
+
+  // Read straight from the submodule -- same as skills above. (Each
+  // vendor/apra-pm/agents/*.md file used to contain an unresolved
+  // `<!-- GRAPH-SEMANTICS -->` marker that only scripts/vendor-pm.mjs's
+  // submodule -> dist/agents copy step resolved, which is why this used to
+  // prefer dist/agents when present and warn on the raw-submodule fallback.
+  // apra-pm PR#29 replaced that marker with an explicit prose pointer to
+  // vendor/apra-pm/agents/_shared/GRAPH-SEMANTICS.md in every agent file, so
+  // there is nothing left to resolve and no dist/agents dependency here.)
+  const agentsDir = path.join(root, 'vendor', 'apra-pm', 'agents');
+  const agentsBase = 'vendor/apra-pm/agents';
 
   const skills = collectFilesRec(pmSkillsDir, pmBase, pmBase);
   const agents = collectFilesRec(agentsDir, agentsBase, agentsBase);
@@ -166,8 +231,48 @@ function buildDevManifest(root: string): AssetManifest {
     }
   }
 
+  // Workflow subsystem parity (mirrors scripts/gen-sea-config.mjs) so `node
+  // dist/index.js install` behaves identically to the SEA binary. Each source
+  // tree is optional -- an npm global install (no node_modules/ajv, no vendor
+  // submodule, no packages/) simply omits the section, same as an older SEA
+  // manifest built before this epic; the install step warns and skips.
+  const workflowRuntimeDir = path.join(root, 'packages', 'apra-fleet-workflow');
+  const clientDir = path.join(root, 'packages', 'apra-fleet-client');
+  const ajvDir = path.join(root, 'node_modules', 'ajv');
+  let workflowRuntime: Record<string, string> | undefined;
+  if (fs.existsSync(workflowRuntimeDir) && fs.existsSync(clientDir) && fs.existsSync(ajvDir)) {
+    workflowRuntime = {
+      ...collectPackageTree(root, workflowRuntimeDir, '@apralabs/apra-fleet-workflow'),
+      ...collectPackageTree(root, clientDir, '@apralabs/apra-fleet-client'),
+      ...collectPackageTree(root, ajvDir, 'ajv'),
+      ...collectPackageTree(root, path.join(root, 'node_modules', 'fast-deep-equal'), 'fast-deep-equal'),
+      ...collectPackageTree(root, path.join(root, 'node_modules', 'fast-uri'), 'fast-uri'),
+      ...collectPackageTree(root, path.join(root, 'node_modules', 'json-schema-traverse'), 'json-schema-traverse'),
+      ...collectPackageTree(root, path.join(root, 'node_modules', 'require-from-string'), 'require-from-string'),
+    };
+  }
+
+  const agentSchemasDir = path.join(root, 'vendor', 'apra-pm', 'agents', 'schemas');
+  let agentSchemas: Record<string, string> | undefined;
+  if (fs.existsSync(agentSchemasDir)) {
+    agentSchemas = collectPackageTree(root, agentSchemasDir, 'agentSchemas');
+  }
+
+  const autoSprintDir = path.join(root, 'packages', 'apra-fleet-se');
+  const helloWorldDir = path.join(root, 'examples', 'workflows', 'hello-world');
+  let builtinWorkflows: Record<string, string> | undefined;
+  if (fs.existsSync(autoSprintDir) || fs.existsSync(helloWorldDir)) {
+    builtinWorkflows = {
+      ...(fs.existsSync(autoSprintDir) ? collectPackageTree(root, autoSprintDir, 'auto-sprint') : {}),
+      ...(fs.existsSync(helloWorldDir) ? collectPackageTree(root, helloWorldDir, 'hello-world') : {}),
+    };
+  }
+
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
-  return { version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows, autoSprintArgsSkill };
+  return {
+    version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows,
+    workflowRuntime, agentSchemas, builtinWorkflows, autoSprintArgsSkill,
+  };
 }
 
 let _manifestOverride: AssetManifest | null = null;
@@ -414,21 +519,27 @@ function mergeCopilotConfig(paths: ProviderInstallConfig, mcpConfig: any): void 
 function mergeOpenCodeConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
   settings.mcp = settings.mcp || {};
-  settings.mcp['apra-fleet'] = {
-    type: 'local',
-    command: [mcpConfig.command, ...(mcpConfig.args || [])],
-    enabled: true,
-  };
+  settings.mcp['apra-fleet'] = mcpConfig.url
+    ? { type: 'remote', url: mcpConfig.url, enabled: true }
+    : {
+        type: 'local',
+        command: [mcpConfig.command, ...(mcpConfig.args || [])],
+        enabled: true,
+      };
   writeConfig(paths, settings);
 }
 
 function mergeCodexConfig(paths: ProviderInstallConfig, mcpConfig: any): void {
   const settings = readConfig(paths);
   settings.mcp_servers = settings.mcp_servers || {};
-  settings.mcp_servers['apra-fleet'] = {
-    command: mcpConfig.command.replace(/\\/g, '/'),
-    args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
-  };
+  if (mcpConfig.url) {
+    settings.mcp_servers['apra-fleet'] = { url: mcpConfig.url };
+  } else {
+    settings.mcp_servers['apra-fleet'] = {
+      command: mcpConfig.command.replace(/\\/g, '/'),
+      args: mcpConfig.args.map((a: string) => a.replace(/\\/g, '/')),
+    };
+  }
 
   writeConfig(paths, settings);
 }
@@ -504,8 +615,11 @@ Usage:
   apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
+  apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
   apra-fleet install --force           Stop a running server before installing
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
+  apra-fleet install --transport http  Register MCP server with HTTP transport (default)
+  apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
   apra-fleet install --help            Show this help
 
 Options:
@@ -513,8 +627,13 @@ Options:
                           Defaults to claude. Note: --llm gemini shows a warning about sequential
                           dispatch — Gemini does not support background agents, so fleet operations
                           run sequentially rather than in parallel.
+  --transport <mode>      MCP transport to use: http (default) or stdio. HTTP uses the singleton
+                          fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
   --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
   --no-skill              Alias for --skill none.
+  --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
+                          ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
+                          schemas), and /workflows/{auto-sprint,hello-world} (built-in workflows).
   --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
     process.exit(0);
     return;
@@ -570,12 +689,62 @@ Options:
     skillMode = 'none';
   }
 
+  // Parse --workflows flag: default (no flag) = all; accepts all|none
+  type WorkflowsMode = 'all' | 'none';
+  let workflowsMode: WorkflowsMode = 'all';
+  const workflowsEqualArg = args.find(a => a.startsWith('--workflows='));
+  if (workflowsEqualArg) {
+    const val = workflowsEqualArg.split('=')[1];
+    if (val === 'all' || val === 'none') {
+      workflowsMode = val;
+    } else {
+      console.error(`Error: --workflows value must be one of: all, none (got "${val}")`);
+      process.exit(1);
+    }
+  } else {
+    const workflowsIdx = args.indexOf('--workflows');
+    if (workflowsIdx >= 0) {
+      const nextArg = args[workflowsIdx + 1];
+      if (nextArg === 'all' || nextArg === 'none') {
+        workflowsMode = nextArg;
+      } else {
+        console.error(`Error: --workflows requires a value: all or none.`);
+        process.exit(1);
+      }
+    }
+  }
+
   // Parse --force flag
   const force = args.includes('--force');
 
+  // Parse --transport flag (default: http)
+  type TransportMode = 'http' | 'stdio';
+  let transport: TransportMode = 'http';
+  const transportEqualArg = args.find(a => a.startsWith('--transport='));
+  if (transportEqualArg) {
+    const val = transportEqualArg.split('=')[1];
+    if (val === 'http' || val === 'stdio') {
+      transport = val;
+    } else {
+      console.error(`Error: --transport value must be one of: http, stdio (got "${val}")`);
+      process.exit(1);
+    }
+  } else {
+    const transportIdx = args.indexOf('--transport');
+    if (transportIdx >= 0 && transportIdx < args.length - 1) {
+      const val = args[transportIdx + 1];
+      if (val === 'http' || val === 'stdio') {
+        transport = val;
+      } else {
+        console.error(`Error: --transport value must be one of: http, stdio (got "${val}")`);
+        process.exit(1);
+      }
+    }
+  }
+
   // Reject unknown flags to catch typos early
-  const knownFlagPrefixes = ['--llm=', '--skill='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--force', '--help', '-h']);
+  const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -587,9 +756,13 @@ Options:
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
   const installAgents = installPm && paths.agentsDir !== undefined;
+  const installWorkflows = workflowsMode === 'all';
+  const serviceStep = isSea() && transport === 'http';
   let totalSteps = (installFleet && installPm) ? 8 : installFleet ? 7 : installPm ? 8 : 6;
   if (installAgents) totalSteps++;
   if (installPm) totalSteps++; // cost.js extraction + workflow copy step
+  if (installWorkflows) totalSteps++; // workflow-subsystem runtime/schemas/built-ins step
+  if (serviceStep) totalSteps++;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
     console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
@@ -680,35 +853,57 @@ ${killHint}
   // --- Step 5: Register MCP server ---
   console.log(`  [5/${totalSteps}] Registering MCP server...`);
 
-  // 'run' is the subcommand that starts the MCP server; it is passed as the last arg so
-  // LLM providers invoke `apra-fleet run` (or `node dist/index.js run`) and the no-arg
-  // default (installation) is never accidentally triggered by the MCP host.
-  const mcpConfig = isSea()
-    ? { command: binaryPath, args: ['run'] }
-    : isNpmGlobalInstall()
-    ? { command: process.execPath, args: [process.argv[1], 'run'] }
-    : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js'), 'run'] };
+  const fleetPort = DEFAULT_PORT;
+  const fleetUrl = `http://localhost:${fleetPort}/mcp`;
 
-  if (llm === 'claude') {
-    try {
-      run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
-    } catch { /* not registered */ }
+  if (transport === 'http') {
+    if (llm === 'claude') {
+      try {
+        run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+      } catch { /* not registered */ }
+      run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+    } else if (llm === 'gemini') {
+      mergeGeminiConfig(paths, { httpUrl: fleetUrl });
+    } else if (llm === 'codex') {
+      mergeCodexConfig(paths, { url: fleetUrl });
+    } else if (llm === 'copilot') {
+      mergeCopilotConfig(paths, { url: fleetUrl, type: 'http' });
+    } else if (llm === 'agy') {
+      mergeAgyConfig(paths, { url: fleetUrl });
+    } else if (llm === 'opencode') {
+      mergeOpenCodeConfig(paths, { url: fleetUrl });
+    }
+  } else {
+    // 'run --transport stdio' starts the stdio MCP server; passed as trailing args so
+    // LLM providers invoke `apra-fleet run` (or `node dist/index.js run`) and the no-arg
+    // default (installation) is never accidentally triggered by the MCP host.
+    const mcpConfig = isSea()
+      ? { command: binaryPath, args: ['run', '--transport', 'stdio'] }
+      : isNpmGlobalInstall()
+      ? { command: process.execPath, args: [process.argv[1], 'run', '--transport', 'stdio'] }
+      : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js'), 'run', '--transport', 'stdio'] };
 
-    // Build the claude MCP command from the actual mcpConfig structure.
-    // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
-    const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
-    const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
-    run(cmd);
-  } else if (llm === 'gemini') {
-    mergeGeminiConfig(paths, mcpConfig);
-  } else if (llm === 'codex') {
-    mergeCodexConfig(paths, mcpConfig);
-  } else if (llm === 'copilot') {
-    mergeCopilotConfig(paths, mcpConfig);
-  } else if (llm === 'agy') {
-    mergeAgyConfig(paths, mcpConfig);
-  } else if (llm === 'opencode') {
-    mergeOpenCodeConfig(paths, mcpConfig);
+    if (llm === 'claude') {
+      try {
+        run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+      } catch { /* not registered */ }
+
+      // Build the claude MCP command from the actual mcpConfig structure.
+      // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
+      const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
+      const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
+      run(cmd);
+    } else if (llm === 'gemini') {
+      mergeGeminiConfig(paths, mcpConfig);
+    } else if (llm === 'codex') {
+      mergeCodexConfig(paths, mcpConfig);
+    } else if (llm === 'copilot') {
+      mergeCopilotConfig(paths, mcpConfig);
+    } else if (llm === 'agy') {
+      mergeAgyConfig(paths, mcpConfig);
+    } else if (llm === 'opencode') {
+      mergeOpenCodeConfig(paths, mcpConfig);
+    }
   }
 
   // --- Step 6: Install fleet skill (optional) ---
@@ -867,16 +1062,37 @@ Then re-run:  apra-fleet install`);
     console.log(`  [${agentStep}/${totalSteps}] Installing PM agents...`);
     const agentsDestDir = paths.agentsDir!;
     fs.mkdirSync(agentsDestDir, { recursive: true });
+    // #336's loadAgentAssets() unifies SEA and dev-mode sourcing; its
+    // dev-mode path reads vendor/apra-pm/agents directly (dist/agents only
+    // as a fallback), preserving this branch's no-dist/agents rule, and it
+    // recurses into _shared/ and schemas/ which the old flat readdir missed.
     for (const { relPath, content: rawContent } of loadAgentAssets()) {
       const content = llm === 'opencode' ? transformAgentForOpenCode(rawContent, relPath) : rawContent;
       writeAssetFile(path.join(agentsDestDir, relPath), content);
     }
   }
 
+  // --- Workflow-subsystem install step (optional, --workflows all|none) ---
+  // Writes ~/.apra-fleet/{node_modules,schemas,workflows/{auto-sprint,hello-world}}.
+  // See docs/workflow-subsystem-plan.md Section 6 / Section 2.1 for the layout.
+  if (installWorkflows) {
+    const workflowsStepNum = serviceStep ? totalSteps - 2 : totalSteps - 1;
+    console.log(`  [${workflowsStepNum}/${totalSteps}] Installing workflow runtime...`);
+    // Extraction itself (node_modules / schemas / built-in workflows / .installed.json)
+    // lives in workflow-assets.ts -- the SAME code path workflow.ts's self-heal
+    // launcher path uses on-demand (apra-fleet-7pm.8).
+    extractWorkflowSubsystemAssets({
+      manifest,
+      extractAssetBuffer,
+      version: serverVersion,
+    });
+  }
+
   // --- Beads install step ---
   // shell:true required on Windows — npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
-  console.log(`  [${totalSteps}/${totalSteps}] Installing Beads task tracker...`);
+  const beadsStep = serviceStep ? totalSteps - 1 : totalSteps;
+  console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
   try {
     // Check if already installed
     try {
@@ -901,7 +1117,26 @@ Then re-run:  apra-fleet install`);
   }
 
   // Write install-config.json (merge provider entry)
-  writeInstallConfig(llm, skillMode);
+  writeInstallConfig(llm, skillMode, workflowsMode);
+
+  // --- Step N: Register and start service (SEA + HTTP mode only) ---
+  let serviceRegistered = false;
+  if (serviceStep) {
+    console.log(`  [${totalSteps}/${totalSteps}] Registering and starting service...`);
+    const svcMgr = await getServiceManager();
+    try {
+      await svcMgr.register(binaryPath, ['--transport', 'http'], LOG_FILE_PATH);
+      try {
+        await svcMgr.start();
+        serviceRegistered = true;
+      } catch (startErr) {
+        try { await svcMgr.unregister(); } catch {}
+        throw startErr;
+      }
+    } catch (err) {
+      console.warn(`    Service registration skipped: ${(err as Error).message}`);
+    }
+  }
 
   // --- Done ---
   let beadsVersion = 'installed';
@@ -915,13 +1150,14 @@ Then re-run:  apra-fleet install`);
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   const instructions = llm === 'claude' ? 'Run /mcp in Claude Code to load the server.' : `Restart ${paths.name} to load the server.`;
   const forceNote = force ? `\nRestart ${clientName} to reload the MCP server.` : '';
+  const serviceLine = serviceStep ? `\n  Service:     ${serviceRegistered ? 'registered and running' : 'registration skipped'}` : '';
   console.log(`
 Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
   Binary:      ${BIN_DIR}
   Hooks:       ${HOOKS_DIR}
   Scripts:     ${SCRIPTS_DIR}
   Settings:    ${paths.settingsFile}${installFleet ? `\n  Fleet Skill: ${paths.fleetSkillsDir}` : ''}${installPm ? `\n  PM Skill:    ${paths.skillsDir}` : ''}${installAgents ? `\n  Agents:      ${paths.agentsDir}` : ''}
-  Beads:       ${beadsVersion}
+  Beads:       ${beadsVersion}${serviceLine}
 
 ${instructions}${forceNote}
 `);

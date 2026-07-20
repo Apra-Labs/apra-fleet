@@ -1,0 +1,31 @@
+apra-fleet install
+
+Install the apra-fleet binary, hooks, MCP server registration, and skills.
+
+Usage:
+  apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
+  apra-fleet install --skill all       Same as bare install (all skills)
+  apra-fleet install --skill fleet     Install fleet skill only
+  apra-fleet install --skill pm        Install PM skill (also installs fleet -- PM depends on fleet)
+  apra-fleet install --skill none      Skip skill installation
+  apra-fleet install --no-skill        Same as --skill none
+  apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
+  apra-fleet install --force           Stop a running server before installing
+  apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
+  apra-fleet install --transport http  Register MCP server with HTTP transport (default)
+  apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
+  apra-fleet install --help            Show this help
+
+Options:
+  --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy, opencode.
+                          Defaults to claude. Note: --llm gemini shows a warning about sequential
+                          dispatch -- Gemini does not support background agents, so fleet operations
+                          run sequentially rather than in parallel.
+  --transport <mode>      MCP transport to use: http (default) or stdio. HTTP uses the singleton
+                          fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
+  --skill <mode>          Which skills to install: all (default), fleet, pm, or none.
+  --no-skill              Alias for --skill none.
+  --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
+                          ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
+                          schemas), and /workflows/{auto-sprint,hello-world} (built-in workflows).
+  --force                 Stop a running apra-fleet server before installing (SEA mode only).

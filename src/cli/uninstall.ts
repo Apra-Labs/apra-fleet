@@ -5,12 +5,16 @@ import { execSync } from 'node:child_process';
 import * as readlinePromises from 'node:readline/promises';
 import { serverVersion } from '../version.js';
 import type { LlmProvider } from '../types.js';
-import { isApraFleetRunning, killApraFleet } from './install.js';
+import { isApraFleetRunning } from './install.js';
+import { getServiceManager } from '../services/service-manager/index.js';
 import {
   BIN_DIR,
   HOOKS_DIR,
   SCRIPTS_DIR,
   FLEET_BASE,
+  NODE_MODULES_DIR,
+  SCHEMAS_DIR,
+  WORKFLOWS_DIR,
   getProviderInstallConfig,
   readConfig,
   writeConfig,
@@ -18,6 +22,7 @@ import {
   PROVIDER_STANDARD_MODELS,
   ProviderInstallConfig
 } from './config.js';
+import { BUILTIN_WORKFLOW_NAMES } from './workflow-assets.js';
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
   const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' } : {};
@@ -155,6 +160,72 @@ function cleanupSettings(paths: ProviderInstallConfig, dryRun: boolean): boolean
   return changed;
 }
 
+// Workflow subsystem cleanup (Phase 3 - Task 8): removes the shared
+// ~/.apra-fleet/{node_modules,schemas} runtime and ONLY the built-in
+// workflow subdirectories recorded in workflows/.installed.json's `builtin`
+// array. workflows/ root is only removed if empty of user-authored content
+// afterward; otherwise a "kept user workflows: <names>" message is printed.
+// dry-run prints the identical plan without mutating the filesystem -- every
+// mutation below is gated by `!dryRun` while the console output that
+// describes the plan runs unconditionally, mirroring cleanupSettings() above.
+function cleanupWorkflows(dryRun: boolean): boolean {
+  let anythingRemoved = false;
+
+  if (!fs.existsSync(WORKFLOWS_DIR) && !fs.existsSync(NODE_MODULES_DIR) && !fs.existsSync(SCHEMAS_DIR)) {
+    return false;
+  }
+
+  console.log('Cleaning up workflow subsystem...');
+
+  if (fs.existsSync(NODE_MODULES_DIR)) {
+    console.log(`  - Removing workflow runtime: ${NODE_MODULES_DIR}`);
+    if (!dryRun) fs.rmSync(NODE_MODULES_DIR, { recursive: true, force: true });
+    anythingRemoved = true;
+  }
+
+  if (fs.existsSync(SCHEMAS_DIR)) {
+    console.log(`  - Removing workflow schemas: ${SCHEMAS_DIR}`);
+    if (!dryRun) fs.rmSync(SCHEMAS_DIR, { recursive: true, force: true });
+    anythingRemoved = true;
+  }
+
+  if (fs.existsSync(WORKFLOWS_DIR)) {
+    // Determine the built-in list from .installed.json (written by install.ts's
+    // workflow-install step); fall back to the static built-in name list if the
+    // manifest is missing so uninstall still cleans up a partially-installed tree.
+    let builtinNames: string[] = BUILTIN_WORKFLOW_NAMES;
+    const installedJsonPath = path.join(WORKFLOWS_DIR, '.installed.json');
+    if (fs.existsSync(installedJsonPath)) {
+      try {
+        const installed = JSON.parse(fs.readFileSync(installedJsonPath, 'utf-8'));
+        if (Array.isArray(installed.builtin)) builtinNames = installed.builtin;
+      } catch { /* fall back to the static list */ }
+    }
+
+    const entries = (fs.readdirSync(WORKFLOWS_DIR, { withFileTypes: true }) || []) as fs.Dirent[];
+    const dirNames = entries.filter(e => e.isDirectory()).map(e => e.name);
+    const keptUserWorkflows = dirNames.filter(name => !builtinNames.includes(name));
+
+    for (const name of dirNames) {
+      if (!builtinNames.includes(name)) continue;
+      const dir = path.join(WORKFLOWS_DIR, name);
+      console.log(`  - Removing built-in workflow: ${dir}`);
+      if (!dryRun) fs.rmSync(dir, { recursive: true, force: true });
+      anythingRemoved = true;
+    }
+
+    if (keptUserWorkflows.length === 0) {
+      console.log(`  - Removing workflows directory: ${WORKFLOWS_DIR}`);
+      if (!dryRun) fs.rmSync(WORKFLOWS_DIR, { recursive: true, force: true });
+      anythingRemoved = true;
+    } else {
+      console.log(`  - kept user workflows: ${keptUserWorkflows.join(', ')}`);
+    }
+  }
+
+  return anythingRemoved;
+}
+
 export async function runUninstall(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`apra-fleet uninstall
@@ -164,7 +235,7 @@ Uninstall apra-fleet binary, hooks, MCP registration, and skills.
 Usage:
   apra-fleet uninstall                   Full uninstall (all recorded providers)
   apra-fleet uninstall --llm <provider>  Uninstall for specific provider only
-  apra-fleet uninstall --skill <mode>    Uninstall specific skills (fleet|pm|all)
+  apra-fleet uninstall --skill <mode>    Uninstall specific skills (fleet|pm|workflows|all)
   apra-fleet uninstall --dry-run         Log actions without modifying files
   apra-fleet uninstall --force           Stop running server automatically before uninstall
   apra-fleet uninstall --yes             Skip confirmation prompt
@@ -172,7 +243,9 @@ Usage:
 
 Options:
   --llm <provider>   Specific provider to clean up: claude, gemini, codex, copilot, agy, opencode.
-  --skill <mode>     Skills to remove: fleet, pm, or all (default).
+  --skill <mode>     Skills to remove: fleet, pm, workflows, or all (default). "workflows" removes
+                      the ~/.apra-fleet/{node_modules,schemas} runtime and built-in workflow dirs,
+                      leaving any user-authored workflows/<name>/ directories in place.
   --dry-run          Preview the uninstall process without modifying anything.
   --force            Automatically stop the running server before uninstalling.
   --yes              Bypass confirmation prompt.`);
@@ -197,17 +270,18 @@ Options:
   }
 
   // Parse --skill
-  type SkillMode = 'fleet' | 'pm' | 'all';
+  type SkillMode = 'fleet' | 'pm' | 'workflows' | 'all';
+  const skillModes = ['fleet', 'pm', 'workflows', 'all'];
   let skillMode: SkillMode = 'all';
   const skillArg = args.find(a => a.startsWith('--skill='));
   if (skillArg) {
     const val = skillArg.split('=')[1];
-    if (val === 'fleet' || val === 'pm' || val === 'all') skillMode = val;
+    if (skillModes.includes(val)) skillMode = val as SkillMode;
   } else {
     const idx = args.indexOf('--skill');
     if (idx >= 0 && idx < args.length - 1) {
       const val = args[idx + 1];
-      if (val === 'fleet' || val === 'pm' || val === 'all') skillMode = val;
+      if (skillModes.includes(val)) skillMode = val as SkillMode;
     }
   }
 
@@ -224,18 +298,26 @@ Options:
 
   console.log(`\nUninstalling Apra Fleet ${serverVersion}...${dryRun ? ' (DRY RUN)' : ''}\n`);
 
+  const svcMgr = await getServiceManager();
+
   if (isApraFleetRunning()) {
     if (dryRun && force) {
       console.log('  Note: apra-fleet server is currently running (would be stopped by --force).');
     } else if (force) {
-      killApraFleet();
-      await new Promise(resolve => setTimeout(resolve, 500));
-      console.log('  Stopped running server.');
+      if (!dryRun) {
+        try { await svcMgr.stop(); } catch {}
+        console.log('  Stopped running server.');
+      }
     } else {
       console.error('Error: apra-fleet server is currently running.\n\n  Run with --force to stop it automatically:\n    apra-fleet uninstall --force\n');
       process.exit(1);
       return;
     }
+  }
+
+  // Remove service unit (idempotent -- tolerates "not installed")
+  if (!dryRun) {
+    try { await svcMgr.unregister(); } catch {}
   }
 
   const installConfig = readInstallConfig();
@@ -311,6 +393,12 @@ Options:
         anythingRemoved = true;
       }
     }
+  }
+
+  // Workflow subsystem removal (Phase 3 - Task 8): shared ~/.apra-fleet assets,
+  // not tied to any specific --llm target.
+  if (skillMode === 'all' || skillMode === 'workflows') {
+    if (cleanupWorkflows(dryRun)) anythingRemoved = true;
   }
 
   if (!dryRun && targetLlm === 'all' && skillMode === 'all') {

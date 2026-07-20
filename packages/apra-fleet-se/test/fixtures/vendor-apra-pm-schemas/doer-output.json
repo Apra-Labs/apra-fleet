@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/doer-output@1",
+  "version": 1,
+  "title": "doer output",
+  "description": "Canonical machine-readable output contract for the doer role. See agents/doer.md Step 3 (VERIFY checkpoint) and Branch and secrets rules (BLOCKED) for the prose contract this mirrors.",
+  "type": "object",
+  "required": ["status", "closedIds", "notes"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["VERIFY", "BLOCKED"]
+    },
+    "closedIds": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

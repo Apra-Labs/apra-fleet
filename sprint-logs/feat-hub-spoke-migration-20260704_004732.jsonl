@@ -1,0 +1,25 @@
+{\"ts\":\"2026-07-04T00:47:32Z\",\"type\":\"meta\",\"branch\":\"feat/hub-spoke-migration\",\"startedAt\":\"20260704_004732\",\"roots\":[\"apra-fleet-us9\",\"apra-fleet-20o\"],\"goal\":\"P1/P2\",\"transcriptDir\":\"C:\\Users\\akhil\.claude\\projects\\C--akhil-git-apra-fleet-reorg\"}
+{"ts":"2026-07-04T00:47:32Z","type":"cycle-start","cycle":1,"branch":"feat/hub-spoke-migration"}
+{"ts":"2026-07-04T03:53:07-0400","cycle":"setup","phase":"Plan","label":"setup-shell","model":"cheap","context":"","outTokens":0,"costUsd":0}
+{"ts":"2026-07-04T03:53:07-0400","cycle":"setup","phase":"Plan","label":"setup","model":"cheap","context":"","outTokens":0,"costUsd":0}
+{"ts":"2026-07-04T03:53:07-0400","cycle":"setup","phase":"Plan","label":"sprint-meta","model":"cheap","context":"","outTokens":0,"costUsd":0}
+{"ts":"2026-07-04T03:53:07-0400","cycle":1,"phase":"Plan","label":"cycle-meta-c1","model":"cheap","context":"","outTokens":0,"costUsd":0}
+{"ts":"2026-07-04T03:53:07-0400","cycle":1,"phase":"Plan","label":"cycle-state","model":"cheap","context":"","outTokens":0,"costUsd":0}
+{"ts":"2026-07-04T03:53:07-0400","cycle":1,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":0,"costUsd":0}
+{"ts":"2026-07-04T03:53:07-0400","cycle":1,"phase":"Develop","label":"doer-c1-i0: apra-fleet-2xs.5 apra-fleet-2xs.11 apra-fleet-2xs.13 +7more","model":"standard","context":"tasks apra-fleet-2xs.5, apra-fleet-2xs.11, apra-fleet-2xs.13, apra-fleet-2xs.14, apra-fleet-us9.1, apra-fleet-us9.9, apra-fleet-2xs.3, apra-fleet-2xs.4, apra-fleet-2xs.9, apra-fleet-us9.3","outTokens":63708,"costUsd":0.9556}
+{"ts":"2026-07-04T03:53:07-0400","cycle":1,"phase":"Develop","label":"reviewer-c1-i1: apra-fleet-2xs.5 apra-fleet-2xs.11 apra-fleet-2xs.13 +7more","model":"standard","context":"reviewing tasks apra-fleet-2xs.5, apra-fleet-2xs.11, apra-fleet-2xs.13, apra-fleet-2xs.14, apra-fleet-us9.1, apra-fleet-us9.9, apra-fleet-2xs.3, apra-fleet-2xs.4, apra-fleet-2xs.9, apra-fleet-us9.3","outTokens":7551,"costUsd":0.1133}
+{"ts":"2026-07-04T04:05:52-04:00","cycle":1,"phase":"Develop","label":"log-append-iter-c1-i1","model":"cheap","context":"8 new entries","outTokens":2565,"costUsd":0.0128}
+{"ts":"2026-07-04T04:05:52-04:00","cycle":1,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":4354,"costUsd":0.0218}
+{"ts":"2026-07-04T04:05:52-04:00","cycle":1,"phase":"Develop","label":"doer-c1-i1: apra-fleet-fnz.2 apra-fleet-fnz.3","model":"standard","context":"tasks apra-fleet-fnz.2, apra-fleet-fnz.3","outTokens":20317,"costUsd":0.3048}
+{"ts":"2026-07-04T04:05:52-04:00","cycle":1,"phase":"Develop","label":"reviewer-c1-i2: apra-fleet-fnz.2 apra-fleet-fnz.3","model":"standard","context":"reviewing tasks apra-fleet-fnz.2, apra-fleet-fnz.3","outTokens":4608,"costUsd":0.0691}
+{"ts":"2026-07-04T00:47:32Z","type":"cycle-start","cycle":2,"branch":"feat/hub-spoke-migration"}
+{"ts":"2026-07-04T04:07:59-0400","cycle":1,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":3838,"costUsd":0.0192}
+{"ts":"2026-07-04T04:07:59-0400","cycle":1,"phase":"Develop","label":"log-append-iter-c1-i2","model":"cheap","context":"4 new entries","outTokens":3838,"costUsd":0.0192}
+{"ts":"2026-07-04T04:07:59-0400","cycle":1,"phase":"Develop","label":"push-sha-c1","model":"cheap","context":"","outTokens":659,"costUsd":0.0033}
+{"ts":"2026-07-04T04:07:59-0400","cycle":1,"phase":"Develop","label":"exit-check","model":"cheap","context":"","outTokens":3952,"costUsd":0.0198}
+{"ts":"2026-07-04T04:10:51-0400","cycle":2,"phase":"Plan","label":"cycle-meta-c2","model":"cheap","context":"","outTokens":2181,"costUsd":0.0109}
+{"ts":"2026-07-04T04:10:51-0400","cycle":2,"phase":"Develop","label":"log-append-end-c1","model":"cheap","context":"4 new entries","outTokens":3076,"costUsd":0.0154}
+{"ts":"2026-07-04T04:10:51-0400","cycle":2,"phase":"Plan","label":"cycle-state","model":"cheap","context":"","outTokens":8026,"costUsd":0.0401}
+{"ts":"2026-07-04T04:10:51-0400","cycle":2,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":1731,"costUsd":0.0087}
+{"ts":"2026-07-04T04:10:51-0400","cycle":2,"phase":"Develop","label":"push-sha-c2","model":"cheap","context":"","outTokens":606,"costUsd":0.003}
+{"ts":"2026-07-04T04:10:51-0400","cycle":2,"phase":"Develop","label":"exit-check","model":"cheap","context":"","outTokens":3795,"costUsd":0.019}

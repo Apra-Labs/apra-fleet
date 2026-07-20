@@ -1,10 +1,14 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
-import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+
+const execFileAsync = promisify(execFile);
 
 export class ClaudeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'claude';
@@ -33,14 +37,18 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv, agentName } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     const turns = maxTurns ?? 50;
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    let cmd = `cd "${escapedFolder}" && claude -p "${instruction}" --output-format json --max-turns ${turns}`;
+    let cmd = `cd "${escapedFolder}" && claude`;
+    if (agentName) {
+      cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
+    }
+    cmd += ` -p "${instruction}" --output-format json --max-turns ${turns}`;
     if (resuming && sessionId) {
       cmd += ` ${buildResumeFlag(sessionId)}`;
     } else if (sessionId) {
@@ -81,6 +89,8 @@ export class ClaudeProvider implements ProviderAdapter {
         isError: obj.is_error === true || obj.subtype === 'error' || result.code !== 0,
         raw,
         usage: extractUsage(obj.usage),
+        subtype: obj.subtype,
+        terminalReason: obj.terminal_reason,
       };
     };
 
@@ -100,6 +110,8 @@ export class ClaudeProvider implements ProviderAdapter {
           isError: parsed.is_error === true || result.code !== 0,
           raw,
           usage: extractUsage(parsed.usage),
+          subtype: parsed.subtype,
+          terminalReason: parsed.terminal_reason,
         };
       }
     } catch { /* not valid JSON - try line-by-line JSONL below */ }
@@ -204,6 +216,29 @@ export class ClaudeProvider implements ProviderAdapter {
 
   headlessInvocation(promptLiteral: string): string {
     return `-p "${promptLiteral}"`;
+  }
+
+  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
+    // Live-verified (apra-fleet-2xs.5, docs/member-onboarding-journey.md 3a): `claude
+    // mcp add` is Claude's own native registration mechanism -- it writes .mcp.json
+    // (project scope) or the user-scope config itself, round-tripping the bearer
+    // header intact. Shelling out here (rather than hand-writing .mcp.json) means
+    // future changes to Claude Code's config format are Anthropic's problem, not
+    // ours, and it composes correctly with whatever the user does afterward via the
+    // same CLI.
+    const args = [
+      'mcp', 'add',
+      '--transport', 'http',
+      '--scope', opts.scope,
+      'apra-fleet-member',
+      opts.url,
+      '--header', `Authorization: Bearer ${opts.token}`,
+    ];
+    await execFileAsync('claude', args, { cwd: opts.workFolder });
+    return {
+      mechanism: 'cli-verb',
+      detail: `claude mcp add --transport http --scope ${opts.scope} apra-fleet-member <url> (cwd=${opts.workFolder})`,
+    };
   }
 }
 

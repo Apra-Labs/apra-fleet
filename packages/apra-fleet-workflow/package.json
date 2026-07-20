@@ -1,0 +1,26 @@
+{
+  "name": "@apralabs/apra-fleet-workflow",
+  "version": "1.0.0",
+  "description": "Workflow Engine for Apra Fleet",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "main": "src/workflow/index.mjs",
+  "exports": {
+    ".": "./src/workflow/index.mjs",
+    "./engine": "./src/workflow/engine.mjs",
+    "./viewer": "./src/viewer/index.mjs",
+    "./viewer/html-utils": "./src/viewer/html-utils.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "type": "module",
+  "dependencies": {
+    "@apralabs/apra-fleet-client": "*",
+    "ajv": "^8.12.0"
+  },
+  "author": "Apra Labs",
+  "license": "Apache-2.0"
+}

@@ -1,4 +1,4 @@
-export type PromptErrorCategory = 'auth' | 'server' | 'overloaded' | 'unknown';
+export type PromptErrorCategory = 'auth' | 'server' | 'overloaded' | 'max_turns' | 'unknown';
 
 const patterns: Array<{ category: PromptErrorCategory; re: RegExp }> = [
   { category: 'auth', re: /not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error/i },

@@ -7,6 +7,12 @@ import * as readline from 'node:readline/promises';
 import { runUninstall } from '../src/cli/uninstall.js';
 import * as config from '../src/cli/config.js';
 import * as install from '../src/cli/install.js';
+import { serverVersion } from '../src/version.js';
+import {
+  normalizeCommandSurfaceOutput,
+  readCommandSurfaceFixture,
+  fillFixturePlaceholders,
+} from './helpers/regression-command-surface.js';
 
 vi.mock('node:fs');
 vi.mock('node:child_process');
@@ -30,6 +36,8 @@ describe('uninstall', () => {
     // Default mocks for fs
     vi.spyOn(fs, 'existsSync').mockReturnValue(true);
     vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({ providers: { claude: { skill: 'all' } } }));
+    // No built-in/user workflow dirs by default; individual tests override this.
+    vi.spyOn(fs, 'readdirSync').mockReturnValue([]);
 
     // Default mock for readline
     (readline.createInterface as any).mockReturnValue({
@@ -62,6 +70,33 @@ describe('uninstall', () => {
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('(DRY RUN)'));
     expect(fs.rmSync).not.toHaveBeenCalled();
     expect(fs.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  // Regression guard (apra-fleet-7pm.14): uninstall --dry-run output must stay
+  // byte-for-byte unchanged versus
+  // tests/fixtures/regression-command-surface/uninstall-dry-run.txt after this
+  // epic's install.ts/uninstall.ts/update.ts/index.ts edits land. Relies on
+  // the default beforeEach mocks (single claude provider, skill 'all', no
+  // settings changes, empty workflows dir listing) which reproduce the exact
+  // scenario the fixture was captured from.
+  it('--dry-run output is byte-for-byte unchanged versus its fixture (apra-fleet-7pm.14)', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await runUninstall(['--dry-run', '--yes']);
+
+    const claudePaths = config.getProviderInstallConfig('claude');
+    const actual = normalizeCommandSurfaceOutput(consoleSpy.mock.calls.map(c => c.join(' ')).join('\n'));
+    const expected = fillFixturePlaceholders(readCommandSurfaceFixture('uninstall-dry-run.txt'), {
+      VERSION: serverVersion,
+      PM_SKILLS_DIR: claudePaths.skillsDir,
+      ARGS_SKILL_DIR: path.join(claudePaths.configDir, 'skills', 'auto-sprint-args'),
+      AGENTS_DIR: claudePaths.agentsDir!,
+      FLEET_SKILLS_DIR: claudePaths.fleetSkillsDir,
+      NODE_MODULES_DIR: config.NODE_MODULES_DIR,
+      SCHEMAS_DIR: config.SCHEMAS_DIR,
+      WORKFLOWS_DIR: config.WORKFLOWS_DIR,
+    });
+    expect(actual).toBe(normalizeCommandSurfaceOutput(expected));
   });
 
   it('removes recorded providers by default', async () => {
@@ -216,6 +251,78 @@ describe('uninstall', () => {
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Gemini...'));
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Codex...'));
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Copilot...'));
+  });
+
+  describe('--skill workflows', () => {
+    const workflowsDir = config.WORKFLOWS_DIR;
+    const nodeModulesDir = config.NODE_MODULES_DIR;
+    const schemasDir = config.SCHEMAS_DIR;
+
+    function mockWorkflowsLayout(userDirs: string[]) {
+      const builtinDirs = ['auto-sprint', 'hello-world'];
+      const allDirs = [...builtinDirs, ...userDirs];
+      vi.spyOn(fs, 'readFileSync').mockImplementation((p: any) => {
+        if (typeof p === 'string' && p.includes('.installed.json')) {
+          return JSON.stringify({ version: '1.0.0', builtin: builtinDirs });
+        }
+        return JSON.stringify({ providers: { claude: { skill: 'all' } } });
+      });
+      vi.spyOn(fs, 'readdirSync').mockImplementation((p: any) => {
+        if (p === workflowsDir) {
+          return allDirs.map(name => ({ name, isDirectory: () => true })) as any;
+        }
+        return [] as any;
+      });
+    }
+
+    it('removes builtin workflows and the empty workflows/ root (empty-after case)', async () => {
+      mockWorkflowsLayout([]);
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await runUninstall(['--skill', 'workflows', '--yes']);
+
+      expect(fs.rmSync).toHaveBeenCalledWith(nodeModulesDir, expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(schemasDir, expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'auto-sprint'), expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'hello-world'), expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(workflowsDir, expect.any(Object));
+      expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringContaining('kept user workflows'));
+    });
+
+    it('keeps user-authored workflows and the workflows/ root (non-empty-after case)', async () => {
+      mockWorkflowsLayout(['my-custom']);
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await runUninstall(['--skill', 'workflows', '--yes']);
+
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'auto-sprint'), expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'hello-world'), expect.any(Object));
+      expect(fs.rmSync).not.toHaveBeenCalledWith(workflowsDir, expect.any(Object));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('kept user workflows: my-custom'));
+    });
+
+    it('--dry-run prints the identical plan for both cases without deleting anything', async () => {
+      mockWorkflowsLayout(['my-custom']);
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await runUninstall(['--skill', 'workflows', '--dry-run', '--yes']);
+
+      expect(fs.rmSync).not.toHaveBeenCalled();
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing workflow runtime: ${nodeModulesDir}`));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing workflow schemas: ${schemasDir}`));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing built-in workflow: ${path.join(workflowsDir, 'auto-sprint')}`));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing built-in workflow: ${path.join(workflowsDir, 'hello-world')}`));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('kept user workflows: my-custom'));
+    });
+
+    it('is included in --skill all', async () => {
+      mockWorkflowsLayout([]);
+
+      await runUninstall(['--yes']);
+
+      expect(fs.rmSync).toHaveBeenCalledWith(nodeModulesDir, expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(workflowsDir, expect.any(Object));
+    });
   });
 
   it('removes the auto-sprint-args skill for claude PM uninstall (GAP B)', async () => {

@@ -1,0 +1,23 @@
+{
+  "name": "@apralabs/apra-fleet-client",
+  "version": "1.0.0",
+  "description": "MCP Client SDK for Apra Fleet",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "main": "src/client/api.mjs",
+  "exports": {
+    ".": "./src/client/api.mjs",
+    "./client": "./src/client/client.mjs",
+    "./factory": "./src/client/factory.mjs",
+    "./transport": "./src/client/transport.mjs",
+    "./server-resolution": "./src/client/server-resolution.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "type": "module",
+  "author": "Apra Labs",
+  "license": "Apache-2.0"
+}

@@ -150,10 +150,13 @@ function normalizeFolderPath(folder: string): string {
  * Check if another agent already uses the same folder on the same device.
  * - Local agents: match any existing local agent with the same normalized folder.
  * - Remote agents: match any existing remote agent with the same host + port + normalized folder.
+ * - Relay agents: no check -- the folder is a path on the RELAYED machine,
+ *   not this machine's own filesystem, so there's no local duplicate-folder
+ *   concept to enforce here (apra-fleet-jfn).
  * Returns true if a duplicate exists.
  */
 export function hasDuplicateFolder(
-  agentType: 'local' | 'remote',
+  agentType: 'local' | 'remote' | 'relay',
   folder: string,
   host?: string,
   port?: number,

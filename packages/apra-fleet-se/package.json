@@ -1,0 +1,28 @@
+{
+  "name": "@apralabs/apra-fleet-se",
+  "version": "1.0.0",
+  "description": "Apra Fleet Software Engineering (SE) Edition. Contains SE-specific workflows like auto-sprint.",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "bin": {
+    "auto-sprint": "./bin/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test --test-reporter=./test/helpers/timestamped-reporter.mjs --test-reporter-destination=stdout --test-concurrency=8 test/*.test.mjs",
+    "test:unit": "node scripts/run-tests.mjs mock",
+    "test:integration": "node scripts/run-tests.mjs real",
+    "test:record": "node scripts/run-tests.mjs record",
+    "update-golden": "node -e \"require('child_process').execFileSync(process.execPath,['--test','test/golden-transcript.test.mjs'],{stdio:'inherit',env:{...process.env,UPDATE_GOLDEN:'1'}})\"",
+    "vendor-schemas": "node scripts/vendor-schemas.mjs",
+    "vendor-schemas:check": "node scripts/vendor-schemas.mjs --check"
+  },
+  "dependencies": {
+    "@apralabs/apra-fleet-workflow": "*",
+    "@apralabs/apra-fleet-client": "*",
+    "ajv": "^8.12.0"
+  }
+}

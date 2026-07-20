@@ -67,6 +67,9 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.apra-fleet/bin/apra-fleet[.exe]` | The fleet binary |
 | `~/.apra-fleet/hooks/` | Shell hooks (statusline, etc.) |
 | `~/.apra-fleet/scripts/` | Helper scripts |
+| `~/.apra-fleet/node_modules/` | Shared on-disk workflow runtime (`@apralabs/apra-fleet-workflow`, `@apralabs/apra-fleet-client`, vendored `ajv` + deps) that `apra-fleet workflow <name>` and any user-authored workflow resolve bare specifiers against -- see `docs/authoring-workflows.md` |
+| `~/.apra-fleet/schemas/` | Installed agent role verdict/input JSON schemas (17 files); the `APRA_FLEET_SE_SCHEMAS_DIR` default the workflow launcher sets |
+| `~/.apra-fleet/workflows/` | Installed workflows (`.installed.json` + one directory per workflow, built-in or user-authored); run with `apra-fleet workflow <name> [args...]` -- see `docs/authoring-workflows.md` |
 | `~/.claude/skills/fleet/` | Fleet skill (MCP tool docs for Claude) |
 | `~/.claude/skills/pm/` | PM orchestration skill |
 | `~/.claude/skills/pm/cost.js` | Auto-generated CJS module with sprint cost functions (all providers with PM) |
@@ -80,6 +83,48 @@ This local install only covers the machine you run it on. Remote fleet members g
 
 The install also registers the MCP server (`claude mcp add apra-fleet`) and
 configures a status bar icon showing fleet member activity.
+
+### Two `auto-sprint` entry points -- do not confuse them
+
+`apra-fleet` ships **two separate, independently maintained** auto-sprint
+implementations:
+
+| | `~/.claude/workflows/auto-sprint.js` | `auto-sprint` bin (npm) |
+|---|---|---|
+| Written by | `install` (table above) | The root `@apralabs/apra-fleet` npm package's `bin.auto-sprint`, resolving to `dist/auto-sprint.mjs` |
+| Providers | Claude Code only | Any provider a fleet member is registered with (Claude, Gemini, Codex, Copilot, Antigravity/agy) |
+| Source package | `vendor/apra-pm/.claude/workflows/auto-sprint.js` | `packages/apra-fleet-se` (esbuild-bundled, apra-fleet-3ns.2) |
+| Model selection | Literal Claude model names | Fleet's `cheap`/`standard`/`premium` tier keywords, per-member |
+| How you run it | Invoked from within a Claude Code session as a workflow | `npx auto-sprint --issue ... --members ... --branch ... --base ...` (or globally, if `@apralabs/apra-fleet` is installed with `-g`) -- see `packages/apra-fleet-se/docs/cli-reference.md` |
+
+If you installed `apra-fleet` via `npm install -g @apralabs/apra-fleet`
+(or `npx @apralabs/apra-fleet`), the `auto-sprint` bin is available
+immediately alongside `apra-fleet` -- no separate install step. It requires
+the `apra-fleet` MCP server to be reachable (it spawns/connects to it over
+stdio the same way `apra-fleet` itself does); see
+`packages/apra-fleet-se/docs/cli-reference.md` for its server- and
+schema-resolution order across dev/bundled/standalone layouts.
+
+### The `apra-fleet workflow <name>` subcommand
+
+`install` also populates `~/.apra-fleet/node_modules/`, `~/.apra-fleet/schemas/`,
+and `~/.apra-fleet/workflows/` (see the directory table above) so that
+`apra-fleet workflow <name> [args...]` -- the SEA-binary workflow runner --
+can run built-in workflows (`auto-sprint`, `hello-world`) or any
+user-authored workflow with zero system Node required. See
+`docs/authoring-workflows.md` for the full authoring contract.
+
+The workflow launcher and the `apra-fleet` MCP server it talks to are
+always separate processes. Set `APRA_FLEET_TRANSPORT=http` (the default) or
+`APRA_FLEET_TRANSPORT=stdio` to control how the launcher reaches that
+server: `http` (default) attaches to the already-running installed-service
+singleton at `http://localhost:${APRA_FLEET_PORT:-7523}/mcp` and spawns
+nothing; `stdio` self-spawns a private server the same way the `auto-sprint`
+bin does. See `docs/adr-workflow-server-resolution.md` for the full
+resolution order (this same order also governs where role schemas resolve
+from in the installed-binary case: `APRA_FLEET_SE_SCHEMAS_DIR`, set by the
+launcher to `~/.apra-fleet/schemas`, is now tier 1 of the schema resolution
+described in `packages/apra-fleet-se/docs/cli-reference.md`).
 
 **What `install` does NOT do:**
 
@@ -168,7 +213,16 @@ apra-fleet uninstall
 | `--force` | Automatically stop the running fleet server before uninstalling |
 | `--yes` | Skip the confirmation prompt |
 | `--llm <provider>` | Remove only a specific provider (`claude`, `agy`, `codex`, `copilot`, `gemini`) |
-| `--skill fleet\|pm\|all` | Remove only the specified skill directories (default: `all`) |
+| `--skill fleet\|pm\|workflows\|all` | Remove only the specified skill directories (default: `all`) |
+
+`--skill workflows` removes the shared workflow runtime and schemas
+(`~/.apra-fleet/node_modules/`, `~/.apra-fleet/schemas/`) plus only the
+built-in workflow subdirectories under `~/.apra-fleet/workflows/` (read from
+`workflows/.installed.json`'s `builtin` list, falling back to the static
+built-in name list if that manifest is missing). Any user-authored
+`workflows/<name>/` directories are left in place, and the command reports
+which ones it kept; the `workflows/` root itself is only removed if nothing
+user-authored remains in it.
 
 Examples:
 
@@ -184,6 +238,9 @@ apra-fleet uninstall --skill pm
 
 # Remove only Claude's fleet skills
 apra-fleet uninstall --llm claude --skill fleet
+
+# Remove only the workflow runtime + built-in workflows, keep user-authored ones
+apra-fleet uninstall --skill workflows
 ```
 
 If the fleet server is running, uninstall aborts and tells you to re-run with

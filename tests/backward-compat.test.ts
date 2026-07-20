@@ -69,9 +69,10 @@ describe('sprint state-file names are preserved', () => {
     });
   }
 
-  // tpl-progress.json was deliberately retired upstream in apra-pm commit 29aba29
-  // ("delete tpl-progress.json: an unreferenced progress.json template in a
-  // skill") -- it is no longer part of the pm skill and this assertion is gone.
+  // tpl-progress.json was removed upstream (apra-pm PR#29, commit 29aba29):
+  // it was an unreferenced template in a skill whose docs state repeatedly
+  // that no progress.json is used, so its "existence" was never a real
+  // backward-compat guarantee -- deleting it is the fix, not a regression.
 });
 
 // -- (c) Beads lifecycle hooks unchanged ----------------------------------------

@@ -70,13 +70,32 @@ The codebase follows a strict layering:
 
 Each layer only depends on the layers below it. Tools never import other tools. Services don't know about the MCP protocol.
 
+## HTTP Transport & Interactive Sessions
+
+Alongside the stdio MCP transport, the server exposes a `StreamableHTTPServerTransport` on `POST/GET/DELETE /mcp` (`src/services/http-transport.ts`), bound to `127.0.0.1` only. This is what lets a member's own `apra-fleet` MCP server connect back interactively -- distinct from the subprocess/SSH-driven `execute_prompt` path, which stays subprocess-only. See `docs/hub-spoke-wire-protocol.md` for the full wire-level design.
+
+Each `/mcp` connection carries one of two identities:
+
+- **JWT-authenticated** -- a `Bearer` token (`src/services/jwt.ts`, HS256, signed with `~/.apra-fleet/fleet.key`) verified via the pluggable `TokenIssuer` (`src/services/token-issuer.ts`). The token's `workspace_id` claim is the hard security boundary (never `project_id`, which is an optional non-security label) -- Phase 1 uses a local dev-mode issuer (one machine == one implicit workspace); a hub-era issuer swaps in behind the same interface with no token-shape change.
+- **Unauthenticated URL-param fallback** -- a `?member=<id>` query param, trusted only because the server binds to loopback. Legacy friendly-name params are resolved to the member's UUID via the agent registry.
+
+A connected member is tracked in the in-memory `sessionRegistry` (`src/services/session-registry.ts`), keyed on the composite `(workspace_id, member_id)` -- every lookup is workspace-scoped, so a member connected under a different workspace is indistinguishable from "not connected" (existence is never leaked across the boundary). `send_message` (`src/tools/send-message.ts`) uses this registry to push a `notifications/claude/channel` MCP notification to a connected member's live session, flipping its status to `busy`.
+
+That flip is closed by `report_status` (`src/tools/report-status.ts`): a connected member's OWN session calls it (`online` or `idle`) to report it's done responding. There is no `member_id` parameter -- identity comes entirely from the live MCP session the call arrives on, resolved via `sessionRegistry.findBySessionId(extra.sessionId)` (the SDK populates `sessionId` on every tool call's `extra`). This is the tier-2-local status state machine `docs/hub-spoke-wire-protocol.md` section 4 reserves the `presence.member_status` envelope name for, once a hub relays it upward.
+
+Fleet events (`credential:stored`, `task:completed`, `member:status-changed`, `stall:detected`) broadcast only to sessions in the same workspace as the local orchestrator -- never across a workspace wall.
+
+`execute_prompt` (`src/tools/execute-prompt.ts`) itself is dual-path: for a member with NO live interactive session, it behaves exactly as before (subprocess/SSH, unchanged). For a member that IS interactively connected, it routes through the same channel instead of spawning anything -- `send_message` pushes the prompt and the caller awaits the member's `respond_to_message({reply_to, content})` call, correlated purely in-memory by `src/services/pending-responses.ts` (a `msgid` -> pending-promise map, timeout-bound by the same `timeout_s` the subprocess path uses). Mode selection is decided tier-2-locally against this machine's own `sessionRegistry` -- never from caller-side or (future) hub-side state -- so it is unaffected by whether `execute_prompt` is invoked directly or eventually relayed through a hub. This interactive mode is gated to Claude members only: `docs/interactive-injection-provider-survey.md` confirms it is POC-proven on Claude alone (the other five providers are confirmed unsupported or unconfirmed) -- a non-Claude member with a live session (e.g. from `registerMcpEndpoint`, which gives several providers basic MCP tool access) still falls through to the subprocess path.
+
 ## Provider Abstraction
 
-Fleet supports six LLM providers: Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, Gemini CLI, and OpenCode. Members can mix providers within a single fleet.
+Fleet supports six LLM providers -- Claude Code, Google Antigravity CLI (agy), OpenAI Codex CLI, GitHub Copilot CLI, Gemini CLI, and OpenCode -- plus a seventh null option, `'none'`, for a plain command executor with no LLM at all (`src/providers/none.ts`). Members can mix providers within a single fleet.
 
 ### How It Works
 
-Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'gemini' | 'opencode'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
+Each member has an optional `llmProvider` field (`'claude' | 'agy' | 'codex' | 'copilot' | 'gemini' | 'opencode' | 'none'`). When absent, it defaults to `'claude'` for backwards compatibility. Every tool that interacts with the member's LLM CLI resolves the provider via `getProvider(agent.llmProvider)` and delegates CLI-specific concerns to the `ProviderAdapter` interface.
+
+A `'none'` member supports `execute_command` (already fully provider-agnostic, no changes needed) but never `execute_prompt` in either mode -- rejected immediately with a clear error rather than reaching `NoneProvider`'s methods, most of which throw by design (there is no CLI, no prompt, no model to build a command from). `register_member` skips CLI/auth verification entirely for these members, and status/detail views show `compute only` in place of a token count.
 
 ```
 +----------+     getProvider()     +-----------------+
@@ -134,6 +153,123 @@ All five members use the same `execute_prompt` tool call. The tool builds provid
 - **OpenCode** - uses any OpenAI-compatible endpoint (Ollama, vLLM). The user provisions the endpoint; Fleet installs the CLI and agents. Model tiers are set per member at registration via `model_tiers` (since models vary by deployment). Agent files are transformed from Claude format to OpenCode format at install time (tools allowlist -> permission map).
 
 See `docs/provider-matrix.md` for the full comparison table.
+
+### Multi-member topology (auto-sprint)
+
+The `apra-fleet-se` auto-sprint runner (`packages/apra-fleet-se/auto-sprint/runner.js`) dispatches roles across configured members: the orchestrator issues every `bd` command and the git push/PR, doers round-robin across the doer pool, and the reviewer runs from the reviewer pool.
+
+Important, honest limitation: this round the runner has **NO cross-member bd/git sync layer**. Every `bd` command the orchestrator issues runs against the orchestrator member's beads DB, while each doer's own `bd close` runs against **its** member's DB; and the sprint git branch is only meaningful if all members operate on the same working state. That design coheres in exactly two topologies:
+
+- **Single-member** -- one member does everything (the DB and the branch are trivially shared).
+- **Verified shared-workspace fleet** -- every configured member resolves to the same checkout / beads DB (e.g. multiple members pointed at one working folder).
+
+Any other topology (each member with its own independent checkout/DB) is **NOT supported** yet: non-orchestrator members would silently work against a beads DB and git branch the orchestrator never sees, so their `bd close` calls and commits would diverge. A real cross-member reconcile layer is deferred (see `packages/apra-fleet-workflow/docs/plan.md` section 5) because it cannot be validated without a real multi-member fleet.
+
+Two guards enforce the supported contract instead of silently misbehaving:
+
+1. **Branch-ensure everywhere** (N4): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
+2. **Topology precondition** (N4): `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. It compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained). Single-member sprints skip the check (nothing to compare). Matching HEADs at start is a best-effort shared-workspace heuristic, not a proof of ongoing shared state -- the latter needs the deferred sync layer.
+
+## Workflow Subsystem (SEA-embedded workflow runner)
+
+`apra-fleet workflow <name>` runs a self-contained script (an ESM entry point
+under `workflows/<name>/`) against a live fleet connection, from inside the
+single-executable-application (SEA) binary -- no separate Node install and no
+unpacking to a temp directory required. `auto-sprint` is itself shipped as one
+of these built-in workflows rather than as a bespoke subcommand, so the
+launcher, the packaging, and the docs only need to solve this problem once.
+
+**Two always-separate processes.** The workflow launcher (`apra-fleet
+workflow`, `auto-sprint`) and the `apra-fleet` MCP server are never merged
+into one process. This is a hard boundary, not an optimization detail --
+see `docs/adr-workflow-server-resolution.md` for the ADR and its explicit
+scope guard against reopening it.
+
+**Server connection resolution is a single shared helper**, not duplicated
+per consumer. `@apralabs/apra-fleet-client/server-resolution`
+(`packages/apra-fleet-client/src/client/server-resolution.mjs`) implements
+one resolution order used identically by `src/cli/workflow.ts` and
+`packages/apra-fleet-se/bin/cli.mjs`:
+
+1. `APRA_FLEET_TRANSPORT` forced override (`http` fails loud with no
+   singleton rather than silently falling back to a private server; `stdio`
+   or a set `APRA_FLEET_SERVER_CMD`/`_BIN` goes straight to self-spawn).
+2. Probe for a healthy HTTP singleton (`checkRunningInstance()` -- the same
+   pid + `/health` check the installed service already uses for
+   startup-dedup) and attach with zero spawned processes. This is the
+   default, steady-state path.
+3. Fall back to stdio self-spawn (the four-tier command resolution
+   `resolveFleetServerCommand()` already had) only when no healthy
+   singleton is found.
+
+The rationale for one shared helper over two copies: a launcher that merely
+mirrored the old stdio-only `resolveFleetServerCommand()` would always
+self-spawn a private server even when a healthy HTTP singleton already
+existed, doubling running servers and splitting state. Duplicating the
+resolution order in two languages (TS launcher, MJS auto-sprint) was
+rejected because it guarantees drift between the two copies over time; see
+the ADR for the full tradeoff writeup.
+
+**Workflow entry contract:** a workflow is a directory under `workflows/`
+containing a `workflow.json` (name, entry, description) and an entry file
+that is either self-executing ESM or exports `main(args)` / `run(args)` /
+a default export. The launcher sets two env vars for every workflow run --
+`APRA_FLEET_SERVER_BIN` and `APRA_FLEET_SE_SCHEMAS_DIR` -- and never
+clobbers a value the caller already set. See `docs/authoring-workflows.md`
+for the full contract, including the raw-node escape hatch and how a
+workflow should import the shared engine/client packages.
+
+**Entry-path escape prevention is security-critical, not incidental:** the
+launcher resolves a workflow's `entry` against its own directory and
+rejects any resolution that escapes it (checked via `path.relative` plus
+`..`/absolute-path detection) before ever executing the file. A workflow
+manifest is not a trusted-by-construction input.
+
+**Packaging:** the workflow runtime, agent schemas, and built-in workflows
+(including auto-sprint) are embedded as SEA assets by
+`scripts/gen-sea-config.mjs`, proven viable by an earlier spike that
+dynamic `import()` of on-disk ESM works from inside a SEA main script on
+all three target OSes.
+
+**Install/uninstall/update lifecycle (Phases 1-3, closed this sprint,
+`apra-fleet-7pm`):** `install.ts`'s workflow-install step and its extraction
+logic (extract-to-temp-then-rename, with Windows EBUSY retry/backoff) were
+factored out into `src/cli/workflow-assets.ts` so more than one caller can
+share the exact same code path instead of re-implementing it:
+
+- `apra-fleet install` (fresh install) calls `extractWorkflowSubsystemAssets()`
+  to lay down `~/.apra-fleet/{node_modules,schemas,workflows/<builtin>}`.
+- `src/cli/workflow.ts`'s launcher self-heals: if a `workflow <name>`
+  invocation finds the on-disk payload missing or incomplete
+  (`hasWorkflowSubsystemAssets()` is false), it re-extracts from the same
+  embedded SEA assets before running, rather than failing with an opaque
+  module-not-found error.
+- `apra-fleet uninstall --skill workflows` removes the shared runtime/schema
+  dirs plus only the built-in workflow subdirectories recorded in
+  `workflows/.installed.json`'s `builtin` array (falling back to the static
+  `BUILTIN_WORKFLOW_NAMES` list if that manifest is missing, so a
+  partially-installed tree still cleans up). User-authored workflow
+  directories are left in place; `workflows/` itself is only removed if
+  nothing user-authored remains, and the command prints which user
+  workflows it kept.
+- `apra-fleet update` reads back the previously-persisted `--workflows` mode
+  and threads it into the re-invoked install, so an update refreshes
+  built-in workflow assets to the new version while preserving any
+  user-authored workflows already on disk.
+
+**CI coverage (Phase 4, closed this sprint):** `build:binary` smoke tests
+exercise the packaged SEA binary's `workflow` subcommand and the
+auto-sprint-as-built-in-workflow path end-to-end (not just the source
+`.ts`/`.mjs` files), and a regression-guard test suite
+(`tests/regression-command-surface.test.ts`) pins the full existing CLI
+command surface (`install --help`, `uninstall --dry-run`, `--version`,
+stdio handshake) against golden fixtures so future workflow-subsystem work
+can't silently change unrelated command output.
+
+The workflow subsystem is now installable, self-healing, uninstallable, and
+update-safe end-to-end; remaining gaps for this feature are tracked as
+individual open issues under `apra-fleet-7pm`, not as a phase-level
+placeholder.
 
 ## PM Skill Submodule
 

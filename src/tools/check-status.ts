@@ -35,6 +35,7 @@ interface AgentStatusRow {
   session: string;
   lastActivity: string;
   lastLlmActivityAt?: string;
+  llmProvider?: string;
   branch?: string;
   cloudInfo?: CloudInfo;
   tokenUsage?: { input: number; output: number };
@@ -81,6 +82,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     session: agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : '(none)',
     lastActivity: formatTimeAgo(agent.lastUsed),
     lastLlmActivityAt: agent.lastLlmActivityAt,
+    llmProvider: agent.llmProvider,
     branch: agent.lastBranch,
     tokenUsage: agent.tokenUsage,
     category: agent.category?.trim() || null,
@@ -285,8 +287,10 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
     t += `\n[${category}]\n`;
     for (const { row: r } of members) {
       const branchStr = r.branch ? ` | branch=${r.branch}` : '';
-      const tokenStr = (r.tokenUsage && (r.tokenUsage.input > 0 || r.tokenUsage.output > 0))
-        ? ` | tokens=in:${r.tokenUsage.input} out:${r.tokenUsage.output}` : '';
+      const tokenStr = r.llmProvider === 'none'
+        ? ' | compute only'
+        : (r.tokenUsage && (r.tokenUsage.input > 0 || r.tokenUsage.output > 0))
+          ? ` | tokens=in:${r.tokenUsage.input} out:${r.tokenUsage.output}` : '';
       const tagsStr = (r.tags && r.tags.length > 0) ? ` | tags=[${r.tags.join(', ')}]` : '';
       let line = `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}${branchStr}${tokenStr}${tagsStr}`;
       if (r.cloudInfo) {

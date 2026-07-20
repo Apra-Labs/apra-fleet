@@ -36,6 +36,7 @@ export interface PromptOptions {
   tier?: 'cheap' | 'standard' | 'premium';
   maxTurns?: number;
   inv?: string;
+  agentName?: string;
 }
 
 export interface ParsedResponse {
@@ -44,6 +45,26 @@ export interface ParsedResponse {
   isError: boolean;
   raw: string;
   usage?: { input_tokens: number; output_tokens: number };
+  /** e.g. 'error_max_turns' -- the CLI result event's own subtype, when present. */
+  subtype?: string;
+  /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */
+  terminalReason?: string;
+}
+
+export interface RegisterMcpEndpointOptions {
+  /** e.g. http://<host>:<port>/mcp?member=<member-uuid> */
+  url: string;
+  /** JWT bearer token for the member's fleet MCP session. */
+  token: string;
+  workFolder: string;
+  scope: 'project' | 'user';
+}
+
+export interface RegisterMcpEndpointResult {
+  /** e.g. 'cli-verb' (Claude's `claude mcp add`) or 'config-file-merge' (AGY/OpenCode). */
+  mechanism: string;
+  /** Human-readable detail for logging/audit -- what file or command was used. */
+  detail: string;
 }
 
 export interface ProviderAdapter {
@@ -112,6 +133,13 @@ export interface ProviderAdapter {
   /** Args for headless invocation with a safe literal prompt string.
    *  Returns e.g. `-p "LITERAL"` for Claude/Gemini/Copilot or `exec "LITERAL"` for Codex. */
   headlessInvocation(promptLiteral: string): string;
+
+  /** Register (or update) this member's apra-fleet MCP endpoint using the provider's own
+   *  native mechanism (CLI verb, e.g. Claude's `claude mcp add`; or config-file merge, e.g.
+   *  AGY/OpenCode). Optional until every provider's mechanism has been investigated and
+   *  implemented -- see docs/member-onboarding-journey.md section 3/3a.
+   *  Returns what was done, for logging/audit. */
+  registerMcpEndpoint?(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult>;
 }
 
 
