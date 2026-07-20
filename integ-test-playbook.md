@@ -163,12 +163,19 @@ rm -rf "$SANDBOX"
 ## Test scenario (informational)
 
 The smoke test itself: what `integ-test-runner` does with the environment
-`## Setup` provides. Marked informational because it uses MCP tools and
-judgment, not copy-paste shell commands like the three lifecycle sections.
+`## Setup` provides. Marked informational because it applies judgment and
+assertions (find the canary, run a sprint, verify the outcome), not a fixed
+copy-paste block like the three lifecycle sections. Every step is now
+shell-drivable -- no MCP tool is required to run the scenario.
 
-1. Register one member (`register_member` MCP tool, not a shell command)
-   pointed at `$HOME/toy-repo`, using the isolated `HOME`/`APRA_FLEET_PORT`
-   from Setup.
+1. Register one member pointed at `$HOME/toy-repo`, using the isolated
+   `HOME`/`APRA_FLEET_PORT` from Setup, via the `register-member` CLI
+   subcommand (Bash, not the `register_member` MCP tool):
+
+   ```bash
+   node dist/index.js register-member --type local --name toy-doer \
+     --path "$HOME/toy-repo" --llm claude
+   ```
 2. Find the canary issue by its `integ-canary` tag. If the lookup returns
    a match, confirm it is open (`bd show <canary-id>`, where
    `<canary-id>` is whatever ID the tag lookup returned). If the lookup
@@ -209,6 +216,10 @@ ad-hoc script:
 4. Keep the <10-minute budget. If the new step is inherently slow, gate it
    behind an opt-in flag documented here rather than making every run pay
    for it.
-5. Keep `## Setup` / `## Reset` / `## Teardown` shell-only: their command
-   blocks must stay copy-paste runnable in a plain shell with no MCP
-   tools. Anything needing MCP belongs in `## Test scenario`.
+5. Keep every section shell-drivable: `## Setup` / `## Reset` /
+   `## Teardown` are fixed copy-paste command blocks, and `## Test scenario`
+   is also all Bash (member registration uses the `register-member` CLI
+   subcommand, not the MCP tool). This matters because `integ-test-runner`
+   has only [Read, Bash, Grep, Glob] tools and cannot call MCP tools -- if a
+   step genuinely needs MCP, add a CLI entry point for it first rather than
+   assuming the runner can reach the MCP tool.
