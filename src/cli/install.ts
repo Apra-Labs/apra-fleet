@@ -71,6 +71,10 @@ function getSeaAssetBuffer(key: string): Buffer {
   return Buffer.from(sea.getAsset(key));
 }
 
+// Claude-only helper skill vendored alongside apra-pm's auto-sprint workflow --
+// installed into <configDir>/skills/auto-sprint-args, mirrors apra-pm/install.mjs.
+const AUTO_SPRINT_ARGS_SKILL_NAME = 'auto-sprint-args';
+
 interface AssetManifest {
   version: string;
   hooks: Record<string, string>;
@@ -79,6 +83,7 @@ interface AssetManifest {
   fleetSkills: Record<string, string>;
   agents: Record<string, string>;
   workflows: Record<string, string>;
+  autoSprintArgsSkill: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -137,6 +142,16 @@ function buildDevManifest(root: string): AssetManifest {
   const agents = collectFilesRec(agentsDir, agentsBase, agentsBase);
   const fleetSkills = collectFilesRec(path.join(root, 'skills', 'fleet'), 'skills/fleet');
 
+  // auto-sprint-args helper skill (vendored alongside apra-pm's auto-sprint workflow;
+  // claude-only install target, see the install flow's PM cost/workflow step).
+  const vendorArgsSkill = path.join(root, 'vendor', 'apra-pm', '.claude', 'skills', 'auto-sprint-args');
+  const distArgsSkill = path.join(root, 'dist', 'skills', 'auto-sprint-args');
+  const argsSkillDir = fs.existsSync(vendorArgsSkill) ? vendorArgsSkill : distArgsSkill;
+  const argsSkillBase = fs.existsSync(vendorArgsSkill)
+    ? 'vendor/apra-pm/.claude/skills/auto-sprint-args'
+    : 'dist/skills/auto-sprint-args';
+  const autoSprintArgsSkill = collectFilesRec(argsSkillDir, argsSkillBase, argsSkillBase);
+
   // Collect auto-sprint.js from vendor/apra-pm/.claude/workflows (or dist/workflows fallback)
   const vendorWorkflows = path.join(root, 'vendor', 'apra-pm', '.claude', 'workflows');
   const workflowsSrc = fs.existsSync(vendorWorkflows)
@@ -152,7 +167,7 @@ function buildDevManifest(root: string): AssetManifest {
   }
 
   const vf = JSON.parse(fs.readFileSync(path.join(root, 'version.json'), 'utf-8'));
-  return { version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows };
+  return { version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows, autoSprintArgsSkill };
 }
 
 let _manifestOverride: AssetManifest | null = null;
@@ -805,6 +820,41 @@ Then re-run:  apra-fleet install`);
     } else {
       console.warn('  [!] auto-sprint.js not found -- cost.js and workflow not written');
     }
+
+    // Claude only: install the auto-sprint-args helper skill (args contract for
+    // the auto-sprint workflow) into <configDir>/skills/auto-sprint-args -- mirrors
+    // apra-pm's own install.mjs semantics.
+    if (llm === 'claude') {
+      const argsSkillDest = path.join(paths.configDir, 'skills', AUTO_SPRINT_ARGS_SKILL_NAME);
+      const argsSkillEntries = isSea()
+        ? Object.entries(manifest.autoSprintArgsSkill ?? {}).map(([relPath, assetKey]) => ({
+            relPath,
+            content: extractAsset(assetKey),
+          }))
+        : (() => {
+            const root = findProjectRoot();
+            const vendorArgsSkill = path.join(root, 'vendor', 'apra-pm', '.claude', 'skills', AUTO_SPRINT_ARGS_SKILL_NAME);
+            const distArgsSkill = path.join(root, 'dist', 'skills', AUTO_SPRINT_ARGS_SKILL_NAME);
+            const argsSkillSrc = fs.existsSync(vendorArgsSkill) ? vendorArgsSkill : distArgsSkill;
+            const argsSkillBase = fs.existsSync(vendorArgsSkill)
+              ? `vendor/apra-pm/.claude/skills/${AUTO_SPRINT_ARGS_SKILL_NAME}`
+              : `dist/skills/${AUTO_SPRINT_ARGS_SKILL_NAME}`;
+            const collected = collectFilesRec(argsSkillSrc, argsSkillBase, argsSkillBase);
+            return Object.entries(collected).map(([relPath, rootRelativeLabel]) => ({
+              relPath,
+              content: fs.readFileSync(path.join(root, rootRelativeLabel), 'utf-8'),
+            }));
+          })();
+
+      if (argsSkillEntries.length > 0) {
+        clearDirSync(argsSkillDest);
+        for (const { relPath, content } of argsSkillEntries) {
+          writeAssetFile(path.join(argsSkillDest, relPath), content);
+        }
+      } else {
+        console.warn(`  [!] ${AUTO_SPRINT_ARGS_SKILL_NAME} skill source not found -- skill not installed`);
+      }
+    }
   }
 
   if (!installFleet && !installPm) {
@@ -817,26 +867,9 @@ Then re-run:  apra-fleet install`);
     console.log(`  [${agentStep}/${totalSteps}] Installing PM agents...`);
     const agentsDestDir = paths.agentsDir!;
     fs.mkdirSync(agentsDestDir, { recursive: true });
-    if (isSea()) {
-      for (const [name, assetKey] of Object.entries(manifest.agents)) {
-        let content = extractAsset(assetKey);
-        if (llm === 'opencode') {
-          content = transformAgentForOpenCode(content, name);
-        }
-        writeAssetFile(path.join(agentsDestDir, name), content);
-      }
-    } else {
-      const root = findProjectRoot();
-      const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
-      const agentsSrc = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
-      for (const entry of fs.readdirSync(agentsSrc, { withFileTypes: true })) {
-        if (entry.isDirectory()) continue;
-        let content = fs.readFileSync(path.join(agentsSrc, entry.name), 'utf-8');
-        if (llm === 'opencode') {
-          content = transformAgentForOpenCode(content, entry.name);
-        }
-        writeAssetFile(path.join(agentsDestDir, entry.name), content);
-      }
+    for (const { relPath, content: rawContent } of loadAgentAssets()) {
+      const content = llm === 'opencode' ? transformAgentForOpenCode(rawContent, relPath) : rawContent;
+      writeAssetFile(path.join(agentsDestDir, relPath), content);
     }
   }
 

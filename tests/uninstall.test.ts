@@ -218,6 +218,27 @@ describe('uninstall', () => {
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Cleaning up Copilot...'));
   });
 
+  it('removes the auto-sprint-args skill for claude PM uninstall (GAP B)', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { claude: { skill: 'all' } }
+    }));
+
+    await runUninstall(['--skill', 'pm', '--yes']);
+
+    expect(fs.rmSync).toHaveBeenCalledWith(expect.stringMatching(/[\\/]auto-sprint-args$/), expect.any(Object));
+  });
+
+  it('does not remove auto-sprint-args skill for non-claude providers', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { gemini: { skill: 'all' } }
+    }));
+
+    await runUninstall(['--skill', 'pm', '--yes']);
+
+    const rmCalls = vi.mocked(fs.rmSync).mock.calls.map(c => c[0].toString());
+    expect(rmCalls.some(p => p.includes('auto-sprint-args'))).toBe(false);
+  });
+
   it('aborts if apra-fleet server is running', async () => {
     vi.mocked(install.isApraFleetRunning).mockReturnValue(true);
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
