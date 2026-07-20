@@ -130,13 +130,22 @@ fi
 ```
 
 Verify: no uncommented line in `.beads/config.yaml` may reference
-`fleet-e2e-toy` after this step.
+`fleet-e2e-toy` after this step, AND the sandbox clone must have 0 commits
+ahead of `origin/main` (nothing has actually reached the real remote).
+`scripts/check-sandbox-sync-remote.mjs` (apra-fleet-eft.25.2) asserts both in
+one shell-drivable, sandbox-only, read-only step -- it exits non-zero (and
+prints a `FAIL` line) if either check fails, and exits 0 (`OK` lines) when
+both hold. Run it from `<repo-root>`:
 
 ```bash
-grep -n '^[^#]*fleet-e2e-toy' "$HOME/toy-repo/.beads/config.yaml" && \
-  echo "FAIL: active sync.remote still points at fleet-e2e-toy" || \
-  echo "OK: sync.remote is inert"
+node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
 ```
+
+(Its own unit tests, `tests/check-sandbox-sync-remote.test.ts`, exercise both
+the eft.25 hazard shape -- active `sync.remote` right after a bare `bd
+bootstrap --yes` -- and the eft.25.1 remedy shape -- `sync.remote`
+commented out -- entirely against local fixtures, so they never touch the
+real remote either.)
 
 ## Reset
 
