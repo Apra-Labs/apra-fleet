@@ -756,3 +756,24 @@ deduplicated DAG -- the plan gate working as designed.
 - **apra-fleet-qv1**: parallel doer streaks to a single member are unsafe
   (pre-existing bead, visible in the server log's bead dumps); single-member
   sprints serialize doers so not currently hit.
+
+### Process change (2026-07-20): launch via the delivered CLI surface
+
+From run 16 onward the stabilization loop launches sprints through the
+delivered product surface instead of the raw engine path:
+
+    npm run build
+    node dist/index.js install     (refresh ~/.apra-fleet workflow runtime)
+    node dist/index.js workflow auto-sprint --issue apra-fleet-eft \
+      --members fleet-rev --branch auto-sprint/eft-service \
+      --base feat/fleet-reorg --viewer-port 18300
+
+Rationale: every relaunch now also exercises the dev-mode install asset
+pipeline, the workflow launcher (version-skew check, ADR server
+resolution, verbatim arg passthrough), matching how end users run
+sprints. An install/launcher regression now blocks the loop by design --
+that is surfaced signal, not friction to route around. The integ-test
+playbook's smoke test (Part 2 step 3) already launches via
+'apra-fleet workflow auto-sprint', so both lanes now run the same
+delivered surface. Version bumped to 0.4.0 on this branch (the reorg/eft
+line ships as 0.4.0; 0.3.5 was released from main).
