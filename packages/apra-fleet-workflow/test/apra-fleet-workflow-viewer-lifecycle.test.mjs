@@ -351,7 +351,7 @@ describe('apra-fleet-unw.10: no process.exit in the /stop handler (source grep)'
 });
 
 describe('server-side sprint-state persistence (auto-save on finish, stop, or exit)', () => {
-    test('a normal "end" event writes sprint-logs/sprint_HHMMSS.json whose content matches /state', async () => {
+    test('a normal "end" event writes sprint-logs/sprint_HHMMSS.json with the FULL state, while GET /state serves the lean list-state projection of the same run (apra-fleet-eft.27.1)', async () => {
         await withTempCwd(async (dir) => {
             const wf = new FleetWorkflow(createMockFleetApi());
             const engine = new WorkflowEngine(wf);
@@ -369,8 +369,19 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
                 const saved = JSON.parse(savedContent);
 
                 const liveState = JSON.parse(await httpGet(port, '/state'));
-                assert.deepStrictEqual(saved, liveState, 'saved file must match the in-memory state served at /state');
+                // apra-fleet-eft.27.1: GET /state now serves a lean, string-
+                // deduped projection (src/viewer/lean-state.mjs) of the same
+                // in-memory state, not a byte-for-byte copy of it -- the
+                // full-fidelity snapshot persisted here to sprint-logs/ (the
+                // crash-safety/audit record) is unaffected. Assert both
+                // describe the SAME run rather than asserting deep equality.
+                assert.strictEqual(saved.status, liveState.status);
+                assert.strictEqual(saved.workflowName, liveState.workflowName);
+                assert.strictEqual(saved.sprintId, liveState.sprintId);
+                assert.strictEqual(saved.stats.durationMs, liveState.stats.durationMs);
                 assert.strictEqual(saved.status, 'success');
+                assert.ok(!('_strings' in saved), 'the full persisted snapshot must not carry the lean-state dedup table');
+                assert.ok(Array.isArray(liveState._strings), 'GET /state must carry the lean-state string-dedup table');
 
                 // Formatting must match the client-side saveState()'s own
                 // JSON.stringify(globalState, null, 2) -- 2-space indent.

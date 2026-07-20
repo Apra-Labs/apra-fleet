@@ -13,7 +13,8 @@
     "./viewer": "./src/viewer/index.mjs",
     "./viewer/html-utils": "./src/viewer/html-utils.mjs",
     "./viewer/sprint-state-paths": "./src/viewer/sprint-state-paths.mjs",
-    "./viewer/debounced-writer": "./src/viewer/debounced-writer.mjs"
+    "./viewer/debounced-writer": "./src/viewer/debounced-writer.mjs",
+    "./viewer/lean-state": "./src/viewer/lean-state.mjs"
   },
   "scripts": {
     "test": "node --test --test-timeout=60000 test/*.test.mjs"

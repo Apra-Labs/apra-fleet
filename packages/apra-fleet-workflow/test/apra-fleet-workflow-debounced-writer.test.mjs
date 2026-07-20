@@ -249,13 +249,20 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
                 assert.deepStrictEqual(result, { result: 'echo: hello' });
 
                 // Existing sprint-logs/ crash-safety net must be untouched:
-                // exactly one sprint_HHMMSS.json, 2-space indented, matching /state.
+                // exactly one sprint_HHMMSS.json, 2-space indented, describing
+                // the same run as /state. apra-fleet-eft.27.1: GET /state now
+                // serves a lean, string-deduped projection (see
+                // src/viewer/lean-state.mjs), not a byte-for-byte copy of the
+                // full in-memory state -- so this no longer asserts deep
+                // equality against it, only that both describe the same run.
                 const files = readSprintLogFiles(dir);
                 assert.strictEqual(files.length, 1, `expected exactly one sprint_HHMMSS.json file, found: ${JSON.stringify(files)}`);
                 const savedContent = fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8');
                 const saved = JSON.parse(savedContent);
                 const liveState = JSON.parse(await httpGet(port, '/state'));
-                assert.deepStrictEqual(saved, liveState, 'saved sprint-logs/ file must still match the in-memory state served at /state');
+                assert.strictEqual(saved.status, liveState.status);
+                assert.strictEqual(saved.sprintId, liveState.sprintId);
+                assert.strictEqual(saved.status, 'success', 'saved sprint-logs/ file must reflect the same terminal run served at /state');
                 assert.ok(savedContent.includes('\n  "workflowName"'), 'sprint-logs/ formatting must remain 2-space indented JSON');
 
                 // New: the debounced writer's own file must exist and be flushed

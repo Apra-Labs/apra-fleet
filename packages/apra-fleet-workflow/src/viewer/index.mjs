@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { escapeHtml } from './html-utils.mjs';
 import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic } from './debounced-writer.mjs';
 import { getRunningSprintStatePath, getOldSprintStatePath } from './sprint-state-paths.mjs';
+import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -196,6 +197,16 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // Shared with dashboard extensions -- see src/viewer/html-utils.mjs for
     // why this is embedded via escapeHtml.toString() instead of duplicated.
     ${escapeHtml.toString()}
+
+    // apra-fleet-eft.27.1: GET /state's lean list-state payload dedupes
+    // repeated strings into a shared \`_strings\` table (see
+    // src/viewer/lean-state.mjs) -- this is that module's resolveStringRefs()
+    // embedded verbatim (same .toString() pattern as escapeHtml above) so the
+    // browser can undo the same transform before rendering. Safe to run on
+    // ANY state object, including a History view's frozen literal that never
+    // went through dedupeStrings(): with no \`{ $ref }\` markers present it's a
+    // no-op pass-through.
+    ${resolveStringRefs.toString()}
 
     function saveState() {
       if (!globalState) return;
@@ -453,7 +464,11 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     async function poll() {
       try {
         const res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
-        const state = await res.json();
+        const raw = await res.json();
+        // apra-fleet-eft.27.1: undo the server's string-table dedup before
+        // handing the state to renderState()/renderTreeIncremental(), which
+        // both expect plain, already-resolved strings.
+        const state = resolveStringRefs(raw, raw._strings || []);
         renderState(state);
       } catch(e) {
           console.error("Poll Error:", e);
@@ -762,8 +777,20 @@ export function createDashboardViewer(workflow, opts = {}) {
             clients.add(res);
             req.on('close', () => clients.delete(res));
         } else if (req.url.startsWith('/state')) {
+            // apra-fleet-eft.27.1: GET /state is the RECURRING poll endpoint
+            // (every ~250ms-400ms while a sprint is live) -- it must never
+            // serve the full in-memory `state` object as-is. That object
+            // accumulates one entry per activity for the sprint's entire
+            // history, and each entry can embed multi-KB command/agent
+            // output; on a real 449-activity sprint this endpoint measured a
+            // 116 MB payload per poll (apra-fleet-eft.27). buildListStatePayload()
+            // (src/viewer/lean-state.mjs) strips descriptions/transcripts
+            // down to short summaries and dedupes any remaining repeated
+            // strings -- `state` itself (the source of truth persisted to
+            // sprint-logs/ and running/<sprintId>.json, and what the
+            // process-free History view embeds) is never mutated by this.
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
-            res.end(JSON.stringify(state));
+            res.end(JSON.stringify(buildListStatePayload(state)));
         } else if (req.url === '/stop' && req.method === 'POST') {
             // (apra-fleet-unw.10) Cooperative stop -- no process.exit(). The
             // old handler killed the whole Node process immediately, with no
