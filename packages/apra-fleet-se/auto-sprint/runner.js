@@ -238,6 +238,10 @@ const GOAL_PATTERN = /^P[1-3](\/P[1-3]){0,2}$/;
 const KNOWN_ARG_KEYS = new Set([
     'target_issues', 'target_issue', 'members', 'branch', 'base_branch',
     'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'budget',
+    // Stabilization Issue 32: per-dispatch time budget (timeout_s ==
+    // max_total_s at every dispatch site; integ ceiling = 2x). Lets small
+    // runs (sandbox canary sprints) bound the cost of a hung dispatch.
+    'dispatch_timeout_s',
     // apra-fleet-eft.9.2 / eft.9.3 / eft.9.7: the always-on supervisor's base
     // HTTP URL (e.g. http://127.0.0.1:8787). Set by bin/cli.mjs from the
     // FLEET_SE_SERVICE_URL env var the supervisor's spawner injects into each
@@ -1810,6 +1814,23 @@ export function validateArgs(args) {
         }
     }
 
+    // --- dispatch_timeout_s (optional, default 3600; stabilization Issue 32) --
+    // Per-dispatch time budget in seconds, applied as BOTH timeout_s and
+    // max_total_s on every agent dispatch (Issue 12: `claude -p` is silent
+    // until the turn completes, so inactivity == total runtime and the two
+    // timers must be equal for the ceiling to be reachable); the integ-test
+    // dispatch ceiling is 2x this value (Issue 30: its real suites + smoke
+    // sprint legitimately run past one budget). Lowering it bounds the cost
+    // of a live-but-silent member hang (observed run 15 integ C5: PID alive,
+    // zero output, no timer able to distinguish hang from work) -- a small
+    // sprint (e.g. a sandbox canary) can pass 600-900 so a hang costs
+    // minutes, not an hour. Floor 60: below that even healthy dispatches
+    // cannot complete a single turn.
+    const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 3600 : args.dispatch_timeout_s;
+    if (typeof dispatchTimeoutS !== 'number' || !Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60) {
+        throw new Error(`[Arg Contract] Invalid dispatch_timeout_s "${dispatchTimeoutS}": must be an integer >= 60 (seconds).`);
+    }
+
     return {
         targetIssues,
         members: args.members,
@@ -1822,6 +1843,7 @@ export function validateArgs(args) {
         budget: args.budget,
         serviceUrl: args.serviceUrl,
         assignee: args.assignee,
+        dispatchTimeoutS,
     };
 }
 
@@ -2765,6 +2787,13 @@ async function runSprintCycle(context) {
     // fleet dispatches.
     const validated = validateArgs(args);
 
+    // Stabilization Issue 32: the per-dispatch time budget every dispatch
+    // site below uses for BOTH timeout_s and max_total_s (Issue 12: silent-
+    // until-done CLIs make inactivity == total runtime, so the two must be
+    // equal). The integ-test dispatch alone gets a 2x ceiling (Issue 30).
+    const DISPATCH_TIMEOUT_S = validated.dispatchTimeoutS;
+    const INTEG_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 2;
+
     // N10 (apra-fleet-unw2.8): apply the optional `budget` arg ceiling to
     // THIS run's budget object. Every prior version of this runner ignored
     // `context.budget` entirely, so `budget.total` stayed `null` (unlimited)
@@ -3069,8 +3098,8 @@ async function runSprintCycle(context) {
             // apra-fleet-aw8: reviewer inspects a real diff/branch,
             // not a quick prompt -- same 300s-default gap as doer
             // dispatch, observed live tripping on real review work.
-            timeout_s: 3600,
-            max_total_s: 3600,
+            timeout_s: DISPATCH_TIMEOUT_S,
+            max_total_s: DISPATCH_TIMEOUT_S,
             max_turns: BASE_REVIEWER_MAX_TURNS,
         };
         const dispatchReviewerOnce = () => withGitSync(reviewerPool[0], false, () => agent(
@@ -3747,8 +3776,8 @@ async function runSprintCycle(context) {
                 model: FIXED_ROLE_TIER.planner,
                 // apra-fleet-j6i: plans the entire epic DAG, comparably
                 // heavy to a doer streak -- same 300s-default gap.
-                timeout_s: 3600,
-                max_total_s: 3600,
+                timeout_s: DISPATCH_TIMEOUT_S,
+                max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: PLANNER_MAX_TURNS,
             };
             const dispatchPlannerOnce = () => withGitSync(getMemberForRole('planner'), false, () => agent(
@@ -3835,8 +3864,8 @@ async function runSprintCycle(context) {
                 schema: planReviewerVerdict,
                 model: FIXED_ROLE_TIER['plan-reviewer'],
                 // apra-fleet-j6i: same 300s-default gap as Planner.
-                timeout_s: 3600,
-                max_total_s: 3600,
+                timeout_s: DISPATCH_TIMEOUT_S,
+                max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: PLAN_REVIEWER_MAX_TURNS,
             };
             try {
@@ -4280,8 +4309,8 @@ async function runSprintCycle(context) {
                             // Inactivity == total runtime for a silent-until-done
                             // CLI, so the inactivity timer must match the
                             // max_total_s ceiling (stabilization log Issue 12).
-                            timeout_s: 3600,
-                            max_total_s: 3600,
+                            timeout_s: DISPATCH_TIMEOUT_S,
+                            max_total_s: DISPATCH_TIMEOUT_S,
                             max_turns: BASE_DOER_MAX_TURNS,
                         }
                     );
@@ -4305,8 +4334,8 @@ async function runSprintCycle(context) {
                         label: `Streak [${actualBeadIds.join(', ')}] (resume, max_turns=${maxTurns})`,
                         schema: doerReport,
                         model: undefined,  // Model is resolved in main dispatch
-                        timeout_s: 3600,
-                        max_total_s: 3600,
+                        timeout_s: DISPATCH_TIMEOUT_S,
+                        max_total_s: DISPATCH_TIMEOUT_S,
                         resume: true,
                         max_turns: maxTurns,
                     }
@@ -4559,8 +4588,8 @@ async function runSprintCycle(context) {
                 model: FIXED_ROLE_TIER.deployer,
                 // apra-fleet-j6i: runs real deploy commands per a
                 // runbook, plausibly long-running.
-                timeout_s: 3600,
-                max_total_s: 3600,
+                timeout_s: DISPATCH_TIMEOUT_S,
+                max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: DEPLOYER_MAX_TURNS,
             };
             try {
@@ -4702,8 +4731,8 @@ async function runSprintCycle(context) {
                     // keeping the 1h INACTIVITY timer: a genuinely hung
                     // runner still dies after 60 min of silence; an active
                     // long pass is never killed mid-progress.
-                    timeout_s: 3600,
-                    max_total_s: 7200,
+                    timeout_s: DISPATCH_TIMEOUT_S,
+                    max_total_s: INTEG_MAX_TOTAL_S,
                     max_turns: INTEG_TEST_MAX_TURNS,
                 };
                 const dispatchIntegOnce = () => withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(
@@ -4940,8 +4969,8 @@ async function runSprintCycle(context) {
         // entire epic's worth of closed tasks -- most costly of the
         // 300s-default gaps since a timeout here flips a whole
         // sprint's outcome to FAIL.
-        timeout_s: 3600,
-        max_total_s: 3600,
+        timeout_s: DISPATCH_TIMEOUT_S,
+        max_total_s: DISPATCH_TIMEOUT_S,
         max_turns: FINAL_REVIEW_MAX_TURNS,
     };
     const dispatchFinalReview = () => withGitSync(getMemberForRole('reviewer'), false, () => agent(
@@ -5099,8 +5128,8 @@ async function runSprintCycle(context) {
         model: FIXED_ROLE_TIER.harvester,
         // apra-fleet-j6i: writes docs/changelog/sprint-analysis
         // across the whole epic, plausibly long-running.
-        timeout_s: 3600,
-        max_total_s: 3600,
+        timeout_s: DISPATCH_TIMEOUT_S,
+        max_total_s: DISPATCH_TIMEOUT_S,
         max_turns: HARVESTER_MAX_TURNS,
     };
     try {

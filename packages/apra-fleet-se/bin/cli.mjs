@@ -140,6 +140,9 @@ export function buildOptionsSpec() {
         'role-map': { type: 'string' },
         'viewer-port': { type: 'string', default: String(DEFAULT_VIEWER_PORT) },
         budget: { type: 'string' },
+        // Stabilization Issue 32: per-dispatch time budget in seconds
+        // (timeout_s == max_total_s at every dispatch; integ ceiling 2x).
+        'dispatch-timeout-s': { type: 'string' },
         // apra-fleet-eft.8.5: explicitly opt a multi-member run into synced
         // topology mode (orchestrator-bracketed git sync -- same-origin +
         // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
@@ -167,6 +170,10 @@ Options:
       --viewer-port <port>     Port for the local dashboard viewer. Default: 8080.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
+      --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 3600). Applied as both
+                                the inactivity timeout and the hard ceiling on every agent dispatch
+                                (the integration-test dispatch ceiling is 2x). Lower it for small
+                                sprints so a hung dispatch costs minutes, not an hour. Minimum 60.
       --sync                   Use synced topology mode (orchestrator-bracketed git sync):
                                 members may sit on differing HEADs but must share the same
                                 origin URL and pass a 'bd dolt pull' probe. Omitted (default)
@@ -271,7 +278,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -283,6 +290,7 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     if (requirementsFile !== undefined) args.requirementsFile = requirementsFile;
     if (roleMap !== undefined) args.roleMap = roleMap;
     if (budget !== undefined) args.budget = budget;
+    if (dispatchTimeoutS !== undefined) args.dispatch_timeout_s = dispatchTimeoutS;
     return args;
 }
 
@@ -437,6 +445,7 @@ async function main() {
     const requirementsFile = values['requirements-file'];
     const viewerPort = values['viewer-port'] !== undefined ? Number(values['viewer-port']) : DEFAULT_VIEWER_PORT;
     const budget = values.budget !== undefined ? Number(values.budget) : undefined;
+    const dispatchTimeoutS = values['dispatch-timeout-s'] !== undefined ? Number(values['dispatch-timeout-s']) : undefined;
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
@@ -472,6 +481,11 @@ async function main() {
     // --max-cycles/--viewer-port above (apra-fleet-unw2.16, N14 (a)) -- this
     // mirrors, but does not duplicate/conflict with, runner.js validateArgs's
     // own budget check (non-negative finite number; see N10, apra-fleet-unw2.8).
+    if (dispatchTimeoutS !== undefined && (!Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60)) {
+        console.error(`Error: --dispatch-timeout-s must be an integer >= 60 (seconds), got "${values['dispatch-timeout-s']}".`);
+        process.exit(1);
+    }
+
     if (budget !== undefined && (!Number.isFinite(budget) || budget < 0)) {
         console.error(`Error: --budget must be a non-negative finite number (USD ceiling), got "${values.budget}".`);
         process.exit(1);
@@ -686,6 +700,7 @@ async function main() {
             requirementsFile,
             roleMap,
             budget,
+            dispatchTimeoutS,
         }));
         process.removeListener('SIGINT', onSigint);
         await releaseReservationOnce();

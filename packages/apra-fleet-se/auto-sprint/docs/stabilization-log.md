@@ -879,3 +879,34 @@ the happy-path transcript); arg-contract member-routing tests exclude the
 new read alongside `bd dolt *` (same per-member bracket class). Engine
 suite: 960 pass / 0 fail; root vitest green minus the 2 known Windows-local
 teardown flakes.
+
+### Issue 32 (run 15 integ C4/C5): a live-but-silent hung dispatch costs a full hour, and no watchdog CAN fire
+
+The eft.28 recurrence signature: the sandbox planner dispatch hung with
+its PID alive, dashboard state frozen 2m15s+, zero output. "Why did no
+watchdog call it stalled?" -- because with `claude -p` there is no signal
+to watch: the CLI prints nothing until the turn completes (Issue 12), so
+server-side inactivity == total runtime and an output-based watchdog
+cannot distinguish a hang from silent work. The engine DOES self-heal (the
+dispatch dies at timeout_s and the retry/resume ladders take over) but at
+the cost of the full dispatch budget: 60 minutes lost per hang, fatal
+inside a 10-minute canary smoke test.
+
+Engine fix: the budget is now an arg. `dispatch_timeout_s` (default 3600,
+floor 60; CLI `--dispatch-timeout-s`) is applied as BOTH timeout_s and
+max_total_s at every dispatch site (the Issue 12 equality is preserved at
+any value), with the integ-test ceiling at 2x (preserving Issue 30). The
+integ playbook's sandbox canary launch now passes 900 -- a hang there
+costs 15 minutes and the sprint's own ladders recover. TRUE liveness
+detection (is the member's claude process making progress?) requires a
+member-side signal the orchestrator does not have; that remains the open
+eft.28 product bead (execute-prompt.ts), now with two cycles of fresh
+repro evidence.
+
+Also found while editing: the playbook's smoke step named a
+`skip_dolt_push: true` arg that has never existed in the engine
+(validateArgs would reject it; the CLI's strict parser has no such flag)
+-- removed, with sandbox isolation now genuinely enforced by the Issue 31
+pre-gate instead. Tests: arg-contract suite pins default/validation and
+end-to-end plumbing (every mock dispatch carries the overridden budget).
+Engine suite: 963 pass / 0 fail.

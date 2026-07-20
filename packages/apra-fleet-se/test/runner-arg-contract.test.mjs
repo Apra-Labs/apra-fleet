@@ -103,6 +103,26 @@ describe('validateArgs', () => {
     });
 
     // -------------------------------------------------------------------
+    // Stabilization Issue 32: dispatch_timeout_s -- the per-dispatch time
+    // budget (timeout_s == max_total_s at every site; integ ceiling 2x).
+    // -------------------------------------------------------------------
+
+    test('dispatch_timeout_s defaults to 3600 and accepts an explicit integer >= 60', () => {
+        assert.strictEqual(validateArgs(VALID_ARGS).dispatchTimeoutS, 3600);
+        assert.strictEqual(validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 600 }).dispatchTimeoutS, 600);
+        assert.strictEqual(validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 60 }).dispatchTimeoutS, 60);
+    });
+
+    test('dispatch_timeout_s rejects non-integers, sub-60 values, and numeric strings', () => {
+        assert.throws(() => validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 59 }), /Invalid dispatch_timeout_s/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 0 }), /Invalid dispatch_timeout_s/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 1.5 }), /Invalid dispatch_timeout_s/);
+        // The CLI layer coerces '--dispatch-timeout-s 600' to a number; a
+        // string reaching the runner is a caller bug and must fail loudly.
+        assert.throws(() => validateArgs({ ...VALID_ARGS, dispatch_timeout_s: '600' }), /Invalid dispatch_timeout_s/);
+    });
+
+    // -------------------------------------------------------------------
     // N15 (apra-fleet-unw2.11): roleMap key normalization + the
     // 'orchestrator' application-level pseudo-role.
     // -------------------------------------------------------------------
@@ -323,7 +343,7 @@ function buildSpyFleetApi(overrides = {}) {
         },
         executePrompt: async (opts) => {
             calls.executePrompt++;
-            promptLog.push({ agent: opts.agent, prompt: opts.prompt });
+            promptLog.push({ agent: opts.agent, prompt: opts.prompt, timeout_s: opts.timeout_s, max_total_s: opts.max_total_s });
 
             if (opts.agent === 'plan-reviewer') {
                 // apra-fleet-unw.15: plan-reviewer verdicts are now
@@ -584,6 +604,37 @@ describe('runner.js mock-level execution', () => {
             spy.promptLog.every((p) => p.agent !== 'orchestrator'),
             'orchestrator must never be dispatched as an agent (it is not a member of contracts.ROLES)'
         );
+    });
+
+    test('dispatch_timeout_s: every agent dispatch carries the overridden budget as timeout_s == max_total_s (integ ceiling would be 2x)', async () => {
+        // Stabilization Issue 32 (run 15 integ C5): a live-but-silent hung
+        // dispatch costs a full dispatch budget before any timer fires
+        // (Issue 12: `claude -p` is silent until done, so inactivity ==
+        // total runtime). The budget is now an arg so small runs (sandbox
+        // canary sprints) can bound that cost. This pins the plumbing:
+        // arg -> validateArgs -> every executePrompt's timeout_s/max_total_s.
+        const spy = buildSpyFleetApi();
+        const workflow = new FleetWorkflow(spy);
+        const engine = new WorkflowEngine(workflow);
+
+        const result = await engine.executeFile(RUNNER_SCRIPT_PATH, {
+            target_issue: 'bd-1',
+            members: ['local'],
+            branch: 'auto-sprint/dispatch-timeout-test',
+            base_branch: 'main',
+            max_cycles: 1,
+            dispatch_timeout_s: 600,
+        }, true);
+
+        assert.strictEqual(result.status, 'success');
+        assert.ok(spy.promptLog.length > 0, 'expected at least one executePrompt dispatch');
+        for (const { agent, timeout_s, max_total_s } of spy.promptLog) {
+            assert.strictEqual(timeout_s, 600, `agent '${agent}' dispatched with timeout_s ${timeout_s}, expected 600`);
+            assert.ok(
+                max_total_s === 600 || max_total_s === 1200,
+                `agent '${agent}' dispatched with max_total_s ${max_total_s}, expected 600 (or 1200 for the integ runner)`
+            );
+        }
     });
 
     // -------------------------------------------------------------------

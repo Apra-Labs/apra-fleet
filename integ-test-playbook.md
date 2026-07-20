@@ -294,11 +294,17 @@ shell-drivable -- no MCP tool is required to run the scenario.
    integ-canary`, no push) and use its ID as `<canary-id>`. Neither path
    writes to `git+https://github.com/Apra-Labs/fleet-e2e-toy`.
 3. Run `apra-fleet workflow auto-sprint` against the canary issue with
-   `max_cycles: 1` and `skip_dolt_push: true` (never write to the real Dolt
-   remote from a sandbox run). The canary's tiny fixed scope (one flag,
-   one file, one assertion) is what keeps this step inside the time
-   budget -- if the sprint plans more than a couple of tasks for it, that
-   is itself suspicious and worth a bug bead.
+   `--max-cycles 1` and `--dispatch-timeout-s 900`. The timeout bound
+   means a hung dispatch (member process alive but silent) costs at most
+   15 minutes instead of the default hour -- right-sized for the canary's
+   tiny scope. Dolt-remote isolation needs no flag: with the sandbox's
+   `sync.remote` neutralized per `## Reset`, the engine's D-push pre-gate
+   refuses to issue any `bd dolt push` at all (there is no
+   `skip_dolt_push` arg -- an earlier revision of this playbook named one
+   that never existed). The canary's tiny fixed scope (one flag, one
+   file, one assertion) is what keeps this step inside the time budget --
+   if the sprint plans more than a couple of tasks for it, that is itself
+   suspicious and worth a bug bead.
 4. Assert the canary issue is now closed and the toy repo's sprint branch
    has a commit. Because the canary's deliverable is concrete, also
    verify it functionally when the canary is the "--version flag" issue:
