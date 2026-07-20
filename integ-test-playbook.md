@@ -116,8 +116,32 @@ it up by tag at run time, and the `<canary-id>` token in `## Test
 scenario` is a placeholder for whatever that lookup returns -- not a real
 ID someone forgot to fill in. The `git reset --hard` above restores the
 beads DB along with the rest of the tracked repo state, which re-opens the
-canary. If the canary issue has been renamed or removed upstream, re-seed
-one in `fleet-e2e-toy` (tagged `integ-canary`) before continuing.
+canary, when that canary exists upstream.
+
+If the tag lookup in `## Test scenario` step 2 returns zero matches (no
+upstream `integ-canary` issue present, or it was renamed/removed), the
+runner self-provisions a canary in the sandbox's LOCAL beads DB only --
+this never writes to or pushes the real Dolt remote:
+
+```bash
+cd "$HOME/toy-repo"
+bd create --title "integ canary (local, sandbox-only)" --label integ-canary
+```
+
+This is local-only: it creates the issue in the sandbox clone's local
+beads DB and does not push, preserving the same `skip_dolt_push`
+semantics that `## Test scenario` step 3 uses for the sprint run itself.
+Proceed using the newly-created issue's ID as `<canary-id>`.
+
+Maintainer note (out-of-band; NOT a sandbox/runner step): to re-seed a
+*permanent* canary upstream so future runs find it via the tag lookup
+instead of self-provisioning, a maintainer with push access to
+`git+https://github.com/Apra-Labs/fleet-e2e-toy` creates an issue tagged
+`integ-canary` in that repo's beads DB and pushes it from a real,
+non-sandbox checkout. This is a one-time maintenance action on shared
+external infra performed by a human maintainer -- it is not something
+`integ-test-runner` does automatically, and it is separate from the
+automated self-provision path above.
 
 ## Teardown
 
@@ -142,9 +166,13 @@ judgment, not copy-paste shell commands like the three lifecycle sections.
 1. Register one member (`register_member` MCP tool, not a shell command)
    pointed at `$HOME/toy-repo`, using the isolated `HOME`/`APRA_FLEET_PORT`
    from Setup.
-2. Find the canary issue by its `integ-canary` tag and confirm it is open
-   (`bd show <canary-id>`, where `<canary-id>` is whatever ID the tag
-   lookup returned).
+2. Find the canary issue by its `integ-canary` tag. If the lookup returns
+   a match, confirm it is open (`bd show <canary-id>`, where
+   `<canary-id>` is whatever ID the tag lookup returned). If the lookup
+   returns zero matches, self-provision one in the sandbox's local beads
+   DB per `## Reset` above (`bd create ... --label integ-canary`, no
+   push) and use its ID as `<canary-id>`. Neither path writes to
+   `git+https://github.com/Apra-Labs/fleet-e2e-toy`.
 3. Run `apra-fleet workflow auto-sprint` against the canary issue with
    `max_cycles: 1` and `skip_dolt_push: true` (never write to the real Dolt
    remote from a sandbox run).
