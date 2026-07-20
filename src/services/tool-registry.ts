@@ -59,9 +59,9 @@ export async function registerAllTools(server: McpServer): Promise<void> {
 
   function getOnboardingPreamble(toolName: string, isJson: boolean): string | null {
     if (!isActiveTool(toolName)) return null;
+    if (isJson) return null;
     const banner = getFirstRunPreamble();
     if (banner) return banner;
-    if (isJson) return null;
     return getWelcomeBackPreamble();
   }
 
