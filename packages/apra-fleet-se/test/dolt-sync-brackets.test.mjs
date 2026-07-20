@@ -344,6 +344,47 @@ test('isMemberSyncRemoteConfigured: fail-safe -- an unparsable / errored / missi
     assert.equal(positivelyAbsent, false, 'a clean parse of an empty value is the only "not configured" case');
 });
 
+// apra-fleet-eft.32: the try/catch around the injected command() call itself
+// (a thrown exception, as opposed to a failSoft `{ ok: false }` result) is a
+// distinct fail-closed branch from the three above and was previously
+// unexercised.
+test('isMemberSyncRemoteConfigured: fail-safe -- a thrown command() exception is treated as CONFIGURED', async () => {
+    const thrown = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => { throw new Error('ECONNRESET'); },
+    });
+    assert.equal(thrown, true, 'a thrown command() exception fails safe (configured)');
+});
+
+// apra-fleet-eft.32: end-to-end proof (via doltPushAfter's default
+// isMemberSyncRemoteConfigured check, no override) that every one of the four
+// fail-closed sync.remote query outcomes -- command() throwing, a failSoft
+// error result, unparseable output, and empty output -- is treated as
+// CONFIGURED and so a non-diverged 'bd dolt push' failure still raises
+// DoltSyncError instead of being downgraded to a benign no-remote skip. This
+// is the safety-critical default (eft.16.1): an inconclusive sync.remote read
+// must never silently swallow a real push failure.
+test('doltPushAfter: every fail-closed isMemberSyncRemoteConfigured path (command() throws, failSoft error, unparseable output, empty output) still throws DoltSyncError on a non-diverged push failure', async () => {
+    const scenarios = [
+        { name: 'command() throws', configHandler: async () => { throw new Error('ECONNRESET'); } },
+        { name: 'failSoft error result', configHandler: async () => ({ ok: false, output: '', error: 'boom' }) },
+        { name: 'unparseable output', configHandler: async () => ({ ok: true, output: 'not json', error: null }) },
+        { name: 'empty output', configHandler: async () => ({ ok: true, output: '', error: null }) },
+    ];
+
+    for (const { name, configHandler } of scenarios) {
+        const command = async (cmd) => {
+            if (cmd.includes('bd config get sync.remote')) return configHandler();
+            if (cmd.includes('bd dolt push')) return fail(CREDENTIALS_ERROR);
+            return OK;
+        };
+        await assert.rejects(
+            () => doltPushAfter('memberA', { command }),
+            DoltSyncError,
+            `fail-closed path '${name}' must still throw DoltSyncError (member treated as configured, no silent no-remote skip)`,
+        );
+    }
+});
+
 // -----------------------------------------------------------------------------
 // verifyDoerStreakClosed -- the single most divergence-sensitive read.
 //
