@@ -6,6 +6,7 @@ import { escapeHtml } from './html-utils.mjs';
 import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic } from './debounced-writer.mjs';
 import { getRunningSprintStatePath, getOldSprintStatePath } from './sprint-state-paths.mjs';
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
+import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -615,6 +616,15 @@ export function createDashboardViewer(workflow, opts = {}) {
         debounceMs: opts.debounceMs || DEFAULT_DEBOUNCE_MS
     });
 
+    // apra-fleet-eft.27.4: configurable head/tail cap applied to a `command`
+    // activity's captured output/error BEFORE it's ever stored into
+    // state.tree (command-output-cap.mjs) -- undefined fields fall back to
+    // that module's own defaults.
+    const commandOutputCapOpts = {
+        headChars: opts.commandOutputHeadChars,
+        tailChars: opts.commandOutputTailChars
+    };
+
     // apra-fleet-eft.2.3: on terminal completion, move (not copy) the live
     // running/<sprintId>.json to old_sprints/<sprintId>.json so "is this
     // sprint live" is a directory-membership check, never a stale field on
@@ -733,11 +743,23 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     workflow.on('activity:end', (meta) => {
+        // apra-fleet-eft.27.4: cap a `command` activity's output/error to a
+        // head+tail excerpt + byte count BEFORE it lands in state.tree --
+        // this is the object persisted (debounced running/<sprintId>.json,
+        // terminal sprint-logs/ snapshot) and read by GET /state's
+        // buildListStatePayload() transform, so an uncapped multi-MB command
+        // dump written here bloats all three regardless of that transform.
+        // Returns the SAME `meta` reference unchanged when there's nothing
+        // to cap (non-command activities, or output already under the cap),
+        // and never mutates the original `meta` object -- other
+        // `activity:end` listeners (e.g. journal.mjs's replay cache) still
+        // need the complete, uncapped text.
+        const storedMeta = capCommandActivityMeta(meta, commandOutputCapOpts);
         for (const g of state.tree) {
             for (const p of g.phases) {
                 const ev = p.events.find(e => e.type === 'activity' && e.id === meta.id);
                 if (ev) {
-                    ev.data = { ...ev.data, ...meta, isRunning: false };
+                    ev.data = { ...ev.data, ...storedMeta, isRunning: false };
                 }
             }
         }
@@ -835,6 +857,24 @@ export function createDashboardViewer(workflow, opts = {}) {
                 description: bead.description || '',
                 updatedAt: bead.updated_at || bead.updatedAt || null
             }));
+        } else if (req.method === 'GET' && /^\/activities\/[^/]+\/output$/.test(req.url)) {
+            // apra-fleet-eft.27.4: on-demand full-output endpoint for a
+            // `command` activity whose stdout/error was capped to a
+            // head+tail excerpt before being stored in state.tree (see the
+            // activity:end handler above / command-output-cap.mjs). Fetched
+            // only when a user expands a truncated command activity in the
+            // dashboard -- never during normal polling. 404s (not a crash)
+            // for an unknown id, or one that was never actually capped
+            // (nothing to fetch beyond what's already inline).
+            const id = decodeURIComponent(req.url.slice('/activities/'.length, req.url.length - '/output'.length));
+            const full = getFullOutput(id);
+            if (!full) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'activity output not found', id }));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ id, ...full }));
         } else if (req.url === '/stop' && req.method === 'POST') {
             // (apra-fleet-unw.10) Cooperative stop -- no process.exit(). The
             // old handler killed the whole Node process immediately, with no
