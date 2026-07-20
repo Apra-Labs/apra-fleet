@@ -19,6 +19,9 @@
  *   is a stateless signer) -- always `0` ("expired/unknown"), per
  *   MemberSchema's own "0 = expired" convention, rather than a made-up number.
  * - `agentVer`: not yet reported by any spoke to this hub -- `'unknown'`.
+ * - `reservedBy`: server-side member reservation (apra-fleet-eft.10) is
+ *   scoped to the local fleet-server Agent registry, not this hub-service
+ *   workspace-member store -- always `null` here.
  */
 import { getMember, listMembers } from './members.js';
 import { getMachine } from './machines.js';
@@ -40,6 +43,7 @@ export interface MemberView {
   tags: string[];
   jwtExp: number;
   agentVer: string;
+  reservedBy: string | null;
 }
 
 async function assembleView(
@@ -80,6 +84,7 @@ async function assembleView(
     tags: [],
     jwtExp: 0,
     agentVer: 'unknown',
+    reservedBy: null,
   };
 }
 
