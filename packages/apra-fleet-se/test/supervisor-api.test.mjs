@@ -320,6 +320,74 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
         const guard = defaultMemberOverlapGuard(ledgerStub);
         await assert.doesNotReject(() => guard({ members: ['bob', 'carol'] }));
     });
+
+    // apra-fleet-eft.26.2 (Hole 2): with member M reserved SERVER-SIDE only
+    // (ledger empty), a launch whose member union includes M is rejected 409,
+    // naming the owning sprint id -- this is what makes a workflow/cli-launched
+    // sprint's member_reservation claim (eft.26.1) visible to a launch routed
+    // through THIS supervisor.
+    test('defaultMemberOverlapGuard: a server-side-only reservation (ledger empty) still rejects with 409 naming the owning sprint id', async () => {
+        const ledgerStub = { list: () => [] };
+        const listMembers = () => ({ members: [{ name: 'alice', reservedBy: 'workflow-sprint-1' }, { name: 'bob', reservedBy: null }] });
+        const guard = defaultMemberOverlapGuard(ledgerStub, listMembers);
+        await assert.rejects(
+            () => guard({ members: ['alice', 'bob'] }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.field === 'members'
+                && err.message.includes('workflow-sprint-1')
+                && err.message.includes('alice')
+                && !err.message.includes('bob'),
+        );
+    });
+
+    test('defaultMemberOverlapGuard: server-side reservations merge with local-ledger conflicts without double-naming a sprint', async () => {
+        const ledgerStub = { list: () => [{ sprintId: 's1', members: ['alice'] }] };
+        const listMembers = () => ({ members: [{ name: 'alice', reservedBy: 's1' }, { name: 'carol', reservedBy: 's2' }] });
+        const guard = defaultMemberOverlapGuard(ledgerStub, listMembers);
+        await assert.rejects(
+            () => guard({ members: ['alice', 'carol'] }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.message === formatMemberConflict([
+                    { sprintId: 's1', members: ['alice'] },
+                    { sprintId: 's2', members: ['carol'] },
+                ]),
+        );
+    });
+
+    test('defaultMemberOverlapGuard: no listMembers injected behaves exactly as pure local-ledger check (backward compatible)', async () => {
+        const ledgerStub = { list: () => [] };
+        const guard = defaultMemberOverlapGuard(ledgerStub);
+        await assert.doesNotReject(() => guard({ members: ['alice'] }));
+    });
+
+    test('defaultMemberOverlapGuard: a listMembers() failure is non-fatal -- the local-ledger check still runs', async () => {
+        const ledgerStub = { list: () => [{ sprintId: 's1', members: ['alice'] }] };
+        const listMembers = async () => { throw new Error('fleet server unreachable'); };
+        const guard = defaultMemberOverlapGuard(ledgerStub, listMembers);
+        await assert.rejects(
+            () => guard({ members: ['alice'] }),
+            (err) => err instanceof ApiError && err.status === 409 && err.message.includes('s1'),
+        );
+    });
+
+    test('POST /api/sprints: member reserved server-side only (ledger empty) is rejected with 409 naming the owning sprint id', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [{ name: 'alice', reservedBy: 'workflow-sprint-1' }] }),
+            getBacklog: () => ({}),
+        });
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-3', members: ['alice'], branch: 'feat/z', base: 'main' }),
+            (err) => err instanceof ApiError && err.status === 409 && err.message.includes('workflow-sprint-1'),
+        );
+        assert.equal(captured.length, 0);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
 });
 
 describe('api -- GET /api/members overlay', () => {
@@ -338,6 +406,45 @@ describe('api -- GET /api/members overlay', () => {
         assert.equal(byName.alice.reservedBy, 's1');
         assert.equal(byName.bob.reserved, false);
         assert.equal(byName.bob.reservedBy, null);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-eft.26.2 (Hole 2): with the local ledger EMPTY, a member
+    // reserved only via the fleet server's own reservedBy record (e.g. a
+    // workflow/cli-launched sprint's eft.26.1 member_reservation claim) still
+    // shows up as reserved here -- not just launches routed through this
+    // ledger.
+    test('a member reserved server-side only (ledger empty) is shown as reserved, naming the owning sprint id', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [{ name: 'alice', reservedBy: 'workflow-sprint-1' }, { name: 'bob', reservedBy: null }] }),
+            getBacklog: () => ({}),
+        });
+        const out = await controller.members();
+        const byName = Object.fromEntries(out.members.map((m) => [m.name, m]));
+        assert.equal(byName.alice.reserved, true);
+        assert.equal(byName.alice.reservedBy, 'workflow-sprint-1');
+        assert.equal(byName.bob.reserved, false);
+        assert.equal(byName.bob.reservedBy, null);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('the local ledger reservation wins over a stale/differing server-side reservedBy for the same member', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s-local', { members: ['alice'], issueRoots: ['R'], childPid: 1 });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            // Server record hasn't caught up yet / disagrees; the ledger is
+            // this supervisor's own most-specific knowledge and should win.
+            listMembers: () => ({ members: [{ name: 'alice', reservedBy: 'stale-sprint' }] }),
+            getBacklog: () => ({}),
+        });
+        const out = await controller.members();
+        const byName = Object.fromEntries(out.members.map((m) => [m.name, m]));
+        assert.equal(byName.alice.reservedBy, 's-local');
         await fsp.rm(dir, { recursive: true, force: true });
     });
 });

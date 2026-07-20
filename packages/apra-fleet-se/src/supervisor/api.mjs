@@ -102,28 +102,79 @@ export function formatMemberConflict(conflicts) {
 }
 
 /**
- * apra-fleet-eft.5.2: the DEFAULT member-axis overlap guard used as
- * `beforeLaunch` when the caller does not inject its own. All-or-nothing:
- * ANY member in the incoming union (members + every roleMap value, INCLUDING
- * the orchestrator role -- memberUnion() already folds that in) that is also
- * held by any OTHER active reservation rejects the ENTIRE launch with a 409,
- * naming the conflicting sprint id(s) and the specific overlapping member
- * names. This throws BEFORE ledger.claim() is ever called, so a rejected
- * launch leaves the ledger byte-identical -- no partial claim.
+ * apra-fleet-eft.5.2 (extended by eft.26.2, Hole 2): the DEFAULT member-axis
+ * overlap guard used as `beforeLaunch` when the caller does not inject its
+ * own. All-or-nothing: ANY member in the incoming union (members + every
+ * roleMap value, INCLUDING the orchestrator role -- memberUnion() already
+ * folds that in) that is also held by any OTHER active reservation rejects
+ * the ENTIRE launch with a 409, naming the conflicting sprint id(s) and the
+ * specific overlapping member names. This throws BEFORE ledger.claim() is
+ * ever called, so a rejected launch leaves the ledger byte-identical -- no
+ * partial claim.
+ *
+ * Two reservation sources are consulted, merged into ONE conflict set:
+ *   1. This supervisor's OWN ledger (`ledger.list()`) -- reservations made by
+ *      launches routed through THIS supervisor's POST /api/sprints.
+ *   2. (eft.26.2) The fleet server's OWN per-member `reservedBy` record, read
+ *      via the injected `listMembers` (the same collaborator GET /api/members
+ *      already uses) -- reservations made by ANY OTHER means, e.g. a
+ *      workflow/cli-launched sprint that reserved directly via
+ *      `member_reservation` (apra-fleet-eft.26.1) and was never routed
+ *      through this ledger at all. Without this second source, a launch could
+ *      land a member ALREADY reserved server-side and the two sprints would
+ *      interleave dispatches on it.
+ *
+ * `listMembers` is optional (backward compatible: omitting it checks only the
+ * local ledger, exactly as before eft.26.2).
+ *
  * @param {{ list: () => Array<{ sprintId: string, members?: string[] }> }} ledger
+ * @param {() => Promise<object|object[]>|object|object[]} [listMembers]
  * @returns {(ctx: { members: string[], issueRoots: string[] }) => Promise<void>}
  */
-export function defaultMemberOverlapGuard(ledger) {
+export function defaultMemberOverlapGuard(ledger, listMembers) {
     return async ({ members: requestMembers }) => {
         const requestSet = new Set(requestMembers ?? []);
-        const conflicts = [];
+        // sprintId -> Set<member>, merged across both sources so a member
+        // conflicting via both the local ledger AND the server record is
+        // named once, not twice.
+        const conflictsBySprint = new Map();
+        const addConflict = (sprintId, member) => {
+            if (!sprintId) return;
+            if (!conflictsBySprint.has(sprintId)) conflictsBySprint.set(sprintId, new Set());
+            conflictsBySprint.get(sprintId).add(member);
+        };
+
         for (const reservation of ledger.list()) {
-            const overlapping = (reservation.members ?? []).filter((m) => requestSet.has(m));
-            if (overlapping.length > 0) {
-                conflicts.push({ sprintId: reservation.sprintId, members: overlapping.sort() });
+            for (const m of (reservation.members ?? [])) {
+                if (requestSet.has(m)) addConflict(reservation.sprintId, m);
             }
         }
-        if (conflicts.length > 0) {
+
+        // eft.26.2: also consult the fleet server's own reservedBy record so
+        // a server-side reservation made by other means (not this ledger) is
+        // still caught. Best-effort: a failure to reach listMembers must not
+        // block the local-ledger check above from still protecting the launch.
+        if (typeof listMembers === 'function') {
+            try {
+                const raw = await listMembers();
+                const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
+                for (const m of list) {
+                    if (!m || typeof m !== 'object') continue;
+                    if (m.name && m.reservedBy && requestSet.has(m.name)) {
+                        addConflict(m.reservedBy, m.name);
+                    }
+                }
+            } catch {
+                // Non-fatal: fall through with whatever the local ledger
+                // already found. The server-side check is defense in depth on
+                // top of the ledger, not a replacement for it.
+            }
+        }
+
+        if (conflictsBySprint.size > 0) {
+            const conflicts = [...conflictsBySprint.entries()]
+                .map(([sprintId, members]) => ({ sprintId, members: [...members].sort() }))
+                .sort((a, b) => a.sprintId.localeCompare(b.sprintId));
             throw new ApiError(409, formatMemberConflict(conflicts), 'members');
         }
     };
@@ -210,7 +261,7 @@ export function createSprintController(deps = {}) {
     // overlap guard (409 on conflict), not a no-op. Callers may still inject
     // their own beforeLaunch (e.g. to compose it with the eft.5.3 issue-scope
     // guard) -- this default is what runs when nothing is injected.
-    const beforeLaunch = deps.beforeLaunch ?? defaultMemberOverlapGuard(ledger);
+    const beforeLaunch = deps.beforeLaunch ?? defaultMemberOverlapGuard(ledger, listMembers);
     const generateSprintId = deps.generateSprintId ?? ((issue) => `${issue}-${randomUUID()}`);
     const resolvePort = deps.resolvePort
         ?? ((pid) => (pid != null && spawner.getLiveEntry ? spawner.getLiveEntry(pid)?.port : undefined));
@@ -235,10 +286,19 @@ export function createSprintController(deps = {}) {
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
+    // apra-fleet-eft.26.2 (Hole 2): the overlay now surfaces BOTH reservation
+    // sources -- this supervisor's own ledger (local launches) AND the fleet
+    // server's own `reservedBy` record already present on each raw member
+    // (e.g. set by a workflow/cli-launched sprint via `member_reservation`,
+    // apra-fleet-eft.26.1, which never touches this ledger at all). The local
+    // ledger wins when both are present (it is this supervisor's own,
+    // most-specific knowledge); the server record is the fallback so a
+    // member reserved by some OTHER means is still shown as reserved here,
+    // not silently reported as free.
     async function members() {
         const raw = await listMembers();
         const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
-        // member name -> sprintId that reserves it (first reservation wins).
+        // member name -> sprintId that reserves it (first LOCAL reservation wins).
         const reservedBy = new Map();
         for (const r of ledger.list()) {
             for (const m of (r.members ?? [])) {
@@ -248,7 +308,7 @@ export function createSprintController(deps = {}) {
         return {
             members: list.map((m) => {
                 const base = typeof m === 'string' ? { name: m } : { ...m };
-                const sid = reservedBy.get(base.name) ?? null;
+                const sid = reservedBy.get(base.name) ?? base.reservedBy ?? null;
                 return { ...base, reserved: sid != null, reservedBy: sid };
             }),
         };
