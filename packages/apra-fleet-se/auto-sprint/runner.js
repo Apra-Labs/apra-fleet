@@ -2720,6 +2720,32 @@ async function runSprintCycle(context) {
             }
         }
 
+        // apra-fleet-eft.24.1: seed scopeIds with any target issue that has
+        // NO children of its own (a childless leaf target, e.g. a bare
+        // issue_type=task with nothing decomposed under it yet). Without
+        // this, scopeIds stayed empty for such a target -- the BFS above
+        // only ever adds descendants -- which short-circuited this function
+        // to `[]` for both the --ready and notDoneBeads queries and tripped
+        // the pre-sprint validation hard-fail before the Planner ever ran.
+        // Deliberately scoped to childless targets ONLY: a target that DOES
+        // have children is left exactly as before (its own id stays out of
+        // scopeIds, only its descendants are in scope), preserving prior
+        // behaviour bit-for-bit for the already-decomposed case -- including
+        // this same pre-sprint validation's earlier '--ready'/notDoneBeads
+        // gate above, which would otherwise start counting a purely
+        // grouping node (e.g. an epic with no blocking deps of its own) as
+        // independently "ready" work even though it is not a real unit of
+        // work. See readyLeafBeads()'s decomposed-node guard below
+        // (apra-fleet-xbu.C5), which remains unaffected either way: a
+        // target WITH children already contributes its own id to
+        // `parentIds` via its children's `.parent` field regardless of
+        // whether the target itself is in scopeIds.
+        for (const id of targetIssues) {
+            if (!childrenOf.has(id) || childrenOf.get(id).length === 0) {
+                scopeIds.add(id);
+            }
+        }
+
         if (scopeIds.size === 0) return [];
 
         if (!rest) {
