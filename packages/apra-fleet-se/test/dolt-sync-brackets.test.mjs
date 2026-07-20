@@ -80,6 +80,80 @@ test('classifyDoltFailure: unclassifiable output is unknown (never silently tran
 });
 
 // -----------------------------------------------------------------------------
+// classifyDoltFailure / doltPullBefore / doltPushAfter -- 'no-remote'
+// (apra-fleet-eft.16.1/16.2): a local beads clone with no configured dolt
+// remote has nothing to pull/push. This must classify distinctly from
+// diverged/transient/unknown and the brackets must skip (not throw) for it,
+// while still throwing for every other failure kind (regression guard so the
+// skip is not over-broad).
+// -----------------------------------------------------------------------------
+test("classifyDoltFailure: 'Error 1105: no remote' and 'no remote' fetch text classify as no-remote", () => {
+    assert.equal(
+        classifyDoltFailure("fetch from origin/main: Error 1105: no remote"),
+        'no-remote',
+    );
+    assert.equal(
+        classifyDoltFailure("[Command Failed] Error: fetch from origin/main: Error 1105: no remote"),
+        'no-remote',
+    );
+    assert.equal(classifyDoltFailure('no remote configured for this repository'), 'no-remote');
+});
+
+test('doltPullBefore: a no-remote failure returns a benign skip, never throws', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt pull': [fail("fetch from origin/main: Error 1105: no remote")],
+    });
+    const res = await doltPullBefore('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA', skipped: true, reason: 'no-remote' });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 1, 'no-remote is not retried');
+});
+
+test('doltPullBefore: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
+    await assert.rejects(
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('merge conflict detected')] }).command }),
+        DoltDivergedError,
+        'diverged D-pull failures are not swallowed by the no-remote skip',
+    );
+    await assert.rejects(
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] }).command }),
+        DoltSyncError,
+        'transient-exhausted D-pull failures are not swallowed by the no-remote skip',
+    );
+    await assert.rejects(
+        () => doltPullBefore('memberA', { command: makeCommandMock({ 'bd dolt pull': [fail('some brand-new dolt failure text')] }).command }),
+        DoltSyncError,
+        'unknown D-pull failures are not swallowed by the no-remote skip',
+    );
+});
+
+test('doltPushAfter: a no-remote failure returns a benign skip, never throws, and issues no reconcile pull', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt push': [fail("[Command Failed] Error: fetch from origin/main: Error 1105: no remote")],
+    });
+    const res = await doltPushAfter('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no-remote D-push triggers no reconcile pull');
+});
+
+test('doltPushAfter: transient/diverged/unknown failures still throw despite the no-remote skip existing', async () => {
+    await assert.rejects(
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('cannot fast-forward: divergent branches')], 'bd dolt pull': [OK] }).command }),
+        DoltDivergedError,
+        'diverged D-push failures are not swallowed by the no-remote skip',
+    );
+    await assert.rejects(
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('connection refused'), fail('connection refused')] }).command }),
+        DoltSyncError,
+        'transient-exhausted D-push failures are not swallowed by the no-remote skip',
+    );
+    await assert.rejects(
+        () => doltPushAfter('memberA', { command: makeCommandMock({ 'bd dolt push': [fail('some brand-new dolt failure text')] }).command }),
+        DoltSyncError,
+        'unknown D-push failures are not swallowed by the no-remote skip',
+    );
+});
+
+// -----------------------------------------------------------------------------
 // doltPullBefore (D-pull).
 // -----------------------------------------------------------------------------
 test('doltPullBefore: happy path runs `bd dolt pull` with an explicit member_name', async () => {
