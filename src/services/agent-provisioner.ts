@@ -42,9 +42,12 @@ function sha256Hex(content: string): string {
 export function loadCanonicalAgentSet(provider: LlmProvider): CanonicalAgentFile[] {
   const assets = loadAgentAssets();
   return assets.map(({ relPath, content }) => {
+    // Normalize CRLF -> LF before hashing/uploading so a CRLF checkout (Windows)
+    // and an LF binary (SEA asset) produce identical hashes for the same file.
+    const normalized = content.replace(/\r\n/g, '\n');
     const transformed = provider === 'opencode'
-      ? transformAgentForOpenCode(content, relPath)
-      : content;
+      ? transformAgentForOpenCode(normalized, relPath)
+      : normalized;
     return { relPath, content: transformed, sha256: sha256Hex(transformed) };
   });
 }

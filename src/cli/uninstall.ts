@@ -286,6 +286,23 @@ Options:
         if (!dryRun) fs.rmSync(paths.skillsDir, { recursive: true, force: true });
         anythingRemoved = true;
       }
+      // auto-sprint-args helper skill is claude-only, installed outside skillsDir
+      // (into <configDir>/skills/auto-sprint-args) -- see install.ts.
+      if (llm === 'claude') {
+        const argsSkillDir = path.join(paths.configDir, 'skills', 'auto-sprint-args');
+        if (fs.existsSync(argsSkillDir)) {
+          console.log(`  - Removing auto-sprint-args skill: ${argsSkillDir}`);
+          if (!dryRun) fs.rmSync(argsSkillDir, { recursive: true, force: true });
+          anythingRemoved = true;
+        }
+      }
+      // PM agent files (role .md files, schemas/, _shared/) -- install.ts writes
+      // the whole set into paths.agentsDir wholesale, so uninstall mirrors that.
+      if (paths.agentsDir && fs.existsSync(paths.agentsDir)) {
+        console.log(`  - Removing PM agent files: ${paths.agentsDir}`);
+        if (!dryRun) fs.rmSync(paths.agentsDir, { recursive: true, force: true });
+        anythingRemoved = true;
+      }
     }
     if (skillMode === 'all' || skillMode === 'fleet') {
       if (fs.existsSync(paths.fleetSkillsDir)) {
