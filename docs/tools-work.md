@@ -59,7 +59,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 
 **What it does:**
 
-1. Looks up the member by ID and resolves its LLM provider (`getProvider(agent.llmProvider)`).
+1. Looks up the member by ID and resolves its LLM provider (`getProvider(agent.llmProvider)`). On the first dispatch to a remote member since the server started, it also checks that member's role-agent files (planner, doer, reviewer, etc.) are current and re-provisions any missing or stale ones before proceeding -- this is what carries an already-registered member's agent files forward after an orchestrator upgrade, without requiring a `register_member`/`update_member` call first. A provisioning failure never blocks the prompt dispatch; it is retried on the next `execute_prompt` call to that member. Skipped for local members and for providers with no agents directory (codex, copilot).
 2. **Base64-encodes the prompt** -- this avoids shell escaping issues when the prompt contains quotes, newlines, or special characters. The encoding is decoded on the target side before being passed to the CLI.
 3. **Builds the provider command** -- via `provider.buildPromptCommand()`, which produces the correct CLI call for the member's provider and OS. Max-turns flag is only appended for Claude (the only provider that supports it).
 4. **Appends the resume flag** if `resume=true` and the member has a stored session. Each provider uses its own resume flag.

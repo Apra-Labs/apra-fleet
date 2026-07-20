@@ -30,6 +30,12 @@ CLAUDE.md
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
 
+# Sprint-log transcripts and analyses are per-run artifacts, not deliverables.
+# Files already tracked before this rule stay tracked (gitignore does not
+# untrack existing files) -- this only stops new ones from being committed.
+sprint-logs/*.jsonl
+sprint-logs/*.analysis.md
+
 # Provider agent context files are tracked project deliverables (git add -f was used).
 # These entries prevent sprint-injected replacements from being accidentally staged.
 GEMINI.md

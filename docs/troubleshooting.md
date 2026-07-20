@@ -44,6 +44,14 @@ Fleet can configure member permissions. Ask it to, for example, "Grant
 | Codex | `.codex/config.toml` (approval mode) |
 | Copilot | `.github/copilot/settings.local.json` |
 
+**Permission granted but still denied on Claude**
+
+Claude Code only honors `.claude/settings.local.json` permissions once the
+project folder is a **trusted workspace**. If the member's work folder has
+never been opened and trusted in Claude Code directly, the permissions Fleet
+writes there are inert. Open the folder in Claude Code once and accept the
+trust prompt, then retry.
+
 ## Timeouts
 
 A dispatch can end in two distinct ways:

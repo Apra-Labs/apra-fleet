@@ -89,6 +89,8 @@ describe('uninstall', () => {
     const expected = fillFixturePlaceholders(readCommandSurfaceFixture('uninstall-dry-run.txt'), {
       VERSION: serverVersion,
       PM_SKILLS_DIR: claudePaths.skillsDir,
+      ARGS_SKILL_DIR: path.join(claudePaths.configDir, 'skills', 'auto-sprint-args'),
+      AGENTS_DIR: claudePaths.agentsDir!,
       FLEET_SKILLS_DIR: claudePaths.fleetSkillsDir,
       NODE_MODULES_DIR: config.NODE_MODULES_DIR,
       SCHEMAS_DIR: config.SCHEMAS_DIR,
@@ -321,6 +323,62 @@ describe('uninstall', () => {
       expect(fs.rmSync).toHaveBeenCalledWith(nodeModulesDir, expect.any(Object));
       expect(fs.rmSync).toHaveBeenCalledWith(workflowsDir, expect.any(Object));
     });
+  });
+
+  it('removes the auto-sprint-args skill for claude PM uninstall (GAP B)', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { claude: { skill: 'all' } }
+    }));
+
+    await runUninstall(['--skill', 'pm', '--yes']);
+
+    expect(fs.rmSync).toHaveBeenCalledWith(expect.stringMatching(/[\\/]auto-sprint-args$/), expect.any(Object));
+  });
+
+  it('does not remove auto-sprint-args skill for non-claude providers', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { gemini: { skill: 'all' } }
+    }));
+
+    await runUninstall(['--skill', 'pm', '--yes']);
+
+    const rmCalls = vi.mocked(fs.rmSync).mock.calls.map(c => c[0].toString());
+    expect(rmCalls.some(p => p.includes('auto-sprint-args'))).toBe(false);
+  });
+
+  it('removes PM agent files (agentsDir) for claude PM uninstall', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { claude: { skill: 'all' } }
+    }));
+
+    await runUninstall(['--skill', 'pm', '--yes']);
+
+    expect(fs.rmSync).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]agents$/),
+      expect.objectContaining({ recursive: true, force: true })
+    );
+  });
+
+  it('does not remove agentsDir for providers with no agent files (codex, copilot)', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { codex: { skill: 'pm' } }
+    }));
+
+    await runUninstall(['--llm', 'codex', '--skill', 'pm', '--yes']);
+
+    const rmCalls = vi.mocked(fs.rmSync).mock.calls.map(c => c[0].toString());
+    expect(rmCalls.some(p => p.endsWith('agents'))).toBe(false);
+  });
+
+  it('does not remove agentsDir when only fleet skills are requested', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { claude: { skill: 'all' } }
+    }));
+
+    await runUninstall(['--skill', 'fleet', '--yes']);
+
+    const rmCalls = vi.mocked(fs.rmSync).mock.calls.map(c => c[0].toString());
+    expect(rmCalls.some(p => p.endsWith('agents'))).toBe(false);
   });
 
   it('aborts if apra-fleet server is running', async () => {

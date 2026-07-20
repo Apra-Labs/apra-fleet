@@ -33,6 +33,14 @@ vi.mock('../../src/services/strategy.js', async (importOriginal) => {
   };
 });
 
+// execute_prompt now auto-provisions agent files on first dispatch to a remote
+// member (see execute-prompt-provisioning.test.ts) -- mock it away here so it
+// doesn't consume the mockExecCommand queue and shift call-index assertions.
+vi.mock('../../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
+}));
+
 // ── Inactivity timer ─────────────────────────────────────────────────────────
 // Tests the rolling inactivity timer and max_total_s ceiling by running real
 // local processes through LocalStrategy.execCommand.

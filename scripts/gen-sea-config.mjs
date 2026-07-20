@@ -96,6 +96,11 @@ const fleetSkills = collectFiles(join(root, 'skills', 'fleet'), 'skills/fleet');
 // nothing left for vendor-pm.mjs to resolve here.)
 const agentsDir = join(root, 'vendor', 'apra-pm', 'agents');
 const agents = collectFiles(agentsDir, 'vendor/apra-pm/agents', 'vendor/apra-pm/agents');
+const autoSprintArgsSkill = collectFiles(
+  join(root, 'vendor', 'apra-pm', '.claude', 'skills', 'auto-sprint-args'),
+  'vendor/apra-pm/.claude/skills/auto-sprint-args',
+  'vendor/apra-pm/.claude/skills/auto-sprint-args'
+);
 
 if (Object.keys(skills).length === 0) {
   console.error('Error: vendor/apra-pm submodule is not initialized (skills/pm is empty).');
@@ -173,6 +178,7 @@ const manifest = {
   workflowRuntime,
   agentSchemas,
   builtinWorkflows,
+  autoSprintArgsSkill,
 };
 
 writeFileSync(join(distDir, 'sea-manifest.json'), JSON.stringify(manifest, null, 2));
@@ -186,6 +192,7 @@ console.log(`  Workflows:    ${Object.keys(workflows).length} files`);
 console.log(`  Workflow runtime:   ${Object.keys(workflowRuntime).length} files`);
 console.log(`  Agent schemas:      ${Object.keys(agentSchemas).length} files`);
 console.log(`  Built-in workflows: ${Object.keys(builtinWorkflows).length} files`);
+console.log(`  Skill (auto-sprint-args): ${Object.keys(autoSprintArgsSkill).length} files`);
 
 // Build SEA config with assets
 const assets = {};
@@ -231,6 +238,10 @@ for (const [, relPath] of Object.entries(agentSchemas)) {
   assets[relPath] = join(root, relPath);
 }
 for (const [, relPath] of Object.entries(builtinWorkflows)) {
+  assets[relPath] = join(root, relPath);
+}
+// Add auto-sprint-args skill files
+for (const [, relPath] of Object.entries(autoSprintArgsSkill)) {
   assets[relPath] = join(root, relPath);
 }
 

@@ -50,10 +50,12 @@ const distDir = join(root, 'dist');
 const submoduleSkills = join(root, 'vendor', 'apra-pm', 'skills', 'pm');
 const submoduleAgents = join(root, 'vendor', 'apra-pm', 'agents');
 const submoduleWorkflows = join(root, 'vendor', 'apra-pm', '.claude', 'workflows');
+const submoduleArgsSkill = join(root, 'vendor', 'apra-pm', '.claude', 'skills', 'auto-sprint-args');
 
 const distSkills = join(distDir, 'skills', 'pm');
 const distAgents = join(distDir, 'agents');
 const distWorkflows = join(distDir, 'workflows');
+const distArgsSkill = join(distDir, 'skills', 'auto-sprint-args');
 
 const isNonEmptyDir = (dir) => existsSync(dir) && readdirSync(dir).length > 0;
 
@@ -71,6 +73,12 @@ if (isNonEmptyDir(submoduleSkills) && isNonEmptyDir(submoduleAgents)) {
     mkdirSync(distWorkflows, { recursive: true });
     cpSync(submoduleWorkflows, distWorkflows, { recursive: true });
     console.log(`Vendored .claude/workflows -> dist/workflows`);
+  }
+
+  if (existsSync(submoduleArgsSkill)) {
+    mkdirSync(distArgsSkill, { recursive: true });
+    cpSync(submoduleArgsSkill, distArgsSkill, { recursive: true });
+    console.log(`Vendored .claude/skills/auto-sprint-args -> dist/skills/auto-sprint-args`);
   }
 } else if (isNonEmptyDir(distSkills) && isNonEmptyDir(distAgents)) {
   console.log('Submodule not initialized but dist/ already populated -- skipping vendor copy');

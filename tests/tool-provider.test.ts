@@ -36,6 +36,14 @@ vi.mock('../src/services/auth-socket.js', () => ({
   collectOobApiKey: (...args: unknown[]) => mockCollectOobApiKey(...(args as [])),
 }));
 
+// execute_prompt now auto-provisions agent files on first dispatch (see
+// execute-prompt-provisioning.test.ts) -- mock it away here so it doesn't
+// consume the mockExecCommand queue and shift the call-index assertions below.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
+}));
+
 // ---------------------------------------------------------------------------
 // execute-prompt: each provider parses its own response format
 // ---------------------------------------------------------------------------

@@ -36,6 +36,14 @@ vi.mock('../src/services/cloud/lifecycle.js', () => ({
   ensureCloudReady: mockEnsureCloudReady,
 }));
 
+// execute_prompt now auto-provisions agent files on first dispatch to a remote
+// member (see execute-prompt-provisioning.test.ts) -- mock it away here so it
+// doesn't consume the mockExecCommand queue and shift call-count assertions.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
+}));
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
