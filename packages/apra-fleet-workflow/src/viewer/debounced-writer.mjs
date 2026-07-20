@@ -19,6 +19,40 @@ export const MIN_DEBOUNCE_MS = 200;
 export const MAX_DEBOUNCE_MS = 500;
 export const DEFAULT_DEBOUNCE_MS = 300;
 
+// apra-fleet-eft.20.1: single shared atomic-JSON-write primitive for every
+// sprint-state persistence path in this package (the debounced writer below
+// AND the terminal-snapshot persistState() in ../viewer/index.mjs). Centralizing
+// this here guarantees two invariants that a hand-rolled/partial-patch writer
+// could otherwise violate:
+//   1. The full object is always serialized in ONE JSON.stringify pass -- no
+//      code path ever splices/patches individual fields into previously
+//      serialized text (the kind of string surgery that produced the
+//      `"phase"":"Develop"` doubled-quote corruption in apra-fleet-eft.20:
+//      a stray extra `"` inserted by an in-place field patch rather than a
+//      single whole-object serialization). Because the input to
+//      fs.writeFileSync is always the direct output of JSON.stringify(), the
+//      written bytes are guaranteed to round-trip through JSON.parse().
+//   2. The write is atomic: bytes land in a sibling temp file first, then
+//      `fs.renameSync` (a single filesystem operation on POSIX) swaps it into
+//      place, so a reader (or a crash mid-write) can never observe a
+//      truncated/partial file -- only the old complete file or the new
+//      complete one.
+// The temp filename includes both the pid and a monotonic counter (not just
+// Date.now(), which can collide when called faster than the clock's
+// resolution) so concurrent/rapid writers targeting the same filePath never
+// collide on the same temp path.
+let _tmpSeq = 0;
+export function writeJsonFileAtomic(filePath, data) {
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpPath = path.join(
+        dir,
+        `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${_tmpSeq++}.tmp`
+    );
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+    fs.renameSync(tmpPath, filePath);
+}
+
 export class DebouncedStateWriter {
     /**
      * @param {object} opts
@@ -96,8 +130,6 @@ export class DebouncedStateWriter {
     _writeNow() {
         this._dirty = false;
         try {
-            const dir = path.dirname(this._filePath);
-            fs.mkdirSync(dir, { recursive: true });
             // Write atomically: a concurrent reader (watchdog/dashboard/
             // history views, or this package's own tests) must never observe
             // a partially-written file, and a SIGKILL landing mid-write must
@@ -105,13 +137,11 @@ export class DebouncedStateWriter {
             // to a sibling temp path and renaming into place is atomic on
             // POSIX (rename is a single filesystem operation), so readers see
             // either the old complete file or the new complete file, never a
-            // truncated one.
-            const tmpPath = path.join(
-                dir,
-                `.${path.basename(this._filePath)}.${process.pid}.${Date.now()}.tmp`
-            );
-            fs.writeFileSync(tmpPath, JSON.stringify(this._getState(), null, 2));
-            fs.renameSync(tmpPath, this._filePath);
+            // truncated one. The whole state snapshot is always serialized in
+            // one JSON.stringify() pass (see writeJsonFileAtomic above) --
+            // never patched field-by-field -- so the written bytes always
+            // round-trip through JSON.parse().
+            writeJsonFileAtomic(this._filePath, this._getState());
             this._writeCount += 1;
         } catch (e) {
             // A failed write must never crash or block the sprint's own

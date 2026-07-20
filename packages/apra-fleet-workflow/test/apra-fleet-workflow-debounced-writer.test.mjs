@@ -12,7 +12,8 @@ import {
     DebouncedStateWriter,
     MIN_DEBOUNCE_MS,
     MAX_DEBOUNCE_MS,
-    DEFAULT_DEBOUNCE_MS
+    DEFAULT_DEBOUNCE_MS,
+    writeJsonFileAtomic
 } from '../src/viewer/debounced-writer.mjs';
 
 // Tests for apra-fleet-eft.2.1: debounced sprint-state writer with
@@ -181,6 +182,51 @@ describe('apra-fleet-eft.2.1: DebouncedStateWriter unit behavior', () => {
         assert.strictEqual(writer.writeCount, 2);
         const saved = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         assert.strictEqual(saved.v, 2);
+    });
+});
+
+describe('apra-fleet-eft.20.1: writeJsonFileAtomic -- single-pass serialization + atomic write', () => {
+    let tmpDir;
+    beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-atomic-write-unit-'));
+    });
+    afterEach(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test('the written file always round-trips through JSON.parse, even across many rapid re-writes', () => {
+        const filePath = path.join(tmpDir, 'sprint.state.json');
+        // Simulate rapid per-activity phase-transition checkpoint writes (the
+        // apra-fleet-eft.20 repro: Plan -> Develop -> Review -> Harvest,
+        // fired back-to-back). Every single write must produce bytes that
+        // round-trip through JSON.parse -- a hand-rolled partial field patch
+        // could inject a stray duplicate quote/delimiter (e.g. the observed
+        // `"phase"":"Develop"`); a single JSON.stringify() pass never can.
+        const phases = ['Plan', 'Develop', 'Review', 'Harvest'];
+        for (let cycle = 1; cycle <= 25; cycle++) {
+            const phase = phases[cycle % phases.length];
+            writeJsonFileAtomic(filePath, { cycle, phase, planApproved: cycle > 1 });
+            const raw = fs.readFileSync(filePath, 'utf-8');
+            const parsed = JSON.parse(raw); // throws (failing the test) on malformed JSON
+            assert.strictEqual(parsed.cycle, cycle);
+            assert.strictEqual(parsed.phase, phase);
+        }
+    });
+
+    test('writes atomically via temp-file-then-rename: no leftover temp file, target never missing mid-loop', () => {
+        const filePath = path.join(tmpDir, 'sprint.state.json');
+        for (let i = 0; i < 10; i++) {
+            writeJsonFileAtomic(filePath, { i });
+        }
+        const dirEntries = fs.readdirSync(tmpDir);
+        assert.deepStrictEqual(dirEntries, ['sprint.state.json'], 'no .tmp artifacts must survive a completed write');
+        assert.deepStrictEqual(JSON.parse(fs.readFileSync(filePath, 'utf-8')), { i: 9 });
+    });
+
+    test('creates the target directory (recursive) if it does not exist yet', () => {
+        const filePath = path.join(tmpDir, 'nested', 'dir', 'sprint.state.json');
+        writeJsonFileAtomic(filePath, { ok: true });
+        assert.deepStrictEqual(JSON.parse(fs.readFileSync(filePath, 'utf-8')), { ok: true });
     });
 });
 

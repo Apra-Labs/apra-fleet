@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { escapeHtml } from './html-utils.mjs';
-import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS } from './debounced-writer.mjs';
+import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic } from './debounced-writer.mjs';
 import { getRunningSprintStatePath, getOldSprintStatePath } from './sprint-state-paths.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
@@ -614,12 +614,17 @@ export function createDashboardViewer(workflow, opts = {}) {
         saved = true;
         try {
             const dir = path.join(process.cwd(), 'sprint-logs');
-            fs.mkdirSync(dir, { recursive: true });
             const now = new Date();
             const pad2 = (n) => String(n).padStart(2, '0');
             const hhmmss = `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
             const filePath = path.join(dir, `sprint_${hhmmss}.json`);
-            fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
+            // apra-fleet-eft.20.1: route through the same single-pass
+            // JSON.stringify + atomic temp-file-then-rename primitive the
+            // debounced writer uses (writeJsonFileAtomic, debounced-writer.mjs)
+            // instead of a direct writeFileSync, so this terminal snapshot can
+            // never be observed half-written and its bytes always round-trip
+            // through JSON.parse().
+            writeJsonFileAtomic(filePath, state);
             console.log(`[Viewer] Sprint state saved to ${filePath}`);
         } catch (e) {
             // A failed save must never crash or block the sprint's own
