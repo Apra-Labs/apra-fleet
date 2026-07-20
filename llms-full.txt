@@ -560,7 +560,9 @@ See `docs/provider-matrix.md` for the full comparison table.
 
 ## PM Skill Submodule
 
-The PM skill and its four agent definitions (planner, plan-reviewer, doer, reviewer) are vendored from the [apra-pm](https://github.com/Apra-Labs/apra-pm) repository via a git submodule at `vendor/apra-pm/`. At build time, `scripts/vendor-pm.mjs` copies the skill and agent files into `dist/`. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`). For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation.
+The PM skill and its role agent definitions (planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner, ci-watcher, harvester), plus their shared `agents/schemas/` and `agents/_shared/` assets, are vendored from the [apra-pm](https://github.com/Apra-Labs/apra-pm) repository via a git submodule at `vendor/apra-pm/`. At build time, `scripts/vendor-pm.mjs` copies the skill and agent files into `dist/` (and `scripts/gen-sea-config.mjs` embeds them as SEA assets for the standalone binary), so all three install paths -- dev-mode, npm, and SEA binary -- carry the same set. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`); `uninstall` removes that directory in the same pass. For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation. Claude installs additionally get the `auto-sprint-args` skill (the args contract for the `/auto-sprint` workflow), written to `~/.claude/skills/auto-sprint-args`.
+
+Remote fleet members do not share the operator's home directory, so `register_member`, `update_member`, and (starting with the first dispatch after an orchestrator upgrade) `execute_prompt` each independently hash-diff the canonical agent set against the remote box and push anything missing or stale. See [docs/tools-lifecycle.md](tools-lifecycle.md) and [docs/tools-work.md](tools-work.md) for the per-tool behavior.
 
 ## Key Design Decisions
 
@@ -687,8 +689,12 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.claude/skills/pm/` | PM orchestration skill |
 | `~/.claude/skills/pm/cost.js` | Auto-generated CJS module with sprint cost functions (all providers with PM) |
 | `~/.claude/workflows/auto-sprint.js` | Full auto-sprint workflow (Claude only) |
+| `~/.claude/skills/auto-sprint-args/` | Args contract for the `/auto-sprint` workflow (Claude only) |
+| `~/.claude/agents/` | PM role-agent files (planner, doer, reviewer, etc.), plus `schemas/` and `_shared/` -- written whenever PM is installed and the provider has an agents directory (not codex/copilot) |
 
 For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
+
+This local install only covers the machine you run it on. Remote fleet members get their own copy of the PM agent files independently -- `register_member` and `update_member` push them on first contact, and `execute_prompt` re-checks and re-provisions any missing or stale files on first dispatch to that member each server run (so an existing member picks up new agent files after you upgrade Fleet, without needing to be re-registered). Local members are unaffected -- they share the operator's home directory above.
 
 The install also registers the MCP server (`claude mcp add apra-fleet`) and
 configures a status bar icon showing fleet member activity.
@@ -766,8 +772,9 @@ OAuth.
 ## Uninstall
 
 The built-in uninstall command surgically removes MCP registration,
-permissions, hooks, status line, and skill directories without touching your
-other settings:
+permissions, hooks, status line, skill directories, and PM agent files
+(`~/.claude/agents/`, or the equivalent provider directory) without touching
+your other settings:
 
 ```bash
 apra-fleet uninstall
@@ -2039,6 +2046,14 @@ Fleet can configure member permissions. Ask it to, for example, "Grant
 | Gemini | `.gemini/policies/` |
 | Codex | `.codex/config.toml` (approval mode) |
 | Copilot | `.github/copilot/settings.local.json` |
+
+**Permission granted but still denied on Claude**
+
+Claude Code only honors `.claude/settings.local.json` permissions once the
+project folder is a **trusted workspace**. If the member's work folder has
+never been opened and trusted in Claude Code directly, the permissions Fleet
+writes there are inert. Open the folder in Claude Code once and accept the
+trust prompt, then retry.
 
 ## Timeouts
 
