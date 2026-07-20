@@ -491,6 +491,28 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 </html>`;
 };
 
+// apra-fleet-eft.27.2: on-demand bead-description lookup for GET
+// /beads/:id/description (see the route below). GET /state's lean list-state
+// payload (apra-fleet-eft.27.1, src/viewer/lean-state.mjs) strips every
+// bead's full `description` down to a short `summary` so the recurring poll
+// payload stays small -- this is the client's ONLY way to recover the full
+// text, and it must read it from the LIVE, full-fidelity `state.extensions`
+// object (never leaned), not from any /state response. Deliberately the one
+// place in this file that knows the 'beads' extension's shape (sprintTasks/
+// backlogTasks, both arrays of { id, description, updated_at, ... }) --
+// everything else here (and all of lean-state.mjs) stays extension-agnostic.
+function findBeadById(state, id) {
+    const beadsExt = state.extensions && state.extensions.beads;
+    if (!beadsExt) return null;
+    const pools = [beadsExt.sprintTasks, beadsExt.backlogTasks];
+    for (const pool of pools) {
+        if (!Array.isArray(pool)) continue;
+        const match = pool.find((t) => t && String(t.id) === String(id));
+        if (match) return match;
+    }
+    return null;
+}
+
 // apra-fleet-eft.6.5: exported so the supervisor's process-free History view
 // (packages/apra-fleet-se/src/supervisor/history-view.mjs) can render a
 // finished sprint's persisted terminal state through the SAME template the
@@ -791,6 +813,28 @@ export function createDashboardViewer(workflow, opts = {}) {
             // process-free History view embeds) is never mutated by this.
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
             res.end(JSON.stringify(buildListStatePayload(state)));
+        } else if (req.method === 'GET' && /^\/beads\/[^/]+\/description$/.test(req.url)) {
+            // apra-fleet-eft.27.2: on-demand full-description endpoint. This
+            // is fetched ONLY when a user expands a bead row in the
+            // dashboard's beads extension (packages/apra-fleet-se/auto-sprint
+            // /viewer-extensions.mjs) -- never during normal polling -- and
+            // the browser caches the result in localStorage, keyed by bead
+            // id and validated against `updatedAt` (bd's `updated_at`),
+            // re-fetching only once that timestamp changes in a later /state
+            // poll.
+            const id = decodeURIComponent(req.url.slice('/beads/'.length, req.url.length - '/description'.length));
+            const bead = findBeadById(state, id);
+            if (!bead) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'bead not found', id }));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({
+                id: bead.id,
+                description: bead.description || '',
+                updatedAt: bead.updated_at || bead.updatedAt || null
+            }));
         } else if (req.url === '/stop' && req.method === 'POST') {
             // (apra-fleet-unw.10) Cooperative stop -- no process.exit(). The
             // old handler killed the whole Node process immediately, with no

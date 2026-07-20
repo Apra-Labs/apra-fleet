@@ -204,6 +204,186 @@ describe('renderBeadsHtml: Sprint / Backlog two-section layout', () => {
     });
 });
 
+describe('apra-fleet-eft.27.2: renderBeadsHtml on-demand description markup', () => {
+    test('a lean (summary-only) bead renders an expandable row carrying its id/updatedAt for the client-side fetch, marked NOT loaded', () => {
+        const html = renderBeadsHtml([{ id: 'bd-1', title: 'A task', status: 'open', summary: 'short preview...', updated_at: '2026-07-20T00:00:00Z', dependencies: [] }]);
+        assert.ok(html.includes('class="bead-desc"'));
+        assert.ok(html.includes('data-bead-id="bd-1"'));
+        assert.ok(html.includes('data-updated-at="2026-07-20T00:00:00Z"'));
+        assert.ok(html.includes('data-loaded="false"'), 'a summary-only bead has no full text yet -- must be marked not-loaded so the client fetches it on expand');
+        assert.ok(html.includes('short preview...'));
+    });
+
+    test('a bead with the full description inline (e.g. a History-view snapshot) is marked already-loaded -- no fetch needed', () => {
+        const html = renderBeadsHtml([{ id: 'bd-2', title: 'A task', status: 'open', description: 'the full text', updated_at: '2026-07-20T00:00:00Z', dependencies: [] }]);
+        assert.ok(html.includes('data-loaded="true"'));
+        assert.ok(html.includes('the full text'));
+    });
+
+    test('a bead with neither description nor summary renders its plain title with no expandable markup', () => {
+        const html = renderBeadsHtml([{ id: 'bd-3', title: 'Bare task', status: 'open', dependencies: [] }]);
+        assert.ok(!html.includes('bead-desc'));
+        assert.ok(html.includes('Bare task'));
+    });
+});
+
+describe('apra-fleet-eft.27.2: browser-side fetch + localStorage cache (embedded script)', () => {
+    function createMockLocalStorage() {
+        const store = new Map();
+        return {
+            getItem: (k) => (store.has(k) ? store.get(k) : null),
+            setItem: (k, v) => { store.set(k, String(v)); },
+            removeItem: (k) => store.delete(k),
+            clear: () => store.clear()
+        };
+    }
+
+    // Extracts the cache/fetch helpers embedded in beadsExtension.js (the
+    // same source that runs in the browser) exactly as the real page would
+    // load them, minus the two top-level addEventListener() wireups (which
+    // would otherwise register real listeners against the test's mocked
+    // `document`) -- mirrors the extraction pattern the existing
+    // "embeds a working renderBeadsHtml()" test above already uses.
+    function extractHelpers() {
+        const src = beadsExtension.js.replace(/document\.addEventListener[\s\S]*$/, '');
+        const factory = new Function(`
+            ${src}
+            return { loadBeadDescription: loadBeadDescription, readBeadDescCache: readBeadDescCache, writeBeadDescCache: writeBeadDescCache };
+        `);
+        return factory();
+    }
+
+    function makeDetailsEl(id, updatedAt, initialText) {
+        const bodyEl = { textContent: initialText, dataset: { loaded: 'false' } };
+        return {
+            dataset: { beadId: id, updatedAt: updatedAt },
+            querySelector: (sel) => (sel === '.bead-desc-body' ? bodyEl : null),
+            _bodyEl: bodyEl
+        };
+    }
+
+    // Globals are saved/restored per-test explicitly (try/finally inside
+    // each test body below) rather than via a file-wide beforeEach/afterEach,
+    // since only this describe block touches globalThis.localStorage/fetch.
+    let originalLocalStorage, originalFetch;
+
+    test('cache miss: fetches from GET /beads/:id/description exactly once, then caches the result', async () => {
+        originalLocalStorage = globalThis.localStorage;
+        originalFetch = globalThis.fetch;
+        try {
+            globalThis.localStorage = createMockLocalStorage();
+            let fetchCalls = 0;
+            globalThis.fetch = async (url) => {
+                fetchCalls++;
+                assert.ok(url.includes('/beads/bd-1/description'));
+                return { ok: true, json: async () => ({ id: 'bd-1', description: 'the full text', updatedAt: 'v1' }) };
+            };
+
+            const { loadBeadDescription } = extractHelpers();
+            const details = makeDetailsEl('bd-1', 'v1', 'short preview');
+            await loadBeadDescription(details);
+
+            assert.equal(fetchCalls, 1);
+            assert.equal(details._bodyEl.textContent, 'the full text');
+            assert.equal(details._bodyEl.dataset.loaded, 'true');
+        } finally {
+            globalThis.localStorage = originalLocalStorage;
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    test('cache hit: a second expand of an unchanged bead (same updatedAt) causes NO network request', async () => {
+        originalLocalStorage = globalThis.localStorage;
+        originalFetch = globalThis.fetch;
+        try {
+            const storage = createMockLocalStorage();
+            globalThis.localStorage = storage;
+            let fetchCalls = 0;
+            globalThis.fetch = async () => {
+                fetchCalls++;
+                return { ok: true, json: async () => ({ id: 'bd-1', description: 'the full text', updatedAt: 'v1' }) };
+            };
+
+            const { loadBeadDescription } = extractHelpers();
+
+            // First expand: populates the cache via a real fetch.
+            await loadBeadDescription(makeDetailsEl('bd-1', 'v1', 'preview'));
+            assert.equal(fetchCalls, 1);
+
+            // Second expand of a FRESH element (simulating the full-innerHTML
+            // rebuild a poll tick performs) with the SAME updatedAt: must be
+            // served entirely from localStorage, no additional fetch.
+            const second = makeDetailsEl('bd-1', 'v1', 'preview');
+            await loadBeadDescription(second);
+            assert.equal(fetchCalls, 1, 'a cache hit must not trigger another network request');
+            assert.equal(second._bodyEl.textContent, 'the full text');
+        } finally {
+            globalThis.localStorage = originalLocalStorage;
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    test('a changed updatedAt invalidates the cache and triggers exactly one refetch', async () => {
+        originalLocalStorage = globalThis.localStorage;
+        originalFetch = globalThis.fetch;
+        try {
+            globalThis.localStorage = createMockLocalStorage();
+            let fetchCalls = 0;
+            globalThis.fetch = async () => {
+                fetchCalls++;
+                return { ok: true, json: async () => ({ id: 'bd-1', description: 'v' + fetchCalls, updatedAt: 'irrelevant' }) };
+            };
+
+            const { loadBeadDescription } = extractHelpers();
+
+            await loadBeadDescription(makeDetailsEl('bd-1', 'v1', 'preview'));
+            assert.equal(fetchCalls, 1);
+
+            // Bead changed server-side -- next poll reports a new updatedAt.
+            const changed = makeDetailsEl('bd-1', 'v2', 'preview');
+            await loadBeadDescription(changed);
+            assert.equal(fetchCalls, 2, 'a changed updatedAt must trigger exactly one refetch, not a stale cache hit');
+        } finally {
+            globalThis.localStorage = originalLocalStorage;
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    test('a fetch failure (network error) is handled gracefully, never throwing', async () => {
+        originalLocalStorage = globalThis.localStorage;
+        originalFetch = globalThis.fetch;
+        try {
+            globalThis.localStorage = createMockLocalStorage();
+            globalThis.fetch = async () => { throw new Error('network down'); };
+
+            const { loadBeadDescription } = extractHelpers();
+            const details = makeDetailsEl('bd-1', 'v1', 'preview');
+            await assert.doesNotReject(loadBeadDescription(details));
+            assert.equal(details._bodyEl.textContent, '(failed to load description)');
+        } finally {
+            globalThis.localStorage = originalLocalStorage;
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    test('a 404 response is handled gracefully, never throwing', async () => {
+        originalLocalStorage = globalThis.localStorage;
+        originalFetch = globalThis.fetch;
+        try {
+            globalThis.localStorage = createMockLocalStorage();
+            globalThis.fetch = async () => ({ ok: false });
+
+            const { loadBeadDescription } = extractHelpers();
+            const details = makeDetailsEl('bd-1', 'v1', 'preview');
+            await assert.doesNotReject(loadBeadDescription(details));
+            assert.equal(details._bodyEl.textContent, '(description unavailable)');
+        } finally {
+            globalThis.localStorage = originalLocalStorage;
+            globalThis.fetch = originalFetch;
+        }
+    });
+});
+
 describe('beadsExtension.js: embedded browser script is syntactically valid and self-contained', () => {
     test('parses as a valid function body (no leftover template-literal escaping bugs)', () => {
         assert.doesNotThrow(() => new Function('document', beadsExtension.js));

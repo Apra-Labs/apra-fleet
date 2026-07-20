@@ -165,6 +165,36 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         return '<span style="color: #a1a1aa; font-size: 10px;">' + (model ? escapeHtml(model) : 'n/a') + '</span>';
     }
 
+    // apra-fleet-eft.27.2: descriptions are no longer inlined into the
+    // dashboard's recurring poll payload -- apra-fleet-eft.27.1's lean
+    // list-state transform (src/viewer/lean-state.mjs) strips every bead's
+    // full `description` down to a short `summary` before GET /state ever
+    // serves it, so the real running dashboard only ever has `summary`
+    // here. The full text is instead fetched on demand, exactly once per
+    // (bead id, updatedAt) pair, the moment a user expands the row -- see
+    // GET /beads/:id/description (src/viewer/index.mjs) and the fetch +
+    // localStorage-cache logic wired up below in `js`.
+    //
+    // A caller that already has the full `description` inline (this
+    // module's own unit tests, a History-view's frozen/unleaned snapshot,
+    // or any future non-leaned data source) still gets it rendered
+    // immediately with no fetch at all -- `data-loaded="true"` marks that
+    // case so the client-side expand handler never re-fetches something it
+    // was already given. `summary` is only used as the short initial
+    // preview when the full field isn't present.
+    function descriptionDetailsHtml(task, safeId, safeTitle) {
+        const preview = task.description || task.summary;
+        if (!preview) return safeTitle;
+        const safePreview = escapeHtml(preview);
+        const safeUpdatedAt = escapeHtml(task.updated_at || task.updatedAt || '');
+        const hasFull = task.description ? 'true' : 'false';
+        return '<details class="bead-desc" data-bead-id="' + safeId + '" data-updated-at="' + safeUpdatedAt + '">' +
+            '<summary style="cursor: pointer; outline: none; list-style-position: inside;">' + safeTitle + '</summary>' +
+            '<div class="bead-desc-body" data-loaded="' + hasFull + '" style="margin-top: 6px; padding: 8px; background: rgba(0,0,0,0.15); border-left: 2px solid var(--accent); font-size: 11px; border-radius: 0 4px 4px 0; color: #a1a1aa; white-space: pre-wrap; font-family: monospace;">' +
+            safePreview +
+            '</div></details>';
+    }
+
     function sectionHeaderRow(label) {
         return '<tr><td colspan="6" style="padding: 10px 8px 4px; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; color: #a1a1aa; border-bottom: 1px solid rgba(255,255,255,0.1);">' + escapeHtml(label) + '</td></tr>';
     }
@@ -211,15 +241,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         const safeId = escapeHtml(node.id);
         const safeTitle = escapeHtml(node.title);
 
-        let titleHtml = safeTitle;
-        if (node.description) {
-            const safeDescription = escapeHtml(node.description);
-            titleHtml = '<details><summary style="cursor: pointer; outline: none; list-style-position: inside;">' +
-                safeTitle +
-                '</summary><div style="margin-top: 6px; padding: 8px; background: rgba(0,0,0,0.15); border-left: 2px solid var(--accent); font-size: 11px; border-radius: 0 4px 4px 0; color: #a1a1aa; white-space: pre-wrap; font-family: monospace;">' +
-                safeDescription +
-                '</div></details>';
-        }
+        const titleHtml = descriptionDetailsHtml(node, safeId, safeTitle);
 
         // Additional blockers beyond the one used for tree placement --
         // only shown when there's more than one, so the common (single
@@ -255,15 +277,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         const safeId = escapeHtml(task.id);
         const safeTitle = escapeHtml(task.title);
 
-        let titleHtml = safeTitle;
-        if (task.description) {
-            const safeDescription = escapeHtml(task.description);
-            titleHtml = '<details><summary style="cursor: pointer; outline: none; list-style-position: inside;">' +
-                safeTitle +
-                '</summary><div style="margin-top: 6px; padding: 8px; background: rgba(0,0,0,0.15); border-left: 2px solid var(--accent); font-size: 11px; border-radius: 0 4px 4px 0; color: #a1a1aa; white-space: pre-wrap; font-family: monospace;">' +
-                safeDescription +
-                '</div></details>';
-        }
+        const titleHtml = descriptionDetailsHtml(task, safeId, safeTitle);
 
         return '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding: 8px; vertical-align: top; width: 110px; color: ' + titleColor(task.status) + ';">#' + safeId + '</td>' +
@@ -325,6 +339,85 @@ export const beadsExtension = {
     js: `
         ${escapeHtml.toString()}
         ${renderBeadsHtml.toString()}
+
+        // apra-fleet-eft.27.2: on-demand bead-description fetch + browser
+        // localStorage cache. GET /state now serves only a short \`summary\`
+        // per bead (apra-fleet-eft.27.1) -- the full text is fetched here,
+        // from GET /beads/:id/description (src/viewer/index.mjs), the moment
+        // a user actually expands a row, and cached under the bead's id.
+        // Each cache entry also carries the \`updatedAt\` it was fetched
+        // against, so a later lean-state poll reporting a NEW updatedAt for
+        // that bead transparently invalidates the cache and triggers a
+        // refetch instead of ever serving stale text.
+        const BEAD_DESC_CACHE_PREFIX = 'apra-fleet-bead-desc:';
+
+        function beadDescCacheKey(id) { return BEAD_DESC_CACHE_PREFIX + id; }
+
+        function readBeadDescCache(id, updatedAt) {
+            try {
+                const raw = localStorage.getItem(beadDescCacheKey(id));
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.updatedAt === updatedAt) return parsed.description;
+            } catch (e) {
+                // Corrupt or unavailable cache entry -- treat as a miss,
+                // never let a caching problem break the expand action.
+            }
+            return null;
+        }
+
+        function writeBeadDescCache(id, updatedAt, description) {
+            try {
+                localStorage.setItem(beadDescCacheKey(id), JSON.stringify({ updatedAt: updatedAt, description: description }));
+            } catch (e) {
+                // localStorage full/unavailable (quota, private browsing) --
+                // non-fatal: the fetch itself already succeeded and rendered.
+            }
+        }
+
+        async function loadBeadDescription(detailsEl) {
+            const bodyEl = detailsEl.querySelector('.bead-desc-body');
+            // Already showing the full text (either a prior fetch/cache hit,
+            // or a caller that inlined the full description up front) --
+            // no network request on a repeat expand.
+            if (!bodyEl || bodyEl.dataset.loaded === 'true') return;
+
+            const id = detailsEl.dataset.beadId;
+            const updatedAt = detailsEl.dataset.updatedAt || '';
+
+            const cached = readBeadDescCache(id, updatedAt);
+            if (cached !== null) {
+                bodyEl.textContent = cached;
+                bodyEl.dataset.loaded = 'true';
+                return;
+            }
+
+            bodyEl.textContent = 'Loading...';
+            try {
+                const res = await fetch('/beads/' + encodeURIComponent(id) + '/description');
+                if (!res.ok) { bodyEl.textContent = '(description unavailable)'; return; }
+                const data = await res.json();
+                const description = data.description || '(no description)';
+                bodyEl.textContent = description;
+                bodyEl.dataset.loaded = 'true';
+                writeBeadDescCache(id, updatedAt, description);
+            } catch (e) {
+                bodyEl.textContent = '(failed to load description)';
+            }
+        }
+
+        // The 'toggle' event does not bubble in every browser, but it IS
+        // still observable during the capture phase regardless of bubbling
+        // -- a single document-level capture listener therefore catches
+        // every <details class="bead-desc"> toggle, including rows
+        // recreated by the full innerHTML rebuild below on each poll, with
+        // no per-row listener wiring or cleanup needed.
+        document.addEventListener('toggle', function (e) {
+            const el = e.target;
+            if (el && el.tagName === 'DETAILS' && el.classList && el.classList.contains('bead-desc') && el.open) {
+                loadBeadDescription(el);
+            }
+        }, true);
 
         document.addEventListener('workflow:state:beads', (e) => {
             const data = e.detail;
