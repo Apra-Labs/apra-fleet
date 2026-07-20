@@ -305,6 +305,16 @@ let _manifestOverride: AssetManifest | null = null;
 /** Inject a manifest for tests — avoids SEA asset extraction. Pass null to restore default. */
 export function _setManifestOverride(m: AssetManifest | null): void { _manifestOverride = m; }
 
+/**
+ * Test-only escape hatch to exercise the real buildDevManifest() (against the
+ * real filesystem, not the mocked node:fs used elsewhere in
+ * tests/install-workflows.test.ts) so regressions like apra-fleet-eft.19
+ * (dev-mode install omitting undici from the workflowRuntime bundle) are
+ * caught by a direct assertion on the generated manifest, not just on the
+ * mocked-fs runInstall() flow.
+ */
+export function _buildDevManifestForTest(root: string): AssetManifest { return buildDevManifest(root); }
+
 function loadManifest(): AssetManifest {
   if (_manifestOverride !== null) return _manifestOverride;
   if (isSea()) {
