@@ -334,6 +334,13 @@ function buildRepairPrompt(errorsText) {
  *   throw, the pre-existing behavior). Each poll is a cheap re-dispatch attempt (the
  *   server rejects busy calls in milliseconds with no side effects).
  * @property {number} [busyPollMs] - Poll interval (ms) for the busy-wait above. Default 15s.
+ * @property {string} [sprint_id] - Opaque sprint identity to pass straight through to
+ *   execute_prompt's server-side reservation check (apra-fleet-eft.29.1). Callers that
+ *   also reserve members via member_reservation (e.g. auto-sprint's
+ *   createMemberReservationClient) should pass the SAME token here so a dispatch from
+ *   the owning sprint is recognized as such even when the fleet server this call
+ *   dispatches through is a pre-existing shared singleton with no per-sprint
+ *   APRA_FLEET_SPRINT_ID of its own. Omit to preserve prior (env-var-only) behavior.
  */
 
 /**
@@ -773,6 +780,8 @@ export class FleetWorkflow extends EventEmitter {
                 max_turns: opts.max_turns,
                 effort: opts.effort,
                 agent: opts.agentType,
+                // apra-fleet-eft.29.1: pass-through opt-in, see AgentOptions.sprint_id above.
+                sprint_id: opts.sprint_id,
                 // F10: default to a self-contained (non-resumed) session for
                 // the INITIAL dispatch of a workflow-authored prompt. See
                 // AgentOptions.resume above and apra-fleet-unw.3.

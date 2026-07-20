@@ -70,6 +70,15 @@ export const executePromptSchema = z.object({
     'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md -- ' +
     'the call is rejected with a clear error if neither is present.'
   ),
+  sprint_id: z.string().optional().describe(
+    'Opaque identity of the sprint issuing this dispatch (apra-fleet-eft.29.1). ' +
+    'When provided, the server-side member-reservation check (see reservedBy below) ' +
+    'compares this value directly against the reservation instead of falling back to ' +
+    'this server process\'s APRA_FLEET_SPRINT_ID env var -- the same per-call value ' +
+    'the caller passed to member_reservation reserve/release. Callers that never set a ' +
+    'reservation, or that reserved and dispatch in the same process, should omit this; ' +
+    'omitting it preserves the pre-existing env-var-based behavior exactly.'
+  ),
 }).strict();
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
@@ -316,8 +325,23 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // or against an unreserved member proceeds unchanged, so behavior with no
   // reservations is identical to before. Checked before any busy state is
   // entered, closing the manual-CLI bypass the ledger alone could not.
+  //
+  // apra-fleet-eft.29.1: currentSprintId() alone (APRA_FLEET_SPRINT_ID on
+  // THIS server process) is only correct when the launcher spawns a private
+  // per-sprint server and stamps its env -- it is not for the eft.7.1
+  // CLI/shared-fleet-server path, where cli.mjs attaches to an existing,
+  // long-lived HTTP singleton it never spawns and so can never stamp. There,
+  // APRA_FLEET_SPRINT_ID is unset (or stale from a different run), so a
+  // member reserved by ITS OWN owning sprint was rejected as if from another
+  // sprint. Prefer the per-call `sprint_id` -- the exact same opaque token
+  // the caller already passed to member_reservation reserve/release (see
+  // createMemberReservationClient / sprintMutexId in
+  // packages/apra-fleet-se/auto-sprint/runner.js) -- and fall back to
+  // currentSprintId() only when the caller omits it, so existing
+  // env-var-based callers/tests are unaffected.
   const owningSprint = agent.reservedBy ?? null;
-  if (owningSprint && owningSprint !== currentSprintId()) {
+  const dispatchSprintId = input.sprint_id ?? currentSprintId();
+  if (owningSprint && owningSprint !== dispatchSprintId) {
     return {
       text: `[-] Member "${agent.friendlyName}" is reserved by sprint "${owningSprint}" and cannot accept a dispatch from another sprint. Wait for that sprint to release it, or force-release the reservation to recover.`,
       structuredContent: { isError: true, reason: 'reserved' },

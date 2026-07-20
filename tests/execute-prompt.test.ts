@@ -836,6 +836,55 @@ describe('server-side member reservation enforced at dispatch (apra-fleet-eft.10
     expect(resultText(result)).toContain('free-ok');
     expect(mockExecCommand).toHaveBeenCalled();
   });
+
+  // apra-fleet-eft.29 / eft.29.1: the CLI/shared-fleet-server path (eft.7.1)
+  // never stamps APRA_FLEET_SPRINT_ID on the (pre-existing, never-spawned-by-
+  // the-sprint) fleet server process, so a member reserved by ITS OWN owning
+  // sprint was rejected as if from another sprint. A per-call `sprint_id`
+  // (the same opaque token the caller already passed to member_reservation)
+  // must be preferred over the env var for this comparison.
+  it('allows a dispatch from the OWNING sprint via per-call sprint_id, even with no/mismatched APRA_FLEET_SPRINT_ID env (eft.29.1)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-owner-sprintid', reservedBy: 'integ-smoke-1784570804' });
+    memberId = member.id;
+    addAgent(member);
+    // Deliberately left unset (the eft.29 repro condition): the shared fleet
+    // server process was never stamped with this sprint's identity.
+    expect(process.env.APRA_FLEET_SPRINT_ID).toBeUndefined();
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'owner-ok-via-sprint-id', session_id: 'sess-owner-2' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({
+      member_id: memberId,
+      prompt: 'hi',
+      resume: false,
+      timeout_s: 5,
+      sprint_id: 'integ-smoke-1784570804',
+    });
+
+    expect(resultText(result)).toContain('owner-ok-via-sprint-id');
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('still rejects a dispatch whose sprint_id names a DIFFERENT sprint than the reservation, even if APRA_FLEET_SPRINT_ID happens to match the owner (sprint_id takes precedence)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-cross-sprintid', reservedBy: 'sprint-owner' });
+    memberId = member.id;
+    addAgent(member);
+    process.env.APRA_FLEET_SPRINT_ID = 'sprint-owner';
+
+    const result = await executePrompt({
+      member_id: memberId,
+      prompt: 'hi',
+      resume: false,
+      timeout_s: 5,
+      sprint_id: 'sprint-intruder',
+    });
+
+    expect(resultText(result)).toContain('reserved by sprint "sprint-owner"');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
 });
 
 describe('no-LLM members are rejected, never dispatched (apra-fleet-us9.14)', () => {

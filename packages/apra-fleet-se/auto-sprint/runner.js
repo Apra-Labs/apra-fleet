@@ -2675,11 +2675,23 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
 // same binding the old bare-global version referred to; no control-flow or
 // dispatch-order changes.
 async function runSprintCycle(context) {
-    const { agent, command, parallel, log, phase, group, endGroup, publishState, args, budget } = context;
+    const { agent: agentRaw, command, parallel, log, phase, group, endGroup, publishState, args, budget } = context;
 
     // A stable per-sprint id for mutex fairness/introspection: the sprint branch
     // is unique per concurrent sprint on the shared remote.
     const sprintMutexId = (args && args.branch) ? String(args.branch) : 'sprint';
+
+    // apra-fleet-eft.29.1: stamp every agent() dispatch below with the SAME
+    // opaque sprint-identity token (sprintMutexId) createMemberReservationClient
+    // reserves members under (bin/cli.mjs's `sprintId: branchName`), so
+    // execute_prompt's dispatch-time reservedBy check (src/tools/execute-prompt.ts)
+    // can recognize a dispatch as coming from the reservation's OWNING sprint even
+    // when the fleet server it dispatches through is a pre-existing shared HTTP
+    // singleton with no per-sprint APRA_FLEET_SPRINT_ID env of its own (root cause
+    // of apra-fleet-eft.29). A single wrapper here covers every `agent(...)` call
+    // site in this file for free; an explicit `sprintId`/`sprint_id` in an
+    // individual call's opts (none today) would still win via the spread order.
+    const agent = (prompt, opts = {}) => agentRaw(prompt, { sprint_id: sprintMutexId, ...opts });
 
     // apra-fleet-eft.9.2 (Plan 3.4): the supervisor-owned global dolt push mutex
     // client. Every D-push below serializes through it so two sprints never push
