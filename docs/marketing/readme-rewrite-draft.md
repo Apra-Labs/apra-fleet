@@ -210,6 +210,21 @@ instead of scaling with every step forever.
 | Cost curve | scales with every step | scales with thinking only |
 | Failure mode | drift and silent retries | typed errors, resumable state |
 
+The collapse is two-dimensional. As a workflow hardens, control flow moves
+from model to program -- and the judgment nodes that remain move from
+frontier models to cheaper ones, because a well-specified task no longer
+needs discovery-grade reasoning. **Develop a workflow with Claude;
+operationalize it on OpenCode against a local or OpenRouter model.** Same
+fleet, same workflow -- swap the members. Tier routing makes it a
+registration change, not a rewrite.
+
+Only a fleet makes that trade possible. Single-provider tools cannot leave
+their vendor; in-process frameworks cannot move orchestration out of the
+token path. Because apra-fleet's unit of execution is the member -- a
+machine plus a provider, swappable at registration -- the same hardened
+workflow runs on frontier models the day you design it and on commodity
+models every day after.
+
 auto-sprint is this principle, lived: it began as LLM-orchestrated
 exploration; each discovered pattern was hardened into the deterministic
 engine; today the engine drives hour-long autonomous runs in which models

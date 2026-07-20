@@ -210,6 +210,21 @@ lived proof (exploration -> hardened engine; models only as planner/doer/
 reviewer/tester/harvester). Placement discipline: mid-README after "How
 it works" -- too dense for the 30-second window; gets a full page on the
 github.io site (add to page map when scaffolding).
+Second axis (user, same day): the collapse is two-dimensional -- control
+flow moves model->program AND the surviving judgment nodes move frontier->
+cheap/local, because a well-specified task no longer needs discovery-grade
+reasoning. Canonical line: "Develop a workflow with Claude; operationalize
+it on OpenCode against a local or OpenRouter model. Same fleet, same
+workflow -- swap the members." Tier routing = registration change, not a
+rewrite.
+Exclusivity punchline (user): "and that is only possible with fleet" --
+worded defensibly on architecture: the unit of execution is the MEMBER
+(machine + provider, swappable at registration); single-provider tools
+cannot leave their vendor, in-process frameworks cannot move orchestration
+out of the token path -- both capabilities must coexist in one platform
+for the explore-cheaply-operate-cheaper trade to exist. Closer sentence:
+"the same hardened workflow runs on frontier models the day you design it
+and on commodity models every day after."
 
 ## 9. Log (append-only)
 
