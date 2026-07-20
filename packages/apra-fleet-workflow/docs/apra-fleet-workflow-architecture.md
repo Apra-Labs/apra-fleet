@@ -22,6 +22,8 @@ dashboard.
 | `src/workflow/vetting.mjs` | `VettingEngine` -- an advisory (non-blocking by default) heuristic scan of a script's source for review purposes. |
 | `src/viewer/index.mjs` | `createDashboardViewer()` -- an HTTP server + Server-Sent-Events dashboard that visualizes a running `FleetWorkflow` in real time. |
 | `src/viewer/html-utils.mjs` | `escapeHtml()` -- the single shared HTML-escaping implementation used by both the core viewer and any dashboard extension. |
+| `src/viewer/debounced-writer.mjs` | Coalesced, atomic, flush-on-exit continuous state persistence -- see "Continuous state persistence" below. |
+| `src/viewer/sprint-state-paths.mjs` | Path resolution for a sprint's continuous state file, keyed by a stable sprint id (`running/<id>.json` while live, moved to `old_sprints/<id>.json` on completion). |
 
 The package's `exports` map (see `package.json`) exposes four import paths:
 

@@ -756,6 +756,88 @@ describe('concurrency guard: rejects a second dispatch while one is in flight (a
   });
 });
 
+describe('server-side member reservation enforced at dispatch (apra-fleet-eft.10.3)', () => {
+  let memberId: string;
+  const savedSprintEnv = process.env.APRA_FLEET_SPRINT_ID;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    delete process.env.APRA_FLEET_SPRINT_ID;
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) inFlightAgents.delete(memberId);
+    if (savedSprintEnv === undefined) delete process.env.APRA_FLEET_SPRINT_ID;
+    else process.env.APRA_FLEET_SPRINT_ID = savedSprintEnv;
+  });
+
+  it('rejects a dispatch to a member reserved by a DIFFERENT sprint, naming the owning sprint, without dispatching', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-reserved', reservedBy: 'sprint-owner' });
+    memberId = member.id;
+    addAgent(member);
+    process.env.APRA_FLEET_SPRINT_ID = 'sprint-other';
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('reserved by sprint "sprint-owner"');
+    expect(resultText(result)).toContain('ep-reserved');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    if (typeof result !== 'string' && result.structuredContent) {
+      expect(result.structuredContent.reason).toBe('reserved');
+    }
+  });
+
+  it('rejects a manual dispatch (no APRA_FLEET_SPRINT_ID) to a reserved member -- closes the manual-CLI bypass', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-manual', reservedBy: 'sprint-owner' });
+    memberId = member.id;
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('reserved by sprint "sprint-owner"');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('allows a dispatch from the OWNING sprint against its reserved member', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-owner', reservedBy: 'sprint-owner' });
+    memberId = member.id;
+    addAgent(member);
+    process.env.APRA_FLEET_SPRINT_ID = 'sprint-owner';
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'owner-ok', session_id: 'sess-owner' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('owner-ok');
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('allows a dispatch to an UNRESERVED member regardless of sprint env (no-reservation behavior unchanged)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-free' });
+    memberId = member.id;
+    addAgent(member);
+    process.env.APRA_FLEET_SPRINT_ID = 'sprint-other';
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'free-ok', session_id: 'sess-free' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('free-ok');
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+});
+
 describe('no-LLM members are rejected, never dispatched (apra-fleet-us9.14)', () => {
   let memberId: string;
 

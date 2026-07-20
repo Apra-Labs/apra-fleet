@@ -94,6 +94,42 @@ const isBdCommand = (cmd) => /^\s*bd(\s|$)/.test(cmd);
 // record/replay layer.
 const isDoltSyncCommand = (cmd) => /^\s*bd\s+dolt\s+(pull|push)\b/.test(cmd);
 
+// ---------------------------------------------------------------------------
+// real-mode D-pull/D-push bracket caching (apra-fleet-eft.17.1)
+// ---------------------------------------------------------------------------
+// Under real bd (APRA_FLEET_BD_MOCK=off), runner.js wraps EVERY dispatch in the
+// Plan 3.3 sync brackets (doltPullBefore -> `bd dolt pull`, doltPushAfter ->
+// `bd dolt push`). Each such call spawns the real `bd` CLI, which cold-starts
+// the embedded dolt engine (~seconds per spawn). The mock-sprint-*, golden-
+// transcript* and budget-live scenarios each drive DOZENS of dispatches against
+// a SINGLE local beads clone (their per-scenario tempDir) that has NO configured
+// dolt remote, so every one of those pulls/pushes is a deterministic no-remote
+// no-op returning the exact same benign-skip result. Re-spawning it per dispatch
+// is what pushed 28/74 real-bd files over the 5-min single-file budget and the
+// full suite to ~3228s (apra-fleet-eft.17).
+//
+// Fix: hydrate each fixture's dolt working copy at most ONCE per test-file
+// process. The first `bd dolt pull` (and first `bd dolt push`) for a given clone
+// -- keyed by cwd -- runs for real; its result Promise is cached and every
+// subsequent identical dolt-sync command for that SAME clone is served from the
+// cache WITHOUT re-spawning bd. Correctness is unchanged: with no remote the
+// operation cannot vary for a given clone, and every bd read hits the local dolt
+// store directly regardless of whether a redundant push ran. Distinct scenarios
+// use distinct tempDirs (unique cwd), so each fixture still pays exactly one real
+// round-trip per verb. Caching the Promise (not just the resolved value) also
+// dedupes concurrent bracket calls from parallel doer streaks.
+const realDoltSyncCache = new Map(); // `${cwd} ${normalizedCmd}` -> Promise<{err,stdout,stderr}>
+
+function realDoltSyncCached(cmd, cwd) {
+    const key = `${cwd} ${cmd.trim().replace(/\s+/g, ' ')}`;
+    let pending = realDoltSyncCache.get(key);
+    if (!pending) {
+        pending = execCmd(cmd, cwd);
+        realDoltSyncCache.set(key, pending);
+    }
+    return pending;
+}
+
 export function scenarioKeyFromCwd(cwd) {
     return path.basename(cwd).replace(/-\d+-\d+$/, '');
 }
@@ -238,7 +274,12 @@ function replayBd(cmd, cwd) {
 export function runCmd(cmd, cwd) {
     if (!isBdCommand(cmd)) return execCmd(cmd, cwd);
     const mode = bdMode();
-    if (mode === 'real') return execCmd(cmd, cwd);
+    if (mode === 'real') {
+        // Hydrate each fixture's dolt clone once, then serve repeat D-pull/
+        // D-push brackets from cache (see realDoltSyncCached above).
+        if (isDoltSyncCommand(cmd)) return realDoltSyncCached(cmd, cwd);
+        return execCmd(cmd, cwd);
+    }
     // Dolt sync brackets are mock-mode no-ops (see isDoltSyncCommand above):
     // synthesize a clean success WITHOUT recording or requiring a recording.
     if (isDoltSyncCommand(cmd)) return Promise.resolve({ err: null, stdout: '', stderr: '' });

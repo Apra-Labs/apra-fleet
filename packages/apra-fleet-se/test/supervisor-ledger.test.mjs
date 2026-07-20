@@ -282,3 +282,98 @@ describe('ledger -- exported schema/contract', () => {
         assert.equal(typeof ledger.stop, 'function');
     });
 });
+
+describe('ledger -- server reservation client (apra-fleet-eft.10.3)', () => {
+    test('claim() reserves every member on the server for the sprint after the local commit', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const calls = [];
+        const reservationClient = {
+            async reserve(memberId, sprintId) { calls.push(['reserve', memberId, sprintId]); },
+            async release(memberId, sprintId) { calls.push(['release', memberId, sprintId]); },
+        };
+        const ledger = createLedger({ filePath, reservationClient });
+        await ledger.start();
+
+        await ledger.claim('sprint-a', { members: ['alice', 'bob'], issueRoots: ['apra-fleet-x'] });
+
+        assert.deepEqual(calls, [
+            ['reserve', 'alice', 'sprint-a'],
+            ['reserve', 'bob', 'sprint-a'],
+        ]);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('release() releases every held member on the server on a terminal event', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const calls = [];
+        const reservationClient = {
+            async reserve(memberId, sprintId) { calls.push(['reserve', memberId, sprintId]); },
+            async release(memberId, sprintId) { calls.push(['release', memberId, sprintId]); },
+        };
+        const ledger = createLedger({ filePath, reservationClient });
+        await ledger.start();
+
+        await ledger.claim('sprint-a', { members: ['alice', 'bob'], issueRoots: ['apra-fleet-x'] });
+        calls.length = 0;
+        const removed = await ledger.release('sprint-a');
+
+        assert.equal(removed, true);
+        assert.deepEqual(calls, [
+            ['release', 'alice', 'sprint-a'],
+            ['release', 'bob', 'sprint-a'],
+        ]);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('release() of an unheld sprint drives no server release', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const calls = [];
+        const reservationClient = {
+            async reserve(memberId, sprintId) { calls.push(['reserve', memberId, sprintId]); },
+            async release(memberId, sprintId) { calls.push(['release', memberId, sprintId]); },
+        };
+        const ledger = createLedger({ filePath, reservationClient });
+        await ledger.start();
+
+        const removed = await ledger.release('ghost-sprint');
+
+        assert.equal(removed, false);
+        assert.deepEqual(calls, []);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a server reservation failure is swallowed and does NOT roll back the local commit', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const errors = [];
+        const reservationClient = {
+            async reserve() { throw new Error('server unreachable'); },
+            async release() { throw new Error('server unreachable'); },
+        };
+        const ledger = createLedger({ filePath, reservationClient, logger: { error: (...a) => errors.push(a) } });
+        await ledger.start();
+
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+
+        // Local ledger committed despite the server op throwing.
+        assert.deepEqual(ledger.get('sprint-a').members, ['alice']);
+        assert.equal(errors.length, 1);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('no reservationClient injected -> claim/release behave exactly as pure storage', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+        assert.deepEqual(ledger.get('sprint-a').members, ['alice']);
+        assert.equal(await ledger.release('sprint-a'), true);
+        assert.equal(ledger.get('sprint-a'), undefined);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});

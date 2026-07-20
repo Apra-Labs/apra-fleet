@@ -167,7 +167,19 @@ function cloneReservation(r) {
  *     rm?: typeof import('node:fs/promises').rm,
  *   },
  *   logger?: { log?: Function, error?: Function },
+ *   reservationClient?: {
+ *     reserve: (memberId: string, sprintId: string) => Promise<any>|any,
+ *     release: (memberId: string, sprintId: string) => Promise<any>|any,
+ *   },
  * }} [deps]
+ *
+ * apra-fleet-eft.10.3: when a `reservationClient` is injected, the ledger
+ * becomes a CLIENT of the fleet server's per-member reservation authority --
+ * every claim reserves each member on the server, and every release releases
+ * them. The server (member.reservedBy) is then what execute_prompt consults to
+ * reject a cross-sprint dispatch, with this ledger driving it. Without a client
+ * injected the ledger behaves exactly as before (pure local storage), so the
+ * server ops are opt-in and cannot break the storage-level contract.
  */
 export function createLedger(deps = {}) {
     const dataDir = deps.dataDir ?? defaultDataDir();
@@ -177,6 +189,27 @@ export function createLedger(deps = {}) {
     const fs = deps.fs ?? fsp;
     const logger = deps.logger ?? console;
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
+    const reservationClient = deps.reservationClient ?? null;
+
+    /**
+     * Drive the server reservation op for every member in a reservation. Best
+     * effort: a per-member failure is logged and does NOT roll back the local
+     * ledger commit (the ledger stays the durable, restart-surviving record;
+     * the server is a live overlay the watchdog reconciliation can re-drive).
+     * @param {'reserve'|'release'} op
+     * @param {string} sprintId
+     * @param {string[]} members
+     */
+    async function driveServerReservation(op, sprintId, members) {
+        if (!reservationClient || typeof reservationClient[op] !== 'function') return;
+        for (const member of members) {
+            try {
+                await reservationClient[op](member, sprintId);
+            } catch (err) {
+                logError(`[ledger] server ${op} failed for member=${member} sprint=${sprintId}:`, err);
+            }
+        }
+    }
 
     // Authoritative in-memory view. Committed to ONLY after a successful disk
     // write, so a failed persist can never leave a half-claimed reservation.
@@ -303,6 +336,10 @@ export function createLedger(deps = {}) {
                 }
                 draft.set(sprintId, reservation);
             });
+            // eft.10.3: mirror the claim onto the server's per-member reservation
+            // authority so execute_prompt rejects cross-sprint dispatch. Only
+            // after the local commit succeeded (the ledger is the durable record).
+            await driveServerReservation('reserve', sprintId, reservation.members);
             return cloneReservation(reservation);
         },
 
@@ -316,7 +353,16 @@ export function createLedger(deps = {}) {
             if (typeof sprintId !== 'string' || sprintId.length === 0) {
                 throw new TypeError('release() requires a non-empty sprintId');
             }
-            return transact((draft) => draft.delete(sprintId));
+            // Capture the member set BEFORE the delete so the terminal-event
+            // server release (eft.10.3) can free exactly the members this sprint
+            // held. The delete stays the atomic, transactional source of truth.
+            const held = reservations.get(sprintId);
+            const members = held ? [...held.members] : [];
+            const removed = await transact((draft) => draft.delete(sprintId));
+            if (removed) {
+                await driveServerReservation('release', sprintId, members);
+            }
+            return removed;
         },
 
         /**

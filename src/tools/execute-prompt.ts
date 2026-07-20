@@ -33,7 +33,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response';
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
   sessionId?: string;
   [key: string]: unknown;
@@ -145,6 +145,20 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
 
 const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
+/**
+ * The sprint id this server process dispatches on behalf of, or undefined when
+ * run outside a sprint (e.g. a manual cli.mjs invocation). Sourced from
+ * APRA_FLEET_SPRINT_ID, which the auto-sprint spawner stamps into the per-sprint
+ * server's environment (apra-fleet-eft.10.3). Read on every dispatch so a
+ * reservation set/cleared mid-run is observed without a restart.
+ */
+export function currentSprintId(): string | undefined {
+  const raw = process.env.APRA_FLEET_SPRINT_ID;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 export const inFlightAgents = new Set<string>();
 
 // All exit paths from executePrompt clear busy state via the finally block (inFlightAgents.delete + writeStatusline):
@@ -227,6 +241,21 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
   } catch (err: any) {
     return `❌ Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+  }
+
+  // Server-side member reservation enforcement (apra-fleet-eft.10.3): a member
+  // reserved by a DIFFERENT sprint may not be dispatched to. Mirrors the
+  // inFlightAgents busy-rejection error path -- the error names the owning
+  // sprint. A dispatch from the owning sprint (matching APRA_FLEET_SPRINT_ID)
+  // or against an unreserved member proceeds unchanged, so behavior with no
+  // reservations is identical to before. Checked before any busy state is
+  // entered, closing the manual-CLI bypass the ledger alone could not.
+  const owningSprint = agent.reservedBy ?? null;
+  if (owningSprint && owningSprint !== currentSprintId()) {
+    return {
+      text: `[-] Member "${agent.friendlyName}" is reserved by sprint "${owningSprint}" and cannot accept a dispatch from another sprint. Wait for that sprint to release it, or force-release the reservation to recover.`,
+      structuredContent: { isError: true, reason: 'reserved' },
+    };
   }
 
   if (inFlightAgents.has(agent.id)) {
