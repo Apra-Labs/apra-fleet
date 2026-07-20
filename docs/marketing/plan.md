@@ -194,6 +194,23 @@ away"); (b) redundancy removed -- the retail/logistics/healthcare sentence
 moved OUT of the flagship section into the pillar (single home); flagship
 keeps only "the engine does not know what a sprint is".
 
+### Token-economics insight (2026-07-20, user-proposed, assessed SHARE)
+
+New README section "Explore with agents. Operate with programs." Thesis:
+LLM orchestration is the right mode for DISCOVERING a workflow; once the
+workflow is known, control flow hardens into deterministic programs and
+the model is consulted only at judgment nodes -- execute_command (zero
+tokens) vs execute_prompt (tokens where thinking lives). Development/NRE
+tokens are not operating tokens; runtime cost SHRINKS as a workflow
+matures instead of scaling with every step (the CrewAI/AutoGen/LangGraph
+contrast: their orchestration itself burns tokens on every run, forever).
+Why share: answers the VC unit-economics question (improving cost curve),
+is architecturally checkable in the API surface, and auto-sprint is the
+lived proof (exploration -> hardened engine; models only as planner/doer/
+reviewer/tester/harvester). Placement discipline: mid-README after "How
+it works" -- too dense for the 30-second window; gets a full page on the
+github.io site (add to page map when scaffolding).
+
 ## 9. Log (append-only)
 
 - 2026-07-20: positioning decided (fleet + k8s simile + recursive proof);

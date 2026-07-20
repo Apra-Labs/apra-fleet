@@ -183,6 +183,38 @@ flowchart LR
   member reservation ledger (no two workflows fight over a machine),
   crash watchdog, run history.
 
+## Explore with agents. Operate with programs.
+
+There are two ways to orchestrate agents, and apra-fleet is built on the
+observation that you need both -- at different stages of a workflow's life:
+
+- **Exploration mode.** While a workflow is still being discovered, let an
+  LLM orchestrate: flexible, adaptive, and token-hungry -- every step is a
+  decision, and every decision costs thinking.
+- **Operation mode.** Once you know what must happen, the control flow
+  becomes a deterministic workflow program. Shell, git, and file steps run
+  through `execute_command` -- zero tokens. The model is invoked only at
+  the corners that genuinely require judgment (`execute_prompt`): review
+  this diff, plan this backlog, decide this exception.
+
+**Development tokens are not operating tokens.** The cost of discovering a
+workflow is paid once, like NRE; a hardened workflow spends tokens only
+where thinking happens, so runtime cost shrinks as the workflow matures --
+instead of scaling with every step forever.
+
+| | LLM-orchestrated (explore) | Workflow-orchestrated (operate) |
+|---|---|---|
+| Control flow | the model decides each step (tokens) | deterministic program (free) |
+| Shell / git / file steps | narrated through the model | `execute_command`, zero tokens |
+| Where the model runs | everywhere | judgment nodes only (`execute_prompt`) |
+| Cost curve | scales with every step | scales with thinking only |
+| Failure mode | drift and silent retries | typed errors, resumable state |
+
+auto-sprint is this principle, lived: it began as LLM-orchestrated
+exploration; each discovered pattern was hardened into the deterministic
+engine; today the engine drives hour-long autonomous runs in which models
+are consulted only as planner, doer, reviewer, tester, and harvester.
+
 ## Compare to alternatives
 
 | Tool | Overlap | Where apra-fleet differs |
