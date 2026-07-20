@@ -69,8 +69,8 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // 12 -> 13: Streak Assignment semantic-repair re-ask -- the second
 // documented exemption (same pure-compute grouping task as the first;
 // no repo access, so no sync bracket).
-const EXPECTED_AGENT_COUNT = 14;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 12;
+const EXPECTED_AGENT_COUNT = 18;
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 16;
 const STREAK_ASSIGNMENT_MARKERS = [
     "label: 'Streak Assignment'",
     "label: 'Streak Assignment (semantic repair)'",
@@ -255,8 +255,8 @@ test('pushCode is set true only for the code-writing dispatch roles (doer, harve
     // total: doer, doer-resume, harvester.
     assert.strictEqual(
         pushCodeTrueSites.length,
-        3,
-        `Expected exactly 3 withGitSync(...) call sites with pushCode:true (doer, doer-resume, harvester), found ${pushCodeTrueSites.length}.`
+        4,
+        `Expected exactly 4 withGitSync(...) call sites with pushCode:true (doer, doer-resume, harvester, harvester-resume), found ${pushCodeTrueSites.length}.`
     );
     for (const site of pushCodeTrueSites) {
         assert.ok(

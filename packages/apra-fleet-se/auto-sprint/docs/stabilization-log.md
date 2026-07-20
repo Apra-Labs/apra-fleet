@@ -656,6 +656,33 @@ deduplicated DAG -- the plan gate working as designed.
   loaded its runner; its C3+ integ attempts rely on the Issue 23 trust
   fix removing the turn waste).
 
+### Issue 25: universal turn-exhaustion resume (operator directive)
+
+- **Directive**: every max_turns-based dispatch failure, in ANY phase,
+  must be answered with a same-session resume at doubled turns and a
+  "continue where you left off" prompt -- never treated as a terminal
+  failure on the first exhaustion.
+- **Coverage before**: doer (100->200->400), reviewer (60->120), final
+  review (60->120), integ-test-runner (100->200, Issue 24). Uncovered:
+  planner, plan-reviewer, deployer, harvester -- each would degrade or
+  fail its round on a single exhaustion.
+- **Fix** (runner.js): all four remaining member-dispatch sites gain
+  explicit turn budgets and the same resume ladder -- planner 100->200
+  (doer-sized, builds the whole DAG), plan-reviewer 60->120, deployer
+  60->120 (the source-build fallback deploy runs npm ci + two builds),
+  harvester 60->120. Each resume repeats the role's withGitSync/dolt
+  bracket semantics (planner and harvester resumes carry pushBeads;
+  harvester resume carries pushCode).
+- **Deliberate exception**: the two streak-assignment agent() sites stay
+  ladder-free -- they are pure-compute schema asks (no member run) whose
+  failure degrades safely to one-bead-per-streak, and they already have
+  their own bounded semantic-repair re-ask (Issue 15).
+- **Structural baselines**: 18 agent sites, 16 withGitSync brackets,
+  8 pushBeads brackets, 4 pushCode brackets.
+- **Rollout**: run 14 launched minutes before this change (it has the
+  Issue 24 integ ladder, which is the one that matters for its critical
+  path); full coverage from run 15.
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":

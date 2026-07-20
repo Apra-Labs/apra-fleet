@@ -3426,18 +3426,46 @@ async function runSprintCycle(context) {
             // -- pushBeads:true so its new tasks are D-pushed to the shared
             // remote for the next dispatch/read to observe. It writes no code
             // (pushCode:false).
-            const dispatchPlanner = () => withGitSync(getMemberForRole('planner'), false, () => agent(
+            // Stabilization log Issue 25: EVERY dispatch site answers
+            // max_turns exhaustion with a same-session resume at doubled
+            // turns (operator directive) -- the planner gets the doer-sized
+            // base since it builds the whole epic DAG.
+            const PLANNER_MAX_TURNS = 100;
+            const plannerDispatchOpts = {
+                member_name: getMemberForRole('planner'),
+                agentType: 'planner',
+                model: FIXED_ROLE_TIER.planner,
+                // apra-fleet-j6i: plans the entire epic DAG, comparably
+                // heavy to a doer streak -- same 300s-default gap.
+                timeout_s: 3600,
+                max_total_s: 3600,
+                max_turns: PLANNER_MAX_TURNS,
+            };
+            const dispatchPlannerOnce = () => withGitSync(getMemberForRole('planner'), false, () => agent(
                 plannerPrompt,
+                { ...plannerDispatchOpts, member_name: getMemberForRole('planner') }
+            ), { pushBeads: true });
+            const dispatchPlannerResume = () => withGitSync(getMemberForRole('planner'), false, () => agent(
+                'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
                 {
+                    ...plannerDispatchOpts,
                     member_name: getMemberForRole('planner'),
-                    agentType: 'planner',
-                    model: FIXED_ROLE_TIER.planner,
-                    // apra-fleet-j6i: plans the entire epic DAG, comparably
-                    // heavy to a doer streak -- same 300s-default gap.
-                    timeout_s: 3600,
-                    max_total_s: 3600,
+                    label: `Plan (resume, max_turns=${PLANNER_MAX_TURNS * 2})`,
+                    resume: true,
+                    max_turns: PLANNER_MAX_TURNS * 2,
                 }
             ), { pushBeads: true });
+            const dispatchPlanner = async () => {
+                try {
+                    return await dispatchPlannerOnce();
+                } catch (err) {
+                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                        log(`Planner exhausted its turn limit (max_turns=${PLANNER_MAX_TURNS}) -- resuming the same session with max_turns=${PLANNER_MAX_TURNS * 2}.`);
+                        return await dispatchPlannerResume();
+                    }
+                    throw err;
+                }
+            };
             // apra-fleet-j6i: unlike every other dispatch site in this file,
             // the Planner call had no error handling at all -- a single
             // AgentDispatchError (e.g. a timeout) propagated uncaught all the
@@ -3488,21 +3516,44 @@ async function runSprintCycle(context) {
             log(`Planner: ${plannerRes}`);
 
             let verdict;
+            // Stabilization log Issue 25: same-session turn-exhaustion resume
+            // for the plan-reviewer (reviewer-sized base).
+            const PLAN_REVIEWER_MAX_TURNS = 60;
+            const planReviewerDispatchOpts = {
+                member_name: getMemberForRole('plan-reviewer'),
+                agentType: 'plan-reviewer',
+                schema: planReviewerVerdict,
+                model: FIXED_ROLE_TIER['plan-reviewer'],
+                // apra-fleet-j6i: same 300s-default gap as Planner.
+                timeout_s: 3600,
+                max_total_s: 3600,
+                max_turns: PLAN_REVIEWER_MAX_TURNS,
+            };
             try {
                 // apra-fleet-eft.8.2: plan-reviewer is a read-side role
                 // (pushCode: false) -- G-pull before, no-op G-push after.
-                verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
-                    buildPlanReviewerPrompt({ targetIssues, goal: validated.goal }),
-                    {
-                        member_name: getMemberForRole('plan-reviewer'),
-                        agentType: 'plan-reviewer',
-                        schema: planReviewerVerdict,
-                        model: FIXED_ROLE_TIER['plan-reviewer'],
-                        // apra-fleet-j6i: same 300s-default gap as Planner.
-                        timeout_s: 3600,
-                        max_total_s: 3600,
+                try {
+                    verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
+                        buildPlanReviewerPrompt({ targetIssues, goal: validated.goal }),
+                        { ...planReviewerDispatchOpts, member_name: getMemberForRole('plan-reviewer') }
+                    ));
+                } catch (err) {
+                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                        log(`Plan Reviewer exhausted its turn limit (max_turns=${PLAN_REVIEWER_MAX_TURNS}) -- resuming the same session with max_turns=${PLAN_REVIEWER_MAX_TURNS * 2}.`);
+                        verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
+                            'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
+                            {
+                                ...planReviewerDispatchOpts,
+                                member_name: getMemberForRole('plan-reviewer'),
+                                label: `Plan Review (resume, max_turns=${PLAN_REVIEWER_MAX_TURNS * 2})`,
+                                resume: true,
+                                max_turns: PLAN_REVIEWER_MAX_TURNS * 2,
+                            }
+                        ));
+                    } else {
+                        throw err;
                     }
-                ));
+                }
             } catch (err) {
                 // Persistent non-JSON/non-schema-compliant output, or a failed
                 // dispatch, both FAIL this plan round -- neither must ever be
@@ -4158,23 +4209,47 @@ async function runSprintCycle(context) {
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
             let deployResult;
+            // Stabilization log Issue 25: same-session turn-exhaustion resume
+            // for the deployer (a source-build fallback deploy runs npm ci +
+            // two builds, comfortably beyond a small default budget).
+            const DEPLOYER_MAX_TURNS = 60;
+            const deployerDispatchOpts = {
+                member_name: getMemberForRole('deployer'),
+                agentType: 'deployer',
+                schema: deployerReport,
+                model: FIXED_ROLE_TIER.deployer,
+                // apra-fleet-j6i: runs real deploy commands per a
+                // runbook, plausibly long-running.
+                timeout_s: 3600,
+                max_total_s: 3600,
+                max_turns: DEPLOYER_MAX_TURNS,
+            };
             try {
                 // apra-fleet-eft.8.2: deployer is a read-side role (pushCode:
                 // false) -- a deployer on a stale checkout is as damaging as
                 // a stale reviewer diff, so no phase-based exemption here.
-                deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                    'Deploy to test env using deploy.md.',
-                    {
-                        member_name: getMemberForRole('deployer'),
-                        agentType: 'deployer',
-                        schema: deployerReport,
-                        model: FIXED_ROLE_TIER.deployer,
-                        // apra-fleet-j6i: runs real deploy commands per a
-                        // runbook, plausibly long-running.
-                        timeout_s: 3600,
-                        max_total_s: 3600,
+                try {
+                    deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
+                        'Deploy to test env using deploy.md.',
+                        { ...deployerDispatchOpts, member_name: getMemberForRole('deployer') }
+                    ));
+                } catch (err) {
+                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                        log(`Deployer exhausted its turn limit (max_turns=${DEPLOYER_MAX_TURNS}) -- resuming the same session with max_turns=${DEPLOYER_MAX_TURNS * 2}.`);
+                        deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
+                            'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
+                            {
+                                ...deployerDispatchOpts,
+                                member_name: getMemberForRole('deployer'),
+                                label: `Deploy (resume, max_turns=${DEPLOYER_MAX_TURNS * 2})`,
+                                resume: true,
+                                max_turns: DEPLOYER_MAX_TURNS * 2,
+                            }
+                        ));
+                    } else {
+                        throw err;
                     }
-                ));
+                }
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
@@ -4621,6 +4696,20 @@ async function runSprintCycle(context) {
         costAnalysis,
     });
     let harvesterResult = null;
+    // Stabilization log Issue 25: same-session turn-exhaustion resume for
+    // the harvester (writes docs/changelog across the whole epic).
+    const HARVESTER_MAX_TURNS = 60;
+    const harvesterDispatchOpts = {
+        member_name: getMemberForRole('harvester'),
+        agentType: 'harvester',
+        schema: harvesterReport,
+        model: FIXED_ROLE_TIER.harvester,
+        // apra-fleet-j6i: writes docs/changelog/sprint-analysis
+        // across the whole epic, plausibly long-running.
+        timeout_s: 3600,
+        max_total_s: 3600,
+        max_turns: HARVESTER_MAX_TURNS,
+    };
     try {
         // apra-fleet-eft.8.2: harvester is a code-writing role (pushCode:
         // true) alongside doer -- G-pull before, G-push after so the docs/
@@ -4629,19 +4718,28 @@ async function runSprintCycle(context) {
         // mutates beads (issue-defer of low-priority items), so per Plan 3.3
         // (apra-fleet-eft.9.1) it must D-push those beads mutations after
         // (pushBeads: true) alongside its git push.
-        harvesterResult = await withGitSync(getMemberForRole('harvester'), true, () => agent(
-            harvesterPrompt,
-            {
-                member_name: getMemberForRole('harvester'),
-                agentType: 'harvester',
-                schema: harvesterReport,
-                model: FIXED_ROLE_TIER.harvester,
-                // apra-fleet-j6i: writes docs/changelog/sprint-analysis
-                // across the whole epic, plausibly long-running.
-                timeout_s: 3600,
-                max_total_s: 3600,
+        try {
+            harvesterResult = await withGitSync(getMemberForRole('harvester'), true, () => agent(
+                harvesterPrompt,
+                { ...harvesterDispatchOpts, member_name: getMemberForRole('harvester') }
+            ), { pushBeads: true });
+        } catch (err) {
+            if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                log(`Harvester exhausted its turn limit (max_turns=${HARVESTER_MAX_TURNS}) -- resuming the same session with max_turns=${HARVESTER_MAX_TURNS * 2}.`);
+                harvesterResult = await withGitSync(getMemberForRole('harvester'), true, () => agent(
+                    'Continue your harvest exactly where you left off in this same session -- do not redo docs or changelog sections already written. Finish the remaining updates, commit them, and return your final report now.',
+                    {
+                        ...harvesterDispatchOpts,
+                        member_name: getMemberForRole('harvester'),
+                        label: `Harvest (resume, max_turns=${HARVESTER_MAX_TURNS * 2})`,
+                        resume: true,
+                        max_turns: HARVESTER_MAX_TURNS * 2,
+                    }
+                ), { pushBeads: true });
+            } else {
+                throw err;
             }
-        ), { pushBeads: true });
+        }
         log(`Harvester: ${JSON.stringify(harvesterResult)}`);
         if (harvesterResult.status !== 'OK') {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
