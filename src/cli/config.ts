@@ -127,6 +127,17 @@ export function getProviderInstallConfig(provider: LlmProvider): ProviderInstall
   }
 }
 
+/**
+ * Home-relative agents dir for a provider (e.g. '.claude/agents'), or undefined
+ * when the provider has no agents dir (codex, copilot). Derived from
+ * getProviderInstallConfig() so install and remote provisioning cannot drift.
+ */
+export function getAgentsDirRelative(provider: LlmProvider): string | undefined {
+  const paths = getProviderInstallConfig(provider);
+  if (!paths.agentsDir) return undefined;
+  return path.relative(home, paths.agentsDir).replace(/\\/g, '/');
+}
+
 export function readConfig(paths: ProviderInstallConfig): any {
   if (!fs.existsSync(paths.settingsFile)) return {};
   const content = fs.readFileSync(paths.settingsFile, 'utf-8').trim();

@@ -168,6 +168,33 @@ function loadManifest(): AssetManifest {
   return buildDevManifest(findProjectRoot());
 }
 
+/**
+ * Recursively load every agent asset (role agents + _shared/ + schemas/) as
+ * {relPath, content} pairs, relPath relative to the agents dir root.
+ * Shared by install (writes to disk) and agent-provisioner (hashes for remote diffing).
+ */
+export function loadAgentAssets(): Array<{ relPath: string; content: string }> {
+  const results: Array<{ relPath: string; content: string }> = [];
+  if (isSea()) {
+    const manifest = loadManifest();
+    for (const [relPath, assetKey] of Object.entries(manifest.agents)) {
+      results.push({ relPath, content: extractAsset(assetKey) });
+    }
+    return results;
+  }
+
+  const root = findProjectRoot();
+  const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
+  const agentsSrc = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
+  const agentsBase = fs.existsSync(vendorAgents) ? 'vendor/apra-pm/agents' : 'dist/agents';
+
+  const collected = collectFilesRec(agentsSrc, agentsBase, agentsBase);
+  for (const [relPath, rootRelativeLabel] of Object.entries(collected)) {
+    results.push({ relPath, content: fs.readFileSync(path.join(root, rootRelativeLabel), 'utf-8') });
+  }
+  return results;
+}
+
 function extractAsset(key: string): string {
   if (isSea()) {
     return getSeaAsset(key);

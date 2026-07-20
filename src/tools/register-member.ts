@@ -18,6 +18,7 @@ import { logLine } from '../utils/log-helpers.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
+import { provisionAgents, type ProvisionResult } from '../services/agent-provisioner.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -225,6 +226,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   let detectedOS: Agent['os'] = isCloud ? 'linux' : undefined;
   let claudeVersion: string | undefined;
   let connResult: { ok: boolean; latencyMs?: number; error?: string } = { ok: true };
+  let agentProvisionResult: ProvisionResult | undefined;
 
   if (!skipSshOps) {
     const strategy = getStrategy(tempAgent);
@@ -290,6 +292,14 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
 
     await Promise.all([versionCheck, authCheck, mkdirCheck]);
 
+    // --- Provision role-agent definition files (planner.md, doer.md, ...) ---
+    // Remote members have their own home dir and never receive these via install() --
+    // only when connectivity is confirmed do we attempt the probe/push round trip.
+    if (connResult.ok) {
+      agentProvisionResult = await provisionAgents(tempAgent);
+      if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
+    }
+
     // --- Validate opencode model_tiers against available models ---
     if (!skipSshOps && (input.llm_provider ?? 'claude') === 'opencode' && normalizedModelTiers) {
       const { warnings: tierWarnings } = await validateOpenCodeModelTiers(tempAgent, normalizedModelTiers);
@@ -299,6 +309,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     tempAgent.os = detectedOS;
     if (isCloud) {
       warnings.push(`${input.llm_provider ?? 'claude'} CLI and auth not verified — run provision_llm_auth after the instance starts.`);
+      warnings.push('Agent files not provisioned -- run update_member after the instance starts.');
     }
   }
 
@@ -347,6 +358,15 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   }
   if (claudeVersion) {
     result += `  CLI:     ${claudeVersion}\n`;
+  }
+  if (agentProvisionResult) {
+    if (agentProvisionResult.skippedReason) {
+      result += `  Agents:  skipped (${agentProvisionResult.skippedReason})\n`;
+    } else if (agentProvisionResult.pushed.length > 0) {
+      result += `  Agents:  ${agentProvisionResult.pushed.length} file(s) provisioned\n`;
+    } else {
+      result += `  Agents:  up to date\n`;
+    }
   }
   if (!isLocal) {
     result += `  Auth:    ${tempAgent.authType}\n`;

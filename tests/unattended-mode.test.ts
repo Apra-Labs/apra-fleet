@@ -20,6 +20,14 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
+// Agent provisioning is exercised in tests/agent-provisioner.test.ts and the
+// dedicated register/update-member provisioning tests -- stub it out here so
+// these unrelated unattended-mode tests don't attempt real SFTP uploads.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: () => '.claude/agents',
+}));
+
 vi.mock('../src/services/onboarding.js', () => ({
   loadOnboardingState: () => ({ bannerShown: true, firstMemberRegistered: true, firstPromptExecuted: true, multiMemberNudgeShown: true }),
   saveOnboardingState: vi.fn(),
