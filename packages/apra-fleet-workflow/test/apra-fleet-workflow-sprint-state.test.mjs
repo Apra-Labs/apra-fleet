@@ -12,6 +12,7 @@ import {
     getRunningSprintStatePath,
     getOldSprintStatePath
 } from '../src/viewer/sprint-state-paths.mjs';
+import { DebouncedStateWriter } from '../src/viewer/debounced-writer.mjs';
 
 // Tests for apra-fleet-eft.2.2 ("persist on every activity/phase/state event
 // and enrich the state file") and apra-fleet-eft.2.3 ("running/ ->
@@ -315,5 +316,81 @@ describe('apra-fleet-eft.2.2: persist on every activity/phase/state event and en
 
             await runPromise;
         });
+    });
+});
+
+describe('apra-fleet-eft.20.2: per-activity checkpoint writer round-trips through every phase transition', () => {
+    // Regression coverage for apra-fleet-eft.20's observed corruption: a
+    // phase-transition checkpoint write once produced a doubled
+    // quote/delimiter (e.g. `"phase"":"Develop"`), leaving state.json
+    // unparseable. apra-fleet-eft.20.1 fixed this by routing every
+    // sprint-state write (the debounced PER-ACTIVITY writer used here, and
+    // the terminal persistState() covered separately) through the single
+    // shared writeJsonFileAtomic() primitive -- one JSON.stringify() pass
+    // per write, atomic temp-file-then-rename. This test drives THAT SAME
+    // per-activity writer (DebouncedStateWriter, the real production
+    // class -- not a hand-rolled JSON.stringify call) through a realistic
+    // full checkpoint sequence and asserts every single intermediate write
+    // parses cleanly and reproduces the expected object.
+    let tmpDir;
+    beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-checkpoint-writer-'));
+    });
+    afterEach(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test('every sequential phase/field checkpoint write JSON.parses and equals the expected object', () => {
+        const filePath = path.join(tmpDir, 'running-sprint.json');
+
+        // Mutable sprint state, mirroring the fields a real cycle drives
+        // through the checkpoint writer: phase, cycle number, and whether
+        // the current cycle's DAG has been plan-approved.
+        let sprintState = { phase: null, cycle: 1, planApproved: false };
+        const writer = new DebouncedStateWriter({
+            getState: () => sprintState,
+            filePath,
+            debounceMs: 200,
+        });
+
+        // Full sequence of phase-transition checkpoint writes across two
+        // cycles: Plan -> approve DAG -> Develop -> Review -> Harvest, then
+        // a second cycle's Plan to exercise the cycle/planApproved field
+        // updates (planApproved resets to false on a new cycle's Plan).
+        const checkpoints = [
+            { phase: 'Plan', cycle: 1, planApproved: false },
+            { phase: 'Plan', cycle: 1, planApproved: true }, // "approve DAG"
+            { phase: 'Develop', cycle: 1, planApproved: true },
+            { phase: 'Review', cycle: 1, planApproved: true },
+            { phase: 'Harvest', cycle: 1, planApproved: true },
+            { phase: 'Plan', cycle: 2, planApproved: false },
+        ];
+
+        for (const checkpoint of checkpoints) {
+            sprintState = { ...checkpoint };
+            writer.schedule();
+            writer.flushSync();
+
+            const raw = fs.readFileSync(filePath, 'utf-8');
+
+            // The specific observed regression: a stray extra quote/delimiter
+            // inserted by a hand-rolled in-place field patch, e.g.
+            // `"phase"":"Develop"`. A single JSON.stringify() pass can never
+            // produce this -- assert it directly, not just via JSON.parse
+            // succeeding (a doubled quote inside an otherwise-valid-looking
+            // structure could in principle still be missed by a looser check).
+            assert.ok(
+                !/"phase""\s*:/.test(raw),
+                `checkpoint write must never emit a doubled-quote delimiter, got: ${raw}`
+            );
+
+            const parsed = JSON.parse(raw); // throws (failing the test) on malformed JSON
+            assert.deepStrictEqual(parsed, checkpoint, 'on-disk state must exactly reproduce the checkpoint just written');
+        }
+
+        // Final on-disk state must reflect the LAST checkpoint, not an
+        // intermediate one.
+        const final = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        assert.deepStrictEqual(final, checkpoints[checkpoints.length - 1]);
     });
 });
