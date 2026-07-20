@@ -230,7 +230,12 @@ test('doltPushAfter: a transient-exhausted push raises DoltSyncError (not DoltDi
 });
 
 // -----------------------------------------------------------------------------
-// apra-fleet-eft.30.2/30.3 -- neutralized-sandbox D-push defense-in-depth.
+// apra-fleet-eft.30.2/30.3 + stabilization Issue 31 -- neutralized-sandbox
+// D-push isolation, two layers: (1) PRE-GATE: when bd-level sync.remote is
+// positively absent, no `bd dolt push` is issued at all (run 15 final review:
+// bd auto-provisions a Dolt remote from git origin on the attempt, so a
+// credentialed clone would reach the real shared remote); (2) failure-path
+// downgrade as defense-in-depth if a push does fire and fail.
 //
 // A misconfigured/mis-wired Dolt-level remote in a neutralized sandbox can
 // make a real 'bd dolt push' attempt and fail with a credentials-style error
@@ -246,7 +251,12 @@ test('doltPushAfter: a transient-exhausted push raises DoltSyncError (not DoltDi
 // -----------------------------------------------------------------------------
 const CREDENTIALS_ERROR = 'could not read Username for https://github.com: terminal prompts disabled';
 
-test('doltPushAfter: neutralized-sandbox non-diverged push failure (bd-level sync.remote absent) is treated as a benign no-remote skip, not thrown', async () => {
+test('doltPushAfter: PRE-GATE (stabilization Issue 31) -- with bd-level sync.remote absent, NO bd dolt push command is issued at all', async () => {
+    // The safety-critical assertion from run 15's final review: it is not
+    // enough that a neutralized-sandbox push FAILURE is downgraded to a
+    // benign skip -- the push must never be ATTEMPTED, because bd
+    // auto-provisions a Dolt remote from git origin on the attempt and a
+    // credentialed clone would push to the real shared remote successfully.
     const logs = [];
     const log = (msg) => logs.push(msg);
     const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
@@ -255,6 +265,30 @@ test('doltPushAfter: neutralized-sandbox non-diverged push failure (bd-level syn
     const res = await doltPushAfter('memberA', { command, log, checkSyncRemoteConfigured });
 
     assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 0, 'no bd dolt push command is ISSUED when sync.remote is absent (pre-gate, not failure downgrade)');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no reconcile pull is issued either');
+    assert.ok(
+        logs.some((l) => l.includes("skipped pre-attempt") && l.includes('no push command issued')),
+        `expected a 'skipped pre-attempt ... no push command issued' log line, got: ${JSON.stringify(logs)}`,
+    );
+});
+
+test('doltPushAfter: failure-path downgrade (eft.30.2 defense-in-depth) still covered -- pre-gate passes, push fails, then sync.remote reads absent', async () => {
+    // Stateful stub: the pre-gate read reports CONFIGURED (so the push is
+    // attempted, preserving eft.16.1 semantics for real clones), the push
+    // fails with an unclassifiable credentials error, and the failure-path
+    // re-check reports absent -- the downgrade branch must then turn the
+    // failure into the same benign no-remote skip instead of DoltSyncError.
+    const logs = [];
+    const log = (msg) => logs.push(msg);
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    const answers = [true, false];
+    const checkSyncRemoteConfigured = async () => (answers.length > 1 ? answers.shift() : answers[0]);
+
+    const res = await doltPushAfter('memberA', { command, log, checkSyncRemoteConfigured });
+
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 1, 'the push WAS attempted (pre-gate saw configured)');
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no reconcile pull is issued for this benign skip');
     assert.ok(
         logs.some((l) => l.includes("[Dolt] D-push for member 'memberA' skipped: no dolt remote configured")),

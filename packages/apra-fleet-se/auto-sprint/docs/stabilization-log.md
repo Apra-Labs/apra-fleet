@@ -850,3 +850,32 @@ plan, review are not plausibly hour-plus when healthy). Takes effect run
 16; run 15's in-flight C4 still carries the 60-min ceiling, so a C4 integ
 result of passed:false with a dispatch-failed summary near the 60-min mark
 should be read as THIS signature, not a real test failure.
+
+### Issue 31 (run 15 verdict FAIL, root cause of eft.30): D-push gate ran AFTER the push attempt
+
+The single most serious finding of run 15: in doltPushAfter(), `bd dolt
+push` was attempted FIRST and isMemberSyncRemoteConfigured() was consulted
+only on the FAILURE path (eft.30.2), to downgrade an unclassifiable failure
+to a benign skip. But bd auto-provisions a Dolt-level remote from git's own
+origin on the push attempt itself, so on a clone with valid credentials the
+push SUCCEEDS against the real shared remote -- neutralization verified
+clean seconds earlier is simply re-armed. Observed live in integ C4 AND C5:
+a sandbox reached the real fleet-e2e-toy remote and was stopped only by the
+machine's missing GitHub credentials, not by design. The C5 R3 reviewer
+reopened eft.30 with exactly this diagnosis; the final FAIL verdict cited
+it as the run's core defect.
+
+Fix: the push is now gated BEFORE being issued -- when the member's
+bd-level sync.remote is positively confirmed absent/neutralized, no `bd
+dolt push` command is issued at all (same benign no-remote skip result).
+isMemberSyncRemoteConfigured fails CLOSED (any inconclusive read reports
+configured), so a real, actively-synced clone always still pushes; the
+eft.30.2 failure-path downgrade stays as defense-in-depth. New test pins
+the load-bearing assertion: with sync.remote absent, ZERO push commands are
+ISSUED (not merely "the failure was benign"); a stateful-stub test keeps
+the failure-path branch covered. Cost: one `bd config get sync.remote`
+read per D-push bracket. Goldens refreshed (8 pre-gate reads now appear in
+the happy-path transcript); arg-contract member-routing tests exclude the
+new read alongside `bd dolt *` (same per-member bracket class). Engine
+suite: 960 pass / 0 fail; root vitest green minus the 2 known Windows-local
+teardown flakes.

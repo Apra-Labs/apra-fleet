@@ -536,7 +536,12 @@ describe('runner.js mock-level execution', () => {
 
         assert.strictEqual(result.status, 'success');
 
-        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ') && !d.command.startsWith('bd dolt'));
+        // `bd config get sync.remote` is part of the same per-member D-push
+        // bracket (the Issue 31 pre-gate reads the BRACKET member's own
+        // sync.remote before deciding whether to push), so it is excluded
+        // alongside `bd dolt *` for the same reason.
+        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-x', `expected command "${command}" to dispatch to 'member-x', got '${member_name}'`);
@@ -564,7 +569,10 @@ describe('runner.js mock-level execution', () => {
         // beads-sync brackets around each dispatched agent's own call, not
         // orchestrator bookkeeping, and correctly use that agent's own
         // member rather than `orchestratorMember`.
-        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ') && !d.command.startsWith('bd dolt'));
+        // `bd config get sync.remote` excluded like `bd dolt *` -- part of
+        // the per-member D-push bracket (Issue 31 pre-gate), see above.
+        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-y', `expected command "${command}" to dispatch to 'member-y', got '${member_name}'`);

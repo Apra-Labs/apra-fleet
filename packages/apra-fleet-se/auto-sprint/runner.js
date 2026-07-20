@@ -1146,6 +1146,27 @@ export async function doltPushAfter(member, opts = {}) {
         return { ok: true, member, pushed: false, reconciled: false };
     }
 
+    // apra-fleet-eft.30 (stabilization log Issue 31): gate the push BEFORE
+    // issuing it. The eft.30.2 failure-path downgrade below stopped the
+    // sprint-abort but still let `bd dolt push` be ATTEMPTED -- and bd
+    // auto-provisions a Dolt-level remote from git's own origin on that
+    // attempt, so on a clone with valid credentials the push would SUCCEED
+    // against the real shared remote even though bd-level sync.remote is
+    // neutralized (observed live, integ C4/C5: a sandbox reached the real
+    // fleet-e2e-toy remote and was blocked only by missing credentials).
+    // When the member's own sync.remote is positively confirmed absent,
+    // nothing is supposed to leave this clone: skip without issuing any
+    // push command at all. isMemberSyncRemoteConfigured fails CLOSED (any
+    // inconclusive read reports configured), so a real, actively-synced
+    // clone always still pushes -- this gate can only ever suppress a push
+    // the eft.25 neutralize step already declared must not happen. The
+    // failure-path downgrade below stays as defense-in-depth.
+    const preGateCheckFn = checkSyncRemoteConfigured || isMemberSyncRemoteConfigured;
+    if (!(await preGateCheckFn(member, { command, log }))) {
+        log(`[Dolt] D-push for member '${member}' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued`);
+        return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };
+    }
+
     // apra-fleet-eft.9.2: serialize this push behind the global mutex. Acquire
     // (waiting our FIFO turn) before touching the remote; release on every exit.
     let grant = null;

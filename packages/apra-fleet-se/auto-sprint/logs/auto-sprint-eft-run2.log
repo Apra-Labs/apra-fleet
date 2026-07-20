@@ -1,0 +1,73 @@
+Starting Auto-Sprint
+Target Issues: apra-fleet-eft
+Sprint Branch: auto-sprint/eft-service (Base: feat/fleet-reorg)
+Goal Constraint: P1/P2
+Max Cycles: 5
+Active Members (1): fleet-reorg
+Dashboard live at http://localhost:18300
+[Viewer] Workflow Dashboard live at http://localhost:18300
+[VettingEngine] Script flagged with risk score 80/100 (advisory only -- workflow scripts run with full Node privileges and must be trusted; see docs/apra-fleet-workflow-architecture.md).
+  - WARNING: Imports a core Node.js system module -- worth a review pass, but not blocked (workflow scripts are trusted code with full Node privileges).
+
+=== Group: Sprint Setup ===
+--- Phase: Ensure Sprint Branch ---
+
+=== Group: Sprint Cycle 1 ===
+--- Phase: Plan C1 R1 ---
+[Dispatch] phase: Plan C1 R1 | member: fleet-reorg | label: none
+[Workflow Log] Planner: 📋 Response from fleet-reorg:
+
+Planning pass complete. This was a re-planning pass against an already-decomposed DAG under `apra-fleet-eft`.
+
+## What I found (audit)
+- **12 of 13 features** were already fully decomposed with `[impl]` + `[test]` tasks, all carrying `model` metadata (`cheap`/`standard`/`premium`), correctly parented, and test-tasks correctly blocked by their sibling impl tasks. No `blocks` edges onto parents. No changes needed.
+- **`eft.1`** (P1, PR-on-abort): has closed impl `eft.1.2` (which encapsulated `finalizeAbort` incl. branch-push + `[ABORTED]` PR creation with the commit gate, per its acceptance criteria producing a `prUrl`) plus a ready open `[test]` `eft.1.3`. Adequately decomposed — left untouched (closed work is not re-planned).
+- **`eft.10 / eft.11 / eft.12`** are P3 (Phase 3), outside this pass's P1/P2 scope — deliberately left undecomposed.
+
+## The one real gap I filled: `eft.13` (P1 bug, had no children)
+Decomposed the fixed-port EADDRINUSE cascade bug into 4 tasks, each with acceptance criteria and model tier:
+
+| id | task | tier |
+|----|------|------|
+| `eft.13.1` | [impl] ephemeral ports for viewer-lifecycle (+ future debounced-writer) test servers | cheap |
+| `eft.13.2` | [impl] ephemeral ports for test-runner + manual e2e-runner test servers | cheap |
+| `eft.13.3` | [impl] best-effort process-tree teardown on transport-timeout retry | standard |
+| `eft.13.4` | [test] overlapping runs of a formerly-fixed-port file do not EADDRINUSE | standard |
+
+Wiring: all four parented under `eft.13`; `eft.13.4` (`[test]`) blocked by the three sibling impls (`bd dep add 13.4 13.1/13.2/13.3`). No parent↔child `blocks` edges.
+
+## Validation
+- `bd list --parent apra-fleet-eft --ready` → **26 ready** (non-empty ⇒ no deadlock).
+- `bd blocked --parent apra-fleet-eft.13` → only `13.4`, blocked by three unblocked impls.
+- `bd dep cycles` → **no cycles**.
+
+The beads DAG is the output; it's ready for `plan-reviewer`.
+Tokens: input=28 output=13161
+
+---
+session: 83166600-6163-4ba8-a635-bb31f83dad93
+[Dispatch] phase: Plan C1 R1 | member: fleet-reorg | label: none
+[Workflow Log] Plan Reviewer: {"verdict":"APPROVED","notes":"Reviewed the P1/P2 subtree under apra-fleet-eft (features eft.1-9 plus bug eft.13; P3 features eft.10/.11/.12 excluded per scope). All ten criteria pass. Coverage: every Phase 0/1/2 plan goal maps to a feature. Test tasks: each P1/P2 feature and bug has exactly one [test] task (1.3, 2.4, 3.3, 4.6, 5.6, 6.6, 7.3, 8.7, 9.8, 13.4). Dependency wiring: all [test] tasks are blocked-by their impl tasks and transitively downstream of every impl they claim to cover (verified 9.8 reaches Path A/B via 9.6->9.5->9.4, and 6.6 reaches 6.1/6.2/6.4 via 6.3/6.5). Scoped `bd list --parent apra-fleet-eft --ready` is non-empty, so no cycle. Task sizing: every task names a Files: target of 1-3 files (13.4 omits the literal line but its AC and single new test file are concrete). Model metadata present on all 46 tasks. Feasibility: eft.9.4 correctly hard-depends on external apra-fleet-ire for the portable dolt binary. Minor (non-blocking) observation: eft.3.3 is blocked only by the closed guard impl eft.3.1, not the open eft.3.2 (npm-wiring/docs); acceptable since the test targets guard logic, not the wiring.","taskAssignments":[{"id":"apra-fleet-eft.1.3","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.2.2","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.2.3","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.2.4","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.3.2","bucket":"S","model":"cheap"},{"id":"apra-fleet-eft.3.3","bucket":"S","model":"standard"},{"id":"apra-fleet-eft.4.1","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.4.2","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.4.3","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.4.4","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.4.5","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.4.6","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.5.1","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.5.2","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.5.3","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.5.4","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.5.5","bucket":"S","model":"cheap"},{"id":"apra-fleet-eft.5.6","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.6.1","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.6.2","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.6.3","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.6.4","bucket":"M","model":"premium"},{"id":"apra-fleet-eft.6.5","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.6.6","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.7.1","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.7.2","bucket":"S","model":"cheap"},{"id":"apra-fleet-eft.7.3","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.8.1","bucket":"M","model":"premium"},{"id":"apra-fleet-eft.8.2","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.8.3","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.8.4","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.8.5","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.8.6","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.8.7","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.9.1","bucket":"M","model":"premium"},{"id":"apra-fleet-eft.9.2","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.9.3","bucket":"M","model":"premium"},{"id":"apra-fleet-eft.9.4","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.9.5","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.9.6","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.9.7","bucket":"M","model":"cheap"},{"id":"apra-fleet-eft.9.8","bucket":"L","model":"premium"},{"id":"apra-fleet-eft.13.1","bucket":"S","model":"cheap"},{"id":"apra-fleet-eft.13.2","bucket":"S","model":"cheap"},{"id":"apra-fleet-eft.13.3","bucket":"M","model":"standard"},{"id":"apra-fleet-eft.13.4","bucket":"M","model":"standard"}]}
+--- Phase: Develop C1 R1 ---
+[Dispatch] phase: Develop C1 R1 | member: fleet-reorg | label: Streak Assignment
+[Workflow Log] Streak Assignment: {"streaks":[["apra-fleet-ire","apra-fleet-ire.1"],["apra-fleet-eft.1","apra-fleet-eft.1.3"],["apra-fleet-eft.2","apra-fleet-eft.2.2","apra-fleet-eft.2.3"],["apra-fleet-eft.3"],["apra-fleet-eft.4","apra-fleet-eft.4.1"],["apra-fleet-eft.5","apra-fleet-eft.5.1"],["apra-fleet-eft.6","apra-fleet-eft.6.7"],["apra-fleet-eft.7"],["apra-fleet-eft.8","apra-fleet-eft.8.1","apra-fleet-eft.8.5"],["apra-fleet-eft.9"],["apra-fleet-eft.10"],["apra-fleet-eft.11"],["apra-fleet-eft.12"],["apra-fleet-eft.13","apra-fleet-eft.13.1","apra-fleet-eft.13.2","apra-fleet-eft.13.3"]]}
+[Dispatch] phase: Develop C1 R1 | member: fleet-reorg | label: Streak [apra-fleet-ire, apra-fleet-ire.1]
+[Workflow Log] Doer [apra-fleet-ire, apra-fleet-ire.1] on [fleet-reorg]: {"status":"VERIFY","closedIds":["apra-fleet-ire.1"],"notes":"Implemented src/cli/dolt-install.ts (resolveDoltAsset + downloadAndExtractDolt) per apra-fleet-ire.1's acceptance criteria: pinned dolt v2.2.0, resolves win32/x64, linux/x64, darwin/x64, darwin/arm64 release assets, throws UnsupportedDoltPlatformError on unsupported combos, extracts via in-module minimal zip/tar.gz parsers (no new deps, uses node:zlib) into caller-supplied destDir only (never system PATH, no admin rights), chmod +x on POSIX only. fetch/fs deps are injected (mirrors join.ts's JoinDeps/realDeps pattern) so it's unit-testable without network. Added tests/dolt-install.test.ts (9 tests, all passing) building in-memory zip/tar.gz fixtures covering asset resolution, extraction correctness, chmod behavior (present on linux, absent on win32), and download-failure error propagation. npm run build passes; source is ASCII-only. Committed as 898f406 and closed. apra-fleet-ire (the parent) was left open/unclaimed -- it's a container epic (issue_type=task but with no acceptance-criteria section of its own; all actionable scope lives in children ire.1-ire.4), so per the missing-acceptance-criteria skip rule I did not claim or close it."}
+[Workflow Log] Doer streak [apra-fleet-ire, apra-fleet-ire.1] reported status 'VERIFY' but bead(s) still open: apra-fleet-ire -- treating streak as FAILED.
+[Dispatch] phase: Develop C1 R1 | member: fleet-reorg | label: Streak [apra-fleet-eft.1, apra-fleet-eft.1.3]
+[Workflow Log] Doer [apra-fleet-eft.1, apra-fleet-eft.1.3] on [fleet-reorg]: {"status":"VERIFY","closedIds":[],"notes":"Skipped both assigned ids without claiming or closing. apra-fleet-eft.1 is issue_type=feature (has children apra-fleet-eft.1.1/.1.2/.1.3) and per Step 1 non-task rule must not be claimed/closed by a doer. apra-fleet-eft.1.3 depends on apra-fleet-eft.1.2 ('Route typed sprint-abort errors through finalizeAbort in runner.js/cli.mjs'), which shows as closed in beads, but a full-repo grep found no `finalizeAbort` symbol, no `[ABORTED]` PR-title string, and no abort-handling logic anywhere in packages/apra-fleet-se/auto-sprint/runner.js or bin/cli.mjs -- the referenced implementation does not exist on this branch. Writing the test file eft.1.3 requires (asserting finalizeAbort() behavior, PR idempotency, terminal history records) would mean inventing scope against non-existent code, which the doer contract explicitly prohibits. Leaving both beads open; recommend the orchestrator verify whether eft.1.1/eft.1.2 commits were lost/reverted or landed on a different branch before re-dispatching eft.1.3."}
+[Workflow Log] Doer streak [apra-fleet-eft.1, apra-fleet-eft.1.3] reported status 'VERIFY' but bead(s) still open: apra-fleet-eft.1, apra-fleet-eft.1.3 -- treating streak as FAILED.
+[Dispatch] phase: Develop C1 R1 | member: fleet-reorg | label: Streak [apra-fleet-eft.2, apra-fleet-eft.2.2, apra-fleet-eft.2.3]
+[Agent API Error] Authentication failed on "fleet-reorg". Run /login to refresh your credentials, then run provision_llm_auth to deploy them to this agent.
+[Agent API Error] [Workflow Error] Agent dispatch failed (nonzero_exit): Authentication failed on "fleet-reorg". Run /login to refresh your credentials, then run provision_llm_auth to deploy them to this agent.
+[Workflow Log] Doer streak [apra-fleet-eft.2, apra-fleet-eft.2.2, apra-fleet-eft.2.3] on member 'fleet-reorg' threw: [Workflow Error] Agent dispatch failed (nonzero_exit): Authentication failed on "fleet-reorg". Run /login to refresh your credentials, then run provision_llm_auth to deploy them to this agent.. Retrying once.
+[Dispatch] phase: Develop C1 R1 | member: fleet-reorg | label: Streak [apra-fleet-eft.2, apra-fleet-eft.2.2, apra-fleet-eft.2.3]
+[Agent API Error] Request "tools/call" (id=32) timed out after 930000ms with no response.
+[Dispatch] phase: Develop C1 R1 | member: fleet-reorg | label: Streak [apra-fleet-eft.3]
+[Workflow Log] [Parallel Error] item 2 failed: [Workflow Error] Transport failure while executing agent prompt: Request "tools/call" (id=32) timed out after 930000ms with no response.
+[Workflow Log] Doer [apra-fleet-eft.3] on [fleet-reorg]: {"status":"VERIFY","closedIds":[],"notes":"apra-fleet-eft.3 is issue_type=feature (with children eft.3.1, eft.3.2, eft.3.3), not a task -- per doer contract this was skipped without claiming or closing. No other bead ids were assigned. No code changes made."}
+[Workflow Log] Doer streak [apra-fleet-eft.3] reported status 'VERIFY' but bead(s) still open: apra-fleet-eft.3 -- treating streak as FAILED.
+[Dispatch] phase: Develop C1 R1 | member: fleet-reorg | label: Streak [apra-fleet-eft.4, apra-fleet-eft.4.1]
+[Workflow Log] Doer [apra-fleet-eft.4, apra-fleet-eft.4.1] on [fleet-reorg]: {"status":"VERIFY","closedIds":["apra-fleet-eft.4.1"],"notes":"apra-fleet-eft.4.1 (task): Implemented the supervisor skeleton. Added src/supervisor/server.mjs (createSupervisor: HTTP bootstrap, error-isolated request dispatcher, GET /api/health, POST /api/shutdown, idempotent stop, and documented module seams for ledger/spawner/watchdog/dashboard as injectable inert stubs) and bin/serve.mjs ('fleet-se serve' always-on entry that stays up until POST /api/shutdown or SIGINT/SIGTERM - no fork()/IPC). Added a fleet-se-serve bin entry to package.json and a 15-case node:test suite (test/supervisor-skeleton.test.mjs). Verified: all new tests pass (15/15), full run with cli-robustness passes 41/41, SE bundler (bundle-se.mjs) still succeeds, and an end-to-end smoke run boots the process, answers /api/health, and exits cleanly on POST /api/shutdown. A thrown handler returns 500 while the process stays alive. apra-fleet-eft.4 was assigned but is issue_type=feature (with children), so per the doer contract it was NOT claimed or closed - only its child task was worked. Committed on branch auto-sprint/eft-service; other unrelated modified/untracked files in the worktree were left untouched."}
+[Workflow Log] Doer streak [apra-fleet-eft.4, apra-fleet-eft.4.1] reported status 'VERIFY' but bead(s) still open: apra-fleet-eft.4 -- treating streak as FAILED.
+[Dispatch] phase: Develop C1 R1 | member: fleet-reorg | label: Streak [apra-fleet-eft.5, apra-fleet-eft.5.1]
