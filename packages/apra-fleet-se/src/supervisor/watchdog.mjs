@@ -39,7 +39,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { isPidAlive } from './reconcile.mjs';
-import { getOldSprintStatePath } from '@apralabs/apra-fleet-workflow/viewer/sprint-state-paths';
+import { getOldSprintStatePath, getRunningSprintStatePath } from '@apralabs/apra-fleet-workflow/viewer/sprint-state-paths';
+import { writeJsonFileAtomic } from '@apralabs/apra-fleet-workflow/viewer/debounced-writer';
 
 /** The four -- and only four -- statuses the classifier may return. */
 export const WATCHDOG_STATUS = Object.freeze({
@@ -212,6 +213,59 @@ export function probeChildHttp(port, opts = {}) {
 }
 
 /**
+ * apra-fleet-eft.20.3: default terminal-error recorder, invoked the FIRST
+ * time a sprint is observed transitioning into CRASHED. The apra-fleet-eft.20
+ * smoke-test symptom this fixes: a doer sub-session died mid-Develop and the
+ * run just went silent -- no error, no exception, no exit line anywhere, and
+ * nothing about the failure was ever persisted. This makes that death
+ * observable in two places an operator (or another automated system) would
+ * actually look:
+ *   (a) an explicit, greppable line via the watchdog's own logger -- the SAME
+ *       fleet server log every other watchdog/supervisor line already goes
+ *       to, so no new log surface to monitor;
+ *   (b) the sprint's own state file, read+merged+written back atomically (the
+ *       apra-fleet-eft.20.1 single-pass-JSON.stringify-plus-atomic-rename
+ *       primitive) with a `status: 'failed'` and a `lastError` describing
+ *       what the watchdog observed. Written back to running/ IN PLACE
+ *       (never moved to old_sprints/) so classifySprint()'s FINISHED/CRASHED
+ *       distinction -- which keys off old_sprints/ membership -- is not
+ *       disturbed by this write: a sprint the watchdog declared crashed stays
+ *       classified crashed on every later tick, it never silently becomes
+ *       "finished" just because this recorder touched its file.
+ * @param {{ sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: { log?: Function, error?: Function } }} info
+ */
+export function defaultRecordTerminalError({ sprintId, childPid, env, logger }) {
+    const log = (logger && (logger.error ?? logger.log)) ?? (() => {});
+    const message = `Sprint '${sprintId}' (pid ${childPid ?? 'unknown'}) is no longer alive and never recorded a terminal state -- classified CRASHED by the PID-liveness watchdog.`;
+    log(`[watchdog] TERMINAL ERROR: ${message}`);
+    try {
+        const statePath = getRunningSprintStatePath(sprintId, env);
+        let existing = {};
+        try {
+            existing = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        } catch {
+            // No readable prior state (the child died before ever writing one,
+            // or its last write was left malformed) -- still record the crash
+            // with whatever we know; never let a missing/bad prior file block
+            // reporting the failure itself.
+        }
+        writeJsonFileAtomic(statePath, {
+            ...existing,
+            status: 'failed',
+            terminalReason: existing.terminalReason || 'watchdog: crashed (pid gone, no terminal state ever persisted)',
+            lastError: {
+                message,
+                sprintId,
+                childPid: childPid ?? null,
+                detectedAt: new Date().toISOString(),
+            },
+        });
+    } catch (err) {
+        log(`[watchdog] failed to persist terminal error state for '${sprintId}': ${(err && err.message) || err}`);
+    }
+}
+
+/**
  * Create the PID-liveness watchdog seam. Every collaborator is injectable so a
  * test can drive deterministic PID/HTTP/terminal-state signals without real
  * processes, sockets, or files.
@@ -222,6 +276,7 @@ export function probeChildHttp(port, opts = {}) {
  *   isChildAlive?: (pid: number, marker?: string|number|null) => boolean,
  *   probeHttp?: (port: number) => Promise<boolean>|boolean,
  *   hasTerminalState?: (sprintId: string) => boolean,
+ *   recordTerminalError?: (info: { sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: object }) => void,
  *   intervalMs?: number,
  *   env?: NodeJS.ProcessEnv,
  *   setIntervalFn?: typeof setInterval,
@@ -255,6 +310,11 @@ export function createWatchdog(deps = {}) {
                 return false;
             }
         });
+    // apra-fleet-eft.20.3: the CRASHED-transition recorder (log line + a
+    // persisted failed/lastError in the sprint's running/ state file, see
+    // defaultRecordTerminalError above). Injectable so a test can assert on a
+    // spy instead of the real fs/logger.
+    const recordTerminalError = deps.recordTerminalError ?? defaultRecordTerminalError;
     const intervalMs = Number.isInteger(deps.intervalMs) && deps.intervalMs > 0
         ? deps.intervalMs
         : WATCHDOG_DEFAULT_INTERVAL_MS;
@@ -267,6 +327,14 @@ export function createWatchdog(deps = {}) {
     let snapshot = [];
     /** @type {ReturnType<typeof setInterval>|null} */
     let timer = null;
+    // Sprint ids the CRASHED recorder has already fired for, so a wedged
+    // ledger entry that stays CRASHED across many interval ticks gets
+    // exactly ONE terminal-error log line + state write, not one per tick.
+    // Scoped to this watchdog instance/process lifetime -- a supervisor
+    // restart is itself a fresh watchdog instance, and by then the sprint's
+    // running/ state file already carries the persisted failed/lastError
+    // from before the restart, so there is nothing to re-report.
+    const recordedCrashes = new Set();
 
     /**
      * Classify a SINGLE ledger entry into exactly one of the four statuses.
@@ -310,6 +378,25 @@ export function createWatchdog(deps = {}) {
         // PID gone: a persisted terminal state in old_sprints/ means it FINISHED;
         // its absence means it CRASHED (died without recording a terminal state).
         const finished = hasTerminalState(sprintId);
+        if (!finished) {
+            // apra-fleet-eft.20.3: this is the silent-death case the
+            // apra-fleet-eft.20 smoke test exposed -- a doer/orchestrator
+            // child died mid-Develop with zero diagnostic signal anywhere.
+            // Make it observable the FIRST time this sprint is classified
+            // CRASHED: an explicit log line, plus a persisted failed/lastError
+            // written into its own running/ state file.
+            if (!recordedCrashes.has(sprintId)) {
+                recordedCrashes.add(sprintId);
+                try {
+                    recordTerminalError({ sprintId, childPid, env, logger });
+                } catch (err) {
+                    // The recorder itself must never take the classifier down
+                    // with it -- classification (the watchdog's core contract)
+                    // must keep proceeding even if diagnostics reporting fails.
+                    logError(`[watchdog] recordTerminalError threw for '${sprintId}':`, err);
+                }
+            }
+        }
         return {
             sprintId,
             status: finished ? WATCHDOG_STATUS.FINISHED : WATCHDOG_STATUS.CRASHED,

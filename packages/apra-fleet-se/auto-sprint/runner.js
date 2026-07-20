@@ -4882,6 +4882,76 @@ async function runSprintCycle(context) {
 }
 
 // ---------------------------------------------------------------------------
+// Fatal-diagnostics guard for the doer-dispatch boundary (apra-fleet-eft.20.3)
+// ---------------------------------------------------------------------------
+//
+// apra-fleet-eft.20 (smoke-test sandbox): a doer sub-session died mid-Develop
+// with ZERO diagnostic signal -- the fleet server log went silent after the
+// doer member's session-registration line, and both the doer and orchestrator
+// processes were later found dead with nothing further committed or logged.
+// main()'s existing try/catch around runSprintCycle() only ever sees errors
+// that propagate up an AWAITED call chain; it can never see (a) a promise
+// that rejects without ever being awaited/attached to a .catch (a genuine
+// unhandledRejection), or (b) a synchronous throw that somehow escapes every
+// awaited frame. Both crash the process by default with Node's own generic
+// (and easily-missed) diagnostics -- or, depending on the host's
+// unhandledRejection mode, may not even do that. This guard makes that
+// failure mode observable: it logs an explicit [FATAL] line (with cause and
+// the last phase this run entered) via the run's own log() -- so it lands in
+// the SAME fleet server log operators already watch -- and best-effort
+// persists the same information into the sprint state file via
+// publishState('terminal', ...), which flows through the SAME atomic writer
+// every other sprint-state write uses (apra-fleet-eft.20.1), so a reader
+// (watchdog, dashboard, or a human) sees a real lastError instead of state
+// frozen mid-Develop with no explanation.
+//
+// This deliberately does NOT attempt to recover or continue the run -- by the
+// time either process-level event fires, the process's control flow is
+// already in an unspecified state. It only guarantees the death is logged and
+// recorded before whatever happens next (Node's own crash, or the process
+// exiting via some other path).
+/**
+ * @param {{ log?: (msg: string) => void, publishState?: (namespace: string, data: any) => void, phaseOf?: () => string|null }} deps
+ * @returns {() => void} uninstall() -- removes both listeners.
+ */
+export function installFatalDiagnosticsGuard(deps = {}) {
+    const log = typeof deps.log === 'function' ? deps.log : () => {};
+    const publishState = typeof deps.publishState === 'function' ? deps.publishState : null;
+    const phaseOf = typeof deps.phaseOf === 'function' ? deps.phaseOf : () => null;
+
+    const handle = (kind) => (err) => {
+        const message = (err && err.message) || String(err);
+        const stack = (err && err.stack) || null;
+        const phase = phaseOf();
+        log(`[FATAL] ${kind} (last known phase: ${phase ?? 'unknown'}): ${message}${stack ? `\n${stack}` : ''}`);
+        if (publishState) {
+            try {
+                publishState('terminal', {
+                    verdict: 'ABORTED',
+                    failed: true,
+                    terminalReason: kind,
+                    lastError: { message, stack, phase, kind, at: new Date().toISOString() },
+                });
+            } catch (publishErr) {
+                // Diagnostics reporting itself must never crash harder than the
+                // failure it is trying to record -- log and move on.
+                log(`[FATAL] ${kind}: failed to persist terminal error state: ${(publishErr && publishErr.message) || publishErr}`);
+            }
+        }
+    };
+
+    const onUnhandledRejection = handle('unhandledRejection');
+    const onUncaughtException = handle('uncaughtException');
+    process.on('unhandledRejection', onUnhandledRejection);
+    process.on('uncaughtException', onUncaughtException);
+
+    return function uninstall() {
+        process.off('unhandledRejection', onUnhandledRejection);
+        process.off('uncaughtException', onUncaughtException);
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Engine entry point + typed-abort routing (apra-fleet-eft.1.2)
 // ---------------------------------------------------------------------------
 //
@@ -4915,9 +4985,27 @@ async function runSprintCycle(context) {
 // that never had a resolvable branch to count commits on in the first
 // place.
 export async function main(context) {
-    const { command, log = () => {}, publishState } = context;
+    const { command, log = () => {}, publishState, phase: rawPhase } = context;
+
+    // apra-fleet-eft.20.3: track the last phase this run entered (Plan /
+    // Develop / Review / Deploy / Test / Harvest / ...) purely by wrapping
+    // context.phase locally -- no change to FleetWorkflow's public API --
+    // so a fatal diagnostic below can say e.g. "last known phase: Develop"
+    // instead of just "somewhere".
+    let lastPhaseTitle = null;
+    const phase = typeof rawPhase === 'function'
+        ? (title) => { lastPhaseTitle = title; return rawPhase(title); }
+        : rawPhase;
+    const runContext = { ...context, phase };
+
+    const uninstallFatalGuard = installFatalDiagnosticsGuard({
+        log,
+        publishState,
+        phaseOf: () => lastPhaseTitle,
+    });
+
     try {
-        return await runSprintCycle(context);
+        return await runSprintCycle(runContext);
     } catch (err) {
         if (!isTypedAbortError(err)) {
             throw err;
@@ -4958,5 +5046,7 @@ export async function main(context) {
         }
 
         throw err;
+    } finally {
+        uninstallFatalGuard();
     }
 }

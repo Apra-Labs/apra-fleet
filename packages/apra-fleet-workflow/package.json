@@ -12,7 +12,8 @@
     "./engine": "./src/workflow/engine.mjs",
     "./viewer": "./src/viewer/index.mjs",
     "./viewer/html-utils": "./src/viewer/html-utils.mjs",
-    "./viewer/sprint-state-paths": "./src/viewer/sprint-state-paths.mjs"
+    "./viewer/sprint-state-paths": "./src/viewer/sprint-state-paths.mjs",
+    "./viewer/debounced-writer": "./src/viewer/debounced-writer.mjs"
   },
   "scripts": {
     "test": "node --test --test-timeout=60000 test/*.test.mjs"
