@@ -598,6 +598,29 @@ deduplicated DAG -- the plan gate working as designed.
   into workable task children -- unblocking Deploy, then Integ Test,
   then feature closure.
 
+### Issue 22: integ-test-playbook.md permissions never provisioned (Issue 18's class, second member)
+
+- **Symptom**: run 13 Integ Test C1 -- the FIRST integ-test dispatch of
+  the campaign (Deploy C1 finally succeeded via eft.15's source-build
+  fallback) refused to run at Step 0a: five of the six permission
+  prefixes integ-test-playbook.md requires were missing from fleet-rev's
+  allowlist (only Bash(mkdir *) was present, from the Issue 18 fix).
+  featuresClosed: 0 -- the cycle's feature-closure opportunity was lost.
+- **Root cause**: same class as Issue 18. Sprint-authored playbooks
+  (deploy.md, integ-test-playbook.md) declare their own Permissions
+  sections, but nothing in onboarding or the sprint provisions those
+  prefixes onto the member; each playbook's Step 0 self-check then
+  correctly refuses.
+- **Fix** (member-side, live): added the five missing prefixes to both
+  settings files on fleet-rev before Integ Test C2.
+- **Structural fix candidate (watched)**: this is now the third
+  member-side permission patch (deploy Step 0, deploy rm/chmod/version,
+  integ Step 0a). The runner should get a pre-phase permission-ensure
+  step: parse the playbook's Permissions section and merge any missing
+  prefixes into the member's settings before dispatching deployer /
+  integ-test-runner. Defer until the current permission set proves
+  sufficient end-to-end, then implement once.
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":
