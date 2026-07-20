@@ -270,6 +270,11 @@ function buildDevManifest(root: string): AssetManifest {
       ...collectPackageTree(root, path.join(root, 'node_modules', 'fast-uri'), 'fast-uri'),
       ...collectPackageTree(root, path.join(root, 'node_modules', 'json-schema-traverse'), 'json-schema-traverse'),
       ...collectPackageTree(root, path.join(root, 'node_modules', 'require-from-string'), 'require-from-string'),
+      // undici is a direct runtime dependency of apra-fleet-client's transport
+      // (packages/apra-fleet-client/src/client/transport.mjs). undici-types is
+      // a types-only peer dependency (no runtime require of it in undici's
+      // lib), so it is intentionally not bundled here.
+      ...collectPackageTree(root, path.join(root, 'node_modules', 'undici'), 'undici'),
     };
   }
 
