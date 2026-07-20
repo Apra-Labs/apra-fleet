@@ -88,25 +88,43 @@ run your workflow reliably across your fleet.
 
 ## Quick start (5 minutes)
 
+**1. Install** -- one command via npm (Node.js 22+), or grab the
+standalone installer binary for your platform from
+[Releases](https://github.com/Apra-Labs/apra-fleet/releases) and
+double-click it (installation is the default action):
+
 ```bash
-# 1. Install (single binary, no dependencies)
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/install.sh | sh
+npm install -g @apralabs/apra-fleet
+apra-fleet                   # installs for Claude Code (default)
+apra-fleet --llm gemini      # or Antigravity/Codex/Copilot/Gemini/OpenCode
+```
 
-# 2. Start the fleet server
-apra-fleet start
+**2. Connect your agent.** Load the fleet server in Claude Code with
+`/mcp` (or restart your provider CLI). Your agent now has a fleet.
 
-# 3. Register this machine as your first member
-apra-fleet register-member --type local --name my-laptop --path ~/my-repo --llm claude
+**3. Register members -- in plain language.** apra-fleet is driven
+conversationally through any MCP-capable agent:
 
-# 4. Run your first workflow
+> "Register a local member called `doer`. Register another called
+> `reviewer`. Pair them."
+
+> "Register 192.168.1.10 as `build-server`. Username akhil, work folder
+> `/home/akhil/projects/myapp`."
+
+Remote passwords are collected out-of-band -- typed into a separate
+terminal, never the chat -- used once to set up SSH keys, then forgotten.
+
+**4. Run your first workflow:**
+
+```bash
 apra-fleet workflow hello-world
 ```
 
-Then point it at real work:
+Then point the fleet at real work:
 
 ```bash
 apra-fleet workflow auto-sprint \
-  --issue my-project-epic --members my-laptop \
+  --issue my-project-epic --members doer \
   --branch auto-sprint/first-run --base main
 ```
 
