@@ -15,6 +15,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
+import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
@@ -103,6 +104,34 @@ const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
 export const inFlightAgents = new Set<string>();
 
+// Member ids whose remote agent files (planner.md, doer.md, _shared/, schemas/, ...)
+// have already been probed/refreshed this server process uptime -- the #336
+// provisioner is a real SSH round trip, so we pay that cost once per member per
+// run rather than on every dispatch. Local members share the operator's home dir
+// and never need this; providers with no remote agents dir (codex, copilot) are
+// cheap to check and also skipped.
+export const provisionedRemoteAgents = new Set<string>();
+
+/**
+ * Bring a remote member's agent files current before dispatch (the 0.3.4->0.3.5
+ * upgrade path: #336 only provisions on register_member/update_member, so an
+ * already-registered member stays stale until this runs). Never throws --
+ * provisioning failures must not block the prompt dispatch.
+ */
+async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
+  if (agent.agentType === 'local') return;
+  if (provisionedRemoteAgents.has(agent.id)) return;
+  provisionedRemoteAgents.add(agent.id);
+
+  if (remoteAgentsDir(agent.llmProvider ?? 'claude') === null) return;
+
+  try {
+    await provisionAgents(agent);
+  } catch {
+    // warn-and-continue, same as register_member/update_member's wire-in
+  }
+}
+
 // All exit paths from executePrompt clear busy state via the finally block (inFlightAgents.delete + writeStatusline):
 // (a) normal success: result.code === 0 → finally sets idle and removes agent from inFlight
 // (b) non-zero exit from execCommand: result.code !== 0 → finally sets idle and removes agent from inFlight
@@ -127,6 +156,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   } catch (err: any) {
     return `❌ Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
+
+  await ensureAgentFilesProvisioned(agent);
 
   if (inFlightAgents.has(agent.id)) {
     return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
