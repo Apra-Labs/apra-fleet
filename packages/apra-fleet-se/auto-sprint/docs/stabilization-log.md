@@ -777,3 +777,22 @@ playbook's smoke test (Part 2 step 3) already launches via
 'apra-fleet workflow auto-sprint', so both lanes now run the same
 delivered surface. Version bumped to 0.4.0 on this branch (the reorg/eft
 line ships as 0.4.0; 0.3.5 was released from main).
+
+### Issue 27 (run 15 C1): bare "continue" resume prompts lose per-dispatch scope
+
+Observed live twice in run 15 C1. (a) The integ runner exhausted 100 turns,
+was resumed with a generic continue-prompt, and returned featuresClosed: 0
+with "this dispatch's .fleet-task.md carried no explicit feature-id list"
+-- correct behavior per its missing-scope contract, because a resumed
+dispatch DELIVERS A NEW PROMPT ARTIFACT to the member, replacing the
+original one that carried the feature-id scope. (b) The resumed doer for
+one streak drifted onto a previously-finished bead ("no new work to
+continue") for the same reason: its continue-prompt never restated the
+assigned bead ids.
+
+Fix: the three resume sites whose contracts depend on per-dispatch scope
+(integ-test-runner feature ids; doer bead ids + branch; reviewer bead ids
++ branch/base) now restate that scope verbatim inside the resume prompt.
+The five other resume sites (planner, plan-reviewer, deployer, final
+review, harvester) self-derive their scope or carry it in-session and are
+left as-is. Engine suite: 887 pass / 0 fail.

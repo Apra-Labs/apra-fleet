@@ -2819,7 +2819,11 @@ async function runSprintCycle(context) {
             { ...reviewerDispatchOpts, member_name: reviewerPool[0] }
         ));
         const dispatchReviewerResume = () => withGitSync(reviewerPool[0], false, () => agent(
-            'Continue your review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. Finish evaluating the remaining acceptance criteria and return your final verdict now.',
+            // Issue 27 (see the integ resume site): restate the review scope --
+            // a resumed dispatch replaces the delivered prompt artifact.
+            'Continue your review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. ' +
+            `Your scope, restated so a resumed dispatch never loses it: bead id(s) under review ${beadIds.join(', ')} on branch ${validated.branch} against base ${validated.baseBranch}. ` +
+            'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
             {
                 ...reviewerDispatchOpts,
                 member_name: reviewerPool[0],
@@ -3997,7 +4001,13 @@ async function runSprintCycle(context) {
                 // responsibilities), so it gets the identical git+dolt sync
                 // bracket treatment as the original dispatch above.
                 const dispatchDoerResume = (maxTurns) => withGitSync(doerMember, true, () => agent(
-                    'Continue exactly where you left off on your assigned bead ids from this same session -- do not restart, re-read from scratch, or re-plan. Pick up from your last action and proceed to the VERIFY checkpoint.',
+                    // Issue 27 (see the integ resume site): restate the streak's
+                    // scope -- a resumed dispatch replaces the delivered prompt
+                    // artifact, and run 15 C1's resumed doer drifted onto a
+                    // previously-finished bead when its scope was not restated.
+                    'Continue exactly where you left off from this same session -- do not restart, re-read from scratch, or re-plan. ' +
+                    `Your scope, restated so a resumed dispatch never loses it: assigned bead id(s) ${actualBeadIds.join(', ')} on sprint branch ${validated.branch}. ` +
+                    'Pick up from your last action on those bead(s) and proceed to the VERIFY checkpoint.',
                     {
                         member_name: doerMember,
                         agentType: 'doer',
@@ -4364,8 +4374,17 @@ async function runSprintCycle(context) {
                     featurePrompt,
                     { ...integDispatchOpts, member_name: getMemberForRole('integ-test-runner') }
                 ), { pushBeads: true });
+                // Stabilization log Issue 27: a resumed dispatch DELIVERS A NEW
+                // PROMPT ARTIFACT to the member (replacing the original one, e.g.
+                // .fleet-task.md), so a bare "continue" resume erases the
+                // dispatch's scope from the artifact a contract may treat as its
+                // scope source of truth. Observed live (run 15 C1): the resumed
+                // integ runner found no feature-id list and -- correctly, per its
+                // missing-scope contract -- closed nothing. Every resume prompt
+                // that carries per-dispatch scope must therefore restate it.
                 const dispatchIntegResume = () => withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(
-                    'Continue the integration test run exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining suites, close passing features / file bugs per your contract, and return your final report now.',
+                    'Continue the integration test run exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining suites, close passing features / file bugs per your contract, and return your final report now. ' +
+                    'Your original scope, restated so a resumed dispatch never loses it: ' + featurePrompt,
                     {
                         ...integDispatchOpts,
                         member_name: getMemberForRole('integ-test-runner'),
