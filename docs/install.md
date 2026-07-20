@@ -74,8 +74,12 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.claude/skills/pm/` | PM orchestration skill |
 | `~/.claude/skills/pm/cost.js` | Auto-generated CJS module with sprint cost functions (all providers with PM) |
 | `~/.claude/workflows/auto-sprint.js` | Full auto-sprint workflow (Claude only) |
+| `~/.claude/skills/auto-sprint-args/` | Args contract for the `/auto-sprint` workflow (Claude only) |
+| `~/.claude/agents/` | PM role-agent files (planner, doer, reviewer, etc.), plus `schemas/` and `_shared/` -- written whenever PM is installed and the provider has an agents directory (not codex/copilot) |
 
 For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
+
+This local install only covers the machine you run it on. Remote fleet members get their own copy of the PM agent files independently -- `register_member` and `update_member` push them on first contact, and `execute_prompt` re-checks and re-provisions any missing or stale files on first dispatch to that member each server run (so an existing member picks up new agent files after you upgrade Fleet, without needing to be re-registered). Local members are unaffected -- they share the operator's home directory above.
 
 The install also registers the MCP server (`claude mcp add apra-fleet`) and
 configures a status bar icon showing fleet member activity.
@@ -195,8 +199,9 @@ OAuth.
 ## Uninstall
 
 The built-in uninstall command surgically removes MCP registration,
-permissions, hooks, status line, and skill directories without touching your
-other settings:
+permissions, hooks, status line, skill directories, and PM agent files
+(`~/.claude/agents/`, or the equivalent provider directory) without touching
+your other settings:
 
 ```bash
 apra-fleet uninstall

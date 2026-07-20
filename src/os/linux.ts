@@ -302,4 +302,10 @@ export class LinuxCommands implements OsCommands {
     }
     return stdout.trim();
   }
+
+  // --- Agent provisioning ---
+
+  hashFilesRecursive(dir: string): string {
+    return `cd "${escapeDoubleQuoted(dir)}" 2>/dev/null && find . -type f -exec sha256sum {} + 2>/dev/null || true`;
+  }
 }

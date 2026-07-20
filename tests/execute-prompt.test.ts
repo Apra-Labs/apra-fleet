@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
-import { executePrompt, inFlightAgents } from '../src/tools/execute-prompt.js';
+import { executePrompt, inFlightAgents, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import { getStallDetector } from '../src/services/stall/index.js';
 import { setStoredPid, clearStoredPid, getStoredPid, getAgentOS } from '../src/utils/agent-helpers.js';
 import { writeStatusline } from '../src/services/statusline.js';
@@ -24,11 +24,20 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
+// Agent-file provisioning (#336 / auto-refresh on dispatch) is covered in its own
+// suite (execute-prompt-provisioning.test.ts) -- mock it away here so it doesn't
+// consume the mockExecCommand queue and shift the call-index assertions below.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
+}));
+
 describe('executePrompt', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     vi.useFakeTimers();
+    provisionedRemoteAgents.clear();
   });
 
   afterEach(() => {

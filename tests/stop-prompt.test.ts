@@ -23,6 +23,14 @@ vi.mock('../src/services/strategy.js', () => ({
   }),
 }));
 
+// execute_prompt now auto-provisions agent files on first dispatch (see
+// execute-prompt-provisioning.test.ts) -- mock it away here so it doesn't
+// consume the mockExecCommand queue and shift the call-index assertions below.
+vi.mock('../src/services/agent-provisioner.js', () => ({
+  provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
+  remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
+}));
+
 describe('stop_prompt (T8)', () => {
   let memberId: string;
 

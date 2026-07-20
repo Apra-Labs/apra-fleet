@@ -36,10 +36,11 @@ vi.mock('../src/services/credential-store.js', () => ({
 const successResponse = JSON.stringify({ result: 'done', session_id: 'sess-x' });
 
 function setupExec(): void {
-  mockExecCommand
-    .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })          // writePromptFile
-    .mockResolvedValueOnce({ stdout: successResponse, stderr: '', code: 0 }) // main command
-    .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });          // deletePromptFile
+  // The dispatch pipeline issues a variable number of exec calls (prompt-file
+  // staging, the CLI invocation, output reads, cleanup) -- return the success
+  // payload for every call rather than pinning a 3-call sequence; the tests
+  // assert on the staged prompt content and response text, not call count.
+  mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
 }
 
 describe('execute_prompt -- substitutions surface tests', () => {
