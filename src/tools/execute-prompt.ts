@@ -18,7 +18,7 @@ import { getStallDetector, resolveSessionLogPath } from '../services/stall/index
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
-import { tryKillPid } from '../utils/pid-helpers.js';
+import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
@@ -170,6 +170,68 @@ export const inFlightAgents = new Set<string>();
 // (f) server overload retry -> retried after delay; finally clears on success or failure
 // (g) early returns before inFlightAgents.add: busy state never entered
 
+// apra-fleet-eft.28.1: how often the interactive wait re-checks that the
+// target member's claude process is still alive. This is the dispatch-level
+// liveness/no-progress bound -- the member's process can die AFTER the
+// pre-dispatch liveness check above (e.g. mid-turn, right after send_message
+// lands) with no further signal ever arriving, so the wait for
+// respond_to_message must not be the sole backstop up to the full timeout_s
+// (which can be 3600s). A short, fixed poll interval keeps the surfaced
+// error well under the playbook's <10min budget regardless of how large
+// timeout_s is.
+const INTERACTIVE_LIVENESS_POLL_MS = 5000;
+
+/** Raised by waitForInteractiveResponse when the member's claude process is
+ *  confirmed dead while a response is still pending -- distinguished from a
+ *  plain "nobody answered in time" timeout so the caller can surface a more
+ *  actionable terminal error. */
+class InteractiveSessionDiedError extends Error {}
+
+/**
+ * Waits for the member's respond_to_message reply, racing that wait against
+ * a periodic PID-liveness poll of the same session. Resolves/rejects as soon
+ * as either side settles -- a dead PID short-circuits the wait instead of
+ * letting it run out the full timeoutMs.
+ */
+function waitForInteractiveResponse(
+  agent: Agent,
+  workspaceId: string,
+  msgid: string,
+  timeoutMs: number,
+  scope: LogScope,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const poller = setInterval(() => {
+      if (settled) return;
+      const session = sessionRegistry.get(workspaceId, agent.id);
+      const pid = session?.pid;
+      if (pid !== undefined && !isPidAlive(pid)) {
+        settled = true;
+        clearInterval(poller);
+        scope.info(`[interactive] member process pid=${pid} died while awaiting a response -- aborting wait`);
+        sessionRegistry.unregister(workspaceId, agent.id);
+        reject(new InteractiveSessionDiedError(`member claude process (pid ${pid}) died while waiting for a response`));
+      }
+    }, INTERACTIVE_LIVENESS_POLL_MS);
+
+    registerPending(msgid, timeoutMs).then(
+      (res) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(poller);
+        resolve(res);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(poller);
+        reject(err);
+      },
+    );
+  });
+}
+
 /**
  * Interactive routing (apra-fleet-2xs.8): pushes the prompt to a connected
  * member's live session via send_message and waits for that member to call
@@ -195,12 +257,16 @@ async function executePromptInteractive(
   }
 
   try {
-    const response = await registerPending(parsed.msgid, timeoutS * 1000);
+    const response = await waitForInteractiveResponse(agent, workspaceId, parsed.msgid, timeoutS * 1000, scope);
     scope.ok('interactive response received');
     let output = `📋 Response from ${agent.friendlyName}:\n\n${response}`;
     if (heuristicWarningSuffix) output += heuristicWarningSuffix;
     return output;
   } catch (err: any) {
+    if (err instanceof InteractiveSessionDiedError) {
+      scope.abort(err.message);
+      return `[ERROR] "${agent.friendlyName}"'s interactive claude process died while this dispatch was waiting for a response (${err.message}). The prompt was delivered but nothing will ever answer it -- re-launch the member (re-run register_member) before retrying.`;
+    }
     scope.abort(`interactive timeout: ${err.message}`);
     return `❌ Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`;
   }
@@ -299,6 +365,28 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const workspaceId = getTokenIssuer().workspaceId();
   const interactiveSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
   if (interactiveSession?.server) {
+    // apra-fleet-eft.28.1: never reuse a persistent interactive session whose
+    // underlying member claude process has already died. Before this check,
+    // a dead launch-time process (e.g. it crashed before ever producing a
+    // plan) left a `server` entry in sessionRegistry that looked reusable --
+    // send_message would happily enqueue to it, but nothing would ever call
+    // respond_to_message, so the caller silently burned the full timeout_s
+    // (observed up to 3600s in apra-fleet-eft.28) with zero fleet-server log
+    // output and no watchdog coverage. Checked here, before any wait starts,
+    // so a dead PID fails fast instead of hanging. `pid` is only ever
+    // undefined for sessions registered without a captured PID (e.g. tests,
+    // or a provider that never went through register_member's local spawn
+    // path) -- those are left to the pre-existing behavior, unchanged.
+    if (interactiveSession.pid !== undefined && !isPidAlive(interactiveSession.pid)) {
+      const deadScope = new LogScope('execute_prompt', `[interactive] session liveness check pid=${interactiveSession.pid}`, agent);
+      sessionRegistry.unregister(workspaceId, agent.id);
+      const msg = `member claude process (pid ${interactiveSession.pid}) for "${agent.friendlyName}" is dead -- discarding the stale interactive session instead of reusing it`;
+      deadScope.abort(msg);
+      return {
+        text: `[ERROR] Interactive session for "${agent.friendlyName}" is dead (pid ${interactiveSession.pid} is no longer running). The persistent claude process must be re-launched (re-run register_member, or restart the member) before dispatching to it again.`,
+        structuredContent: { isError: true, reason: 'dispatch_failed' },
+      };
+    }
     inFlightAgents.add(agent.id);
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {
