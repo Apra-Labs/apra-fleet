@@ -32,6 +32,14 @@ import { execFileSync } from 'node:child_process';
 // (and their tests) reference the same identity.
 export const HAZARD_REMOTE = 'fleet-e2e-toy';
 
+// apra-fleet-eft.30: the eft.25.1 neutralize step only patches the bd-level
+// sync.remote YAML key -- 'bd bootstrap --yes' ALSO wires Dolt's OWN
+// internal remote (independent of that YAML key) to the real fleet-e2e-toy
+// remote, so a per-cycle D-push can still target it even when the YAML
+// check above reports OK. This third check asserts Dolt's own remote list
+// (via 'bd dolt remote list --json') carries no remote pointing at
+// HAZARD_REMOTE.
+
 /**
  * Does `configText` (the contents of a .beads/config.yaml) contain an
  * ACTIVE (non-commented) line referencing the hazard remote?
@@ -122,6 +130,81 @@ export function checkNoOutboundCommits(repoPath, deps = {}) {
   return { ok: true, message: `OK: sandbox clone at '${repoPath}' has 0 commits ahead of origin/main (left=${left}, right=${right}).` };
 }
 
+/**
+ * Parse the JSON array 'bd dolt remote list --json' prints (one entry per
+ * configured Dolt remote, each with at least {name, url}).
+ *
+ * @param {string} output
+ * @returns {Array<{name: string, url?: string}>}
+ */
+export function parseDoltRemoteList(output) {
+  let list;
+  try {
+    list = JSON.parse(output);
+  } catch (err) {
+    throw new Error(`Unexpected 'bd dolt remote list --json' output: '${output}'`);
+  }
+  if (!Array.isArray(list)) {
+    throw new Error(`Unexpected 'bd dolt remote list --json' output (not an array): '${output}'`);
+  }
+  return list;
+}
+
+/**
+ * Check that Dolt's OWN internal remote list (independent of the bd-level
+ * sync.remote YAML key checked by checkSyncRemoteInert above) contains no
+ * remote pointing at the hazard remote. apra-fleet-eft.30: 'bd bootstrap
+ * --yes' wires this Dolt-level remote separately from the YAML key, so the
+ * YAML check alone can report OK while a per-cycle D-push still targets the
+ * real fleet-e2e-toy remote. Read-only: runs 'bd dolt remote list', never
+ * 'bd dolt remote add/remove' or any push/pull.
+ *
+ * @param {string} repoPath
+ * @param {{execFileSync: typeof execFileSync}} [deps] injectable for tests
+ * @returns {{ok: boolean, message: string}}
+ */
+export function checkDoltRemoteAbsent(repoPath, deps = {}) {
+  const run = deps.execFileSync ?? execFileSync;
+  let output;
+  try {
+    output = run('bd', ['dolt', 'remote', 'list', '--json'], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+    });
+  } catch (err) {
+    // No beads DB / no bd binary reachable in this clone (or the command
+    // otherwise fails outright): there is nothing wired to the hazard
+    // remote at the Dolt level either -- vacuously safe, mirroring
+    // checkSyncRemoteInert's no-config.yaml case above.
+    return {
+      ok: true,
+      message: `OK: 'bd dolt remote list' unavailable at '${repoPath}' (${String(err.message).split('\n')[0]}) -- nothing to disarm.`,
+    };
+  }
+
+  let remotes;
+  try {
+    remotes = parseDoltRemoteList(output);
+  } catch (err) {
+    return {
+      ok: false,
+      message: `FAIL: could not parse 'bd dolt remote list --json' output at '${repoPath}': ${err.message}`,
+    };
+  }
+
+  const hazardRemotes = remotes.filter(
+    (r) => (r.url ?? '').includes(HAZARD_REMOTE) || (r.name ?? '').includes(HAZARD_REMOTE)
+  );
+  if (hazardRemotes.length > 0) {
+    const names = hazardRemotes.map((r) => r.name).join(', ');
+    return {
+      ok: false,
+      message: `FAIL: Dolt-level remote(s) [${names}] in '${repoPath}' still point at ${HAZARD_REMOTE} -- run the eft.30.1 Dolt-remote disarm step before any auto-sprint run.`,
+    };
+  }
+  return { ok: true, message: `OK: Dolt-level remotes in '${repoPath}' contain no reference to ${HAZARD_REMOTE}.` };
+}
+
 function main() {
   const repoPath = process.argv[2] ?? path.join(process.env.HOME ?? '', 'toy-repo');
   if (!repoPath) {
@@ -136,7 +219,10 @@ function main() {
   const outboundCheck = checkNoOutboundCommits(repoPath);
   console.log(`[check-sandbox-sync-remote] ${outboundCheck.message}`);
 
-  if (!syncCheck.ok || !outboundCheck.ok) {
+  const doltRemoteCheck = checkDoltRemoteAbsent(repoPath);
+  console.log(`[check-sandbox-sync-remote] ${doltRemoteCheck.message}`);
+
+  if (!syncCheck.ok || !outboundCheck.ok || !doltRemoteCheck.ok) {
     process.exit(1);
   }
   console.log('[check-sandbox-sync-remote] OK: sandbox is isolated from the real fleet-e2e-toy Dolt remote.');

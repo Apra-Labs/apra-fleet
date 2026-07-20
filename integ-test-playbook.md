@@ -129,23 +129,60 @@ if [ -f "$CONFIG" ]; then
 fi
 ```
 
+apra-fleet-eft.30 (second neutralize gap): the sed above only patches the
+bd-level `sync.remote` YAML key. `bd bootstrap --yes` ALSO wires Dolt's OWN
+internal remote (tracked separately from that YAML key) to the real
+`fleet-e2e-toy` remote, so a per-cycle D-push can still target it even after
+the YAML patch above -- the YAML key and Dolt's own remote wiring are two
+independent hazards that both need neutralizing. Disarm the Dolt-level
+remote too, immediately after the YAML step, using `bd dolt remote remove`
+(read-only listing plus a name-scoped removal -- never `bd dolt push`).
+Idempotent and safe to run even when no Dolt-level remote is configured (or
+no beads DB exists yet in this clone): it is then a no-op.
+
+```bash
+TOY_REPO="$HOME/toy-repo"
+if [ -d "$TOY_REPO/.beads" ]; then
+  HAZARD_REMOTES=$(cd "$TOY_REPO" && bd dolt remote list --json 2>/dev/null | node -e "
+    let d = '';
+    process.stdin.on('data', (c) => { d += c; });
+    process.stdin.on('end', () => {
+      try {
+        for (const r of JSON.parse(d)) {
+          if ((r.url || '').includes('fleet-e2e-toy') || (r.name || '').includes('fleet-e2e-toy')) {
+            console.log(r.name);
+          }
+        }
+      } catch (e) { /* no remotes configured -- nothing to print */ }
+    });
+  ")
+  for name in $HAZARD_REMOTES; do
+    (cd "$TOY_REPO" && bd dolt remote remove "$name") || true
+  done
+fi
+```
+
 Verify: no uncommented line in `.beads/config.yaml` may reference
-`fleet-e2e-toy` after this step, AND the sandbox clone must have 0 commits
-ahead of `origin/main` (nothing has actually reached the real remote).
-`scripts/check-sandbox-sync-remote.mjs` (apra-fleet-eft.25.2) asserts both in
-one shell-drivable, sandbox-only, read-only step -- it exits non-zero (and
-prints a `FAIL` line) if either check fails, and exits 0 (`OK` lines) when
-both hold. Run it from `<repo-root>`:
+`fleet-e2e-toy` after the first step, Dolt's own remote list (`bd dolt
+remote list --json` in the sandbox clone) must carry no remote pointing at
+`fleet-e2e-toy` after the second step, AND the sandbox clone must have 0
+commits ahead of `origin/main` (nothing has actually reached the real
+remote). `scripts/check-sandbox-sync-remote.mjs` (apra-fleet-eft.25.2,
+extended by apra-fleet-eft.30.1) asserts all three in one shell-drivable,
+sandbox-only, read-only step -- it exits non-zero (and prints a `FAIL` line)
+if any check fails, and exits 0 (`OK` lines) when all three hold. Run it
+from `<repo-root>`:
 
 ```bash
 node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
 ```
 
-(Its own unit tests, `tests/check-sandbox-sync-remote.test.ts`, exercise both
-the eft.25 hazard shape -- active `sync.remote` right after a bare `bd
-bootstrap --yes` -- and the eft.25.1 remedy shape -- `sync.remote`
-commented out -- entirely against local fixtures, so they never touch the
-real remote either.)
+(Its own unit tests, `tests/check-sandbox-sync-remote.test.ts`, exercise the
+eft.25 hazard shape -- active `sync.remote` right after a bare `bd
+bootstrap --yes` -- the eft.25.1 remedy shape -- `sync.remote` commented
+out -- and (apra-fleet-eft.30.3) the eft.30 Dolt-level remote hazard/remedy
+shapes, entirely against local fixtures, so they never touch the real
+remote either.)
 
 ## Reset
 
