@@ -182,6 +182,15 @@ export async function setupMinimal(tempDirSuffix, taskSpecs) {
  * itself returns. When omitted, sensible defaults (close every assigned
  * bead / approve-with-no-reopens) are used -- these defaults are what the
  * original run1/run2 happy-path scenario relies on.
+ *
+ * `plannerHandler(ctx)` (apra-fleet-eft.28.2) is the same override hook for
+ * the fresh (non-streak-assignment) 'planner' dispatch specifically. Receives
+ * `{ opts, tempDir, runCmd, epicBead }` and must return the same
+ * `{ content: [...], structuredContent?: {...} }` shape `executePrompt`
+ * itself returns -- e.g. `{ content: [...], structuredContent: { isError:
+ * true, reason: 'dispatch_failed' } }` to simulate a fleet-level dispatch
+ * failure (what execute_prompt now returns instead of hanging when a
+ * member's interactive session's underlying claude process is dead).
  */
 // apra-fleet-unw2.22 (N12 follow-up): the harvester contract check must
 // genuinely validate that runner.js supplied real, non-trivial CONTENT for
@@ -237,6 +246,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         planReviewerMode = 'reject-then-approve',
         doerHandler = null,
         reviewerHandler = null,
+        // apra-fleet-eft.28.2: optional (opts) => result override for the
+        // Planner dispatch (the fresh, non-streak-assignment 'planner' call
+        // only -- mirrors doerHandler/reviewerHandler). Lets a scenario
+        // simulate a fleet-level dispatch failure (structuredContent:
+        // { isError: true, reason: 'dispatch_failed' }, exactly what
+        // execute_prompt now returns for a dead-PID interactive session
+        // instead of hanging) at the Planner call site specifically, to
+        // exercise runner.js's PLANNER_DISPATCH_RETRY_DELAYS_MS retry loop
+        // and the terminal-error propagation through main()'s typed-abort
+        // catch (publishState('terminal', ...)) end to end.
+        plannerHandler = null,
         addExtraTaskDuringPlan = true,
         // apra-fleet-unw.17 additions:
         deployHandler = null,
@@ -487,6 +507,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
 
             // --- plan phase: planner ---
             if (opts.agent === 'planner' && !isStreakAssignment) {
+                if (plannerHandler) {
+                    return plannerHandler({ opts, tempDir, runCmd, epicBead });
+                }
                 if (addExtraTaskDuringPlan && !extraTaskAdded) {
                     extraTaskAdded = true;
                     // Contract enforcement (vendored planner.md Step 3): the
@@ -851,7 +874,7 @@ export async function runRejectedPlanScenario(tag) {
  * doer/reviewer handler overrides.
  */
 export async function runDevelopLoopScenario(tag, {
-    members, taskSpecs, doerHandler, reviewerHandler,
+    members, taskSpecs, doerHandler, reviewerHandler, plannerHandler,
     // apra-fleet-unw.17 additions:
     deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
     goal = 'P1/P2', maxCycles = 1,
@@ -885,12 +908,14 @@ export async function runDevelopLoopScenario(tag, {
     const commandLogDetailed = [];
     const memberGitState = new Map();
     const logs = [];
+    const states = [];
     try {
         const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
             planReviewerMode: 'approve-immediately',
             addExtraTaskDuringPlan: false,
             doerHandler,
             reviewerHandler,
+            plannerHandler,
             deployHandler,
             integHandler,
             finalReviewHandler,
@@ -903,6 +928,13 @@ export async function runDevelopLoopScenario(tag, {
         });
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('log', (e) => logs.push(e.msg));
+        // apra-fleet-eft.28.2: publishState() (runner.js's sprint-state
+        // persistence, e.g. the main() typed-abort catch's
+        // publishState('terminal', ...)) emits a 'state' event on the
+        // FleetWorkflow instance -- captured here so a scenario can assert
+        // a terminal error was actually PERSISTED to sprint state, not just
+        // logged.
+        workflow.on('state', (e) => states.push(e));
         const engine = new WorkflowEngine(workflow);
         const scriptPath = path.join(__dirname, '../../auto-sprint/runner.js');
 
@@ -925,7 +957,7 @@ export async function runDevelopLoopScenario(tag, {
         const finalBeadsRaw = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
         const finalBeadsById = new Map(finalBeadsRaw.map((b) => [b.id, b]));
 
-        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch };
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch };
     } finally {
         await teardown(tempDir);
     }
