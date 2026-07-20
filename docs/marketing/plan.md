@@ -188,3 +188,15 @@ Page map (v1):
   user, replaced with real flow, ground rule recorded; track moved to
   docs/marketing/; plan expanded to be fully self-contained per user
   direction ("every idea must survive agent restart/compaction").
+- 2026-07-20 (hole-poking pass vs actual repo, user-directed): draft now
+  uses the REAL badge row from current README (CI/Apache-2.0/platform/
+  MCP-compatible/DeepWiki) instead of placeholders; embeds the EXISTING
+  3-min YouTube run (youtu.be/SGdHvIkSbY8) as the interim GFX-2 until the
+  lean-viewer GIF is recorded; carries over the "different blind spots"
+  cross-provider-review line, the production fleet snippet (Opus
+  orchestrator/Sonnet doer/Antigravity/Opus reviewer), and a
+  compare-to-alternatives table (extended with a LangGraph/CrewAI row:
+  in-process frameworks vs operating agents across machines/providers/
+  days); integ-suite number refreshed to 81 files. Standing directive:
+  keep refining the draft against the actual work product as sprint work
+  lands.

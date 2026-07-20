@@ -17,7 +17,11 @@ What Kubernetes did for containers, apra-fleet does for AI agents:
 scheduling, credentials, isolation, and observability for an agentic
 workforce -- on any machine, anywhere, using every LLM provider at once.
 
-[badges row: build | release | license | providers: 5+ | platform: win/mac/linux]
+[![CI](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/Apra-Labs/apra-fleet/releases)
+[![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-fleet)
 
 [Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [Docs](https://apra-labs.github.io/apra-fleet)
 
@@ -26,12 +30,16 @@ workforce -- on any machine, anywhere, using every LLM provider at once.
 ---
 
 [GFX-2: animated GIF, the auto-sprint dashboard actually running -- agents
-dispatching, phases advancing, verdicts landing. 20-30s loop.]
+dispatching, phases advancing, verdicts landing. 20-30s loop.
+INTERIM until that GIF is recorded on the lean viewer: the existing real
+3-minute run video below.]
+
+[![Apra Fleet -- a doer-reviewer sprint, start to finish](https://img.youtube.com/vi/SGdHvIkSbY8/hqdefault.jpg)](https://youtu.be/SGdHvIkSbY8)
 
 > **This repository is built by the product you are looking at.** An
 > autonomous apra-fleet workflow plans, codes, reviews, tests, and ships
 > this codebase in multi-hour sprints -- filing bugs against itself and
-> fixing them. The dashboard above is a real recording, not a mockup.
+> fixing them. The recording above is a real run, not a mockup.
 
 ---
 
@@ -60,7 +68,7 @@ One control plane. Any device. Any model. Any workflow.
 | Pillar | Concretely |
 |---|---|
 | **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. |
-| **Any model** | Claude, Codex, Gemini, Copilot, Antigravity, local models -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. |
+| **Any model** | Claude, Codex, Gemini, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
 
 [GFX-3: fleet topology diagram -- one control plane, spokes to
@@ -75,10 +83,19 @@ cycles, until the goal is met or the evidence says stop.
 It is not a toy. It builds apra-fleet itself:
 
 - Multi-cycle sprints running for hours, unattended
-- 2,300+ unit tests and a 76-file integration suite against real backends
+- 2,300+ unit tests and an 81-file integration suite against real backends
 - Files bugs against itself, decomposes them, fixes them, and blocks its
   own release until quality gates pass
 - Every dispatch, verdict, and dollar visible live on the dashboard
+
+A fleet that has run in production:
+
+```
+pm-1      Opus (premium)      orchestrator
+doer-1    Sonnet (standard)   feature work
+doer-2    Antigravity         large-context tasks
+reviewer  Opus (premium)      final review
+```
 
 Software engineering is the first vertical -- the same orchestration
 pattern runs wherever work decomposes into agent-sized pieces: retail
@@ -167,6 +184,18 @@ flowchart LR
 - **Supervisor**: the always-on layer -- launch and stop sprints over HTTP,
   member reservation ledger (no two workflows fight over a machine),
   crash watchdog, run history.
+
+## Compare to alternatives
+
+| Tool | Overlap | Where apra-fleet differs |
+|------|---------|--------------------------|
+| Single-agent coding assistants | AI writes code | A fleet adds agents that review, test, and deploy each other's work -- across vendors. |
+| CI self-hosted runners | Runs work on other machines | Conversational and stateful, not pipeline-triggered; agents carry context between phases. |
+| SkyPilot / dstack | Multi-machine compute | Coordinates agents and their context, credentials, and permissions -- not just jobs. |
+| Google A2A | Agent-to-agent messaging | An opinionated orchestration and operations layer, not just a transport. |
+| Agent frameworks (LangGraph, CrewAI, ...) | Multi-agent logic | Those compose agents inside one process; apra-fleet operates agents across real machines, providers, and days-long workflows. |
+
+When NOT to use it: a one-off single-file change needs no fleet.
 
 ## Security model, in one paragraph
 
