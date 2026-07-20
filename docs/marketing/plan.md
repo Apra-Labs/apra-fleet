@@ -226,6 +226,41 @@ for the explore-cheaply-operate-cheaper trade to exist. Closer sentence:
 "the same hardened workflow runs on frontier models the day you design it
 and on commodity models every day after."
 
+### Integration-tester value insight (2026-07-20, measured from sprint logs, assessed SHARE -- no hyperbole)
+
+Source: full sweep of sprint-logs across runs 13-15 (13 integ dispatches).
+The honest numbers, usable verbatim:
+- 13 integration-test dispatches, ZERO passed:true -- a 100% failed-verdict
+  streak. Lead with this, not around it: the gate never let a false PASS
+  through, and that is the claim.
+- While ~2,400 unit tests were green, the integ role discovered/reproduced
+  11 distinct real defects unit tests could not see: a P0 dev-install bug
+  (every sandbox shipped a broken client), a sandbox Dolt-push escape
+  stopped only by missing credentials, an indefinite dispatch hang, a
+  self-reservation deadlock, and more.
+- It is the only role that proved landed fixes WRONG: run 15's central
+  finding (three bugs with merged fix+test commits that did not hold
+  end-to-end) exists only because the integ runner re-ran the smoke test
+  every cycle and updated the bugs with fresh evidence.
+- It verified-and-closed 9 product features + 1 bug -- closure authority
+  exercised on test evidence, not on diff review.
+- Honest cost: 3 of 13 dispatches (run 13) executed zero tests
+  (permission/turn-budget infrastructure failures). Include this; the
+  waste became engine fixes and the candor is what makes the rest
+  believable.
+
+Marketing framing (grounded): "quality is a ROLE in the workflow, not a
+promise" -- auto-sprint ships an adversarial integration gate whose
+verdicts are recorded in the same logs as everything else, and in our own
+dogfood it is the reason a release-candidate FAIL verdict was trustworthy.
+The one-liner: "our integration tester has never said PASS falsely --
+including the 13 straight times it said FAIL to us."
+Placement: README quality/how-it-works section (short paragraph + the
+13/0 stat); full evidence table is github.io material. Discipline: every
+number above must be re-derived from logs at publish time (runs land
+daily; 13/0 will change -- possibly to 13/1, which is a BETTER story:
+"the first PASS meant something").
+
 ## 9. Log (append-only)
 
 - 2026-07-20: positioning decided (fleet + k8s simile + recursive proof);
@@ -245,3 +280,8 @@ and on commodity models every day after."
   days); integ-suite number refreshed to 81 files. Standing directive:
   keep refining the draft against the actual work product as sprint work
   lands.
+- 2026-07-20 (integration-tester insight, user-directed "grounded truth
+  and honesty"): measured 13-dispatch/0-pass history from runs 13-15
+  distilled into a SHARE-assessed section above (quality is a role;
+  adversarial gate; honest 3-wasted-dispatch cost included). Numbers must
+  be re-derived from logs at publish time.
