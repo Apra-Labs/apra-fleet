@@ -124,14 +124,61 @@ describe('execute_prompt: auto-provision stale remote agent files on dispatch', 
     expect(mockProvisionAgents).toHaveBeenCalledTimes(1);
   });
 
-  it('still caches the member as checked even when provisioning throws (no retry storm)', async () => {
+  it('retries provisioning on the next dispatch after a transient throw (cache must not poison)', async () => {
     mockProvisionAgents.mockRejectedValue(new Error('SSH probe blew up'));
-    const member = makeTestAgent({ friendlyName: 'provision-throws-cached' });
+    const member = makeTestAgent({ friendlyName: 'provision-throws-retried' });
     addAgent(member);
 
     await executePrompt({ member_id: member.id, prompt: 'first', resume: false, timeout_s: 5 });
     await executePrompt({ member_id: member.id, prompt: 'second', resume: false, timeout_s: 5 });
 
+    expect(mockProvisionAgents).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries provisioning on the next dispatch after a warning result (probe/upload failure)', async () => {
+    mockProvisionAgents.mockResolvedValue({ pushed: [], warning: 'Could not verify remote agent files -- skipped provisioning (probe failed)' });
+    const member = makeTestAgent({ friendlyName: 'provision-warns-retried' });
+    addAgent(member);
+
+    await executePrompt({ member_id: member.id, prompt: 'first', resume: false, timeout_s: 5 });
+    await executePrompt({ member_id: member.id, prompt: 'second', resume: false, timeout_s: 5 });
+
+    expect(mockProvisionAgents).toHaveBeenCalledTimes(2);
+  });
+
+  it('stays cached on genuine success (no warning) -- skipped on next dispatch', async () => {
+    mockProvisionAgents.mockResolvedValue({ pushed: ['planner.md'] });
+    const member = makeTestAgent({ friendlyName: 'provision-success-cached' });
+    addAgent(member);
+
+    await executePrompt({ member_id: member.id, prompt: 'first', resume: false, timeout_s: 5 });
+    await executePrompt({ member_id: member.id, prompt: 'second', resume: false, timeout_s: 5 });
+
+    expect(mockProvisionAgents).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not run provisioning when the dispatch is rejected as busy', async () => {
+    const member = makeTestAgent({ friendlyName: 'busy-remote' });
+    addAgent(member);
+
+    // Simulate a live in-flight session so the second call is rejected as busy.
+    let resolveFirst: (() => void) | undefined;
+    mockExecCommand.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirst = () => resolve(OK_RESPONSE);
+    }));
+
+    const firstCall = executePrompt({ member_id: member.id, prompt: 'first', resume: false, timeout_s: 5 });
+
+    // Let the first call get far enough to claim inFlightAgents before firing the second.
+    await new Promise((r) => setTimeout(r, 0));
+
+    const secondResult = await executePrompt({ member_id: member.id, prompt: 'second', resume: false, timeout_s: 5 });
+    expect(secondResult).toContain('already running');
+
+    resolveFirst?.();
+    await firstCall;
+
+    // Only the first (non-busy) dispatch should have triggered provisioning.
     expect(mockProvisionAgents).toHaveBeenCalledTimes(1);
   });
 });

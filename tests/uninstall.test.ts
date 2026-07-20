@@ -239,6 +239,41 @@ describe('uninstall', () => {
     expect(rmCalls.some(p => p.includes('auto-sprint-args'))).toBe(false);
   });
 
+  it('removes PM agent files (agentsDir) for claude PM uninstall', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { claude: { skill: 'all' } }
+    }));
+
+    await runUninstall(['--skill', 'pm', '--yes']);
+
+    expect(fs.rmSync).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]agents$/),
+      expect.objectContaining({ recursive: true, force: true })
+    );
+  });
+
+  it('does not remove agentsDir for providers with no agent files (codex, copilot)', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { codex: { skill: 'pm' } }
+    }));
+
+    await runUninstall(['--llm', 'codex', '--skill', 'pm', '--yes']);
+
+    const rmCalls = vi.mocked(fs.rmSync).mock.calls.map(c => c[0].toString());
+    expect(rmCalls.some(p => p.endsWith('agents'))).toBe(false);
+  });
+
+  it('does not remove agentsDir when only fleet skills are requested', async () => {
+    vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
+      providers: { claude: { skill: 'all' } }
+    }));
+
+    await runUninstall(['--skill', 'fleet', '--yes']);
+
+    const rmCalls = vi.mocked(fs.rmSync).mock.calls.map(c => c[0].toString());
+    expect(rmCalls.some(p => p.endsWith('agents'))).toBe(false);
+  });
+
   it('aborts if apra-fleet server is running', async () => {
     vi.mocked(install.isApraFleetRunning).mockReturnValue(true);
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

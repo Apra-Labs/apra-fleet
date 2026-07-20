@@ -126,9 +126,15 @@ async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
   if (remoteAgentsDir(agent.llmProvider ?? 'claude') === null) return;
 
   try {
-    await provisionAgents(agent);
+    const result = await provisionAgents(agent);
+    if (result.warning) {
+      // Probe or upload failed -- do not trust the cache, retry on next dispatch.
+      provisionedRemoteAgents.delete(agent.id);
+    }
   } catch {
-    // warn-and-continue, same as register_member/update_member's wire-in
+    // warn-and-continue, same as register_member/update_member's wire-in, but
+    // a transient failure must not permanently poison the cache.
+    provisionedRemoteAgents.delete(agent.id);
   }
 }
 
@@ -157,12 +163,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return `❌ Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
 
-  await ensureAgentFilesProvisioned(agent);
-
   if (inFlightAgents.has(agent.id)) {
     return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
   }
   inFlightAgents.add(agent.id);
+
+  await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
   let clearedByStall = false;
   stallDetector.add(agent.id, {

@@ -296,6 +296,13 @@ Options:
           anythingRemoved = true;
         }
       }
+      // PM agent files (role .md files, schemas/, _shared/) -- install.ts writes
+      // the whole set into paths.agentsDir wholesale, so uninstall mirrors that.
+      if (paths.agentsDir && fs.existsSync(paths.agentsDir)) {
+        console.log(`  - Removing PM agent files: ${paths.agentsDir}`);
+        if (!dryRun) fs.rmSync(paths.agentsDir, { recursive: true, force: true });
+        anythingRemoved = true;
+      }
     }
     if (skillMode === 'all' || skillMode === 'fleet') {
       if (fs.existsSync(paths.fleetSkillsDir)) {
