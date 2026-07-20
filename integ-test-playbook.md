@@ -94,6 +94,50 @@ git clone https://github.com/Apra-Labs/fleet-e2e-toy "$HOME/toy-repo"
 Before handing off to the test: verify `node dist/index.js status` exits 0
 and reports the server listening on `18700`.
 
+### Neutralize sandbox sync.remote after any `bd bootstrap --yes`
+
+A fresh clone can hit a "no beads database found" error before the local
+beads DB is materialized; the documented recovery is `bd bootstrap --yes` in
+`$HOME/toy-repo` (see apra-fleet-eft.18's repro). Run this step immediately
+after ANY `bd bootstrap --yes` invocation in the sandbox -- whether it is
+needed once here during `## Setup`, or again later as an ad hoc recovery
+action during a test session -- and always before the next auto-sprint run
+(`## Test scenario` step 3).
+
+Why: the pristine `fleet-e2e-toy` clone ships with `sync.remote` commented
+out (`# sync.remote disabled -- no Dolt push for this toy project`), which is
+what lets `## Test scenario` step 3 rely on `skip_dolt_push` semantics. But
+`bd bootstrap --yes` rehydrates the local DB from the real `fleet-e2e-toy`
+Dolt remote and, as a side effect, rewrites `.beads/config.yaml` to add a new
+ACTIVE `sync.remote` block pointing at that same remote, leaving the old
+disabled line stale below it. Left active, this is a latent hazard: it does
+not break the immediately-following `bd bootstrap` call itself, but it means
+the NEXT `bd dolt push` from a real auto-sprint run against this sandbox
+(once a real doer/harvester commit lands) would push sandbox test mutations
+to the shared external remote real users/CI depend on -- defeating the
+playbook's isolation guarantee.
+
+This step is idempotent and safe to run even if `bd bootstrap --yes` was
+never invoked in this sandbox: it is a no-op when there is no active
+`sync.remote` line to comment out.
+
+```bash
+CONFIG="$HOME/toy-repo/.beads/config.yaml"
+if [ -f "$CONFIG" ]; then
+  sed -i.bak -E '/fleet-e2e-toy/{/^[[:space:]]*#/!s/^/# /;}' "$CONFIG"
+  rm -f "$CONFIG.bak"
+fi
+```
+
+Verify: no uncommented line in `.beads/config.yaml` may reference
+`fleet-e2e-toy` after this step.
+
+```bash
+grep -n '^[^#]*fleet-e2e-toy' "$HOME/toy-repo/.beads/config.yaml" && \
+  echo "FAIL: active sync.remote still points at fleet-e2e-toy" || \
+  echo "OK: sync.remote is inert"
+```
+
 ## Reset
 
 A faster alternative to Teardown + Setup between test runs in the same
@@ -110,6 +154,14 @@ git fetch origin
 git reset --hard origin/main
 git clean -fdx
 ```
+
+If `.beads/config.yaml` is git-tracked in `fleet-e2e-toy`, the `git reset
+--hard` above already restores its pristine, disabled `sync.remote` state.
+But if `bd bootstrap --yes` needs to run again later in the same session
+(e.g. recovering a corrupted local beads DB between Resets, per apra-fleet-
+eft.18's repro) before the next `## Reset`, immediately re-run the
+"Neutralize sandbox sync.remote after any `bd bootstrap --yes`" step from
+`## Setup` above before proceeding to the next `## Test scenario` sprint run.
 
 The toy repo keeps one permanent, always-open canary issue for exactly
 this purpose, identified by its `integ-canary` tag in the repo's beads DB.
