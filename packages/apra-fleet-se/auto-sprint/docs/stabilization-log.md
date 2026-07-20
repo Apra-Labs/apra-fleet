@@ -683,6 +683,53 @@ deduplicated DAG -- the plan gate working as designed.
   Issue 24 integ ladder, which is the one that matters for its critical
   path); full coverage from run 15.
 
+### Run 14 outcome: full 5-cycle lifecycle, Final Verdict FAIL on the Issue 26 harness gap
+
+- Run 14 was the campaign's most productive run and the first to complete
+  the whole sprint lifecycle: 5 cycles + Final Review + Harvest +
+  Publish PR (idempotent -- updated the existing PR). The integ phase ran
+  for the first time end to end and CLOSED 8 features in cycle 1, then
+  drove a real find-fix loop through genuine PRODUCT bugs across cycles:
+  eft.16 (dolt no-remote), eft.18 (canary self-provision), eft.19 (P0:
+  dev-mode install missing undici), eft.20 (P1: state.json corruption --
+  doubled-quote breaking JSON.parse in the eft.2 persistence path,
+  stalling auto-sprint after Plan), eft.21 (teardown ~-reresolution).
+  Every one fixed with tests; unit suite ended green (2337 passing).
+- Final Verdict: FAIL -- correctly. The headline deliverable (auto-sprint
+  running a sprint end-to-end via the integ smoke test's Part 2 Test
+  scenario) never completed in any cycle. Root cause = Issue 26 below.
+  Final Review filed a newTask gating epic-close on a green Part 2 run.
+- Two run-14-only gaps (both fixed for run 15): the Harvester hit turn
+  exhaustion with NO resume (run 14 launched minutes before the Issue 25
+  universal ladder), so docs were not harvested; and the completion gate
+  was never reachable because of Issue 26.
+
+### Issue 26: integ-test-runner cannot complete its own playbook's Part 2 (no MCP tools)
+
+- **Symptom**: integ Part 2 "Test scenario" step 1 registered a member
+  via the `register_member` MCP tool, but the integ-test-runner agent is
+  granted only [Read, Bash, Grep, Glob] -- no MCP. Cycles C2/C3 only got
+  past it by hand-rolling a Bash HTTP/JSON-RPC call to the MCP server (the
+  workaround CLAUDE.md forbids); C4/C5 correctly refused and reported the
+  gap, so Part 2 never completed and the sprint could not sign off.
+- **Root cause**: the agent's tool grant contradicted the playbook it
+  owns end to end. `register_member` had no CLI equivalent, so Part 2
+  step 1 was not shell-drivable at all.
+- **Fix** (chosen by operator: add the CLI, not grant MCP -- keeps the
+  fix in apra-fleet, no apra-pm submodule/upstream PR, and makes Part 2
+  fully shell-only per the playbook's own Setup/Reset/Teardown principle):
+  new `register-member` CLI subcommand (src/cli/register-member.ts, wired
+  into src/index.ts) wrapping the SAME shared registerMember() function
+  the MCP tool uses (src/tools/register-member.ts:110) through the same
+  Zod schema -- no logic fork. integ-test-playbook.md Part 2 step 1
+  reworded to `node dist/index.js register-member --type local ...` via
+  Bash; the shell-vs-MCP notes updated (every section is now
+  shell-drivable). 9 new CLI tests; full suite green. Commit 60c518a.
+- **Note**: local+claude registration still bootstraps an interactive
+  session needing the running server (Setup starts it) and spawns a real
+  claude process -- identical to the MCP path, faithfully wrapped, not
+  diverged.
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":
