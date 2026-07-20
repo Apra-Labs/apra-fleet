@@ -189,16 +189,14 @@ ${deployBlock}
             );
         }
 
-        // Cross-check against .claude/settings.json's permissions.allow too,
-        // when readable, since that is what actually gates execution.
-        const settingsPath = path.join(repoRoot, '.claude', 'settings.json');
-        if (fs.existsSync(settingsPath)) {
-            const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-            const allow = (settings.permissions && settings.permissions.allow) || [];
-            for (const { prefix } of requiredCommandsToPrefixes) {
-                const covered = allow.some((entry) => entry === `Bash(${prefix})`);
-                assert.ok(covered, `.claude/settings.json permissions.allow must contain "Bash(${prefix})"`);
-            }
-        }
+        // NOTE deliberately NOT cross-checked: .claude/settings.json's
+        // permissions.allow. That file is gitignored and machine-local (it
+        // gates execution on the machine the runbook actually runs on), so
+        // asserting its contents from a repo test made the suite pass or
+        // fail depending on which checkout ran it -- green on the deploy
+        // member and on bare CI runners (file absent), red on any other dev
+        // clone. The repo-portable contract is deploy.md's own Permissions
+        // section, asserted above; provisioning the member's settings to
+        // match it is an operational step, not a repo invariant.
     });
 });
