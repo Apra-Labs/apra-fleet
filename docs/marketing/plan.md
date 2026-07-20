@@ -1,106 +1,190 @@
 # Marketing Track: README Rewrite + github.io Site
 
-Living plan for repositioning apra-fleet's public face. Maintained
-alongside the work; update statuses in place as items land.
+Living plan for repositioning apra-fleet's public face. SELF-CONTAINED BY
+DESIGN: everything decided, argued, or proposed in conversation is recorded
+here so the track survives agent restarts, context compaction, and acts of
+god. A fresh agent (or human) must be able to execute from this file alone.
+Update statuses and the log in place as items land.
 
-## Positioning (decided)
+Companion file: [readme-rewrite-draft.md](readme-rewrite-draft.md) -- the
+actual draft copy. This file is the WHY and the WHAT-NEXT; the draft is the
+current text.
 
-- **Category claim**: agent fleet platform -- own the word "fleet".
-  One control plane: any device, any model, any workflow.
-- **Analogy** (used once, early): "What Kubernetes did for containers,
-  apra-fleet does for AI agents" -- category placement in one sentence.
-- **Proof lead**: "This repository is built by the product you are looking
-  at." Real dashboard recording, real sprint transcripts, never mockups.
-- **Wedge vs platform**: the pitch OPENS with the working vertical
-  (autonomous software engineering via auto-sprint) and frames platform
-  generality (retail/logistics/healthcare) as the arc -- focus reads as
-  discipline; "platform for everything" unproven reads as a red flag.
-- **Audience split**: README converts developers in 30 seconds;
-  github.io converts investors/press/high-rollers in 3 minutes.
+---
 
-## Ground rules
+## 1. The problem being solved
 
-- ASCII only (repo policy). Mermaid for evolving diagrams (diffs in PRs).
-- Every command shown must be verified against the shipped CLI/README --
-  no invented flows (a hallucinated quickstart was caught 2026-07-20;
-  the REAL flow -- npm/binary install, /mcp connect, conversational member
-  registration, `apra-fleet workflow ...` -- is also the better story).
-- No fabricated numbers: dogfood stats come from real runs (suite counts,
-  cycles, bugs self-filed/fixed).
+The current /README.md commits the classic infrastructure-company sin: it
+describes what the software does (install steps, member registration, PM
+skills, sprints) instead of what the user gets to stop worrying about. It
+leads with the software-engineering vertical, so readers file apra-fleet
+as "another AI coding tool" -- the most crowded, least defensible shelf.
+Months of messaging have been confusing for exactly this reason.
 
-## Workstream 1: README.md rewrite
+The architecture separation finally makes the true product visible:
+- apra-fleet = core fleet platform (server, members, credentials,
+  workflows runtime)
+- packages/apra-fleet-se = the software-engineering VERTICAL
+- packages/apra-fleet-se/auto-sprint = one flagship WORKFLOW
+- apra-pm = removed to its own repo entirely
 
-Draft: [readme-rewrite-draft.md](readme-rewrite-draft.md) (promote to
-/README.md at a sprint-run boundary -- the harvester appends to the live
-README during Final Harvest, so landing mid-run invites merge noise).
+Target audiences: VCs, ProductHunt, YC, high-profile people in agentic AI.
 
-Structure (first 30 seconds -> 5 minutes):
-1. Hero banner [GFX-1] + one-line claim + k8s sentence
-2. Dashboard GIF [GFX-2] + "built by itself" proof caption
-3. "Why a fleet?" -- 4 operational pains + pillars drumbeat
-4. Pillars table (Any device / Any model / Any workflow)
-5. Flagship: auto-sprint with real dogfood numbers
-6. Quick start (verified real flow, 4 steps)
-7. How it works (mermaid) + security paragraph + package map
-8. Status/roadmap + closing CTA
+## 2. Positioning (DECIDED)
 
-Status:
+- **Own the word "fleet"** -- not "framework", not "agents". Fleet implies
+  many, heterogeneous, managed, accountable. Category claim: **agent fleet
+  platform**. Drumbeat: "One control plane. Any device. Any model. Any
+  workflow."
+- **The k8s analogy is approved and load-bearing** (user explicitly liked
+  it). Used ONCE, early, as sentence two: "What Kubernetes did for
+  containers, apra-fleet does for AI agents: scheduling, credentials,
+  isolation, and observability for an agentic workforce." It does category
+  placement in ~4 seconds of reading.
+- **Proof lead -- the recursive story**: "This repository is built by the
+  product you are looking at." Autonomous sprints plan/code/review/test/
+  ship this codebase, file bugs against themselves, fix them, and block
+  their own release on quality gates. No competitor can honestly copy the
+  claim. Always backed by REAL artifacts (recordings, transcripts, run
+  logs) -- never mockups.
+- **Wedge vs platform tension (argued, resolved)**: VCs read focus as
+  discipline; "platform for everything" unproven is a red flag. So the
+  pitch OPENS with the working vertical (autonomous software engineering,
+  self-hosting today) and frames generality as the arc: "the engine does
+  not know what a sprint is; it knows how to run your workflow reliably
+  across your fleet." Vertical teasers (retail replenishment, logistics
+  exception handling, healthcare intake, back-office ops) are one-liners,
+  explicitly examples of the pattern, never promises.
+- **Audience split**: README converts DEVELOPERS in 30 seconds; the
+  github.io site converts INVESTORS/PRESS in 3 minutes. Different jobs,
+  shared copy skeleton (README lands first, becomes the site skeleton).
+
+## 3. Differentiators to lead with (verified against the codebase)
+
+1. **Real devices, not sandboxes.** Members are actual machines (MacBook,
+   Windows tower, GPU box, cloud VM) -- registered, credentialed,
+   permission-composed, health-checked. Cloud members auto-start on
+   demand (ensureCloudReady).
+2. **Every provider, simultaneously.** Claude, Codex, Gemini, Copilot,
+   Antigravity, local models (OpenCode/vLLM) in ONE fleet. Tier-based
+   routing (cheap/standard/premium) = cost governance built in.
+3. **Workflows as durable programs.** Multi-hour, resumable, observable
+   orchestration: supervisor, member reservations, watchdogs, atomic
+   state, live dashboard. Temporal-class rigor applied to agents, not a
+   prompt chain.
+4. **The unsexy 20% moat**: OOB credential store ({{secure.NAME}}, TTL,
+   egress policy allow/deny/confirm), per-provider permission
+   composition, VCS auth provisioning/revocation, session liveness,
+   dispatch locks. Boring in a feature list, decisive in diligence.
+5. **It builds itself** -- see proof lead above. Real numbers only,
+   sourced from stabilization log + sprint logs (2,300+ unit tests,
+   76-81-file real-backend integ suite, multi-cycle unattended runs,
+   10+ bugs self-filed and fixed as of run 15).
+
+## 4. README first-30-seconds design (DECIDED)
+
+Reader sees, in order:
+1. Hero banner [GFX-1] + name + one-liner: "Run a fleet of AI agents
+   across your devices, your providers, your workflows."
+2. k8s sentence (category placement).
+3. Credibility gut-punch: real dashboard GIF [GFX-2] captioned "built by
+   the product you are looking at... not a mockup."
+4. "Why a fleet?" -- four operational pains that make an agent operator
+   feel seen: Which machine runs which agent? / Which model does which
+   job? / Who watches the agents? / Who holds the keys? Ending in the
+   drumbeat line.
+5. Pillars table -> flagship (auto-sprint w/ real numbers) -> 4-step
+   quickstart -> mermaid architecture -> security paragraph -> package
+   map -> roadmap -> closing CTA: "Stop babysitting agents. Start
+   operating fleets."
+
+## 5. Ground rules (learned the hard way)
+
+- ASCII only in all files (repo policy). Mermaid for evolving diagrams.
+- **Every command shown must be verified against the shipped CLI/current
+  README before it enters the draft.** A hallucinated quickstart
+  (invented install.sh + `apra-fleet start` + CLI-first flow) was caught
+  by the user on 2026-07-20. The REAL flow: npm i -g @apralabs/apra-fleet
+  (install is the default action; --llm per provider) OR standalone
+  installer binary from Releases; connect via /mcp in the LLM CLI;
+  register members CONVERSATIONALLY in plain language (OOB password for
+  remote members); then `apra-fleet workflow hello-world` /
+  `apra-fleet workflow auto-sprint --issue ... --members ... --branch
+  ... --base ...`. NOTE: the real conversational flow is also the BETTER
+  story -- feature it in the hook, not just accuracy.
+- No fabricated numbers, ever. Dogfood stats from real run artifacts.
+- README.md promotion happens at a SPRINT-RUN BOUNDARY only: the
+  auto-sprint harvester appends to the live README during Final Harvest;
+  landing mid-run invites merge conflicts with the running fleet.
+- When rewriting README.md, do not delete the current deep-dive sections
+  (transport/SSE, service mode, PM skill, cost tables, provider matrix
+  details) -- MOVE them into docs/ pages and link them. They are good
+  content at the wrong altitude.
+
+## 6. Workstream 1: README.md rewrite -- status + next actions
+
 - [x] Positioning brainstorm + decision (2026-07-20)
-- [x] First full draft committed
+- [x] First full draft committed (docs/marketing/readme-rewrite-draft.md)
 - [x] Quickstart corrected to the real npm//mcp/conversational flow
-- [ ] User review pass on draft copy
-- [ ] Dogfood numbers refreshed from the finished run (cycles, tests,
-      bugs self-filed/fixed) -- source: stabilization log + sprint logs
-- [ ] GFX-1 hero banner produced (spec in draft footer)
-- [ ] GFX-2 dashboard GIF recorded -- WAIT for run 16+ (lean-state viewer,
-      eft.27) so the hero asset is smooth, not the sluggish old viewer
-- [ ] GFX-3 fleet topology SVG produced (spec in draft footer)
-- [ ] Promote draft to /README.md at run boundary; keep deep-dive
-      sections (transport, service mode, PM skill) by moving them into
-      docs/ rather than deleting
+- [ ] USER REVIEW PASS on draft copy (pending -- solicit explicitly)
+- [ ] Refresh dogfood numbers from the FINISHED run: cycles run, total
+      tests, integ-suite size, bugs self-filed/fixed count. Sources:
+      packages/apra-fleet-se/auto-sprint/docs/stabilization-log.md and
+      sprint-logs/*.log. Replace the draft's current numbers.
+- [ ] Produce GFX-1 hero banner (spec: section 8)
+- [ ] Record GFX-2 dashboard GIF -- BLOCKED until run 16+ runs with the
+      eft.27 lean-state viewer (recording today's sluggish viewer would
+      undercut the pitch). Tool: claude-in-chrome gif_creator against the
+      live viewer at the 18300-series port.
+- [ ] Produce GFX-3 fleet topology SVG (spec: section 8)
+- [ ] Migrate current README deep-dive sections into docs/ pages (see
+      ground rule) and add links from the new README
+- [ ] Promote draft -> /README.md at run boundary; delete draft file;
+      update this plan's log
 
-## Workstream 2: github.io site
+## 7. Workstream 2: github.io site -- plan + next actions
 
-Purpose: branded, marketing-grade companion -- features, story, evidence.
-Target audiences: VCs / ProductHunt / YC / agentic-AI press.
+Purpose: branded marketing-grade companion. Converts investors/press in
+3 minutes with actual features + evidence.
 
-Plan:
-- Hosting: GitHub Pages. Preference: `docs-site/` folder (or gh-pages
-  branch) on this repo; decide when scaffolding.
-- Stack: keep trivial -- plain HTML/CSS or Astro; no build complexity
-  that outlives its usefulness. Dark-first, one accent, real product
-  screenshots/recordings only.
-- Page map (v1):
-  1. Landing: hero, pillars, dashboard video embed, provider matrix
-  2. "It builds itself": the dogfood story with real sprint transcript
-     excerpts and run timelines as evidence
-  3. Security: credential store, OOB secrets, egress policy, permission
-     composition
-  4. Workflows: engine model (durable, resumable, observable) + supervisor
-  5. Get started: mirrors README quickstart + links to docs
-- Sequencing: README lands first; its copy becomes the site skeleton.
-  Prototype the landing page as a private artifact for user reaction
-  before anything goes public.
+Decisions still open (decide at scaffold time): docs-site/ folder vs
+gh-pages branch; plain HTML/CSS vs Astro (bias: keep trivial, no build
+complexity that outlives usefulness); domain/branding linkage to
+apralabs.com. Style: dark-first, single accent, real product
+screenshots/recordings only.
 
-Status:
-- [ ] Scaffold decision (docs-site/ vs gh-pages branch)
-- [ ] Landing page prototype (private artifact for review)
+Page map (v1):
+1. Landing: hero, pillars, dashboard video embed, provider matrix
+2. "It builds itself": the dogfood story w/ real sprint transcript
+   excerpts + run timelines as evidence
+3. Security: credential store, OOB secrets, egress policy, permission
+   composition, provisioned/revocable VCS auth
+4. Workflows: durable-program model (resumable, observable) + supervisor
+   (launch/stop over HTTP, reservation ledger, watchdog, history)
+5. Get started: mirrors README quickstart + docs links
+
+- [ ] Scaffold decision (folder vs branch; generator)
+- [ ] Landing page prototype AS A PRIVATE ARTIFACT for user reaction
+      BEFORE anything goes public (explicitly agreed sequencing)
 - [ ] Copy adaptation from final README
-- [ ] Domain/branding decision (apralabs.com linkage)
-- [ ] Publish + link from README hero nav
+- [ ] Domain/branding decision
+- [ ] Publish + link from README hero nav (the draft already points nav
+      at https://apra-labs.github.io/apra-fleet -- placeholder until live)
 
-## Asset inventory
+## 8. Asset inventory + production specs
 
 | Asset | Spec | Status |
 |---|---|---|
-| GFX-1 hero banner | 1280x320 SVG/PNG, dark+light variants, device constellation + control hexagon | not started |
-| GFX-2 dashboard GIF | real recording, 20-30s, 1200px, <8MB, record on run 16+ viewer | blocked on eft.27 viewer |
-| GFX-3 fleet topology | 900px SVG, control plane -> heterogeneous members with provider badges | not started |
-| GFX-4 architecture | mermaid in README (renders natively) | in draft |
-| Badges | shields.io: build, release, license, providers, platforms | pending README landing |
+| GFX-1 hero banner | 1280x320 SVG/PNG, dark+light variants via GitHub picture element. Wordmark + tagline. Visual: constellation of device silhouettes (laptop, tower, rack, cloud) connected by orbit lines to a central control hexagon; small provider glyphs per device; subtle grid background. | not started |
+| GFX-2 dashboard GIF | REAL recording of the auto-sprint viewer during a live run: phase transitions, doer dispatch landing, verdict appearing. 20-30s loop, 1200px wide, <8MB. Highest-credibility asset -- prioritize. | BLOCKED on run 16+ (eft.27 lean viewer) |
+| GFX-3 fleet topology | 900px SVG, static. One control-plane node -> 4-5 heterogeneous member devices, provider logos + OS glyphs, callouts: "reserved by sprint A", "tier: premium", "credential: scoped". Mono-accent. | not started |
+| GFX-4 architecture | mermaid block in README (renders natively on GitHub, diffs in PRs). Already in draft. | in draft |
+| Badges | shields.io: build (GH Actions), latest release, license, "providers: 5+", platform trio (win/mac/linux). No custom infra. | pending README landing |
 
-## Log
+## 9. Log (append-only)
 
-- 2026-07-20: positioning decided; first draft written and committed;
-  hallucinated quickstart caught by user and replaced with the real flow;
-  track moved to docs/marketing/.
+- 2026-07-20: positioning decided (fleet + k8s simile + recursive proof);
+  first draft written and committed; hallucinated quickstart caught by
+  user, replaced with real flow, ground rule recorded; track moved to
+  docs/marketing/; plan expanded to be fully self-contained per user
+  direction ("every idea must survive agent restart/compaction").
