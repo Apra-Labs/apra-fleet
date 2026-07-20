@@ -876,6 +876,20 @@ export async function syncMemberAfter(member, opts = {}) {
 // brackets each dispatch. `command` is dependency-injected so unit tests can
 // drive these helpers with a mock command() and no live Dolt server.
 
+// Substrings that mark a `bd dolt` failure as NO-REMOTE (apra-fleet-eft.16.1):
+// this local beads clone has no configured dolt remote at all (e.g. a temp
+// fixture repo with no 'origin'), so there is nothing to pull or push. This is
+// a benign, non-error condition -- distinct from both a genuine divergence and
+// a transient network/server hiccup -- and must be checked FIRST so its text
+// (which does not collide with the diverged/transient patterns below) always
+// wins. A remote that IS configured but unreachable/diverged/auth-failing
+// never matches these patterns and still falls through to the existing
+// diverged/transient/unknown classification.
+const DOLT_NO_REMOTE_PATTERNS = [
+    /error 1105.*no remote/i,
+    /\bno remote\b/i,
+];
+
 // Substrings that mark a `bd dolt` failure as a DIVERGENCE (the remote moved
 // under us / a data or merge conflict). Reconciled once by the push loser, or
 // surfaced as DoltDivergedError -- never retried blindly.
@@ -918,16 +932,20 @@ const DOLT_TRANSIENT_PATTERNS = [
 ];
 
 /**
- * Classify a failed `bd dolt` command's output into the two failure classes
- * the Dolt brackets route differently. Divergence is checked FIRST: a
- * remote-moved/conflict state must never be misread as transient and retried
- * blindly, even if its message also happens to contain a lock/network word.
+ * Classify a failed `bd dolt` command's output into the failure classes the
+ * Dolt brackets route differently. no-remote is checked FIRST (apra-fleet-
+ * eft.16.1): a local clone with no configured dolt remote has nothing to
+ * pull/push, which is a benign skip, never a divergence or a retryable
+ * transient failure. Divergence is checked next: a remote-moved/conflict
+ * state must never be misread as transient and retried blindly, even if its
+ * message also happens to contain a lock/network word.
  *
  * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
- * @returns {'diverged'|'transient'|'unknown'}
+ * @returns {'no-remote'|'diverged'|'transient'|'unknown'}
  */
 export function classifyDoltFailure(output) {
     const text = String(output == null ? '' : output);
+    for (const re of DOLT_NO_REMOTE_PATTERNS) if (re.test(text)) return 'no-remote';
     for (const re of DOLT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
     for (const re of DOLT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
     return 'unknown';
@@ -967,9 +985,14 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  * Every command is issued via the injected command() with an explicit
  * member_name (3.2).
  *
+ * apra-fleet-eft.16.1: a local clone with no configured dolt remote (the
+ * 'no-remote' classification) has nothing to pull -- this is a benign no-op
+ * skip, not an error, so it returns `{ ok: true, skipped: true, reason:
+ * 'no-remote' }` instead of throwing DoltSyncError.
+ *
  * @param {string} member
  * @param {{ command: Function, log?: Function, maxTransientRetries?: number }} opts
- * @returns {Promise<{ ok: true, member: string }>}
+ * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote' }>}
  */
 export async function doltPullBefore(member, opts = {}) {
     const { command, log = () => {}, maxTransientRetries = 1 } = opts;
@@ -982,6 +1005,10 @@ export async function doltPullBefore(member, opts = {}) {
         label: `D-pull for '${member}'`, log, maxTransientRetries,
     });
     if (!pull.ok) {
+        if (pull.kind === 'no-remote') {
+            log(`[Dolt] D-pull for member '${member}' skipped: no dolt remote configured (nothing to pull)`);
+            return { ok: true, member, skipped: true, reason: 'no-remote' };
+        }
         if (pull.kind === 'diverged') {
             throw new DoltDivergedError(
                 `[Dolt] D-pull for member '${member}' hit an unmergeable beads conflict and must not be auto-resolved by judgment: ${pull.error}`,
@@ -1023,9 +1050,15 @@ export async function doltPullBefore(member, opts = {}) {
  * failed push can never leak the mutex. A crashed holder is separately reclaimed
  * by the mutex's own lease expiry, so this bracket does not need to.
  *
+ * apra-fleet-eft.16.1: a local clone with no configured dolt remote (the
+ * 'no-remote' classification) has nothing to push -- this is a benign no-op
+ * skip, not an error, so it returns `{ ok: true, pushed: false, reconciled:
+ * false, skipped: true, reason: 'no-remote' }` instead of throwing
+ * DoltSyncError.
+ *
  * @param {string} member
  * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string }} opts
- * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean }>}
+ * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote' }>}
  */
 export async function doltPushAfter(member, opts = {}) {
     const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId } = opts;
@@ -1062,6 +1095,11 @@ export async function doltPushAfter(member, opts = {}) {
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, reconciled: false };
+    }
+
+    if (push.kind === 'no-remote') {
+        log(`[Dolt] D-push for member '${member}' skipped: no dolt remote configured (nothing to push)`);
+        return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };
     }
 
     if (push.kind !== 'diverged') {
