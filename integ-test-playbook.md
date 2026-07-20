@@ -80,7 +80,8 @@ steps of the test itself (see `## Test scenario`), because member
 registration is one of the things under test.
 
 ```bash
-export HOME=~/temp/.apra-fleet-tests
+SANDBOX="$HOME/temp/.apra-fleet-tests"
+export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
 mkdir -p "$HOME"
@@ -100,7 +101,8 @@ session. It restores the toy repo and its beads state to pristine without
 reinstalling or re-cloning.
 
 ```bash
-export HOME=~/temp/.apra-fleet-tests
+SANDBOX="$HOME/temp/.apra-fleet-tests"
+export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
 cd "$HOME/toy-repo"
@@ -150,11 +152,12 @@ the sandbox entirely, so no state accumulates or drifts from a fresh
 install between runs.
 
 ```bash
-export HOME=~/temp/.apra-fleet-tests
+SANDBOX="$HOME/temp/.apra-fleet-tests"
+export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
 node dist/index.js stop
-rm -rf ~/temp/.apra-fleet-tests
+rm -rf "$SANDBOX"
 ```
 
 ## Test scenario (informational)
