@@ -123,11 +123,21 @@ canary, when that canary exists upstream.
 If the tag lookup in `## Test scenario` step 2 returns zero matches (no
 upstream `integ-canary` issue present, or it was renamed/removed), the
 runner self-provisions a canary in the sandbox's LOCAL beads DB only --
-this never writes to or pushes the real Dolt remote:
+this never writes to or pushes the real Dolt remote.
+
+The canary is deliberately the SIMPLEST possible issue -- the same
+scope-containment trick the e2e suite uses with this same toy repo (its
+sprint script pins exactly one minimal issue, "Add --version flag to
+CLI"). A concrete, tiny deliverable keeps the toy sprint's planner from
+inventing scope: there is exactly one obvious task, one obvious change,
+and one objectively checkable outcome.
 
 ```bash
 cd "$HOME/toy-repo"
-bd create --title "integ canary (local, sandbox-only)" --label integ-canary
+bd create "Add a --version flag to the CLI" \
+  -d "Print the toy project version when the CLI is invoked with --version, then exit 0. Smallest possible change: no refactors, no extra features." \
+  --acceptance "Running the CLI with --version prints a version string and exits 0." \
+  --label integ-canary
 ```
 
 This is local-only: it creates the issue in the sandbox clone's local
@@ -138,12 +148,13 @@ Proceed using the newly-created issue's ID as `<canary-id>`.
 Maintainer note (out-of-band; NOT a sandbox/runner step): to re-seed a
 *permanent* canary upstream so future runs find it via the tag lookup
 instead of self-provisioning, a maintainer with push access to
-`git+https://github.com/Apra-Labs/fleet-e2e-toy` creates an issue tagged
-`integ-canary` in that repo's beads DB and pushes it from a real,
-non-sandbox checkout. This is a one-time maintenance action on shared
-external infra performed by a human maintainer -- it is not something
-`integ-test-runner` does automatically, and it is separate from the
-automated self-provision path above.
+`git+https://github.com/Apra-Labs/fleet-e2e-toy` tags an issue of this
+same minimal "--version flag" shape with `integ-canary` in that repo's
+beads DB and pushes it from a real, non-sandbox checkout (the toy repo's
+existing e2e issue of that exact shape is a natural candidate). This is a
+one-time maintenance action on shared external infra performed by a human
+maintainer -- it is not something `integ-test-runner` does automatically,
+and it is separate from the automated self-provision path above.
 
 ## Teardown
 
@@ -179,16 +190,24 @@ shell-drivable -- no MCP tool is required to run the scenario.
 2. Find the canary issue by its `integ-canary` tag. If the lookup returns
    a match, confirm it is open (`bd show <canary-id>`, where
    `<canary-id>` is whatever ID the tag lookup returned). If the lookup
-   returns zero matches, self-provision one in the sandbox's local beads
-   DB per `## Reset` above (`bd create ... --label integ-canary`, no
-   push) and use its ID as `<canary-id>`. Neither path writes to
-   `git+https://github.com/Apra-Labs/fleet-e2e-toy`.
+   returns zero matches, self-provision the minimal "--version flag"
+   canary in the sandbox's local beads DB per `## Reset` above
+   (`bd create "Add a --version flag to the CLI" ... --label
+   integ-canary`, no push) and use its ID as `<canary-id>`. Neither path
+   writes to `git+https://github.com/Apra-Labs/fleet-e2e-toy`.
 3. Run `apra-fleet workflow auto-sprint` against the canary issue with
    `max_cycles: 1` and `skip_dolt_push: true` (never write to the real Dolt
-   remote from a sandbox run).
+   remote from a sandbox run). The canary's tiny fixed scope (one flag,
+   one file, one assertion) is what keeps this step inside the time
+   budget -- if the sprint plans more than a couple of tasks for it, that
+   is itself suspicious and worth a bug bead.
 4. Assert the canary issue is now closed and the toy repo's sprint branch
-   has a commit. If not, fail loud: file a bug bead. Do not silently reset
-   and move on -- this repo treats sprint-run surprises as signal
+   has a commit. Because the canary's deliverable is concrete, also
+   verify it functionally when the canary is the "--version flag" issue:
+   run the toy CLI with `--version` from the sprint branch and confirm it
+   prints a version string and exits 0. If any assertion fails, fail
+   loud: file a bug bead. Do not silently reset and move on -- this repo
+   treats sprint-run surprises as signal
    ([[project-goal-auto-sprint-ruggedization]]).
 5. Hand off to Teardown regardless of the assertion's outcome.
 
