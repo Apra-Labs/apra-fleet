@@ -131,7 +131,7 @@ const EXPECTED_COMMAND_COUNT = 28;
 // site (one corrective re-dispatch when the candidate is schema-valid but
 // semantically rejected, e.g. run 8's suffix-stripped bead ids);
 // member_name literal confirmed.
-const EXPECTED_AGENT_COUNT = 13;
+const EXPECTED_AGENT_COUNT = 14;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in

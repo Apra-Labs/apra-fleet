@@ -69,8 +69,8 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // 12 -> 13: Streak Assignment semantic-repair re-ask -- the second
 // documented exemption (same pure-compute grouping task as the first;
 // no repo access, so no sync bracket).
-const EXPECTED_AGENT_COUNT = 13;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 11;
+const EXPECTED_AGENT_COUNT = 14;
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 12;
 const STREAK_ASSIGNMENT_MARKERS = [
     "label: 'Streak Assignment'",
     "label: 'Streak Assignment (semantic repair)'",

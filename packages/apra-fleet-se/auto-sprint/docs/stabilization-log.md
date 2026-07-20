@@ -621,6 +621,41 @@ deduplicated DAG -- the plan gate working as designed.
   integ-test-runner. Defer until the current permission set proves
   sufficient end-to-end, then implement once.
 
+### Issue 23: member workspace untrusted -- ALL settings.json permissions silently ignored
+
+- **Symptom**: run 13 Integ Test C2 -- the first real playbook dispatch
+  exhausted its turn budget, and the error carried the actual cause:
+  "Ignoring 18 permissions.allow entries from .claude/settings.json:
+  this workspace has not been trusted." Every playbook command was being
+  denied, so the agent burned its turns fighting refusals.
+- **Root cause**: the Claude CLI only honors a workspace's
+  .claude/settings.json after the interactive trust dialog has been
+  accepted for that directory -- recorded in ~/.claude.json under
+  projects[<path>].hasTrustDialogAccepted. Headless members never see
+  the dialog, so all the Issue 18/19/22 permission provisioning into
+  settings.json was silently inert. (settings.local.json entries also
+  gate on the same trust flag.)
+- **Fix** (member-side, live): set projects["/Users/akhil/git/
+  apra-fleet"].hasTrustDialogAccepted = true in ~/.claude.json on
+  fleet-rev. Onboarding lesson for the fleet: provisioning permissions
+  onto a member is only effective if the workspace is also trusted --
+  worth folding into compose_permissions / member onboarding.
+
+### Issue 24: integ-test-runner had no turn-exhaustion resume ladder
+
+- **Symptom**: same dispatch as Issue 23 -- max_turns_exhausted was
+  caught and degraded to passed:false (correct), but the cycle's entire
+  feature-closure opportunity was lost with no recovery attempt.
+- **Fix** (runner.js): INTEG_TEST_MAX_TURNS = 100 (doer-sized -- the
+  runner owns the sandbox lifecycle plus full functional suites) with
+  the same same-session resume-and-continue ladder the reviewer/final-
+  review dispatches use (resume at 200 turns, sandbox kept, then the
+  existing degrade path). Structural baselines updated: 14 agent sites,
+  12 withGitSync brackets, 6 pushBeads brackets (integ once + resume).
+  Full se suite green (863/0). Applies from run 14 (run 13 already
+  loaded its runner; its C3+ integ attempts rely on the Issue 23 trust
+  fix removing the turn waste).
+
 ### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
 
 - fleet-dev's execute_prompt lock returned {"isError":true,"reason":

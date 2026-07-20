@@ -4228,19 +4228,49 @@ async function runSprintCycle(context) {
                 // (apra-fleet-eft.9.1) it must therefore D-push those beads
                 // mutations to the shared remote (pushBeads: true), a D-push
                 // with no git push. G-pull before, no-op G-push after.
-                integResult = await withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(
+                // Stabilization log Issue 24: the integ runner owns the whole
+                // sandbox lifecycle plus the real functional suites, so it is
+                // at least as turn-hungry as a doer. Give it the doer-sized
+                // budget and the same same-session resume-and-continue ladder
+                // the reviewer/final-review dispatches already have (observed
+                // live, run 13 C2: max_turns_exhausted with no resume path
+                // silently cost the cycle's entire feature-closure pass).
+                const INTEG_TEST_MAX_TURNS = 100;
+                const integDispatchOpts = {
+                    member_name: getMemberForRole('integ-test-runner'),
+                    agentType: 'integ-test-runner',
+                    schema: integReport,
+                    model: FIXED_ROLE_TIER['integ-test-runner'],
+                    // apra-fleet-j6i: runs a full test suite, plausibly
+                    // long-running.
+                    timeout_s: 3600,
+                    max_total_s: 3600,
+                    max_turns: INTEG_TEST_MAX_TURNS,
+                };
+                const dispatchIntegOnce = () => withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(
                     featurePrompt,
+                    { ...integDispatchOpts, member_name: getMemberForRole('integ-test-runner') }
+                ), { pushBeads: true });
+                const dispatchIntegResume = () => withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(
+                    'Continue the integration test run exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining suites, close passing features / file bugs per your contract, and return your final report now.',
                     {
+                        ...integDispatchOpts,
                         member_name: getMemberForRole('integ-test-runner'),
-                        agentType: 'integ-test-runner',
-                        schema: integReport,
-                        model: FIXED_ROLE_TIER['integ-test-runner'],
-                        // apra-fleet-j6i: runs a full test suite, plausibly
-                        // long-running.
-                        timeout_s: 3600,
-                        max_total_s: 3600,
+                        label: `Integ Test (resume, max_turns=${INTEG_TEST_MAX_TURNS * 2})`,
+                        resume: true,
+                        max_turns: INTEG_TEST_MAX_TURNS * 2,
                     }
                 ), { pushBeads: true });
+                try {
+                    integResult = await dispatchIntegOnce();
+                } catch (err) {
+                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                        log(`Integ Test Runner exhausted its turn limit (max_turns=${INTEG_TEST_MAX_TURNS}) -- resuming the same session with max_turns=${INTEG_TEST_MAX_TURNS * 2} instead of restarting the run.`);
+                        integResult = await dispatchIntegResume();
+                    } else {
+                        throw err;
+                    }
+                }
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
