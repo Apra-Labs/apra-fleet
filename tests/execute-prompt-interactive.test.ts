@@ -199,3 +199,151 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
     expect(resultText(result)).toContain('gemini-with-live-session');
   });
 });
+
+// apra-fleet-eft.28.1: a persistent interactive session whose underlying
+// member claude process has already died must never be silently reused --
+// this is the fix for the bug in apra-fleet-eft.28, where a dead launch-time
+// process left a reusable-looking sessionRegistry entry and the dispatch
+// hung silently for the full timeout_s (observed up to 3600s) with no
+// watchdog coverage.
+describe('dead interactive session detection (apra-fleet-eft.28.1)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    restoreRegistry();
+    if (memberId) {
+      inFlightAgents.delete(memberId);
+      sessionRegistry.unregister(getTokenIssuer().workspaceId(), memberId);
+    }
+  });
+
+  it('pre-dispatch check: a session whose pid is already dead is discarded, never reused, and returns a dispatch_failed structured error', async () => {
+    const member = makeTestAgent({ friendlyName: 'dead-pid-member' });
+    memberId = member.id;
+    addAgent(member);
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const err: any = new Error('kill ESRCH');
+      err.code = 'ESRCH';
+      throw err;
+    });
+
+    const notification = vi.fn().mockResolvedValue(undefined);
+    const workspaceId = getTokenIssuer().workspaceId();
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      pid: 424242,
+      status: 'online',
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(killSpy).toHaveBeenCalledWith(424242, 0);
+    // Fails fast with a surfaced, structured dispatch_failed error -- never
+    // silently hangs waiting for a reply that can never arrive.
+    expect(result).not.toBe(undefined);
+    expect((result as any).structuredContent).toEqual({ isError: true, reason: 'dispatch_failed' });
+    expect(resultText(result)).toContain('dead-pid-member');
+    expect(resultText(result)).toContain('424242');
+    // send_message/notification (and therefore the subprocess path) must
+    // never fire -- the dead session is rejected before any dispatch attempt.
+    expect(notification).not.toHaveBeenCalled();
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    // The stale session entry is discarded, not left behind for a future
+    // dispatch to trip over again.
+    expect(sessionRegistry.get(workspaceId, memberId)).toBeUndefined();
+    expect(inFlightAgents.has(memberId)).toBe(false);
+  });
+
+  it('a session with no captured pid is left to the pre-existing (unchanged) behavior', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-pid-member' });
+    memberId = member.id;
+    addAgent(member);
+
+    const notification = vi.fn().mockResolvedValue(undefined);
+    const workspaceId = getTokenIssuer().workspaceId();
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      // no pid captured
+      status: 'online',
+    });
+
+    const promptPromise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+    await vi.waitFor(() => expect(notification).toHaveBeenCalledTimes(1));
+    const msgid = notification.mock.calls[0][0].params.meta.msgid;
+    await respondToMessage({ reply_to: msgid, content: 'still works' });
+
+    const result = await promptPromise;
+    expect(resultText(result)).toContain('still works');
+  });
+
+  it('mid-wait liveness poll: rejects with a terminal error (not a full-timeout hang) when the member process dies AFTER dispatch has started waiting', async () => {
+    const member = makeTestAgent({ friendlyName: 'dies-mid-wait-member' });
+    memberId = member.id;
+    addAgent(member);
+
+    // Alive for the pre-dispatch check (call #1), then dead from the first
+    // mid-wait liveness poll onward (apra-fleet-eft.28.1's
+    // INTERACTIVE_LIVENESS_POLL_MS = 5000ms poll interval) -- simulating the
+    // process dying right after send_message lands, mid-turn, with no
+    // further signal ever arriving.
+    let killCalls = 0;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      killCalls += 1;
+      if (killCalls === 1) return true as any;
+      const err: any = new Error('kill ESRCH');
+      err.code = 'ESRCH';
+      throw err;
+    });
+
+    const notification = vi.fn().mockResolvedValue(undefined);
+    const workspaceId = getTokenIssuer().workspaceId();
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      pid: 777,
+      status: 'online',
+    });
+
+    vi.useFakeTimers();
+    // timeout_s is deliberately large (matching the playbook's real-world
+    // 3600s interactive timeout) -- the liveness poll must short-circuit the
+    // wait well before this, not fall back on it as the only backstop.
+    const promptPromise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 3600 });
+
+    // Let send_message's (awaited, microtask-resolving) notification land
+    // before advancing the fake-timer poll interval.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(notification).toHaveBeenCalledTimes(1);
+
+    // First liveness poll tick: the process is now dead.
+    await vi.advanceTimersByTimeAsync(5000);
+
+    const result = await promptPromise;
+
+    expect(killSpy).toHaveBeenCalledWith(777, 0);
+    expect(resultText(result)).toContain('died while this dispatch was waiting for a response');
+    expect(resultText(result)).toContain('dies-mid-wait-member');
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    // The dead session must be discarded here too, not left registered.
+    expect(sessionRegistry.get(workspaceId, memberId)).toBeUndefined();
+  });
+});
