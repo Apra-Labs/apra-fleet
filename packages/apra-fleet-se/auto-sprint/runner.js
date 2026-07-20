@@ -1896,6 +1896,25 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
             'children, even if review feedback appears to ask for decomposition of such a ' +
             'feature (verify with bd list --parent <feature> --all first).'
         );
+        // Stabilization log Issue 33 (run 15 C5): the pending-closure rule
+        // has a REGRESSION exception for bugs, or a regressed bug becomes
+        // unreachable by every role -- the planner refuses to re-decompose,
+        // doers refuse non-task beads, and the integ runner may only
+        // verify-and-close. Run 15 burned three full develop rounds (9 doer
+        // refusals each) on exactly this state and ended FAIL on two such
+        // bugs.
+        lines.push(
+            'REGRESSION EXCEPTION -- the leave-it-alone rule above does NOT apply to a ' +
+            'regressed bug. An OPEN bug-type bead whose task children are all closed but ' +
+            'whose own notes record the defect still reproducing AFTER those children ' +
+            'closed (e.g. fresh evidence from a later integration-test run: "recurred", ' +
+            '"still reproduces", "fix did not hold") is a REGRESSION, not pending-closure ' +
+            'housekeeping. For each such bug: read its latest evidence with bd show, then ' +
+            'create NEW task children under it (a fix task targeting the residual ' +
+            'mechanism the fresh evidence names -- not a duplicate of the closed fix -- ' +
+            'plus a [test] task pinning it), with acceptance criteria and model metadata ' +
+            'as for any task. Leave the bug bead itself open as the parent.'
+        );
     } else {
         lines.push('Analyze the sprint scope below and build a features+tasks DAG in beads, per your agent contract.');
     }
@@ -1996,6 +2015,21 @@ function buildPlanReviewerPrompt({ targetIssues, goal }) {
         'CHANGES_NEEDED asking the planner to decompose that bug into task-type ' +
         'children. This does not apply to features covered by the pending-closure ' +
         'rule above.',
+        // Stabilization log Issue 33 -- see buildPlannerPrompt's matching
+        // REGRESSION EXCEPTION. Without this criterion the reviewer reads a
+        // regressed bug (children closed, fresh repro evidence) as ordinary
+        // pending-closure and approves a plan that gives it no fix work;
+        // run 15 C5 ended FAIL on two such bugs.
+        'REGRESSION EXCEPTION to the pending-closure rule -- for OPEN BUG-type beads ' +
+        'only: if a bug\'s task children are all closed but its own notes record the ' +
+        'defect still reproducing AFTER those children closed (fresh evidence from a ' +
+        'later integration/test run: "recurred", "still reproduces", "fix did not ' +
+        'hold"), it is a REGRESSION, not pending-closure housekeeping. Such a bug with ' +
+        'no NEW open task children addressing the fresh evidence makes the plan NOT ' +
+        'approvable: return CHANGES_NEEDED asking the planner to add a new fix task ' +
+        '(targeting the residual mechanism the latest evidence names, never ' +
+        'duplicating the closed fix) plus a [test] task. A bug whose notes show no ' +
+        'post-closure recurrence stays under the pending-closure rule as before.',
     ].join('\n\n');
 }
 

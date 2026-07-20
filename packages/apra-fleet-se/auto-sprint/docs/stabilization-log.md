@@ -910,3 +910,24 @@ Also found while editing: the playbook's smoke step named a
 pre-gate instead. Tests: arg-contract suite pins default/validation and
 end-to-end plumbing (every mock dispatch carries the overridden budget).
 Engine suite: 963 pass / 0 fail.
+
+### Issue 33 (run 15 C5): a regressed bug with closed children is unreachable by every role
+
+Observed end-to-end in run 15 C5: eft.28 and eft.30 carried fresh
+"recurred despite the landed fixes" evidence from integ C4, but their fix
+children were all closed -- so the plan reviewer classified them as
+pending-closure ("do NOT re-decompose"), the planner left them alone,
+doers refused them as non-task beads (three full develop rounds of nine
+refusals each), and the integ runner may only verify-and-close. Nobody in
+the role graph had authority to create NEW fix tasks for a regression;
+the run ended FAIL on exactly those two beads.
+
+Fix: a REGRESSION EXCEPTION added to both sides of the Issue 14/21 rule
+pair. buildPlannerPrompt (delta cycles): an open bug whose children are
+all closed but whose notes record the defect reproducing AFTER closure is
+a regression -- read the latest evidence and create NEW fix + [test] task
+children targeting the residual mechanism (never duplicating the closed
+fix). buildPlanReviewerPrompt: such a bug with no new open task children
+makes the plan NOT approvable (CHANGES_NEEDED); bugs without post-closure
+recurrence stay under pending-closure as before. Goldens refreshed.
+Engine suite: 963 pass / 0 fail.
