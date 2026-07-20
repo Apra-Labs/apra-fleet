@@ -8,6 +8,8 @@ import {
   checkSyncRemoteInert,
   checkNoOutboundCommits,
   parseLeftRightCount,
+  checkDoltRemoteAbsent,
+  parseDoltRemoteList,
   HAZARD_REMOTE,
 } from '../scripts/check-sandbox-sync-remote.mjs';
 
@@ -164,6 +166,80 @@ describe('checkNoOutboundCommits: outbound-commit safety check (local-only git, 
       execFileSync: () => {
         throw new Error('boom');
       },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/^FAIL/);
+  });
+});
+
+describe('parseDoltRemoteList', () => {
+  it('parses a JSON array of {name, url} entries', () => {
+    expect(parseDoltRemoteList('[{"name":"origin","url":"git+https://github.com/Apra-Labs/fleet-e2e-toy"}]')).toEqual([
+      { name: 'origin', url: 'git+https://github.com/Apra-Labs/fleet-e2e-toy' },
+    ]);
+    expect(parseDoltRemoteList('[]')).toEqual([]);
+  });
+
+  it('throws on non-JSON output', () => {
+    expect(() => parseDoltRemoteList('not json')).toThrow();
+  });
+
+  it('throws when the parsed JSON is not an array', () => {
+    expect(() => parseDoltRemoteList('{"name":"origin"}')).toThrow();
+  });
+});
+
+describe('checkDoltRemoteAbsent: Dolt-level remote hazard detection (apra-fleet-eft.30)', () => {
+  // Regression coverage for apra-fleet-eft.30: 'bd bootstrap --yes' wires
+  // Dolt's OWN internal remote independently of the bd-level sync.remote
+  // YAML key that checkSyncRemoteInert (above) checks. The eft.25.1
+  // neutralize step (YAML-only) does NOT touch this Dolt-level remote, so
+  // this check must FAIL on a YAML-only-neutralized sandbox and only PASS
+  // once the eft.30.1 Dolt-remote disarm step has actually removed it.
+  // Hermetic: execFileSync is always injected here -- this suite never
+  // shells out to a real 'bd' binary or contacts the network.
+
+  it('FAILS when Dolt-level "bd dolt remote list --json" still carries the hazard remote (pre-eft.30.1 state, incl. after YAML-only neutralize)', () => {
+    const result = checkDoltRemoteAbsent('/fake/repo', {
+      execFileSync: () =>
+        JSON.stringify([
+          { name: 'origin', url: 'git+https://github.com/Apra-Labs/fleet-e2e-toy' },
+        ]),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/^FAIL/);
+    expect(result.message).toMatch(/fleet-e2e-toy/);
+  });
+
+  it('PASSES once the eft.30.1 Dolt-remote disarm step has removed the hazard remote', () => {
+    const result = checkDoltRemoteAbsent('/fake/repo', {
+      execFileSync: () => JSON.stringify([]),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
+  });
+
+  it('FAILS when a hazard remote is identified by name rather than url', () => {
+    const result = checkDoltRemoteAbsent('/fake/repo', {
+      execFileSync: () => JSON.stringify([{ name: 'fleet-e2e-toy', url: '' }]),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/^FAIL/);
+  });
+
+  it('is vacuously OK when "bd dolt remote list" is unavailable (no bd binary / no beads DB in this clone)', () => {
+    const result = checkDoltRemoteAbsent('/fake/repo', {
+      execFileSync: () => {
+        throw new Error('command not found: bd');
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
+  });
+
+  it('surfaces a FAIL result (not a throw) when the command output cannot be parsed as JSON', () => {
+    const result = checkDoltRemoteAbsent('/fake/repo', {
+      execFileSync: () => 'not json',
     });
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/^FAIL/);

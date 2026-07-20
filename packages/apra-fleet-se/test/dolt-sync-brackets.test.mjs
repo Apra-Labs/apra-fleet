@@ -7,6 +7,7 @@ import {
     classifyDoltFailure,
     doltPullBefore,
     doltPushAfter,
+    isMemberSyncRemoteConfigured,
     verifyDoerStreakClosed,
 } from '../auto-sprint/runner.js';
 import { DoltDivergedError, DoltSyncError } from '../auto-sprint/errors.mjs';
@@ -226,6 +227,87 @@ test('doltPushAfter: a transient-exhausted push raises DoltSyncError (not DoltDi
     const { command, calls } = makeCommandMock({ 'bd dolt push': [fail('connection refused')] });
     await assert.rejects(() => doltPushAfter('memberA', { command }), DoltSyncError);
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'a non-diverged failure triggers no reconcile pull');
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-eft.30.2/30.3 -- neutralized-sandbox D-push defense-in-depth.
+//
+// A misconfigured/mis-wired Dolt-level remote in a neutralized sandbox can
+// make a real 'bd dolt push' attempt and fail with a credentials-style error
+// (e.g. 'could not read Username for https://github.com') that
+// classifyDoltFailure has no pattern for and so classifies as 'unknown' --
+// NOT 'no-remote'. doltPushAfter must still treat this as a benign
+// no-remote skip when the member's bd-level sync.remote is itself
+// neutralized/absent (checked via isMemberSyncRemoteConfigured /
+// opts.checkSyncRemoteConfigured), and must still raise DoltSyncError,
+// unchanged from eft.16.1, when sync.remote IS actively configured (the
+// negative control). Hermetic: command() is always a scripted mock here --
+// no real bd/dolt process and no network I/O.
+// -----------------------------------------------------------------------------
+const CREDENTIALS_ERROR = 'could not read Username for https://github.com: terminal prompts disabled';
+
+test('doltPushAfter: neutralized-sandbox non-diverged push failure (bd-level sync.remote absent) is treated as a benign no-remote skip, not thrown', async () => {
+    const logs = [];
+    const log = (msg) => logs.push(msg);
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    const checkSyncRemoteConfigured = async () => false; // simulates a neutralized/absent bd-level sync.remote
+
+    const res = await doltPushAfter('memberA', { command, log, checkSyncRemoteConfigured });
+
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'no reconcile pull is issued for this benign skip');
+    assert.ok(
+        logs.some((l) => l.includes("[Dolt] D-push for member 'memberA' skipped: no dolt remote configured")),
+        `expected a 'skipped: no dolt remote configured' log line, got: ${JSON.stringify(logs)}`,
+    );
+});
+
+test('doltPushAfter: negative control -- with an active configured sync.remote, the same non-diverged failure still throws DoltSyncError (eft.16.1 semantics preserved)', async () => {
+    const { command, calls } = makeCommandMock({ 'bd dolt push': [fail(CREDENTIALS_ERROR)] });
+    const checkSyncRemoteConfigured = async () => true; // simulates an actively configured bd-level sync.remote
+
+    await assert.rejects(() => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), DoltSyncError);
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'a non-diverged failure triggers no reconcile pull');
+});
+
+test('doltPushAfter: default isMemberSyncRemoteConfigured check (no override) is exercised end-to-end -- absent sync.remote skips, configured sync.remote throws', async () => {
+    const absent = makeCommandMock({
+        'bd dolt push': [fail(CREDENTIALS_ERROR)],
+        'bd config get sync.remote': [{ ok: true, output: JSON.stringify({ value: '' }), error: null }],
+    });
+    const resAbsent = await doltPushAfter('memberA', { command: absent.command });
+    assert.deepEqual(resAbsent, { ok: true, member: 'memberA', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' });
+    const configCallAbsent = absent.calls.find((c) => c.cmd.includes('bd config get sync.remote'));
+    assert.ok(configCallAbsent, 'doltPushAfter consulted bd-level sync.remote via command()');
+    assert.equal(configCallAbsent.opts.member_name, 'memberA', 'sync.remote query carries an explicit member_name (3.2)');
+
+    const configured = makeCommandMock({
+        'bd dolt push': [fail(CREDENTIALS_ERROR)],
+        'bd config get sync.remote': [{ ok: true, output: JSON.stringify({ value: 'git+https://github.com/Apra-Labs/fleet-e2e-toy' }), error: null }],
+    });
+    await assert.rejects(() => doltPushAfter('memberA', { command: configured.command }), DoltSyncError);
+});
+
+test('isMemberSyncRemoteConfigured: fail-safe -- an unparsable / errored / missing-output query is treated as CONFIGURED', async () => {
+    const errored = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => ({ ok: false, error: 'boom' }),
+    });
+    assert.equal(errored, true, 'a failSoft error result fails safe (configured)');
+
+    const unparsable = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => ({ ok: true, output: 'not json', error: null }),
+    });
+    assert.equal(unparsable, true, 'unparsable JSON fails safe (configured)');
+
+    const emptyOutput = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => ({ ok: true, output: '', error: null }),
+    });
+    assert.equal(emptyOutput, true, 'no output to positively parse fails safe (configured)');
+
+    const positivelyAbsent = await isMemberSyncRemoteConfigured('memberA', {
+        command: async () => ({ ok: true, output: JSON.stringify({ value: '' }), error: null }),
+    });
+    assert.equal(positivelyAbsent, false, 'a clean parse of an empty value is the only "not configured" case');
 });
 
 // -----------------------------------------------------------------------------
