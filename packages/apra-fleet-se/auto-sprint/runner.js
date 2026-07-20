@@ -4668,8 +4668,21 @@ async function runSprintCycle(context) {
                     model: FIXED_ROLE_TIER['integ-test-runner'],
                     // apra-fleet-j6i: runs a full test suite, plausibly
                     // long-running.
+                    //
+                    // Stabilization log Issue 30: max_total_s is a HARD kill
+                    // at elapsed time regardless of activity, and a timer
+                    // kill surfaces as a plain AgentDispatchError -- the
+                    // resume ladder below only matches max_turns_exhausted,
+                    // so a killed-at-the-ceiling run becomes a FALSE
+                    // passed:false with no resume, and two such cycles trip
+                    // stall-abort. The integ phase (real suites + a full
+                    // sandbox smoke sprint) can legitimately run past 60
+                    // minutes, so give the ceiling 2h of headroom while
+                    // keeping the 1h INACTIVITY timer: a genuinely hung
+                    // runner still dies after 60 min of silence; an active
+                    // long pass is never killed mid-progress.
                     timeout_s: 3600,
-                    max_total_s: 3600,
+                    max_total_s: 7200,
                     max_turns: INTEG_TEST_MAX_TURNS,
                 };
                 const dispatchIntegOnce = () => withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(

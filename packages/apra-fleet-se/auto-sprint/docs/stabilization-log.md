@@ -824,3 +824,29 @@ case/shape) at the single engine read site; zero or multiple matches pass
 through untouched so explicit model ids are never mangled. The planner
 prompt's defensive '-tier' legalese was trimmed at the same time -- enforce
 in code, not prompts. Data fixed member-side (eft.26/27 -> "standard").
+
+### Issue 30 (run 15 C4, preemptive): 60-min hard ceiling would false-fail a long integ pass
+
+Found by inspection while Integ Test C4 was in flight -- the first integ
+pass expected to run LONG (real suites + a full sandbox smoke sprint),
+which is exactly when the ceiling matters. The integ dispatch set
+timeout_s: 3600 AND max_total_s: 3600. The first is an inactivity timer
+(resets on member stdout; the playbook's background-sprint poll loop keeps
+it fed). The second is a HARD kill at elapsed time regardless of activity
+or progress. A timer kill surfaces as a plain AgentDispatchError, which
+the catch converts to passed:false -- a FALSE integ failure -- and the
+resume ladder only matches reason max_turns_exhausted, so the killed run
+gets no resume even if minutes from done. Compounding: two such cycles
+with no other closes trip stall-abort and kill the whole run.
+
+Note the sprint-level stall detector is NOT a risk here: it is cycle-
+granular (closed-bead high-water mark at cycle evaluation), structurally
+unable to fire mid-phase.
+
+Fix: integ runner max_total_s raised to 7200 while keeping timeout_s at
+3600 -- a genuinely hung runner still dies after 60 min of silence; an
+active long pass gets 2h of headroom. Other roles keep 3600/3600 (deploy,
+plan, review are not plausibly hour-plus when healthy). Takes effect run
+16; run 15's in-flight C4 still carries the 60-min ceiling, so a C4 integ
+result of passed:false with a dispatch-failed summary near the 60-min mark
+should be read as THIS signature, not a real test failure.
