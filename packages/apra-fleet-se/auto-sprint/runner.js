@@ -1366,6 +1366,79 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
 }
 
 /**
+ * apra-fleet-eft.26.1 (Reservation interop gap, Hole 1) -- reserves and
+ * releases every sprint member against the fleet server's OWN per-member
+ * reservation record (`member_reservation` tool, apra-fleet-eft.10.1/10.2),
+ * so a sprint launched directly via `apra-fleet workflow auto-sprint` / this
+ * package's bin/cli.mjs (never routed through the supervisor's
+ * POST /api/sprints, and so never seen by src/supervisor/ledger.mjs) still
+ * becomes visible to the enforcement every launch path already shares:
+ * execute_prompt's dispatch-time reservedBy check (src/tools/execute-prompt.ts,
+ * eft.10.3) and, for supervisor-routed launches, the eft.26.2 overlap guard
+ * that now also reads this same server-side record.
+ *
+ * `callTool` is injected (the caller's MCP client, e.g.
+ * `fleetApi.mcpClient.callTool`) so this stays transport-agnostic and
+ * unit-testable without a live fleet server. This is deliberately NOT built
+ * on the supervisor's own HTTP routes (unlike the dolt-mutex/id-allocator
+ * clients above): `member_reservation` lives on the fleet MCP server every
+ * launch path already connects to, not the (optional, not wired for direct
+ * CLI launches) apra-fleet-se supervisor.
+ *
+ * `sprintId` should be the SAME opaque identity already used for the dolt
+ * push mutex / child-id allocator (see `sprintMutexId` in runSprintCycle,
+ * currently the sprint's branch name) -- opaque and target-agnostic, no
+ * assumption about which repo the sprint develops.
+ *
+ * Reserve/release are BEST-EFFORT per member: a failure (transport error, or
+ * the tool's own "already reserved by X" rejection) is logged and does NOT
+ * throw -- matching the release()-is-non-fatal precedent set by the
+ * dolt-mutex / id-allocator clients above. This is safe because
+ * execute_prompt (eft.10.3) independently rejects any dispatch to a member
+ * this sprint failed to actually reserve, so an unreserved member fails
+ * loudly at its first dispatch rather than silently interleaving with
+ * another sprint.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, members?: string[], sprintId?: string, log?: Function }} opts
+ * @returns {{ reserveAll: () => Promise<void>, releaseAll: () => Promise<void> }}
+ */
+export function createMemberReservationClient(opts = {}) {
+    const { callTool, members = [], sprintId, log = () => {} } = opts;
+    const active = typeof callTool === 'function' && typeof sprintId === 'string' && sprintId.length > 0 && members.length > 0;
+
+    function resultText(result) {
+        if (typeof result === 'string') return result;
+        if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
+            return result.content[0].text;
+        }
+        return '';
+    }
+
+    async function callFor(action, member) {
+        try {
+            const result = await callTool('member_reservation', { member_name: member, action, sprint_id: sprintId });
+            const text = resultText(result);
+            if ((result && result.isError) || text.startsWith('[-]')) {
+                log(`[member-reservation] ${action} rejected for member '${member}': ${text || '(no detail)'}`);
+            }
+        } catch (err) {
+            log(`[member-reservation] ${action} failed for member '${member}' (non-fatal; execute_prompt's dispatch-time reservedBy check still applies): ${err.message}`);
+        }
+    }
+
+    return {
+        async reserveAll() {
+            if (!active) return;
+            for (const member of members) await callFor('reserve', member);
+        },
+        async releaseAll() {
+            if (!active) return;
+            for (const member of members) await callFor('release', member);
+        },
+    };
+}
+
+/**
  * apra-fleet-eft.9.3 -- create a child bead under `parentId` using a
  * supervisor-allocated, collision-free explicit id. This is the single
  * bead-creation seam every reviewer-proposed newTask flows through so that two

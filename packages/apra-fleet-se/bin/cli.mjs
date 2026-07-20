@@ -16,7 +16,7 @@ import {
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension } from '../auto-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName, checkMemberTopology } from '../auto-sprint/runner.js';
+import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient } from '../auto-sprint/runner.js';
 import { normalizeRole } from '../auto-sprint/contracts.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -637,6 +637,43 @@ async function main() {
 
     if (viewerFailed) return; // process.exit already called synchronously above
 
+    // apra-fleet-eft.26.1 (Reservation interop gap, Hole 1): a sprint
+    // launched directly through this CLI (never routed through the
+    // supervisor's POST /api/sprints) never reserved its members
+    // server-side, so it was invisible to any interop -- neither the
+    // supervisor's overlap guard (eft.26.2) nor execute_prompt's
+    // dispatch-time reservedBy check (eft.10.3) had anything to consult.
+    // Reserve every member now, on the SAME opaque sprint id runner.js uses
+    // for the dolt-mutex/allocator (the sprint branch name), and release on
+    // EVERY exit path below: normal success, a caught failure/stall-abort,
+    // or SIGINT.
+    const sprintReservation = createMemberReservationClient({
+        callTool: (name, args) => mcpClient.callTool(name, args),
+        members: validMembers,
+        sprintId: branchName,
+        log: (msg) => console.log(msg),
+    });
+    await sprintReservation.reserveAll();
+
+    let reservationReleased = false;
+    const releaseReservationOnce = async () => {
+        if (reservationReleased) return;
+        reservationReleased = true;
+        await sprintReservation.releaseAll();
+    };
+    // Ctrl-C during an in-flight sprint previously had no handler at all (Node's
+    // default: immediate termination, no cleanup). Registering one here is what
+    // makes a released-on-SIGINT reservation possible; it is removed again
+    // (below) the instant the sprint settles so it can never fire during --
+    // or short-circuit -- the unrelated post-failure grace-window SIGINT
+    // listener registered further down in the catch branch.
+    const onSigint = () => {
+        releaseReservationOnce()
+            .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
+            .finally(() => process.exit(130));
+    };
+    process.once('SIGINT', onSigint);
+
     try {
         const scriptPath = resolveRunnerScriptPath();
         const res = await engine.executeFile(scriptPath, buildRunnerArgs({
@@ -650,11 +687,15 @@ async function main() {
             roleMap,
             budget,
         }));
+        process.removeListener('SIGINT', onSigint);
+        await releaseReservationOnce();
         console.log('Sprint finished:', res);
         server.close();
         transport.stop();
         process.exit(0);
     } catch (err) {
+        process.removeListener('SIGINT', onSigint);
+        await releaseReservationOnce();
         // apra-fleet-xbu.4: a caught sprint-level failure (Planner retries
         // exhausted, a StalledSprintError, pre-sprint validation, etc.) used
         // to tear the dashboard server down in the same tick as the error --
