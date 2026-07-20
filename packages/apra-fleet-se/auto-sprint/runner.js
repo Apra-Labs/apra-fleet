@@ -952,6 +952,71 @@ export function classifyDoltFailure(output) {
 }
 
 /**
+ * apra-fleet-eft.30.2 (defense-in-depth, independent of eft.30.1): query
+ * whether `member`'s bd-level `sync.remote` setting -- the exact YAML key
+ * the eft.25.1 neutralize step comments out -- is currently configured.
+ *
+ * This is deliberately independent of Dolt's raw remote wiring /
+ * classifyDoltFailure's stderr pattern matching: apra-fleet-eft.30 showed a
+ * (mis)wired Dolt-level remote can still make a real `bd dolt push` attempt
+ * and fail with a credentials error ('could not read Username for
+ * https://github.com') that classifyDoltFailure has no pattern for, so it
+ * returns 'unknown' rather than 'no-remote' -- even though the sprint's
+ * bd-level sync.remote for this clone IS neutralized and nothing is
+ * supposed to be pushed. Consulting the bd-level setting directly closes
+ * that gap regardless of what Dolt's own remote list says.
+ *
+ * Uses `bd config get sync.remote --json` (via the injected command(), with
+ * an explicit member_name per 3.2) rather than reading config.yaml off disk
+ * directly, since `command()` is the only member-scoped I/O this runner has
+ * -- a member's clone is not assumed to be locally readable.
+ *
+ * Fail-safe by default: a failed command(), a failSoft error result, or
+ * output that cannot be positively parsed as `{ value: '' }` is all treated
+ * as CONFIGURED (returns true) -- i.e. this only ever reports "not
+ * configured" when it can positively confirm an empty `value` from a clean
+ * JSON parse. This deliberately does NOT mirror checkSyncRemoteInert's
+ * vacuous pass on a missing config.yaml: unlike that read-only sandbox
+ * guard, a false positive here (wrongly reporting "not configured") would
+ * silently swallow a genuine D-push failure on a real, actively-synced
+ * clone -- the exact eft.16.1 regression this must not reintroduce -- so an
+ * inconclusive read must fail closed (assume configured, keep throwing),
+ * not fail open.
+ *
+ * @param {string} member
+ * @param {{ command: Function, log?: Function }} opts
+ * @returns {Promise<boolean>}
+ */
+export async function isMemberSyncRemoteConfigured(member, opts) {
+    const { command, log = () => {} } = opts;
+    let res;
+    try {
+        res = await command('bd config get sync.remote --json', { member_name: member, silent: true, failSoft: true });
+    } catch (err) {
+        log(`[Dolt] could not query bd-level sync.remote for member '${member}' (fail-safe: treating as configured): ${err.message}`);
+        return true;
+    }
+    if (res && typeof res === 'object' && res.ok === false) {
+        log(`[Dolt] 'bd config get sync.remote' failed for member '${member}' (fail-safe: treating as configured): ${res.error}`);
+        return true;
+    }
+    const output = res && typeof res === 'object' ? res.output : res;
+    if (!output) {
+        // No output to positively parse (e.g. a no-op/unmocked command()) --
+        // fail-safe: cannot confirm sync.remote is absent, so do not treat
+        // it as neutralized.
+        return true;
+    }
+    try {
+        const parsed = JSON.parse(output);
+        return !(typeof parsed.value === 'string' && parsed.value.trim().length === 0);
+    } catch (err) {
+        log(`[Dolt] could not parse 'bd config get sync.remote --json' output for member '${member}' (fail-safe: treating as configured): ${err.message}`);
+        return true;
+    }
+}
+
+/**
  * Run a single `bd dolt` command via the injected command() with failSoft,
  * retrying ONLY transient failures up to `maxTransientRetries` times. A
  * diverged (or unknown) failure is returned immediately, never retried.
@@ -1056,12 +1121,23 @@ export async function doltPullBefore(member, opts = {}) {
  * false, skipped: true, reason: 'no-remote' }` instead of throwing
  * DoltSyncError.
  *
+ * apra-fleet-eft.30.2 (defense-in-depth, independent of eft.30.1): a
+ * non-diverged push failure that classifyDoltFailure cannot recognize as
+ * 'no-remote' from stderr text alone (e.g. a credentials error from a
+ * mis-wired Dolt-level remote) is ALSO treated as this same benign
+ * no-remote skip -- rather than the fatal DoltSyncError below -- when
+ * `member`'s bd-level sync.remote is itself absent/neutralized (see
+ * isMemberSyncRemoteConfigured). A clone with an actively configured
+ * sync.remote still throws DoltSyncError on such a failure, unchanged from
+ * eft.16.1. Override the check with `opts.checkSyncRemoteConfigured` (same
+ * `(member, {command, log}) => Promise<boolean>` shape) in tests.
+ *
  * @param {string} member
- * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string }} opts
+ * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function }} opts
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote' }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -1104,7 +1180,22 @@ export async function doltPushAfter(member, opts = {}) {
 
     if (push.kind !== 'diverged') {
         // Transient-exhausted or unknown failure -- not a divergence, so no
-        // reconcile; surface the (non-diverged) sync error.
+        // reconcile. apra-fleet-eft.30.2: before surfacing this as a fatal
+        // sync error, consult the member's OWN bd-level sync.remote setting
+        // -- independent of Dolt's raw remote wiring / classifyDoltFailure's
+        // stderr pattern matching, which apra-fleet-eft.30 showed can both
+        // still misclassify a neutralized-sandbox push failure (e.g. a
+        // credentials error) as 'unknown' rather than 'no-remote'. A
+        // neutralized/absent sync.remote means nothing is supposed to be
+        // pushed from this clone, so treat the failure as the same benign
+        // no-remote skip; an actively configured sync.remote still throws
+        // DoltSyncError here, unchanged from eft.16.1.
+        const checkFn = checkSyncRemoteConfigured || isMemberSyncRemoteConfigured;
+        const syncRemoteConfigured = await checkFn(member, { command, log });
+        if (!syncRemoteConfigured) {
+            log(`[Dolt] D-push for member '${member}' skipped: no dolt remote configured (bd-level sync.remote neutralized/absent; push failure treated as benign: ${push.error})`);
+            return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };
+        }
         throw new DoltSyncError(
             `[Dolt] D-push for member '${member}' failed: ${push.error}`,
             { member, doltOutput: push.error },
