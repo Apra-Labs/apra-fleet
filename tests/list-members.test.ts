@@ -146,3 +146,27 @@ describe('list_members -- cloud workspace section (apra-fleet-aho)', () => {
     expect(json.cloud).toEqual({ status: 'credential-expired', members: [], projects: [], lastSyncedAt: null });
   });
 });
+
+describe('list_members -- reservedBy (apra-fleet-eft.10.2)', () => {
+  it('surfaces the reservedBy owner for a reserved member in both formats', async () => {
+    addAgent(makeTestAgent({ id: 'member-reserved', friendlyName: 'reserved-worker', reservedBy: 'sprint-1' }));
+
+    const compact = await listMembers({ format: 'compact' });
+    expect(compact).toContain('reserved-by=sprint-1');
+
+    const json = JSON.parse(await listMembers({ format: 'json' }));
+    const member = json.members.find((m: any) => m.id === 'member-reserved');
+    expect(member.reservedBy).toBe('sprint-1');
+  });
+
+  it('shows nothing/na for an unreserved member', async () => {
+    addAgent(makeTestAgent({ id: 'member-free', friendlyName: 'free-worker' }));
+
+    const compact = await listMembers({ format: 'compact' });
+    expect(compact).not.toContain('reserved-by=');
+
+    const json = JSON.parse(await listMembers({ format: 'json' }));
+    const member = json.members.find((m: any) => m.id === 'member-free');
+    expect(member.reservedBy).toBeNull();
+  });
+});

@@ -117,6 +117,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         lastUsed: a.lastUsed ?? 'never',
         category: a.category ?? null,
         tags: a.tags ?? null,
+        reservedBy: a.reservedBy ?? null,
       })),
     });
   }
@@ -151,6 +152,9 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
       }
       if (a.tags && a.tags.length > 0) {
         t += ` | tags=[${a.tags.join(', ')}]`;
+      }
+      if (a.reservedBy) {
+        t += ` | reserved-by=${a.reservedBy}`;
       }
       t += '\n';
     }
