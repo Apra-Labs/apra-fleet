@@ -116,7 +116,13 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // clean-state check `command('git status --porcelain', { member_name:
 // member, silent: true, failSoft: true, label })` inside syncMemberAfter
 // (+1), net -1. Verified compliant (explicit member_name).
-const EXPECTED_COMMAND_COUNT = 28;
+// 28 -> 29 (apra-fleet-eft.30.2, neutralized-sandbox D-push defense-in-depth):
+// isMemberSyncRemoteConfigured gained one new `command('bd config get
+// sync.remote --json', { member_name: member, silent: true, failSoft: true
+// })` call site, used by doltPushAfter to consult a member's bd-level
+// sync.remote setting before treating a non-diverged push failure as fatal.
+// Verified compliant (explicit member_name).
+const EXPECTED_COMMAND_COUNT = 29;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
