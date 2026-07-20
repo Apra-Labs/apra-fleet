@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Auto-sprint as a service: always-on multi-sprint supervisor
+
+Sprint goal: turn the single-shot, run-to-completion auto-sprint CLI into an always-on
+supervisor service that runs multiple concurrent sprints with member+issue-scope
+reservation, a sprint-stack dashboard, and orchestrator-bracketed git+Dolt sync, with the
+service positioned as the single supported user-facing entry point. **Goal not fully
+met -- sprint verdict is FAIL.** A large amount of real, well-tested functionality shipped:
+an always-on supervisor process owning a combined member+issue-scope reservation ledger and
+a PID-liveness watchdog with restart re-adoption; a sprint-stack dashboard (running sprints,
+a process-free history view, a backlog tree that live-recomputes claimed scope) served
+through one reverse-proxied port; orchestrator-bracketed git and Dolt sync with a scripted-
+first conflict escalation ladder (mechanical detection/resolution before any agent is
+dispatched, and only as a documented last resort); CLI convergence onto one shared fleet
+transport; server-side per-member reservation enforced at dispatch time (independent of the
+supervisor's own launch-time ledger, closing the gap where a manually invoked sprint could
+otherwise bypass it); a shell-drivable `register-member` CLI subcommand sharing the same
+validation/registration logic as the MCP tool; a darwin-x64 build-from-source deploy
+fallback; and a lean dashboard-polling pattern (small recurring payload, on-demand full-text
+fetch with client-side caching) for sprints with large activity/task counts. Unit and build
+suites are fully green.
+
+However, the sprint fails its own acceptance gate: the epic requires the service to complete
+a full plan-develop-review-harvest cycle against a live smoke sandbox, and that end-to-end
+smoke test did not pass in any of five attempted cycles. Root causes uncovered and (partially)
+fixed but not yet proven to hold under a real end-to-end run: a member's live interactive
+session dying mid-dispatch with no timeout ever firing on the dispatching side; a member
+being incorrectly rejected as "reserved by another sprint" when the identity token used at
+reservation time and at dispatch time did not match; and a sandboxed Dolt clone's remote
+being re-wired and a real push attempted against it despite an explicit neutralization step,
+caught only by an unrelated missing-credentials condition rather than by the neutralization
+holding as designed. Additional known, tracked-but-unresolved integration blockers: a fixed
+test-server port causing an EADDRINUSE cascade across dependent test processes; a smoke-test
+fixture repository with no pre-tagged canary issue, requiring either a maintainer reseed or a
+self-provisioned fallback; a pre-sprint scope validator that rejects a single childless issue
+as a sprint target; and a bootstrap recovery step that can reactivate a real, live sync
+remote unless explicitly neutralized afterward. A vendored agent-contract durability
+improvement (per-commit push discipline for the vendored doer/harvester role contracts) is
+incomplete: implementation work remains in progress and no test exists yet to verify it, so
+the vendored contract files are unchanged from before this sprint.
+
+Carried forward, all open, none closed this cycle: the eight integration blockers described
+above; a member-reservation interoperability gap between workflow/CLI-launched sprints and
+the server-side reservation check; a viewer full-state-polling performance gap on very large
+sprints (distinct from, and not fully addressed by, the lean-polling pattern shipped this
+sprint); a real-bd test suite performance regression where a meaningful fraction of files
+exceed their per-file time budget; and the incomplete vendored agent-contract durability
+work described above. Two lower-priority follow-ups from earlier in the sprint (a CLI-
+convergence in-progress item, and a crash-resume-via-journal design explicitly deferred by
+the original plan) also remain open and are intentionally left for a future sprint.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $0.0000.
+Remaining budget: unknown/unbounded.
+Pricing source: all 80 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- feat/fleet-reorg
 
 Sprint goal: continue scope issue `apra-fleet-7pm` (P1 epic, "apra-fleet workflow subsystem: SEA-binary workflow runner") from the point the prior `feat/fleet-workflow-subsystem` sprint left off. **Goal work landed (15 beads closed this sprint, final open-at-goal-priority count 0), but the sprint's own final verdict is FAIL** -- the final reviewer dispatch timed out after repair attempts (`Command timed out after 300000ms of inactivity`) rather than returning a schema-valid verdict, so the sprint could not self-certify despite the code landing. What shipped: `apra-fleet-7pm.8` self-heal extraction in the workflow launcher (`src/cli/workflow.ts` re-extracts the on-disk payload from embedded SEA assets if it's found missing/incomplete); `apra-fleet-7pm.9` `uninstall --skill workflows` (removes the shared runtime/schema dirs and only the built-in workflow subdirectories, preserving user-authored workflows); `apra-fleet-7pm.10` the update flow reading back and re-threading the persisted `--workflows` mode into a re-invoked install; `apra-fleet-7pm.11` `docs/authoring-workflows.md` plus doc deltas; `apra-fleet-7pm.12` a fix for broken npm-mode auto-sprint runtime imports in a clean global install; `apra-fleet-7pm.13`/`.15` build-binary smoke tests for the workflow subcommand and an auto-sprint-as-built-in-workflow packaged-binary e2e test; and `apra-fleet-7pm.14` a regression guard pinning the existing CLI command surface. Also landed outside the epic: a redesigned Sprint/Backlog dependency-tree beads panel in the auto-sprint dashboard, and a positioning paper comparing `apra-fleet-workflow` to LangChain/LangGraph.

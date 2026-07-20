@@ -267,6 +267,15 @@ premium) are set per member at registration via `model_tiers` in
 Provider strengths, role recommendations, and gotchas:
 [docs/provider-guide.md](docs/provider-guide.md).
 
+**Registering a member from a shell.** `apra-fleet register-member --name
+<name> --path <folder> [options]` is a shell-drivable equivalent of the
+`register_member` MCP tool, for contexts that can run shell commands but
+cannot make MCP tool calls (scripted setup, CI, an agent role without MCP
+tool access). It shares the exact same validation and registration logic as
+the MCP tool -- both converge on one underlying registration function, so
+the two entry points can never drift apart. Run `apra-fleet register-member
+--help` for the full flag reference.
+
 ## Transport
 
 Fleet runs as a singleton service on your machine. When you start it, the server
