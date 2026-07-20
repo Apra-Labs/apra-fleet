@@ -61,7 +61,7 @@ operations problem nobody else has solved:
   model. Per-provider permission composition. Network egress policy per
   credential.
 
-One control plane. Any device. Any model. Any workflow.
+One control plane. Any device. Any model. Any workflow. Any domain.
 
 ## What you get
 
@@ -70,6 +70,7 @@ One control plane. Any device. Any model. Any workflow.
 | **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. |
 | **Any model** | Claude, Codex, Gemini, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
+| **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
 
 [GFX-3: fleet topology diagram -- one control plane, spokes to
 heterogeneous devices, each device badged with its provider(s)]
@@ -97,11 +98,8 @@ doer-2    Antigravity         large-context tasks
 reviewer  Opus (premium)      final review
 ```
 
-Software engineering is the first vertical -- the same orchestration
-pattern runs wherever work decomposes into agent-sized pieces: retail
-replenishment, logistics exception handling, healthcare intake, back-office
-operations. The engine does not know what a "sprint" is; it knows how to
-run your workflow reliably across your fleet.
+The engine does not know what a "sprint" is; it knows how to run your
+workflow reliably across your fleet (see **Any domain** above).
 
 ## Quick start (5 minutes)
 

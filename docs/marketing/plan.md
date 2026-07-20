@@ -181,6 +181,19 @@ Page map (v1):
 | GFX-4 architecture | mermaid block in README (renders natively on GitHub, diffs in PRs). Already in draft. | in draft |
 | Badges | shields.io: build (GH Actions), latest release, license, "providers: 5+", platform trio (win/mac/linux). No custom infra. | pending README landing |
 
+### Pillar decision addendum (2026-07-20, user-proposed, critiqued, adopted)
+
+Fourth pillar **Any domain** added below Any workflow; drumbeat is now
+"One control plane. Any device. Any model. Any workflow. Any domain."
+Critique applied: (a) aspiration-trap risk managed by making examples
+concrete WORKFLOW SHAPES (each passes "decomposes into agent-sized pieces
++ needs orchestration + leaves an audit trail"), not industry name-drops,
+and by keeping the honesty clause in the pillar itself ("software
+engineering is the vertical running today -- your domain is a workflow
+away"); (b) redundancy removed -- the retail/logistics/healthcare sentence
+moved OUT of the flagship section into the pillar (single home); flagship
+keeps only "the engine does not know what a sprint is".
+
 ## 9. Log (append-only)
 
 - 2026-07-20: positioning decided (fleet + k8s simile + recursive proof);
