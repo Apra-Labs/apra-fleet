@@ -502,7 +502,14 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // directly -- the root cause of a real dispatch-timeout bug).
             // Detect it by its distinctive prompt content instead.
             const isStreakAssignment = opts.prompt.includes('Ready bead ids:');
-            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name });
+            // apra-fleet-eft.29.2: also record the per-call sprint_id the
+            // FleetWorkflow agent() payload carries through to executePrompt
+            // (see AgentOptions.sprint_id / apra-fleet-eft.29.1) -- this is
+            // what lets a test confirm runSprintCycle's `agent` wrapper (the
+            // sprintMutexId stamp in runner.js) actually reaches every real
+            // dispatch call site, not just the ones exercised directly by an
+            // execute-prompt.ts unit test.
+            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id });
             await sleep(DELAY_MS);
 
             // --- plan phase: planner ---

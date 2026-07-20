@@ -885,6 +885,30 @@ describe('server-side member reservation enforced at dispatch (apra-fleet-eft.10
     expect(resultText(result)).toContain('reserved by sprint "sprint-owner"');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
+
+  // apra-fleet-eft.29.2 acceptance criterion 3: an UNRESERVED member with NO
+  // per-call sprint_id and currentSprintId() undefined (no APRA_FLEET_SPRINT_ID
+  // env either) must dispatch unchanged -- the eft.29.1 sprint_id plumbing
+  // must not regress the pre-existing no-reservation path.
+  it('dispatches unchanged for an unreserved member with no sprint_id and no APRA_FLEET_SPRINT_ID env (no regression to the no-reservation path)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ep-free-no-token' });
+    memberId = member.id;
+    addAgent(member);
+    expect(process.env.APRA_FLEET_SPRINT_ID).toBeUndefined();
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'free-no-token-ok', session_id: 'sess-free-no-token' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('free-no-token-ok');
+    expect(mockExecCommand).toHaveBeenCalled();
+    if (typeof result !== 'string' && result.structuredContent) {
+      expect(result.structuredContent.reason).not.toBe('reserved');
+    }
+  });
 });
 
 describe('no-LLM members are rejected, never dispatched (apra-fleet-us9.14)', () => {
