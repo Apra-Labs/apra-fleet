@@ -29,12 +29,12 @@ workforce -- on any machine, anywhere, using every LLM provider at once.
 
 ---
 
-[GFX-2: animated GIF, the auto-sprint dashboard actually running -- agents
-dispatching, phases advancing, verdicts landing. 20-30s loop.
-INTERIM until that GIF is recorded on the lean viewer: the existing real
-3-minute run video below.]
-
-[![Apra Fleet -- a doer-reviewer sprint, start to finish](https://img.youtube.com/vi/SGdHvIkSbY8/hqdefault.jpg)](https://youtu.be/SGdHvIkSbY8)
+[GFX-2 SLOT -- DO NOT SHIP WITHOUT IT: animated GIF of the auto-sprint
+dashboard actually running -- agents dispatching, phases advancing,
+verdicts landing. 20-30s loop. Record on the run-16+ lean viewer
+(eft.27). NOTE: the old YouTube video (SGdHvIkSbY8) in the current README
+is PM-skill-era material and contradicts this positioning -- do not reuse
+it here; a fresh recording is a landing prerequisite.]
 
 > **This repository is built by the product you are looking at.** An
 > autonomous apra-fleet workflow plans, codes, reviews, tests, and ships
