@@ -1780,14 +1780,17 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
         'never dispatched directly and stays open as the parent until its children ' +
         'are done and verified.'
     );
+    // Issue 29: the old version of this pin spent a sentence warning against
+    // '-tier'-suffixed spellings; the engine now normalizes those
+    // deterministically (normalizeTierToken), so the prompt carries only the
+    // affirmative instruction -- enforce in code, not in prompt legalese.
     lines.push(
         'For every task: set clear acceptance criteria in its description, and set its ' +
         'model tier as beads metadata at creation time via ' +
-        '`bd create ... --metadata \'{"model": "<tier>"}\'` (tier is EXACTLY one of ' +
-        '\'cheap\', \'standard\', \'premium\' -- these three literal strings, not ' +
-        '"cheap-tier"/"standard-tier"/"premium-tier") -- this is the ONLY location the model ' +
-        'tier is recorded: do not additionally record it via bd\'s freeform notes field or ' +
-        'a METADATA-section comment, per planner.md Step 3.'
+        '`bd create ... --metadata \'{"model": "<tier>"}\'` (tier: cheap, standard, or ' +
+        'premium) -- this is the ONLY location the model tier is recorded: do not ' +
+        'additionally record it via bd\'s freeform notes field or a METADATA-section ' +
+        'comment, per planner.md Step 3.'
     );
 
     if (requirementsFile && requirementsContent) {
@@ -2082,6 +2085,35 @@ const SAFE_PRIORITY_RE = /^P[0-4]$/;
  * @param {{ title: unknown, description: unknown, priority: unknown }} newTask
  * @returns {{ ok: true, title: string, description: string, priority: string } | { ok: false, reason: string }}
  */
+// Stabilization log Issue 29: bead model metadata arrives from MANY authors
+// (planner runs, out-of-band injections, older sprints), and the
+// '-tier'-suffixed forms of the three tier names keep appearing despite the
+// planner-prompt pin (the pin exists precisely because agents kept writing
+// them). A raw unknown token reaches execute_prompt verbatim and falls
+// through the server's tier map as a LITERAL provider model name, failing
+// the entire dispatch with a provider 404 -- observed live (run 15 C3 R3):
+// metadata {"model": "standard-tier"} -> claude --model standard-tier ->
+// api_error_status 404, streak lost. Normalize the unambiguous aliases at
+// the single engine read site; every OTHER value passes through untouched so
+// an explicit concrete model id in metadata still works deliberately.
+/**
+ * Normalizes a bead-metadata model value by CONTAINMENT: if the value
+ * (case-insensitive) contains exactly ONE of the three tier names --
+ * 'cheap', 'standard', 'premium' -- it normalizes to that bare tier name,
+ * so 'standard-tier', 'tier-standard', 'Standard (default)' all resolve to
+ * 'standard'. A value containing zero tier names (explicit model ids: no
+ * mainstream provider id contains these words) or MORE than one (ambiguous,
+ * e.g. 'standard-or-premium') passes through unchanged.
+ * @param {unknown} raw
+ * @returns {unknown}
+ */
+export function normalizeTierToken(raw) {
+    if (typeof raw !== 'string') return raw;
+    const lowered = raw.toLowerCase();
+    const matches = ['cheap', 'standard', 'premium'].filter((tier) => lowered.includes(tier));
+    return matches.length === 1 ? matches[0] : raw;
+}
+
 export function validateNewTask(newTask) {
     const priority = String(newTask && newTask.priority);
     if (!SAFE_PRIORITY_RE.test(priority)) {
@@ -2857,11 +2889,24 @@ async function runSprintCycle(context) {
     // `type=feature` parent; only the has-children structure tells them
     // apart.
     async function readyLeafBeads() {
-        const [ready, allInScope] = await Promise.all([
+        // Stabilization log Issue 28: the exclusion set must be built from
+        // children of ANY status, not just open ones. The previous
+        // open-only scope query had a blind spot observed live across run
+        // 15 C2: the moment a decomposed bug's task children ALL closed,
+        // they vanished from the open-beads list, the parent stopped
+        // looking like a parent, and it re-entered doer seeding as a
+        // "leaf" -- where every doer correctly refused it as non-task,
+        // wasting one full dispatch per bead per round until something
+        // closed it. Finishing the work must never re-expose the parent.
+        // bdListScoped('') is the no-extra-query path: it returns the
+        // already-fetched project-wide ANY-status dump (closed included)
+        // filtered to scope -- exactly the child set needed here, with no
+        // new bd command issued.
+        const [ready, allAnyStatus] = await Promise.all([
             bdListScoped('--ready --json'),
-            bdListScoped('--json'),
+            bdListScoped(''),
         ]);
-        const parentIds = new Set(allInScope.filter((b) => b.parent).map((b) => b.parent));
+        const parentIds = new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
         return ready.filter((b) => !parentIds.has(b.id));
     }
 
@@ -3766,7 +3811,28 @@ async function runSprintCycle(context) {
         // different streak-assignment prompt text between two runs) that
         // the older agentType-only sequence comparison in
         // test/advanced-mock-runner-test.mjs could not see.
+        // Stabilization log Issue 28 (second half): mirror the doer
+        // contract's "only claim issue_type=task" rule at SEEDING time.
+        // A non-task bead handed to a doer produces a deterministic,
+        // contract-mandated refusal -- paying a full LLM dispatch to hear
+        // "this is a bug, not a task" recited back is pure token waste
+        // (observed live: 4 of 6 streaks in one round). This deliberately
+        // does NOT touch readiness semantics or the xbu.C5 structural
+        // parent guard above -- it only mirrors, engine-side, the exact
+        // type rule the doer contract already enforces agent-side.
+        // Childless non-task beads stay in scope for the PLANNER (whose
+        // contract decomposes them into task children); they just never
+        // reach a doer streak directly.
+        //
+        // EXEMPTION -- target issues: a childless leaf TARGET is the
+        // eft.24 sprint-on-a-single-issue case; it is deliberately seeded
+        // into scope whatever its recorded type, and if planning leaves it
+        // childless the direct dispatch is the sprint's only path to it.
+        // The filter exists to stop NON-target parents/bugs from wasting
+        // doer dispatches, never to make a sprint's own target unreachable.
+        const targetIssueSet = new Set(targetIssues);
         const readyBeads = (await readyLeafBeads())
+            .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
             .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
         // A5: an empty `--ready` list is NOT, by itself, evidence the sprint
@@ -3912,7 +3978,9 @@ async function runSprintCycle(context) {
             // See resolveDoerModel() below for how a streak's (possibly
             // multi-bead) model is picked from this map, and the
             // budget-is-estimate-based caveat there.
-            const modelByBeadId = new Map(currentReady.map((b) => [b.id, b.metadata && b.metadata.model]));
+            // Issue 29: normalizeTierToken() guards this single read site --
+            // see its doc comment for the live 404 this prevents.
+            const modelByBeadId = new Map(currentReady.map((b) => [b.id, normalizeTierToken(b.metadata && b.metadata.model)]));
 
             // --- Doer barrier: isolated failures, one retry, verified closes (Work item 3) ---
             // continueOnError: true so one doer streak's exception can never
@@ -4436,14 +4504,46 @@ async function runSprintCycle(context) {
                 // per-cycle phase sequence every other cycle-evaluation check
                 // in this file assumes).
                 const openFeatures = await bdListScoped('--type=feature --status=open --json');
-                const featurePrompt = openFeatures.length > 0
+                // Stabilization log Issue 28 (third half): pending-closure
+                // BUGS -- open bug-type beads whose task children are all
+                // closed -- previously had no closure owner at all: doers
+                // refuse them (non-task), reviewers may not close, and this
+                // prompt only ever named features. They lingered open at
+                // goal priority forever (observed live: run 14's final FAIL
+                // cited exactly such beads), re-entering doer seeding every
+                // round pre-Issue-28. The integ runner already has
+                // bead-closing authority and pushBeads:true, and has closed
+                // verified bugs before -- make it their explicit owner.
+                // bdListScoped('') = the already-fetched any-status dump
+                // filtered to scope; open bugs are derived client-side from
+                // the same list -- this whole block issues NO new bd command
+                // beyond what the phase already ran (see readyLeafBeads).
+                const allForClosure = await bdListScoped('');
+                const openBugs = allForClosure.filter((b) => b.issue_type === 'bug' && b.status === 'open');
+                const childrenByParent = new Map();
+                for (const b of allForClosure) {
+                    if (!b.parent) continue;
+                    if (!childrenByParent.has(b.parent)) childrenByParent.set(b.parent, []);
+                    childrenByParent.get(b.parent).push(b);
+                }
+                const pendingClosureBugs = openBugs.filter((bug) => {
+                    const kids = childrenByParent.get(bug.id) || [];
+                    return kids.length > 0 && kids.every((k) => k.status === 'closed');
+                });
+                const pendingClosureClause = pendingClosureBugs.length > 0
+                    ? ` Additionally, these open bug bead(s) have ALL their task children closed and await ` +
+                      `verification-closure: ${pendingClosureBugs.map((b) => b.id).join(', ')}. For each, if ` +
+                      `your pass shows the underlying defect no longer reproduces, close it (bd close) with a ` +
+                      `note naming the evidence; if it still reproduces, leave it open and say why.`
+                    : '';
+                const featurePrompt = (openFeatures.length > 0
                     ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
                       `${openFeatures.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
                       `--parent ${targetIssues[0]}.`
                     : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
                       `this cycle -- if the playbook still names concrete checks to run, run them; ` +
                       `otherwise report nothing to test. Add bug beads if needed, filed under ` +
-                      `--parent ${targetIssues[0]}.`;
+                      `--parent ${targetIssues[0]}.`) + pendingClosureClause;
                 // apra-fleet-eft.8.2: integ-test-runner does NOT touch code
                 // (pushCode: false, no git push) but it DOES mutate beads --
                 // it closes passing features and files bug beads. Per Plan 3.3

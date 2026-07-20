@@ -187,9 +187,16 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             // contradict. Instead this targets the OLD wording's specific
             // phrase ("... is one of cheap-tier, standard-tier, premium-tier")
             // literally, which the current wording never produces.
+            // Issue 29 rewording: the pin now targets the current concise
+            // phrasing "(tier: cheap, standard, or premium)" -- the engine
+            // normalizes alias spellings in code (normalizeTierToken), so the
+            // prompt no longer carries defensive quoting/legalese. The intent
+            // of this check is unchanged: the three tier keywords must be
+            // named for the planner, and the old pre-dv5.1 phrasing must
+            // never return (next check below).
             check(
-                p.includes("'cheap'") && p.includes("'standard'") && p.includes("'premium'"),
-                `Planner prompt must name the exact tier keywords 'cheap', 'standard', 'premium': ${p}`
+                p.includes('tier: cheap, standard, or premium'),
+                `Planner prompt must name the tier keywords via the concise "(tier: cheap, standard, or premium)" phrasing: ${p}`
             );
             check(
                 !/is one of cheap-tier, standard-tier, premium-tier/.test(p),

@@ -796,3 +796,31 @@ Fix: the three resume sites whose contracts depend on per-dispatch scope
 The five other resume sites (planner, plan-reviewer, deployer, final
 review, harvester) self-derive their scope or carry it in-session and are
 left as-is. Engine suite: 887 pass / 0 fail.
+
+### Issue 28 (run 15 C2/C3): undispatchable beads wasted a full doer dispatch per round
+
+Observed live: 4 of 6 streaks in one Develop round were bug-type beads a
+doer is contract-bound to refuse -- each still cost a complete LLM dispatch
+that returned "skip" deterministically. Three engine holes, three fixes:
+(a) readyLeafBeads built its decomposed-parent exclusion set from OPEN
+children only, so the moment a bug's task children all closed it re-entered
+doer seeding as a fake leaf -- now built from the any-status dump
+(bdListScoped('') -- no new bd command); (b) streak seeding now mirrors the
+doer contract engine-side, dropping non-task beads before dispatch, with
+target issues exempt (the eft.24 childless-leaf-target sprint case must
+stay dispatchable); (c) pending-closure BUGS (all task children closed) had
+no closure owner at all -- doers refuse, reviewers may not close, integ
+prompts only named features -- so they lingered open at goal forever; the
+integ dispatch prompt now names them for verify-and-close.
+
+### Issue 29 (run 15 C3 R3): '-tier'-suffixed model metadata 404-failed a whole streak
+
+An out-of-band injected bead carried metadata {"model": "standard-tier"};
+the engine passed it verbatim to execute_prompt, the server tier map missed
+it, and it reached the provider CLI as a literal model name: claude --model
+standard-tier -> api_error_status 404, streak lost. Fix: normalizeTierToken()
+containment-normalizes any value holding exactly ONE tier word (any
+case/shape) at the single engine read site; zero or multiple matches pass
+through untouched so explicit model ids are never mangled. The planner
+prompt's defensive '-tier' legalese was trimmed at the same time -- enforce
+in code, not prompts. Data fixed member-side (eft.26/27 -> "standard").
