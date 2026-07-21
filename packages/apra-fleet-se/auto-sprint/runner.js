@@ -2842,7 +2842,25 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
                 { details: { reason: 'watchdog_timeout', member, timeoutS, graceS: DISPATCH_WATCHDOG_GRACE_S } }
             ));
         }, budgetMs);
-        if (timer && typeof timer.unref === 'function') timer.unref();
+        // apra-fleet-eft.50.1: the watchdog timer is deliberately NOT unref'd.
+        // Its entire contract (see this function's doc comment) is to guarantee
+        // a stalled/dead dispatch is aborted at a bounded, logged budget rather
+        // than left "alive-but-silent" -- and an unref'd timer defeats exactly
+        // that guarantee whenever it is the ONLY work left on the event loop.
+        // A frozen dispatch (a never-settling promise, e.g. a dead persistent
+        // interactive session -- the eft.28/eft.50 hang) leaves nothing else
+        // scheduled: in production a long-lived server/MCP loop happens to keep
+        // the process alive so the unref'd timer still fired, but under
+        // node:test's replay-mode harness (no child processes during the wait)
+        // the loop drained BEFORE the unref'd timer could fire, so the abort
+        // never happened and the run hung silently ("Promise resolution is
+        // still pending but the event loop has already resolved") -- the precise
+        // silent hang this watchdog exists to prevent, dependent only on which
+        // platform/Node build happened to hold the loop open. Keeping the timer
+        // ref'd makes the watchdog self-sufficient: the loop stays alive until
+        // the abort fires (or the dispatch settles first and clearTimeout() in
+        // the finally below releases it, so a normal fast dispatch never delays
+        // a clean process exit).
     });
     return Promise.race([dispatchPromise, watchdogPromise]).finally(() => clearTimeout(timer));
 }
