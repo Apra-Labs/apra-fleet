@@ -105,7 +105,16 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     .activity-child { padding: 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; }
     .activity-child.output { color: #a1a1aa; border-left: 2px solid var(--accent); }
     .activity-child.error { background: rgba(239, 68, 68, 0.05); color: var(--danger); border-left: 2px solid var(--danger); }
-    
+
+    /* apra-fleet-eft.38: on-demand full-output button for a capped command
+       activity (GET /activities/:id/output, wired up in eft.27.4 but never
+       surfaced client-side until now). Deliberately its own small element,
+       never the activity's summary/header -- headers/titles stay a plain
+       expand/collapse toggle only. */
+    .more-btn { margin-left: 8px; padding: 1px 8px; font-size: 11px; font-family: sans-serif; border-radius: 4px; border: 1px solid var(--border); background: rgba(255,255,255,0.06); color: var(--accent); cursor: pointer; }
+    .more-btn:hover { background: rgba(255,255,255,0.12); }
+    .more-btn:disabled { cursor: default; opacity: 0.6; }
+
     .status-badge { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
     .status-running { background: var(--accent-glow); color: var(--accent); animation: pulse 2s infinite; }
     .status-success { background: rgba(16, 185, 129, 0.1); color: var(--success); }
@@ -243,6 +252,75 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     
     streamEl.addEventListener('scroll', () => {
       isAutoScrolling = (streamEl.scrollTop + streamEl.clientHeight >= streamEl.scrollHeight - 30);
+    });
+
+    // apra-fleet-eft.38: on-demand full-output fetch for a capped command
+    // activity's 'more...' button (see fieldBlock() above). Delegated on
+    // streamEl (not one listener per button) since renderTreeIncremental()
+    // keeps appending new activity elements as the sprint progresses.
+    // Deliberately scoped to .more-btn clicks only -- never the activity's
+    // own <summary> header, which keeps its native <details> expand/collapse
+    // behavior untouched.
+    let expandedMoreBtn = null;
+    function collapseMoreBtn(btn) {
+        if (!btn) return;
+        const span = btn.previousElementSibling;
+        if (span && span.dataset.truncatedText !== undefined) {
+            span.textContent = span.dataset.truncatedText;
+        }
+        btn.dataset.state = '';
+        btn.disabled = false;
+        btn.textContent = btn.dataset.label || 'more...';
+        if (expandedMoreBtn === btn) expandedMoreBtn = null;
+    }
+    streamEl.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.more-btn');
+        if (!btn) return;
+        const span = btn.previousElementSibling;
+        if (!span) return;
+
+        if (btn.dataset.state === 'expanded') {
+            // Toggle back to the capped preview -- no re-fetch needed.
+            collapseMoreBtn(btn);
+            return;
+        }
+        if (btn.dataset.state === 'loading') return;
+
+        // apra-fleet-eft.38: only ONE activity's full output is ever held
+        // expanded in the DOM at a time. Fetched command output can run to
+        // many MB, and keeping several fully expanded simultaneously is
+        // exactly the kind of unbounded-DOM growth apra-fleet-eft.27/27.4
+        // already fixed for the initial render -- a new 'more...' click
+        // collapses whichever block was previously expanded back to its
+        // capped preview first.
+        if (expandedMoreBtn && expandedMoreBtn !== btn) {
+            collapseMoreBtn(expandedMoreBtn);
+        }
+
+        if (span.dataset.truncatedText === undefined) {
+            span.dataset.truncatedText = span.textContent;
+        }
+        const activityId = btn.dataset.activityId;
+        const field = btn.dataset.field;
+        btn.dataset.state = 'loading';
+        btn.disabled = true;
+        btn.textContent = 'loading...';
+        try {
+            const res = await fetch('/activities/' + encodeURIComponent(activityId) + '/output');
+            if (!res.ok) throw new Error('request failed: ' + res.status);
+            const data = await res.json();
+            const full = data[field];
+            if (typeof full !== 'string') throw new Error('missing ' + field + ' in response');
+            span.textContent = full;
+            btn.dataset.state = 'expanded';
+            btn.disabled = false;
+            btn.textContent = 'less';
+            expandedMoreBtn = btn;
+        } catch (err) {
+            btn.dataset.state = '';
+            btn.disabled = false;
+            btn.textContent = 'failed to load (retry?)';
+        }
     });
 
     ${isHistory ? '' : `
@@ -384,10 +462,33 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                         
                         let childrenHtml = '';
                         if (!act.isRunning) {
+                            // apra-fleet-eft.38: a \`command\` activity's stored
+                            // output/error may only be a head+tail excerpt --
+                            // command-output-cap.mjs (eft.27.4) capped it
+                            // before it ever reached state.tree, marking which
+                            // field via \${field}Truncated + the TRUE original
+                            // \${field}ByteLength. fieldBlock() wraps that
+                            // field's escaped text in a span the click handler
+                            // below can find and swap for the full text (GET
+                            // /activities/:id/output), and appends a dedicated
+                            // 'more...' button right next to it -- never on
+                            // the activity's own summary/header, which stays a
+                            // plain expand/collapse toggle only.
+                            const fieldBlock = (prefix, text, field) => {
+                                const truncated = act[field + 'Truncated'];
+                                const bytes = act[field + 'ByteLength'];
+                                const label = truncated
+                                    ? \`more... (\${(bytes || 0).toLocaleString()} bytes total)\`
+                                    : '';
+                                const btn = truncated
+                                    ? \` <button type="button" class="more-btn" data-activity-id="\${escapeHtml(String(act.id))}" data-field="\${field}" data-label="\${escapeHtml(label)}">\${escapeHtml(label)}</button>\`
+                                    : '';
+                                return \`\${prefix}<span class="output-text" data-field="\${field}">\${escapeHtml(text)}</span>\${btn}\`;
+                            };
                             if (act.error) {
-                                childrenHtml = \`<div class="activity-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
+                                childrenHtml = \`<div class="activity-child error">\${fieldBlock('', act.error, 'error')}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? fieldBlock('Output:\\n', act.output, 'output') : ''}</div>\`;
                             } else if (act.output) {
-                                childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
+                                childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${fieldBlock('', act.output, 'output')}</div>\`;
                             }
                         }
                         
