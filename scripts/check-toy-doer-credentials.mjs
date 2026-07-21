@@ -178,6 +178,15 @@ function shellQuote(value) {
  */
 function cleanEnvSeedParts(fleetHome) {
   const seedParts = [`HOME=${shellQuote(fleetHome)}`];
+  // apra-fleet-eft.48.7 (reopened): HOME alone does NOT sandbox the spawned
+  // CLI on Windows -- profile resolution there goes through USERPROFILE (and
+  // the Win32 API when unset), so an env-i probe seeding only HOME ran the
+  // real CLI against the OPERATOR'S real ~/.claude, and its OAuth refreshes
+  // rotated the operator's live refresh token (observed 2026-07-21: two
+  // consecutive login expiries in the operator's interactive session). Pin
+  // USERPROFILE to the same sandboxed home on every platform (harmless under
+  // POSIX bash, load-bearing under Git Bash/Windows).
+  seedParts.push(`USERPROFILE=${shellQuote(fleetHome)}`);
   for (const key of ['USER', 'LOGNAME', 'SHELL']) {
     if (process.env[key]) seedParts.push(`${key}=${shellQuote(process.env[key])}`);
   }
@@ -310,6 +319,24 @@ export function isAuthenticatedClaudeCliResult(output) {
 export function checkCleanEnvRealClaudeAuth(fleetHome = defaultFleetHome(), deps = {}) {
   const run = deps.execSync ?? execSync;
   const credPath = defaultCredentialsPath(fleetHome);
+  // apra-fleet-eft.48.7 (reopened): probes must be REFRESH-INCAPABLE by
+  // construction. A sandboxed credentials file carrying a refreshToken lets
+  // the spawned real CLI rotate that token server-side, which invalidates
+  // the ORIGINAL holder of the same refresh token (the operator's live
+  // session or fleet host) even though the probe never touched their file.
+  // Auth classification only ever needs the access token + session shape,
+  // so a refresh-capable probe file is always a caller bug -- fail closed.
+  try {
+    const parsed = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
+    if (parsed?.claudeAiOauth?.refreshToken) {
+      return {
+        ok: false,
+        authenticated: false,
+        raw: '',
+        message: `REFUSED (refresh-capable probe): '${credPath}' contains claudeAiOauth.refreshToken -- a probe CLI run could rotate it server-side and invalidate the credential's original holder. Strip refreshToken/refreshTokenExpiresAt from probe credential files before calling checkCleanEnvRealClaudeAuth.`,
+      };
+    }
+  } catch { /* absent/unparseable file: fall through -- the probe itself classifies that as NOT-AUTHENTICATED */ }
   const seedParts = cleanEnvSeedParts(fleetHome);
   // stdin explicitly from /dev/null (avoids the CLI's "no stdin data
   // received" wait); stderr discarded (only carries an unrelated

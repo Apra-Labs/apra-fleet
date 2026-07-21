@@ -83,17 +83,29 @@ describe.skipIf(!CLAUDE_CLI_AVAILABLE || !REAL_TOKEN)(
   'credential-less (bare-token) toy-doer authenticates through clean-env dispatch against the real claude CLI (apra-fleet-eft.48.7)',
   () => {
     let tmpHome: string;
-    let savedHome: string | undefined;
+    // apra-fleet-eft.48.7 (reopened): HOME alone does not sandbox profile
+    // resolution on Windows -- the spawned real CLI resolves USERPROFILE (or
+    // the Win32 API when unset), so overriding only HOME ran probes against
+    // the OPERATOR'S real ~/.claude and rotated their live OAuth session.
+    // Override every profile-resolution variable together, and restore all.
+    const PROFILE_ENV_KEYS = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'] as const;
+    let savedProfileEnv: Record<string, string | undefined>;
 
     beforeEach(() => {
-      savedHome = process.env.HOME;
+      savedProfileEnv = {};
+      for (const key of PROFILE_ENV_KEYS) savedProfileEnv[key] = process.env[key];
       tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-eft-48-7-real-cli-'));
       process.env.HOME = tmpHome;
+      process.env.USERPROFILE = tmpHome;
+      process.env.HOMEDRIVE = path.parse(tmpHome).root.replace(/[\\/]+$/, '');
+      process.env.HOMEPATH = tmpHome.slice(path.parse(tmpHome).root.length - 1);
     });
 
     afterEach(() => {
-      if (savedHome !== undefined) process.env.HOME = savedHome;
-      else delete process.env.HOME;
+      for (const key of PROFILE_ENV_KEYS) {
+        if (savedProfileEnv[key] !== undefined) process.env[key] = savedProfileEnv[key];
+        else delete process.env[key];
+      }
       fs.rmSync(tmpHome, { recursive: true, force: true });
     });
 

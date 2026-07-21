@@ -333,15 +333,23 @@ shell-drivable -- no MCP tool is required to run the scenario.
    `.git`/`.beads`, so this step cannot reach or write to the real
    `fleet-e2e-toy` git remote or its Dolt remote.
 
-   Seed the FULL `claudeAiOauth` object, not just the access token
-   (stabilization Issue 43): a credentials file containing only
-   `accessToken` is rejected by the Claude CLI as "Not logged in" -- it
-   requires at least `expiresAt` to treat the session as valid. Seeding
-   the whole object preserves the real expiry and refresh token, so
-   nothing is fabricated. `auth --oauth` accepts either a bare token or a
-   full JSON object as the secret and merges whichever it gets. Fall back
-   to the bare `CLAUDE_CODE_OAUTH_TOKEN` env var only when no real
-   credentials file exists (that path is what the env var is for).
+   Seed the full session-shape fields of `claudeAiOauth` -- but NEVER the
+   refresh token (stabilization Issue 43, apra-fleet-eft.48.7 reopen): a
+   credentials file containing only `accessToken` is rejected by the
+   Claude CLI as "Not logged in" (it needs `expiresAt` and `scopes` to
+   treat the session as valid), so seed those real fields; but
+   `refreshToken`/`refreshTokenExpiresAt` MUST be stripped -- OAuth
+   refresh-token rotation is server-side, so any sandbox process that
+   refreshes with a COPIED refresh token invalidates the original
+   holder's live session (observed 2026-07-21: probe runs expired the
+   operator's interactive login twice). The sandbox lives one canary
+   sprint; the access token's own validity window covers it, and if it
+   expires mid-run the honest failure is re-provisioning, not a silent
+   rotation of the runner's credentials. `auth --oauth` accepts either a
+   bare token or a JSON object as the secret and merges whichever it
+   gets. Fall back to the bare `CLAUDE_CODE_OAUTH_TOKEN` env var only
+   when no real credentials file exists (that path is what the env var
+   is for).
 
    ```bash
    SECRET=""
@@ -350,7 +358,12 @@ shell-drivable -- no MCP tool is required to run the scenario.
        const fs = require('fs');
        const c = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8'));
        const o = c.claudeAiOauth;
-       process.stdout.write(o && o.accessToken ? JSON.stringify(o) : '');
+       if (o && o.accessToken) {
+         // Session-shape fields only -- refreshToken deliberately omitted
+         // so nothing in the sandbox can rotate the runner's credentials.
+         const { refreshToken, refreshTokenExpiresAt, ...probeSafe } = o;
+         process.stdout.write(JSON.stringify(probeSafe));
+       }
      " "$REAL_HOME/.claude/.credentials.json")
    fi
    if [ -z "$SECRET" ]; then
