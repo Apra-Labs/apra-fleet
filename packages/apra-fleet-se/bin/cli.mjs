@@ -772,6 +772,13 @@ function isMainModule() {
     }
 }
 
+// Declare the launcher contract (apra-fleet workflow imports this file and
+// checks the flag after import): main() runs asynchronously, so without this
+// declaration the launcher's non-executing backstop (apra-fleet-eft.41.2)
+// cannot tell "started async" from "did nothing", fails loud, and its exit(1)
+// kills the just-started sprint.
+export const selfExecuting = true;
+
 if (isMainModule()) {
     main().catch(err => {
         console.error(err);
