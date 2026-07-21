@@ -88,6 +88,21 @@ const reporterPath = path.join(repoRoot, 'scripts', 'integ-file-results-reporter
 const HEARTBEAT_STALE_MS = 120000;
 const TEST_CONCURRENCY = 8;
 
+// apra-fleet-eft.46.1: these two watchdog tests do real per-retry dolt/bd
+// child-process work and, under concurrency=8, that dolt overhead contends
+// with the other 7 files in the run and can push them past their own
+// purpose-computed hang-detection timeout budgets (a scheduling artifact,
+// not a correctness regression). Run them in their own low-concurrency lane,
+// sequenced AFTER the main lane finishes (never overlapping it), so their
+// dolt overhead is never contended with the rest of the suite. Do not widen
+// this set casually -- it exists to avoid inflating the tests' own
+// hang-detecting timeouts, which would risk re-masking the eft.28 hang.
+const ISOLATED_LANE_FILES = new Set([
+  'mock-sprint-planner-dispatch-dead-pid.test.mjs',
+  'mock-sprint-planner-dispatch-stalled-session.test.mjs',
+]);
+const ISOLATED_LANE_CONCURRENCY = 1;
+
 const argv = process.argv.slice(2);
 const args = new Set(argv.filter((a) => !a.startsWith('--wait=')));
 const waitArg = argv.find((a) => a.startsWith('--wait='));
@@ -309,7 +324,56 @@ function cmdStart(files) {
   process.exit(0);
 }
 
-function cmdSupervise(assignedFiles) {
+// Runs one node --test invocation over `files` at the given concurrency and
+// resolves with its exit code (never rejects -- a spawn error resolves -1,
+// mirroring the previous single-lane error handling). Absolute file paths on
+// purpose: the checkpoint reporter identifies file-level events by
+// name === data.file (see its header comment). APRA_FLEET_BD_MOCK=off forces
+// REAL bd, not the mocked default (bd-mock-shim contract: unset =
+// mock/replay; 0/false/off/real = real bd; record = real bd + refresh
+// fixtures).
+function runLane(files, concurrency) {
+  return new Promise((resolve) => {
+    if (files.length === 0) { resolve(0); return; }
+    const child = spawn(
+      process.execPath,
+      [
+        '--test',
+        `--test-concurrency=${concurrency}`,
+        '--test-reporter=./test/helpers/timestamped-reporter.mjs',
+        '--test-reporter-destination=stdout',
+        `--test-reporter=${pathToFileURL(reporterPath).href}`,
+        '--test-reporter-destination=stdout',
+        ...files.map((f) => path.join(testDir, f)),
+      ],
+      {
+        cwd: pkgDir,
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          APRA_FLEET_BD_MOCK: 'off',
+          INTEG_SUITES_STATUS_FILE: statusFile,
+          INTEG_SUITES_HEARTBEAT_FILE: heartbeatFile,
+        },
+      }
+    );
+
+    child.on('error', (e) => {
+      console.error(`[integ-suites] supervisor: could not spawn node --test (lane concurrency=${concurrency}): ${e.message}`);
+      resolve(-1);
+    });
+    child.on('exit', (code, signal) => {
+      const exitCode = code === null ? -1 : code;
+      console.log(
+        `[integ-suites] supervisor: node --test lane (concurrency=${concurrency}, ${files.length} file(s)) ` +
+        `exited code=${exitCode}${signal ? ` signal=${signal}` : ''}`
+      );
+      resolve(exitCode);
+    });
+  });
+}
+
+async function cmdSupervise(assignedFiles) {
   if (assignedFiles.length === 0) fail('--supervise called with no files (internal error)');
   touchHeartbeat();
   // Belt-and-braces heartbeat: the reporter touches it on every test event,
@@ -320,47 +384,27 @@ function cmdSupervise(assignedFiles) {
   }, 20000);
 
   const startMs = Date.now();
-  // Absolute file paths on purpose: the checkpoint reporter identifies
-  // file-level events by name === data.file (see its header comment).
-  // APRA_FLEET_BD_MOCK=off forces REAL bd, not the mocked default
-  // (bd-mock-shim contract: unset = mock/replay; 0/false/off/real = real bd;
-  // record = real bd + refresh fixtures).
-  const child = spawn(
-    process.execPath,
-    [
-      '--test',
-      `--test-concurrency=${TEST_CONCURRENCY}`,
-      '--test-reporter=./test/helpers/timestamped-reporter.mjs',
-      '--test-reporter-destination=stdout',
-      `--test-reporter=${pathToFileURL(reporterPath).href}`,
-      '--test-reporter-destination=stdout',
-      ...assignedFiles.map((f) => path.join(testDir, f)),
-    ],
-    {
-      cwd: pkgDir,
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        APRA_FLEET_BD_MOCK: 'off',
-        INTEG_SUITES_STATUS_FILE: statusFile,
-        INTEG_SUITES_HEARTBEAT_FILE: heartbeatFile,
-      },
-    }
-  );
 
-  child.on('error', (e) => {
+  // Two sequential (never overlapping) lanes: the bulk of the suite keeps
+  // its concurrency=8 wall-clock win, then the dolt-heavy watchdog tests run
+  // alone at low concurrency so their per-attempt dolt overhead is never
+  // contended with the rest of the suite (apra-fleet-eft.46.1). Either lane
+  // may be empty on a resume (--start only re-passes pending files).
+  const isolatedFiles = assignedFiles.filter((f) => ISOLATED_LANE_FILES.has(f));
+  const mainFiles = assignedFiles.filter((f) => !ISOLATED_LANE_FILES.has(f));
+
+  let mainExit = 0;
+  let isolatedExit = 0;
+  try {
+    mainExit = await runLane(mainFiles, TEST_CONCURRENCY);
+    isolatedExit = await runLane(isolatedFiles, ISOLATED_LANE_CONCURRENCY);
+  } finally {
     clearInterval(hb);
-    console.error(`[integ-suites] supervisor: could not spawn node --test: ${e.message}`);
-    finalize(assignedFiles, startMs, -1);
-    process.exit(2);
-  });
-  child.on('exit', (code, signal) => {
-    clearInterval(hb);
-    const exitCode = code === null ? -1 : code;
-    console.log(`[integ-suites] supervisor: node --test exited code=${exitCode}${signal ? ` signal=${signal}` : ''}`);
-    finalize(assignedFiles, startMs, exitCode);
-    process.exit(exitCode === 0 ? 0 : 1);
-  });
+  }
+
+  const exitCode = mainExit !== 0 ? mainExit : isolatedExit;
+  finalize(assignedFiles, startMs, exitCode);
+  process.exit(exitCode === 0 ? 0 : 1);
 }
 
 function finalize(assignedFiles, startMs, exitCode) {
