@@ -144,7 +144,30 @@ const workflowRuntime = {
   ...collectPackageTree(join(root, 'node_modules', 'fast-uri'), 'fast-uri'),
   ...collectPackageTree(join(root, 'node_modules', 'json-schema-traverse'), 'json-schema-traverse'),
   ...collectPackageTree(join(root, 'node_modules', 'require-from-string'), 'require-from-string'),
+  // undici: direct runtime dep of @apralabs/apra-fleet-client (transport.mjs
+  // imports it). Absent from this list, every CI-built binary died at first
+  // workflow import inside the extracted runtime with ERR_MODULE_NOT_FOUND
+  // (all 3 platforms, run 29867644753) -- local builds masked it because the
+  // workspace node_modules was still resolvable next to dist/. undici has no
+  // runtime dependencies of its own, so the single tree suffices.
+  ...collectPackageTree(join(root, 'node_modules', 'undici'), 'undici'),
 };
+
+// Guard against this list silently drifting from apra-fleet-client's real
+// dependency set again: every dependency the client package declares must be
+// shipped in the runtime tree above (or be one of the @apralabs packages).
+const clientPkg = JSON.parse(readFileSync(join(root, 'packages', 'apra-fleet-client', 'package.json'), 'utf-8'));
+for (const dep of Object.keys(clientPkg.dependencies ?? {})) {
+  if (dep.startsWith('@apralabs/')) continue;
+  // collectPackageTree keys assets as '<manifestPrefix>/<pathInPackage>', so a
+  // shipped dependency appears as 'undici/package.json', 'ajv/dist/...', etc.
+  const shipped = Object.keys(workflowRuntime).some((assetName) => assetName === dep || assetName.startsWith(`${dep}/`));
+  if (!shipped) {
+    console.error(`Error: @apralabs/apra-fleet-client depends on '${dep}' but gen-sea-config.mjs does not ship it in the workflow runtime tree.`);
+    console.error('Add a collectPackageTree(...) entry for it above.');
+    process.exit(1);
+  }
+}
 
 // Agent role schemas: the glob over vendor/apra-pm/agents/schemas is
 // authoritative for the file count -- do not hardcode it. Hard-fail if the
