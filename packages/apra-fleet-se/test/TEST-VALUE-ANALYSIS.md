@@ -87,6 +87,34 @@ investment (E)**. D and E compose: D now, E when someone has a day to build the 
 | mock-sprint-exit-goalpriority | 6.4 min | golden-transcript | 4.2 min |
 | mock-sprint-plan-contracts | 0.8 min | all 16 other files combined | ~2s |
 
+### D-pull/D-push bracket caching (apra-fleet-eft.17.1)
+
+Once eft.16 made the Plan 3.3 sync brackets run for real, every mock-sprint /
+golden-transcript / budget-live dispatch paid two extra real `bd dolt pull` /
+`bd dolt push` spawns (cold-starting the embedded dolt engine ~seconds each)
+against a single no-remote scratch clone where they are deterministic no-ops.
+That pushed 28/74 real-bd files over the 5-min single-file budget (worst 1543s)
+and the full suite to ~3228s. Fix: `test/helpers/bd-replay.mjs` hydrates each
+fixture's dolt working copy at most once per test-file process -- the first
+`bd dolt pull` (and first `bd dolt push`) per clone (keyed by cwd) runs for
+real and its result Promise is cached; every later identical dolt-sync command
+for that same clone is served from cache without re-spawning bd. Correctness is
+unchanged (no remote => the op cannot vary for a clone; every bd read still hits
+the local dolt store) and the dispatch transcript is untouched (caching sits
+below the dispatch/log point). Measured before/after (real-bd single-file
+durationMs, worst offenders):
+
+| File | Before | After | Speedup |
+|---|---|---|---|
+| mock-sprint-doer-max-turns | 1,543,492 (3/3 pass) | 327,943 (3/3 pass) | ~4.7x |
+| budget-live | 1,232,943 (5/5 pass) | 321,406 (5/5 pass) | ~3.8x |
+| golden-transcript | 1,408,835 | 355,316 | ~4.0x |
+
+golden-transcript's wall time drops ~4x too, but one of its two tests now
+diverges in real mode for an unrelated reason (D-pull gating skips the no-remote
+`bd dolt pull` the committed golden still expects -- passes in mock mode); see
+apra-fleet-eft.17.3.
+
 Perfect-packing lower bound on wall time: 12.0 min at concurrency 4, 6.0 min at
 concurrency 8. Observed 16 min means today's packing loses ~4 min to file
 granularity alone.
