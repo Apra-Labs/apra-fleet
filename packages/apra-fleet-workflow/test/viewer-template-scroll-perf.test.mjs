@@ -24,6 +24,30 @@ test('flex scroll chain carries min-height: 0 down to the stream list', () => {
     );
 });
 
+test('apra-fleet-eft.43: html/body are pinned to the viewport, and #stream-list has both overflow-y: auto and a bounded height to scroll inside of', () => {
+    const html = HTML_TEMPLATE([]);
+
+    // Structural-only (no layout engine here, per this file's header comment)
+    // -- these are the exact rules apra-fleet-eft.43 pinned as the minimum
+    // that must survive: html,body height: 100%, body itself constrained to
+    // the viewport (100vh/100dvh) as a flex column, and #stream-list bound by
+    // flex: 1 + min-height: 0 with its own overflow-y: auto. Deleting any one
+    // of them (e.g. reverting html,body to auto height, or #stream-list back
+    // to a plain flex: 1 with no min-height: 0) must fail this test.
+    assert.ok(/html,\s*body\s*\{[^}]*height:\s*100%;[^}]*\}/.test(html), 'html and body must both be pinned to 100% height');
+    assert.ok(/body\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*hidden;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*\}/.test(html), 'body must be a bounded (100vh/100dvh) flex column, not a page that grows with content');
+    assert.ok(
+        /\.stream-list\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/.test(html),
+        '#stream-list must be flex: 1 + min-height: 0 + overflow-y: auto so its own scrollbar (not the window) engages once content exceeds the bounded pane'
+    );
+});
+
+test('apra-fleet-7lk / apra-fleet-eft.43: tree groups/phases are flex-shrink: 0 so they scroll instead of squishing to fit', () => {
+    const html = HTML_TEMPLATE([]);
+    assert.ok(/\.tree-group\s*\{[^}]*flex-shrink:\s*0;/.test(html), '.tree-group must be flex-shrink: 0');
+    assert.ok(/\.tree-phase\s*\{[^}]*flex-shrink:\s*0;/.test(html), '.tree-phase must be flex-shrink: 0');
+});
+
 test('extension tab containers are bounded flex children, not clipped blocks', () => {
     const html = HTML_TEMPLATE([{ id: 'beads', title: 'Beads', js: '' }]);
     assert.ok(

@@ -35,7 +35,20 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       --success: #10b981; --warning: #f59e0b; --danger: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: var(--bg); color: var(--text); font-family: sans-serif; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    /* apra-fleet-eft.43 (measured live, Chrome, 799px window): without an
+       explicit height on <html>, and with only overflow: hidden on <body>,
+       the whole page grew to fit every activity (documentElement.scrollHeight
+       ended up EQUAL to clientHeight -- the window itself could never scroll,
+       body's overflow: hidden made sure of that -- while #stream-list's own
+       scrollHeight/clientHeight were also equal, because ITS height was
+       unbounded too: nothing above it in the ancestor chain actually pinned
+       it to the viewport). html,body height: 100% plus body's own 100dvh
+       (falls back to 100vh in browsers that predate dvh) is what makes the
+       flex-column layout below a fixed-size box in the first place -- only
+       then does #stream-list's flex: 1; min-height: 0; overflow-y: auto
+       actually have a bounded parent to scroll inside of. */
+    html, body { height: 100%; }
+    body { background: var(--bg); color: var(--text); font-family: sans-serif; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
     .header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--bg-glass); border-bottom: 1px solid var(--border); }
     .header h1 { font-size: 16px; font-weight: 600; margin: 0; }
     .header-actions { display: flex; gap: 12px; align-items: center; }
@@ -65,7 +78,16 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     .stream-list { flex: 1; min-height: 0; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; background: #000; }
     
     /* Tree Group */
-    .tree-group { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    /* apra-fleet-7lk / apra-fleet-eft.43: .tree-group and .tree-phase are
+       both flex ITEMS of an ancestor display: flex; flex-direction: column
+       container (#stream-list, .group-body) with no explicit height of their
+       own -- a flex item's default flex-shrink: 1 lets the browser squish it
+       below its content's natural size whenever the column tries to fit more
+       rows than its bounded parent has room for, instead of just letting the
+       (already scrollable, overflow-y: auto) ancestor grow past the fold and
+       scroll. flex-shrink: 0 pins each row to its content size so the bounded
+       pane scrolls, rather than crushing its children to fit. */
+    .tree-group { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex-shrink: 0; }
     .group-header { padding: 12px 16px; background: rgba(0,0,0,0.4); cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; outline: none; list-style: none; }
     .group-header h3 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
     .group-header:hover { background: rgba(0,0,0,0.6); }
@@ -73,7 +95,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     .group-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 
     /* Tree Phase */
-    .tree-phase { background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; overflow: hidden; }
+    .tree-phase { background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
     .phase-header { padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; border-bottom: 1px solid rgba(255,255,255,0.02); outline: none; list-style: none; }
     .phase-header h4 { font-size: 13px; font-weight: 600; color: #e4e4e7; margin: 0; }
     .phase-header:hover { background: rgba(255,255,255,0.05); }
