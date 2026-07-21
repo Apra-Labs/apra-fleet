@@ -270,10 +270,27 @@ ID someone forgot to fill in. The `git reset --hard` above restores the
 beads DB along with the rest of the tracked repo state, which re-opens the
 canary, when that canary exists upstream.
 
-If the tag lookup in `## Test scenario` step 2 returns zero matches (no
-upstream `integ-canary` issue present, or it was renamed/removed), the
-runner self-provisions a canary in the sandbox's LOCAL beads DB only --
-this never writes to or pushes the real Dolt remote.
+apra-fleet-eft.18.3 (stale bootstrap Dolt DB vs. git-tracked JSONL): `bd
+bootstrap --yes` hydrates the sandbox's local Dolt DB from a SEPARATE sync
+path (the real `fleet-e2e-toy` Dolt remote) rather than from the git-
+tracked `.beads/issues.jsonl` the `git reset --hard` above just restored.
+A maintainer can merge an `integ-canary` label into the JSONL (e.g. PR #96
+labeling gh-toy-4ef) without that label having propagated into the synced
+Dolt DB yet, so the tag lookup below can return zero matches even though
+the git-tracked source of truth already carries the tag. Before falling
+back to self-provisioning, the tag lookup in `## Test scenario` step 2
+first reconciles the local Dolt DB from the git-tracked JSONL with `bd
+import` (no file argument: it reads the configured `import.path`, which
+defaults to `.beads/issues.jsonl`) -- an upsert into the LOCAL database
+only, never a push -- and retries the label lookup once. `bd import`
+never contacts the real Dolt remote, so this reconcile step is exactly as
+isolated as the tag lookup it repairs.
+
+If the tag lookup still returns zero matches after that reconcile (no
+`integ-canary` issue present in the Dolt DB or the git-tracked JSONL, or
+it was renamed/removed), the runner self-provisions a canary in the
+sandbox's LOCAL beads DB only -- this never writes to or pushes the real
+Dolt remote.
 
 The canary is deliberately the SIMPLEST possible issue -- the same
 scope-containment trick the e2e suite uses with this same toy repo (its
@@ -337,14 +354,21 @@ shell-drivable -- no MCP tool is required to run the scenario.
    node dist/index.js register-member --type local --name toy-doer \
      --path "$HOME/toy-repo" --llm claude
    ```
-2. Find the canary issue by its `integ-canary` tag. If the lookup returns
-   a match, confirm it is open (`bd show <canary-id>`, where
+2. Find the canary issue by its `integ-canary` tag (`bd list
+   --label=integ-canary --json` from `$HOME/toy-repo`). If the lookup
+   returns a match, confirm it is open (`bd show <canary-id>`, where
    `<canary-id>` is whatever ID the tag lookup returned). If the lookup
-   returns zero matches, self-provision the minimal "--version flag"
-   canary in the sandbox's local beads DB per `## Reset` above
-   (`bd create "Add a --version flag to the CLI" ... --label
-   integ-canary`, no push) and use its ID as `<canary-id>`. Neither path
-   writes to `git+https://github.com/Apra-Labs/fleet-e2e-toy`.
+   returns zero matches, first reconcile the local Dolt DB from the
+   git-tracked JSONL (`bd import`, no file argument -- reads
+   `.beads/issues.jsonl` by default, a local-only upsert, never a push;
+   see the apra-fleet-eft.18.3 note under `## Reset`) and retry the label
+   lookup once. If that retry still returns zero matches (no
+   `integ-canary` tag in the Dolt DB or the git-tracked JSONL),
+   self-provision the minimal "--version flag" canary in the sandbox's
+   local beads DB per `## Reset` above (`bd create "Add a --version flag
+   to the CLI" ... --label integ-canary`, no push) and use its ID as
+   `<canary-id>`. No path in this step writes to
+   `git+https://github.com/Apra-Labs/fleet-e2e-toy`.
 3. Run `apra-fleet workflow auto-sprint` against the canary issue with
    `--max-cycles 1` and `--dispatch-timeout-s 900`. The timeout bound
    means a hung dispatch (member process alive but silent) costs at most
