@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -194,6 +194,14 @@ export class CopilotProvider implements ProviderAdapter {
 
   headlessInvocation(promptLiteral: string): string {
     return `-p "${promptLiteral}"`;
+  }
+
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40 was scoped to the Claude workspace-trust gate (see the
+    // provider-trust-matrix note on the parent bug); Copilot was not part of that
+    // investigation and no equivalent per-project trust gate is known. No-op until a
+    // Copilot-specific gate is live-verified.
+    return { seeded: false, detail: 'copilot: no known per-project trust gate' };
   }
 }
 

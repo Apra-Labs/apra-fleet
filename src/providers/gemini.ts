@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -220,6 +220,13 @@ export class GeminiProvider implements ProviderAdapter {
 
   headlessInvocation(promptLiteral: string): string {
     return `--skip-trust -p "${promptLiteral}"`;
+  }
+
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40 provider trust matrix: Gemini has a workspace-trust gate too, but
+    // it is ALREADY handled per-dispatch via --skip-trust in headlessInvocation() above --
+    // no settings-file seeding is needed or correct here.
+    return { seeded: false, detail: 'gemini: trust gate already bypassed per-dispatch via --skip-trust' };
   }
 }
 

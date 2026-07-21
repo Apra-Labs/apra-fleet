@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -288,5 +288,12 @@ export class AgyProvider implements ProviderAdapter {
       mechanism: 'config-file-merge',
       detail: `merged apra-fleet-member into ${configFile} (mcpServers.apra-fleet-member)`,
     };
+  }
+
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40 provider trust matrix: AGY has NO per-project trust concept -- its
+    // config is machine-global (live-verified, docs/member-onboarding-journey.md section
+    // 3a). No-op.
+    return { seeded: false, detail: 'agy: no per-project trust concept -- machine-global config' };
   }
 }

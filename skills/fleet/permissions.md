@@ -76,3 +76,34 @@ When a member's primary mode changes (e.g., from doer to reviewer), re-run `comp
 ## Never auto-granted
 
 `sudo`, `su`, `env`, `printenv`, `nc`, `nmap` - the tool rejects these. Escalate to user.
+
+## Workspace trust (Claude)
+
+Composed permissions only take effect in a **trusted** workspace. Claude gates
+`permissions.allow` entries on `projects[<work_folder>].hasTrustDialogAccepted` in the
+member-side `~/.claude.json` - if that flag is unset, the CLI silently **drops** every
+project-scoped allow entry it was just handed by `compose_permissions` (not merely a
+cosmetic warning), so an unattended member's dispatches get denied tools instead of the
+permissions it was configured with.
+
+Normally a human accepts this trust dialog interactively the first time they open a
+folder in Claude. An unattended, fleet-managed member can never click that dialog, and
+its work folder is fleet-managed by definition - it is never opened by a human first -
+so trust has to be seeded programmatically instead of relying on that interactive flow.
+
+The `ensureWorkspaceTrusted(workFolder)` provider-adapter hook does this: for Claude, it
+performs an idempotent, atomic read-merge-write of the member-side `~/.claude.json`,
+setting `projects[<work_folder>].hasTrustDialogAccepted = true` scoped **strictly** to
+that exact work folder (never a parent directory, never blanket) - delivered over the
+same channel `compose_permissions` already uses, so it works uniformly for local and
+remote (SSH) members. It logs distinctly whether it just seeded trust or found it
+already present. Other providers no-op: Gemini and OpenCode have their own trust gates
+but already bypass them per-dispatch (`--skip-trust`, `--dangerously-skip-permissions`);
+AGY has no per-project trust concept (machine-global config); Codex/Copilot have no
+known equivalent gate.
+
+If `execute_prompt` fails with a `workspace_not_trusted` structured error, the CLI's own
+stderr will contain a `"...this workspace has not been trusted"` message - seed trust
+via `ensureWorkspaceTrusted(workFolder)` (invoked automatically at
+register_member/update_member and on every `compose_permissions` call once
+apra-fleet-eft.40.2 wires it in), then retry.

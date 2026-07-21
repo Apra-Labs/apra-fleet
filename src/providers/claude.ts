@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -275,6 +275,71 @@ export class ClaudeProvider implements ProviderAdapter {
       mechanism: 'cli-verb',
       detail: `claude mcp add --transport http --scope ${opts.scope} apra-fleet-member <url> (cwd=${opts.workFolder})`,
     };
+  }
+
+  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux'): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40: Claude gates project-scoped permissions.allow entries on
+    // projects[<key>].hasTrustDialogAccepted in the member-side ~/.claude.json -- an
+    // untrusted workspace silently DROPS them (not merely a cosmetic warning), degrading
+    // unattended dispatches. There is no surgical --skip-trust equivalent for Claude
+    // (only the overbroad --dangerously-skip-permissions), so seeding this flag directly
+    // is the only viable fix.
+    //
+    // Live-verified format ground truth (apra-fleet-eft.40 notes, real ~/.claude.json):
+    // project keys are ABSOLUTE PATHS WITH FORWARD SLASHES even on Windows. Normalize so
+    // a folder passed with backslashes, or with a trailing slash, still hits the SAME
+    // entry -- that is also what makes re-running this idempotent.
+    const key = workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+
+    const isWindows = agentOs === 'windows';
+    const homeFile = isWindows ? '$env:USERPROFILE\\.claude.json' : '$HOME/.claude.json';
+    const tmpFile = isWindows ? '$env:USERPROFILE\\.claude.json.fleet-trust-tmp' : '$HOME/.claude.json.fleet-trust-tmp';
+
+    const readCmd = isWindows
+      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue`
+      : `cat "${homeFile}" 2>/dev/null || true`;
+    const readResult = await execCommand(readCmd, 10000);
+
+    let existing: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(readResult.stdout.trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
+    } catch {
+      // File missing, empty, or not JSON -- a member that has never run Claude
+      // interactively has no ~/.claude.json at all yet. Start from an empty object.
+    }
+
+    const rawProjects = existing.projects;
+    const projects: Record<string, unknown> = (rawProjects && typeof rawProjects === 'object' && !Array.isArray(rawProjects))
+      ? rawProjects as Record<string, unknown>
+      : {};
+    const rawEntry = projects[key];
+    const existingEntry: Record<string, unknown> = (rawEntry && typeof rawEntry === 'object' && !Array.isArray(rawEntry))
+      ? rawEntry as Record<string, unknown>
+      : {};
+
+    if (existingEntry.hasTrustDialogAccepted === true) {
+      console.error(`[claude] workspace trust: already present for "${key}"`);
+      return { seeded: false, detail: `already trusted: ${key}` };
+    }
+
+    // MERGE: preserve every sibling field already on the project entry (history,
+    // allowedTools, etc.) and every other project's entry in the file -- never replace
+    // the entry, or the file, wholesale.
+    const mergedProjects = { ...projects, [key]: { ...existingEntry, hasTrustDialogAccepted: true } };
+    const merged = { ...existing, projects: mergedProjects };
+    const contentStr = JSON.stringify(merged, null, 2);
+
+    // ATOMIC write: stage the full merged content in a temp file, then rename over the
+    // real file in one filesystem operation -- a crash or concurrent read mid-write can
+    // never observe a partially-written ~/.claude.json.
+    const writeCmd = isWindows
+      ? `[System.IO.File]::WriteAllText("${tmpFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${tmpFile}" "${homeFile}"`
+      : `cat > "${tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${tmpFile}" "${homeFile}"`;
+    await execCommand(writeCmd, 10000);
+
+    console.error(`[claude] workspace trust: seeded for "${key}"`);
+    return { seeded: true, detail: `seeded trust: ${key}` };
   }
 }
 
