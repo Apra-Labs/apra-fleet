@@ -166,6 +166,25 @@ function shellQuote(value) {
 }
 
 /**
+ * Mirrors getCleanEnv()'s seed set (HOME, USER, LOGNAME, SHELL), with HOME
+ * pinned to the given fleetHome rather than the ambient process env, so
+ * probes built on top of this are deterministic under test fixtures too.
+ * Shared by checkCleanEnvCredentialsFile and checkCleanEnvRealClaudeAuth so
+ * both reproduce the exact same 'env -i <seed>' prefix LocalStrategy's
+ * dispatch exec path uses.
+ *
+ * @param {string} fleetHome
+ * @returns {string[]}
+ */
+function cleanEnvSeedParts(fleetHome) {
+  const seedParts = [`HOME=${shellQuote(fleetHome)}`];
+  for (const key of ['USER', 'LOGNAME', 'SHELL']) {
+    if (process.env[key]) seedParts.push(`${key}=${shellQuote(process.env[key])}`);
+  }
+  return seedParts;
+}
+
+/**
  * Path 2: does a clean-env probe -- reproducing LocalStrategy's dispatch
  * exec path (src/os/linux.ts#getCleanEnv: 'env -i <seed> bash -l -c ...',
  * HOME seeded from the fleet server's own process.env.HOME) -- resolve a
@@ -178,14 +197,7 @@ function shellQuote(value) {
 export function checkCleanEnvCredentialsFile(fleetHome = defaultFleetHome(), deps = {}) {
   const run = deps.execSync ?? execSync;
   const credPath = defaultCredentialsPath(fleetHome);
-
-  // Mirrors getCleanEnv()'s seed set (HOME, USER, LOGNAME, SHELL), with HOME
-  // pinned to the fleetHome under test rather than the ambient process env,
-  // so this probe is deterministic under test fixtures too.
-  const seedParts = [`HOME=${shellQuote(fleetHome)}`];
-  for (const key of ['USER', 'LOGNAME', 'SHELL']) {
-    if (process.env[key]) seedParts.push(`${key}=${shellQuote(process.env[key])}`);
-  }
+  const seedParts = cleanEnvSeedParts(fleetHome);
   // '|| true' keeps the probe's own exit code 0 when the credentials file
   // is simply absent (the expected pre-fix state) -- 'cat' on a missing
   // file exits non-zero even with stderr redirected, and that is a
@@ -228,6 +240,106 @@ export function checkCleanEnvCredentialsFile(fleetHome = defaultFleetHome(), dep
   return {
     ok: true,
     message: `OK (clean-env path): clean-env probe resolved a claudeAiOauth object with accessToken and a sufficient session shape (expiresAt/refreshToken/scopes/subscriptionType) at '${credPath}'.`,
+  };
+}
+
+// A bogus, never-real model id. checkCleanEnvRealClaudeAuth() intentionally
+// passes this so the real CLI fails fast on model resolution (~1s, $0 cost,
+// no real generation call) rather than actually generating a response.
+// Reaching THIS specific failure (instead of "Not logged in") is itself the
+// "authenticated" signal -- it mirrors the passing ambient-env-var control
+// case recorded in apra-fleet-eft.48's notes ("gets past auth straight to a
+// model-not-found error").
+export const AUTH_PROBE_MODEL_ID = 'apra-fleet-eft-48-7-nonexistent-auth-probe-model';
+
+/**
+ * Does a claude CLI `--output-format json` result payload (the raw stdout
+ * text captured by checkCleanEnvRealClaudeAuth) indicate the CLI
+ * authenticated (reached past auth), as opposed to rejecting the session as
+ * "Not logged in"?
+ *
+ * @param {string} output
+ * @returns {boolean}
+ */
+export function isAuthenticatedClaudeCliResult(output) {
+  if (!output || !output.trim()) return false;
+  const lower = output.toLowerCase();
+  if (lower.includes('not logged in') || lower.includes('please run /login') || lower.includes('please run \\/login')) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(output.trim());
+    // A parseable {"type":"result",...} payload that did not match the
+    // not-logged-in text above reached the CLI's actual request handling
+    // (e.g. the deliberately-bogus probe model's resolution error) --
+    // that is what "authenticated" means here.
+    return !!(parsed && parsed.type === 'result');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * REAL, non-mocked probe: runs the actual installed `claude` CLI through
+ * LocalStrategy's exact clean-env exec path ('env -i <seed> bash -l -c
+ * "claude -p ... --model <bogus-probe-model> --output-format json"')
+ * against fleetHome/.claude/.credentials.json, and classifies whether the
+ * CLI authenticated or was rejected as "Not logged in".
+ *
+ * Unlike checkCleanEnvCredentialsFile (a presence/shape-only probe --
+ * hasSufficientSessionShape() treats a bare `expiresAt` as already
+ * "sufficient"), this exercises the real CLI's actual login decision. That
+ * distinction matters: apra-fleet-eft.48's verification-pass-#2 notes found
+ * the installed CLI (2.1.212) still rejects an accessToken+expiresAt-only
+ * file as "Not logged in" even though the shape probe reports OK for it --
+ * the CLI's real deciding field is `claudeAiOauth.scopes` containing
+ * `user:inference` (apra-fleet-eft.48.6). Only an actual CLI invocation can
+ * pin that regression and prove the fix.
+ *
+ * Requires a REAL, currently-valid OAuth access token in `accessToken`
+ * (write one via parseClaudeOAuthSecret/runAuth first) -- an invalid token
+ * fails auth regardless of session shape, so callers must gate on a real
+ * credential being available (see tests/toy-doer-bare-token-real-cli-
+ * integ.test.ts's CLAUDE_REAL_TOKEN/CLAUDE_CLI_AVAILABLE guards) rather than
+ * running this unconditionally.
+ *
+ * @param {string} [fleetHome]
+ * @param {{execSync: typeof execSync}} [deps] injectable for tests
+ * @returns {{ok: boolean, authenticated: boolean, message: string, raw: string}}
+ */
+export function checkCleanEnvRealClaudeAuth(fleetHome = defaultFleetHome(), deps = {}) {
+  const run = deps.execSync ?? execSync;
+  const credPath = defaultCredentialsPath(fleetHome);
+  const seedParts = cleanEnvSeedParts(fleetHome);
+  // stdin explicitly from /dev/null (avoids the CLI's "no stdin data
+  // received" wait); stderr discarded (only carries an unrelated
+  // workspace-trust warning); '|| true' keeps this probe's own exit code 0
+  // even though the CLI itself exits 1 on BOTH a "Not logged in" rejection
+  // and the deliberate bogus-model resolution error, so a real failure is
+  // reported as a structured {ok:false} result rather than a thrown probe
+  // error.
+  const script = `env -i ${seedParts.join(' ')} bash -l -c 'claude -p "hi" --model ${shellQuote(AUTH_PROBE_MODEL_ID)} --output-format json </dev/null 2>/dev/null || true'`;
+
+  let output;
+  try {
+    output = run(script, { encoding: 'utf-8' });
+  } catch (err) {
+    return {
+      ok: false,
+      authenticated: false,
+      raw: '',
+      message: `PROBE-ERROR: real-CLI clean-env probe failed to run against fleet home '${fleetHome}': ${err.message}`,
+    };
+  }
+
+  const authenticated = isAuthenticatedClaudeCliResult(output);
+  return {
+    ok: authenticated,
+    authenticated,
+    raw: output,
+    message: authenticated
+      ? `AUTHENTICATED (real-CLI clean-env probe): the installed claude CLI accepted '${credPath}' as a valid logged-in session and reached past auth (deliberate bogus probe model '${AUTH_PROBE_MODEL_ID}' resolution error).`
+      : `NOT-AUTHENTICATED (real-CLI clean-env probe): the installed claude CLI rejected '${credPath}' -- "Not logged in" (or an unparseable/empty response). Raw: ${output.trim().slice(0, 500)}`,
   };
 }
 
