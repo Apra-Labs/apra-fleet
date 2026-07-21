@@ -1347,6 +1347,57 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
 
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response' });
   });
+
+  // apra-fleet-eft.28.7: end-to-end regression for the eft.28.6 server-side
+  // output-extraction fix. This mirrors the real trust-probe capture named in
+  // eft.28 NEW EVIDENCE: the final `type:result` event's session_id parses fine
+  // but its own `result` field is blank, even though the assistant's full reply
+  // (incl. tool use) is present in the preceding `type:assistant` stream events.
+  // Pre-eft.28.6, ClaudeProvider.parseResponse returned `result: ''` for this
+  // exact stream, which execute-prompt.ts's empty-result guard (apra-fleet-eft.14,
+  // just above) then classified as a typed `empty_response` failure -- so the
+  // caller got only the {usage, sessionId} wrapper and lost the reply text, even
+  // though it was fully present member-side. This test fails against that
+  // pre-fix behavior and passes once the assistant text is recovered.
+  it('recovers and returns the assistant reply text (not just {usage, sessionId}) when the result event text is blank but session_id parses', async () => {
+    const member = makeTestAgent({ friendlyName: 'recovers-reply' });
+    addAgent(member);
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-recover' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Here is the full ' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'bash' }, { type: 'text', text: 'answer.' }] } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: '', session_id: 'sid-recover', usage: { input_tokens: 5, output_tokens: 7 } }),
+    ].join('\n');
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: stream, stderr: '', code: 0 })  // main: exit 0, blank result event, recoverable assistant text
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(result.structuredContent).toMatchObject({ sessionId: 'sid-recover' });
+    expect(resultText(result)).toContain('Here is the full answer.');
+    expect(resultText(result)).toContain('sid-recover');
+  });
+
+  it('still classifies a genuinely empty result (no recoverable assistant text) as empty_response, not a silent success', async () => {
+    const member = makeTestAgent({ friendlyName: 'genuinely-empty' });
+    addAgent(member);
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-empty' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: '', session_id: 'sid-empty' }),
+    ].join('\n');
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: stream, stderr: '', code: 0 })  // main: exit 0, blank result, no assistant text at all
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response' });
+    expect(resultText(result)).toContain('no parseable output');
+  });
 });
 
 // apra-fleet-eft.40.3: workspace-not-trusted degrades composed permissions without
