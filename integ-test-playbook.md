@@ -99,153 +99,94 @@ downstream that still needs to read anything from outside `$SANDBOX`.
 Before handing off to the test: verify `node dist/index.js status` exits 0
 and reports the server listening on `18700`.
 
-### Neutralize sandbox sync.remote after any `bd bootstrap --yes`
+### Seed the sandbox beads DB (structural isolation, no bootstrap, no neutralize)
 
-A fresh clone can hit a "no beads database found" error before the local
-beads DB is materialized; the documented recovery is `bd bootstrap --yes` in
-`$HOME/toy-repo` (see apra-fleet-eft.18's repro). Run this step immediately
-after ANY `bd bootstrap --yes` invocation in the sandbox -- whether it is
-needed once here during `## Setup`, or again later as an ad hoc recovery
-action during a test session -- and always before the next auto-sprint run
-(`## Test scenario` step 4).
+Adopts the e2e suite's own technique (see `vendor/apra-pm/e2e/run-e2e.mjs`):
+seed the sandbox's local beads DB straight from the git-committed
+`.beads/issues.jsonl` already sitting in the clone above, rather than the
+retired local-DB-recovery path this file previously documented here
+(apra-fleet-eft.18's repro), which pulled the local Dolt DB from the real
+`fleet-e2e-toy` Dolt remote and required patching the result back to a safe
+state afterward (apra-fleet-eft.25/eft.30's two-part remediation). This flow
+wires every remote the sandbox will ever talk to as a sandbox-local
+throwaway BEFORE the local Dolt DB is created, so there is nothing to fix up
+after the fact: the real `fleet-e2e-toy` remote URL is never adopted into
+the sandbox's git or beads config at any step below.
 
-Why: the pristine `fleet-e2e-toy` clone ships with `sync.remote` commented
-out (`# sync.remote disabled -- no Dolt push for this toy project`), which is
-what lets `## Test scenario` step 4 rely on `skip_dolt_push` semantics. But
-`bd bootstrap --yes` rehydrates the local DB from the real `fleet-e2e-toy`
-Dolt remote and, as a side effect, rewrites `.beads/config.yaml` to add a new
-ACTIVE `sync.remote` block pointing at that same remote, leaving the old
-disabled line stale below it. Left active, this is a latent hazard: it does
-not break the immediately-following `bd bootstrap` call itself, but it means
-the NEXT `bd dolt push` from a real auto-sprint run against this sandbox
-(once a real doer/harvester commit lands) would push sandbox test mutations
-to the shared external remote real users/CI depend on -- defeating the
-playbook's isolation guarantee.
-
-This step is idempotent and safe to run even if `bd bootstrap --yes` was
-never invoked in this sandbox: it is a no-op when there is no active
-`sync.remote` line to comment out.
-
-```bash
-CONFIG="$HOME/toy-repo/.beads/config.yaml"
-if [ -f "$CONFIG" ]; then
-  sed -i.bak -E '/fleet-e2e-toy/{/^[[:space:]]*#/!s/^/# /;}' "$CONFIG"
-  rm -f "$CONFIG.bak"
-fi
-```
-
-apra-fleet-eft.30 (second neutralize gap): the sed above only patches the
-bd-level `sync.remote` YAML key. `bd bootstrap --yes` ALSO wires Dolt's OWN
-internal remote (tracked separately from that YAML key) to the real
-`fleet-e2e-toy` remote, so a per-cycle D-push can still target it even after
-the YAML patch above -- the YAML key and Dolt's own remote wiring are two
-independent hazards that both need neutralizing. Disarm the Dolt-level
-remote too, immediately after the YAML step, using `bd dolt remote remove`
-(read-only listing plus a name-scoped removal -- never `bd dolt push`).
-Idempotent and safe to run even when no Dolt-level remote is configured (or
-no beads DB exists yet in this clone): it is then a no-op.
+Point the sandbox clone's git `origin` at a sandbox-local bare mirror of its
+own just-cloned content -- never the real `fleet-e2e-toy` URL -- before any
+`bd` command runs in the clone. This is safety-invariant layer (1): even
+though `bd init` below auto-provisions a Dolt remote from git `origin` as a
+side effect (the known apra-fleet-eft.30 trap), it can now only ever derive
+a sandbox-local remote, because `origin` no longer resolves to anything
+real.
 
 ```bash
 TOY_REPO="$HOME/toy-repo"
-if [ -d "$TOY_REPO/.beads" ]; then
-  HAZARD_REMOTES=$(cd "$TOY_REPO" && bd dolt remote list --json 2>/dev/null | node -e "
-    let d = '';
-    process.stdin.on('data', (c) => { d += c; });
-    process.stdin.on('end', () => {
-      try {
-        for (const r of JSON.parse(d)) {
-          if ((r.url || '').includes('fleet-e2e-toy') || (r.name || '').includes('fleet-e2e-toy')) {
-            console.log(r.name);
-          }
-        }
-      } catch (e) { /* no remotes configured -- nothing to print */ }
-    });
-  ")
-  for name in $HAZARD_REMOTES; do
-    (cd "$TOY_REPO" && bd dolt remote remove "$name") || true
-  done
-fi
+GIT_MIRROR="$HOME/.apra-fleet-toy-origin.git"
+rm -rf "$GIT_MIRROR"
+git clone --bare "$TOY_REPO" "$GIT_MIRROR"
+git -C "$TOY_REPO" remote set-url origin "file://$GIT_MIRROR"
 ```
 
-apra-fleet-eft.31 (third neutralize gap): checks 1-3 above can all report
-clean at snapshot time, yet the sandbox clone's OWN `git remote get-url
-origin` still points at the real `fleet-e2e-toy` remote -- that is exactly
-what `## Setup`'s `git clone https://github.com/Apra-Labs/fleet-e2e-toy
-"$HOME/toy-repo"` step sets it to. Left as-is, this is a latent hazard: a
-LATER `bd dolt` invocation can auto-provision a fresh Dolt-level remote
-FROM this git origin ("Configured Dolt remote origin from git origin."),
-re-arming exactly what the Dolt-level neutralize step above just cleared.
-Neutralize the sandbox clone's git origin too, immediately after the
-Dolt-level remote step, by rewriting it to point at a fetchable-but-fully-
-isolated local git remote -- never `git push`, and never `file:///dev/null/...`
-(apra-fleet-eft.47: that path is not a real repo, so any LEGITIMATE later
-`git fetch origin` -- e.g. the auto-sprint engine's own `Ensure Sprint
-Branch` phase, or this playbook's own `## Reset` step -- fails with exit
-128 and aborts, even though nothing hazardous was ever at stake). Instead,
-create a second, throwaway BARE clone of the sandbox toy-repo's own local
-content (never the real `https://github.com/Apra-Labs/fleet-e2e-toy`) and
-point `origin` at that: real, empty-of-any-network-remote, and fully
-fetchable. Use `git remote set-url` rather than `git remote remove`: the
-latter also deletes the clone's cached `origin/main` remote-tracking ref,
-which would break the Verify step's `checkNoOutboundCommits` check (it
-diffs `HEAD...origin/main` and needs that ref to still resolve locally).
-The bare clone's path deliberately does not contain the `fleet-e2e-toy`
-substring, so it also reads as non-hazard to
-`checkGitOriginNotHazard` below:
+Seed the local beads DB from the git-tracked JSONL only (no Dolt history is
+pulled from anywhere), wiring `sync.remote` in the same command to a second,
+dedicated sandbox-local throwaway directory -- deliberately not
+`$GIT_MIRROR` above, since Dolt's `file://` remote format writes its own
+storage directly into its target directory and would otherwise collide with
+`$GIT_MIRROR`'s git-bare-repo layout. This is safety-invariant layer (2):
 
 ```bash
-TOY_REPO="$HOME/toy-repo"
-NEUTRAL_ORIGIN="$HOME/.apra-fleet-neutralized-origin.git"
-if [ -d "$TOY_REPO/.git" ]; then
-  rm -rf "$NEUTRAL_ORIGIN"
-  git clone --bare "$TOY_REPO" "$NEUTRAL_ORIGIN"
-  (cd "$TOY_REPO" && git remote set-url origin "file://$NEUTRAL_ORIGIN") || true
-fi
+cd "$TOY_REPO"
+rm -rf .beads/embeddeddolt .beads/.local_version
+DOLT_REMOTE="$HOME/.apra-fleet-toy-dolt-remote"
+rm -rf "$DOLT_REMOTE"
+bd init --from-jsonl --prefix gh-toy --remote "file://$DOLT_REMOTE" --non-interactive
+bd dolt push
 ```
 
-Idempotent and safe to run even when no `origin` remote is configured (or
-no git repo exists yet in this clone): the bare clone is rebuilt fresh each
-run (`rm -rf` before `clone --bare`), and the `set-url` no-ops with a
-non-zero exit swallowed by `|| true` when there is no `origin` to rewrite.
-`git clone --bare` here only reads from the local `$TOY_REPO` working
-copy and writes to a new local directory -- it never contacts any network
-remote, so no reachability to the real `fleet-e2e-toy` repo is introduced.
+`bd init --from-jsonl` imports the issues committed in `.beads/issues.jsonl`
+into a fresh local Dolt DB and refuses to run at all if the `--remote`
+target already carries real Dolt history it would have to discard --
+exactly the guard that makes this seed step safe to treat as a hard failure
+rather than a silent overwrite. `--remote` persists as `sync.remote` in
+`.beads/config.yaml` in the same command, so it is live from the start;
+`bd dolt push` immediately after seeds that throwaway remote with the
+freshly-initialized DB once, so the rest of the run's D-push/D-pull
+brackets have real history to sync against.
 
-Verify: no uncommented line in `.beads/config.yaml` may reference
-`fleet-e2e-toy` after the first step, Dolt's own remote list (`bd dolt
-remote list --json` in the sandbox clone) must carry no remote pointing at
-`fleet-e2e-toy` after the second step, the sandbox clone's `git remote
-get-url origin` must not point at `fleet-e2e-toy` after the third step
-(it must instead point at the local `$NEUTRAL_ORIGIN` bare clone),
-`git fetch origin main` run from `$TOY_REPO` must exit 0 against that
-neutralized origin (proving the sprint engine's own fetch can succeed),
-AND the sandbox clone must have 0 commits ahead of `origin/main` (nothing
-has actually reached the real remote -- still checkable locally because
-`set-url` preserves the cached `origin/main` ref, and the fresh bare clone
-shares the same history as of neutralize time).
-`scripts/check-sandbox-sync-remote.mjs` (apra-fleet-eft.25.2, extended by
-apra-fleet-eft.30.1 and apra-fleet-eft.31) asserts all four in one
-shell-drivable, sandbox-only, read-only step -- it exits non-zero (and
-prints a `FAIL` line) if any check fails, and exits 0 (`OK` lines) when all
-four hold. Run it from `<repo-root>`, AFTER the git-origin neutralize step
-above:
+Verify: `.beads/config.yaml`'s `sync.remote` and the sandbox clone's own
+Dolt remote list (`bd dolt remote list --json`) must both resolve to the
+`$DOLT_REMOTE` throwaway above, and the sandbox clone's `git remote get-url
+origin` must resolve to `$GIT_MIRROR` -- none of the three may ever
+reference `fleet-e2e-toy`. `scripts/check-sandbox-sync-remote.mjs`
+(apra-fleet-eft.25.2, extended by apra-fleet-eft.30.1 and apra-fleet-eft.31)
+still asserts the "no reference to `fleet-e2e-toy`" shape of those three
+checks today; its fourth check (no outbound git commits ahead of
+`origin/main`) targets a different, now-stale hazard shape from the retired
+bootstrap/neutralize flow -- under this design `origin` is sandbox-local
+from the start, so being ahead of it carries no real-remote exposure, and
+retargeting all four checks to assert every git/Dolt remote resolves
+*inside* the sandbox path (rather than merely `!= fleet-e2e-toy`) is
+apra-fleet-eft.18.6's job, not this step's. Run it from `<repo-root>`,
+after the steps above:
 
 ```bash
 node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
 ```
 
-(Its own unit tests, `tests/check-sandbox-sync-remote.test.ts`, exercise the
-eft.25 hazard shape -- active `sync.remote` right after a bare `bd
-bootstrap --yes` -- the eft.25.1 remedy shape -- `sync.remote` commented
-out -- and (apra-fleet-eft.30.3) the eft.30 Dolt-level remote hazard/remedy
-shapes, entirely against local fixtures, so they never touch the real
-remote either.)
-
 ## Reset
 
 A faster alternative to Teardown + Setup between test runs in the same
 session. It restores the toy repo and its beads state to pristine without
-reinstalling or re-cloning.
+reinstalling or re-cloning, using the same e2e-pattern reset the e2e suite
+uses on this toy repo (see `vendor/apra-pm/e2e/run-e2e.mjs`): reset the git
+working tree to the sandbox-local mirror's `main`, then throw away and
+re-seed the local beads DB from the git-tracked JSONL. The git `origin`
+remote wired during `## Setup` (the sandbox-local `$GIT_MIRROR`) is
+untouched by `git reset`/`git clean` -- remotes live in `.git/config`, not
+the working tree -- so it stays sandbox-local across every Reset with no
+re-wiring needed.
 
 ```bash
 SANDBOX="$HOME/temp/.apra-fleet-tests"
@@ -256,77 +197,23 @@ cd "$HOME/toy-repo"
 git fetch origin
 git reset --hard origin/main
 git clean -fdx
+rm -rf .beads/embeddeddolt .beads/.local_version
+bd init --from-jsonl --prefix gh-toy --non-interactive
 ```
 
-If `.beads/config.yaml` is git-tracked in `fleet-e2e-toy`, the `git reset
---hard` above already restores its pristine, disabled `sync.remote` state.
-But if `bd bootstrap --yes` needs to run again later in the same session
-(e.g. recovering a corrupted local beads DB between Resets, per apra-fleet-
-eft.18's repro) before the next `## Reset`, immediately re-run the
-"Neutralize sandbox sync.remote after any `bd bootstrap --yes`" step from
-`## Setup` above before proceeding to the next `## Test scenario` sprint run.
-
-The toy repo keeps one permanent, always-open canary issue for exactly
-this purpose, identified by its `integ-canary` tag in the repo's beads DB.
-This file deliberately does not hard-code the issue's ID: the test looks
-it up by tag at run time, and the `<canary-id>` token in `## Test
-scenario` is a placeholder for whatever that lookup returns -- not a real
-ID someone forgot to fill in. The `git reset --hard` above restores the
-beads DB along with the rest of the tracked repo state, which re-opens the
-canary, when that canary exists upstream.
-
-apra-fleet-eft.18.3 (stale bootstrap Dolt DB vs. git-tracked JSONL): `bd
-bootstrap --yes` hydrates the sandbox's local Dolt DB from a SEPARATE sync
-path (the real `fleet-e2e-toy` Dolt remote) rather than from the git-
-tracked `.beads/issues.jsonl` the `git reset --hard` above just restored.
-A maintainer can merge an `integ-canary` label into the JSONL (e.g. PR #96
-labeling gh-toy-4ef) without that label having propagated into the synced
-Dolt DB yet, so the tag lookup below can return zero matches even though
-the git-tracked source of truth already carries the tag. Before falling
-back to self-provisioning, the tag lookup in `## Test scenario` step 3
-first reconciles the local Dolt DB from the git-tracked JSONL with `bd
-import` (no file argument: it reads the configured `import.path`, which
-defaults to `.beads/issues.jsonl`) -- an upsert into the LOCAL database
-only, never a push -- and retries the label lookup once. `bd import`
-never contacts the real Dolt remote, so this reconcile step is exactly as
-isolated as the tag lookup it repairs.
-
-If the tag lookup still returns zero matches after that reconcile (no
-`integ-canary` issue present in the Dolt DB or the git-tracked JSONL, or
-it was renamed/removed), the runner self-provisions a canary in the
-sandbox's LOCAL beads DB only -- this never writes to or pushes the real
-Dolt remote.
-
-The canary is deliberately the SIMPLEST possible issue -- the same
-scope-containment trick the e2e suite uses with this same toy repo (its
-sprint script pins exactly one minimal issue, "Add --version flag to
-CLI"). A concrete, tiny deliverable keeps the toy sprint's planner from
-inventing scope: there is exactly one obvious task, one obvious change,
-and one objectively checkable outcome.
-
-```bash
-cd "$HOME/toy-repo"
-bd create "Add a --version flag to the CLI" \
-  -d "Print the toy project version when the CLI is invoked with --version, then exit 0. Smallest possible change: no refactors, no extra features." \
-  --acceptance "Running the CLI with --version prints a version string and exits 0." \
-  --label integ-canary
-```
-
-This is local-only: it creates the issue in the sandbox clone's local
-beads DB and does not push, preserving the same `skip_dolt_push`
-semantics that `## Test scenario` step 4 uses for the sprint run itself.
-Proceed using the newly-created issue's ID as `<canary-id>`.
-
-Maintainer note (out-of-band; NOT a sandbox/runner step): to re-seed a
-*permanent* canary upstream so future runs find it via the tag lookup
-instead of self-provisioning, a maintainer with push access to
-`git+https://github.com/Apra-Labs/fleet-e2e-toy` tags an issue of this
-same minimal "--version flag" shape with `integ-canary` in that repo's
-beads DB and pushes it from a real, non-sandbox checkout (the toy repo's
-existing e2e issue of that exact shape is a natural candidate). This is a
-one-time maintenance action on shared external infra performed by a human
-maintainer -- it is not something `integ-test-runner` does automatically,
-and it is separate from the automated self-provision path above.
+`rm -rf .beads/embeddeddolt` (plus `.local_version`, so `bd` never tries to
+forward-migrate a stale schema marker) throws away the local Dolt DB
+entirely; `bd init --from-jsonl` re-seeds it fresh from the git-tracked
+`.beads/issues.jsonl` the `git reset --hard` above just restored -- the same
+JSONL-only seed `## Setup` uses, so the hardcoded canary `gh-toy-4ef` (see
+`## Test scenario` step 2) reappears automatically with no separate
+re-provisioning step. `bd init` here auto-derives a fresh Dolt remote from
+git `origin` (the sandbox-local `$GIT_MIRROR`) the same way the first
+`bd init` in `## Setup` did; since nothing is ever pushed into
+`$GIT_MIRROR` itself (`## Setup`'s one throwaway push always targets the
+separate `$DOLT_REMOTE` directory instead), that auto-derived remote never
+accumulates real Dolt history, so this plain re-init succeeds every time
+without needing `--discard-remote`.
 
 ## Teardown
 
@@ -359,7 +246,28 @@ shell-drivable -- no MCP tool is required to run the scenario.
    node dist/index.js register-member --type local --name toy-doer \
      --path "$HOME/toy-repo" --llm claude
    ```
-2. Provision LLM credentials for the freshly-registered `toy-doer` member,
+2. The canary is fixed, not looked up: `gh-toy-4ef`, the toy repo's minimal
+   "Add a --version flag to the CLI" issue, labeled `integ-canary` in the
+   git-committed `.beads/issues.jsonl` that `## Setup` (and `## Reset`) seed
+   the sandbox's local beads DB from directly (apra-fleet-eft.18.5) -- no
+   Dolt-remote tag lookup, no `bd import` reconcile, and no self-
+   provisioning fallback. Confirm it came through the seed and is open:
+
+   ```bash
+   cd "$HOME/toy-repo"
+   bd show gh-toy-4ef
+   ```
+
+   If this fails (issue missing, or not open), the seeded fixture itself
+   is broken -- fail loud per step 5/6 below rather than silently self-
+   provisioning a replacement. The canary is deliberately the SIMPLEST
+   possible issue -- the same scope-containment trick the e2e suite uses
+   with this same toy repo (its sprint script pins exactly one minimal
+   issue, "Add --version flag to CLI"). A concrete, tiny deliverable keeps
+   the toy sprint's planner from inventing scope: there is exactly one
+   obvious task, one obvious change, and one objectively checkable
+   outcome.
+3. Provision LLM credentials for the freshly-registered `toy-doer` member,
    so the real Planner dispatch in step 4 below can authenticate
    (apra-fleet-eft.48: `LocalStrategy` dispatches for local members run
    through a clean-env `env -i ... bash -l -c` exec path that strips the
@@ -420,21 +328,6 @@ shell-drivable -- no MCP tool is required to run the scenario.
    file `toy-doer`'s clean-env dispatch reads, since `getCleanEnv()` seeds
    the clean shell's `HOME` from the fleet server process's own `HOME`
    (`$SANDBOX`) before sourcing login profiles under it.
-3. Find the canary issue by its `integ-canary` tag (`bd list
-   --label=integ-canary --json` from `$HOME/toy-repo`). If the lookup
-   returns a match, confirm it is open (`bd show <canary-id>`, where
-   `<canary-id>` is whatever ID the tag lookup returned). If the lookup
-   returns zero matches, first reconcile the local Dolt DB from the
-   git-tracked JSONL (`bd import`, no file argument -- reads
-   `.beads/issues.jsonl` by default, a local-only upsert, never a push;
-   see the apra-fleet-eft.18.3 note under `## Reset`) and retry the label
-   lookup once. If that retry still returns zero matches (no
-   `integ-canary` tag in the Dolt DB or the git-tracked JSONL),
-   self-provision the minimal "--version flag" canary in the sandbox's
-   local beads DB per `## Reset` above (`bd create "Add a --version flag
-   to the CLI" ... --label integ-canary`, no push) and use its ID as
-   `<canary-id>`. No path in this step writes to
-   `git+https://github.com/Apra-Labs/fleet-e2e-toy`.
 4. Run `apra-fleet workflow auto-sprint` against the canary issue with
    `--max-cycles 1` and `--dispatch-timeout-s 900`. The timeout bound
    means a hung dispatch (member process alive but silent) costs at most
