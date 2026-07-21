@@ -224,7 +224,7 @@ describe('apra-fleet-eft.27.3: on-demand description fetch + cache timing (clien
             globalThis.localStorage = createMockLocalStorage();
             globalThis.fetch = async (url) => ({
                 ok: true,
-                json: async () => ({ id: 'bd-1', description: HEAVY_DESCRIPTION, updatedAt: 'v1' })
+                json: async () => ({ id: 'bd-1', text: HEAVY_DESCRIPTION, updatedAt: 'v1' })
             });
 
             const { loadBeadDescription } = extractHelpers();
@@ -252,7 +252,7 @@ describe('apra-fleet-eft.27.3: on-demand description fetch + cache timing (clien
             let fetchCalls = 0;
             globalThis.fetch = async () => {
                 fetchCalls++;
-                return { ok: true, json: async () => ({ id: 'bd-1', description: HEAVY_DESCRIPTION, updatedAt: 'v1' }) };
+                return { ok: true, json: async () => ({ id: 'bd-1', text: HEAVY_DESCRIPTION, updatedAt: 'v1' }) };
             };
 
             const { loadBeadDescription } = extractHelpers();
@@ -286,7 +286,7 @@ describe('apra-fleet-eft.27.3: on-demand description fetch + cache timing (clien
             let fetchCalls = 0;
             globalThis.fetch = async () => {
                 fetchCalls++;
-                return { ok: true, json: async () => ({ id: 'bd-1', description: 'v' + fetchCalls, updatedAt: 'irrelevant' }) };
+                return { ok: true, json: async () => ({ id: 'bd-1', text: 'v' + fetchCalls, updatedAt: 'irrelevant' }) };
             };
 
             const { loadBeadDescription } = extractHelpers();
@@ -312,7 +312,7 @@ describe('apra-fleet-eft.27.3: on-demand description fetch + cache timing (clien
             let fetchCalls = 0;
             globalThis.fetch = async () => {
                 fetchCalls++;
-                return { ok: true, json: async () => ({ id: 'bd-x', description: HEAVY_DESCRIPTION, updatedAt: 'v1' }) };
+                return { ok: true, json: async () => ({ id: 'bd-x', text: HEAVY_DESCRIPTION, updatedAt: 'v1' }) };
             };
 
             const { loadBeadDescription } = extractHelpers();
