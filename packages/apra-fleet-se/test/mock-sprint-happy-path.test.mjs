@@ -27,8 +27,8 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         check(run1.result && run1.result.maxCycles === 5, `Run1 result did not expose maxCycles: ${JSON.stringify(run1.result)}`);
 
         // apra-fleet-unw.14: git semantics -- ensure/create the sprint branch is
-        // the very first commands dispatched (before any bd/node command), and
-        // push + PR-raise are the last two commands dispatched (finalization).
+        // the first GIT command dispatched, and push + PR-raise are the last
+        // two commands dispatched (finalization).
         // apra-fleet-zzu: the fetch + checkout used to be one `a && b` shell
         // string (a single commandLog entry) -- split into two sequential
         // command() calls so this phase works on Windows PowerShell 5.1, which
@@ -40,17 +40,35 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // hermetic tempDir, not a real git remote -- see mock-sprint-harness.mjs),
         // so this fetch "succeeds" here and the checkout adopts origin/<branch>
         // as its start point, not origin/<baseBranch>.
+        // apra-fleet-eft.58.1: the pre-flight beads-health gate now runs
+        // BEFORE branch-ensure (that is the whole point -- a diverged beads
+        // DB must be caught before any setup mutation), so the git fetch/
+        // checkout sequence is no longer necessarily commandLog[0..2]: it is
+        // preceded by that gate's `bd config get sync.remote --json` pre-
+        // check and (only if this real, hermetic tempDir's bd reports a
+        // configured sync.remote) a `bd dolt pull`. Whether that second entry
+        // fires is environment-dependent (a real `bd config get` read, not a
+        // scripted mock -- see doltPullBefore()'s own doc comment on the
+        // no-remote skip), so this asserts on the first GIT command's
+        // position rather than a fixed index, and that everything before it
+        // is exactly this gate's own bd command(s).
+        const firstGitIdx = run1.commandLog.findIndex((c) => /^git /.test(c));
+        check(firstGitIdx > 0, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
         check(
-            run1.commandLog.length >= 5 && /^git fetch /.test(run1.commandLog[0]),
-            `Expected first commandLog entry to be the base-branch fetch, got: ${JSON.stringify(run1.commandLog[0])}`
+            run1.commandLog.slice(0, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
+            `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(0, firstGitIdx))}`
         );
         check(
-            run1.commandLog[1] && /^git fetch origin auto-sprint\/mock-sprint\b/.test(run1.commandLog[1]),
-            `Expected second commandLog entry to be the sprint-branch fetch, got: ${JSON.stringify(run1.commandLog[1])}`
+            run1.commandLog.length >= firstGitIdx + 5 && /^git fetch /.test(run1.commandLog[firstGitIdx]),
+            `Expected first git commandLog entry to be the base-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx])}`
         );
         check(
-            run1.commandLog[2] && run1.commandLog[2].includes('git checkout -B auto-sprint/mock-sprint'),
-            `Expected third commandLog entry to be the sprint-branch checkout, got: ${JSON.stringify(run1.commandLog[2])}`
+            run1.commandLog[firstGitIdx + 1] && /^git fetch origin auto-sprint\/mock-sprint\b/.test(run1.commandLog[firstGitIdx + 1]),
+            `Expected second git commandLog entry to be the sprint-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 1])}`
+        );
+        check(
+            run1.commandLog[firstGitIdx + 2] && run1.commandLog[firstGitIdx + 2].includes('git checkout -B auto-sprint/mock-sprint'),
+            `Expected third git commandLog entry to be the sprint-branch checkout, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 2])}`
         );
         const pushIdx = run1.commandLog.length - 2;
         const prIdx = run1.commandLog.length - 1;

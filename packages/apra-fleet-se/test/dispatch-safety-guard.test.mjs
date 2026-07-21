@@ -128,7 +128,13 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // site, used to resolve this cycle's deploy-verified SHA right after a
 // successful deploy, for the Integ Test dispatch/validation below. Verified
 // compliant (explicit member_name).
-const EXPECTED_COMMAND_COUNT = 30;
+// 30 -> 31 (apra-fleet-eft.58.1, pre-flight beads-health gate): on a
+// detected divergence, preflightBeadsHealthGate() issues one new best-effort
+// `command('pwd', { member_name: member, silent: true, failSoft: true,
+// label: ... })` call site to resolve the workspace path for its one-line
+// cause message. Only ever dispatched on the (rare) divergence path.
+// Verified compliant (explicit member_name).
+const EXPECTED_COMMAND_COUNT = 31;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

@@ -1132,6 +1132,109 @@ export async function doltPullBefore(member, opts = {}) {
 }
 
 /**
+ * apra-fleet-eft.58.1: best-effort extraction of the beads/dolt table name(s)
+ * implicated in a diverged `bd dolt pull`'s raw output, for the pre-flight
+ * beads-health gate's one-line cause below (preflightBeadsHealthGate()).
+ * Dolt's own conflict text is not one single stable grammar (it varies with
+ * the exact conflict kind -- schema vs data, pull vs merge), so this matches
+ * the handful of shapes it is actually observed to use (`table <name>`,
+ * `` `<name>` table``, `conflict in <name>`) rather than assuming a single
+ * canonical format. Never throws; an output with no recognizable table name
+ * returns `[]` so the caller can fall back to an explicit 'unknown' in its
+ * message rather than silently omitting the field.
+ *
+ * @param {string|null|undefined} doltOutput
+ * @returns {string[]}
+ */
+export function extractConflictingTables(doltOutput) {
+    const text = String(doltOutput == null ? '' : doltOutput);
+    const tables = new Set();
+    const patterns = [
+        /\btables?\s+`?([A-Za-z_][\w.]*)`?/gi,
+        /`([A-Za-z_][\w.]*)`\s+table/gi,
+        /conflict(?:s|ed)? in\s+`?([A-Za-z_][\w.]*)`?/gi,
+    ];
+    for (const re of patterns) {
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            tables.add(m[1]);
+        }
+    }
+    return [...tables];
+}
+
+/**
+ * apra-fleet-eft.58.1 -- Pre-flight beads-health gate.
+ *
+ * Problem (run 20): a diverged local beads DB vs the shared Dolt remote
+ * already aborted correctly via doltPullBefore()'s typed DoltDivergedError,
+ * but that D-pull only ran (the eft.34 call site further below in
+ * runSprintCycle, immediately before the first `bd list --all` pre-sprint-
+ * validation read) AFTER Sprint Setup's branch-ensure loop had already
+ * issued its own `git fetch`/`git checkout -B` mutations -- so an operator
+ * saw a raw dolt stack in stderr, a main log that jumped straight to
+ * 'Sprint FAILED' with no reason line, and setup mutations that had already
+ * begun before the abort. This gate runs the SAME D-pull probe, but called
+ * from the very top of runSprintCycle's Sprint Setup section -- strictly
+ * BEFORE the branch-ensure loop's first git command and before any PR
+ * command -- so a divergence is caught before any of that.
+ *
+ * On divergence it composes and logs a single actionable line matching
+ * /beads DB diverged/ that names: the workspace path (a best-effort `pwd`
+ * probe on `member`, falling back to the member id if that probe itself
+ * fails -- diagnostics must never block the abort or throw a second,
+ * different error), the conflicting table(s) parsed from the raw dolt
+ * output (extractConflictingTables(), falling back to 'unknown' if none are
+ * recognizable), and the fixed remediation text. That composed string
+ * becomes the re-thrown DoltDivergedError's `.message` -- which main()'s
+ * typed-abort catch (isTypedAbortError() -- DoltDivergedError extends
+ * WorkflowError) already persists verbatim into the terminal run-state's
+ * `message` field via publishState('terminal', ...), so the SAME string
+ * reaches both the main log and the dashboard with no separate plumbing.
+ *
+ * A non-divergence D-pull failure (DoltSyncError -- transient/unknown, or
+ * the benign no-remote skip) is NOT rewritten here: it already carries its
+ * own actionable message from doltPullBefore(), and is not the bug this gate
+ * targets, so it is re-thrown/returned unchanged.
+ *
+ * @param {string} member
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function }} opts
+ * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote' }>}
+ */
+export async function preflightBeadsHealthGate(member, opts = {}) {
+    const { command, log = () => {} } = opts;
+    try {
+        return await doltPullBefore(member, opts);
+    } catch (err) {
+        if (!(err instanceof DoltDivergedError)) {
+            throw err;
+        }
+        let workspace = member;
+        try {
+            const pwdRes = await command('pwd', {
+                member_name: member,
+                silent: true,
+                failSoft: true,
+                label: `Resolve workspace path for member '${member}' (beads-health gate diagnostics)`,
+            });
+            if (pwdRes && pwdRes.ok && String(pwdRes.output || '').trim()) {
+                workspace = String(pwdRes.output).trim();
+            }
+        } catch (pwdErr) {
+            log(`[Beads Health] could not resolve workspace path for member '${member}' (falling back to member id): ${(pwdErr && pwdErr.message) || pwdErr}`);
+        }
+        const tables = extractConflictingTables(err.doltOutput);
+        const tablesText = tables.length > 0 ? tables.join(', ') : 'unknown';
+        const cause =
+            `[Beads Health] beads DB diverged from the shared Dolt remote (member '${member}', workspace: ${workspace}; ` +
+            `conflicting table(s): ${tablesText}) -- local beads DB diverged from remote; resolve or re-init from the ` +
+            `shared remote, then relaunch.`;
+        log(cause);
+        throw new DoltDivergedError(cause, { member, doltOutput: err.doltOutput, operation: err.operation });
+    }
+}
+
+/**
  * D-push (Plan 3.3): publish `member`'s committed beads changes to the shared
  * remote after a beads-mutating step -- `bd dolt push` with the mechanical,
  * first-successful-pusher-wins reconcile. If the push is rejected because the
@@ -3486,11 +3589,22 @@ async function runSprintCycle(context) {
         }
     }
 
+    // apra-fleet-eft.58.1: pre-flight beads-health gate -- runs the D-pull
+    // probe BEFORE any setup mutation (the branch-ensure loop's first `git
+    // fetch`/`git checkout -B` just below, and before any PR command), so a
+    // diverged orchestrator beads clone is caught and reported -- with an
+    // actionable, one-line cause naming the workspace path, conflicting
+    // table(s), and remediation -- before the sprint has mutated anything.
+    // See preflightBeadsHealthGate()'s own doc comment (near doltPullBefore
+    // above) for the confirmed root cause (run 20) this closes. This is now
+    // genuinely the first fleet dispatch of the run.
+    await preflightBeadsHealthGate(orchestratorMember, { command, log });
+
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
     // =======================
-    // First fleet dispatch of the run -- runs before any bd/agent activity
-    // so the whole sprint develops on `branch`, branched from `base_branch`.
+    // First GIT dispatch of the run -- runs before any bd/agent activity so
+    // the whole sprint develops on `branch`, branched from `base_branch`.
     group('Sprint Setup');
     phase('Ensure Sprint Branch');
     // N4: dispatch the fetch + checkout -B to EVERY member in the ensure set
@@ -3797,6 +3911,16 @@ async function runSprintCycle(context) {
     // its own doc comment), so this adds no behavioural risk to an
     // already-decomposed target's validation path; it only ever makes the
     // orchestrator's view of `bd list --all` MORE current, never less.
+    //
+    // apra-fleet-eft.58.1: this is no longer the FIRST D-pull of the run --
+    // preflightBeadsHealthGate() (called before Sprint Setup, above) already
+    // pulled this same orchestratorMember clone and would have aborted by
+    // now on a genuine divergence. This call is kept as a cheap, idempotent
+    // defense-in-depth re-freshen immediately before the read it exists for
+    // (a diverged clone would already be impossible to reach here, but a
+    // clone that merely fell further behind between Setup and here -- e.g. a
+    // slow branch-ensure loop across many members -- still benefits from one
+    // more pull right before the read).
     await doltPullBefore(orchestratorMember, { command, log });
 
     await updateDashboard();

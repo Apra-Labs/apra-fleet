@@ -9,7 +9,9 @@ import {
     classifyDoltFailure,
     doltPullBefore,
     doltPushAfter,
+    extractConflictingTables,
     isMemberSyncRemoteConfigured,
+    preflightBeadsHealthGate,
     verifyDoerStreakClosed,
 } from '../auto-sprint/runner.js';
 import { DoltDivergedError, DoltSyncError } from '../auto-sprint/errors.mjs';
@@ -454,6 +456,126 @@ test('doltPushAfter: every fail-closed isMemberSyncRemoteConfigured path (comman
             `fail-closed path '${name}' must still throw DoltSyncError (member treated as configured, no silent no-remote skip)`,
         );
     }
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-eft.58.1 -- extractConflictingTables: best-effort table-name
+// extraction from raw dolt conflict output, feeding the pre-flight
+// beads-health gate's one-line cause message.
+// -----------------------------------------------------------------------------
+test('extractConflictingTables: recognizes the "table <name>" shape', () => {
+    assert.deepEqual(extractConflictingTables('cannot fast-forward: table issues'), ['issues']);
+});
+
+test('extractConflictingTables: recognizes the "`<name>` table" shape', () => {
+    assert.deepEqual(extractConflictingTables('merge conflict: `dependencies` table'), ['dependencies']);
+});
+
+test('extractConflictingTables: recognizes the "conflict in <name>" shape', () => {
+    assert.deepEqual(extractConflictingTables('data conflict in issue_comments during merge'), ['issue_comments']);
+});
+
+test('extractConflictingTables: dedupes repeated mentions of the same table', () => {
+    const tables = extractConflictingTables('conflict in issues; table issues has unresolved rows');
+    assert.deepEqual(tables, ['issues']);
+});
+
+test('extractConflictingTables: collects multiple distinct tables', () => {
+    const tables = extractConflictingTables('conflict in issues; conflict in dependencies');
+    assert.deepEqual(new Set(tables), new Set(['issues', 'dependencies']));
+});
+
+test('extractConflictingTables: returns [] for unrecognizable output, never throws', () => {
+    assert.deepEqual(extractConflictingTables('some brand-new dolt failure text'), []);
+    assert.deepEqual(extractConflictingTables(''), []);
+    assert.doesNotThrow(() => extractConflictingTables(null));
+    assert.doesNotThrow(() => extractConflictingTables(undefined));
+    assert.deepEqual(extractConflictingTables(null), []);
+    assert.deepEqual(extractConflictingTables(undefined), []);
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-eft.58.1 -- preflightBeadsHealthGate: the pre-flight beads-health
+// gate that must catch a diverged orchestrator beads clone BEFORE any setup
+// mutation (git branch ensure / PR commands), with an actionable one-line
+// cause naming the workspace path, conflicting table(s), and remediation.
+// -----------------------------------------------------------------------------
+test('preflightBeadsHealthGate: happy path passes through doltPullBefore\'s ok result unchanged', async () => {
+    const { command } = makeCommandMock({ 'bd dolt pull': [OK] });
+    const res = await preflightBeadsHealthGate('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA' });
+});
+
+test('preflightBeadsHealthGate: no-remote skip passes through unchanged (not treated as a divergence)', async () => {
+    const { command } = makeCommandMock({ 'bd dolt pull': [fail('Error 1105: no remote')] });
+    const res = await preflightBeadsHealthGate('memberA', { command });
+    assert.deepEqual(res, { ok: true, member: 'memberA', skipped: true, reason: 'no-remote' });
+});
+
+test('preflightBeadsHealthGate: a non-diverged (transient-exhausted/unknown) failure is re-thrown unchanged, not rewritten', async () => {
+    const { command } = makeCommandMock({ 'bd dolt pull': [fail('connection refused'), fail('connection refused')] });
+    await assert.rejects(() => preflightBeadsHealthGate('memberA', { command }), DoltSyncError);
+});
+
+test('preflightBeadsHealthGate: on divergence, composes a one-line cause naming workspace, table(s), and remediation, then throws DoltDivergedError', async () => {
+    const logs = [];
+    const log = (msg) => logs.push(msg);
+    const command = async (cmd, opts = {}) => {
+        if (cmd.includes('bd dolt pull')) return fail('cannot fast-forward: conflict in table issues');
+        if (cmd === 'pwd') return { ok: true, output: '/home/ci/sprint-workspace\n', error: null };
+        return OK;
+    };
+
+    await assert.rejects(
+        () => preflightBeadsHealthGate('memberA', { command, log }),
+        (err) => {
+            assert.ok(err instanceof DoltDivergedError, 'rethrows as DoltDivergedError');
+            assert.match(err.message, /beads DB diverged/, 'message matches the required /beads DB diverged/ cause line');
+            assert.ok(err.message.includes('/home/ci/sprint-workspace'), `message names the resolved workspace path, got: ${err.message}`);
+            assert.ok(err.message.includes('issues'), `message names the conflicting table, got: ${err.message}`);
+            assert.ok(/resolve or re-init from the shared remote/.test(err.message), `message includes remediation guidance, got: ${err.message}`);
+            return true;
+        },
+    );
+    assert.ok(
+        logs.some((l) => /beads DB diverged/.test(l)),
+        `expected the composed cause to be logged to the main log, got: ${JSON.stringify(logs)}`,
+    );
+});
+
+test('preflightBeadsHealthGate: falls back to "unknown" table(s) and the member id (workspace) when neither is resolvable', async () => {
+    const command = async (cmd) => {
+        if (cmd.includes('bd dolt pull')) return fail('cannot fast-forward: local changes diverge from remote, please resolve');
+        if (cmd === 'pwd') return { ok: false, output: '', error: 'pwd not available' };
+        return OK;
+    };
+
+    await assert.rejects(
+        () => preflightBeadsHealthGate('memberA', { command }),
+        (err) => {
+            assert.ok(err instanceof DoltDivergedError);
+            assert.ok(err.message.includes("workspace: memberA"), `expected a member-id workspace fallback, got: ${err.message}`);
+            assert.ok(err.message.includes('unknown'), `expected an "unknown" table fallback, got: ${err.message}`);
+            return true;
+        },
+    );
+});
+
+test('preflightBeadsHealthGate: a thrown pwd probe never blocks the abort -- still throws DoltDivergedError with a member-id fallback', async () => {
+    const command = async (cmd) => {
+        if (cmd.includes('bd dolt pull')) return fail('conflict in table issues');
+        if (cmd === 'pwd') throw new Error('unexpected pwd failure');
+        return OK;
+    };
+
+    await assert.rejects(
+        () => preflightBeadsHealthGate('memberA', { command }),
+        (err) => {
+            assert.ok(err instanceof DoltDivergedError, 'a broken diagnostics probe never masks the real divergence error');
+            assert.ok(err.message.includes('workspace: memberA'));
+            return true;
+        },
+    );
 });
 
 // -----------------------------------------------------------------------------
