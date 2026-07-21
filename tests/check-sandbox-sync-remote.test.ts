@@ -5,6 +5,9 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   isSyncRemoteActive,
+  parseActiveSyncRemoteValue,
+  resolvesInsideSandbox,
+  defaultSandboxPath,
   checkSyncRemoteInert,
   checkNoOutboundCommits,
   parseLeftRightCount,
@@ -14,85 +17,153 @@ import {
   HAZARD_REMOTE,
 } from '../scripts/check-sandbox-sync-remote.mjs';
 
-// Tests for apra-fleet-eft.25.2: verify scripts/check-sandbox-sync-remote.mjs
-// correctly detects both the eft.25 hazard (active sync.remote right after a
-// bare 'bd bootstrap --yes') and the eft.25.1 remedy (sync.remote neutralized
-// / commented out), plus the outbound-commit safety check.
+// Tests for apra-fleet-eft.18.6: scripts/check-sandbox-sync-remote.mjs
+// retargeted from "sync.remote is commented out / real remote absent" (the
+// retired bd-bootstrap-then-neutralize flow) to "every git+Dolt remote
+// resolves INSIDE the sandbox path" (apra-fleet-eft.18.5's structural-
+// isolation seed flow: sandbox-local git origin mirror + sandbox-local
+// throwaway Dolt file:// remote, wired before any bd command ever runs).
 //
 // Sandbox-only: this suite never contacts the real fleet-e2e-toy Dolt
 // remote. Git repos used here are local-only (no network), created fresh
 // under os.tmpdir() and removed afterward.
 
-describe('isSyncRemoteActive / checkSyncRemoteInert: sync.remote hazard detection', () => {
-  it('FAILS (active) on the config.yaml shape bd bootstrap --yes produces (eft.25 repro)', () => {
-    // Shape from apra-fleet-eft.25's repro: bd bootstrap --yes adds a new
-    // ACTIVE block and leaves the old disabled line stale below it.
-    const afterBootstrapOnly = [
-      'sync:',
-      '  remote: "git+https://github.com/Apra-Labs/fleet-e2e-toy"',
-      '# sync.remote disabled -- no Dolt push for this toy project',
-      '',
-    ].join('\n');
-    expect(isSyncRemoteActive(afterBootstrapOnly)).toBe(true);
+describe('defaultSandboxPath', () => {
+  it('is the parent directory of the repo path (matches "$HOME/toy-repo" -> "$HOME")', () => {
+    expect(defaultSandboxPath('/home/sandbox/toy-repo')).toBe(path.dirname('/home/sandbox/toy-repo'));
+  });
+});
+
+describe('resolvesInsideSandbox', () => {
+  const sandbox = '/tmp/apra-fleet-tests/sandbox-root';
+
+  it('is true for a file:// URL resolving to a path inside the sandbox root', () => {
+    expect(resolvesInsideSandbox(`file://${sandbox}/.apra-fleet-toy-dolt-remote`, sandbox)).toBe(true);
   });
 
-  it('PASSES (inert) once every fleet-e2e-toy reference is commented out (eft.25.1 remedy)', () => {
-    const afterNeutralize = [
-      '# sync:',
-      '#   remote: "git+https://github.com/Apra-Labs/fleet-e2e-toy"',
-      '# sync.remote disabled -- no Dolt push for this toy project',
-      '',
-    ].join('\n');
-    expect(isSyncRemoteActive(afterNeutralize)).toBe(false);
+  it('is true for a plain filesystem path inside the sandbox root', () => {
+    expect(resolvesInsideSandbox(`${sandbox}/.apra-fleet-toy-origin.git`, sandbox)).toBe(true);
   });
 
-  it('PASSES on the pristine fresh-clone config (sync.remote shipped disabled)', () => {
-    const pristine = '# sync.remote disabled -- no Dolt push for this toy project\n';
-    expect(isSyncRemoteActive(pristine)).toBe(false);
+  it('is true when the value resolves to the sandbox root itself', () => {
+    expect(resolvesInsideSandbox(sandbox, sandbox)).toBe(true);
+  });
+
+  it('is false for a path outside the sandbox root', () => {
+    expect(resolvesInsideSandbox('/tmp/apra-fleet-tests/somewhere-else', sandbox)).toBe(false);
+  });
+
+  it('is false for a sibling directory that merely shares a string prefix (no false positive on startsWith)', () => {
+    expect(resolvesInsideSandbox(`${sandbox}-evil-twin/payload`, sandbox)).toBe(false);
+  });
+
+  it('is false for the real hazard remote URL (git+https scheme, never a filesystem path)', () => {
+    expect(resolvesInsideSandbox('git+https://github.com/Apra-Labs/fleet-e2e-toy', sandbox)).toBe(false);
+  });
+
+  it('is false for any other non-file URL scheme (e.g. ssh://)', () => {
+    expect(resolvesInsideSandbox('ssh://git@example.com/some/repo.git', sandbox)).toBe(false);
+  });
+
+  it('is false for an empty value', () => {
+    expect(resolvesInsideSandbox('', sandbox)).toBe(false);
+  });
+});
+
+describe('parseActiveSyncRemoteValue', () => {
+  it('extracts the active sync.remote value from config.yaml text', () => {
+    const text = ['sync:', '  remote: "file:///tmp/sandbox/.apra-fleet-toy-dolt-remote"', ''].join('\n');
+    expect(parseActiveSyncRemoteValue(text)).toBe('file:///tmp/sandbox/.apra-fleet-toy-dolt-remote');
+  });
+
+  it('ignores a commented-out remote line', () => {
+    const text = ['# sync:', '#   remote: "git+https://github.com/Apra-Labs/fleet-e2e-toy"', ''].join('\n');
+    expect(parseActiveSyncRemoteValue(text)).toBeNull();
+  });
+
+  it('returns null on the pristine fresh-clone config (no remote key at all)', () => {
+    expect(parseActiveSyncRemoteValue('# sync.remote disabled -- no Dolt push for this toy project\n')).toBeNull();
+  });
+});
+
+describe('isSyncRemoteActive: hazard-identity detection (defense in depth)', () => {
+  it('is true on an active line referencing the hazard remote', () => {
+    const text = ['sync:', '  remote: "git+https://github.com/Apra-Labs/fleet-e2e-toy"', ''].join('\n');
+    expect(isSyncRemoteActive(text)).toBe(true);
+  });
+
+  it('is false once every fleet-e2e-toy reference is commented out', () => {
+    const text = ['# sync:', '#   remote: "git+https://github.com/Apra-Labs/fleet-e2e-toy"', ''].join('\n');
+    expect(isSyncRemoteActive(text)).toBe(false);
   });
 
   it('references the real hazard remote identity', () => {
     expect(HAZARD_REMOTE).toBe('fleet-e2e-toy');
   });
+});
 
+describe('checkSyncRemoteInert: sync.remote resolves-inside-sandbox (apra-fleet-eft.18.6 retarget)', () => {
   let tmpDir: string;
+  let sandboxRoot: string;
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sync-remote-test-'));
+    sandboxRoot = tmpDir;
   });
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('checkSyncRemoteInert: FAILS right after bd bootstrap --yes, before neutralize', () => {
-    const configPath = path.join(tmpDir, 'config.yaml');
-    fs.writeFileSync(
-      configPath,
-      'sync:\n  remote: "git+https://github.com/Apra-Labs/fleet-e2e-toy"\n# sync.remote disabled -- no Dolt push for this toy project\n',
-      'utf-8'
-    );
-    const result = checkSyncRemoteInert(configPath);
-    expect(result.ok).toBe(false);
-    expect(result.message).toMatch(/^FAIL/);
-  });
-
-  it('checkSyncRemoteInert: PASSES after the eft.25.1 neutralize step runs', () => {
-    const configPath = path.join(tmpDir, 'config.yaml');
-    fs.writeFileSync(
-      configPath,
-      'sync:\n  remote: "git+https://github.com/Apra-Labs/fleet-e2e-toy"\n# sync.remote disabled -- no Dolt push for this toy project\n',
-      'utf-8'
-    );
-    // Apply the exact same sed transform the playbook's neutralize step uses.
-    execFileSync('sed', ['-i.bak', '-E', '/fleet-e2e-toy/{/^[[:space:]]*#/!s/^/# /;}', configPath]);
-    fs.rmSync(`${configPath}.bak`, { force: true });
-
-    const result = checkSyncRemoteInert(configPath);
+  it('PASSES (vacuously) when config.yaml does not exist -- nothing wired yet', () => {
+    const result = checkSyncRemoteInert(path.join(tmpDir, 'does-not-exist.yaml'), sandboxRoot);
     expect(result.ok).toBe(true);
     expect(result.message).toMatch(/^OK/);
   });
 
-  it('checkSyncRemoteInert: PASSES (vacuously) when config.yaml does not exist', () => {
-    const result = checkSyncRemoteInert(path.join(tmpDir, 'does-not-exist.yaml'));
+  it('PASSES (vacuously) on the pristine fresh-clone config (no active sync.remote)', () => {
+    const configPath = path.join(tmpDir, 'config.yaml');
+    fs.writeFileSync(configPath, '# sync.remote disabled -- no Dolt push for this toy project\n', 'utf-8');
+    const result = checkSyncRemoteInert(configPath, sandboxRoot);
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
+  });
+
+  it('PASSES (positive case): active sync.remote is a sandbox-local file:// throwaway remote', () => {
+    const configPath = path.join(tmpDir, 'config.yaml');
+    const doltRemote = path.join(sandboxRoot, '.apra-fleet-toy-dolt-remote');
+    fs.writeFileSync(configPath, `sync:\n  remote: "file://${doltRemote}"\n`, 'utf-8');
+    const result = checkSyncRemoteInert(configPath, sandboxRoot);
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
+    expect(result.message).toContain('resolves inside the sandbox path');
+  });
+
+  it('FAILS (negative case): active sync.remote points at the real fleet-e2e-toy remote', () => {
+    const configPath = path.join(tmpDir, 'config.yaml');
+    fs.writeFileSync(configPath, 'sync:\n  remote: "git+https://github.com/Apra-Labs/fleet-e2e-toy"\n', 'utf-8');
+    const result = checkSyncRemoteInert(configPath, sandboxRoot);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/^FAIL/);
+    expect(result.message).toMatch(/fleet-e2e-toy/);
+  });
+
+  it('FAILS when active sync.remote resolves to a path outside the sandbox root (not the real remote either)', () => {
+    const configPath = path.join(tmpDir, 'config.yaml');
+    const outside = path.join(os.tmpdir(), 'some-other-unrelated-dolt-remote');
+    fs.writeFileSync(configPath, `sync:\n  remote: "file://${outside}"\n`, 'utf-8');
+    const result = checkSyncRemoteInert(configPath, sandboxRoot);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/^FAIL/);
+    expect(result.message).toMatch(/resolves outside the sandbox path/);
+  });
+
+  it('defaults sandboxPath to the grandparent of configPath when not given', () => {
+    const repoDir = path.join(tmpDir, 'toy-repo');
+    fs.mkdirSync(repoDir, { recursive: true });
+    const configPath = path.join(repoDir, 'config.yaml');
+    const doltRemote = path.join(tmpDir, '.apra-fleet-toy-dolt-remote');
+    fs.writeFileSync(configPath, `sync:\n  remote: "file://${doltRemote}"\n`, 'utf-8');
+    const result = checkSyncRemoteInert(configPath);
     expect(result.ok).toBe(true);
   });
 });
@@ -108,7 +179,7 @@ describe('parseLeftRightCount', () => {
   });
 });
 
-describe('checkNoOutboundCommits: outbound-commit safety check (local-only git, no network)', () => {
+describe('checkNoOutboundCommits: sandbox-integrity sanity check, unchanged by the eft.18.6 retarget (local-only git, no network)', () => {
   let tmpDir: string;
   let originDir: string;
   let cloneDir: string;
@@ -155,7 +226,7 @@ describe('checkNoOutboundCommits: outbound-commit safety check (local-only git, 
   it('FAILS when the sandbox clone has an un-pushed local commit ahead of origin/main', () => {
     fs.writeFileSync(path.join(cloneDir, 'new-file.txt'), 'local only\n', 'utf-8');
     git(cloneDir, ['add', 'new-file.txt']);
-    git(cloneDir, ['commit', '-m', 'local-only commit (never pushed to real remote)']);
+    git(cloneDir, ['commit', '-m', 'local-only commit (never pushed anywhere)']);
 
     const result = checkNoOutboundCommits(cloneDir);
     expect(result.ok).toBe(false);
@@ -190,46 +261,61 @@ describe('parseDoltRemoteList', () => {
   });
 });
 
-describe('checkDoltRemoteAbsent: Dolt-level remote hazard detection (apra-fleet-eft.30)', () => {
-  // Regression coverage for apra-fleet-eft.30: 'bd bootstrap --yes' wires
-  // Dolt's OWN internal remote independently of the bd-level sync.remote
-  // YAML key that checkSyncRemoteInert (above) checks. The eft.25.1
-  // neutralize step (YAML-only) does NOT touch this Dolt-level remote, so
-  // this check must FAIL on a YAML-only-neutralized sandbox and only PASS
-  // once the eft.30.1 Dolt-remote disarm step has actually removed it.
+describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra-fleet-eft.18.6 retarget of apra-fleet-eft.30)', () => {
   // Hermetic: execFileSync is always injected here -- this suite never
   // shells out to a real 'bd' binary or contacts the network.
+  const sandbox = '/tmp/apra-fleet-tests/sandbox-root';
 
-  it('FAILS when Dolt-level "bd dolt remote list --json" still carries the hazard remote (pre-eft.30.1 state, incl. after YAML-only neutralize)', () => {
-    const result = checkDoltRemoteAbsent('/fake/repo', {
-      execFileSync: () =>
-        JSON.stringify([
-          { name: 'origin', url: 'git+https://github.com/Apra-Labs/fleet-e2e-toy' },
-        ]),
-    });
+  it('PASSES (positive case): the Dolt remote is a sandbox-local throwaway file:// remote', () => {
+    const result = checkDoltRemoteAbsent(
+      '/fake/repo',
+      sandbox,
+      { execFileSync: () => JSON.stringify([{ name: 'origin', url: `file://${sandbox}/.apra-fleet-toy-dolt-remote` }]) },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
+  });
+
+  it('FAILS (negative case): the Dolt remote points at the real fleet-e2e-toy remote', () => {
+    const result = checkDoltRemoteAbsent(
+      '/fake/repo',
+      sandbox,
+      { execFileSync: () => JSON.stringify([{ name: 'origin', url: 'git+https://github.com/Apra-Labs/fleet-e2e-toy' }]) },
+    );
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/^FAIL/);
     expect(result.message).toMatch(/fleet-e2e-toy/);
   });
 
-  it('PASSES once the eft.30.1 Dolt-remote disarm step has removed the hazard remote', () => {
-    const result = checkDoltRemoteAbsent('/fake/repo', {
-      execFileSync: () => JSON.stringify([]),
-    });
+  it('FAILS when a Dolt remote resolves outside the sandbox path (not the hazard remote either)', () => {
+    const result = checkDoltRemoteAbsent(
+      '/fake/repo',
+      sandbox,
+      { execFileSync: () => JSON.stringify([{ name: 'origin', url: '/somewhere/else/entirely' }]) },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/^FAIL/);
+    expect(result.message).toMatch(/resolve outside the sandbox path/);
+  });
+
+  it('PASSES when no Dolt remotes are configured yet', () => {
+    const result = checkDoltRemoteAbsent('/fake/repo', sandbox, { execFileSync: () => JSON.stringify([]) });
     expect(result.ok).toBe(true);
     expect(result.message).toMatch(/^OK/);
   });
 
   it('FAILS when a hazard remote is identified by name rather than url', () => {
-    const result = checkDoltRemoteAbsent('/fake/repo', {
-      execFileSync: () => JSON.stringify([{ name: 'fleet-e2e-toy', url: '' }]),
-    });
+    const result = checkDoltRemoteAbsent(
+      '/fake/repo',
+      sandbox,
+      { execFileSync: () => JSON.stringify([{ name: 'fleet-e2e-toy', url: '' }]) },
+    );
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/^FAIL/);
   });
 
   it('is vacuously OK when "bd dolt remote list" is unavailable (no bd binary / no beads DB in this clone)', () => {
-    const result = checkDoltRemoteAbsent('/fake/repo', {
+    const result = checkDoltRemoteAbsent('/fake/repo', sandbox, {
       execFileSync: () => {
         throw new Error('command not found: bd');
       },
@@ -239,28 +325,36 @@ describe('checkDoltRemoteAbsent: Dolt-level remote hazard detection (apra-fleet-
   });
 
   it('surfaces a FAIL result (not a throw) when the command output cannot be parsed as JSON', () => {
-    const result = checkDoltRemoteAbsent('/fake/repo', {
-      execFileSync: () => 'not json',
-    });
+    const result = checkDoltRemoteAbsent('/fake/repo', sandbox, { execFileSync: () => 'not json' });
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/^FAIL/);
   });
+
+  it('defaults sandboxPath to the parent of repoPath when not given', () => {
+    const repoPath = path.join(sandbox, 'toy-repo');
+    const result = checkDoltRemoteAbsent(repoPath, undefined, {
+      execFileSync: () => JSON.stringify([{ name: 'origin', url: `file://${sandbox}/.apra-fleet-toy-dolt-remote` }]),
+    });
+    expect(result.ok).toBe(true);
+  });
 });
 
-describe('checkGitOriginNotHazard: git-origin-derived Dolt remote re-wire detection (apra-fleet-eft.31)', () => {
-  // Regression coverage for apra-fleet-eft.31: at C4/C5 the first three
-  // checks (sync.remote inert, no outbound commits, Dolt-level remote
-  // absent) all reported clean at the moment check-sandbox-sync-remote.mjs
-  // ran, yet a LATER 'bd dolt' invocation still auto-provisioned a fresh
-  // Dolt-level remote FROM the clone's own git 'origin' remote and attempted
-  // a live push against it -- stopped only by missing GitHub credentials,
-  // not by any check here. This check closes that gap by inspecting the git
-  // origin itself, the raw material any future auto-provision derives from.
+describe('checkGitOriginNotHazard: git-origin resolves-inside-sandbox (apra-fleet-eft.18.6 retarget of apra-fleet-eft.31)', () => {
   // Hermetic: execFileSync is always injected -- this suite never shells out
-  // to a real git binary or touches the network.
+  // to a real git binary or touches the network, except in the "REAL local
+  // git repo" cases below which use only local, network-free git repos.
+  const sandbox = '/tmp/apra-fleet-tests/sandbox-root';
 
-  it('FAILS when the sandbox clone\'s git origin itself points at the hazard remote (the C4/C5 escape path)', () => {
-    const result = checkGitOriginNotHazard('/fake/repo', {
+  it('PASSES (positive case): git origin is a sandbox-local bare mirror', () => {
+    const result = checkGitOriginNotHazard('/fake/repo', sandbox, {
+      execFileSync: () => `file://${sandbox}/.apra-fleet-toy-origin.git\n`,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
+  });
+
+  it('FAILS (negative case): git origin points at the real fleet-e2e-toy remote', () => {
+    const result = checkGitOriginNotHazard('/fake/repo', sandbox, {
       execFileSync: () => 'git+https://github.com/Apra-Labs/fleet-e2e-toy\n',
     });
     expect(result.ok).toBe(false);
@@ -268,18 +362,19 @@ describe('checkGitOriginNotHazard: git-origin-derived Dolt remote re-wire detect
     expect(result.message).toMatch(/fleet-e2e-toy/);
   });
 
-  it('PASSES when the sandbox clone\'s git origin points at an unrelated repo', () => {
-    const result = checkGitOriginNotHazard('/fake/repo', {
-      execFileSync: () => 'git+https://github.com/Apra-Labs/some-other-toy-repo\n',
+  it('FAILS when git origin resolves to a path outside the sandbox root (not the hazard remote either)', () => {
+    const result = checkGitOriginNotHazard('/fake/repo', sandbox, {
+      execFileSync: () => 'https://github.com/Apra-Labs/some-other-toy-repo\n',
     });
-    expect(result.ok).toBe(true);
-    expect(result.message).toMatch(/^OK/);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/^FAIL/);
+    expect(result.message).toMatch(/resolves outside the sandbox path/);
   });
 
   it('is vacuously OK when there is no git \'origin\' remote to inspect (no git repo / no origin configured)', () => {
-    const result = checkGitOriginNotHazard('/fake/repo', {
+    const result = checkGitOriginNotHazard('/fake/repo', sandbox, {
       execFileSync: () => {
-        throw new Error('fatal: No such remote \'origin\'');
+        throw new Error("fatal: No such remote 'origin'");
       },
     });
     expect(result.ok).toBe(true);
@@ -288,37 +383,55 @@ describe('checkGitOriginNotHazard: git-origin-derived Dolt remote re-wire detect
 
   let tmpDir: string;
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-git-origin-hazard-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-git-origin-sandbox-test-'));
   });
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('against a REAL local git repo: FAILS when origin is a local remote whose path contains the hazard identity', () => {
-    const hazardRemote = path.join(tmpDir, 'fleet-e2e-toy.git');
+  it('against a REAL local git repo: PASSES when origin is a sandbox-local bare mirror', () => {
+    const mirror = path.join(tmpDir, '.apra-fleet-toy-origin.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', mirror]);
+
+    const workDir = path.join(tmpDir, 'toy-repo');
+    fs.mkdirSync(workDir);
+    execFileSync('git', ['init', '-b', 'main'], { cwd: workDir });
+    execFileSync('git', ['remote', 'add', 'origin', mirror], { cwd: workDir });
+
+    const result = checkGitOriginNotHazard(workDir, tmpDir);
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
+  });
+
+  it('against a REAL local git repo: FAILS when origin is a local remote outside the sandbox root', () => {
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-outside-sandbox-'));
+    const hazardRemote = path.join(outsideRoot, 'fleet-e2e-toy.git');
     execFileSync('git', ['init', '--bare', '-b', 'main', hazardRemote]);
 
-    const workDir = path.join(tmpDir, 'work');
+    const workDir = path.join(tmpDir, 'toy-repo');
     fs.mkdirSync(workDir);
     execFileSync('git', ['init', '-b', 'main'], { cwd: workDir });
     execFileSync('git', ['remote', 'add', 'origin', hazardRemote], { cwd: workDir });
 
-    const result = checkGitOriginNotHazard(workDir);
-    expect(result.ok).toBe(false);
-    expect(result.message).toMatch(/^FAIL/);
+    try {
+      const result = checkGitOriginNotHazard(workDir, tmpDir);
+      expect(result.ok).toBe(false);
+      expect(result.message).toMatch(/^FAIL/);
+    } finally {
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
   });
 
-  it('against a REAL local git repo: PASSES when origin points elsewhere', () => {
-    const benignRemote = path.join(tmpDir, 'some-other-repo.git');
-    execFileSync('git', ['init', '--bare', '-b', 'main', benignRemote]);
+  it('defaults sandboxPath to the parent of repoPath when not given', () => {
+    const mirror = path.join(tmpDir, '.apra-fleet-toy-origin.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', mirror]);
 
-    const workDir = path.join(tmpDir, 'work');
+    const workDir = path.join(tmpDir, 'toy-repo');
     fs.mkdirSync(workDir);
     execFileSync('git', ['init', '-b', 'main'], { cwd: workDir });
-    execFileSync('git', ['remote', 'add', 'origin', benignRemote], { cwd: workDir });
+    execFileSync('git', ['remote', 'add', 'origin', mirror], { cwd: workDir });
 
     const result = checkGitOriginNotHazard(workDir);
     expect(result.ok).toBe(true);
-    expect(result.message).toMatch(/^OK/);
   });
 });
