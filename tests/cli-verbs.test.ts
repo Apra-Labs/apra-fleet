@@ -118,13 +118,42 @@ describe('runStart', () => {
   });
 
   it('calls service manager start when unit is installed', async () => {
-    mockSvcMgr.isInstalled.mockResolvedValue(true);
-    mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
-    vi.useFakeTimers();
-    const p = runStart([]);
-    await vi.advanceTimersByTimeAsync(2001);
-    await p;
-    expect(mockSvcMgr.start).toHaveBeenCalled();
+    // apra-fleet-eft.51.1: this is the "default instance" case (no
+    // APRA_FLEET_PORT/APRA_FLEET_DATA_DIR sandbox override), so svcMgr.start()
+    // must still run. tests/setup.ts always sets APRA_FLEET_DATA_DIR for test
+    // isolation, so temporarily clear it here to represent an un-overridden
+    // (default) instance -- restored in afterEach via the saved value below.
+    const savedDataDir = process.env.APRA_FLEET_DATA_DIR;
+    delete process.env.APRA_FLEET_DATA_DIR;
+    try {
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
+      vi.useFakeTimers();
+      const p = runStart([]);
+      await vi.advanceTimersByTimeAsync(2001);
+      await p;
+      expect(mockSvcMgr.start).toHaveBeenCalled();
+    } finally {
+      if (savedDataDir !== undefined) process.env.APRA_FLEET_DATA_DIR = savedDataDir;
+    }
+  });
+
+  it('direct-spawns and skips service manager start for a non-default instance (custom port)', async () => {
+    const savedPort = process.env.APRA_FLEET_PORT;
+    process.env.APRA_FLEET_PORT = '18700';
+    try {
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
+      vi.useFakeTimers();
+      const p = runStart([]);
+      await vi.advanceTimersByTimeAsync(2001);
+      await p;
+      expect(mockSvcMgr.start).not.toHaveBeenCalled();
+      expect(vi.mocked(spawn)).toHaveBeenCalled();
+    } finally {
+      if (savedPort === undefined) delete process.env.APRA_FLEET_PORT;
+      else process.env.APRA_FLEET_PORT = savedPort;
+    }
   });
 
   it('spawns a detached process when no service unit is installed', async () => {

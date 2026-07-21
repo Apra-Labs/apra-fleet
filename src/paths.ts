@@ -3,7 +3,25 @@ import os from 'node:os';
 
 export const FLEET_DIR = process.env.APRA_FLEET_DATA_DIR ?? path.join(os.homedir(), '.apra-fleet', 'data');
 
-export const DEFAULT_PORT = parseInt(process.env.APRA_FLEET_PORT ?? '', 10) || 7523;
+const RAW_DEFAULT_PORT = 7523;
+
+export const DEFAULT_PORT = parseInt(process.env.APRA_FLEET_PORT ?? '', 10) || RAW_DEFAULT_PORT;
+
+/**
+ * True when this process invocation targets a non-default fleet instance --
+ * either a custom port (APRA_FLEET_PORT set to something other than the
+ * built-in default) or a custom data directory (APRA_FLEET_DATA_DIR set at
+ * all). cli/start.ts's runStart() uses this to keep a sandboxed instance
+ * from ever touching the machine-global service registration: a sandbox
+ * must always direct-spawn, never call svcMgr.start() (apra-fleet-eft.51).
+ */
+export function isNonDefaultInstance(): boolean {
+  const portOverride = process.env.APRA_FLEET_PORT;
+  const hasPortOverride =
+    portOverride !== undefined && portOverride !== '' && parseInt(portOverride, 10) !== RAW_DEFAULT_PORT;
+  const hasDataDirOverride = !!process.env.APRA_FLEET_DATA_DIR;
+  return hasPortOverride || hasDataDirOverride;
+}
 
 /**
  * Bind address for the local MCP/HTTP server (src/services/http-transport.ts).
