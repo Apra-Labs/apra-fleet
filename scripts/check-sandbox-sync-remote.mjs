@@ -234,6 +234,20 @@ export function checkDoltRemoteAbsent(repoPath, deps = {}) {
  * Read-only: runs 'git remote get-url origin', never 'git remote add/set-url'
  * or any push/pull/fetch.
  *
+ * apra-fleet-eft.47: the `## Setup` neutralize step no longer points
+ * `origin` at an unfetchable `file:///dev/null/...` placeholder (that broke
+ * the sprint engine's own legitimate `git fetch origin main`) -- it now
+ * points `origin` at a second, throwaway local BARE clone of the sandbox
+ * toy-repo's own content (real, fetchable, and reachable only on local
+ * disk). This check's substring match against HAZARD_REMOTE already treats
+ * that arrangement as non-hazard as long as the bare clone's path does not
+ * itself contain the `fleet-e2e-toy` substring -- which is exactly what the
+ * documented neutralize step's `$HOME/.apra-fleet-neutralized-origin.git`
+ * path guarantees -- while a real `git+https://github.com/Apra-Labs/fleet-
+ * e2e-toy` (or any other URL containing that substring, including a local
+ * fixture deliberately named to simulate it) is still correctly rejected
+ * below.
+ *
  * @param {string} repoPath
  * @param {{execFileSync: typeof execFileSync}} [deps] injectable for tests
  * @returns {{ok: boolean, message: string}}

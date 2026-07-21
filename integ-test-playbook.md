@@ -171,31 +171,53 @@ LATER `bd dolt` invocation can auto-provision a fresh Dolt-level remote
 FROM this git origin ("Configured Dolt remote origin from git origin."),
 re-arming exactly what the Dolt-level neutralize step above just cleared.
 Neutralize the sandbox clone's git origin too, immediately after the
-Dolt-level remote step, by rewriting it to an inert local URL -- never
-`git push`. Use `git remote set-url` rather than `git remote remove`: the
+Dolt-level remote step, by rewriting it to point at a fetchable-but-fully-
+isolated local git remote -- never `git push`, and never `file:///dev/null/...`
+(apra-fleet-eft.47: that path is not a real repo, so any LEGITIMATE later
+`git fetch origin` -- e.g. the auto-sprint engine's own `Ensure Sprint
+Branch` phase, or this playbook's own `## Reset` step -- fails with exit
+128 and aborts, even though nothing hazardous was ever at stake). Instead,
+create a second, throwaway BARE clone of the sandbox toy-repo's own local
+content (never the real `https://github.com/Apra-Labs/fleet-e2e-toy`) and
+point `origin` at that: real, empty-of-any-network-remote, and fully
+fetchable. Use `git remote set-url` rather than `git remote remove`: the
 latter also deletes the clone's cached `origin/main` remote-tracking ref,
 which would break the Verify step's `checkNoOutboundCommits` check (it
-diffs `HEAD...origin/main` and needs that ref to still resolve locally):
+diffs `HEAD...origin/main` and needs that ref to still resolve locally).
+The bare clone's path deliberately does not contain the `fleet-e2e-toy`
+substring, so it also reads as non-hazard to
+`checkGitOriginNotHazard` below:
 
 ```bash
 TOY_REPO="$HOME/toy-repo"
+NEUTRAL_ORIGIN="$HOME/.apra-fleet-neutralized-origin.git"
 if [ -d "$TOY_REPO/.git" ]; then
-  (cd "$TOY_REPO" && git remote set-url origin "file:///dev/null/neutralized-sandbox-origin") || true
+  rm -rf "$NEUTRAL_ORIGIN"
+  git clone --bare "$TOY_REPO" "$NEUTRAL_ORIGIN"
+  (cd "$TOY_REPO" && git remote set-url origin "file://$NEUTRAL_ORIGIN") || true
 fi
 ```
 
 Idempotent and safe to run even when no `origin` remote is configured (or
-no git repo exists yet in this clone): the `set-url` no-ops with a non-zero
-exit swallowed by `|| true` when there is no `origin` to rewrite.
+no git repo exists yet in this clone): the bare clone is rebuilt fresh each
+run (`rm -rf` before `clone --bare`), and the `set-url` no-ops with a
+non-zero exit swallowed by `|| true` when there is no `origin` to rewrite.
+`git clone --bare` here only reads from the local `$TOY_REPO` working
+copy and writes to a new local directory -- it never contacts any network
+remote, so no reachability to the real `fleet-e2e-toy` repo is introduced.
 
 Verify: no uncommented line in `.beads/config.yaml` may reference
 `fleet-e2e-toy` after the first step, Dolt's own remote list (`bd dolt
 remote list --json` in the sandbox clone) must carry no remote pointing at
 `fleet-e2e-toy` after the second step, the sandbox clone's `git remote
-get-url origin` must not point at `fleet-e2e-toy` after the third step,
+get-url origin` must not point at `fleet-e2e-toy` after the third step
+(it must instead point at the local `$NEUTRAL_ORIGIN` bare clone),
+`git fetch origin main` run from `$TOY_REPO` must exit 0 against that
+neutralized origin (proving the sprint engine's own fetch can succeed),
 AND the sandbox clone must have 0 commits ahead of `origin/main` (nothing
 has actually reached the real remote -- still checkable locally because
-`set-url` preserves the cached `origin/main` ref).
+`set-url` preserves the cached `origin/main` ref, and the fresh bare clone
+shares the same history as of neutralize time).
 `scripts/check-sandbox-sync-remote.mjs` (apra-fleet-eft.25.2, extended by
 apra-fleet-eft.30.1 and apra-fleet-eft.31) asserts all four in one
 shell-drivable, sandbox-only, read-only step -- it exits non-zero (and
