@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseClaudeOAuthSecret, runAuth } from '../src/cli/auth.js';
-import { checkCleanEnvCredentialsFile } from '../scripts/check-toy-doer-credentials.mjs';
+import { checkCleanEnvCredentialsFile, checkMemberEnvVarProvisioned, defaultRegistryPath } from '../scripts/check-toy-doer-credentials.mjs';
+import { addAgent, getAllAgents } from '../src/services/registry.js';
+import { decryptPassword } from '../src/utils/crypto.js';
+import { credentialSet } from '../src/services/credential-store.js';
+import { backupAndResetRegistry, restoreRegistry, makeTestLocalAgent } from './test-helpers.js';
 
 // Stabilization Issue 43 (smoke-test rehearsal): `auth --oauth` used to write
 // { claudeAiOauth: { accessToken } } no matter what it was given. The Claude
@@ -213,5 +217,99 @@ describe('handleOAuth / getOAuthCredentialPatch write path (apra-fleet-eft.48.5)
     // real CLI requires, not just a synthetic expiresAt.
     const parsed = JSON.parse(fs.readFileSync(credPath(), 'utf-8'));
     expect(parsed.claudeAiOauth.scopes).toContain('user:inference');
+  });
+});
+
+// apra-fleet-eft.48.8 (ORCHESTRATOR STEER, post-Integ-C4): `auth --oauth
+// --member <name>` provisions the member's registry.json
+// encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly instead of writing a
+// credentials file -- the PRIMARY, cross-platform smoke-test path (see
+// integ-test-playbook.md's '## Test scenario' step 3b). LocalStrategy's
+// clean-env dispatch injects this straight into the child shell via
+// buildAuthEnvPrefix() (src/utils/auth-env.ts), so no synthesized
+// credentials-file session shape is needed at all.
+describe('handleOAuth --member env-var provisioning (apra-fleet-eft.48.8)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.restoreAllMocks();
+  });
+
+  it('stores the token encrypted in the named member\'s encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN, never in plaintext', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'toy-doer' });
+    addAgent(member);
+
+    await runAuth(['--oauth', '--member', 'toy-doer', 'sk-test-member-envvar-token']);
+
+    const updated = getAllAgents().find(a => a.friendlyName === 'toy-doer');
+    expect(updated).toBeDefined();
+    const stored = updated!.encryptedEnvVars?.CLAUDE_CODE_OAUTH_TOKEN;
+    expect(stored).toBeTruthy();
+    expect(stored).not.toBe('sk-test-member-envvar-token'); // never plaintext
+    expect(decryptPassword(stored!)).toBe('sk-test-member-envvar-token');
+  });
+
+  it('resolves a secure.<name> credential-store reference rather than accepting plaintext on the command line', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'toy-doer-2' });
+    addAgent(member);
+    credentialSet('INTEG-TOY-DOER-TOKEN-TEST', 'sk-test-secure-ref-token', true, 'deny');
+
+    await runAuth(['--oauth', '--member', 'toy-doer-2', 'secure.INTEG-TOY-DOER-TOKEN-TEST']);
+
+    const updated = getAllAgents().find(a => a.friendlyName === 'toy-doer-2');
+    expect(decryptPassword(updated!.encryptedEnvVars!.CLAUDE_CODE_OAUTH_TOKEN)).toBe('sk-test-secure-ref-token');
+  });
+
+  it('does NOT write any provider credentials file -- registry-only', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-auth-member-envvar-test-'));
+    const savedHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+    try {
+      const member = makeTestLocalAgent({ friendlyName: 'toy-doer-3' });
+      addAgent(member);
+
+      await runAuth(['--oauth', '--member', 'toy-doer-3', 'sk-test-no-file-write']);
+
+      expect(fs.existsSync(path.join(tmpHome, '.claude', '.credentials.json'))).toBe(false);
+    } finally {
+      if (savedHome !== undefined) process.env.HOME = savedHome; else delete process.env.HOME;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('is picked up by check-toy-doer-credentials.mjs\'s env-var check (checkMemberEnvVarProvisioned)', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'toy-doer-4' });
+    addAgent(member);
+
+    await runAuth(['--oauth', '--member', 'toy-doer-4', 'sk-test-checker-visible']);
+
+    const result = checkMemberEnvVarProvisioned(defaultRegistryPath(), 'toy-doer-4');
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/OK/);
+  });
+
+  it('fails loud (non-zero exit) when the named member does not exist', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runAuth(['--oauth', '--member', 'no-such-member', 'sk-test-token'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    errorSpy.mockRestore();
+  });
+
+  it('rejects --member for non-claude providers (CLAUDE_CODE_OAUTH_TOKEN is Claude-specific)', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'toy-doer-5', llmProvider: 'gemini' });
+    addAgent(member);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runAuth(['--oauth', '--llm', 'gemini', '--member', 'toy-doer-5', 'sk-test-token'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    errorSpy.mockRestore();
   });
 });

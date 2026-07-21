@@ -22,6 +22,7 @@ export async function runAuth(args: string[]): Promise<void> {
 
   console.error('Usage:');
   console.error('  apra-fleet auth --oauth [--llm <provider>] [<token> | secure.<name> | --secure <name>]');
+  console.error('  apra-fleet auth --oauth --member <name> [<token> | secure.<name> | --secure <name>]');
   console.error('  apra-fleet auth --api-key [--llm <provider>] [<token> | secure.<name> | --secure <name>]');
   process.exit(1);
 }
@@ -30,19 +31,22 @@ export async function runAuth(args: string[]): Promise<void> {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/** Parse args shared by --oauth and --api-key: --llm, --secure, positional token. */
+/** Parse args shared by --oauth and --api-key: --llm, --secure, --member, positional token. */
 async function parseTokenArgs(
   args: string[],
   modeFlag: string,
-): Promise<{ provider: string; token: string } | never> {
+): Promise<{ provider: string; token: string; member: string | null } | never> {
   const llmIdx = args.indexOf('--llm');
   const llmArg = llmIdx !== -1 && llmIdx + 1 < args.length ? args[llmIdx + 1] : null;
 
   const secureIdx = args.indexOf('--secure');
   const secureName = secureIdx !== -1 && secureIdx + 1 < args.length ? args[secureIdx + 1] : null;
 
+  const memberIdx = args.indexOf('--member');
+  const memberArg = memberIdx !== -1 && memberIdx + 1 < args.length ? args[memberIdx + 1] : null;
+
   const skipNext = new Set<number>();
-  for (const flag of ['--llm', '--secure']) {
+  for (const flag of ['--llm', '--secure', '--member']) {
     const idx = args.indexOf(flag);
     if (idx !== -1) { skipNext.add(idx); skipNext.add(idx + 1); }
   }
@@ -98,7 +102,7 @@ async function parseTokenArgs(
     throw new Error(); // unreachable
   }
 
-  return { provider, token };
+  return { provider, token, member: memberArg };
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +203,20 @@ function deepMerge(
 }
 
 async function handleOAuth(args: string[]): Promise<void> {
-  const { provider, token } = await parseTokenArgs(args, '--oauth');
+  const { provider, token, member } = await parseTokenArgs(args, '--oauth');
+
+  // apra-fleet-eft.48.8: --member provisions the token into the named
+  // member's registry.json encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN instead
+  // of writing a credentials file. This is the PRIMARY, cross-platform
+  // smoke-test path (register_member/update_member's own persisted field --
+  // see src/utils/auth-env.ts#buildAuthEnvPrefix and src/os/*.ts#getCleanEnv):
+  // LocalStrategy's clean-env dispatch (env -i ... bash -l -c ...) exports
+  // this env var directly into the child shell for every dispatch, which the
+  // real Claude CLI accepts without needing a synthesized credentials-file
+  // session shape at all. Never touches ~/.claude/.credentials.json.
+  if (member) {
+    return provisionEnvVarForMember(provider, token, member);
+  }
 
   const credPatch = getOAuthCredentialPatch(provider, token);
   if (!credPatch) {
@@ -226,6 +243,47 @@ async function handleOAuth(args: string[]): Promise<void> {
     console.log(`  File: ${credPatch.credentialPath}`);
   } catch (err: any) {
     console.error(`✗ Failed to write credentials: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// --oauth --member <name>: provision a member's encryptedEnvVars directly
+// (apra-fleet-eft.48.8), instead of writing a provider credential file.
+// ---------------------------------------------------------------------------
+
+async function provisionEnvVarForMember(provider: string, token: string, memberName: string): Promise<void> {
+  if (provider !== 'claude') {
+    console.error(`✗ --member provisioning currently only supports provider "claude" (CLAUDE_CODE_OAUTH_TOKEN). Got "${provider}".`);
+    process.exit(1);
+    return;
+  }
+
+  const { resolveMember } = await import('../utils/resolve-member.js');
+  const agentOrError = resolveMember(undefined, memberName);
+  if (typeof agentOrError === 'string') {
+    console.error(`✗ ${agentOrError}`);
+    process.exit(1);
+    return;
+  }
+
+  const envVarName = 'CLAUDE_CODE_OAUTH_TOKEN';
+  try {
+    const { encryptPassword } = await import('../utils/crypto.js');
+    const { updateAgent } = await import('../services/registry.js');
+    const updated = updateAgent(agentOrError.id, {
+      encryptedEnvVars: { ...agentOrError.encryptedEnvVars, [envVarName]: encryptPassword(token) },
+    });
+    if (!updated) {
+      console.error(`✗ Failed to update member "${memberName}" -- not found in registry.`);
+      process.exit(1);
+      return;
+    }
+    console.log(`✓ ${envVarName} provisioned for member "${updated.friendlyName}"`);
+    console.log(`  Stored encrypted in registry.json's encryptedEnvVars (never plaintext).`);
+    console.log(`  LocalStrategy's clean-env dispatch injects it into every dispatch's child shell.`);
+  } catch (err: any) {
+    console.error(`✗ Failed to provision member env var: ${err.message}`);
     process.exit(1);
   }
 }

@@ -264,14 +264,21 @@ shell-drivable -- no MCP tool is required to run the scenario.
    `HOME`/`APRA_FLEET_PORT` from Setup, via the `register-member` CLI
    subcommand (Bash, not the `register_member` MCP tool).
 
-   ORDER MATTERS (stabilization Issue 43): run step 3's credential
-   provisioning BEFORE this registration. `register-member` launches the
-   member's live interactive claude session immediately, and a session
-   launched before credentials exist comes up "Not logged in" and stays
-   that way -- fixing the credentials file afterward does not heal the
-   already-running process, so every interactive dispatch routed to it
-   silently burns its full timeout. (Steps stay numbered as written so
-   cross-references hold; execute them 3 -> 1 -> 2 -> 4...)
+   ORDER MATTERS (stabilization Issue 43): run step 3a's BONUS credential
+   FILE write BEFORE this registration. `register-member` launches the
+   member's live interactive claude session immediately (inheriting the
+   fleet server process's own ambient env/credentials file -- it does not
+   read the registry `encryptedEnvVars` step 3b provisions below), and a
+   session launched before credentials exist comes up "Not logged in" and
+   stays that way -- fixing the credentials file afterward does not heal
+   the already-running process, so every interactive dispatch routed to it
+   silently burns its full timeout. Step 3b (the PRIMARY env-var
+   provisioning, apra-fleet-eft.48.8) targets a different, non-interactive
+   dispatch path instead (`LocalStrategy`'s clean-env exec, used for every
+   `workflow auto-sprint` Planner dispatch) and needs the member to already
+   be registered (it looks the member up by name), so it necessarily runs
+   AFTER this step. (Steps stay numbered as written so cross-references
+   hold; execute them 3a -> 1 -> 2 -> 3b -> 4...)
 
    ```bash
    node dist/index.js register-member --type local --name toy-doer \
@@ -298,43 +305,45 @@ shell-drivable -- no MCP tool is required to run the scenario.
    the toy sprint's planner from inventing scope: there is exactly one
    obvious task, one obvious change, and one objectively checkable
    outcome.
-3. Provision LLM credentials for the freshly-registered `toy-doer` member,
-   so the real Planner dispatch in step 4 below can authenticate
-   (apra-fleet-eft.48: `LocalStrategy` dispatches for local members run
-   through a clean-env `env -i ... bash -l -c` exec path that strips the
-   runner's ambient `CLAUDE_CODE_OAUTH_TOKEN`/macOS Keychain session, so an
-   unprovisioned member fails every dispatch with "Authentication failed").
-   That clean-env path always runs with `HOME` seeded from whatever `HOME`
-   the fleet server process itself was started with -- the sandboxed
-   `$SANDBOX` from `## Setup`, never the runner's real home -- so the
-   credential must land under `$SANDBOX`, not the operator's real
-   `~/.claude/.credentials.json`.
-
-   This uses the single-machine CI-runner model documented in
+3. Provision LLM credentials for the `toy-doer` member, so the real Planner
+   dispatch in step 4 below can authenticate (apra-fleet-eft.48:
+   `LocalStrategy` dispatches for local members run through a clean-env
+   `env -i ... bash -l -c` exec path that strips the runner's ambient
+   `CLAUDE_CODE_OAUTH_TOKEN`/macOS Keychain session, so an unprovisioned
+   member fails every dispatch with "Authentication failed"). This uses the
+   single-machine CI-runner model documented in
    `docs/tools-infrastructure.md` ("apra-fleet auth (CLI)"), not the
    SSH-based `provision_llm_auth` MCP flow: `integ-test-runner` has only
    [Read, Bash, Grep, Glob] tools and cannot call MCP tools (see "Adding
    new features to this test" below), and this CLI path is exactly the
    one that model doc section designs for CI runners where the fleet PM
-   and its members share one machine. The credential source is whichever
-   ambient Claude Code credential the runner's own real session already
-   has -- its `CLAUDE_CODE_OAUTH_TOKEN` env var if set, else the
+   and its members share one machine.
+
+   **3a. Resolve the token and seed the persistent secret store, plus a
+   BONUS credential-file write (runs BEFORE step 1's registration --
+   Issue 43 above).** The credential source is whichever ambient Claude
+   Code credential the runner's own real session already has -- its
+   `CLAUDE_CODE_OAUTH_TOKEN` env var if set, else the
    `claudeAiOauth.accessToken` field of its real, pre-sandbox
    `$REAL_HOME/.claude/.credentials.json` (see `REAL_HOME` in `## Setup`).
    That token is seeded into the sandbox's own **persistent** credential
    store as `secure.INTEG-TOY-DOER-TOKEN` (`node dist/index.js secret
    --set ... --persist`, per `docs/tools-infrastructure.md`'s `secure.<name>`
-   convention) and then written into the sandboxed credentials file with
-   `node dist/index.js auth --oauth`. Both commands run with the
+   convention) -- both this and the bonus file write below run with the
    already-sandboxed `HOME=$SANDBOX` from `## Setup`, so the persistent
-   store lands at `$SANDBOX/.apra-fleet/data/credentials.json` and the
-   resulting OAuth file at `$SANDBOX/.claude/.credentials.json` --
-   neither command touches `$HOME/toy-repo` or anything under its
-   `.git`/`.beads`, so this step cannot reach or write to the real
-   `fleet-e2e-toy` git remote or its Dolt remote.
+   store lands at `$SANDBOX/.apra-fleet/data/credentials.json`; neither
+   command touches `$HOME/toy-repo` or anything under its `.git`/`.beads`,
+   so this step cannot reach or write to the real `fleet-e2e-toy` git
+   remote or its Dolt remote.
 
-   Seed the full session-shape fields of `claudeAiOauth` -- but NEVER the
-   refresh token (stabilization Issue 43, apra-fleet-eft.48.7 reopen): a
+   The bonus file write (`node dist/index.js auth --oauth`) is optional
+   defense-in-depth, kept ONLY so the interactive claude session step 1
+   launches comes up already logged in (it inherits the fleet server
+   process's own ambient env/credentials file, not any per-member
+   provisioning) -- it is no longer required for the real Planner dispatch
+   in step 4, which is what step 3b below provisions directly. Seed the
+   full session-shape fields of `claudeAiOauth` -- but NEVER the refresh
+   token (stabilization Issue 43, apra-fleet-eft.48.7 reopen): a
    credentials file containing only `accessToken` is rejected by the
    Claude CLI as "Not logged in" (it needs `expiresAt` and `scopes` to
    treat the session as valid), so seed those real fields; but
@@ -346,10 +355,7 @@ shell-drivable -- no MCP tool is required to run the scenario.
    sprint; the access token's own validity window covers it, and if it
    expires mid-run the honest failure is re-provisioning, not a silent
    rotation of the runner's credentials. `auth --oauth` accepts either a
-   bare token or a JSON object as the secret and merges whichever it
-   gets. Fall back to the bare `CLAUDE_CODE_OAUTH_TOKEN` env var only
-   when no real credentials file exists (that path is what the env var
-   is for).
+   bare token or a JSON object as the secret and merges whichever it gets.
 
    ```bash
    SECRET=""
@@ -377,25 +383,41 @@ shell-drivable -- no MCP tool is required to run the scenario.
      exit 1
    fi
    printf '%s' "$SECRET" | node dist/index.js secret --set INTEG-TOY-DOER-TOKEN --persist -y
+   # Bonus only -- see note above. Never plaintext: the secret always flows
+   # through the persistent store's secure.<name> reference, both here and
+   # in step 3b below.
    node dist/index.js auth --oauth --llm claude secure.INTEG-TOY-DOER-TOKEN
    ```
 
-   Verify: `$SANDBOX/.claude/.credentials.json` exists and its
-   `claudeAiOauth.accessToken` is non-empty (`node dist/index.js auth
-   --oauth` prints the file path it wrote on success) -- this is the same
-   file `toy-doer`'s clean-env dispatch reads, since `getCleanEnv()` seeds
-   the clean shell's `HOME` from the fleet server process's own `HOME`
-   (`$SANDBOX`) before sourcing login profiles under it.
+   **3b. PRIMARY: provision `toy-doer`'s `encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN`
+   directly (apra-fleet-eft.48.8, ORCHESTRATOR STEER post-Integ-C4) --
+   runs AFTER step 1's registration, since it resolves the member by name.**
+   `apra-fleet auth --oauth --member <name>` stores the token (secret-store
+   reference only, never plaintext) in the member's own registry.json
+   record instead of writing any credentials file; `buildAuthEnvPrefix()`
+   (`src/utils/auth-env.ts`) exports it directly into every clean-env
+   dispatch's child shell (`env -i ... bash -l -c 'export
+   CLAUDE_CODE_OAUTH_TOKEN=... && claude ...'`, see `src/os/linux.ts` /
+   `src/os/windows.ts`), which the real Claude CLI accepts outright -- no
+   synthesized credentials-file session shape needed, and it works
+   identically on every platform (including macOS runners, where the real
+   credential lives in the Keychain and `$REAL_HOME/.claude/.credentials.json`
+   never exists, so step 3a's file write can never engage there).
 
-   `scripts/check-toy-doer-credentials.mjs` (apra-fleet-eft.48.2) automates
-   this verification -- it reproduces `getCleanEnv()`'s exact `env -i ...
-   bash -l -c` exec path as a read-only probe (falling back to checking
-   `toy-doer`'s registry.json `encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN` if
-   that path is ever used instead) and exits non-zero with an actionable
-   message if the credential did not land where dispatch will look for it.
-   Run it from `<repo-root>` immediately after the block above, so a
-   skipped/broken provisioning step fails loud right here instead of only
-   surfacing after 5 wasted Planner dispatch retries in step 4:
+   ```bash
+   node dist/index.js auth --oauth --member toy-doer secure.INTEG-TOY-DOER-TOKEN
+   ```
+
+   Verify with `scripts/check-toy-doer-credentials.mjs` (apra-fleet-eft.48.2;
+   its env-var check already covers this path) -- it checks `toy-doer`'s
+   registry.json `encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN` first (the
+   primary path above) and falls back to reproducing
+   `getCleanEnv()`'s exact `env -i ... bash -l -c` exec path against the
+   step 3a bonus credentials file, exiting non-zero with an actionable
+   message if neither path is provisioned. Run it from `<repo-root>`
+   immediately after step 3b, so a skipped/broken provisioning step fails
+   loud right here instead of only surfacing after 5 wasted Planner
+   dispatch retries in step 4:
 
    ```bash
    node "<repo-root>/scripts/check-toy-doer-credentials.mjs" toy-doer "$SANDBOX"

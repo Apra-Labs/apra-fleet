@@ -47,6 +47,7 @@ Usage:
   apra-fleet secret --confirm <credential-name>               Confirm network egress for that credential (interactive)
   apra-fleet auth --oauth [--llm <provider>] <token>          Write OAuth token to provider credential file
   apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
+  apra-fleet auth --oauth --member <name> secure.<name>       Provision a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly (no credential file)
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
   apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard (apra-fleet-6bf)
