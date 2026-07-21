@@ -31,6 +31,11 @@ import { execSync } from 'node:child_process';
 //   - the corrected form actually removes the sandbox directory and marker
 //   - the buggy bare-tilde form leaves the sandbox directory and marker intact
 
+// The behavior under test is bash tilde expansion, so the shell must be bash
+// on every platform: /bin/bash on POSIX, PATH-resolved bash.exe (Git Bash) on
+// Windows -- a hard-coded /bin/bash is ENOENT there.
+const BASH_SHELL = process.platform === 'win32' ? 'bash.exe' : '/bin/bash';
+
 describe('integ-test-playbook.md Teardown tilde-resolution regression', () => {
   let scratchRoot: string;
 
@@ -70,7 +75,7 @@ describe('integ-test-playbook.md Teardown tilde-resolution regression', () => {
         'rm -rf "$SANDBOX"',
       ].join(' && '),
       {
-        shell: '/bin/bash',
+        shell: BASH_SHELL,
         env: { ...process.env, HOME: outerHome },
       },
     );
@@ -97,7 +102,7 @@ describe('integ-test-playbook.md Teardown tilde-resolution regression', () => {
         'rm -rf ~/temp/.apra-fleet-tests',
       ].join(' && '),
       {
-        shell: '/bin/bash',
+        shell: BASH_SHELL,
         env: { ...process.env, HOME: outerHome },
       },
     );
