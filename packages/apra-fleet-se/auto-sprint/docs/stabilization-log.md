@@ -1059,3 +1059,67 @@ push-time remote auto-provisioning can only ever derive sandbox paths; the
 four-check guard script is retargeted (all remotes must resolve inside the
 sandbox), never deleted. Safety invariant: the real remote URL must not
 appear anywhere in sandbox git or beads config at any point.
+## Issue 43: Smoke-test rehearsal on a second platform finds holes the author platform cannot (2026-07-21)
+
+**What happened:** Before run 19's Integ C3 executed the rewritten smoke-test
+playbook on fleet-rev (macOS), the orchestrator rehearsed the same playbook
+on the Windows host in an isolated sandbox (own HOME, port, throwaway
+remotes), with real model dispatches. The rehearsal surfaced six holes, four
+of which would have failed the real run:
+
+1. (doc) Playbook assumes a built repo: `dist/` present and `vendor/apra-pm`
+   submodule initialized. Fresh checkout fails at `install` step 6/12.
+   Fix: prerequisites block (recursive clone/`git submodule update --init
+   --recursive`, `npm install && npm run build`).
+2. (product, Windows) `start` trusts `schtasks /query` for "service
+   installed" -- schtasks is per-user global, not HOME-scoped, so a
+   sandboxed start finds the operator's REAL ApraFleet task and starts
+   that; the sandbox server never spawns. The real server survived only
+   via its own singleton guard. macOS is immune (plist existence check
+   under the overridden HOME).
+3. (playbook, all platforms) Fresh sandbox HOME has no git identity; bd's
+   seed commit fails exit 128 and the toy doer's first commit would too.
+   Fix: seed `git config --global user.name/email` in Setup.
+4. (product, all platforms) `auth --oauth` wrote a credentials file with
+   ONLY `claudeAiOauth.accessToken`; the Claude CLI requires at least
+   `expiresAt` and treats the file as "Not logged in". Every dispatch
+   failed auth. Fix (validated in rehearsal): `auth --oauth` accepts a
+   full claudeAiOauth JSON object as the secret; the playbook seeds the
+   whole object from REAL_HOME, preserving real expiry + refresh token.
+   The eft.48.2 checker passed while dispatch failed -- it verifies the
+   file lands, not that Claude accepts it; harden with expiresAt check.
+5. (product+engine, all platforms) Auth failures are retried and can hang:
+   the non-interactive dispatch path fails fast (8s, classified 'auth'),
+   but (a) the interactive path waits the full --dispatch-timeout-s with
+   no output classification; (b) register_member launches the member's
+   live session BEFORE credentials are provisioned (playbook order:
+   register step 1, provision step 3), creating a permanently
+   unauthenticated zombie session that a later file fix cannot heal; and
+   (c) the engine's dispatch retry wrapper retries an error that begins
+   "Authentication failed" five times -- isRetryable() already says
+   'auth' is terminal, but the engine never consults it. A transport
+   timeout string was also fed into the schema-repair loop as if it were
+   agent output.
+6. (doc) The "every step is shell-drivable" claim has no shell-drivable
+   recovery: there is no remove-member/relaunch-session CLI path, so an
+   unauthenticated member cannot be relaunched without restarting the
+   sandbox server.
+
+**Lesson:** A playbook exercised only on the platform and machine where it
+was written inherits that machine's ambient state (running server, service
+registrations, git identity, credential shape). One rehearsal on a second
+platform with a genuinely cold HOME is cheap relative to an integ cycle and
+converts "integ failed, cycle N+1" into "root-caused beads before integ
+completed". Retry policy must be category-driven: an auth failure can never
+be solved by retry.
+
+**Outcome:** Holes 3/4 (playbook+product) fixed in 98ff2a1/ae8b870, hole
+5's engine piece (category-driven retry: never retry auth/trust) in
+5e5ab49, all pushed to the sprint branch before Cycle 4's develop rounds.
+Integ C3 on fleet-rev independently root-caused hole 4 with the identical
+diagnosis minutes later (its evidence lives on apra-fleet-eft.48; the
+silent retry hang is apra-fleet-eft.50), corroborating the rehearsal
+without either run seeing the other's analysis. Hole 5's remaining
+server-side pieces (interactive-path output classification,
+register-launch auth health check) and hole 2 (Windows schtasks leak)
+stay open as beads for the sprint.
