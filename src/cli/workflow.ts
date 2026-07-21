@@ -428,7 +428,21 @@ export async function runWorkflow(argv: string[], depsOverride?: Partial<Workflo
       const fn = [mod.main, mod.run, mod.default].find((f) => typeof f === 'function') as
         | ((args: string[]) => unknown)
         | undefined;
-      if (fn) await fn(passthrough);
+      if (fn) {
+        await fn(passthrough);
+      } else {
+        // apra-fleet-eft.41.2: a module that neither self-executes nor exports a
+        // callable entry used to fall through here silently, RETURNing 0 having
+        // done nothing -- the worst failure mode (a no-op reported as success).
+        // This is a defense-in-depth backstop even after the cli.mjs
+        // isMainModule() fix (apra-fleet-eft.41.1): fail loud instead.
+        deps.error(
+          `Error: workflow "${name}" entry (${entry}) did not execute: it neither sets ` +
+            `"export const selfExecuting = true" nor exports a callable main/run/default. ` +
+            `Nothing happened.`,
+        );
+        return 1;
+      }
     }
   } catch (err) {
     const e = err as Error;
