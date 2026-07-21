@@ -9,14 +9,14 @@ import { FleetWorkflow } from '../src/workflow/index.mjs';
 import { WorkflowEngine } from '../src/workflow/engine.mjs';
 import { createDashboardViewer } from '../src/viewer/index.mjs';
 import {
-    getRunningSprintStatePath,
-    getOldSprintStatePath
-} from '../src/viewer/sprint-state-paths.mjs';
+    getRunningRunStatePath,
+    getTerminalRunStatePath
+} from '../src/viewer/run-state-paths.mjs';
 import { DebouncedStateWriter } from '../src/viewer/debounced-writer.mjs';
 
 // Tests for apra-fleet-eft.2.2 ("persist on every activity/phase/state event
-// and enrich the state file") and apra-fleet-eft.2.3 ("running/ ->
-// old_sprints/ layout under the service data dir, keyed by sprint id").
+// and enrich the state file") and apra-fleet-eft.2.3 / eft.37.1 ("running/ ->
+// old_runs/ layout under the service data dir, keyed by run id").
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => path.join(__dirname, 'fixtures', name);
@@ -136,31 +136,31 @@ afterEach(() => {
     fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-describe('apra-fleet-eft.2.3: running/ -> old_sprints/ layout under the service data dir', () => {
-    test('live state is written to running/<sprintId>.json outside the repo checkout, then moved (not copied) to old_sprints/<sprintId>.json on completion', async () => {
+describe('apra-fleet-eft.2.3 / eft.37.1: running/ -> old_runs/ layout under the service data dir', () => {
+    test('live state is written to running/<runId>.json outside the repo checkout, then moved (not copied) to old_runs/<runId>.json on completion', async () => {
         const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
-        const sprintId = 'sprint-eft-2-3-a';
+        const runId = 'run-eft-2-3-a';
 
         const wf = new FleetWorkflow(createDelayedFleetApi());
         const engine = new WorkflowEngine(wf);
         const server = createDashboardViewer(wf, {
             port: 0,
-            name: 'Sprint State Test',
+            name: 'Run State Test',
             env,
-            sprintId,
+            runId,
             debounceMs: 200,
             launchArgs: ['--track', 'eft-service']
         });
 
-        const runningPath = getRunningSprintStatePath(sprintId, env);
-        const oldPath = getOldSprintStatePath(sprintId, env);
+        const runningPath = getRunningRunStatePath(runId, env);
+        const oldPath = getTerminalRunStatePath(runId, env);
 
         await withServer(server, async (port) => {
             const runPromise = engine.executeFile(fixture('test-end-event-verdict.mjs'), {});
 
-            // Mid-sprint: the live file must exist under running/, must be
-            // keyed by sprintId (not an HHMMSS clock key), and must live
-            // under the service data dir, NOT the repo checkout (tempCwd).
+            // Mid-run: the live file must exist under running/, must be keyed
+            // by runId (not an HHMMSS clock key), and must live under the
+            // service data dir, NOT the repo checkout (tempCwd).
             await waitFor(() => fs.existsSync(runningPath));
             assert.ok(
                 runningPath.startsWith(dataDir),
@@ -171,71 +171,106 @@ describe('apra-fleet-eft.2.3: running/ -> old_sprints/ layout under the service 
                 'running state path must never be written into the repo checkout / cwd'
             );
 
-            const midSprint = JSON.parse(fs.readFileSync(runningPath, 'utf-8'));
-            assert.strictEqual(midSprint.status, 'running', 'mid-sprint read must show in-progress state, not terminal state');
-            assert.strictEqual(midSprint.sprintId, sprintId);
-            assert.strictEqual(midSprint.endedAt, null);
+            const midRun = JSON.parse(fs.readFileSync(runningPath, 'utf-8'));
+            assert.strictEqual(midRun.status, 'running', 'mid-run read must show in-progress state, not terminal state');
+            assert.strictEqual(midRun.runId, runId);
+            assert.strictEqual(midRun.endedAt, null);
 
             await runPromise;
 
             // Terminal: running/<id>.json must be GONE (moved, not copied)
-            // and old_sprints/<id>.json must now exist.
+            // and old_runs/<id>.json must now exist.
             await waitFor(() => fs.existsSync(oldPath));
             assert.strictEqual(fs.existsSync(runningPath), false, 'the live file must be moved, not copied, out of running/');
 
             const finalState = JSON.parse(fs.readFileSync(oldPath, 'utf-8'));
             assert.strictEqual(finalState.status, 'success');
-            assert.strictEqual(finalState.sprintId, sprintId);
+            assert.strictEqual(finalState.runId, runId);
 
             const liveState = JSON.parse(await httpGet(port, '/state'));
             assert.strictEqual(liveState.status, 'success', 'no SSE/polling regression: /state still reflects the terminal status');
         });
     });
 
-    test('two sprints started concurrently get distinct default sprintIds and distinct running/ files (no HHMMSS-style collision)', async () => {
+    test('two runs started concurrently get distinct default runIds and distinct running/ files (no HHMMSS-style collision)', async () => {
         const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
 
         const wf1 = new FleetWorkflow(createMockFleetApi());
         const wf2 = new FleetWorkflow(createMockFleetApi());
-        const server1 = createDashboardViewer(wf1, { port: 0, name: 'Sprint A', env, debounceMs: 200 });
-        const server2 = createDashboardViewer(wf2, { port: 0, name: 'Sprint B', env, debounceMs: 200 });
+        const server1 = createDashboardViewer(wf1, { port: 0, name: 'Run A', env, debounceMs: 200 });
+        const server2 = createDashboardViewer(wf2, { port: 0, name: 'Run B', env, debounceMs: 200 });
 
         await withServer(server1, async () => {
             await withServer(server2, async () => {
                 const s1 = JSON.parse(await httpGet(server1.address().port, '/state'));
                 const s2 = JSON.parse(await httpGet(server2.address().port, '/state'));
 
-                assert.ok(s1.sprintId, 'sprint 1 must have a generated sprintId');
-                assert.ok(s2.sprintId, 'sprint 2 must have a generated sprintId');
-                assert.notStrictEqual(s1.sprintId, s2.sprintId, 'two sprints must never collide on sprintId');
+                assert.ok(s1.runId, 'run 1 must have a generated runId');
+                assert.ok(s2.runId, 'run 2 must have a generated runId');
+                assert.notStrictEqual(s1.runId, s2.runId, 'two runs must never collide on runId');
 
-                const path1 = getRunningSprintStatePath(s1.sprintId, env);
-                const path2 = getRunningSprintStatePath(s2.sprintId, env);
+                const path1 = getRunningRunStatePath(s1.runId, env);
+                const path2 = getRunningRunStatePath(s2.runId, env);
                 assert.notStrictEqual(path1, path2);
             });
         });
     });
 
-    test('sprint-logs/ still lands in the repo checkout as before, unaffected by the running/old_sprints move', async () => {
+    test('the crash-net snapshot still lands in the repo checkout as before, unaffected by the running/old_runs move', async () => {
         const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
         const wf = new FleetWorkflow(createMockFleetApi());
         const engine = new WorkflowEngine(wf);
-        const server = createDashboardViewer(wf, { port: 0, name: 'Sprint Logs Untouched Test', env, debounceMs: 200 });
+        const server = createDashboardViewer(wf, { port: 0, name: 'Snapshot Untouched Test', env, debounceMs: 200 });
 
         await withServer(server, async () => {
             await engine.executeFile(fixture('test-end-event-success.mjs'), {});
 
-            const sprintLogsDir = path.join(tempCwd, 'sprint-logs');
-            const files = fs.readdirSync(sprintLogsDir).filter((f) => /^sprint_\d{6}\.json$/.test(f));
-            assert.strictEqual(files.length, 1, 'sprint-logs/ crash-safety net must still write exactly one file, untouched by this change');
+            // Default snapshot dir/prefix (eft.37.1): workflow-logs/run_<HHMMSS>.json.
+            const snapshotDir = path.join(tempCwd, 'workflow-logs');
+            const files = fs.readdirSync(snapshotDir).filter((f) => /^run_\d{6}\.json$/.test(f));
+            assert.strictEqual(files.length, 1, 'crash-net snapshot must still write exactly one file, untouched by this change');
+        });
+    });
+
+    test('eft.37.1: opts.stateSnapshotDir/opts.stateSnapshotPrefix override the crash-net snapshot location', async () => {
+        const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
+        const wf = new FleetWorkflow(createMockFleetApi());
+        const engine = new WorkflowEngine(wf);
+        const server = createDashboardViewer(wf, {
+            port: 0,
+            name: 'Snapshot Override Test',
+            env,
+            debounceMs: 200,
+            stateSnapshotDir: 'sprint-logs',
+            stateSnapshotPrefix: 'sprint_'
+        });
+
+        await withServer(server, async () => {
+            await engine.executeFile(fixture('test-end-event-success.mjs'), {});
+
+            const overrideDir = path.join(tempCwd, 'sprint-logs');
+            const files = fs.readdirSync(overrideDir).filter((f) => /^sprint_\d{6}\.json$/.test(f));
+            assert.strictEqual(files.length, 1, 'an explicit snapshot dir/prefix must be honored so se keeps its sprint-logs/ convention');
+        });
+    });
+
+    test('eft.37.1: opts.sprintId is still accepted (deprecated) as an alias for opts.runId', async () => {
+        const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
+        const legacyId = 'legacy-sprint-id-compat';
+        const wf = new FleetWorkflow(createMockFleetApi());
+        const server = createDashboardViewer(wf, { port: 0, name: 'Compat Test', env, debounceMs: 200, sprintId: legacyId });
+
+        await withServer(server, async (port) => {
+            const state = JSON.parse(await httpGet(port, '/state'));
+            assert.strictEqual(state.runId, legacyId, 'opts.sprintId must still map onto state.runId for one release');
         });
     });
 });
 
 describe('apra-fleet-eft.2.2: persist on every activity/phase/state event and enrich the state file', () => {
-    test('the persisted file is enriched with sprintId, args, verdict, prUrl, startedAt/updatedAt/endedAt, terminalReason', async () => {
+    test('the persisted file is enriched with runId, args, verdict, prUrl, startedAt/updatedAt/endedAt, terminalReason', async () => {
         const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
-        const sprintId = 'sprint-eft-2-2-a';
+        const runId = 'run-eft-2-2-a';
         const launchArgs = ['--foo', 'bar'];
 
         const wf = new FleetWorkflow(createDelayedFleetApi());
@@ -244,33 +279,33 @@ describe('apra-fleet-eft.2.2: persist on every activity/phase/state event and en
             port: 0,
             name: 'Enrichment Test',
             env,
-            sprintId,
+            runId,
             launchArgs,
             debounceMs: 200
         });
 
-        const runningPath = getRunningSprintStatePath(sprintId, env);
-        const oldPath = getOldSprintStatePath(sprintId, env);
+        const runningPath = getRunningRunStatePath(runId, env);
+        const oldPath = getTerminalRunStatePath(runId, env);
 
         await withServer(server, async () => {
             const runPromise = engine.executeFile(fixture('test-end-event-verdict.mjs'), {});
 
             await waitFor(() => fs.existsSync(runningPath));
-            const midSprint = JSON.parse(fs.readFileSync(runningPath, 'utf-8'));
-            assert.strictEqual(midSprint.sprintId, sprintId);
-            assert.deepStrictEqual(midSprint.args, launchArgs);
-            assert.strictEqual(midSprint.verdict, null, 'verdict is not yet known mid-sprint');
-            assert.strictEqual(midSprint.prUrl, null);
-            assert.ok(midSprint.startedAt, 'startedAt must be populated from construction');
-            assert.ok(midSprint.updatedAt, 'updatedAt must be populated on every persisted event');
-            assert.strictEqual(midSprint.endedAt, null, 'endedAt must stay null until the sprint terminates');
-            assert.strictEqual(midSprint.terminalReason, null);
+            const midRun = JSON.parse(fs.readFileSync(runningPath, 'utf-8'));
+            assert.strictEqual(midRun.runId, runId);
+            assert.deepStrictEqual(midRun.args, launchArgs);
+            assert.strictEqual(midRun.verdict, null, 'verdict is not yet known mid-run');
+            assert.strictEqual(midRun.prUrl, null);
+            assert.ok(midRun.startedAt, 'startedAt must be populated from construction');
+            assert.ok(midRun.updatedAt, 'updatedAt must be populated on every persisted event');
+            assert.strictEqual(midRun.endedAt, null, 'endedAt must stay null until the run terminates');
+            assert.strictEqual(midRun.terminalReason, null);
 
             await runPromise;
             await waitFor(() => fs.existsSync(oldPath));
 
             const finalState = JSON.parse(fs.readFileSync(oldPath, 'utf-8'));
-            assert.strictEqual(finalState.sprintId, sprintId);
+            assert.strictEqual(finalState.runId, runId);
             assert.deepStrictEqual(finalState.args, launchArgs);
             assert.strictEqual(finalState.verdict, 'MERGED', 'verdict must be picked up from the workflow script\'s own return value');
             assert.strictEqual(finalState.prUrl, 'https://github.com/example/repo/pull/42');
@@ -285,7 +320,7 @@ describe('apra-fleet-eft.2.2: persist on every activity/phase/state event and en
 
     test('every SSE-broadcasting event (group:start/phase/activity/log/state) also schedules a debounced write, not just run-end', async () => {
         const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
-        const sprintId = 'sprint-eft-2-2-b';
+        const runId = 'run-eft-2-2-b';
 
         const wf = new FleetWorkflow(createDelayedFleetApi());
         const engine = new WorkflowEngine(wf);
@@ -293,11 +328,11 @@ describe('apra-fleet-eft.2.2: persist on every activity/phase/state event and en
             port: 0,
             name: 'Every Event Persists Test',
             env,
-            sprintId,
+            runId,
             debounceMs: 200
         });
 
-        const runningPath = getRunningSprintStatePath(sprintId, env);
+        const runningPath = getRunningRunStatePath(runId, env);
 
         const activityStarts = [];
         wf.on('activity:start', (meta) => activityStarts.push(meta));

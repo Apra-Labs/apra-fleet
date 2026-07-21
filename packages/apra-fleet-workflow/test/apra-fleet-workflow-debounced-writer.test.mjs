@@ -94,10 +94,11 @@ async function withTempCwd(fn) {
     }
 }
 
-function readSprintLogFiles(dir) {
-    const sprintLogsDir = path.join(dir, 'sprint-logs');
-    if (!fs.existsSync(sprintLogsDir)) return [];
-    return fs.readdirSync(sprintLogsDir).filter((f) => /^sprint_\d{6}\.json$/.test(f));
+function readSnapshotFiles(dir) {
+    // eft.37.1: the core crash-net snapshot now defaults to workflow-logs/run_<HHMMSS>.json.
+    const snapshotDir = path.join(dir, 'workflow-logs');
+    if (!fs.existsSync(snapshotDir)) return [];
+    return fs.readdirSync(snapshotDir).filter((f) => /^run_\d{6}\.json$/.test(f));
 }
 
 describe('apra-fleet-eft.2.1: DebouncedStateWriter unit behavior', () => {
@@ -230,40 +231,40 @@ describe('apra-fleet-eft.20.1: writeJsonFileAtomic -- single-pass serialization 
     });
 });
 
-describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ regression', () => {
+describe('apra-fleet-eft.2.1 / eft.37.1: viewer wiring -- flush-on-exit and crash-net snapshot regression', () => {
     // NOTE: these tests exercise the debounced writer's flush-on-exit wiring
     // in isolation, so they pass an explicit opts.debouncedStatePath (a fixed
     // location under the test's own temp cwd) rather than relying on the
-    // default running/<sprintId>.json-under-the-service-data-dir layout --
+    // default running/<runId>.json-under-the-service-data-dir layout --
     // that default path resolution is apra-fleet-eft.2.3's concern and is
     // covered by its own dedicated suite (apra-fleet-workflow-sprint-state.test.mjs).
-    test('a normal "end" event flushes the debounced writer AND leaves sprint-logs/ byte-for-byte as before', async () => {
+    test('a normal "end" event flushes the debounced writer AND leaves the crash-net snapshot byte-for-byte as before', async () => {
         await withTempCwd(async (dir) => {
             const wf = new FleetWorkflow(createMockFleetApi());
             const engine = new WorkflowEngine(wf);
-            const debouncedStatePath = path.join(dir, 'sprint-logs', '.debounced-state.json');
+            const debouncedStatePath = path.join(dir, 'workflow-logs', '.debounced-state.json');
             const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer End Test', debounceMs: 200, debouncedStatePath });
 
             await withServer(server, async (port) => {
                 const result = await engine.executeFile(fixture('test-end-event-success.mjs'), {});
                 assert.deepStrictEqual(result, { result: 'echo: hello' });
 
-                // Existing sprint-logs/ crash-safety net must be untouched:
-                // exactly one sprint_HHMMSS.json, 2-space indented, describing
-                // the same run as /state. apra-fleet-eft.27.1: GET /state now
-                // serves a lean, string-deduped projection (see
-                // src/viewer/lean-state.mjs), not a byte-for-byte copy of the
-                // full in-memory state -- so this no longer asserts deep
-                // equality against it, only that both describe the same run.
-                const files = readSprintLogFiles(dir);
-                assert.strictEqual(files.length, 1, `expected exactly one sprint_HHMMSS.json file, found: ${JSON.stringify(files)}`);
-                const savedContent = fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8');
+                // Existing crash-net snapshot must be untouched: exactly one
+                // run_HHMMSS.json, 2-space indented, describing the same run as
+                // /state. apra-fleet-eft.27.1: GET /state now serves a lean,
+                // string-deduped projection (see src/viewer/lean-state.mjs),
+                // not a byte-for-byte copy of the full in-memory state -- so
+                // this no longer asserts deep equality against it, only that
+                // both describe the same run.
+                const files = readSnapshotFiles(dir);
+                assert.strictEqual(files.length, 1, `expected exactly one run_HHMMSS.json file, found: ${JSON.stringify(files)}`);
+                const savedContent = fs.readFileSync(path.join(dir, 'workflow-logs', files[0]), 'utf-8');
                 const saved = JSON.parse(savedContent);
                 const liveState = JSON.parse(await httpGet(port, '/state'));
                 assert.strictEqual(saved.status, liveState.status);
-                assert.strictEqual(saved.sprintId, liveState.sprintId);
-                assert.strictEqual(saved.status, 'success', 'saved sprint-logs/ file must reflect the same terminal run served at /state');
-                assert.ok(savedContent.includes('\n  "workflowName"'), 'sprint-logs/ formatting must remain 2-space indented JSON');
+                assert.strictEqual(saved.runId, liveState.runId);
+                assert.strictEqual(saved.status, 'success', 'saved crash-net snapshot must reflect the same terminal run served at /state');
+                assert.ok(savedContent.includes('\n  "workflowName"'), 'crash-net snapshot formatting must remain 2-space indented JSON');
 
                 // New: the debounced writer's own file must exist and be flushed
                 // synchronously by the time 'end' handling completes.
@@ -288,7 +289,7 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
             const activityStarts = [];
             wf.on('activity:start', (meta) => activityStarts.push(meta));
 
-            const debouncedStatePath = path.join(dir, 'sprint-logs', '.debounced-state.json');
+            const debouncedStatePath = path.join(dir, 'workflow-logs', '.debounced-state.json');
             const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer SIGINT Test', debounceMs: 200, debouncedStatePath });
 
             const originalExit = process.exit;
@@ -330,7 +331,7 @@ describe('apra-fleet-eft.2.1: viewer wiring -- flush-on-exit and sprint-logs/ re
             const activityStarts = [];
             wf.on('activity:start', (meta) => activityStarts.push(meta));
 
-            const debouncedStatePath = path.join(dir, 'sprint-logs', '.debounced-state.json');
+            const debouncedStatePath = path.join(dir, 'workflow-logs', '.debounced-state.json');
             const server = createDashboardViewer(wf, { port: 0, name: 'Debounced Writer Stop Test', debounceMs: 200, debouncedStatePath });
 
             await withServer(server, async (port) => {

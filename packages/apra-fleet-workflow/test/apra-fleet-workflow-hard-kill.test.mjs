@@ -7,15 +7,15 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
-    getRunningSprintStatePath,
-    getOldSprintStatePath
-} from '../src/viewer/sprint-state-paths.mjs';
+    getRunningRunStatePath,
+    getTerminalRunStatePath
+} from '../src/viewer/run-state-paths.mjs';
 
-// Tests for apra-fleet-eft.2.4: continuous persistence must survive a real
-// hard kill (SIGKILL, not a graceful SIGINT/SIGTERM and not a mocked
-// process.exit), and running/ vs old_sprints/ directory membership must be
-// the sole authority on "is this sprint still alive" -- never a stale field
-// on the state object itself.
+// Tests for apra-fleet-eft.2.4 (renamed under eft.37.1): continuous
+// persistence must survive a real hard kill (SIGKILL, not a graceful
+// SIGINT/SIGTERM and not a mocked process.exit), and running/ vs old_runs/
+// directory membership must be the sole authority on "is this run still
+// alive" -- never a stale field on the state object itself.
 //
 // Unlike every other suite in this directory (apra-fleet-workflow-viewer-
 // lifecycle.test.mjs, apra-fleet-workflow-sprint-state.test.mjs,
@@ -50,12 +50,12 @@ function readJson(filePath) {
  * its "ready" line (server listening, all persistence wiring set up) --
  * never races sending a signal against a child that hasn't started yet.
  */
-function spawnHarness({ cwd, env, sprintId, iterations, agentDelayMs, debounceMs }) {
+function spawnHarness({ cwd, env, runId, iterations, agentDelayMs, debounceMs }) {
     const child = spawn(process.execPath, [harnessPath], {
         cwd,
         env: {
             ...env,
-            SPRINT_ID: sprintId,
+            RUN_ID: runId,
             ITERATIONS: String(iterations),
             AGENT_DELAY_MS: String(agentDelayMs),
             DEBOUNCE_MS: String(debounceMs)
@@ -105,19 +105,19 @@ afterEach(() => {
     fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-describe('apra-fleet-eft.2.4: continuous persistence survives a real SIGKILL', () => {
-    test('a SIGKILL mid-run leaves running/<sprintId>.json in place, reflecting progress within one debounce window of the kill', async () => {
+describe('apra-fleet-eft.2.4 / eft.37.1: continuous persistence survives a real SIGKILL', () => {
+    test('a SIGKILL mid-run leaves running/<runId>.json in place, reflecting progress within one debounce window of the kill', async () => {
         const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
-        const sprintId = `sprint-hard-kill-${randomUUID()}`;
+        const runId = `run-hard-kill-${randomUUID()}`;
         const iterations = 30;
         const agentDelayMs = 300;
         const debounceMs = 200; // MIN_DEBOUNCE_MS -- tightest possible bound to assert against
 
-        const runningPath = getRunningSprintStatePath(sprintId, env);
-        const oldPath = getOldSprintStatePath(sprintId, env);
+        const runningPath = getRunningRunStatePath(runId, env);
+        const oldPath = getTerminalRunStatePath(runId, env);
 
         const { child, ready, getStderr } = spawnHarness({
-            cwd: tempCwd, env, sprintId, iterations, agentDelayMs, debounceMs
+            cwd: tempCwd, env, runId, iterations, agentDelayMs, debounceMs
         });
         await ready;
 
@@ -143,17 +143,17 @@ describe('apra-fleet-eft.2.4: continuous persistence survives a real SIGKILL', (
             const { signal } = await waitForExit(child);
             assert.strictEqual(signal, 'SIGKILL', `harness must have been terminated by SIGKILL itself; stderr:\n${getStderr()}`);
 
-            // (b) running/old_sprints membership is authoritative: a hard-killed
+            // (b) running/old_runs membership is authoritative: a hard-killed
             // process gets NO chance to run any exit handler (unlike SIGINT/
             // SIGTERM, src/viewer/index.mjs's handleSigint/handleSigterm), so
             // the file must still be sitting in running/ and must NEVER have
-            // been moved to old_sprints/.
-            assert.ok(fs.existsSync(runningPath), 'running/<sprintId>.json must survive the hard kill in place');
-            assert.strictEqual(fs.existsSync(oldPath), false, 'old_sprints/<sprintId>.json must not exist -- nothing moved it there');
+            // been moved to old_runs/.
+            assert.ok(fs.existsSync(runningPath), 'running/<runId>.json must survive the hard kill in place');
+            assert.strictEqual(fs.existsSync(oldPath), false, 'old_runs/<runId>.json must not exist -- nothing moved it there');
 
             const finalState = readJson(runningPath);
             assert.strictEqual(finalState.status, 'running', 'status must still read "running" -- no graceful terminal transition ever ran');
-            assert.strictEqual(finalState.sprintId, sprintId);
+            assert.strictEqual(finalState.runId, runId);
             assert.strictEqual(finalState.endedAt, null, 'endedAt must still be null -- the end/signal handlers never got to run');
             assert.strictEqual(finalState.terminalReason, null);
 
@@ -191,54 +191,55 @@ describe('apra-fleet-eft.2.4: continuous persistence survives a real SIGKILL', (
         }
     });
 
-    test('a normally-completed sprint has no file in running/ and exactly one in old_sprints/, and sprint-logs/ output is unchanged', async () => {
+    test('a normally-completed run has no file in running/ and exactly one in old_runs/, and the crash-net snapshot output is unchanged', async () => {
         const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
-        const sprintId = `sprint-hard-kill-clean-${randomUUID()}`;
+        const runId = `run-hard-kill-clean-${randomUUID()}`;
         const iterations = 2;
         const agentDelayMs = 20;
         const debounceMs = 200;
 
-        const runningPath = getRunningSprintStatePath(sprintId, env);
-        const oldPath = getOldSprintStatePath(sprintId, env);
+        const runningPath = getRunningRunStatePath(runId, env);
+        const oldPath = getTerminalRunStatePath(runId, env);
 
         const { child, ready, getStderr } = spawnHarness({
-            cwd: tempCwd, env, sprintId, iterations, agentDelayMs, debounceMs
+            cwd: tempCwd, env, runId, iterations, agentDelayMs, debounceMs
         });
         await ready;
 
         const { code, signal } = await waitForExit(child);
         assert.strictEqual(code, 0, `harness must exit cleanly; signal=${signal} stderr:\n${getStderr()}`);
 
-        // (b) running/old_sprints membership, completion case: the live file
+        // (b) running/old_runs membership, completion case: the live file
         // must be MOVED (not copied, not left behind), so directory
-        // membership alone tells you the sprint is done.
-        assert.strictEqual(fs.existsSync(runningPath), false, 'running/<sprintId>.json must be gone after a normal completion');
-        assert.ok(fs.existsSync(oldPath), 'old_sprints/<sprintId>.json must exist after a normal completion');
+        // membership alone tells you the run is done.
+        assert.strictEqual(fs.existsSync(runningPath), false, 'running/<runId>.json must be gone after a normal completion');
+        assert.ok(fs.existsSync(oldPath), 'old_runs/<runId>.json must exist after a normal completion');
 
-        const oldSprintsDir = path.dirname(oldPath);
-        const oldFiles = fs.readdirSync(oldSprintsDir).filter((f) => f === `${sprintId}.json`);
-        assert.strictEqual(oldFiles.length, 1, 'exactly one old_sprints/ file for this sprintId');
+        const oldRunsDir = path.dirname(oldPath);
+        const oldFiles = fs.readdirSync(oldRunsDir).filter((f) => f === `${runId}.json`);
+        assert.strictEqual(oldFiles.length, 1, 'exactly one old_runs/ file for this runId');
 
         // (c) enriched fields on the terminal snapshot.
         const finalState = readJson(oldPath);
-        assert.strictEqual(finalState.sprintId, sprintId);
+        assert.strictEqual(finalState.runId, runId);
         assert.strictEqual(finalState.status, 'success');
         assert.strictEqual(finalState.verdict, 'MERGED');
         assert.strictEqual(finalState.prUrl, 'https://github.com/example/repo/pull/99');
         assert.ok(finalState.endedAt, 'endedAt must be populated on a normal completion');
         assert.strictEqual(finalState.terminalReason, 'success');
 
-        // (d) sprint-logs/ crash-safety net must be entirely unaffected by
-        // this feature (same regression check as apra-fleet-workflow-sprint-
-        // state.test.mjs's "sprint-logs/ still lands in the repo checkout as
+        // (d) the crash-net snapshot must be entirely unaffected by this
+        // feature (same regression check as apra-fleet-workflow-sprint-
+        // state.test.mjs's "snapshot still lands in the repo checkout as
         // before" and apra-fleet-workflow-debounced-writer.test.mjs's
-        // byte-for-byte comparison): exactly one sprint_HHMMSS.json, 2-space
-        // indented, whose content matches the same enriched state object.
-        const sprintLogsDir = path.join(tempCwd, 'sprint-logs');
-        const logFiles = fs.readdirSync(sprintLogsDir).filter((f) => /^sprint_\d{6}\.json$/.test(f));
-        assert.strictEqual(logFiles.length, 1, `expected exactly one sprint_HHMMSS.json file, found: ${JSON.stringify(logFiles)}`);
-        const savedContent = fs.readFileSync(path.join(sprintLogsDir, logFiles[0]), 'utf-8');
-        assert.deepStrictEqual(JSON.parse(savedContent), finalState, 'sprint-logs/ snapshot must match the same terminal state written to old_sprints/');
-        assert.ok(savedContent.includes('\n  "workflowName"'), 'sprint-logs/ formatting must remain 2-space indented JSON, unchanged from before this feature');
+        // byte-for-byte comparison): exactly one run_HHMMSS.json under the
+        // default workflow-logs/ dir, 2-space indented, whose content matches
+        // the same enriched state object.
+        const snapshotDir = path.join(tempCwd, 'workflow-logs');
+        const logFiles = fs.readdirSync(snapshotDir).filter((f) => /^run_\d{6}\.json$/.test(f));
+        assert.strictEqual(logFiles.length, 1, `expected exactly one run_HHMMSS.json file, found: ${JSON.stringify(logFiles)}`);
+        const savedContent = fs.readFileSync(path.join(snapshotDir, logFiles[0]), 'utf-8');
+        assert.deepStrictEqual(JSON.parse(savedContent), finalState, 'crash-net snapshot must match the same terminal state written to old_runs/');
+        assert.ok(savedContent.includes('\n  "workflowName"'), 'crash-net snapshot formatting must remain 2-space indented JSON, unchanged from before this feature');
     });
 });

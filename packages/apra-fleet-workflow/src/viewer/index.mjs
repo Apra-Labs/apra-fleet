@@ -4,7 +4,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { escapeHtml } from './html-utils.mjs';
 import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic } from './debounced-writer.mjs';
-import { getRunningSprintStatePath, getOldSprintStatePath } from './sprint-state-paths.mjs';
+import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-paths.mjs';
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
 
@@ -628,25 +628,33 @@ export function createDashboardViewer(workflow, opts = {}) {
     const port = (typeof opts.port === 'number') ? opts.port : 8080;
     const dashboardExtensions = opts.dashboardExtensions || [];
 
-    // apra-fleet-eft.2.3: stable per-sprint id, NOT an HHMMSS-style clock
-    // key (see sprint-state-paths.mjs) -- this is what running/<id>.json /
-    // old_sprints/<id>.json are keyed by, so two sprints started in the same
-    // second on different days never collide. Callers that already know a
-    // meaningful id (e.g. the auto-sprint runner's own runId) can pass
-    // opts.sprintId; otherwise one is generated here.
+    // apra-fleet-eft.2.3 (renamed under eft.37.1): stable per-run id, NOT an
+    // HHMMSS-style clock key (see run-state-paths.mjs) -- this is what
+    // running/<id>.json / old_runs/<id>.json are keyed by, so two runs started
+    // in the same second on different days never collide. Callers that already
+    // know a meaningful id (e.g. the auto-sprint runner's own runId) can pass
+    // opts.runId; otherwise one is generated here.
     const env = opts.env || process.env;
-    const sprintId = opts.sprintId || randomUUID();
+    // BOUNDARY-COMPAT: opts.sprintId is the pre-rename alias for opts.runId.
+    // Accept it for one release with a deprecation warning so callers migrate
+    // to opts.runId without a flag day; sprintId appears in core code only on
+    // this line. Remove this shim one release after the se consumers pass
+    // opts.runId directly.
+    const legacyRunId = opts.sprintId;
+    if (legacyRunId !== undefined && opts.runId === undefined) {
+        console.warn('[Viewer] opts.sprintId is deprecated; pass opts.runId instead.');
+    }
+    const runId = opts.runId || legacyRunId || randomUUID();
 
     // apra-fleet-eft.2.3: the debounced writer's target defaults to
-    // <serviceDataDir>/running/<sprintId>.json (outside the repo checkout --
-    // see getFleetDataDir()/APRA_FLEET_DATA_DIR), NOT sprint-logs/. Only when
-    // a caller passes an explicit opts.debouncedStatePath (tests, or a
-    // future caller with its own layout) do we skip the running/->
-    // old_sprints/ move-on-completion below, since we can no longer assume
-    // that path lives under a running/ directory we're allowed to rename out
-    // of.
+    // <serviceDataDir>/running/<runId>.json (outside the repo checkout --
+    // see getFleetDataDir()/APRA_FLEET_DATA_DIR), NOT the snapshot dir. Only
+    // when a caller passes an explicit opts.debouncedStatePath (tests, or a
+    // future caller with its own layout) do we skip the running/-> old_runs/
+    // move-on-completion below, since we can no longer assume that path lives
+    // under a running/ directory we're allowed to rename out of.
     const usingDefaultStatePath = !opts.debouncedStatePath;
-    const runningStatePath = opts.debouncedStatePath || getRunningSprintStatePath(sprintId, env);
+    const runningStatePath = opts.debouncedStatePath || getRunningRunStatePath(runId, env);
 
     const nowIso = () => new Date().toISOString();
     const startedAtIso = nowIso();
@@ -655,11 +663,11 @@ export function createDashboardViewer(workflow, opts = {}) {
         workflowName: opts.name || 'Apra Fleet Workflow',
         status: 'running',
         // apra-fleet-eft.2.2: fields enriching the persisted state file
-        // beyond the terminal-only sprint-logs/ snapshot -- populated (where
-        // known) from construction, and updated as the sprint progresses so
-        // a mid-sprint read of the file shows in-progress state, not just
+        // beyond the terminal-only crash-net snapshot -- populated (where
+        // known) from construction, and updated as the run progresses so
+        // a mid-run read of the file shows in-progress state, not just
         // the terminal shape.
-        sprintId,
+        runId,
         args: opts.launchArgs ?? null,
         verdict: null,
         prUrl: null,
@@ -727,45 +735,57 @@ export function createDashboardViewer(workflow, opts = {}) {
     };
 
     // apra-fleet-eft.2.3: on terminal completion, move (not copy) the live
-    // running/<sprintId>.json to old_sprints/<sprintId>.json so "is this
-    // sprint live" is a directory-membership check, never a stale field on
-    // the state object itself. Only applies to the default path layout --
-    // see usingDefaultStatePath above.
-    function moveStateToOldSprints() {
+    // running/<runId>.json to old_runs/<runId>.json so "is this run live" is a
+    // directory-membership check, never a stale field on the state object
+    // itself. Only applies to the default path layout -- see
+    // usingDefaultStatePath above.
+    function moveStateToOldRuns() {
         if (!usingDefaultStatePath) return;
         try {
             if (!fs.existsSync(runningStatePath)) return;
-            const oldPath = getOldSprintStatePath(sprintId, env);
+            const oldPath = getTerminalRunStatePath(runId, env);
             fs.mkdirSync(path.dirname(oldPath), { recursive: true });
             fs.renameSync(runningStatePath, oldPath);
         } catch (e) {
-            // Must never crash or block the sprint's own normal exit
-            // behavior -- log and move on, same contract as persistState()
-            // and the debounced writer itself.
-            console.warn(`[Viewer] Warning: failed to move sprint state to old_sprints/: ${e.message}`);
+            // Must never crash or block the run's own normal exit behavior --
+            // log and move on, same contract as persistState() and the
+            // debounced writer itself.
+            console.warn(`[Viewer] Warning: failed to move run state to old_runs/: ${e.message}`);
         }
     }
 
     // Server-side persistence of the dashboard `state` object to
-    // sprint-logs/sprint_<HHMMSS>.json on every run-ending event (normal
-    // finish, cooperative /stop-triggered cancellation, or the CLI process
-    // itself being interrupted). This is the server-side equivalent of the
-    // client-side saveState() button (HTML_TEMPLATE above) -- that one only
-    // works if a human has the dashboard open in a browser; this one runs
-    // unconditionally so a sprint's final state is never lost just because
-    // nobody was watching. `saved` guards against writing twice for the same
-    // run (e.g. 'end' fires, then a SIGINT arrives moments later during the
-    // bin/cli.mjs failure grace-period wait).
+    // <stateSnapshotDir>/<stateSnapshotPrefix><HHMMSS>.json on every
+    // run-ending event (normal finish, cooperative /stop-triggered
+    // cancellation, or the CLI process itself being interrupted). This is the
+    // server-side equivalent of the client-side saveState() button
+    // (HTML_TEMPLATE above) -- that one only works if a human has the
+    // dashboard open in a browser; this one runs unconditionally so a run's
+    // final state is never lost just because nobody was watching. `saved`
+    // guards against writing twice for the same run (e.g. 'end' fires, then a
+    // SIGINT arrives moments later during the bin/cli.mjs failure grace-period
+    // wait).
+    //
+    // apra-fleet-eft.37.1: the crash-net snapshot location is configurable so
+    // core stays domain-neutral -- opts.stateSnapshotDir (default
+    // `workflow-logs`, resolved under process.cwd() when relative) and
+    // opts.stateSnapshotPrefix (default `run_`, giving `run_<HHMMSS>.json`).
+    // auto-sprint passes `sprint-logs`/`sprint_` explicitly so its user-facing
+    // convention is unchanged.
+    const stateSnapshotDir = opts.stateSnapshotDir || 'workflow-logs';
+    const stateSnapshotPrefix = opts.stateSnapshotPrefix || 'run_';
     let saved = false;
     function persistState() {
         if (saved) return;
         saved = true;
         try {
-            const dir = path.join(process.cwd(), 'sprint-logs');
+            const dir = path.isAbsolute(stateSnapshotDir)
+                ? stateSnapshotDir
+                : path.join(process.cwd(), stateSnapshotDir);
             const now = new Date();
             const pad2 = (n) => String(n).padStart(2, '0');
             const hhmmss = `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
-            const filePath = path.join(dir, `sprint_${hhmmss}.json`);
+            const filePath = path.join(dir, `${stateSnapshotPrefix}${hhmmss}.json`);
             // apra-fleet-eft.20.1: route through the same single-pass
             // JSON.stringify + atomic temp-file-then-rename primitive the
             // debounced writer uses (writeJsonFileAtomic, debounced-writer.mjs)
@@ -773,11 +793,11 @@ export function createDashboardViewer(workflow, opts = {}) {
             // never be observed half-written and its bytes always round-trip
             // through JSON.parse().
             writeJsonFileAtomic(filePath, state);
-            console.log(`[Viewer] Sprint state saved to ${filePath}`);
+            console.log(`[Viewer] Run state saved to ${filePath}`);
         } catch (e) {
-            // A failed save must never crash or block the sprint's own
-            // normal exit behavior -- log and move on.
-            console.warn(`[Viewer] Warning: failed to save sprint state: ${e.message}`);
+            // A failed save must never crash or block the run's own normal
+            // exit behavior -- log and move on.
+            console.warn(`[Viewer] Warning: failed to save run state: ${e.message}`);
         }
     }
 
@@ -803,11 +823,11 @@ export function createDashboardViewer(workflow, opts = {}) {
         // so at most one debounce window of progress is ever lost.
         debouncedWriter.flushSync();
         // apra-fleet-eft.2.3: SIGINT/SIGTERM are a graceful (not hard-kill)
-        // shutdown path, so the file is still moved to old_sprints/ here --
+        // shutdown path, so the file is still moved to old_runs/ here --
         // it's only an unhandled SIGKILL/OOM that leaves it behind in
         // running/ (that gap is what apra-fleet-eft.2.4's hard-kill test
         // covers).
-        moveStateToOldSprints();
+        moveStateToOldRuns();
         process.exit(130);
     };
     const handleSigterm = () => {
@@ -815,7 +835,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         state.terminalReason = state.terminalReason || 'SIGTERM';
         persistState();
         debouncedWriter.flushSync();
-        moveStateToOldSprints();
+        moveStateToOldRuns();
         process.exit(143);
     };
     process.on('SIGINT', handleSigint);
@@ -908,9 +928,9 @@ export function createDashboardViewer(workflow, opts = {}) {
         // lose more than one debounce window against.
         debouncedWriter.flushSync();
         // apra-fleet-eft.2.3: terminal completion -- move running/<id>.json
-        // to old_sprints/<id>.json (directory membership, not a stale field,
-        // is what makes "is this sprint live" authoritative).
-        moveStateToOldSprints();
+        // to old_runs/<id>.json (directory membership, not a stale field,
+        // is what makes "is this run live" authoritative).
+        moveStateToOldRuns();
     });
 
     const server = http.createServer((req, res) => {

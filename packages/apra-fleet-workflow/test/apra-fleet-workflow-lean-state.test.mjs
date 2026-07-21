@@ -134,11 +134,11 @@ describe('leanifyState()', () => {
         assert.equal(data.model, 'standard');
     });
 
-    test('top-level control fields (status, stats, sprintId) pass through untouched', () => {
-        const state = { status: 'success', sprintId: 'abc-123', stats: { activitiesCount: 3, totalCost: 1.5 }, tree: [], extensions: {} };
+    test('top-level control fields (status, stats, runId) pass through untouched', () => {
+        const state = { status: 'success', runId: 'abc-123', stats: { activitiesCount: 3, totalCost: 1.5 }, tree: [], extensions: {} };
         const lean = leanifyState(state);
         assert.equal(lean.status, 'success');
-        assert.equal(lean.sprintId, 'abc-123');
+        assert.equal(lean.runId, 'abc-123');
         assert.deepEqual(lean.stats, { activitiesCount: 3, totalCost: 1.5 });
     });
 });
@@ -191,7 +191,7 @@ describe('buildListStatePayload() -- end-to-end shape and size contract', () => 
         return {
             workflowName: 'Fixture Sprint',
             status: 'running',
-            sprintId: 'fixture-sprint-1',
+            runId: 'fixture-run-1',
             stats: { activitiesCount: activityCount, totalTokens: 1000, totalCost: 1.23, startTime: Date.now(), durationMs: 0 },
             tree: [{ title: 'Workflow', phases: [{ title: 'Work', events }] }],
             extensions: {
