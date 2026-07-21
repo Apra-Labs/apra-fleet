@@ -10,6 +10,7 @@ import {
   hasProvisionedEnvVar,
   extractAccessToken,
   extractExpiresAt,
+  hasSufficientSessionShape,
   checkMemberEnvVarProvisioned,
   checkCleanEnvCredentialsFile,
   checkToyDoerCredentialsProvisioned,
@@ -134,6 +135,70 @@ describe('extractExpiresAt (stabilization Issue 43)', () => {
   });
 });
 
+// apra-fleet-eft.48.4: hasSufficientSessionShape() generalizes the original
+// expiresAt-only check so the guard proves the written file is genuinely
+// CLI-acceptable (any of expiresAt/refreshToken/scopes/subscriptionType),
+// not just non-empty accessToken -- catching the regression that slipped
+// past eft.48.2's original (accessToken-only) probe.
+describe('hasSufficientSessionShape (apra-fleet-eft.48.4)', () => {
+  it('FAILS on the OLD accessToken-only shape (pre-eft.48.3) -- proves the guard would have caught this regression', () => {
+    const text = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-old-shape-only' } });
+    expect(hasSufficientSessionShape(text)).toBe(false);
+  });
+
+  it('FAILS when claudeAiOauth is absent entirely', () => {
+    expect(hasSufficientSessionShape(JSON.stringify({ other: true }))).toBe(false);
+  });
+
+  it('FAILS on empty or malformed input', () => {
+    expect(hasSufficientSessionShape('')).toBe(false);
+    expect(hasSufficientSessionShape('not json')).toBe(false);
+  });
+
+  it('PASSES on the full-shape file written by eft.48.3 (accessToken + expiresAt + refreshToken + scopes + subscriptionType)', () => {
+    const text = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'sk-full-shape',
+        refreshToken: 'sk-refresh',
+        expiresAt: 1999999999999,
+        scopes: ['user:inference'],
+        subscriptionType: 'max',
+      },
+    });
+    expect(hasSufficientSessionShape(text)).toBe(true);
+  });
+
+  it('PASSES with expiresAt alone -- the minimally-sufficient field eft.48.3 synthesizes for bare tokens', () => {
+    const text = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-a', expiresAt: 1999999999999 } });
+    expect(hasSufficientSessionShape(text)).toBe(true);
+  });
+
+  it('PASSES with refreshToken alone (no expiresAt)', () => {
+    const text = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-a', refreshToken: 'sk-refresh' } });
+    expect(hasSufficientSessionShape(text)).toBe(true);
+  });
+
+  it('PASSES with scopes alone (non-empty array)', () => {
+    const text = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-a', scopes: ['user:inference'] } });
+    expect(hasSufficientSessionShape(text)).toBe(true);
+  });
+
+  it('FAILS with an empty scopes array', () => {
+    const text = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-a', scopes: [] } });
+    expect(hasSufficientSessionShape(text)).toBe(false);
+  });
+
+  it('PASSES with subscriptionType alone', () => {
+    const text = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-a', subscriptionType: 'max' } });
+    expect(hasSufficientSessionShape(text)).toBe(true);
+  });
+
+  it('FAILS when expiresAt is non-positive', () => {
+    const text = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-a', expiresAt: 0 } });
+    expect(hasSufficientSessionShape(text)).toBe(false);
+  });
+});
+
 describe('checkMemberEnvVarProvisioned', () => {
   let tmpDir: string;
   let registryPath: string;
@@ -227,6 +292,16 @@ describe('checkCleanEnvCredentialsFile', () => {
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/expiresAt/);
     expect(result.message).toMatch(/FULL claudeAiOauth object/);
+  });
+
+  it('PASSES (apra-fleet-eft.48.4) when the file carries refreshToken but no expiresAt -- proves the guard is not hardcoded to expiresAt alone', () => {
+    fs.mkdirSync(path.join(tmpDir, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude', '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-refresh-shape', refreshToken: 'sk-refresh-token' } }),
+    );
+    const result = checkCleanEnvCredentialsFile(tmpDir);
+    expect(result.ok).toBe(true);
   });
 
   it('supports dependency injection of execSync for isolated unit coverage', () => {

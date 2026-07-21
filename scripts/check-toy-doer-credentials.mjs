@@ -209,21 +209,25 @@ export function checkCleanEnvCredentialsFile(fleetHome = defaultFleetHome(), dep
       message: `NOT-PROVISIONED (clean-env path): clean-env probe (matching LocalStrategy's 'env -i ... bash -l -c' exec path) found no claudeAiOauth.accessToken at '${credPath}' with HOME resolving to '${fleetHome}'.`,
     };
   }
-  // Stabilization Issue 43: an accessToken alone is NOT a usable credential
-  // -- the Claude CLI requires at least claudeAiOauth.expiresAt to treat the
-  // session as valid, and rejects a token-only file with "Not logged in".
-  // This exact gap slipped past the original token-only check: the file
-  // landed where dispatch looks, but Claude refused it and every dispatch
-  // failed auth anyway.
-  if (!extractExpiresAt(output)) {
+  // Stabilization Issue 43 / apra-fleet-eft.48.4: an accessToken alone is
+  // NOT a usable credential -- the Claude CLI requires at least one of
+  // claudeAiOauth.expiresAt/refreshToken/scopes/subscriptionType to treat
+  // the session as valid, and rejects a token-only file with "Not logged
+  // in". This exact gap slipped past the original token-only check: the
+  // file landed where dispatch looks, but Claude refused it and every
+  // dispatch failed auth anyway. hasSufficientSessionShape() generalizes
+  // the original expiresAt-only check to any of the four fields the
+  // installed CLI accepts, matching what apra-fleet-eft.48.3's write path
+  // (bare-token synthetic expiresAt, or full-object passthrough) produces.
+  if (!hasSufficientSessionShape(output)) {
     return {
       ok: false,
-      message: `NOT-PROVISIONED (clean-env path): '${credPath}' has an accessToken but no claudeAiOauth.expiresAt -- the Claude CLI rejects such a file as "Not logged in". Seed the FULL claudeAiOauth object (see integ-test-playbook.md's credential-provisioning step), not just the bare token.`,
+      message: `NOT-PROVISIONED (clean-env path): '${credPath}' has an accessToken but no additional session field (claudeAiOauth.expiresAt/refreshToken/scopes/subscriptionType) -- the Claude CLI rejects such a file as "Not logged in". Seed the FULL claudeAiOauth object (see integ-test-playbook.md's credential-provisioning step), or provision via 'apra-fleet auth --oauth' (apra-fleet-eft.48.3), which always adds at least a synthetic expiresAt for bare tokens.`,
     };
   }
   return {
     ok: true,
-    message: `OK (clean-env path): clean-env probe resolved a non-empty claudeAiOauth.accessToken (with expiresAt) at '${credPath}'.`,
+    message: `OK (clean-env path): clean-env probe resolved a claudeAiOauth object with accessToken and a sufficient session shape (expiresAt/refreshToken/scopes/subscriptionType) at '${credPath}'.`,
   };
 }
 
@@ -243,6 +247,45 @@ export function extractExpiresAt(credentialsJsonText) {
   } catch {
     return 0;
   }
+}
+
+/**
+ * apra-fleet-eft.48.4 (regression follow-up to apra-fleet-eft.48 /
+ * stabilization Issue 43): does a `.credentials.json` file's claudeAiOauth
+ * object carry at least one of the additional session fields the installed
+ * Claude CLI requires beyond a bare accessToken -- expiresAt, refreshToken,
+ * scopes, or subscriptionType -- to accept the file as a valid logged-in
+ * session? The eft.48.2 guard originally asserted only a non-empty
+ * accessToken, which reported OK even though the real CLI (2.1.212)
+ * rejected that exact shape as "Not logged in - Please run /login"; this
+ * check is what makes that regression actually fail loud. It is
+ * presence-only (a read-only shape probe, not a network auth check) --
+ * apra-fleet-eft.48.3's `apra-fleet auth --oauth` always writes at least a
+ * (possibly synthetic) expiresAt, and a full-object seed
+ * (integ-test-playbook.md's documented provisioning step) carries all four.
+ *
+ * @param {string} credentialsJsonText
+ * @returns {boolean}
+ */
+export function hasSufficientSessionShape(credentialsJsonText) {
+  if (!credentialsJsonText || !credentialsJsonText.trim()) return false;
+  let oauth;
+  try {
+    const parsed = JSON.parse(credentialsJsonText);
+    oauth = parsed && parsed.claudeAiOauth;
+  } catch {
+    return false;
+  }
+  if (!oauth || typeof oauth !== 'object') return false;
+
+  const hasExpiresAt = typeof oauth.expiresAt === 'number' && oauth.expiresAt > 0;
+  const hasRefreshToken = typeof oauth.refreshToken === 'string' && oauth.refreshToken.length > 0;
+  const hasScopes = Array.isArray(oauth.scopes)
+    ? oauth.scopes.length > 0
+    : typeof oauth.scopes === 'string' && oauth.scopes.length > 0;
+  const hasSubscriptionType = typeof oauth.subscriptionType === 'string' && oauth.subscriptionType.length > 0;
+
+  return hasExpiresAt || hasRefreshToken || hasScopes || hasSubscriptionType;
 }
 
 /**
