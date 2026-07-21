@@ -484,21 +484,36 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                         
                         let childrenHtml = '';
                         if (!act.isRunning) {
-                            // apra-fleet-eft.38: a \`command\` activity's stored
-                            // output/error may only be a head+tail excerpt --
-                            // command-output-cap.mjs (eft.27.4) capped it
-                            // before it ever reached state.tree, marking which
-                            // field via \${field}Truncated + the TRUE original
-                            // \${field}ByteLength. fieldBlock() wraps that
-                            // field's escaped text in a span the click handler
-                            // below can find and swap for the full text (GET
-                            // /activities/:id/output), and appends a dedicated
-                            // 'more...' button right next to it -- never on
-                            // the activity's own summary/header, which stays a
-                            // plain expand/collapse toggle only.
-                            const fieldBlock = (prefix, text, field) => {
+                            // apra-fleet-eft.38 (reopened): a REAL capped
+                            // activity ships NO inline text field at all --
+                            // only the markers (\${field}Truncated + the TRUE
+                            // original \${field}ByteLength) plus a short
+                            // \`summary\` string (see command-output-cap.mjs for
+                            // \`command\` activities, and lean-state.mjs's
+                            // summarizeHeavyFields() for every other activity
+                            // type, e.g. \`agent\`). The previous version of this
+                            // fix keyed the button on act.output/act.error
+                            // being truthy, which a real capped payload never
+                            // is -- 0 buttons ever rendered. hasField()/
+                            // fieldBlock() below key on the MARKERS instead:
+                            // present inline text wins as the preview when
+                            // available (e.g. an uncapped History-view state),
+                            // otherwise the leaned \`summary\` is the preview,
+                            // and the 'more...' button (never on the
+                            // activity's own summary/header, which stays a
+                            // plain expand/collapse toggle only) fetches the
+                            // full text on demand from GET
+                            // /activities/:id/output.
+                            const hasField = (field) =>
+                                typeof act[field] === 'string' ||
+                                act[field + 'Truncated'] ||
+                                act[field + 'ByteLength'] !== undefined;
+                            const fieldBlock = (prefix, field) => {
                                 const truncated = act[field + 'Truncated'];
                                 const bytes = act[field + 'ByteLength'];
+                                const text = typeof act[field] === 'string'
+                                    ? act[field]
+                                    : (typeof act.summary === 'string' ? act.summary : '');
                                 const label = truncated
                                     ? \`more... (\${(bytes || 0).toLocaleString()} bytes total)\`
                                     : '';
@@ -507,10 +522,10 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                                     : '';
                                 return \`\${prefix}<span class="output-text" data-field="\${field}">\${escapeHtml(text)}</span>\${btn}\`;
                             };
-                            if (act.error) {
-                                childrenHtml = \`<div class="activity-child error">\${fieldBlock('', act.error, 'error')}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? fieldBlock('Output:\\n', act.output, 'output') : ''}</div>\`;
-                            } else if (act.output) {
-                                childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${fieldBlock('', act.output, 'output')}</div>\`;
+                            if (hasField('error')) {
+                                childrenHtml = \`<div class="activity-child error">\${fieldBlock('', 'error')}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${hasField('output') ? fieldBlock('Output:\\n', 'output') : ''}</div>\`;
+                            } else if (hasField('output')) {
+                                childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${fieldBlock('', 'output')}</div>\`;
                             }
                         }
                         
@@ -633,6 +648,25 @@ function findBeadById(state, id) {
         if (!Array.isArray(pool)) continue;
         const match = pool.find((t) => t && String(t.id) === String(id));
         if (match) return match;
+    }
+    return null;
+}
+
+// apra-fleet-eft.38 (reopened): fallback lookup for GET /activities/:id/output
+// (see the route below) when command-output-cap.mjs's own store has nothing
+// for the id -- true for every activity type it never caps (most notably
+// `agent`: its full LLM response text is never trimmed at storage time, only
+// at GET /state's wire-shaping stage by lean-state.mjs's summarizeHeavyFields(),
+// which now stamps the same <field>Truncated markers on it -- see that
+// module). Reads from the LIVE, full-fidelity in-memory `state.tree` (never
+// the leaned /state payload), which is where an uncapped activity's complete
+// output/error text still lives.
+function findActivityById(state, id) {
+    for (const g of state.tree || []) {
+        for (const p of g.phases || []) {
+            const ev = (p.events || []).find((e) => e.type === 'activity' && String(e.id) === String(id));
+            if (ev) return ev.data;
+        }
     }
     return null;
 }
@@ -1001,16 +1035,32 @@ export function createDashboardViewer(workflow, opts = {}) {
                 updatedAt: bead.updated_at || bead.updatedAt || null
             }));
         } else if (req.method === 'GET' && /^\/activities\/[^/]+\/output$/.test(req.url)) {
-            // apra-fleet-eft.27.4: on-demand full-output endpoint for a
-            // `command` activity whose stdout/error was capped to a
-            // head+tail excerpt before being stored in state.tree (see the
-            // activity:end handler above / command-output-cap.mjs). Fetched
-            // only when a user expands a truncated command activity in the
-            // dashboard -- never during normal polling. 404s (not a crash)
-            // for an unknown id, or one that was never actually capped
-            // (nothing to fetch beyond what's already inline).
+            // apra-fleet-eft.27.4 / apra-fleet-eft.38 (reopened): on-demand
+            // full-output endpoint. First checks command-output-cap.mjs's
+            // dedicated store (a `command` activity whose stdout/error was
+            // capped to a head+tail excerpt before being stored in state.tree
+            // -- see the activity:end handler above). Every OTHER activity
+            // type that GET /state's lean-state.mjs may have marked
+            // <field>Truncated (most notably `agent`: its full LLM response
+            // text is never capped at storage time, so it's never in that
+            // store) falls back to the LIVE, full-fidelity in-memory
+            // state.tree instead, via findActivityById() -- that object still
+            // holds the complete, uncapped text for anything not routed
+            // through command-output-cap.mjs. Fetched only when a user
+            // expands a truncated activity in the dashboard -- never during
+            // normal polling. 404s (not a crash) for an unknown id, or one
+            // with nothing to fetch beyond what's already inline.
             const id = decodeURIComponent(req.url.slice('/activities/'.length, req.url.length - '/output'.length));
-            const full = getFullOutput(id);
+            let full = getFullOutput(id);
+            if (!full) {
+                const act = findActivityById(state, id);
+                if (act) {
+                    const fromState = {};
+                    if (typeof act.output === 'string') fromState.output = act.output;
+                    if (typeof act.error === 'string') fromState.error = act.error;
+                    if (Object.keys(fromState).length > 0) full = fromState;
+                }
+            }
             if (!full) {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'activity output not found', id }));

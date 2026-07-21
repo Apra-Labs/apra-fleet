@@ -58,20 +58,48 @@ export function truncate(str, maxChars) {
 // objects with none of these fields, pass through unchanged (a fresh
 // shallow copy is only made when there's actually something to remove, so
 // this stays cheap on the common case).
+//
+// apra-fleet-eft.38 (reopened): a `command` activity's output/error already
+// carries <field>Truncated + <field>ByteLength markers by the time it gets
+// here (command-output-cap.mjs capped it BEFORE storage, at activity:end --
+// see src/viewer/index.mjs). Every OTHER activity type (most notably `agent`,
+// whose full LLM response text is never capped at storage time, only here at
+// the wire-shaping stage) had no such markers, so the dashboard's 'more...'
+// control had nothing to key off of and never rendered for them. This now
+// stamps the same <field>Truncated/<field>ByteLength pair onto ANY heavy
+// field this function strips down to `summary`, whenever that field's full
+// text does not survive intact inline (either it's a secondary heavy field --
+// e.g. `output` when `error` already claimed the one `summary` slot -- that
+// gets dropped entirely, or it's the summary source itself but longer than
+// the summary cap). GET /activities/:id/output (src/viewer/index.mjs) falls
+// back to the live in-memory state.tree for any id not already in
+// command-output-cap.mjs's own store, so these markers are always backed by
+// a real fetchable full text. Markers a field already carries (the `command`
+// case above) are left untouched, never overwritten with a lesser byte count.
 function summarizeHeavyFields(obj, maxChars) {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
-    let heavyValue = null;
-    let hadHeavyField = false;
-    let out = obj;
-    for (const key of HEAVY_FIELD_NAMES) {
-        if (Object.prototype.hasOwnProperty.call(out, key) && typeof out[key] === 'string' && out[key].length > 0) {
-            if (out === obj) out = { ...obj }; // copy on first write only
-            if (heavyValue === null) heavyValue = out[key];
-            delete out[key];
-            hadHeavyField = true;
+    const present = HEAVY_FIELD_NAMES.filter((key) =>
+        Object.prototype.hasOwnProperty.call(obj, key) && typeof obj[key] === 'string' && obj[key].length > 0
+    );
+    if (present.length === 0) return obj;
+
+    const out = { ...obj };
+    const summaryKey = present[0];
+    const heavyValue = out[summaryKey];
+
+    for (const key of present) {
+        const full = out[key];
+        const survivesIntactAsSummary = key === summaryKey && full.length <= maxChars;
+        const truncatedKey = `${key}Truncated`;
+        const byteLengthKey = `${key}ByteLength`;
+        if (!survivesIntactAsSummary && !Object.prototype.hasOwnProperty.call(out, truncatedKey)) {
+            out[truncatedKey] = true;
+            out[byteLengthKey] = Buffer.byteLength(full, 'utf8');
         }
+        delete out[key];
     }
-    if (hadHeavyField && !Object.prototype.hasOwnProperty.call(out, 'summary')) {
+
+    if (!Object.prototype.hasOwnProperty.call(out, 'summary')) {
         out.summary = truncate(heavyValue, maxChars);
     }
     return out;
