@@ -931,3 +931,22 @@ fix). buildPlanReviewerPrompt: such a bug with no new open task children
 makes the plan NOT approvable (CHANGES_NEEDED); bugs without post-closure
 recurrence stay under pending-closure as before. Goldens refreshed.
 Engine suite: 963 pass / 0 fail.
+
+### Issue 34 (run 16 C1 R2): Issue 28's seeding filter missed the in-loop site
+
+Observed live: bug bead eft.37 (filed mid-run, after the plan phase) was
+seeded into its own doer streak in Develop C1 R2. Root cause: the Issue 28
+dispatchability filter was applied only to the PRE-LOOP readyBeads list
+(the round-zero check); the IN-LOOP currentReady list -- the one that
+actually feeds the streak-assignment prompt each round -- had no filter,
+so any non-task bead born after planning (reviewer newTasks are created
+as tasks, but out-of-band bug filings are not) reaches a doer and burns a
+dispatch on a contract-bound refusal. Fix: same filter (with the same
+target-issue exemption) applied at the in-loop site. Honest note: no test
+ever pinned the filter directly -- that is exactly why the second site
+slipped; the run-16 live sprint is the current verification, and a
+focused seeding-filter unit remains worth adding when the runner's
+seeding is next factored testably. Engine suite: 963 pass; the 2
+dolt-sync-discipline real-subprocess failures are the known Windows EBUSY
+temp-dir-cleanup flake (same class PR #332 fixed elsewhere), aggravated
+by the live sprint's dolt server -- unrelated to this change.

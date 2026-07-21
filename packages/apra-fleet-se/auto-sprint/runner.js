@@ -4212,7 +4212,16 @@ async function runSprintCycle(context) {
             // streak-assignment prompt and the doerPool round-robin index
             // below, so an unstable order here was directly observable as
             // prompt drift between two otherwise-identical runs.
+            // Stabilization log Issue 34: the Issue 28 doer-dispatchability
+            // filter must apply HERE too -- this in-loop list is the one that
+            // actually feeds the streak-assignment prompt, and a bug/feature
+            // bead created after the plan phase (reviewer newTask, out-of-band
+            // filing) otherwise lands in a doer streak and burns a dispatch on
+            // a contract-bound refusal (observed live, run 16 C1 R2: bug bead
+            // seeded into its own streak). Same target-issue exemption as the
+            // pre-loop site (eft.24 childless-leaf-target case).
             const currentReady = (await readyLeafBeads())
+                .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
             if (currentReady.length === 0) break;
