@@ -20,7 +20,12 @@
 // identity or anywhere else outside the sandbox. All four checks from the
 // original guard are retained (none deleted) -- only checks 1, 3 and 4
 // change *what* "safe" means; check 2 (no outbound commits) keeps its
-// original shape (see its own docstring below for why).
+// original shape (see its own docstring below for why), but apra-fleet-
+// eft.18.8's end-to-end verification (real `bd` CLI, not a hand-built
+// fixture) found it is now ALWAYS non-zero on the very first successful
+// `## Setup` run, so it no longer gates this guard's exit code -- see the
+// "apra-fleet-eft.18.8 FINDING" paragraph below check 2 for the reproduced
+// root cause.
 //
 //   1. sync.remote resolves inside the sandbox: `.beads/config.yaml`'s
 //      active `sync.remote` value (if any) must resolve to a filesystem
@@ -28,18 +33,40 @@
 //      `$HOME/.apra-fleet-toy-dolt-remote` `file://` remote apra-fleet-
 //      eft.18.5's seed step wires. FAILS if it resolves to the real
 //      fleet-e2e-toy URL, or to any other path outside the sandbox root.
-//   2. no outbound commits: 'git rev-list --left-right --count
-//      HEAD...origin/main' in the sandbox clone shows 0 commits ahead of
-//      origin/main. Under the pre-eft.18.5 bootstrap/neutralize flow this
-//      was a hazard check (an "ahead" count meant something might have
-//      reached the real remote); under the new flow `origin` is wired
-//      sandbox-local from the very start (see check 4), so an "ahead" count
-//      here no longer implies any real-remote exposure. It is retained
-//      as a general sandbox-integrity sanity check (an unexpected diff
-//      between the clone and its own sandbox-local mirror is still worth
-//      surfacing), per apra-fleet-eft.18.5's SAFETY INVARIANT that no check
-//      is dropped outright -- see apra-fleet-eft.18.6/eft.18.7 for the full
-//      retarget rationale.
+//   2. no outbound commits (informational only, apra-fleet-eft.18.8): 'git
+//      rev-list --left-right --count HEAD...origin/main' in the sandbox
+//      clone shows 0 commits ahead of origin/main. Under the pre-eft.18.5
+//      bootstrap/neutralize flow this was a hazard check (an "ahead" count
+//      meant something might have reached the real remote); under the new
+//      flow `origin` is wired sandbox-local from the very start (see check
+//      4), so an "ahead" count here no longer implies any real-remote
+//      exposure. It is retained as a general sandbox-integrity sanity
+//      check (an unexpected diff between the clone and its own
+//      sandbox-local mirror is still worth surfacing), per apra-fleet-
+//      eft.18.5's SAFETY INVARIANT that no check is dropped outright -- see
+//      apra-fleet-eft.18.6/eft.18.7 for the full retarget rationale.
+//
+//      apra-fleet-eft.18.8 FINDING: `bd init --from-jsonl` itself commits
+//      its own scaffolding (AGENTS.md, CLAUDE.md, .beads/hooks, the
+//      just-wired `sync.remote` in `.beads/config.yaml`, ...) straight into
+//      the sandbox clone -- and that commit is created AFTER `## Setup`
+//      already re-pointed `origin` at the sandbox-local `$GIT_MIRROR`, so it
+//      is never present there. Reproduced with the real `bd` CLI end-to-end
+//      (not a hand-built fixture): this makes the sandbox clone exactly 1
+//      commit ahead of `origin/main` on every single successful `## Setup`
+//      run, unconditionally -- not an "unexpected" divergence at all, but
+//      the expected, benign result of the documented flow. Deliberately NOT
+//      fixed by pushing that commit to `$GIT_MIRROR` in `## Setup`: doing so
+//      makes `.beads/config.yaml`'s `sync.remote` (already pointing at the
+//      real, history-bearing `$DOLT_REMOTE` at that point) part of `origin`'s
+//      history too, which then makes `## Reset`'s later plain `bd init
+//      --from-jsonl --prefix gh-toy --non-interactive` (no `--remote`, no
+//      `--discard-remote`) fail hard with "remote already has Dolt history"
+//      -- trading one false positive for a real regression. So check 2 stays
+//      exactly as implemented (never deleted, per the SAFETY INVARIANT
+//      above) but is downgraded to informational-only in `main()` below;
+//      checks 1/3/4 are the ones that actually assert the real-remote
+//      isolation invariant this guard exists for.
 //   3. Dolt-level remote resolves inside the sandbox (apra-fleet-eft.30):
 //      'bd dolt remote list --json' -- every configured Dolt-level remote's
 //      URL must resolve inside the sandbox root (see checkDoltRemoteAbsent
@@ -236,6 +263,15 @@ export function parseLeftRightCount(output) {
  * general integrity signal even though it is no longer a real-remote
  * hazard.
  *
+ * apra-fleet-eft.18.8: this function's own ok/message contract is UNCHANGED
+ * (still `ok: false` with an "ahead" message once the clone diverges) -- only
+ * `main()` below stopped treating a `false` result here as fatal, because
+ * `bd init --from-jsonl` in `## Setup` reproducibly leaves the clone exactly
+ * 1 commit ahead of `origin/main` on every successful run (see the file-level
+ * "apra-fleet-eft.18.8 FINDING" comment above). Callers that need the raw
+ * signal (e.g. this file's own tests) still get it from this function
+ * directly.
+ *
  * @param {string} repoPath
  * @param {{execFileSync: typeof execFileSync}} [deps] injectable for tests
  * @returns {{ok: boolean, message: string}}
@@ -416,8 +452,11 @@ function main() {
   const syncCheck = checkSyncRemoteInert(configPath, sandboxPath);
   console.log(`[check-sandbox-sync-remote] ${syncCheck.message}`);
 
+  // apra-fleet-eft.18.8: informational only -- see checkNoOutboundCommits'
+  // own docstring and the file-level "apra-fleet-eft.18.8 FINDING" comment
+  // above for why this one no longer gates the exit code below.
   const outboundCheck = checkNoOutboundCommits(repoPath);
-  console.log(`[check-sandbox-sync-remote] ${outboundCheck.message}`);
+  console.log(`[check-sandbox-sync-remote] ${outboundCheck.message}${outboundCheck.ok ? '' : ' (informational only -- does not fail this guard; see apra-fleet-eft.18.8)'}`);
 
   const doltRemoteCheck = checkDoltRemoteAbsent(repoPath, sandboxPath);
   console.log(`[check-sandbox-sync-remote] ${doltRemoteCheck.message}`);
@@ -425,7 +464,7 @@ function main() {
   const gitOriginCheck = checkGitOriginNotHazard(repoPath, sandboxPath);
   console.log(`[check-sandbox-sync-remote] ${gitOriginCheck.message}`);
 
-  if (!syncCheck.ok || !outboundCheck.ok || !doltRemoteCheck.ok || !gitOriginCheck.ok) {
+  if (!syncCheck.ok || !doltRemoteCheck.ok || !gitOriginCheck.ok) {
     process.exit(1);
   }
   console.log('[check-sandbox-sync-remote] OK: sandbox is isolated from the real fleet-e2e-toy Dolt remote.');

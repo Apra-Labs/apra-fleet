@@ -156,20 +156,21 @@ freshly-initialized DB once, so the rest of the run's D-push/D-pull
 brackets have real history to sync against.
 
 Verify: `.beads/config.yaml`'s `sync.remote` and the sandbox clone's own
-Dolt remote list (`bd dolt remote list --json`) must both resolve to the
-`$DOLT_REMOTE` throwaway above, and the sandbox clone's `git remote get-url
-origin` must resolve to `$GIT_MIRROR` -- none of the three may ever
-reference `fleet-e2e-toy`. `scripts/check-sandbox-sync-remote.mjs`
-(apra-fleet-eft.25.2, extended by apra-fleet-eft.30.1 and apra-fleet-eft.31)
-still asserts the "no reference to `fleet-e2e-toy`" shape of those three
-checks today; its fourth check (no outbound git commits ahead of
-`origin/main`) targets a different, now-stale hazard shape from the retired
-bootstrap/neutralize flow -- under this design `origin` is sandbox-local
-from the start, so being ahead of it carries no real-remote exposure, and
-retargeting all four checks to assert every git/Dolt remote resolves
-*inside* the sandbox path (rather than merely `!= fleet-e2e-toy`) is
-apra-fleet-eft.18.6's job, not this step's. Run it from `<repo-root>`,
-after the steps above:
+Dolt remote list (`bd dolt remote list --json`) must both resolve to a path
+*inside* the sandbox root (not merely `!= fleet-e2e-toy`), and the sandbox
+clone's `git remote get-url origin` must likewise resolve inside the
+sandbox root -- none of the three may ever reference `fleet-e2e-toy`.
+`scripts/check-sandbox-sync-remote.mjs` (apra-fleet-eft.25.2, retargeted to
+this resolves-inside-sandbox shape by apra-fleet-eft.18.6) asserts exactly
+that for those three checks. Its fourth check (no outbound git commits
+ahead of `origin/main`) is printed but no longer gates this guard's exit
+code (apra-fleet-eft.18.8, confirmed against the real `bd` CLI
+end-to-end): `bd init --from-jsonl` above always commits its own
+scaffolding into the sandbox clone after `origin` has already been
+re-pointed at `$GIT_MIRROR`, so the clone is *always* exactly 1 commit
+ahead of `origin/main` on a successful run -- expected, not a hazard, since
+`origin` itself is already covered by the git-origin check. Run it from
+`<repo-root>`, after the steps above:
 
 ```bash
 node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
