@@ -10,6 +10,7 @@ import {
   parseLeftRightCount,
   checkDoltRemoteAbsent,
   parseDoltRemoteList,
+  checkGitOriginNotHazard,
   HAZARD_REMOTE,
 } from '../scripts/check-sandbox-sync-remote.mjs';
 
@@ -243,5 +244,81 @@ describe('checkDoltRemoteAbsent: Dolt-level remote hazard detection (apra-fleet-
     });
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/^FAIL/);
+  });
+});
+
+describe('checkGitOriginNotHazard: git-origin-derived Dolt remote re-wire detection (apra-fleet-eft.31)', () => {
+  // Regression coverage for apra-fleet-eft.31: at C4/C5 the first three
+  // checks (sync.remote inert, no outbound commits, Dolt-level remote
+  // absent) all reported clean at the moment check-sandbox-sync-remote.mjs
+  // ran, yet a LATER 'bd dolt' invocation still auto-provisioned a fresh
+  // Dolt-level remote FROM the clone's own git 'origin' remote and attempted
+  // a live push against it -- stopped only by missing GitHub credentials,
+  // not by any check here. This check closes that gap by inspecting the git
+  // origin itself, the raw material any future auto-provision derives from.
+  // Hermetic: execFileSync is always injected -- this suite never shells out
+  // to a real git binary or touches the network.
+
+  it('FAILS when the sandbox clone\'s git origin itself points at the hazard remote (the C4/C5 escape path)', () => {
+    const result = checkGitOriginNotHazard('/fake/repo', {
+      execFileSync: () => 'git+https://github.com/Apra-Labs/fleet-e2e-toy\n',
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/^FAIL/);
+    expect(result.message).toMatch(/fleet-e2e-toy/);
+  });
+
+  it('PASSES when the sandbox clone\'s git origin points at an unrelated repo', () => {
+    const result = checkGitOriginNotHazard('/fake/repo', {
+      execFileSync: () => 'git+https://github.com/Apra-Labs/some-other-toy-repo\n',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
+  });
+
+  it('is vacuously OK when there is no git \'origin\' remote to inspect (no git repo / no origin configured)', () => {
+    const result = checkGitOriginNotHazard('/fake/repo', {
+      execFileSync: () => {
+        throw new Error('fatal: No such remote \'origin\'');
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
+  });
+
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-git-origin-hazard-test-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('against a REAL local git repo: FAILS when origin is a local remote whose path contains the hazard identity', () => {
+    const hazardRemote = path.join(tmpDir, 'fleet-e2e-toy.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', hazardRemote]);
+
+    const workDir = path.join(tmpDir, 'work');
+    fs.mkdirSync(workDir);
+    execFileSync('git', ['init', '-b', 'main'], { cwd: workDir });
+    execFileSync('git', ['remote', 'add', 'origin', hazardRemote], { cwd: workDir });
+
+    const result = checkGitOriginNotHazard(workDir);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/^FAIL/);
+  });
+
+  it('against a REAL local git repo: PASSES when origin points elsewhere', () => {
+    const benignRemote = path.join(tmpDir, 'some-other-repo.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', benignRemote]);
+
+    const workDir = path.join(tmpDir, 'work');
+    fs.mkdirSync(workDir);
+    execFileSync('git', ['init', '-b', 'main'], { cwd: workDir });
+    execFileSync('git', ['remote', 'add', 'origin', benignRemote], { cwd: workDir });
+
+    const result = checkGitOriginNotHazard(workDir);
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^OK/);
   });
 });

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import {
     classifyDoltFailure,
     doltPullBefore,
@@ -302,6 +304,75 @@ test('doltPushAfter: negative control -- with an active configured sync.remote, 
 
     await assert.rejects(() => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), DoltSyncError);
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 0, 'a non-diverged failure triggers no reconcile pull');
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-eft.31: prove D-push isolation holds structurally, not just
+// because the real fleet-e2e-toy remote happened to be unreachable without
+// GitHub credentials. C4/C5's "stop" was an accident of the test machine
+// lacking credentials, not the neutralization actually working -- the
+// pre-attempt gate (eft.30/eft.30.2 above) had not landed yet at that point
+// and check-sandbox-sync-remote.mjs reported clean beforehand regardless.
+// This test uses a REAL, fully local, credential-free "hazard" remote (a
+// bare git repo whose path carries the fleet-e2e-toy identity, reachable via
+// a plain filesystem path -- no GitHub auth involved at all) so that if the
+// pre-gate did NOT hold, the push below would simply succeed and land on it.
+// Asserting it never does, with a remote that WOULD happily accept the push,
+// is what proves isolation does not depend on missing credentials.
+// -----------------------------------------------------------------------------
+test('(eft.31) D-push never reaches a fake/local hazard remote even when it is fully reachable with no credentials required', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eft31-hazard-remote-'));
+    try {
+        // A REAL, local, credential-free stand-in for the actual fleet-e2e-toy
+        // Dolt remote from C4/C5.
+        const hazardRemote = path.join(tmpDir, 'fleet-e2e-toy.git');
+        execFileSync('git', ['init', '--bare', '-b', 'main', hazardRemote]);
+
+        const workDir = path.join(tmpDir, 'work');
+        fs.mkdirSync(workDir);
+        execFileSync('git', ['init', '-b', 'main'], { cwd: workDir });
+        execFileSync('git', ['config', 'user.email', 'eft31@test.local'], { cwd: workDir });
+        execFileSync('git', ['config', 'user.name', 'eft-31-test'], { cwd: workDir });
+        fs.writeFileSync(path.join(workDir, 'README.md'), 'seed\n', 'utf-8');
+        execFileSync('git', ['add', 'README.md'], { cwd: workDir });
+        execFileSync('git', ['commit', '-m', 'seed'], { cwd: workDir });
+        execFileSync('git', ['remote', 'add', 'origin', hazardRemote], { cwd: workDir });
+
+        // Sanity: this hazard remote genuinely accepts a push with ZERO
+        // credentials -- unlike the real fleet-e2e-toy remote, nothing here
+        // would ever block an actually-issued push.
+        execFileSync('git', ['push', 'origin', 'main'], { cwd: workDir });
+
+        let pushAttempted = false;
+        const command = async (cmd) => {
+            if (cmd.includes('bd dolt push')) {
+                pushAttempted = true;
+                // If this ever runs, it is a REAL push to the reachable
+                // hazard remote -- it would succeed outright.
+                execFileSync('git', ['push', 'origin', 'main'], { cwd: workDir });
+                return { ok: true, output: '', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const checkSyncRemoteConfigured = async () => false; // neutralized sandbox (eft.25.1)
+
+        const res = await doltPushAfter('sandbox-member', { command, checkSyncRemoteConfigured });
+
+        assert.equal(pushAttempted, false, 'no `bd dolt push` command was ever ISSUED against the reachable hazard remote');
+        assert.deepEqual(
+            res,
+            { ok: true, member: 'sandbox-member', pushed: false, reconciled: false, skipped: true, reason: 'no-remote' },
+            'the D-push bracket reports a benign no-remote skip, not a push',
+        );
+
+        // Confirm nothing actually reached the hazard remote: it still has
+        // exactly the one seed commit, nothing added by a D-push attempt.
+        const remoteLog = execFileSync('git', ['log', '--oneline', 'main'], { cwd: hazardRemote, encoding: 'utf-8' })
+            .trim().split('\n').filter(Boolean);
+        assert.equal(remoteLog.length, 1, 'the hazard remote received exactly the one seed push and nothing from a D-push attempt');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
 });
 
 test('doltPushAfter: default isMemberSyncRemoteConfigured check (no override) is exercised end-to-end -- absent sync.remote skips, configured sync.remote throws', async () => {

@@ -14,14 +14,26 @@
 //      HEAD...origin/main' in the sandbox clone shows 0 commits ahead of
 //      origin/main -- i.e. nothing has actually been pushed to the real
 //      remote from this sandbox session.
+//   3. Dolt-level remote absent (apra-fleet-eft.30): 'bd dolt remote list
+//      --json' carries no remote pointing at the hazard identity (see
+//      checkDoltRemoteAbsent below).
+//   4. git origin not itself the hazard (apra-fleet-eft.31): the sandbox
+//      clone's OWN 'git remote get-url origin' does not point at the hazard
+//      remote either (see checkGitOriginNotHazard below) -- checks 1-3 can
+//      all report clean at snapshot time yet a LATER 'bd dolt' invocation
+//      still auto-provisions a fresh Dolt-level remote FROM this git origin
+//      (observed live, C4/C5: "Configured Dolt remote origin from git
+//      origin." followed by a live push attempt), re-arming exactly what
+//      check 3 just found absent.
 //
 // Run as part of the integ-test-playbook.md ## Setup flow, immediately
 // after the neutralize step:
 //   node scripts/check-sandbox-sync-remote.mjs "$HOME/toy-repo"
 //
-// Sandbox-only: this script only READS files and runs read-only git
-// commands (git rev-list) inside the given clone. It never writes to or
-// pushes to any remote, real or otherwise.
+// Sandbox-only: this script only READS files and runs read-only git/bd
+// commands (git rev-list, git remote get-url, bd dolt remote list) inside
+// the given clone. It never writes to or pushes to any remote, real or
+// otherwise.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -205,6 +217,55 @@ export function checkDoltRemoteAbsent(repoPath, deps = {}) {
   return { ok: true, message: `OK: Dolt-level remotes in '${repoPath}' contain no reference to ${HAZARD_REMOTE}.` };
 }
 
+/**
+ * apra-fleet-eft.31: check that the sandbox clone's OWN git 'origin' remote
+ * does not itself point at the hazard remote. C4/C5 showed the three checks
+ * above (isSyncRemoteActive / checkNoOutboundCommits / checkDoltRemoteAbsent)
+ * can all report clean at the moment this script runs, yet a LATER 'bd dolt'
+ * invocation (e.g. the eft.35-fixed doltPullBefore, before that fix landed)
+ * auto-provisions -- "Configured Dolt remote origin from git origin." -- a
+ * fresh Dolt-level remote FROM the clone's git origin as a side effect of
+ * needing one. If that git origin is itself the hazard remote, any such
+ * auto-provision re-arms exactly the Dolt-level wiring eft.30.1's upfront
+ * disarm cleared, even though nothing was wired at snapshot time. Checking
+ * the git origin directly closes this escape path: it flags the raw
+ * material for a future re-wire, not just its current absence.
+ *
+ * Read-only: runs 'git remote get-url origin', never 'git remote add/set-url'
+ * or any push/pull/fetch.
+ *
+ * @param {string} repoPath
+ * @param {{execFileSync: typeof execFileSync}} [deps] injectable for tests
+ * @returns {{ok: boolean, message: string}}
+ */
+export function checkGitOriginNotHazard(repoPath, deps = {}) {
+  const run = deps.execFileSync ?? execFileSync;
+  let output;
+  try {
+    output = run('git', ['remote', 'get-url', 'origin'], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+    });
+  } catch (err) {
+    // No git remote named 'origin' (or no git repo at all here) -- there is
+    // nothing for a future 'bd dolt' invocation to derive a hazard remote
+    // from, so this is vacuously safe, mirroring the no-config.yaml case in
+    // checkSyncRemoteInert above.
+    return {
+      ok: true,
+      message: `OK: 'git remote get-url origin' unavailable at '${repoPath}' (${String(err.message).split('\n')[0]}) -- nothing for a future Dolt remote re-wire to derive from.`,
+    };
+  }
+  const url = output.trim();
+  if (url.includes(HAZARD_REMOTE)) {
+    return {
+      ok: false,
+      message: `FAIL: git 'origin' remote in '${repoPath}' is '${url}' -- points at ${HAZARD_REMOTE}, so any future 'bd dolt' invocation that auto-provisions a Dolt remote from git origin (apra-fleet-eft.30/eft.35) would re-wire straight back to the real remote even if the checks above currently report clean.`,
+    };
+  }
+  return { ok: true, message: `OK: git 'origin' remote in '${repoPath}' ('${url}') does not reference ${HAZARD_REMOTE}.` };
+}
+
 function main() {
   const repoPath = process.argv[2] ?? path.join(process.env.HOME ?? '', 'toy-repo');
   if (!repoPath) {
@@ -222,7 +283,10 @@ function main() {
   const doltRemoteCheck = checkDoltRemoteAbsent(repoPath);
   console.log(`[check-sandbox-sync-remote] ${doltRemoteCheck.message}`);
 
-  if (!syncCheck.ok || !outboundCheck.ok || !doltRemoteCheck.ok) {
+  const gitOriginCheck = checkGitOriginNotHazard(repoPath);
+  console.log(`[check-sandbox-sync-remote] ${gitOriginCheck.message}`);
+
+  if (!syncCheck.ok || !outboundCheck.ok || !doltRemoteCheck.ok || !gitOriginCheck.ok) {
     process.exit(1);
   }
   console.log('[check-sandbox-sync-remote] OK: sandbox is isolated from the real fleet-e2e-toy Dolt remote.');
