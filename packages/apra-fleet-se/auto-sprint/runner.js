@@ -2814,6 +2814,26 @@ export function isTypedAbortError(err) {
     return typeof err.message === 'string' && err.message.startsWith('Pre-sprint validation failed:');
 }
 
+// apra-fleet-eft.54.1: true when a thrown dispatch error means the agent
+// dispatch did NOT deliver a usable result and therefore produced no
+// code/beads mutation to publish -- an aborted/failed agent dispatch
+// (AgentDispatchError), a dispatch-channel transport failure
+// (FleetTransportError), or any typed sprint-abort error. In that case the
+// orchestrator's post-dispatch G-push/D-push sync teardown is pure wasted
+// real-bd work and is skipped (see withGitSync's finally).
+//
+// Deliberately EXCLUDES an AgentDispatchError whose reason is
+// 'max_turns_exhausted': that is a RESUMABLE partial-work case -- the agent
+// ran and may have committed real code/beads before running out of turns, so
+// its work still needs to be synced and its teardown must run normally.
+export function isNoMutationDispatchFailure(err) {
+    if (!err) return false;
+    if (err instanceof AgentDispatchError && err.details && err.details.reason === 'max_turns_exhausted') {
+        return false;
+    }
+    return err instanceof AgentDispatchError || err instanceof FleetTransportError || isTypedAbortError(err);
+}
+
 // ---------------------------------------------------------------------------
 // Abort-path PR publish (apra-fleet-eft.1 / eft.1.1)
 // ---------------------------------------------------------------------------
@@ -3210,19 +3230,44 @@ async function runSprintCycle(context) {
     async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false } = {}) {
         await syncMemberBefore(member, { command, log, branch: validated.branch });
         await doltPullBefore(member, { command, log });
+        // apra-fleet-eft.54.1: track a terminal dispatch failure so the
+        // post-dispatch sync teardown can be skipped for it (see the finally).
+        let dispatchThrew = null;
         try {
             return await dispatchFn();
+        } catch (err) {
+            dispatchThrew = err;
+            throw err;
         } finally {
-            // apra-fleet-eft.8.4 (Plan 3.3 push ordering): G-push (code)
-            // before D-push (beads), for code-writing roles only. See
-            // syncMemberAfterOrdered()'s own doc comment for the full
-            // rationale (unreachable-close prevention) and unit tests in
-            // mock-sprint-git-sync-brackets.test.mjs for the scripted-mock
-            // coverage of this ordering.
-            await syncMemberAfterOrdered(member, {
-                command, pushCode, pushBeads, log, branch: validated.branch,
-                mutex: doltPushMutex, sprintId: sprintMutexId, agent,
-            });
+            // apra-fleet-eft.54.1: on a TERMINAL dispatch failure the agent
+            // never delivered a usable result, so there is provably nothing
+            // new to publish -- skip the real-bd G-push/D-push teardown
+            // entirely. This is the shared root cause behind eft.54
+            // (auth-failure-no-retry) and eft.50 (attempt1-clean-fail/attempt2-
+            // dead-session): under real bd this teardown otherwise runs
+            // unconditionally on every failed attempt and its sync spawns push
+            // the terminal-abort path past the test's documented fast-abort
+            // bound. Deliberately scoped to dispatch-level failures that
+            // produced no mutation (a failed/aborted agent dispatch), and
+            // deliberately EXCLUDES max_turns_exhausted -- that is a resumable
+            // partial-work case where the agent DID run and may have committed
+            // code/beads that still must be published. The happy path (no
+            // throw) and every non-terminal error keep the exact prior
+            // teardown behaviour.
+            if (dispatchThrew && isNoMutationDispatchFailure(dispatchThrew)) {
+                log(`[Sync] Skipping post-dispatch G-push/D-push for member '${member}' after a terminal dispatch failure (nothing to publish): ${dispatchThrew.message}`);
+            } else {
+                // apra-fleet-eft.8.4 (Plan 3.3 push ordering): G-push (code)
+                // before D-push (beads), for code-writing roles only. See
+                // syncMemberAfterOrdered()'s own doc comment for the full
+                // rationale (unreachable-close prevention) and unit tests in
+                // mock-sprint-git-sync-brackets.test.mjs for the scripted-mock
+                // coverage of this ordering.
+                await syncMemberAfterOrdered(member, {
+                    command, pushCode, pushBeads, log, branch: validated.branch,
+                    mutex: doltPushMutex, sprintId: sprintMutexId, agent,
+                });
+            }
         }
     }
 
