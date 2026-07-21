@@ -81,6 +81,7 @@ registration is one of the things under test.
 
 ```bash
 SANDBOX="$HOME/temp/.apra-fleet-tests"
+export REAL_HOME="$HOME"
 export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
@@ -90,6 +91,10 @@ node dist/index.js install
 node dist/index.js start
 git clone https://github.com/Apra-Labs/fleet-e2e-toy "$HOME/toy-repo"
 ```
+
+`REAL_HOME` preserves the runner's real (pre-sandbox) home directory for the
+`## Test scenario` credential-provisioning step below -- it is the only place
+downstream that still needs to read anything from outside `$SANDBOX`.
 
 Before handing off to the test: verify `node dist/index.js status` exits 0
 and reports the server listening on `18700`.
@@ -102,11 +107,11 @@ beads DB is materialized; the documented recovery is `bd bootstrap --yes` in
 after ANY `bd bootstrap --yes` invocation in the sandbox -- whether it is
 needed once here during `## Setup`, or again later as an ad hoc recovery
 action during a test session -- and always before the next auto-sprint run
-(`## Test scenario` step 3).
+(`## Test scenario` step 4).
 
 Why: the pristine `fleet-e2e-toy` clone ships with `sync.remote` commented
 out (`# sync.remote disabled -- no Dolt push for this toy project`), which is
-what lets `## Test scenario` step 3 rely on `skip_dolt_push` semantics. But
+what lets `## Test scenario` step 4 rely on `skip_dolt_push` semantics. But
 `bd bootstrap --yes` rehydrates the local DB from the real `fleet-e2e-toy`
 Dolt remote and, as a side effect, rewrites `.beads/config.yaml` to add a new
 ACTIVE `sync.remote` block pointing at that same remote, leaving the old
@@ -278,7 +283,7 @@ A maintainer can merge an `integ-canary` label into the JSONL (e.g. PR #96
 labeling gh-toy-4ef) without that label having propagated into the synced
 Dolt DB yet, so the tag lookup below can return zero matches even though
 the git-tracked source of truth already carries the tag. Before falling
-back to self-provisioning, the tag lookup in `## Test scenario` step 2
+back to self-provisioning, the tag lookup in `## Test scenario` step 3
 first reconciles the local Dolt DB from the git-tracked JSONL with `bd
 import` (no file argument: it reads the configured `import.path`, which
 defaults to `.beads/issues.jsonl`) -- an upsert into the LOCAL database
@@ -309,7 +314,7 @@ bd create "Add a --version flag to the CLI" \
 
 This is local-only: it creates the issue in the sandbox clone's local
 beads DB and does not push, preserving the same `skip_dolt_push`
-semantics that `## Test scenario` step 3 uses for the sprint run itself.
+semantics that `## Test scenario` step 4 uses for the sprint run itself.
 Proceed using the newly-created issue's ID as `<canary-id>`.
 
 Maintainer note (out-of-band; NOT a sandbox/runner step): to re-seed a
@@ -354,7 +359,68 @@ shell-drivable -- no MCP tool is required to run the scenario.
    node dist/index.js register-member --type local --name toy-doer \
      --path "$HOME/toy-repo" --llm claude
    ```
-2. Find the canary issue by its `integ-canary` tag (`bd list
+2. Provision LLM credentials for the freshly-registered `toy-doer` member,
+   so the real Planner dispatch in step 4 below can authenticate
+   (apra-fleet-eft.48: `LocalStrategy` dispatches for local members run
+   through a clean-env `env -i ... bash -l -c` exec path that strips the
+   runner's ambient `CLAUDE_CODE_OAUTH_TOKEN`/macOS Keychain session, so an
+   unprovisioned member fails every dispatch with "Authentication failed").
+   That clean-env path always runs with `HOME` seeded from whatever `HOME`
+   the fleet server process itself was started with -- the sandboxed
+   `$SANDBOX` from `## Setup`, never the runner's real home -- so the
+   credential must land under `$SANDBOX`, not the operator's real
+   `~/.claude/.credentials.json`.
+
+   This uses the single-machine CI-runner model documented in
+   `docs/tools-infrastructure.md` ("apra-fleet auth (CLI)"), not the
+   SSH-based `provision_llm_auth` MCP flow: `integ-test-runner` has only
+   [Read, Bash, Grep, Glob] tools and cannot call MCP tools (see "Adding
+   new features to this test" below), and this CLI path is exactly the
+   one that model doc section designs for CI runners where the fleet PM
+   and its members share one machine. The credential source is whichever
+   ambient Claude Code credential the runner's own real session already
+   has -- its `CLAUDE_CODE_OAUTH_TOKEN` env var if set, else the
+   `claudeAiOauth.accessToken` field of its real, pre-sandbox
+   `$REAL_HOME/.claude/.credentials.json` (see `REAL_HOME` in `## Setup`).
+   That token is seeded into the sandbox's own **persistent** credential
+   store as `secure.INTEG-TOY-DOER-TOKEN` (`node dist/index.js secret
+   --set ... --persist`, per `docs/tools-infrastructure.md`'s `secure.<name>`
+   convention) and then written into the sandboxed credentials file with
+   `node dist/index.js auth --oauth`. Both commands run with the
+   already-sandboxed `HOME=$SANDBOX` from `## Setup`, so the persistent
+   store lands at `$SANDBOX/.apra-fleet/data/credentials.json` and the
+   resulting OAuth file at `$SANDBOX/.claude/.credentials.json` --
+   neither command touches `$HOME/toy-repo` or anything under its
+   `.git`/`.beads`, so this step cannot reach or write to the real
+   `fleet-e2e-toy` git remote or its Dolt remote.
+
+   ```bash
+   TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+   if [ -z "$TOKEN" ] && [ -f "$REAL_HOME/.claude/.credentials.json" ]; then
+     TOKEN=$(node -e "
+       const fs = require('fs');
+       const c = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8'));
+       process.stdout.write((c.claudeAiOauth && c.claudeAiOauth.accessToken) || '');
+     " "$REAL_HOME/.claude/.credentials.json")
+   fi
+   if [ -z "$TOKEN" ]; then
+     echo "No ambient Claude credential found (CLAUDE_CODE_OAUTH_TOKEN unset" \
+          "and $REAL_HOME/.claude/.credentials.json missing/empty). Run" \
+          "'/login' in a real session first, or export" \
+          "CLAUDE_CODE_OAUTH_TOKEN, then re-run this step." >&2
+     exit 1
+   fi
+   echo "$TOKEN" | node dist/index.js secret --set INTEG-TOY-DOER-TOKEN --persist -y
+   node dist/index.js auth --oauth --llm claude secure.INTEG-TOY-DOER-TOKEN
+   ```
+
+   Verify: `$SANDBOX/.claude/.credentials.json` exists and its
+   `claudeAiOauth.accessToken` is non-empty (`node dist/index.js auth
+   --oauth` prints the file path it wrote on success) -- this is the same
+   file `toy-doer`'s clean-env dispatch reads, since `getCleanEnv()` seeds
+   the clean shell's `HOME` from the fleet server process's own `HOME`
+   (`$SANDBOX`) before sourcing login profiles under it.
+3. Find the canary issue by its `integ-canary` tag (`bd list
    --label=integ-canary --json` from `$HOME/toy-repo`). If the lookup
    returns a match, confirm it is open (`bd show <canary-id>`, where
    `<canary-id>` is whatever ID the tag lookup returned). If the lookup
@@ -369,7 +435,7 @@ shell-drivable -- no MCP tool is required to run the scenario.
    to the CLI" ... --label integ-canary`, no push) and use its ID as
    `<canary-id>`. No path in this step writes to
    `git+https://github.com/Apra-Labs/fleet-e2e-toy`.
-3. Run `apra-fleet workflow auto-sprint` against the canary issue with
+4. Run `apra-fleet workflow auto-sprint` against the canary issue with
    `--max-cycles 1` and `--dispatch-timeout-s 900`. The timeout bound
    means a hung dispatch (member process alive but silent) costs at most
    15 minutes instead of the default hour -- right-sized for the canary's
@@ -381,7 +447,7 @@ shell-drivable -- no MCP tool is required to run the scenario.
    file, one assertion) is what keeps this step inside the time budget --
    if the sprint plans more than a couple of tasks for it, that is itself
    suspicious and worth a bug bead.
-4. Assert the canary issue is now closed and the toy repo's sprint branch
+5. Assert the canary issue is now closed and the toy repo's sprint branch
    has a commit. Because the canary's deliverable is concrete, also
    verify it functionally when the canary is the "--version flag" issue:
    run the toy CLI with `--version` from the sprint branch and confirm it
@@ -389,7 +455,7 @@ shell-drivable -- no MCP tool is required to run the scenario.
    loud: file a bug bead. Do not silently reset and move on -- this repo
    treats sprint-run surprises as signal
    ([[project-goal-auto-sprint-ruggedization]]).
-5. Hand off to Teardown regardless of the assertion's outcome.
+6. Hand off to Teardown regardless of the assertion's outcome.
 
 One ~10-minute pass exercises fresh install, server boot, member
 registration, git topology checks, planner/doer/reviewer dispatch, and
