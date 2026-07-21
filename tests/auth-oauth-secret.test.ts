@@ -17,10 +17,19 @@ import { checkCleanEnvCredentialsFile } from '../scripts/check-toy-doer-credenti
 // apra-fleet-eft.48.3 (regression follow-up): the bare-token fallback path
 // itself was found to STILL reproduce "Not logged in" -- it wrote
 // { accessToken } with no additional session field at all. The fix
-// synthesizes a minimally-sufficient additional field (a far-future
-// expiresAt) whenever only a bare token is available, so the installed
-// Claude CLI accepts the file as a valid session while still authenticating
-// with the caller's real, unmodified access token.
+// synthesizes a minimally-sufficient additional field whenever only a bare
+// token is available, so the installed Claude CLI accepts the file as a
+// valid session while still authenticating with the caller's real,
+// unmodified access token.
+//
+// apra-fleet-eft.48.6 (regression follow-up to eft.48.3, whose
+// expiresAt-only synthesis STILL reproduced "Not logged in"): a clean-env
+// repro against the installed claude CLI 2.1.212 showed the deciding field
+// is `scopes` -- the CLI only accepts the credentials file when
+// claudeAiOauth.scopes contains `user:inference` (accessToken+expiresAt
+// alone is rejected). The bare-token synthesis therefore now also writes a
+// `scopes` array containing `user:inference`, alongside the far-future
+// expiresAt.
 describe('parseClaudeOAuthSecret', () => {
   it('passes a full claudeAiOauth JSON object through intact', () => {
     const full = {
@@ -38,7 +47,7 @@ describe('parseClaudeOAuthSecret', () => {
     expect(parseClaudeOAuthSecret(`  ${JSON.stringify(full)}\n`)).toEqual(full);
   });
 
-  it('wraps a bare token as { accessToken, expiresAt } -- a synthetic future expiresAt is added so the CLI accepts the file (apra-fleet-eft.48.3)', () => {
+  it('wraps a bare token as { accessToken, expiresAt, scopes } -- synthetic future expiresAt AND a user:inference scope are added so the CLI accepts the file (apra-fleet-eft.48.3 / eft.48.6)', () => {
     const before = Date.now();
     const result = parseClaudeOAuthSecret('sk-bare-token');
     expect(result.accessToken).toBe('sk-bare-token');
@@ -46,21 +55,27 @@ describe('parseClaudeOAuthSecret', () => {
     expect(result.expiresAt as number).toBeGreaterThan(before);
     // Far enough in the future that the CLI never treats it as expired/near-expiry.
     expect(result.expiresAt as number).toBeGreaterThan(before + 24 * 60 * 60 * 1000);
+    // eft.48.6: the empirically-decisive field -- the installed Claude CLI
+    // only accepts the credentials file when scopes contains 'user:inference'.
+    expect(Array.isArray(result.scopes)).toBe(true);
+    expect(result.scopes as string[]).toContain('user:inference');
   });
 
-  it('falls back to bare-token handling (with synthetic expiresAt) for JSON without an accessToken string', () => {
+  it('falls back to bare-token handling (with synthetic expiresAt + scopes) for JSON without an accessToken string', () => {
     const noToken = JSON.stringify({ expiresAt: 123 });
     const result = parseClaudeOAuthSecret(noToken);
     expect(result.accessToken).toBe(noToken);
     expect(typeof result.expiresAt).toBe('number');
     expect(result.expiresAt as number).toBeGreaterThan(Date.now());
+    expect(result.scopes as string[]).toContain('user:inference');
   });
 
-  it('falls back to bare-token handling (with synthetic expiresAt) for malformed JSON starting with a brace', () => {
+  it('falls back to bare-token handling (with synthetic expiresAt + scopes) for malformed JSON starting with a brace', () => {
     const result = parseClaudeOAuthSecret('{not json');
     expect(result.accessToken).toBe('{not json');
     expect(typeof result.expiresAt).toBe('number');
     expect(result.expiresAt as number).toBeGreaterThan(Date.now());
+    expect(result.scopes as string[]).toContain('user:inference');
   });
 });
 
@@ -176,10 +191,15 @@ describe('handleOAuth / getOAuthCredentialPatch write path (apra-fleet-eft.48.5)
     expect(result.message).toMatch(/OK/);
   });
 
-  it('clean-env acceptance: a bare-token write (synthetic expiresAt) is also accepted through the same clean-env path', async () => {
+  it('clean-env acceptance: a bare-token write (synthetic expiresAt + user:inference scope) is also accepted through the same clean-env path', async () => {
     await runAuth(['--oauth', '--llm', 'claude', 'sk-test-bare-cleanenv']);
 
     const result = checkCleanEnvCredentialsFile(tmpHome);
     expect(result.ok).toBe(true);
+
+    // eft.48.6: the bare-token write now carries the user:inference scope the
+    // real CLI requires, not just a synthetic expiresAt.
+    const parsed = JSON.parse(fs.readFileSync(credPath(), 'utf-8'));
+    expect(parsed.claudeAiOauth.scopes).toContain('user:inference');
   });
 });

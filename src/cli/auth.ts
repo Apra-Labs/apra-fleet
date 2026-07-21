@@ -124,17 +124,16 @@ function getOAuthCredentialPatch(provider: string, token: string): OAuthCredenti
 
 // The secret may be either a bare access token or a full claudeAiOauth JSON
 // object (accessToken, refreshToken, expiresAt, scopes, ...). A bare token
-// yields a credentials file the Claude CLI rejects as "Not logged in" --
-// it requires at least one of expiresAt/refreshToken/scopes/subscriptionType
-// to consider the session valid -- so callers that have the full object
-// (e.g. the integ smoke test seeding from the runner's real credentials
-// file) must be able to pass it through intact.
+// yields a credentials file the Claude CLI rejects as "Not logged in"
+// unless the synthesized session shape below is written -- so callers that
+// have the full object (e.g. the integ smoke test seeding from the runner's
+// real credentials file) must be able to pass it through intact.
 //
 // apra-fleet-eft.48.3 (regression follow-up to apra-fleet-eft.48 /
 // stabilization Issue 43): when only a bare token is available (no full
 // session object -- e.g. the playbook's CLAUDE_CODE_OAUTH_TOKEN fallback
 // when no real ~/.claude/.credentials.json exists to seed from), synthesize
-// the minimally-sufficient additional field below so the written file is
+// the minimally-sufficient additional field(s) below so the written file is
 // still CLI-acceptable, rather than silently writing an accessToken-only
 // file that reproduces "Not logged in - Please run /login".
 export function parseClaudeOAuthSecret(secret: string): Record<string, unknown> {
@@ -151,19 +150,36 @@ export function parseClaudeOAuthSecret(secret: string): Record<string, unknown> 
 }
 
 // A bare token carries no real expiry/refresh/scope information, so this
-// cannot fabricate those -- it synthesizes only the one field the installed
-// Claude CLI needs to treat the file as a valid logged-in session
-// (expiresAt, set far enough in the future to never trip locally). This is
+// cannot fabricate those -- it synthesizes only the fields the installed
+// Claude CLI needs to treat the file as a valid logged-in session. This is
 // a local session-shape marker only: it does not affect whether the actual
 // (real, caller-supplied) access token is accepted by the network -- that
 // still depends entirely on the token's own real validity. Callers that
 // have the real expiresAt/refreshToken/scopes/subscriptionType should pass
 // the full JSON blob instead (see the branch above), which preserves the
 // genuine values intact rather than synthesizing this fallback.
+//
+// apra-fleet-eft.48.6 (regression follow-up to apra-fleet-eft.48.3, whose
+// expiresAt-only synthesis STILL reproduced "Not logged in"): empirically
+// (clean-env `env -i HOME=$SANDBOX ... claude -p ...` repro against the
+// installed claude CLI 2.1.212), the deciding field the CLI checks is
+// `scopes` -- it only treats the credentials file as logged-in when
+// `claudeAiOauth.scopes` contains `user:inference`. accessToken+expiresAt
+// alone is rejected; adding the `user:inference` scope reaches past auth
+// (to a model-not-found error), matching the passing env-var control in
+// apra-fleet-eft.48's notes. expiresAt is retained so the synthesized
+// session also carries a far-future, non-expired timestamp.
 const BARE_TOKEN_SYNTHETIC_SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 
+// The scope the installed Claude CLI requires to accept an OAuth
+// credentials file as a valid logged-in session (see comment above).
+const BARE_TOKEN_SYNTHETIC_SCOPES = ['user:inference', 'user:profile'];
+
 function bareTokenSyntheticSessionFields(): Record<string, unknown> {
-  return { expiresAt: Date.now() + BARE_TOKEN_SYNTHETIC_SESSION_TTL_MS };
+  return {
+    expiresAt: Date.now() + BARE_TOKEN_SYNTHETIC_SESSION_TTL_MS,
+    scopes: [...BARE_TOKEN_SYNTHETIC_SCOPES],
+  };
 }
 
 function deepMerge(
