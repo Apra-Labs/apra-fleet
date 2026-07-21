@@ -26,7 +26,7 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -116,6 +116,12 @@ function main() {
 }
 
 // Only run when invoked directly (not when imported for tests).
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Windows-safe self-execution guard (same defect class as stabilization
+// Issue 36 / apra-fleet-eft.41): a raw `file://${argv[1]}` comparison can
+// never match on Windows (backslashes, drive-letter URL encoding), so main()
+// silently never ran there -- the script exited 0 with no output regardless
+// of budget state (windows-latest CI run 29866815136). Compare canonical
+// file URLs on both sides instead.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }

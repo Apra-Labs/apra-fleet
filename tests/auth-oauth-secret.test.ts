@@ -95,16 +95,28 @@ describe('parseClaudeOAuthSecret', () => {
 describe('handleOAuth / getOAuthCredentialPatch write path (apra-fleet-eft.48.5)', () => {
   let tmpHome: string;
   let savedHome: string | undefined;
+  // Windows: os.homedir() -- which runAuth's write path resolves -- reads
+  // USERPROFILE, not HOME. Sandboxing only HOME made these tests WRITE FAKE
+  // TOKENS INTO THE OPERATOR'S REAL ~/.claude/.credentials.json on Windows
+  // (observed live 2026-07-21: instant 401s in the operator's interactive
+  // session after local runs; windows-latest CI run 29866815136 failed the
+  // same 5 tests because the file landed in the real profile, not tmpHome).
+  // Both profile variables must point at the sandbox together.
+  let savedUserProfile: string | undefined;
 
   beforeEach(() => {
     savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-auth-oauth-write-test-'));
     process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
   });
 
   afterEach(() => {
     if (savedHome !== undefined) process.env.HOME = savedHome;
     else delete process.env.HOME;
+    if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
+    else delete process.env.USERPROFILE;
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
