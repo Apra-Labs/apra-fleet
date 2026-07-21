@@ -209,10 +209,40 @@ export function checkCleanEnvCredentialsFile(fleetHome = defaultFleetHome(), dep
       message: `NOT-PROVISIONED (clean-env path): clean-env probe (matching LocalStrategy's 'env -i ... bash -l -c' exec path) found no claudeAiOauth.accessToken at '${credPath}' with HOME resolving to '${fleetHome}'.`,
     };
   }
+  // Stabilization Issue 43: an accessToken alone is NOT a usable credential
+  // -- the Claude CLI requires at least claudeAiOauth.expiresAt to treat the
+  // session as valid, and rejects a token-only file with "Not logged in".
+  // This exact gap slipped past the original token-only check: the file
+  // landed where dispatch looks, but Claude refused it and every dispatch
+  // failed auth anyway.
+  if (!extractExpiresAt(output)) {
+    return {
+      ok: false,
+      message: `NOT-PROVISIONED (clean-env path): '${credPath}' has an accessToken but no claudeAiOauth.expiresAt -- the Claude CLI rejects such a file as "Not logged in". Seed the FULL claudeAiOauth object (see integ-test-playbook.md's credential-provisioning step), not just the bare token.`,
+    };
+  }
   return {
     ok: true,
-    message: `OK (clean-env path): clean-env probe resolved a non-empty claudeAiOauth.accessToken at '${credPath}'.`,
+    message: `OK (clean-env path): clean-env probe resolved a non-empty claudeAiOauth.accessToken (with expiresAt) at '${credPath}'.`,
   };
+}
+
+/**
+ * Extract claudeAiOauth.expiresAt out of a `.credentials.json` file's text,
+ * or 0 if absent/unparseable (stabilization Issue 43).
+ *
+ * @param {string} credentialsJsonText
+ * @returns {number}
+ */
+export function extractExpiresAt(credentialsJsonText) {
+  if (!credentialsJsonText || !credentialsJsonText.trim()) return 0;
+  try {
+    const parsed = JSON.parse(credentialsJsonText);
+    const expiresAt = parsed && parsed.claudeAiOauth && parsed.claudeAiOauth.expiresAt;
+    return typeof expiresAt === 'number' && expiresAt > 0 ? expiresAt : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   findAgentByName,
   hasProvisionedEnvVar,
   extractAccessToken,
+  extractExpiresAt,
   checkMemberEnvVarProvisioned,
   checkCleanEnvCredentialsFile,
   checkToyDoerCredentialsProvisioned,
@@ -115,6 +116,24 @@ describe('extractAccessToken', () => {
   });
 });
 
+describe('extractExpiresAt (stabilization Issue 43)', () => {
+  it('extracts a positive numeric claudeAiOauth.expiresAt', () => {
+    const text = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-abc', expiresAt: 1999999999999 } });
+    expect(extractExpiresAt(text)).toBe(1999999999999);
+  });
+
+  it('returns 0 when expiresAt is absent, non-numeric, or non-positive', () => {
+    expect(extractExpiresAt(JSON.stringify({ claudeAiOauth: { accessToken: 'sk-abc' } }))).toBe(0);
+    expect(extractExpiresAt(JSON.stringify({ claudeAiOauth: { accessToken: 'sk-abc', expiresAt: 'soon' } }))).toBe(0);
+    expect(extractExpiresAt(JSON.stringify({ claudeAiOauth: { accessToken: 'sk-abc', expiresAt: 0 } }))).toBe(0);
+  });
+
+  it('returns 0 on empty or malformed input', () => {
+    expect(extractExpiresAt('')).toBe(0);
+    expect(extractExpiresAt('not json')).toBe(0);
+  });
+});
+
 describe('checkMemberEnvVarProvisioned', () => {
   let tmpDir: string;
   let registryPath: string;
@@ -187,19 +206,31 @@ describe('checkCleanEnvCredentialsFile', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('PASSES (post-fix state, real subprocess) when .claude/.credentials.json carries a non-empty accessToken -- reproduces LocalStrategy\'s "env -i ... bash -l -c" exec path for real', () => {
+  it('PASSES (post-fix state, real subprocess) when .claude/.credentials.json carries accessToken AND expiresAt -- reproduces LocalStrategy\'s "env -i ... bash -l -c" exec path for real', () => {
     fs.mkdirSync(path.join(tmpDir, '.claude'), { recursive: true });
     fs.writeFileSync(
       path.join(tmpDir, '.claude', '.credentials.json'),
-      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-real-probe-token' } }),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-real-probe-token', expiresAt: 1999999999999 } }),
     );
     const result = checkCleanEnvCredentialsFile(tmpDir);
     expect(result.ok).toBe(true);
     expect(result.message).toMatch(/OK/);
   });
 
+  it('FAILS (stabilization Issue 43) when the file has an accessToken but NO expiresAt -- the exact token-only shape the Claude CLI rejects as "Not logged in"', () => {
+    fs.mkdirSync(path.join(tmpDir, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude', '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-token-only' } }),
+    );
+    const result = checkCleanEnvCredentialsFile(tmpDir);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/expiresAt/);
+    expect(result.message).toMatch(/FULL claudeAiOauth object/);
+  });
+
   it('supports dependency injection of execSync for isolated unit coverage', () => {
-    const fakeExecSync = () => JSON.stringify({ claudeAiOauth: { accessToken: 'sk-fake' } });
+    const fakeExecSync = () => JSON.stringify({ claudeAiOauth: { accessToken: 'sk-fake', expiresAt: 1999999999999 } });
     const result = checkCleanEnvCredentialsFile(tmpDir, { execSync: fakeExecSync });
     expect(result.ok).toBe(true);
   });
@@ -236,7 +267,7 @@ describe('checkToyDoerCredentialsProvisioned (combined guard)', () => {
     fs.mkdirSync(path.join(tmpDir, '.claude'), { recursive: true });
     fs.writeFileSync(
       path.join(tmpDir, '.claude', '.credentials.json'),
-      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-post-fix' } }),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-post-fix', expiresAt: 1999999999999 } }),
     );
     const result = checkToyDoerCredentialsProvisioned({ memberName: 'toy-doer', fleetHome: tmpDir, registryPath });
     expect(result.ok).toBe(true);

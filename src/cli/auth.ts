@@ -115,11 +115,30 @@ function getOAuthCredentialPatch(provider: string, token: string): OAuthCredenti
     case 'claude':
       return {
         credentialPath: path.join(os.homedir(), '.claude', '.credentials.json'),
-        patch: { claudeAiOauth: { accessToken: token } },
+        patch: { claudeAiOauth: parseClaudeOAuthSecret(token) },
       };
     default:
       return null;
   }
+}
+
+// The secret may be either a bare access token or a full claudeAiOauth JSON
+// object (accessToken, refreshToken, expiresAt, scopes, ...). A bare token
+// yields a credentials file the Claude CLI rejects as "Not logged in" --
+// it requires at least expiresAt to consider the session valid -- so callers
+// that have the full object (e.g. the integ smoke test seeding from the
+// runner's real credentials file) must be able to pass it through intact.
+export function parseClaudeOAuthSecret(secret: string): Record<string, unknown> {
+  const trimmed = secret.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && typeof parsed.accessToken === 'string') {
+        return parsed as Record<string, unknown>;
+      }
+    } catch { /* fall through to bare-token handling */ }
+  }
+  return { accessToken: secret };
 }
 
 function deepMerge(
