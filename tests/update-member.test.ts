@@ -3,6 +3,7 @@ import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegis
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { updateMember } from '../src/tools/update-member.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
+import { ClaudeProvider } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -319,5 +320,70 @@ describe('updateMember -- agent re-provisioning (remote members)', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
     expect(mockUploadContentToHome).not.toHaveBeenCalled();
     expect(result).not.toContain('Could not reach member');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-eft.40.2 -- ensureWorkspaceTrusted invoked from update_member
+// ---------------------------------------------------------------------------
+
+describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    mockExecCommand.mockReset();
+    mockTestConnection.mockReset();
+    mockUploadContentToHome.mockReset();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('calls ensureWorkspaceTrusted with the resolved work_folder for a reachable remote Claude member', async () => {
+    const member = makeTestAgent({ llmProvider: 'claude', workFolder: '/home/testuser/project' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+    mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(result).toContain('Member "test-agent" updated.');
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os);
+    spy.mockRestore();
+  });
+
+  it('does NOT call ensureWorkspaceTrusted (or execCommand at all) when the remote member is unreachable', async () => {
+    const member = makeTestAgent({ llmProvider: 'claude' });
+    addAgent(member);
+    mockTestConnection.mockResolvedValue({ ok: false, error: 'connection timed out' });
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(result).toContain('Member "test-agent" updated.');
+    expect(spy).not.toHaveBeenCalled();
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('calls ensureWorkspaceTrusted for a local member (no connectivity gate)', async () => {
+    const member = makeTestLocalAgent({ llmProvider: 'claude' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(result).toContain('updated');
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os);
+    expect(mockTestConnection).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

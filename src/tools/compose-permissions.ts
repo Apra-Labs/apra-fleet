@@ -9,6 +9,7 @@ const __dirname = dirname(__filename);
 import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
+import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
@@ -321,6 +322,11 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       saveLedger(input.project_folder, ledger);
     }
 
+    // apra-fleet-eft.40.2: self-healing -- repair workspace trust on EVERY
+    // compose_permissions run (a member registered before this fix, or one whose
+    // trust was never seeded, gets fixed the next time permissions are composed).
+    await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
+
     return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}`;
   }
 
@@ -343,6 +349,11 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   for (let i = 0; i < paths.length; i++) {
     await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
   }
+
+  // apra-fleet-eft.40.2: self-healing -- repair workspace trust on EVERY
+  // compose_permissions run (a member registered before this fix, or one whose
+  // trust was never seeded, gets fixed the next time permissions are composed).
+  await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
 
   const customTags = (input.tags ?? []).filter(t => t !== 'doer' && t !== 'reviewer');
   const tagsLine = customTags.length ? `\n  Tags: ${customTags.join(', ')}` : '';

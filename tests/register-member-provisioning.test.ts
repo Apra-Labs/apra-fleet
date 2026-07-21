@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
+import { ClaudeProvider } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -128,6 +129,62 @@ describe('register_member: agent provisioning integration', () => {
     } as any);
 
     expect(result).toContain('Agent files not provisioned -- run update_member after the instance starts.');
+    expect(result).toContain('Workspace trust not seeded -- run update_member after the instance starts.');
     expect(mockUploadContentToHome).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-eft.40.2 -- ensureWorkspaceTrusted invoked from register_member
+// ---------------------------------------------------------------------------
+
+describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
+    mockGetInstanceState.mockResolvedValue('running');
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('calls ensureWorkspaceTrusted with the resolved work_folder for a reachable remote Claude member', async () => {
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    const result = await registerMember({
+      friendly_name: 'trust-reg-test',
+      member_type: 'remote',
+      host: '192.168.1.120',
+      username: 'akhil',
+      work_folder: '~/git/trust-reg-test',
+      auth_type: 'password',
+      password: 'pw',
+    });
+
+    expect(result).toContain('Member registered successfully');
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('~/git/trust-reg-test', expect.any(Function), 'linux');
+    spy.mockRestore();
+  });
+
+  it('does not throw and still registers the member when ensureWorkspaceTrusted fails (non-fatal)', async () => {
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted').mockRejectedValue(new Error('boom'));
+
+    const result = await registerMember({
+      friendly_name: 'trust-fail-test',
+      member_type: 'remote',
+      host: '192.168.1.121',
+      username: 'akhil',
+      work_folder: '~/git/trust-fail-test',
+      auth_type: 'password',
+      password: 'pw',
+    });
+
+    expect(result).toContain('Member registered successfully');
+    spy.mockRestore();
   });
 });

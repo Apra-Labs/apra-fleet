@@ -21,6 +21,7 @@ import { writeAgyWorkspaceOverlays } from '../cli/install.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 import { checkRunningInstance } from '../services/singleton.js';
 import { provisionAgents, type ProvisionResult } from '../services/agent-provisioner.js';
+import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -344,6 +345,12 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (connResult.ok) {
       agentProvisionResult = await provisionAgents(tempAgent);
       if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
+
+      // apra-fleet-eft.40.2: seed Claude workspace trust for this member's work folder
+      // so composed project-scoped permissions are honored on the first dispatch,
+      // even if the member was never opened interactively. Best-effort/non-fatal;
+      // non-Claude providers no-op.
+      await seedWorkspaceTrust(tempAgent, strategy, 'register_member');
     }
 
     // --- Validate opencode model_tiers against available models ---
@@ -356,6 +363,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (isCloud && (input.llm_provider ?? 'claude') !== 'none') {
       warnings.push(`${input.llm_provider ?? 'claude'} CLI and auth not verified — run provision_llm_auth after the instance starts.`);
       warnings.push('Agent files not provisioned -- run update_member after the instance starts.');
+      warnings.push('Workspace trust not seeded -- run update_member after the instance starts.');
     }
   }
 
