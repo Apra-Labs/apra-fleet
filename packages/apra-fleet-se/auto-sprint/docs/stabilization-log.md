@@ -950,3 +950,38 @@ seeding is next factored testably. Engine suite: 963 pass; the 2
 dolt-sync-discipline real-subprocess failures are the known Windows EBUSY
 temp-dir-cleanup flake (same class PR #332 fixed elsewhere), aggravated
 by the live sprint's dolt server -- unrelated to this change.
+
+## Issue 35: install boundary used a stale binary (9 commits behind tip)
+
+Observed: run 17's installed runtime (built at 4286ef0) lacked eft.38's
+viewer more-button plus engine fixes it was meant to validate (Issue 34
+in-loop filter, eft.28.3 client dispatch watchdog, eft.34/35 D-pull
+gates, eft.27.4 stdout cap). Root cause: the SEA binary was built hours
+before the install boundary and never rebuilt from the branch tip; the
+delivered-binary convention runs the INSTALLED runtime, so workspace
+commits after the build silently do not participate.
+
+Rule adopted: at every run boundary, git fetch + fast-forward the
+workspace to origin tip, run the suites, `npm run build:binary`, THEN
+`install --force` -- and verify `apra-fleet version` reports the tip
+short-SHA before relaunching. Never install a binary whose embedded
+version does not match the branch tip.
+
+## Issue 36: eft.41.1/41.2 fix pair killed every real sprint launch
+
+Observed: run 18 died at t=0 with the new 41.2 backstop's own error
+("entry did not execute ... Nothing happened"). cli.mjs self-executes
+via its isMainModule() guard but never declared the launcher contract
+`export const selfExecuting = true`; its async main() starts, the import
+resolves, the backstop sees no flag and no exported callable, errors,
+and returns 1 -- killing the sprint it just started. All platforms, all
+real launches. It escaped the doer's validation because `--help` calls
+process.exit(0) during import, before the backstop runs -- the only path
+CI smoke exercises (hello-world is safe the same way).
+
+Fix: declare `export const selfExecuting = true` in cli.mjs (d0c000a).
+Verified: run 19 launches and runs on the delivered binary. Lesson
+recorded on eft.41: the [test] child must exercise a REAL-ARGS launch
+through the launcher import path, not only --help; a backstop that fires
+on "no observable execution" must account for guarded self-executing
+modules that neither export nor exit.
