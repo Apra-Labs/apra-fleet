@@ -348,3 +348,124 @@ describe('dead interactive session detection (apra-fleet-eft.28.1)', () => {
     expect(sessionRegistry.get(workspaceId, memberId)).toBeUndefined();
   });
 });
+
+// apra-fleet-eft.50.1: eft.28.1/28.5's dead-session guard was effectively armed
+// only for a session that still carried its own launch-time pid. The specific
+// eft.50 ordering slipped through: a Planner retry attempt 1 fails clean, then a
+// reconnect on attempt 2+ re-registers the SAME persistent interactive session
+// with pid=undefined (the priorPid carry-forward found no entry because the
+// prior SessionState had already been unregistered). With no pid on the live
+// session, execute_prompt's guard was skipped and the dispatch hung silently on
+// the dead channel for the full timeout_s. The fix back-stops the guard with
+// sessionRegistry.lastKnownPid -- the durable per-member launch-pid anchor that
+// survives the unregister/reconnect churn -- so the check re-arms on EVERY
+// dispatch attempt that reuses an interactive session, not just the first.
+describe('dead interactive session detection across retries (apra-fleet-eft.50.1)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    restoreRegistry();
+    if (memberId) {
+      inFlightAgents.delete(memberId);
+      sessionRegistry.unregister(getTokenIssuer().workspaceId(), memberId);
+    }
+  });
+
+  it('evicts and re-dispatches fresh a reused session whose live pid is undefined (lost on reconnect) but whose lastKnownPid points at a dead process', async () => {
+    const member = makeTestAgent({ friendlyName: 'reconnect-dead-pid-member' });
+    memberId = member.id;
+    addAgent(member);
+
+    // 424242 is the dead launch-time pid -- every liveness probe reports ESRCH.
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const err: any = new Error('kill ESRCH');
+      err.code = 'ESRCH';
+      throw err;
+    });
+
+    const workspaceId = getTokenIssuer().workspaceId();
+
+    // Attempt 1 registered the session with its real launch-time pid. This
+    // seeds the durable lastKnownPid anchor with 424242.
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: null,
+      pid: 424242,
+      status: 'online',
+    });
+    expect(sessionRegistry.lastKnownPid(workspaceId, memberId)).toBe(424242);
+
+    // The reconnect on retry attempt 2+ re-registers the SAME session with a
+    // live server but pid=undefined (the priorPid carry-forward found nothing).
+    // Pre-fix, this pid=undefined live session slipped past the guard and hung.
+    const notification = vi.fn().mockResolvedValue(undefined);
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      // pid deliberately undefined -- lost on reconnect.
+      status: 'online',
+    });
+    expect(sessionRegistry.get(workspaceId, memberId)?.pid).toBeUndefined();
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'attempt 2', resume: false, timeout_s: 5 });
+
+    // The guard now resolves the pid via the durable anchor and probes it ...
+    expect(killSpy).toHaveBeenCalledWith(424242, 0);
+    // ... finds it dead, evicts the stale session, and RE-DISPATCHES FRESH via
+    // the subprocess path instead of hanging on the dead interactive channel.
+    expect(mockExecCommand).toHaveBeenCalled();
+    expect(resultText(result)).toContain('reconnect-dead-pid-member');
+    // Interactive routing must NEVER fire against the dead reconnected session.
+    expect(notification).not.toHaveBeenCalled();
+    // The stale session is discarded, not left behind to trip the next retry.
+    expect(sessionRegistry.get(workspaceId, memberId)).toBeUndefined();
+    expect(inFlightAgents.has(memberId)).toBe(false);
+  });
+
+  it('a reconnected session with an undefined pid AND no lastKnownPid anchor keeps the pre-existing interactive behavior (never had a captured pid)', async () => {
+    const member = makeTestAgent({ friendlyName: 'reconnect-no-anchor-member' });
+    memberId = member.id;
+    addAgent(member);
+
+    const workspaceId = getTokenIssuer().workspaceId();
+
+    // This member never went through a local spawn, so no pid was ever
+    // captured and lastKnownPid stays undefined -- the guard must not fire and
+    // interactive routing must still work normally.
+    expect(sessionRegistry.lastKnownPid(workspaceId, memberId)).toBeUndefined();
+
+    const notification = vi.fn().mockResolvedValue(undefined);
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      // no pid ever captured
+      status: 'online',
+    });
+
+    const promptPromise = executePrompt({ member_id: memberId, prompt: 'attempt 2 no anchor', resume: false, timeout_s: 5 });
+    await vi.waitFor(() => expect(notification).toHaveBeenCalledTimes(1));
+    const msgid = notification.mock.calls[0][0].params.meta.msgid;
+    await respondToMessage({ reply_to: msgid, content: 'answered normally' });
+
+    const result = await promptPromise;
+    expect(resultText(result)).toContain('answered normally');
+    // No subprocess re-dispatch -- interactive routing carried it.
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+});
