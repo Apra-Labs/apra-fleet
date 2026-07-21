@@ -53,7 +53,8 @@ export class AgyProvider implements ProviderAdapter {
   buildPromptCommand(opts: PromptOptions): string {
     const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    const absPath = folder.replace(/\\/g, '/') + '/' + promptFile;
+    let instruction = `Your task is described in the file at ${absPath}. Read that absolute path first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
@@ -221,6 +222,7 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string, tier?: 'cheap' | 'standard' | 'premium'): string {
+    if (filePath === '"agy"') filePath = 'agy';
     // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
     const resolvedTier = tier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];

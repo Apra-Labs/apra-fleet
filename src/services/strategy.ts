@@ -155,7 +155,7 @@ class LocalStrategy implements AgentStrategy {
         }
       });
 
-      child.on('close', (code) => {
+      child.on('exit', (code) => {
         clearStoredPid(this.agent.id);
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();

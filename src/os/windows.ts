@@ -100,7 +100,8 @@ export class WindowsCommands implements OsCommands {
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
     const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv } = opts;
     const escapedFolder = escapeWindowsArg(folder);
-    let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    const absPath = folder.replace(/\\/g, '/') + '/' + promptFile;
+    let instruction = `Your task is described in the file at ${absPath}. Read that absolute path first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
