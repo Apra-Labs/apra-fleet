@@ -162,16 +162,46 @@ if [ -d "$TOY_REPO/.beads" ]; then
 fi
 ```
 
+apra-fleet-eft.31 (third neutralize gap): checks 1-3 above can all report
+clean at snapshot time, yet the sandbox clone's OWN `git remote get-url
+origin` still points at the real `fleet-e2e-toy` remote -- that is exactly
+what `## Setup`'s `git clone https://github.com/Apra-Labs/fleet-e2e-toy
+"$HOME/toy-repo"` step sets it to. Left as-is, this is a latent hazard: a
+LATER `bd dolt` invocation can auto-provision a fresh Dolt-level remote
+FROM this git origin ("Configured Dolt remote origin from git origin."),
+re-arming exactly what the Dolt-level neutralize step above just cleared.
+Neutralize the sandbox clone's git origin too, immediately after the
+Dolt-level remote step, by rewriting it to an inert local URL -- never
+`git push`. Use `git remote set-url` rather than `git remote remove`: the
+latter also deletes the clone's cached `origin/main` remote-tracking ref,
+which would break the Verify step's `checkNoOutboundCommits` check (it
+diffs `HEAD...origin/main` and needs that ref to still resolve locally):
+
+```bash
+TOY_REPO="$HOME/toy-repo"
+if [ -d "$TOY_REPO/.git" ]; then
+  (cd "$TOY_REPO" && git remote set-url origin "file:///dev/null/neutralized-sandbox-origin") || true
+fi
+```
+
+Idempotent and safe to run even when no `origin` remote is configured (or
+no git repo exists yet in this clone): the `set-url` no-ops with a non-zero
+exit swallowed by `|| true` when there is no `origin` to rewrite.
+
 Verify: no uncommented line in `.beads/config.yaml` may reference
 `fleet-e2e-toy` after the first step, Dolt's own remote list (`bd dolt
 remote list --json` in the sandbox clone) must carry no remote pointing at
-`fleet-e2e-toy` after the second step, AND the sandbox clone must have 0
-commits ahead of `origin/main` (nothing has actually reached the real
-remote). `scripts/check-sandbox-sync-remote.mjs` (apra-fleet-eft.25.2,
-extended by apra-fleet-eft.30.1) asserts all three in one shell-drivable,
-sandbox-only, read-only step -- it exits non-zero (and prints a `FAIL` line)
-if any check fails, and exits 0 (`OK` lines) when all three hold. Run it
-from `<repo-root>`:
+`fleet-e2e-toy` after the second step, the sandbox clone's `git remote
+get-url origin` must not point at `fleet-e2e-toy` after the third step,
+AND the sandbox clone must have 0 commits ahead of `origin/main` (nothing
+has actually reached the real remote -- still checkable locally because
+`set-url` preserves the cached `origin/main` ref).
+`scripts/check-sandbox-sync-remote.mjs` (apra-fleet-eft.25.2, extended by
+apra-fleet-eft.30.1 and apra-fleet-eft.31) asserts all four in one
+shell-drivable, sandbox-only, read-only step -- it exits non-zero (and
+prints a `FAIL` line) if any check fails, and exits 0 (`OK` lines) when all
+four hold. Run it from `<repo-root>`, AFTER the git-origin neutralize step
+above:
 
 ```bash
 node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
