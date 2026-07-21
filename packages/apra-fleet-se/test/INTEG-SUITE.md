@@ -31,7 +31,11 @@ Procedure (all commands from the repo root):
    erase a recorded failure.
 7. Any single file over ~5 minutes (`durationMs` in the status file) is the
    long pole of the concurrent run: file a bug bead to split it (precedent:
-   commit 72a929e).
+   commit 72a929e). Run `node scripts/check-integ-suite-budget.mjs` after
+   step 4 to check this automatically instead of eyeballing durationMs by
+   hand -- it reads `integ-suite-status.json` and reports/exits non-zero
+   with the offending file(s) named (apra-fleet-eft.17.2). Exit 2 means no
+   completed run was found yet (finish steps 1-4 first).
 
 Exit codes for `--status`: 0 complete+pass, 1 complete+failures, 3 still
 running, 2 fail-loud (corrupt/stale state, or crashed with pending files).
