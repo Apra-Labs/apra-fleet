@@ -79,7 +79,17 @@ function resolveRealToken(): string | null {
 }
 const REAL_TOKEN = resolveRealToken();
 
-describe.skipIf(!CLAUDE_CLI_AVAILABLE || !REAL_TOKEN)(
+// apra-fleet-eft.48.7 (reopened): this suite must NEVER arm itself off
+// ambient credentials. A real-CLI auth probe on a machine whose host
+// credential is file-based runs against a live token; on an unattended
+// runner (member doing `npm test` mid-sprint) nobody is watching when that
+// goes wrong. Opt-in is explicit: a runner sets
+// APRA_FLEET_ALLOW_REAL_CLI_AUTH_PROBE=1 only when it has been deliberately
+// configured for this test (throwaway/CI-scoped auth) -- the default suite
+// on ANY machine, credentials present or not, skips it.
+const REAL_CLI_PROBE_OPTED_IN = process.env.APRA_FLEET_ALLOW_REAL_CLI_AUTH_PROBE === '1';
+
+describe.skipIf(!REAL_CLI_PROBE_OPTED_IN || !CLAUDE_CLI_AVAILABLE || !REAL_TOKEN)(
   'credential-less (bare-token) toy-doer authenticates through clean-env dispatch against the real claude CLI (apra-fleet-eft.48.7)',
   () => {
     let tmpHome: string;
