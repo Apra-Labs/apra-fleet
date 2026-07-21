@@ -209,16 +209,29 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
             sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId });
             const hasMember = !!(postClaims || fallbackMemberId);
             logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember}`);
-            // Register interactive member session when JWT claims are present
+            // Register interactive member session when JWT claims are present.
+            //
+            // apra-fleet-eft.28.5: carry forward the launch-time pid captured
+            // by register_member (which registered `server: null, pid: <proc>`
+            // before this connect-back). Without this, the connect-back
+            // registration overwrote that entry with pid=undefined, so the
+            // execute_prompt interactive liveness check (eft.28.1) had no PID to
+            // test and a dead-but-connected session hung the dispatch for the
+            // full timeout_s -- the exact real-fleet repro in eft.28. Preserving
+            // the pid lets the liveness check detect the dead backing process
+            // and re-dispatch fresh instead of blocking.
             if (postClaims) {
+              const priorPid = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id)?.pid;
               sessionRegistry.register({
                 ...postClaims,
                 server: sessionServer,
                 sessionId: sid,
                 status: 'online',
+                pid: (postClaims as any).pid ?? priorPid,
               });
               logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid}`);
             } else if (fallbackMemberId) {
+              const priorPid = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId)?.pid;
               sessionRegistry.register({
                 member_id: fallbackMemberId,
                 workspace_id: sessionWorkspaceId,
@@ -227,6 +240,7 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 server: sessionServer,
                 sessionId: sid,
                 status: 'online',
+                pid: priorPid,
               });
               logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${sid}`);
             }

@@ -901,6 +901,13 @@ export async function runDevelopLoopScenario(tag, {
     // separate scenario runs against the exact SAME branch to simulate a
     // re-run of finalization.
     gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
+    // apra-fleet-eft.28.4: optional override for `args.dispatch_timeout_s`
+    // (validateArgs floor: integer >= 60; runner.js defaults to 3600 when
+    // omitted). Lets a scenario exercise the client-side dispatch-timeout
+    // watchdog (withDispatchWatchdog, apra-fleet-eft.28.3) against a short,
+    // deterministic budget instead of waiting on the hour-long production
+    // default.
+    dispatchTimeoutS,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -956,6 +963,7 @@ export async function runDevelopLoopScenario(tag, {
                 base_branch: 'main',
                 goal,
                 max_cycles: maxCycles,
+                ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
             }, true);
         } catch (err) {
             error = err;

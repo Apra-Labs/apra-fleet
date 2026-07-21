@@ -224,7 +224,7 @@ describe('dead interactive session detection (apra-fleet-eft.28.1)', () => {
     }
   });
 
-  it('pre-dispatch check: a session whose pid is already dead is discarded, never reused, and returns a dispatch_failed structured error', async () => {
+  it('pre-dispatch check: a session whose pid is already dead is discarded and RE-DISPATCHED FRESH via the subprocess path, never reused (apra-fleet-eft.28.5)', async () => {
     const member = makeTestAgent({ friendlyName: 'dead-pid-member' });
     memberId = member.id;
     addAgent(member);
@@ -249,17 +249,18 @@ describe('dead interactive session detection (apra-fleet-eft.28.1)', () => {
 
     const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
 
+    // The dead-PID liveness check (eft.28.1 detection) still fires ...
     expect(killSpy).toHaveBeenCalledWith(424242, 0);
-    // Fails fast with a surfaced, structured dispatch_failed error -- never
-    // silently hangs waiting for a reply that can never arrive.
+    // ... but eft.28.5 no longer surfaces a terminal dispatch_failed and stops:
+    // it evicts the dead session and RE-DISPATCHES FRESH via the subprocess
+    // path, so the caller gets a real response instead of an error that forces
+    // a manual register_member.
     expect(result).not.toBe(undefined);
-    expect((result as any).structuredContent).toEqual({ isError: true, reason: 'dispatch_failed' });
+    expect(mockExecCommand).toHaveBeenCalled();
     expect(resultText(result)).toContain('dead-pid-member');
-    expect(resultText(result)).toContain('424242');
-    // send_message/notification (and therefore the subprocess path) must
-    // never fire -- the dead session is rejected before any dispatch attempt.
+    // Interactive routing (send_message/notification) must NEVER fire against
+    // the dead session -- nothing would ever answer it.
     expect(notification).not.toHaveBeenCalled();
-    expect(mockExecCommand).not.toHaveBeenCalled();
     // The stale session entry is discarded, not left behind for a future
     // dispatch to trip over again.
     expect(sessionRegistry.get(workspaceId, memberId)).toBeUndefined();

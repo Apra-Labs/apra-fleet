@@ -422,30 +422,41 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // spend the full timeout_s waiting for a response that can never arrive.
   const isClaudeMember = (agent.llmProvider ?? 'claude') === 'claude';
   const workspaceId = getTokenIssuer().workspaceId();
-  const interactiveSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
+  let interactiveSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
+  if (interactiveSession?.server && interactiveSession.pid !== undefined && !isPidAlive(interactiveSession.pid)) {
+    // apra-fleet-eft.28.1/eft.28.5: never reuse a persistent interactive
+    // session whose underlying member claude process has already died. Before
+    // eft.28.1, a dead launch-time process (e.g. it crashed before ever
+    // producing a plan) left a `server` entry in sessionRegistry that looked
+    // reusable -- send_message would happily enqueue to it, but nothing would
+    // ever call respond_to_message, so the caller silently burned the full
+    // timeout_s (observed up to 3600s in apra-fleet-eft.28) with zero
+    // fleet-server log output and no watchdog coverage.
+    //
+    // eft.28.5 changes what happens once the death is detected: instead of
+    // surfacing a terminal dispatch_failed error that forces a manual
+    // register_member, EVICT the dead session and FALL THROUGH to a fresh
+    // non-interactive (subprocess) dispatch below -- i.e. re-dispatch fresh
+    // instead of blocking on waitForInteractiveResponse. The bug in
+    // apra-fleet-eft.28 was precisely that a dead session was reused "rather
+    // than detecting its death and spawning a fresh dispatch"; this does the
+    // spawning. If the fresh subprocess dispatch itself cannot start it
+    // returns its own terminal error, so nothing ever hangs.
+    //
+    // The liveness check now fires for connect-back interactive sessions too:
+    // http-transport carries the launch-time pid forward across re-registration
+    // (eft.28.5), so `pid` is no longer undefined for a member that registered
+    // via register_member and then connected back -- the exact real-fleet
+    // repro that evaded eft.28.1. `pid` stays undefined only for sessions that
+    // never had a captured PID (e.g. tests, or a provider that never went
+    // through register_member's local spawn path); those are left to the
+    // pre-existing interactive behavior, unchanged.
+    const deadScope = new LogScope('execute_prompt', `[interactive] session liveness check pid=${interactiveSession.pid}`, agent);
+    sessionRegistry.unregister(workspaceId, agent.id);
+    deadScope.info(`member claude process (pid ${interactiveSession.pid}) for "${agent.friendlyName}" is dead -- evicting the stale interactive session and re-dispatching fresh (non-interactive)`);
+    interactiveSession = undefined;
+  }
   if (interactiveSession?.server) {
-    // apra-fleet-eft.28.1: never reuse a persistent interactive session whose
-    // underlying member claude process has already died. Before this check,
-    // a dead launch-time process (e.g. it crashed before ever producing a
-    // plan) left a `server` entry in sessionRegistry that looked reusable --
-    // send_message would happily enqueue to it, but nothing would ever call
-    // respond_to_message, so the caller silently burned the full timeout_s
-    // (observed up to 3600s in apra-fleet-eft.28) with zero fleet-server log
-    // output and no watchdog coverage. Checked here, before any wait starts,
-    // so a dead PID fails fast instead of hanging. `pid` is only ever
-    // undefined for sessions registered without a captured PID (e.g. tests,
-    // or a provider that never went through register_member's local spawn
-    // path) -- those are left to the pre-existing behavior, unchanged.
-    if (interactiveSession.pid !== undefined && !isPidAlive(interactiveSession.pid)) {
-      const deadScope = new LogScope('execute_prompt', `[interactive] session liveness check pid=${interactiveSession.pid}`, agent);
-      sessionRegistry.unregister(workspaceId, agent.id);
-      const msg = `member claude process (pid ${interactiveSession.pid}) for "${agent.friendlyName}" is dead -- discarding the stale interactive session instead of reusing it`;
-      deadScope.abort(msg);
-      return {
-        text: `[ERROR] Interactive session for "${agent.friendlyName}" is dead (pid ${interactiveSession.pid} is no longer running). The persistent claude process must be re-launched (re-run register_member, or restart the member) before dispatching to it again.`,
-        structuredContent: { isError: true, reason: 'dispatch_failed' },
-      };
-    }
     inFlightAgents.add(agent.id);
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {
