@@ -9,6 +9,14 @@ import { parseClaudeOAuthSecret } from '../src/cli/auth.js';
 // (seeded from the runner's real credentials file, preserving the real
 // expiry and refresh token) while keeping bare-token behavior for the
 // CLAUDE_CODE_OAUTH_TOKEN env-var path.
+//
+// apra-fleet-eft.48.3 (regression follow-up): the bare-token fallback path
+// itself was found to STILL reproduce "Not logged in" -- it wrote
+// { accessToken } with no additional session field at all. The fix
+// synthesizes a minimally-sufficient additional field (a far-future
+// expiresAt) whenever only a bare token is available, so the installed
+// Claude CLI accepts the file as a valid session while still authenticating
+// with the caller's real, unmodified access token.
 describe('parseClaudeOAuthSecret', () => {
   it('passes a full claudeAiOauth JSON object through intact', () => {
     const full = {
@@ -26,16 +34,28 @@ describe('parseClaudeOAuthSecret', () => {
     expect(parseClaudeOAuthSecret(`  ${JSON.stringify(full)}\n`)).toEqual(full);
   });
 
-  it('wraps a bare token as { accessToken } (env-var path)', () => {
-    expect(parseClaudeOAuthSecret('sk-bare-token')).toEqual({ accessToken: 'sk-bare-token' });
+  it('wraps a bare token as { accessToken, expiresAt } -- a synthetic future expiresAt is added so the CLI accepts the file (apra-fleet-eft.48.3)', () => {
+    const before = Date.now();
+    const result = parseClaudeOAuthSecret('sk-bare-token');
+    expect(result.accessToken).toBe('sk-bare-token');
+    expect(typeof result.expiresAt).toBe('number');
+    expect(result.expiresAt as number).toBeGreaterThan(before);
+    // Far enough in the future that the CLI never treats it as expired/near-expiry.
+    expect(result.expiresAt as number).toBeGreaterThan(before + 24 * 60 * 60 * 1000);
   });
 
-  it('falls back to bare-token handling for JSON without an accessToken string', () => {
+  it('falls back to bare-token handling (with synthetic expiresAt) for JSON without an accessToken string', () => {
     const noToken = JSON.stringify({ expiresAt: 123 });
-    expect(parseClaudeOAuthSecret(noToken)).toEqual({ accessToken: noToken });
+    const result = parseClaudeOAuthSecret(noToken);
+    expect(result.accessToken).toBe(noToken);
+    expect(typeof result.expiresAt).toBe('number');
+    expect(result.expiresAt as number).toBeGreaterThan(Date.now());
   });
 
-  it('falls back to bare-token handling for malformed JSON starting with a brace', () => {
-    expect(parseClaudeOAuthSecret('{not json')).toEqual({ accessToken: '{not json' });
+  it('falls back to bare-token handling (with synthetic expiresAt) for malformed JSON starting with a brace', () => {
+    const result = parseClaudeOAuthSecret('{not json');
+    expect(result.accessToken).toBe('{not json');
+    expect(typeof result.expiresAt).toBe('number');
+    expect(result.expiresAt as number).toBeGreaterThan(Date.now());
   });
 });
