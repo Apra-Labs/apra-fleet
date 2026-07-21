@@ -663,27 +663,21 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 </html>`;
 };
 
-// apra-fleet-eft.27.2: on-demand bead-description lookup for GET
-// /beads/:id/description (see the route below). GET /state's lean list-state
-// payload (apra-fleet-eft.27.1, src/viewer/lean-state.mjs) strips every
-// bead's full `description` down to a short `summary` so the recurring poll
-// payload stays small -- this is the client's ONLY way to recover the full
-// text, and it must read it from the LIVE, full-fidelity `state.extensions`
-// object (never leaned), not from any /state response. Deliberately the one
-// place in this file that knows the 'beads' extension's shape (sprintTasks/
-// backlogTasks, both arrays of { id, description, updated_at, ... }) --
-// everything else here (and all of lean-state.mjs) stays extension-agnostic.
-function findBeadById(state, id) {
-    const beadsExt = state.extensions && state.extensions.beads;
-    if (!beadsExt) return null;
-    const pools = [beadsExt.sprintTasks, beadsExt.backlogTasks];
-    for (const pool of pools) {
-        if (!Array.isArray(pool)) continue;
-        const match = pool.find((t) => t && String(t.id) === String(id));
-        if (match) return match;
-    }
-    return null;
-}
+// apra-fleet-eft.37.4 (M3, docs/workflow-core-boundary-refactoring.md): the
+// on-demand FULL-TEXT lookup used to live here as findBeadById(), a
+// core function that reached into `state.extensions.beads.sprintTasks/
+// backlogTasks` by name -- the one deliberate domain leak the eft.27.2
+// comment it replaced used to call out explicitly. Core has no business
+// knowing an extension's internal shape, so that function moved verbatim
+// into the beads extension module itself
+// (packages/apra-fleet-se/auto-sprint/viewer-extensions.mjs, as
+// `beadsExtension.detailLookup`). Core now only knows the GENERIC hook
+// surface: any dashboard extension may register
+// `detailLookup?: (state, id) => {text, updatedAt} | null`, and core serves
+// GET /extensions/:extId/detail/:itemId (route below) by delegating to
+// whichever extension's `id` matches `:extId` -- a template-method default
+// of "no such extension/no hook -> 404", never a crash, for extensions that
+// don't opt in.
 
 // apra-fleet-eft.38 (reopened): fallback lookup for GET /activities/:id/output
 // (see the route below) when command-output-cap.mjs's own store has nothing
@@ -1049,28 +1043,46 @@ export function createDashboardViewer(workflow, opts = {}) {
             // process-free History view embeds) is never mutated by this.
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
             res.end(JSON.stringify(buildListStatePayload(state)));
-        } else if (req.method === 'GET' && /^\/beads\/[^/]+\/description$/.test(req.url)) {
-            // apra-fleet-eft.27.2: on-demand full-description endpoint. This
-            // is fetched ONLY when a user expands a bead row in the
-            // dashboard's beads extension (packages/apra-fleet-se/auto-sprint
-            // /viewer-extensions.mjs) -- never during normal polling -- and
-            // the browser caches the result in localStorage, keyed by bead
-            // id and validated against `updatedAt` (bd's `updated_at`),
-            // re-fetching only once that timestamp changes in a later /state
-            // poll.
-            const id = decodeURIComponent(req.url.slice('/beads/'.length, req.url.length - '/description'.length));
-            const bead = findBeadById(state, id);
-            if (!bead) {
+        } else if (req.method === 'GET' && /^\/extensions\/[^/]+\/detail\/[^/]+$/.test(req.url)) {
+            // apra-fleet-eft.37.4 (M3): the GENERIC on-demand-detail route.
+            // Any dashboard extension may register a `detailLookup(state, id)`
+            // hook; this is the only route that calls it, and it is
+            // extension-agnostic -- core never names a specific extension or
+            // reaches into its data shape. Fetched only when a user expands
+            // an on-demand row in SOME extension's UI (e.g. the beads
+            // extension's "more..." control, apra-fleet-eft.27) -- never
+            // during normal polling -- against the LIVE, full-fidelity
+            // `state` object (never the leaned /state projection).
+            const match = req.url.match(/^\/extensions\/([^/]+)\/detail\/([^/]+)$/);
+            const extId = decodeURIComponent(match[1]);
+            const itemId = decodeURIComponent(match[2]);
+            const ext = dashboardExtensions.find((e) => e.id === extId);
+            const detail = (ext && typeof ext.detailLookup === 'function')
+                ? ext.detailLookup(state, itemId)
+                : null;
+            if (!detail) {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'bead not found', id }));
+                res.end(JSON.stringify({ error: 'detail not found', id: itemId }));
                 return;
             }
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
             res.end(JSON.stringify({
-                id: bead.id,
-                description: bead.description || '',
-                updatedAt: bead.updated_at || bead.updatedAt || null
+                id: itemId,
+                text: detail.text || '',
+                updatedAt: detail.updatedAt ?? null
             }));
+        } else if (req.method === 'GET' && /^\/beads\/[^/]+\/description$/.test(req.url)) {
+            // BOUNDARY-COMPAT (apra-fleet-eft.37.4, one release only, then
+            // dies per docs/workflow-core-boundary-refactoring.md M3): the
+            // pre-M3 route name. The extension js that used to call it
+            // (packages/apra-fleet-se/auto-sprint/viewer-extensions.mjs) has
+            // already moved to the generic route above; this alias exists
+            // only for anything still pointed at the old URL (e.g. a stale
+            // cached client). A dumb redirect, not a second implementation --
+            // it never touches `state` itself.
+            const id = req.url.slice('/beads/'.length, req.url.length - '/description'.length);
+            res.writeHead(302, { Location: '/extensions/beads/detail/' + id });
+            res.end();
         } else if (req.method === 'GET' && /^\/activities\/[^/]+\/output$/.test(req.url)) {
             // apra-fleet-eft.27.4 / apra-fleet-eft.38 (reopened): on-demand
             // full-output endpoint. First checks command-output-cap.mjs's

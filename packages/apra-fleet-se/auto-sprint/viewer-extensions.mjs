@@ -172,8 +172,10 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
     // serves it, so the real running dashboard only ever has `summary`
     // here. The full text is instead fetched on demand, exactly once per
     // (bead id, updatedAt) pair, the moment a user expands the row -- see
-    // GET /beads/:id/description (src/viewer/index.mjs) and the fetch +
-    // localStorage-cache logic wired up below in `js`.
+    // GET /extensions/beads/detail/:itemId (src/viewer/index.mjs, generic
+    // route delegating to this module's `beadsExtension.detailLookup`,
+    // apra-fleet-eft.37.4) and the fetch + localStorage-cache logic wired up
+    // below in `js`.
     //
     // A caller that already has the full `description` inline (this
     // module's own unit tests, a History-view's frozen/unleaned snapshot,
@@ -400,9 +402,48 @@ export function renderResultExtrasHtml(result) {
     return verdictHtml + prHtml;
 }
 
+// apra-fleet-eft.37.4 (M3, docs/workflow-core-boundary-refactoring.md):
+// relocated verbatim from packages/apra-fleet-workflow/src/viewer/index.mjs's
+// former findBeadById() -- that was the one place core reached into
+// `state.extensions.beads.sprintTasks/backlogTasks` by name, a deliberate
+// domain leak the eft.27.2 comment it replaced called out explicitly. Core
+// now only knows the generic `detailLookup(state, id)` hook shape (see
+// `beadsExtension.detailLookup` below); this function is the se-owned
+// knowledge of the beads extension's own data shape.
+//
+// Runs server-side (Node), invoked by core's GET
+// /extensions/beads/detail/:itemId route -- never embedded into the
+// browser-side `js` string below, unlike renderBeadsHtml/renderResultExtrasHtml.
+function findBeadById(state, id) {
+    const beadsExt = state.extensions && state.extensions.beads;
+    if (!beadsExt) return null;
+    const pools = [beadsExt.sprintTasks, beadsExt.backlogTasks];
+    for (const pool of pools) {
+        if (!Array.isArray(pool)) continue;
+        const match = pool.find((t) => t && String(t.id) === String(id));
+        if (match) return match;
+    }
+    return null;
+}
+
 export const beadsExtension = {
     id: 'beads',
     title: 'Tasks',
+    // apra-fleet-eft.37.4 (M3): the beads extension's detailLookup hook,
+    // called by core's generic GET /extensions/beads/detail/:itemId route
+    // (packages/apra-fleet-workflow/src/viewer/index.mjs) against the LIVE,
+    // full-fidelity `state` object. Returns the shape the hook contract
+    // requires -- `{text, updatedAt} | null` -- never the raw bead object,
+    // so core stays ignorant of bd's own field names (`description`,
+    // `updated_at`).
+    detailLookup(state, id) {
+        const bead = findBeadById(state, id);
+        if (!bead) return null;
+        return {
+            text: bead.description || '',
+            updatedAt: bead.updated_at || bead.updatedAt || null
+        };
+    },
     js: `
         ${escapeHtml.toString()}
         ${renderBeadsHtml.toString()}
@@ -436,15 +477,19 @@ export const beadsExtension = {
             el.innerHTML = html;
         }
 
-        // apra-fleet-eft.27.2: on-demand bead-description fetch + browser
-        // localStorage cache. GET /state now serves only a short \`summary\`
-        // per bead (apra-fleet-eft.27.1) -- the full text is fetched here,
-        // from GET /beads/:id/description (src/viewer/index.mjs), the moment
-        // a user actually expands a row, and cached under the bead's id.
-        // Each cache entry also carries the \`updatedAt\` it was fetched
-        // against, so a later lean-state poll reporting a NEW updatedAt for
-        // that bead transparently invalidates the cache and triggers a
-        // refetch instead of ever serving stale text.
+        // apra-fleet-eft.27.2 / apra-fleet-eft.37.4 (M3): on-demand
+        // bead-description fetch + browser localStorage cache. GET /state
+        // now serves only a short \`summary\` per bead (apra-fleet-eft.27.1)
+        // -- the full text is fetched here, from the GENERIC
+        // GET /extensions/beads/detail/:itemId route (src/viewer/index.mjs,
+        // delegating to this extension's own \`detailLookup\` above -- the
+        // old sprint-named /beads/:id/description route is now core's
+        // one-release BOUNDARY-COMPAT alias, no longer called from here),
+        // the moment a user actually expands a row, and cached under the
+        // bead's id. Each cache entry also carries the \`updatedAt\` it was
+        // fetched against, so a later lean-state poll reporting a NEW
+        // updatedAt for that bead transparently invalidates the cache and
+        // triggers a refetch instead of ever serving stale text.
         const BEAD_DESC_CACHE_PREFIX = 'apra-fleet-bead-desc:';
 
         function beadDescCacheKey(id) { return BEAD_DESC_CACHE_PREFIX + id; }
@@ -490,10 +535,10 @@ export const beadsExtension = {
 
             bodyEl.textContent = 'Loading...';
             try {
-                const res = await fetch('/beads/' + encodeURIComponent(id) + '/description');
+                const res = await fetch('/extensions/beads/detail/' + encodeURIComponent(id));
                 if (!res.ok) { bodyEl.textContent = '(description unavailable)'; return; }
                 const data = await res.json();
-                const description = data.description || '(no description)';
+                const description = data.text || '(no description)';
                 bodyEl.textContent = description;
                 bodyEl.dataset.loaded = 'true';
                 writeBeadDescCache(id, updatedAt, description);

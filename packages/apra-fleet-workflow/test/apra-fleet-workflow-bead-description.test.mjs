@@ -7,22 +7,27 @@ import path from 'path';
 import { FleetWorkflow } from '../src/workflow/index.mjs';
 import { createDashboardViewer } from '../src/viewer/index.mjs';
 
-// Tests for apra-fleet-eft.27.2: an on-demand GET /beads/:id/description
-// endpoint.
-//
-// apra-fleet-eft.27.1 taught GET /state to strip every bead's full
-// `description` down to a short `summary` (lean-state.mjs) so the recurring
-// poll payload stays small -- these tests confirm the endpoint that recovers
-// the full text on demand: it must read the LIVE, full-fidelity
-// `state.extensions.beads` data (never the leaned /state projection), find
-// the bead in either sprintTasks or backlogTasks, and 404 for an unknown id.
+// Tests for apra-fleet-eft.37.4 (M3, docs/workflow-core-boundary-refactoring.md):
+// the former apra-fleet-eft.27.2 GET /beads/:id/description endpoint was
+// replaced with a GENERIC on-demand-detail hook. Core no longer knows
+// anything about a 'beads' extension's shape (sprintTasks/backlogTasks) --
+// it only knows that ANY dashboard extension may register
+// `detailLookup(state, id) => {text, updatedAt} | null`, and serves
+// GET /extensions/:extId/detail/:itemId by delegating to whichever
+// registered extension's `id` matches `:extId`. The old route now lives on
+// as a one-release BOUNDARY-COMPAT redirect alias (see the route's own
+// comment in src/viewer/index.mjs) to the new generic route under the
+// 'beads' extension id specifically, so these tests cover BOTH the
+// extension-agnostic generic route (with a made-up, non-beads extension id,
+// proving core carries no beads-specific knowledge) and the alias's
+// redirect behavior.
 
 function httpGetFull(port, urlPath) {
     return new Promise((resolve, reject) => {
-        http.get(`http://127.0.0.1:${port}${urlPath}`, (res) => {
+        http.get({ host: '127.0.0.1', port, path: urlPath }, (res) => {
             let data = '';
             res.on('data', (chunk) => { data += chunk; });
-            res.on('end', () => resolve({ statusCode: res.statusCode, body: data }));
+            res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, body: data }));
         }).on('error', reject);
     });
 }
@@ -61,68 +66,101 @@ function createMockFleetApi() {
     };
 }
 
-describe('apra-fleet-eft.27.2: GET /beads/:id/description', () => {
-    test('returns the full description + updatedAt for a bead in sprintTasks', async () => {
+describe('apra-fleet-eft.37.4: GET /extensions/:extId/detail/:itemId (generic hook)', () => {
+    test('delegates to the matching extension\'s detailLookup and returns {id, text, updatedAt}', async () => {
         const wf = new FleetWorkflow(createMockFleetApi());
-        const server = createDashboardViewer(wf, { port: 0, name: 'Bead Description Test' });
+        const stuffExtension = {
+            id: 'stuff',
+            title: 'Stuff',
+            js: '',
+            detailLookup(state, id) {
+                if (id !== 'item-1') return null;
+                return { text: 'the full text', updatedAt: 'v1' };
+            }
+        };
+        const server = createDashboardViewer(wf, { port: 0, name: 'Detail Hook Test', dashboardExtensions: [stuffExtension] });
 
         await withServer(server, async (port) => {
-            const bigDescription = 'D'.repeat(5000);
-            wf.publishState('beads', {
-                sprintTasks: [{ id: 'bd-1', title: 'Task 1', status: 'open', description: bigDescription, updated_at: '2026-07-20T00:00:00Z' }],
-                backlogTasks: []
-            });
-
-            // The lean /state projection must NOT carry the full description
-            // (apra-fleet-eft.27.1) -- the on-demand endpoint is the only way
-            // to get it back.
-            const state = JSON.parse((await httpGetFull(port, '/state')).body);
-            assert.ok(!JSON.stringify(state).includes(bigDescription), 'GET /state must never carry the full description');
-
-            const { statusCode, body } = await httpGetFull(port, '/beads/bd-1/description');
+            const { statusCode, body } = await httpGetFull(port, '/extensions/stuff/detail/item-1');
             assert.equal(statusCode, 200);
             const parsed = JSON.parse(body);
-            assert.equal(parsed.id, 'bd-1');
-            assert.equal(parsed.description, bigDescription);
-            assert.equal(parsed.updatedAt, '2026-07-20T00:00:00Z');
+            assert.equal(parsed.id, 'item-1');
+            assert.equal(parsed.text, 'the full text');
+            assert.equal(parsed.updatedAt, 'v1');
         });
     });
 
-    test('finds a bead in backlogTasks too, not just sprintTasks', async () => {
+    test('an extension whose detailLookup returns null (unknown item) yields 404, not a crash', async () => {
         const wf = new FleetWorkflow(createMockFleetApi());
-        const server = createDashboardViewer(wf, { port: 0, name: 'Bead Description Backlog Test' });
+        const stuffExtension = { id: 'stuff', title: 'Stuff', js: '', detailLookup() { return null; } };
+        const server = createDashboardViewer(wf, { port: 0, name: 'Detail Hook 404 Test', dashboardExtensions: [stuffExtension] });
 
         await withServer(server, async (port) => {
-            wf.publishState('beads', {
-                sprintTasks: [],
-                backlogTasks: [{ id: 'bd-backlog-1', title: 'Backlog item', status: 'open', description: 'backlog description', updated_at: '2026-07-19T00:00:00Z' }]
-            });
-
-            const { statusCode, body } = await httpGetFull(port, '/beads/bd-backlog-1/description');
-            assert.equal(statusCode, 200);
-            const parsed = JSON.parse(body);
-            assert.equal(parsed.description, 'backlog description');
-        });
-    });
-
-    test('an unknown bead id returns 404, not a crash', async () => {
-        const wf = new FleetWorkflow(createMockFleetApi());
-        const server = createDashboardViewer(wf, { port: 0, name: 'Bead Description 404 Test' });
-
-        await withServer(server, async (port) => {
-            wf.publishState('beads', { sprintTasks: [{ id: 'bd-1', title: 't', description: 'd' }], backlogTasks: [] });
-            const { statusCode } = await httpGetFull(port, '/beads/does-not-exist/description');
+            const { statusCode } = await httpGetFull(port, '/extensions/stuff/detail/does-not-exist');
             assert.equal(statusCode, 404);
         });
     });
 
-    test('returns 404 (not a crash) when no beads state has been published yet', async () => {
+    test('an unknown extension id yields 404, not a crash', async () => {
         const wf = new FleetWorkflow(createMockFleetApi());
-        const server = createDashboardViewer(wf, { port: 0, name: 'Bead Description No Extension Test' });
+        const server = createDashboardViewer(wf, { port: 0, name: 'Detail Hook Unknown Ext Test' });
 
         await withServer(server, async (port) => {
-            const { statusCode } = await httpGetFull(port, '/beads/bd-1/description');
+            const { statusCode } = await httpGetFull(port, '/extensions/does-not-exist/detail/item-1');
             assert.equal(statusCode, 404);
+        });
+    });
+
+    test('a registered extension with no detailLookup at all yields 404, not a crash (default no-op)', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi());
+        const noHookExtension = { id: 'no-hook', title: 'No Hook', js: '' };
+        const server = createDashboardViewer(wf, { port: 0, name: 'Detail Hook No-Op Test', dashboardExtensions: [noHookExtension] });
+
+        await withServer(server, async (port) => {
+            const { statusCode } = await httpGetFull(port, '/extensions/no-hook/detail/item-1');
+            assert.equal(statusCode, 404);
+        });
+    });
+
+    test('core carries no beads-specific knowledge: an arbitrary extension id works identically to "beads" would', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi());
+        const arbitraryExtension = {
+            id: 'totally-unrelated-domain',
+            title: 'Unrelated',
+            js: '',
+            detailLookup(state, id) { return { text: 'domain-agnostic text for ' + id, updatedAt: null }; }
+        };
+        const server = createDashboardViewer(wf, { port: 0, name: 'Detail Hook Generic Test', dashboardExtensions: [arbitraryExtension] });
+
+        await withServer(server, async (port) => {
+            const { statusCode, body } = await httpGetFull(port, '/extensions/totally-unrelated-domain/detail/x');
+            assert.equal(statusCode, 200);
+            assert.equal(JSON.parse(body).text, 'domain-agnostic text for x');
+        });
+    });
+});
+
+describe('apra-fleet-eft.37.4: GET /beads/:id/description (BOUNDARY-COMPAT one-release alias)', () => {
+    test('redirects (302) to the generic route under the beads extension id', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi());
+        const server = createDashboardViewer(wf, { port: 0, name: 'Bead Alias Redirect Test' });
+
+        await withServer(server, async (port) => {
+            const { statusCode, headers } = await httpGetFull(port, '/beads/bd-1/description');
+            assert.equal(statusCode, 302);
+            assert.equal(headers.location, '/extensions/beads/detail/bd-1');
+        });
+    });
+
+    test('the alias is a dumb redirect -- it never reaches into state itself, regardless of what is published', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi());
+        const server = createDashboardViewer(wf, { port: 0, name: 'Bead Alias No-State-Touch Test' });
+
+        await withServer(server, async (port) => {
+            wf.publishState('beads', { sprintTasks: [{ id: 'bd-1', description: 'd' }], backlogTasks: [] });
+            const { statusCode, headers } = await httpGetFull(port, '/beads/bd-1/description');
+            assert.equal(statusCode, 302);
+            assert.equal(headers.location, '/extensions/beads/detail/bd-1');
         });
     });
 });

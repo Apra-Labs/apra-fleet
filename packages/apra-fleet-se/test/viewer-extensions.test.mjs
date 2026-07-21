@@ -2,6 +2,49 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml } from '../auto-sprint/viewer-extensions.mjs';
 
+// apra-fleet-eft.37.4 (M3): beadsExtension.detailLookup is the relocated
+// (verbatim) former core findBeadById() -- core now only knows the generic
+// detailLookup(state, id) hook contract, never bd's sprintTasks/backlogTasks
+// shape. Exercised directly here since it is server-side (Node) code, not
+// embedded into beadsExtension.js's browser-side script.
+describe('beadsExtension.detailLookup: relocated findBeadById (server-side hook)', () => {
+    test('finds a bead in sprintTasks and returns {text, updatedAt}', () => {
+        const state = {
+            extensions: {
+                beads: {
+                    sprintTasks: [{ id: 'bd-1', description: 'full text here', updated_at: '2026-07-20T00:00:00Z' }],
+                    backlogTasks: []
+                }
+            }
+        };
+        const detail = beadsExtension.detailLookup(state, 'bd-1');
+        assert.deepStrictEqual(detail, { text: 'full text here', updatedAt: '2026-07-20T00:00:00Z' });
+    });
+
+    test('finds a bead in backlogTasks too, not just sprintTasks', () => {
+        const state = {
+            extensions: {
+                beads: {
+                    sprintTasks: [],
+                    backlogTasks: [{ id: 'bd-backlog-1', description: 'backlog description', updated_at: '2026-07-19T00:00:00Z' }]
+                }
+            }
+        };
+        const detail = beadsExtension.detailLookup(state, 'bd-backlog-1');
+        assert.deepStrictEqual(detail, { text: 'backlog description', updatedAt: '2026-07-19T00:00:00Z' });
+    });
+
+    test('an unknown bead id returns null, not a crash', () => {
+        const state = { extensions: { beads: { sprintTasks: [{ id: 'bd-1', description: 'd' }], backlogTasks: [] } } };
+        assert.strictEqual(beadsExtension.detailLookup(state, 'does-not-exist'), null);
+    });
+
+    test('returns null (not a crash) when no beads state has been published yet', () => {
+        assert.strictEqual(beadsExtension.detailLookup({ extensions: {} }, 'bd-1'), null);
+        assert.strictEqual(beadsExtension.detailLookup({}, 'bd-1'), null);
+    });
+});
+
 // Unit tests for apra-fleet-unw.10 (F9/A7-viewer): the beads dashboard
 // extension used to inject `node.title`/`node.description` into `innerHTML`
 // unescaped (XSS risk -- bead titles/descriptions are LLM-authored, and the
@@ -334,7 +377,7 @@ describe('apra-fleet-eft.27.2: browser-side fetch + localStorage cache (embedded
     // since only this describe block touches globalThis.localStorage/fetch.
     let originalLocalStorage, originalFetch;
 
-    test('cache miss: fetches from GET /beads/:id/description exactly once, then caches the result', async () => {
+    test('cache miss: fetches from GET /extensions/beads/detail/:id exactly once, then caches the result', async () => {
         originalLocalStorage = globalThis.localStorage;
         originalFetch = globalThis.fetch;
         try {
@@ -342,8 +385,8 @@ describe('apra-fleet-eft.27.2: browser-side fetch + localStorage cache (embedded
             let fetchCalls = 0;
             globalThis.fetch = async (url) => {
                 fetchCalls++;
-                assert.ok(url.includes('/beads/bd-1/description'));
-                return { ok: true, json: async () => ({ id: 'bd-1', description: 'the full text', updatedAt: 'v1' }) };
+                assert.ok(url.includes('/extensions/beads/detail/bd-1'));
+                return { ok: true, json: async () => ({ id: 'bd-1', text: 'the full text', updatedAt: 'v1' }) };
             };
 
             const { loadBeadDescription } = extractHelpers();
@@ -368,7 +411,7 @@ describe('apra-fleet-eft.27.2: browser-side fetch + localStorage cache (embedded
             let fetchCalls = 0;
             globalThis.fetch = async () => {
                 fetchCalls++;
-                return { ok: true, json: async () => ({ id: 'bd-1', description: 'the full text', updatedAt: 'v1' }) };
+                return { ok: true, json: async () => ({ id: 'bd-1', text: 'the full text', updatedAt: 'v1' }) };
             };
 
             const { loadBeadDescription } = extractHelpers();
@@ -398,7 +441,7 @@ describe('apra-fleet-eft.27.2: browser-side fetch + localStorage cache (embedded
             let fetchCalls = 0;
             globalThis.fetch = async () => {
                 fetchCalls++;
-                return { ok: true, json: async () => ({ id: 'bd-1', description: 'v' + fetchCalls, updatedAt: 'irrelevant' }) };
+                return { ok: true, json: async () => ({ id: 'bd-1', text: 'v' + fetchCalls, updatedAt: 'irrelevant' }) };
             };
 
             const { loadBeadDescription } = extractHelpers();
