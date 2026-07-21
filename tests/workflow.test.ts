@@ -43,6 +43,8 @@ interface Harness {
   seenArgv: string[] | null;
   /** Each call to deps.selfHeal(), recording the includeBuiltins arg passed. */
   selfHealCalls?: boolean[];
+  /** The env object runWorkflow passed to deps.resolveConnection. */
+  resolutionEnv?: Record<string, string | undefined>;
 }
 
 /**
@@ -119,7 +121,8 @@ function harness(
       selfHealCalls.push(includeBuiltins);
       return opts.selfHealResult ?? false;
     },
-    resolveConnection: async () => {
+    resolveConnection: async (env) => {
+      h.resolutionEnv = env;
       if (opts.resolveThrows) throw opts.resolveThrows;
       const mode = opts.mode ?? 'http';
       return { mode, reason: `attached to ${mode}` };
@@ -649,5 +652,36 @@ describe('self-heal -- on-demand extraction (apra-fleet-7pm.8)', () => {
     const h = harness({}, { hasAssets: true, selfHealResult: true });
     await runWorkflow(['auto-sprint'], h.deps);
     expect(h.selfHealCalls).toEqual([true]);
+  });
+});
+
+describe('server resolution env defaults (build-binary smoke false positive)', () => {
+  // The launcher knows its own server binary (deps.serverBin -- in SEA mode the
+  // running executable itself), but used to resolve the connection against the
+  // raw ambient env and only apply that default AFTERWARD, so a bare home
+  // (no singleton, no dev dist/) warned "could not resolve the fleet server"
+  // on every green CI build-binary smoke run. The resolver must see the same
+  // default the workflow itself will receive.
+  it('passes serverBin as APRA_FLEET_SERVER_BIN to resolveConnection when the ambient env sets neither variable', async () => {
+    const h = harness(autoSprintFiles());
+    const code = await runWorkflow(['auto-sprint'], h.deps);
+    expect(code).toBe(0);
+    expect(h.resolutionEnv?.APRA_FLEET_SERVER_BIN).toBe(SERVER_BIN);
+    expect(h.warns.filter((w) => w.includes('could not resolve'))).toEqual([]);
+  });
+
+  it('never overrides an ambient APRA_FLEET_SERVER_BIN', async () => {
+    const h = harness(autoSprintFiles(), { env: { APRA_FLEET_SERVER_BIN: '/custom/bin/apra-fleet' } });
+    const code = await runWorkflow(['auto-sprint'], h.deps);
+    expect(code).toBe(0);
+    expect(h.resolutionEnv?.APRA_FLEET_SERVER_BIN).toBe('/custom/bin/apra-fleet');
+  });
+
+  it('never injects SERVER_BIN into the resolution env when APRA_FLEET_SERVER_CMD is set', async () => {
+    const h = harness(autoSprintFiles(), { env: { APRA_FLEET_SERVER_CMD: 'node server.js run' } });
+    const code = await runWorkflow(['auto-sprint'], h.deps);
+    expect(code).toBe(0);
+    expect(h.resolutionEnv?.APRA_FLEET_SERVER_BIN).toBeUndefined();
+    expect(h.resolutionEnv?.APRA_FLEET_SERVER_CMD).toBe('node server.js run');
   });
 });

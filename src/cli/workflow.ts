@@ -403,9 +403,20 @@ export async function runWorkflow(argv: string[], depsOverride?: Partial<Workflo
   }
 
   // --- Fleet-server reachability (docs/adr-workflow-server-resolution.md).
+  // Resolve against an env view that already carries the launcher's own
+  // APRA_FLEET_SERVER_BIN default (in SEA mode: this very binary). Without it,
+  // a bare home (no HTTP singleton, no dev-monorepo dist/) exhausted every
+  // resolver tier and warned "could not resolve the fleet server" -- a false
+  // positive, since applyEnvDefaults() handed the workflow that exact default
+  // right after (observed on every green CI build-binary smoke run). The
+  // ambient env still wins when the user set either variable themselves.
   let mode: string | null = null;
   try {
-    const resolution = await deps.resolveConnection(deps.env);
+    const resolutionEnv = { ...deps.env };
+    if (!resolutionEnv.APRA_FLEET_SERVER_BIN && !resolutionEnv.APRA_FLEET_SERVER_CMD) {
+      resolutionEnv.APRA_FLEET_SERVER_BIN = deps.serverBin;
+    }
+    const resolution = await deps.resolveConnection(resolutionEnv);
     mode = resolution.mode;
     deps.log(`[workflow] fleet server: ${resolution.reason}`);
   } catch (err) {
