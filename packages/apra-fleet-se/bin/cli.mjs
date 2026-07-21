@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
@@ -746,7 +746,27 @@ async function main() {
 
 function isMainModule() {
     try {
-        return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+        if (process.argv[1] === undefined) return false;
+        const invokedUrl = pathToFileURL(process.argv[1]).href;
+        const moduleUrl = import.meta.url;
+        if (moduleUrl === invokedUrl) return true;
+
+        // On macOS, `mktemp -d` returns a path under /var/folders/... which is
+        // actually a symlink to /private/var/.... Node's ESM loader
+        // canonicalizes import.meta.url to the REAL path, but process.argv[1]
+        // is left un-canonicalized, so the raw URL comparison above can fail
+        // even though both paths point at the same file, silently skipping
+        // the self-executing block below (apra-fleet-eft.41.1). Fall back to
+        // comparing realpath'd paths on both sides; wrap in try/catch and
+        // fall back to "not main" (matching the already-failed raw
+        // comparison) if realpath fails for either side (e.g. ENOENT).
+        try {
+            const realInvokedUrl = pathToFileURL(realpathSync(process.argv[1])).href;
+            const realModuleUrl = pathToFileURL(realpathSync(fileURLToPath(moduleUrl))).href;
+            return realInvokedUrl === realModuleUrl;
+        } catch {
+            return false;
+        }
     } catch {
         return false;
     }
