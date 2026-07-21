@@ -81,10 +81,41 @@ export class ClaudeProvider implements ProviderAdapter {
         ? { input_tokens: u.input_tokens, output_tokens: u.output_tokens }
         : undefined;
 
-    const fromEvent = (obj: any): ParsedResponse | null => {
+    // apra-fleet-eft.28.6: first non-blank string wins. Used so an EMPTY
+    // (present-but-blank) result field on the `type:result` event falls back to
+    // the assistant text we harvested from the stream, instead of being kept as
+    // '' (a plain `obj.result ?? ...` keeps '' because it is not nullish).
+    const firstNonEmpty = (...candidates: any[]): string | undefined => {
+      for (const c of candidates) {
+        if (typeof c === 'string' && c.trim() !== '') return c;
+      }
+      return undefined;
+    };
+
+    // apra-fleet-eft.28.6: the assistant's reply text carried by a
+    // `type:assistant` stream event (message.content[] text blocks). Real
+    // capture (member 'trust-probe', eft.28 NEW EVIDENCE): the final
+    // `type:result` event's own `result` field came back empty even though the
+    // assistant reply -- including tool output -- was fully present in these
+    // preceding events. Harvesting it here lets the server recover the reply
+    // instead of dropping it and mislabelling the dispatch empty_response.
+    const assistantTextOf = (obj: any): string => {
+      const content = obj?.message?.content;
+      if (obj?.type !== 'assistant' || !Array.isArray(content)) return '';
+      return content
+        .filter((c: any) => c?.type === 'text' && typeof c.text === 'string')
+        .map((c: any) => c.text)
+        .join('');
+    };
+
+    const fromEvent = (obj: any, assistantFallback: string): ParsedResponse | null => {
       if (obj.type !== 'result') return null;
       return {
-        result: obj.result ?? obj.response ?? raw,
+        // Prefer the event's own result text; only when it is missing OR blank
+        // do we substitute the harvested assistant text. The final `?? raw`
+        // preserves the pre-existing behavior for a result event with no result
+        // field at all and no recoverable assistant text.
+        result: firstNonEmpty(obj.result, obj.response, assistantFallback) ?? obj.result ?? obj.response ?? raw,
         sessionId: obj.session_id,
         isError: obj.is_error === true || obj.subtype === 'error' || result.code !== 0,
         raw,
@@ -98,8 +129,10 @@ export class ClaudeProvider implements ProviderAdapter {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         // JSON array of events (some Claude Code versions collect JSONL into an array)
+        let assistantText = '';
         for (const obj of parsed) {
-          const r = fromEvent(obj);
+          assistantText += assistantTextOf(obj);
+          const r = fromEvent(obj, assistantText);
           if (r) return r;
         }
       } else {
@@ -117,11 +150,14 @@ export class ClaudeProvider implements ProviderAdapter {
     } catch { /* not valid JSON - try line-by-line JSONL below */ }
 
     // JSONL format (Claude Code 2.1.113+): one JSON object per line
+    let assistantText = '';
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const r = fromEvent(JSON.parse(trimmed));
+        const obj = JSON.parse(trimmed);
+        assistantText += assistantTextOf(obj);
+        const r = fromEvent(obj, assistantText);
         if (r) return r;
       } catch { /* skip non-JSON lines */ }
     }
