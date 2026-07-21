@@ -221,7 +221,14 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
             // the pid lets the liveness check detect the dead backing process
             // and re-dispatch fresh instead of blocking.
             if (postClaims) {
-              const priorPid = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id)?.pid;
+              // apra-fleet-eft.50.1: fall back to the durable launch-pid anchor
+              // when the live SessionState was already unregistered before this
+              // connect-back (so get()?.pid is undefined). Without this last
+              // fallback a reconnect on a dispatch RETRY re-registered with
+              // pid=undefined, blinding the interactive liveness check on
+              // attempt 2+ and reproducing eft.28's silent hang.
+              const priorPid = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id)?.pid
+                ?? sessionRegistry.lastKnownPid(postClaims.workspace_id, postClaims.member_id);
               sessionRegistry.register({
                 ...postClaims,
                 server: sessionServer,
@@ -231,7 +238,11 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
               });
               logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid}`);
             } else if (fallbackMemberId) {
-              const priorPid = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId)?.pid;
+              // apra-fleet-eft.50.1: same durable launch-pid fallback as the
+              // JWT branch above, so a URL-param reconnect on a retry keeps a
+              // pid for the interactive liveness check to test.
+              const priorPid = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId)?.pid
+                ?? sessionRegistry.lastKnownPid(sessionWorkspaceId, fallbackMemberId);
               sessionRegistry.register({
                 member_id: fallbackMemberId,
                 workspace_id: sessionWorkspaceId,

@@ -249,7 +249,11 @@ function waitForInteractiveResponse(
     const poller = setInterval(() => {
       if (settled) return;
       const session = sessionRegistry.get(workspaceId, agent.id);
-      const pid = session?.pid;
+      // apra-fleet-eft.50.1: fall back to the durable launch-pid anchor when the
+      // live session lost its pid on a reconnect, so this in-flight poll can
+      // still detect a dead persistent process on a retry that reused the
+      // reconnected session -- not only when the session still carries its pid.
+      const pid = session?.pid ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
       if (pid !== undefined && !isPidAlive(pid)) {
         settled = true;
         clearInterval(poller);
@@ -423,7 +427,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const isClaudeMember = (agent.llmProvider ?? 'claude') === 'claude';
   const workspaceId = getTokenIssuer().workspaceId();
   let interactiveSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
-  if (interactiveSession?.server && interactiveSession.pid !== undefined && !isPidAlive(interactiveSession.pid)) {
+  // apra-fleet-eft.50.1: resolve the pid to test FRESH on every dispatch
+  // (never cached from a prior attempt) and fall back to the durable
+  // launch-pid anchor when this reused session lost its own pid on a
+  // reconnect. This is what re-arms the dead-session guard on a retry attempt
+  // 2+ exactly as on attempt 1: the specific eft.50 ordering (attempt 1 fails
+  // clean, attempt 2 targets a now-dead reconnected session) used to slip
+  // through here because the reconnected SessionState had pid=undefined, so the
+  // check below was skipped and the caller hung on the dead channel.
+  const interactivePid = interactiveSession?.pid
+    ?? (isClaudeMember ? sessionRegistry.lastKnownPid(workspaceId, agent.id) : undefined);
+  if (interactiveSession?.server && interactivePid !== undefined && !isPidAlive(interactivePid)) {
     // apra-fleet-eft.28.1/eft.28.5: never reuse a persistent interactive
     // session whose underlying member claude process has already died. Before
     // eft.28.1, a dead launch-time process (e.g. it crashed before ever
@@ -447,13 +461,21 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // http-transport carries the launch-time pid forward across re-registration
     // (eft.28.5), so `pid` is no longer undefined for a member that registered
     // via register_member and then connected back -- the exact real-fleet
-    // repro that evaded eft.28.1. `pid` stays undefined only for sessions that
-    // never had a captured PID (e.g. tests, or a provider that never went
-    // through register_member's local spawn path); those are left to the
-    // pre-existing interactive behavior, unchanged.
-    const deadScope = new LogScope('execute_prompt', `[interactive] session liveness check pid=${interactiveSession.pid}`, agent);
+    // repro that evaded eft.28.1.
+    //
+    // apra-fleet-eft.50.1: eft.28.5's carry-forward still lost the pid when a
+    // reconnect happened AFTER the prior SessionState was already unregistered
+    // (priorPid lookup found nothing), so a retry attempt 2+ reused a
+    // pid=undefined session and hung. `interactivePid` above now back-stops
+    // that with sessionRegistry.lastKnownPid, the durable per-member launch-pid
+    // anchor, so this guard re-arms on EVERY dispatch attempt that reuses an
+    // interactive session, not just the first. It stays undefined only for
+    // sessions that never had a captured PID at all (e.g. tests, or a provider
+    // that never went through register_member's local spawn path); those are
+    // left to the pre-existing interactive behavior, unchanged.
+    const deadScope = new LogScope('execute_prompt', `[interactive] session liveness check pid=${interactivePid}`, agent);
     sessionRegistry.unregister(workspaceId, agent.id);
-    deadScope.info(`member claude process (pid ${interactiveSession.pid}) for "${agent.friendlyName}" is dead -- evicting the stale interactive session and re-dispatching fresh (non-interactive)`);
+    deadScope.info(`member claude process (pid ${interactivePid}) for "${agent.friendlyName}" is dead -- evicting the stale interactive session and re-dispatching fresh (non-interactive)`);
     interactiveSession = undefined;
   }
   if (interactiveSession?.server) {
