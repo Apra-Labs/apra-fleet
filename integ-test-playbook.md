@@ -79,6 +79,16 @@ register a fleet member and does NOT start a sprint. Those are the first
 steps of the test itself (see `## Test scenario`), because member
 registration is one of the things under test.
 
+Prerequisites (stabilization Issue 43: a fresh checkout fails without
+these; a sprint workspace normally has all three already):
+- `<repo-root>` cloned recursively (`git clone --recursive`, or
+  `git submodule update --init --recursive` after checkout) -- `install`
+  fails at its fleet-skill step if `vendor/apra-pm` is empty.
+- `npm install && npm run build` has been run -- every step below invokes
+  `node dist/index.js`.
+- The runner's real session has a live Claude credential (see the
+  credential-provisioning step in `## Test scenario`).
+
 ```bash
 SANDBOX="$HOME/temp/.apra-fleet-tests"
 export REAL_HOME="$HOME"
@@ -90,6 +100,17 @@ cd "<repo-root>"
 node dist/index.js install
 node dist/index.js start
 git clone https://github.com/Apra-Labs/fleet-e2e-toy "$HOME/toy-repo"
+```
+
+Seed a git identity into the sandbox HOME immediately after the override
+above (stabilization Issue 43): a fresh `$SANDBOX` has no `.gitconfig`, so
+without this `bd init`'s seed commit fails (exit 128, surfaced as a
+"failed to commit beads files" warning) and the toy sprint's doer fails at
+its very first `git commit`.
+
+```bash
+git config --global user.name "integ-smoke-runner"
+git config --global user.email "integ-smoke-runner@apra-fleet.invalid"
 ```
 
 `REAL_HOME` preserves the runner's real (pre-sandbox) home directory for the
@@ -241,7 +262,16 @@ shell-drivable -- no MCP tool is required to run the scenario.
 
 1. Register one member pointed at `$HOME/toy-repo`, using the isolated
    `HOME`/`APRA_FLEET_PORT` from Setup, via the `register-member` CLI
-   subcommand (Bash, not the `register_member` MCP tool):
+   subcommand (Bash, not the `register_member` MCP tool).
+
+   ORDER MATTERS (stabilization Issue 43): run step 3's credential
+   provisioning BEFORE this registration. `register-member` launches the
+   member's live interactive claude session immediately, and a session
+   launched before credentials exist comes up "Not logged in" and stays
+   that way -- fixing the credentials file afterward does not heal the
+   already-running process, so every interactive dispatch routed to it
+   silently burns its full timeout. (Steps stay numbered as written so
+   cross-references hold; execute them 3 -> 1 -> 2 -> 4...)
 
    ```bash
    node dist/index.js register-member --type local --name toy-doer \
@@ -303,23 +333,37 @@ shell-drivable -- no MCP tool is required to run the scenario.
    `.git`/`.beads`, so this step cannot reach or write to the real
    `fleet-e2e-toy` git remote or its Dolt remote.
 
+   Seed the FULL `claudeAiOauth` object, not just the access token
+   (stabilization Issue 43): a credentials file containing only
+   `accessToken` is rejected by the Claude CLI as "Not logged in" -- it
+   requires at least `expiresAt` to treat the session as valid. Seeding
+   the whole object preserves the real expiry and refresh token, so
+   nothing is fabricated. `auth --oauth` accepts either a bare token or a
+   full JSON object as the secret and merges whichever it gets. Fall back
+   to the bare `CLAUDE_CODE_OAUTH_TOKEN` env var only when no real
+   credentials file exists (that path is what the env var is for).
+
    ```bash
-   TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
-   if [ -z "$TOKEN" ] && [ -f "$REAL_HOME/.claude/.credentials.json" ]; then
-     TOKEN=$(node -e "
+   SECRET=""
+   if [ -f "$REAL_HOME/.claude/.credentials.json" ]; then
+     SECRET=$(node -e "
        const fs = require('fs');
        const c = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8'));
-       process.stdout.write((c.claudeAiOauth && c.claudeAiOauth.accessToken) || '');
+       const o = c.claudeAiOauth;
+       process.stdout.write(o && o.accessToken ? JSON.stringify(o) : '');
      " "$REAL_HOME/.claude/.credentials.json")
    fi
-   if [ -z "$TOKEN" ]; then
+   if [ -z "$SECRET" ]; then
+     SECRET="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+   fi
+   if [ -z "$SECRET" ]; then
      echo "No ambient Claude credential found (CLAUDE_CODE_OAUTH_TOKEN unset" \
           "and $REAL_HOME/.claude/.credentials.json missing/empty). Run" \
           "'/login' in a real session first, or export" \
           "CLAUDE_CODE_OAUTH_TOKEN, then re-run this step." >&2
      exit 1
    fi
-   echo "$TOKEN" | node dist/index.js secret --set INTEG-TOY-DOER-TOKEN --persist -y
+   printf '%s' "$SECRET" | node dist/index.js secret --set INTEG-TOY-DOER-TOKEN --persist -y
    node dist/index.js auth --oauth --llm claude secure.INTEG-TOY-DOER-TOKEN
    ```
 
