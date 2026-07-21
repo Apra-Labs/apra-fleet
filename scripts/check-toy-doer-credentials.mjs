@@ -165,6 +165,15 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+// The probe scripts below are POSIX shell ('env -i ... bash -l -c ...'), so
+// they must run under bash on every platform: execSync's default shell on
+// Windows is cmd.exe, which cannot parse them at all (observed on
+// windows-latest CI, run 29860404996: "'true'' is not recognized as an
+// internal or external command"). Same precedent as
+// tests/integ-test-playbook-teardown.test.ts (04c5e12): PATH-resolved
+// bash.exe (Git Bash) on win32, /bin/bash elsewhere.
+const PROBE_SHELL = process.platform === 'win32' ? 'bash.exe' : '/bin/bash';
+
 /**
  * Mirrors getCleanEnv()'s seed set (HOME, USER, LOGNAME, SHELL), with HOME
  * pinned to the given fleetHome rather than the ambient process env, so
@@ -215,7 +224,7 @@ export function checkCleanEnvCredentialsFile(fleetHome = defaultFleetHome(), dep
 
   let output;
   try {
-    output = run(script, { encoding: 'utf-8' });
+    output = run(script, { encoding: 'utf-8', shell: PROBE_SHELL });
   } catch (err) {
     return {
       ok: false,
@@ -349,7 +358,7 @@ export function checkCleanEnvRealClaudeAuth(fleetHome = defaultFleetHome(), deps
 
   let output;
   try {
-    output = run(script, { encoding: 'utf-8' });
+    output = run(script, { encoding: 'utf-8', shell: PROBE_SHELL });
   } catch (err) {
     return {
       ok: false,
