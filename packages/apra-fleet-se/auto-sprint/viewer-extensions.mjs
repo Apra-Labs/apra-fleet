@@ -26,18 +26,18 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * so that single `.toString()` embed captures everything -- no second
  * function needs its own embed.
  *
- * Tree is built from `blocks`-type dependency edges (task.dependencies),
- * not `parent`/containment -- the user-facing goal is "show me what
- * unblocks what", not "show me epic->task nesting" (a task's own epic
- * parent isn't itself in this dataset and carries no ordering information).
- * A task can have multiple blockers (a real DAG, not a strict tree); to
- * keep the rendering a simple, readable nested list, each task is nested
- * under exactly one PRIMARY blocker (deterministic: lexicographically
- * smallest in-scope blocker id) and any additional blockers are listed
- * inline as a "blocked by" badge so no dependency information is lost.
- * Multiple top-level roots (tasks with no in-scope blocker) render as
- * multiple top-level rows -- this is expected, not an error, whenever a
- * sprint targets more than one independent top-level item at once.
+ * Tree is built from each task's `parent` field (bd's real parent-child
+ * containment, e.g. a `[test]` task nested under its owning bug/feature),
+ * not from `blocks`-type dependency edges -- the user-facing goal is "show
+ * me epic->task nesting" (containment), not "show me what unblocks what"
+ * (ordering). A task with no in-dataset parent is a root. `blocks`-type
+ * edges are a real DAG (a task can have multiple blockers) with no bearing
+ * on tree placement; every blocker is instead listed inline as a compact
+ * "blocked by" badge on the row, so no dependency/ordering information is
+ * lost even though it is no longer used for nesting. Multiple top-level
+ * roots (tasks with no in-dataset parent) render as multiple top-level
+ * rows -- this is expected, not an error, whenever a sprint targets more
+ * than one independent top-level item at once.
  *
  * The panel always shows two top-level sections: "Sprint" (the dependency
  * tree above, built from `sprintTasks`) and "Backlog" (`backlogTasks` --
@@ -203,29 +203,36 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         return '<tr><td colspan="6" style="padding: 8px; font-size: 12px; color: #71717a; font-style: italic;">' + escapeHtml(message) + '</td></tr>';
     }
 
-    // --- Build a dependency tree from `blocks`-type edges, not `parent` ---
+    // --- Build a containment tree from each task's `parent` field, not
+    // from `blocks`-type dependency edges (see module doc-comment above) ---
     const map = {};
     sprintTasks.forEach((t) => { map[t.id] = { ...t, children: [], blockedBy: [] }; });
 
-    const childrenOf = {}; // blockerId -> [taskId, ...] (this blocker unblocks these)
+    const childrenOf = {}; // parentId -> [taskId, ...] (parent-containment, not blocking)
     sprintTasks.forEach((t) => {
+        // 'blocks'-type dependency edges are still captured here -- they no
+        // longer decide tree placement, but every blocker is preserved and
+        // rendered as an inline annotation below so no dependency
+        // information is lost.
         const deps = Array.isArray(t.dependencies) ? t.dependencies : [];
         const blockerIds = deps
             .filter((d) => d && d.type === 'blocks' && map[d.depends_on_id])
             .map((d) => d.depends_on_id);
         map[t.id].blockedBy = blockerIds;
-        if (blockerIds.length > 0) {
-            // Deterministic primary parent: lexicographically smallest
-            // in-scope blocker id. Any remaining blockers are still listed
-            // via the "blocked by" badge below -- not lost, just not used
-            // for tree placement (a task can only live in one place in a
-            // simple nested list).
-            const primary = blockerIds.slice().sort()[0];
-            (childrenOf[primary] = childrenOf[primary] || []).push(t.id);
+
+        // Only an in-dataset parent contributes to nesting -- a `parent`
+        // value pointing outside sprintTasks (e.g. an epic not itself part
+        // of this sprint run) leaves the task a root, same as having no
+        // parent at all.
+        const parentId = t.parent;
+        if (parentId !== undefined && parentId !== null && map[parentId]) {
+            (childrenOf[parentId] = childrenOf[parentId] || []).push(t.id);
         }
     });
 
-    const roots = sprintTasks.filter((t) => map[t.id].blockedBy.length === 0).map((t) => t.id);
+    const roots = sprintTasks
+        .filter((t) => !(t.parent !== undefined && t.parent !== null && map[t.parent]))
+        .map((t) => t.id);
 
     function renderNode(nodeId, depth, rendered) {
         if (rendered.has(nodeId)) return ''; // cycle-guard: never render twice
@@ -243,13 +250,14 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
 
         const titleHtml = descriptionDetailsHtml(node, safeId, safeTitle);
 
-        // Additional blockers beyond the one used for tree placement --
-        // only shown when there's more than one, so the common (single
-        // blocker or none) case stays uncluttered.
+        // 'blocks'-type dependency edges no longer decide tree placement
+        // (nesting now comes from `parent`), so every blocker -- not just
+        // ones beyond a former "primary" -- must be listed here or the
+        // information would be lost.
         let extraBlockedByHtml = '';
-        if (node.blockedBy.length > 1) {
-            const others = node.blockedBy.slice().sort().slice(1).map((id) => '#' + escapeHtml(id)).join(', ');
-            extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">also blocked by: ' + others + '</div>';
+        if (node.blockedBy.length > 0) {
+            const blockers = node.blockedBy.slice().sort().map((id) => '#' + escapeHtml(id)).join(', ');
+            extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">blocked by: ' + blockers + '</div>';
         }
 
         let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
