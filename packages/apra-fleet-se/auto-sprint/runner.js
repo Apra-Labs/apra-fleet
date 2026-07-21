@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, isNonRetryableDispatchError } from './errors.mjs';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 
 // apra-fleet-eft.8.12: parseUnmergedPaths is re-exported here (rather than
@@ -4029,6 +4029,14 @@ async function runSprintCycle(context) {
                     break;
                 } catch (err) {
                     plannerErr = err;
+                    // Stabilization Issue 43: auth/workspace-trust failures are
+                    // deterministic -- no retry can ever succeed, so abort the
+                    // loop immediately instead of burning the remaining
+                    // attempts' dispatch budgets reproducing the same failure.
+                    if (isNonRetryableDispatchError(err)) {
+                        log(`Planner dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting retries -- fix the member's credentials/trust and re-run.`);
+                        break;
+                    }
                     const isLastAttempt = i === PLANNER_DISPATCH_RETRY_DELAYS_MS.length - 1;
                     log(`Planner dispatch threw: ${err.message}.${isLastAttempt ? ' Retries exhausted.' : ' Retrying.'}`);
                 }
@@ -4567,6 +4575,11 @@ async function runSprintCycle(context) {
                         if (dispatchError) {
                             log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
                         }
+                    } else if (isNonRetryableDispatchError(err)) {
+                        // Stabilization Issue 43: auth/trust failures cannot be
+                        // fixed by retrying the identical dispatch.
+                        log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw a non-retryable error (auth/trust): ${err.message}. Not retrying.`);
+                        dispatchError = err;
                     } else {
                         log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
                         wasRetried = true;
@@ -5219,6 +5232,11 @@ async function runSprintCycle(context) {
     try {
         finalVerdictResult = await runFinalReviewAttempt();
     } catch (err) {
+        if (isNonRetryableDispatchError(err)) {
+            // Stabilization Issue 43: auth/trust failures are deterministic --
+            // the retry below would only reproduce them.
+            throw err;
+        }
         if (err instanceof AgentOutputError) {
             log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
         } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {

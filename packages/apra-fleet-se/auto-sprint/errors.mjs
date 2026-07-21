@@ -269,3 +269,30 @@ export class DoltSyncError extends WorkflowError {
         this.doltOutput = doltOutput;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Non-retryable dispatch failures (stabilization Issue 43 / smoke rehearsal)
+// ---------------------------------------------------------------------------
+//
+// An authentication or workspace-trust failure is deterministic: the member's
+// credential/trust state does not change between attempts, so every retry
+// burns a full dispatch budget to reproduce the identical failure (observed
+// live: 5 planner retries x 15-minute interactive timeouts against an
+// unauthenticated member = 75 wasted minutes for an error that was terminal
+// at second zero). The fleet server already classifies these categories as
+// non-retryable (src/utils/prompt-errors.ts isRetryable()); this mirrors
+// that judgment on the engine side, keyed off the server's own error-message
+// signatures since the message string is all that crosses the dispatch
+// boundary today.
+const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace not trusted|has not been trusted/i;
+
+/**
+ * True when a dispatch error can NEVER be fixed by retrying (auth /
+ * workspace-trust failures). Callers must abort their retry loop and surface
+ * the error immediately, with remediation left to the operator.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isNonRetryableDispatchError(err) {
+    return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
+}
