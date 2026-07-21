@@ -441,12 +441,13 @@ jobs:
 
           $bin = Join-Path $PWD "dist\${{ matrix.binary }}"
           $out = & $bin workflow auto-sprint --help 2>"$env:RUNNER_TEMP\as-stderr.log"
+          $code = $LASTEXITCODE
           $errText = Get-Content "$env:RUNNER_TEMP\as-stderr.log" -Raw -ErrorAction SilentlyContinue
           $out | Write-Host
           Write-Host "--- stderr ---"
           Write-Host $errText
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "workflow auto-sprint --help exited $LASTEXITCODE"
+          if ($code -ne 0) {
+            Write-Error "workflow auto-sprint --help exited $code"
             exit 1
           }
           $outText = ($out -join "`n")
