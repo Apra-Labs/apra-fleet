@@ -450,6 +450,32 @@ describe('runWorkflow -- import trampoline', () => {
     expect(main).not.toHaveBeenCalled();
   });
 
+  // apra-fleet-eft.41.2 / .41.4: a module that neither declares
+  // `selfExecuting = true` nor exports a callable main/run/default used to
+  // fall through silently, RETURNing 0 having done nothing -- the worst
+  // failure mode (a no-op reported as success). The launcher must fail loud:
+  // nonzero exit + an actionable stderr message naming the module.
+  it('fails loud (nonzero exit, actionable stderr) when the module neither self-executes nor exports a callable entry', async () => {
+    const h = harness(autoSprintFiles(), { moduleExports: {} });
+    const code = await runWorkflow(['auto-sprint'], h.deps);
+    expect(code).not.toBe(0);
+    expect(code).toBe(1);
+    const errText = h.errors.join('\n');
+    expect(errText).toContain('did not execute');
+    expect(errText).toContain('auto-sprint');
+    expect(errText).toContain('selfExecuting');
+    expect(errText).toContain('main/run/default');
+  });
+
+  it('also fails loud when the module exports non-function main/run/default values', async () => {
+    const h = harness(autoSprintFiles(), {
+      moduleExports: { main: 'not-a-function', run: 42, default: {} },
+    });
+    const code = await runWorkflow(['auto-sprint'], h.deps);
+    expect(code).toBe(1);
+    expect(h.errors.join('\n')).toContain('did not execute');
+  });
+
   it('a thrown error from the workflow is exit 1 with the stack on stderr', async () => {
     const err = new Error('workflow blew up');
     const h = harness(autoSprintFiles(), { importThrows: err });
