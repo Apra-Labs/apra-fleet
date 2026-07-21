@@ -2384,6 +2384,71 @@ export function sanitizePrText(text) {
 }
 
 // ---------------------------------------------------------------------------
+// Integ report part-2 (smoke test) SHA-freshness validation (apra-fleet-eft.55.2)
+// ---------------------------------------------------------------------------
+//
+// apra-fleet-eft.55 (run 19 Integ C5): a resumed integ-test-runner session
+// reused a part-2 (smoke test) result executed EARLIER in the same session,
+// before the cycle's fixes were deployed, then issued verification verdicts
+// from that stale evidence. The Integ Test dispatch (runSprintCycle, below)
+// hands the runner this cycle's deploy-verified SHA and instructs it to echo
+// that SHA back in its report's `summary` using the literal marker
+// "PART2_SHA: <sha>" once part 2 has actually run against it (see
+// `part2ShaClause`). These two pure functions extract and validate that
+// marker; the dispatch call site treats an absent/mismatched SHA as
+// INCONCLUSIVE rather than trusting the report's `passed` field.
+
+// Case-insensitive; matches a short or full git SHA following the marker.
+const PART2_SHA_MARKER_RE = /PART2_SHA:\s*([0-9a-f]{7,40})/i;
+
+/**
+ * Extracts a `PART2_SHA: <sha>` marker from an integ-test-runner report's
+ * free-text `summary`, if present.
+ * @param {unknown} summary
+ * @returns {string|null} the SHA, lowercased, or null if no marker is found.
+ */
+export function extractPart2Sha(summary) {
+    if (typeof summary !== 'string') return null;
+    const match = PART2_SHA_MARKER_RE.exec(summary);
+    return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * Validates that an integ-test-runner report's part-2 (smoke test) evidence
+ * is fresh -- i.e. cites THIS cycle's deploy-verified SHA, not a prior
+ * deploy's stale result carried over by a resumed session. Pure/testable:
+ * takes the already-dispatched integ report and the engine-computed
+ * deploy-verified SHA for this cycle; does no I/O itself.
+ *
+ * A short SHA on either side is accepted as a match via prefix comparison
+ * (git's own short-SHA convention), so a runner that only has `git rev-parse
+ * --short HEAD` available is not unfairly penalized.
+ * @param {{summary?: string}} integResult - the integ-test-runner's report.
+ * @param {string|null} deployedSha - this cycle's deploy-verified SHA
+ *   (lowercased), or null if the engine could not resolve one this cycle --
+ *   in which case there is nothing to validate against, so this always
+ *   returns `inconclusive: false` (falls back to plain pass/fail handling).
+ * @returns {{ inconclusive: boolean, reason: ('absent'|'mismatched'|null), reportedSha: (string|null) }}
+ */
+export function validatePart2Evidence(integResult, deployedSha) {
+    const reportedSha = extractPart2Sha(integResult && integResult.summary);
+    if (!deployedSha) {
+        return { inconclusive: false, reason: null, reportedSha };
+    }
+    if (!reportedSha) {
+        return { inconclusive: true, reason: 'absent', reportedSha: null };
+    }
+    const normalizedDeployed = deployedSha.toLowerCase();
+    const matches = normalizedDeployed === reportedSha
+        || normalizedDeployed.startsWith(reportedSha)
+        || reportedSha.startsWith(normalizedDeployed);
+    if (!matches) {
+        return { inconclusive: true, reason: 'mismatched', reportedSha };
+    }
+    return { inconclusive: false, reason: null, reportedSha };
+}
+
+// ---------------------------------------------------------------------------
 // Finalization prompt builders (apra-fleet-unw.17, A6)
 // ---------------------------------------------------------------------------
 
@@ -3673,6 +3738,32 @@ async function runSprintCycle(context) {
         return res.output.trim() === 'found';
     }
 
+    // apra-fleet-eft.55.2: resolves the SHA the sprint branch's HEAD sat at
+    // right after a successful deploy this cycle -- the "deploy-verified
+    // SHA" the Integ Test phase below hands to the integ-test-runner
+    // dispatch and later checks its part-2 (smoke test) evidence against
+    // (see validatePart2Evidence). Same failSoft probe idiom as
+    // probeFileExists: a transient/portability failure here must never
+    // throw and kill the sprint -- it just means part-2 SHA freshness
+    // cannot be verified this cycle (validatePart2Evidence treats a null
+    // deployedSha as "nothing to validate against", falling back to plain
+    // pass/fail).
+    async function getDeployedSha() {
+        const res = await command('git rev-parse HEAD', {
+            member_name: orchestratorMember, silent: true, label: 'Resolve deploy-verified SHA', failSoft: true,
+        });
+        if (!res.ok) {
+            log(`Could not resolve the deploy-verified SHA this cycle (treating as unknown, skipping part-2 SHA freshness validation): ${res.error}`);
+            return null;
+        }
+        const sha = res.output.trim();
+        if (!/^[0-9a-f]{7,40}$/i.test(sha)) {
+            log(`git rev-parse HEAD returned an unexpected value ("${sha}") -- treating the deploy-verified SHA as unknown, skipping part-2 SHA freshness validation.`);
+            return null;
+        }
+        return sha.toLowerCase();
+    }
+
     // apra-fleet-eft.34: D-pull the orchestrator's OWN beads clone before the
     // very first bd query pre-sprint validation issues (via updateDashboard's
     // bdListScoped('') below, then the initialBeads/notDoneBeads queries).
@@ -4797,6 +4888,7 @@ async function runSprintCycle(context) {
         const hasPlaybook = await probeFileExists('integ-test-playbook.md');
 
         let deployedThisCycle = hasDeploy ? null : false; // null = not attempted yet
+        let deployedSha = null; // apra-fleet-eft.55.2: this cycle's deploy-verified SHA, set only on a real deploy success
 
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
@@ -4858,6 +4950,12 @@ async function runSprintCycle(context) {
             if (!deployedThisCycle) {
                 deployFailures.push({ cycle, notes: deployResult.notes });
                 log(`Deploy FAILED this cycle (C${cycle}): ${deployResult.notes}. Skipping Integration Test phase.`);
+            } else {
+                // apra-fleet-eft.55.2: resolve THIS cycle's deploy-verified
+                // SHA now, right after a real deploy success, so the Integ
+                // Test dispatch below can hand it to the runner and later
+                // check its part-2 evidence was actually run against it.
+                deployedSha = await getDeployedSha();
             }
         } else {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
@@ -4913,6 +5011,22 @@ async function runSprintCycle(context) {
                       `your pass shows the underlying defect no longer reproduces, close it (bd close) with a ` +
                       `note naming the evidence; if it still reproduces, leave it open and say why.`
                     : '';
+                // apra-fleet-eft.55.2: hand the runner THIS cycle's
+                // deploy-verified SHA and require it to echo the SHA back in
+                // its report -- the engine below (validatePart2Evidence)
+                // rejects a report with an absent/mismatched SHA as
+                // INCONCLUSIVE rather than trusting stale part-2 (smoke
+                // test) evidence inherited from a pre-fix run (the eft.55
+                // incident). Omitted entirely when deployedSha could not be
+                // resolved this cycle (see getDeployedSha) -- nothing to
+                // require freshness against.
+                const part2ShaClause = deployedSha
+                    ? ` This cycle's deploy-verified SHA is ${deployedSha}. Part 2 (the smoke test) MUST be ` +
+                      `(re)run fresh against this deployed SHA this cycle -- a part-2 result reused from a ` +
+                      `resumed session's earlier, pre-fix run does NOT satisfy this. Record this exact SHA in ` +
+                      `your report's summary using the literal marker "PART2_SHA: ${deployedSha}" once part 2 ` +
+                      `has actually run against it.`
+                    : '';
                 const featurePrompt = (openFeatures.length > 0
                     ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
                       `${openFeatures.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
@@ -4920,7 +5034,7 @@ async function runSprintCycle(context) {
                     : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
                       `this cycle -- if the playbook still names concrete checks to run, run them; ` +
                       `otherwise report nothing to test. Add bug beads if needed, filed under ` +
-                      `--parent ${targetIssues[0]}.`) + pendingClosureClause;
+                      `--parent ${targetIssues[0]}.`) + pendingClosureClause + part2ShaClause;
                 // apra-fleet-eft.8.2: integ-test-runner does NOT touch code
                 // (pushCode: false, no git push) but it DOES mutate beads --
                 // it closes passing features and files bug beads. Per Plan 3.3
@@ -5004,11 +5118,32 @@ async function runSprintCycle(context) {
                 }
             }
             log(`Integ Test Runner: ${JSON.stringify(integResult)}`);
-            // A4: never swallow a failure just because the agent chose to
-            // (or didn't) file bugs -- `passed` is the honest source of
-            // truth, checked explicitly and propagated below regardless of
-            // `bugsFiled.length`.
-            if (integResult.passed !== true) {
+            // apra-fleet-eft.55.2: before trusting `passed` at all, verify
+            // part-2 (smoke test) evidence actually came from THIS cycle's
+            // deploy-verified SHA -- see validatePart2Evidence's doc
+            // comment for the eft.55 incident this guards against (a
+            // resumed session's part-2 result from BEFORE this cycle's
+            // fixes were deployed, verification verdicts issued from stale
+            // evidence). An absent/mismatched SHA is INCONCLUSIVE, not a
+            // pass/fail verdict -- still recorded here so stale evidence can
+            // never silently masquerade as a genuine pass, but tagged
+            // (`inconclusive: true`) and worded distinctly so the final
+            // reviewer/harvester can tell the two apart. A matching SHA (or
+            // an unresolvable deployedSha, see getDeployedSha) falls
+            // through unchanged to the ordinary pass/fail check below.
+            const part2Evidence = validatePart2Evidence(integResult, deployedSha);
+            if (part2Evidence.inconclusive) {
+                const reasonText = part2Evidence.reason === 'absent'
+                    ? 'the report carries no PART2_SHA marker'
+                    : `the report's PART2_SHA (${part2Evidence.reportedSha}) does not match this cycle's deploy-verified SHA (${deployedSha})`;
+                const inconclusiveNote = `INCONCLUSIVE (part-2/smoke evidence not verified fresh -- ${reasonText}): ${integResult.summary}`;
+                integFailures.push({ cycle, notes: inconclusiveNote, bugsFiled: integResult.bugsFiled, inconclusive: true });
+                log(`Integration tests INCONCLUSIVE this cycle (C${cycle}): ${reasonText}. Not accepted as pass or fail evidence.`);
+            } else if (integResult.passed !== true) {
+                // A4: never swallow a failure just because the agent chose
+                // to (or didn't) file bugs -- `passed` is the honest source
+                // of truth, checked explicitly and propagated below
+                // regardless of `bugsFiled.length`.
                 integFailures.push({ cycle, notes: integResult.summary, bugsFiled: integResult.bugsFiled });
                 log(`Integration tests FAILED this cycle (C${cycle}, bugsFiled: ${integResult.bugsFiled.join(', ') || 'none'}): ${integResult.summary}`);
             }

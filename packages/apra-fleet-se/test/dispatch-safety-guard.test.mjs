@@ -122,7 +122,13 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // })` call site, used by doltPushAfter to consult a member's bd-level
 // sync.remote setting before treating a non-diverged push failure as fatal.
 // Verified compliant (explicit member_name).
-const EXPECTED_COMMAND_COUNT = 29;
+// 29 -> 30 (apra-fleet-eft.55.2, part-2 SHA freshness): getDeployedSha
+// gained one new `command('git rev-parse HEAD', { member_name:
+// orchestratorMember, silent: true, label: ..., failSoft: true })` call
+// site, used to resolve this cycle's deploy-verified SHA right after a
+// successful deploy, for the Integ Test dispatch/validation below. Verified
+// compliant (explicit member_name).
+const EXPECTED_COMMAND_COUNT = 30;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
