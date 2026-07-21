@@ -65,20 +65,63 @@ describe('renderBeadsHtml: XSS escaping', () => {
     });
 });
 
-describe('renderBeadsHtml: dependency tree (blocks-based, not parent-based)', () => {
-    test('nests a task under its blocking dependency, not a parent field', () => {
+// apra-fleet-eft.42: the tree used to nest by `blocks`-type dependency edges;
+// it now nests by bd's real `parent` (containment) field instead, with
+// `blocks` edges preserved as an inline "blocked by" annotation on the row
+// rather than tree placement. The expectations below replace/repurpose the
+// old blocks-based-nesting assertions, which are now inverted -- see the
+// module doc-comment in auto-sprint/viewer-extensions.mjs.
+describe('renderBeadsHtml: containment tree (parent-based nesting, blocks-deps as annotations)', () => {
+    // A row's id cell is `prefix + '#' + id` where `prefix` is this two-glyph
+    // marker (only present at depth > 0) -- built via fromCharCode, not a
+    // literal non-ASCII character, per this repo's ASCII-only file convention.
+    const childPrefix = String.fromCharCode(0x2514, 0x2500) + ' ';
+
+    test('nests children under their parent (containment); the parent is not left as a childless sibling', () => {
         const tasks = [
-            { id: 'A', title: '[impl] first', status: 'closed', dependencies: [] },
-            { id: 'B', title: '[impl] second', status: 'open', dependencies: [{ depends_on_id: 'A', type: 'blocks' }] },
+            { id: '41', title: '[bug] parent epic', status: 'open' },
+            { id: '41.1', parent: '41', title: '[impl] child one', status: 'closed' },
+            { id: '41.2', parent: '41', title: '[test] child two', status: 'open' },
+            { id: '41.4', parent: '41', title: '[test] child four', status: 'open', dependencies: [{ depends_on_id: '41.1', type: 'blocks' }] },
         ];
         const html = renderBeadsHtml(tasks);
-        // B must render (be reachable), and must appear after A in source order
-        // (a real assertion on indentation depth would be brittle against
-        // markup changes -- position-after-blocker is the load-bearing check).
-        assert.ok(html.indexOf('#A') < html.indexOf('#B'), 'blocker A must render before the task it blocks, B');
+
+        // Root row has no depth-prefix.
+        assert.ok(html.includes('>#41</td>'), '41 must render as a root row');
+        // Every child renders WITH the depth-prefix, i.e. nested under 41 --
+        // not as a second, unprefixed (root-level) row of its own.
+        assert.ok(html.includes(childPrefix + '#41.1</td>'), '41.1 must nest under its parent 41');
+        assert.ok(html.includes(childPrefix + '#41.2</td>'), '41.2 must nest under its parent 41');
+        assert.ok(html.includes(childPrefix + '#41.4</td>'), '41.4 must nest under its parent 41');
+        assert.ok(!html.includes('>#41.1</td>'), '41.1 must not also render as an unnested root-level row');
+        assert.ok(!html.includes('>#41.2</td>'), '41.2 must not also render as an unnested root-level row');
+        assert.ok(!html.includes('>#41.4</td>'), '41.4 must not also render as an unnested root-level row');
+        // 41 must actually precede its children in the output.
+        assert.ok(html.indexOf('>#41</td>') < html.indexOf(childPrefix + '#41.1</td>'));
+        assert.ok(html.indexOf('>#41</td>') < html.indexOf(childPrefix + '#41.2</td>'));
+        assert.ok(html.indexOf('>#41</td>') < html.indexOf(childPrefix + '#41.4</td>'));
     });
 
-    test('multiple top-level roots render as multiple top-level rows, not an error', () => {
+    test('a "blocks" dependency renders as an inline "blocked by" annotation, not as tree nesting under the blocker', () => {
+        const tasks = [
+            { id: 'P1', title: '[bug] parent one', status: 'open' },
+            { id: 'X', parent: 'P1', title: '[impl] child of P1, blocked by Y', status: 'open', dependencies: [{ depends_on_id: 'Y', type: 'blocks' }] },
+            { id: 'P2', title: '[bug] parent two', status: 'open' },
+            { id: 'Y', parent: 'P2', title: '[impl] child of P2 (the blocker)', status: 'closed' },
+        ];
+        const html = renderBeadsHtml(tasks);
+
+        // X nests under its own parent, P1 -- NOT under its blocker Y.
+        assert.ok(html.includes(childPrefix + '#X</td>'), 'X must nest under its parent P1');
+        // The blocking relationship is preserved as an inline annotation, not lost.
+        assert.ok(html.includes('blocked by: #Y'), 'the blocks edge must still be surfaced as an inline annotation');
+        // X (a child of P1) must render before P2 -- proving it was placed in
+        // P1's subtree, not pulled into Y's subtree under the unrelated P2.
+        assert.ok(html.indexOf('>#P1</td>') < html.indexOf(childPrefix + '#X</td>'));
+        assert.ok(html.indexOf(childPrefix + '#X</td>') < html.indexOf('>#P2</td>'), 'X must render inside P1\'s subtree, before the unrelated P2 subtree');
+    });
+
+    test('multiple top-level roots (no parent) render as multiple top-level rows, not an error', () => {
         const tasks = [
             { id: 'ROOT1', title: '[impl] root one', status: 'open', dependencies: [] },
             { id: 'ROOT2', title: '[impl] root two', status: 'open', dependencies: [] },
@@ -89,7 +132,7 @@ describe('renderBeadsHtml: dependency tree (blocks-based, not parent-based)', ()
         assert.ok(html.includes('#ROOT2'));
     });
 
-    test('a task with multiple blockers is rendered exactly once, with extra blockers noted', () => {
+    test('a task with multiple blockers is rendered exactly once, with every blocker noted in the annotation', () => {
         const tasks = [
             { id: 'A', title: '[impl] a', status: 'closed', dependencies: [] },
             { id: 'B', title: '[impl] b', status: 'closed', dependencies: [] },
@@ -97,17 +140,41 @@ describe('renderBeadsHtml: dependency tree (blocks-based, not parent-based)', ()
         ];
         const html = renderBeadsHtml(tasks);
         assert.strictEqual((html.match(/#C</g) || []).length, 1, 'C must appear exactly once, not once per blocker');
-        assert.ok(html.includes('also blocked by'));
+        assert.ok(html.includes('blocked by: #A, #B'), 'both blockers must be listed in the single annotation');
     });
 
-    test('a dependency cycle does not crash rendering or infinite-loop (cycle-guard)', () => {
+    test('a `parent`-containment cycle does not crash rendering or infinite-loop (cycle-guard)', () => {
         const tasks = [
-            { id: 'A', title: '[impl] a', status: 'open', dependencies: [{ depends_on_id: 'B', type: 'blocks' }] },
-            { id: 'B', title: '[impl] b', status: 'open', dependencies: [{ depends_on_id: 'A', type: 'blocks' }] },
+            { id: 'A', parent: 'B', title: '[impl] a' },
+            { id: 'B', parent: 'A', title: '[impl] b' },
         ];
         assert.doesNotThrow(() => renderBeadsHtml(tasks));
         const html = renderBeadsHtml(tasks);
         assert.ok(html.includes('#A') && html.includes('#B'), 'both nodes in the cycle must still render via the safety-net sweep');
+        assert.strictEqual((html.match(/#A</g) || []).length, 1, 'A must not be rendered twice despite the cycle');
+        assert.strictEqual((html.match(/#B</g) || []).length, 1, 'B must not be rendered twice despite the cycle');
+    });
+
+    test('status badges are unchanged for closed/open/in_progress/blocked rows, even when nested by parent', () => {
+        const tasks = [
+            { id: 'EPIC', title: '[bug] epic', status: 'in_progress' },
+            { id: 'EPIC.1', parent: 'EPIC', title: '[impl] done work', status: 'closed' },
+            { id: 'EPIC.2', parent: 'EPIC', title: '[impl] open work', status: 'open' },
+            { id: 'EPIC.3', parent: 'EPIC', title: '[impl] not ready', status: 'open', ready: false },
+        ];
+        const html = renderBeadsHtml(tasks);
+        assert.ok(html.includes('IN PROGRESS'));
+        assert.ok(html.includes('CLOSED'));
+        assert.ok(html.includes('>OPEN<'));
+        assert.ok(html.includes('BLOCKED'));
+    });
+
+    test('renderBeadsHtml is a pure synchronous function returning a string (no fetch/await in the render path)', () => {
+        assert.notStrictEqual(renderBeadsHtml.constructor.name, 'AsyncFunction', 'must not be declared async');
+        const result = renderBeadsHtml([{ id: 1, title: 't', status: 'open' }]);
+        assert.strictEqual(typeof result, 'string');
+        assert.ok(!(result instanceof Promise), 'must return a string directly, never a Promise');
+        assert.strictEqual(typeof result.then, 'undefined', 'a plain string has no .then -- confirms this is not a thenable/Promise');
     });
 });
 
