@@ -213,23 +213,43 @@ function cleanEnvSeedParts(fleetHome) {
  * @returns {{ok: boolean, message: string}}
  */
 export function checkCleanEnvCredentialsFile(fleetHome = defaultFleetHome(), deps = {}) {
-  const run = deps.execSync ?? execSync;
   const credPath = defaultCredentialsPath(fleetHome);
-  const seedParts = cleanEnvSeedParts(fleetHome);
-  // '|| true' keeps the probe's own exit code 0 when the credentials file
-  // is simply absent (the expected pre-fix state) -- 'cat' on a missing
-  // file exits non-zero even with stderr redirected, and that is a
-  // NOT-PROVISIONED result, not an infra failure of the probe itself.
-  const script = `env -i ${seedParts.join(' ')} bash -l -c 'cat "$HOME/.claude/.credentials.json" 2>/dev/null || true'`;
 
+  // win32 + no injected execSync: the POSIX 'env -i ... bash -l -c' exec
+  // path this probe reproduces DOES NOT EXIST on Windows -- LocalStrategy
+  // there builds a registry-derived clean env in PowerShell
+  // (src/os/windows.ts#getCleanEnv), and the bash emulation fails anyway
+  // ('env -i' clears PATH, so the inner 'bash' cannot resolve; windows-latest
+  // CI run 29865896256). Read the file directly instead: the assertion under
+  // test (does the credentials file carry a CLI-acceptable session shape at
+  // the path dispatch resolves?) is identical; only the POSIX exec-path
+  // fidelity is dropped, and that fidelity is fictional on Windows. Tests
+  // that want the POSIX script exercised inject deps.execSync (cross-platform
+  // -- no real spawn), so that coverage is unaffected.
   let output;
-  try {
-    output = run(script, { encoding: 'utf-8', shell: PROBE_SHELL });
-  } catch (err) {
-    return {
-      ok: false,
-      message: `NOT-PROVISIONED (clean-env path): probe failed to run against fleet home '${fleetHome}': ${err.message}`,
-    };
+  if (!deps.execSync && process.platform === 'win32') {
+    try {
+      output = fs.readFileSync(credPath, 'utf-8');
+    } catch {
+      output = '';
+    }
+  } else {
+    const run = deps.execSync ?? execSync;
+    const seedParts = cleanEnvSeedParts(fleetHome);
+    // '|| true' keeps the probe's own exit code 0 when the credentials file
+    // is simply absent (the expected pre-fix state) -- 'cat' on a missing
+    // file exits non-zero even with stderr redirected, and that is a
+    // NOT-PROVISIONED result, not an infra failure of the probe itself.
+    const script = `env -i ${seedParts.join(' ')} bash -l -c 'cat "$HOME/.claude/.credentials.json" 2>/dev/null || true'`;
+
+    try {
+      output = run(script, { encoding: 'utf-8', shell: PROBE_SHELL });
+    } catch (err) {
+      return {
+        ok: false,
+        message: `NOT-PROVISIONED (clean-env path): probe failed to run against fleet home '${fleetHome}': ${err.message}`,
+      };
+    }
   }
 
   const token = extractAccessToken(output);
@@ -328,6 +348,22 @@ export function isAuthenticatedClaudeCliResult(output) {
 export function checkCleanEnvRealClaudeAuth(fleetHome = defaultFleetHome(), deps = {}) {
   const run = deps.execSync ?? execSync;
   const credPath = defaultCredentialsPath(fleetHome);
+  // win32 + no injected execSync: same reality as checkCleanEnvCredentialsFile
+  // above -- the POSIX exec path this probe reproduces does not exist on
+  // Windows, and unlike the file probe there is no faithful direct-read
+  // equivalent for "spawn the real CLI through the dispatch exec path".
+  // Fail closed with an explicit unsupported result rather than spawning a
+  // mis-shelled child. Real-CLI auth verification on Windows belongs to a
+  // deliberately-configured POSIX-equivalent runner or the opt-in gated
+  // suite on a machine set up for it (APRA_FLEET_ALLOW_REAL_CLI_AUTH_PROBE).
+  if (!deps.execSync && process.platform === 'win32') {
+    return {
+      ok: false,
+      authenticated: false,
+      raw: '',
+      message: `UNSUPPORTED (win32): the POSIX clean-env exec path this probe reproduces ('env -i ... bash -l -c claude ...') does not exist on Windows -- LocalStrategy there uses a PowerShell registry-derived clean env. Run this probe on a POSIX runner (or inject deps.execSync for unit coverage).`,
+    };
+  }
   // apra-fleet-eft.48.7 (reopened): probes must be REFRESH-INCAPABLE by
   // construction. A sandboxed credentials file carrying a refreshToken lets
   // the spawned real CLI rotate that token server-side, which invalidates
