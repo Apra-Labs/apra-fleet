@@ -1059,14 +1059,52 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  * skip, not an error, so it returns `{ ok: true, skipped: true, reason:
  * 'no-remote' }` instead of throwing DoltSyncError.
  *
+ * apra-fleet-eft.35 (residual after eft.30.1-3): gate the pull BEFORE
+ * issuing it, mirroring doltPushAfter's own pre-gate (apra-fleet-eft.30,
+ * stabilization log Issue 31). CONFIRMED ROOT CAUSE, candidate (b) from the
+ * bug's own diagnosis list: this function previously ran `bd dolt pull`
+ * UNCONDITIONALLY on every withGitSync bracket (i.e. before every single
+ * role dispatch, every cycle) with no pre-gate at all -- unlike
+ * doltPushAfter, which eft.30 already gated. bd auto-provisions a Dolt-level
+ * remote from git's own origin as a side effect of a 'bd dolt' invocation
+ * that needs one (the same mechanism eft.30's own commit message documents
+ * for the push case: "bd auto-provisions a Dolt remote from git origin on
+ * the push attempt itself") -- so this UNGATED pull could re-arm the very
+ * Dolt-level remote eft.30.1's one-time upfront sandbox disarm had just
+ * cleared, on the FIRST dispatch bracket of the sprint, well before any
+ * D-push is ever attempted. That re-arming is what let a LATER, correctly
+ * pre-gated `doltPushAfter()` call observe a live Dolt-level remote wired to
+ * the real fleet-e2e-toy origin and actually attempt `bd dolt push` against
+ * it (live recurrence, integ cycle 6: blocked only by missing GitHub
+ * credentials, not by design). A one-time upfront disarm (eft.30.1, run
+ * once in the playbook's `## Setup`, external to this runner) cannot hold
+ * across many per-cycle 'bd dolt' invocations if any of them can silently
+ * re-provision the remote -- every 'bd dolt' call site needs the SAME
+ * fail-closed gate, not just the push one. Same fail-safe-by-default
+ * semantics as doltPushAfter's gate (isMemberSyncRemoteConfigured only ever
+ * reports "not configured" on a positively-confirmed empty value; any
+ * inconclusive read still fails closed and lets the pull proceed), so a
+ * real, actively-synced clone is unaffected -- no eft.16.1 regression.
+ * Override the check with `opts.checkSyncRemoteConfigured` (same test hook
+ * doltPushAfter exposes).
+ *
  * @param {string} member
- * @param {{ command: Function, log?: Function, maxTransientRetries?: number }} opts
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function }} opts
  * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote' }>}
  */
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1 } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
+    }
+
+    // apra-fleet-eft.35: gate BEFORE issuing, same fail-closed check as
+    // doltPushAfter's pre-gate -- see this function's own doc comment above
+    // for the confirmed root cause this closes.
+    const preGateCheckFn = checkSyncRemoteConfigured || isMemberSyncRemoteConfigured;
+    if (!(await preGateCheckFn(member, { command, log }))) {
+        log(`[Dolt] D-pull for member '${member}' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued`);
+        return { ok: true, member, skipped: true, reason: 'no-remote' };
     }
 
     const pull = await runDoltStep({

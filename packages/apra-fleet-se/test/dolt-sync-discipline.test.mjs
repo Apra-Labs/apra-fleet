@@ -206,12 +206,18 @@ function makeCommandMock(handler) {
 const OK = { ok: true, output: '', error: null };
 
 test('(a) all three D-pull/D-push brackets fire, including the pre-`bd show` D-pull', async () => {
-    // D-pull-before (dispatch/read bracket).
+    // D-pull-before (dispatch/read bracket). apra-fleet-eft.35: doltPullBefore
+    // now issues a `bd config get sync.remote --json` pre-gate check (same
+    // fail-closed gate doltPushAfter already had) before `bd dolt pull`
+    // itself -- mirrored below via `.some()`/`.find()` rather than a fixed
+    // calls[0] index, the same style already used for the D-push assertion
+    // a few lines down.
     const pullMock = makeCommandMock(() => OK);
     const pullRes = await doltPullBefore('memberA', { command: pullMock.command });
     assert.deepEqual(pullRes, { ok: true, member: 'memberA' });
-    assert.equal(pullMock.calls[0].cmd, 'bd dolt pull', 'D-pull issues `bd dolt pull`');
-    assert.equal(pullMock.calls[0].opts.member_name, 'memberA', 'D-pull carries explicit member_name (3.2)');
+    const pullCall = pullMock.calls.find((c) => c.cmd === 'bd dolt pull');
+    assert.ok(pullCall, 'D-pull issues `bd dolt pull`');
+    assert.equal(pullCall.opts.member_name, 'memberA', 'D-pull carries explicit member_name (3.2)');
 
     // D-push-after (mutation bracket).
     const pushMock = makeCommandMock(() => OK);
