@@ -985,3 +985,77 @@ recorded on eft.41: the [test] child must exercise a REAL-ARGS launch
 through the launcher import path, not only --help; a backstop that fires
 on "no observable execution" must account for guarded self-executing
 modules that neither export nor exit.
+
+## Issue 37: sprint branches are a CI blind spot
+
+Observed: ci.yml triggers only on PRs to main and pushes to main, so the
+sprint branch accumulated ~20 commits with ZERO CI signal; the first-ever
+run (manual workflow_dispatch, 29803574606) immediately caught a broken
+intermediate state no member could see. Rule: at every install boundary,
+manually dispatch CI on the sprint branch (gh workflow run --ref <branch>)
+and treat its result as a gate input. Candidate engine fix: add a push
+trigger for auto-sprint/** or have the runner dispatch CI after each
+review-approved round.
+
+## Issue 38: never descope one half of a sequenced migration
+
+Observed: eft.37.1 (core rename) landed with an explicit note that the se
+package cannot import until eft.37.2 updates consumers; the orchestrator
+then descoped the whole eft.37 family to P3 -- stranding the branch in a
+knowingly-broken intermediate state that CI (Issue 37) exposed: all 10
+supervisor test files failed at import. Rule: before cutting scope, check
+each candidate for landed-but-incomplete sequenced work (a sibling commit
+already on the branch that depends on it); restore the minimal completing
+task (37.2) rather than reverting landed work.
+
+## Issue 39: stale in_progress beads are gate-blocking zombies
+
+Observed: eft.13.4 sat in_progress for 2 days after its doer streak was
+interrupted -- its work had actually LANDED (salvage commit 8b6c987) but
+the bead was never closed, and in_progress beads do not re-enter the ready
+set. A full audit found 5 more stale claims (eft.19/7/15/12/17.1), several
+with all work complete. Rules: audit Started/Updated timestamps, not
+status glyphs; cross-reference claimed beads against landed commits before
+believing any status; engine candidate: a streak that ends abnormally must
+reset its claimed beads to open (or the runner sweeps claims older than a
+cycle at plan time).
+
+## Issue 40: closed-bead notes are a feedback black hole
+
+Observed: recurring user feedback (viewer scroll, LLM-output more button)
+was appended as notes to CLOSED beads (eft.27 family, eft.38) where no
+planner or verifier ever looks; the defects survived multiple 'fixed'
+cycles. eft.38's closing unit test fabricated an activity shape (inline
+output + Truncated flag) the real pipeline never produces, so the feature
+shipped rendering zero buttons. Rules: post-closure regressions REOPEN the
+old bead with evidence (never file a duplicate -- lineage matters); search
+all statuses AND all prefixes before filing anything (two open scroll bugs
+sat outside the epic, invisible to every sprint); UX beads must carry
+machine-verifiable acceptance (DOM measurement or HTTP check) so integ can
+verify closures without a human eyeball.
+
+## Issue 41: the bead-injection contract applies to the orchestrator too
+
+Observed: orchestrator-injected eft.18.5 was rejected by the plan reviewer
+for exactly the defects the injection contract predicts: no model metadata
+key, oversized scope (playbook rewrite + multi-file test retirement in one
+task), and an open task under a closed parent. The planner had to spend a
+round restructuring it (18.5/.6/.7 + 18.8). Rule: orchestrator-side beads
+follow the same contract as member-side ones -- model metadata set, single
+-concern task size, correct parentage -- or they cost a plan round.
+
+## Issue 42: structural isolation beats runtime neutralization
+
+Observed: the smoke test's entire recurring bug family (eft.18/25/30/31/
+39/47 -- neutralize dance, origin breakage, canary misses, Dolt remote
+re-adoption) stems from one design divergence: it hydrates beads from the
+live shared Dolt remote (bd bootstrap) and then tries to clean up, while
+the e2e suite prevents the class structurally (no-db JSONL seeding, remote
+never configured). Adopted design (eft.18.5-.8, user-amended): seed like
+e2e (bd init --from-jsonl, hardcoded canary gh-toy-4ef) but keep the
+workflow's D-push/D-pull under test against a sandbox-local file://
+THROWAWAY remote; git origin points at a local mirror so bd's
+push-time remote auto-provisioning can only ever derive sandbox paths; the
+four-check guard script is retargeted (all remotes must resolve inside the
+sandbox), never deleted. Safety invariant: the real remote URL must not
+appear anywhere in sandbox git or beads config at any point.
