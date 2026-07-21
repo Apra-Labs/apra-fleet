@@ -3617,6 +3617,41 @@ async function runSprintCycle(context) {
         return res.output.trim() === 'found';
     }
 
+    // apra-fleet-eft.34: D-pull the orchestrator's OWN beads clone before the
+    // very first bd query pre-sprint validation issues (via updateDashboard's
+    // bdListScoped('') below, then the initialBeads/notDoneBeads queries).
+    // CONFIRMED ROOT CAUSE (candidate (a) from the bug's own diagnosis list):
+    // members in this "always-on multi-sprint supervisor" fleet are
+    // persistent across sprints, so the orchestrator member's local beads
+    // clone can be stale relative to the shared Dolt remote at the exact
+    // moment a NEW sprint is dispatched -- e.g. a freshly bd-created
+    // childless canary target (created by a separate process/clone just
+    // before this sprint was launched) is genuinely invisible to
+    // fetchAllBeadsShared()'s 'bd list --all --limit 0 --json' (issued
+    // against the orchestrator member, see line ~3048) until that clone
+    // pulls it in. eft.24.1's scopeIds seed (the childless-leaf-target BFS
+    // seed a few dozen lines above bdListScoped's `if (scopeIds.size === 0)
+    // return [];`) is necessary but NOT sufficient on its own: seeding
+    // scopeIds with the target's own id only changes the outcome if that
+    // target bead is actually PRESENT in the allBeads/filtered-query result
+    // being intersected against it -- and on a stale clone it is not,
+    // regardless of scopeIds membership, so pre-sprint validation still
+    // hard-fails with 'Nothing to do.' eft.24.2's mock-sprint coverage could
+    // never catch this: its single-clone record/replay harness has no
+    // separate orchestrator-clone-vs-shared-remote drift to reproduce (no
+    // dolt remote is configured there at all), so the fix needs live-shaped
+    // coverage instead (apra-fleet-eft.36).
+    //
+    // doltPullBefore() is the same idiomatic, already-established pattern
+    // used elsewhere in this file to freshen the orchestrator's clone before
+    // an orchestrator-side beads read (see e.g. the Cycle Evaluation D-pull
+    // a few hundred lines below) -- it is a benign no-op both when the clone
+    // is already current AND when no dolt remote is configured at all (see
+    // its own doc comment), so this adds no behavioural risk to an
+    // already-decomposed target's validation path; it only ever makes the
+    // orchestrator's view of `bd list --all` MORE current, never less.
+    await doltPullBefore(orchestratorMember, { command, log });
+
     await updateDashboard();
 
     let initialBeads = await bdListScoped('--ready --json');
