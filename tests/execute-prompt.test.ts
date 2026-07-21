@@ -1349,3 +1349,54 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
   });
 });
 
+// apra-fleet-eft.40.3: workspace-not-trusted degrades composed permissions without
+// killing the CLI, so the pre-fix behavior fell through into the stale-session /
+// server-overloaded retries below and could walk into eft.28's dead-session hang.
+// It must instead be classified as a typed dispatch error and fail fast, before
+// either retry path fires.
+describe('workspace-not-trusted classification (apra-fleet-eft.40.3)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('fails fast with a typed workspace_not_trusted error naming ensureWorkspaceTrusted', async () => {
+    const member = makeTestAgent({ friendlyName: 'untrusted-folder' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'Ignoring 17 permissions.allow entries -- this workspace has not been trusted', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'workspace_not_trusted' });
+    expect(resultText(result)).toContain('ensureWorkspaceTrusted');
+    // Only 3 calls: writePromptFile + main (untrusted) + deletePromptFile -- no retry.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not fall through to the stale-session retry, even with a resumable session', async () => {
+    const member = makeTestAgent({ friendlyName: 'untrusted-with-session', sessionId: 'old-sess' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'this workspace has not been trusted', code: 1 })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const promise = executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await promise;
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'workspace_not_trusted' });
+    // 3 calls only -- proves the stale-session retry (which would add a 4th call) never fired.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+

@@ -9,7 +9,7 @@ import { getProvider } from '../providers/index.js';
 import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { isRetryable, authErrorAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
+import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
@@ -34,7 +34,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted';
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
   sessionId?: string;
   [key: string]: unknown;
@@ -638,6 +638,21 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
+
+    // apra-fleet-eft.40.3: workspace-not-trusted degrades composed permissions
+    // (project-scoped allow entries silently dropped) without killing the CLI process --
+    // from there, unattended -p cannot auto-approve or prompt, so tools get denied and
+    // the turn eventually fails. Blindly falling through to the stale-session /
+    // server-overloaded retries below just repeats the same degraded dispatch against a
+    // workspace that is still untrusted, and can walk into eft.28's dead-session hang.
+    // Classify and fail fast here, before either retry path, naming
+    // ensureWorkspaceTrusted (apra-fleet-eft.40.1/40.2) as the remediation.
+    if (result.code !== 0 && provider.classifyError(result.stderr || result.stdout) === 'workspace_not_trusted') {
+      return {
+        text: `❌ ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${result.stderr || result.stdout}`,
+        structuredContent: { isError: true, reason: 'workspace_not_trusted' },
+      };
+    }
 
     // Stale session retry -- fresh session ID, no resume
     if (result.code !== 0 && input.resume && agent.sessionId) {
