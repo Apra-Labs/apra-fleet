@@ -328,6 +328,20 @@ shell-drivable -- no MCP tool is required to run the scenario.
    file `toy-doer`'s clean-env dispatch reads, since `getCleanEnv()` seeds
    the clean shell's `HOME` from the fleet server process's own `HOME`
    (`$SANDBOX`) before sourcing login profiles under it.
+
+   `scripts/check-toy-doer-credentials.mjs` (apra-fleet-eft.48.2) automates
+   this verification -- it reproduces `getCleanEnv()`'s exact `env -i ...
+   bash -l -c` exec path as a read-only probe (falling back to checking
+   `toy-doer`'s registry.json `encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN` if
+   that path is ever used instead) and exits non-zero with an actionable
+   message if the credential did not land where dispatch will look for it.
+   Run it from `<repo-root>` immediately after the block above, so a
+   skipped/broken provisioning step fails loud right here instead of only
+   surfacing after 5 wasted Planner dispatch retries in step 4:
+
+   ```bash
+   node "<repo-root>/scripts/check-toy-doer-credentials.mjs" toy-doer "$SANDBOX"
+   ```
 4. Run `apra-fleet workflow auto-sprint` against the canary issue with
    `--max-cycles 1` and `--dispatch-timeout-s 900`. The timeout bound
    means a hung dispatch (member process alive but silent) costs at most
