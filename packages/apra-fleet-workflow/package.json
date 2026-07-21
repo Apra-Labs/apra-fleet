@@ -12,6 +12,7 @@
     "./engine": "./src/workflow/engine.mjs",
     "./viewer": "./src/viewer/index.mjs",
     "./viewer/html-utils": "./src/viewer/html-utils.mjs",
+    "./viewer/run-state-paths": "./src/viewer/run-state-paths.mjs",
     "./viewer/sprint-state-paths": "./src/viewer/sprint-state-paths.mjs",
     "./viewer/debounced-writer": "./src/viewer/debounced-writer.mjs",
     "./viewer/lean-state": "./src/viewer/lean-state.mjs"
