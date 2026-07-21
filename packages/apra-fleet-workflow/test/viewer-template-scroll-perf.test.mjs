@@ -13,6 +13,7 @@ test('flex scroll chain carries min-height: 0 down to the stream list', () => {
     const html = HTML_TEMPLATE([]);
     for (const marker of [
         '.main-content { display: flex; flex: 1; overflow: hidden; min-height: 0; }',
+        '.content-area { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }',
         '.stream-list { flex: 1; min-height: 0;',
         '.tab-content.active { display: flex; min-height: 0; }',
     ]) {
@@ -22,6 +23,40 @@ test('flex scroll chain carries min-height: 0 down to the stream list', () => {
         /\.panel \{[^}]*min-height: 0;/.test(html),
         'the .panel rule must include min-height: 0'
     );
+});
+
+test('apra-fleet-eft.43.2: every flex ancestor between the viewport-bounded body and #stream-list is present in markup and carries min-height: 0', () => {
+    const html = HTML_TEMPLATE([]);
+
+    // The min-height: 0 CSS rules above only fix the reported clipped-scroll
+    // bug if they land on the ACTUAL ancestor chain of #stream-list in the
+    // rendered markup: <body> > .main-content > .content-area >
+    // #tab-core(.tab-content.active.panel) > #stream-list. Assert that
+    // nesting directly (not just that the class rules exist somewhere in the
+    // stylesheet), so a future markup refactor that detaches #stream-list
+    // from this chain -- while leaving the CSS rules untouched -- still
+    // fails this test.
+    const mainContentOpen = html.indexOf('<div class="main-content">');
+    const contentAreaOpen = html.indexOf('<div class="content-area">');
+    const tabCoreOpen = html.indexOf('id="tab-core" class="tab-content active panel"');
+    const streamListOpen = html.indexOf('<div class="stream-list" id="stream-list">');
+    assert.ok(mainContentOpen !== -1, '.main-content must be present in markup');
+    assert.ok(contentAreaOpen !== -1, '.content-area must be present in markup');
+    assert.ok(tabCoreOpen !== -1, '#tab-core (.tab-content.active.panel) must be present in markup');
+    assert.ok(streamListOpen !== -1, '#stream-list must be present in markup');
+    assert.ok(
+        mainContentOpen < contentAreaOpen && contentAreaOpen < tabCoreOpen && tabCoreOpen < streamListOpen,
+        '#stream-list must be nested inside .content-area inside .main-content, via #tab-core, in that order'
+    );
+
+    // Every rung of that chain -- .main-content, .content-area, #tab-core's
+    // .tab-content.active + .panel rules, and .stream-list itself -- must
+    // carry min-height: 0, or a tall activity list re-expands the flex item
+    // to its content size instead of letting #stream-list's own
+    // overflow-y: auto engage.
+    for (const rule of [/\.main-content\s*\{[^}]*min-height:\s*0;/, /\.content-area\s*\{[^}]*min-height:\s*0;/, /\.tab-content\.active\s*\{[^}]*min-height:\s*0;/, /\.panel\s*\{[^}]*min-height:\s*0;/, /\.stream-list\s*\{[^}]*min-height:\s*0;/]) {
+        assert.ok(rule.test(html), `expected rule matching ${rule} to set min-height: 0`);
+    }
 });
 
 test('apra-fleet-eft.43: html/body are pinned to the viewport, and #stream-list has both overflow-y: auto and a bounded height to scroll inside of', () => {
