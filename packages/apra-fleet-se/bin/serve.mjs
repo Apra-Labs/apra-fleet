@@ -109,8 +109,9 @@ export async function serveMain(argv = process.argv.slice(2)) {
     registerReservationRoutes(supervisor, reconciler);
 
     // eft.6.5: process-free History view. Always renders a finished sprint's
-    // persisted old_sprints/<sprintId>.json through the SAME HTML template the
-    // live viewer serves, fed a frozen state object -- no live process, no
+    // persisted old_runs/<sprintId>.json (falling back to the legacy
+    // old_sprints/<sprintId>.json, apra-fleet-eft.37.1) through the SAME HTML
+    // template the live viewer serves, fed a frozen state object -- no live process, no
     // /state or /events polling, Save/Stop hidden. Constructed before the live
     // proxy below so its renderForSprint() can be wired in as that proxy's
     // history-fallthrough renderer too (see next block).

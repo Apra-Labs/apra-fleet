@@ -630,7 +630,22 @@ async function main() {
     const server = createDashboardViewer(workflow, {
         port: viewerPort,
         name: 'Auto-Sprint',
-        dashboardExtensions: [beadsExtension]
+        dashboardExtensions: [beadsExtension],
+        // apra-fleet-eft.37.1/37.2: the core viewer now speaks opts.runId
+        // (opts.sprintId is a deprecated BOUNDARY-COMPAT alias -- never use
+        // it from here). branchName is the SAME opaque per-sprint identity
+        // already used for member reservation (`sprintId: branchName` below)
+        // and the runner's own dolt-mutex/allocator stamping (sprintMutexId,
+        // auto-sprint/runner.js), so the dashboard's persisted run state gets
+        // a meaningful, stable id instead of a throwaway random UUID.
+        runId: branchName,
+        // BOUNDARY-COMPAT/user-facing convention (apra-fleet-eft.37.1): core's
+        // crash-net snapshot defaults are domain-neutral (workflow-logs/run_)
+        // now that sprintId->runId is renamed; auto-sprint keeps its historical
+        // sprint-logs/sprint_<HHMMSS>.json convention by passing these
+        // explicitly rather than picking up the new core defaults.
+        stateSnapshotDir: 'sprint-logs',
+        stateSnapshotPrefix: 'sprint_',
     });
 
     // apra-fleet-unw2.16, N14 (e): the viewer port was hardcoded with no

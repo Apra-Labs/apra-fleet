@@ -13,7 +13,7 @@ import {
     WATCHDOG_STATUS,
     WATCHDOG_DEFAULT_INTERVAL_MS,
 } from '../src/supervisor/watchdog.mjs';
-import { getRunningSprintStatePath } from '@apralabs/apra-fleet-workflow/viewer/sprint-state-paths';
+import { getRunningRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 
 // apra-fleet-eft.4.3 -- PID-liveness watchdog + four-status classifier.
 // running-healthy / running-unresponsive / crashed / finished.
@@ -320,7 +320,7 @@ describe('watchdog -- apra-fleet-eft.20.3: CRASHED sprints get a recorded termin
 
         test('simulated doer death after the Develop checkpoint: logs a TERMINAL ERROR line AND persists failed/lastError, preserving prior state fields', async () => {
             const sprintId = 'sprint-eft-20-3-develop-death';
-            const statePath = getRunningSprintStatePath(sprintId, env);
+            const statePath = getRunningRunStatePath(sprintId, env);
             // The last thing the (now-dead) doer wrote before going silent --
             // mid-Develop, exactly the apra-fleet-eft.20 smoke-test symptom.
             fs.mkdirSync(path.dirname(statePath), { recursive: true });
@@ -369,7 +369,7 @@ describe('watchdog -- apra-fleet-eft.20.3: CRASHED sprints get a recorded termin
 
         test('defaultRecordTerminalError tolerates a missing/never-written prior state file', () => {
             const sprintId = 'sprint-eft-20-3-no-prior-state';
-            const statePath = getRunningSprintStatePath(sprintId, env);
+            const statePath = getRunningRunStatePath(sprintId, env);
             assert.equal(fs.existsSync(statePath), false);
 
             const logLines = [];

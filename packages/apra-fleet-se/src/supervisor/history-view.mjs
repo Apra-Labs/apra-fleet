@@ -3,8 +3,10 @@
 // =============================================================================
 //
 // Renders a finished sprint's persisted terminal state
-// (<serviceDataDir>/old_sprints/<sprintId>.json, apra-fleet-eft.2.3) using the
-// SAME HTML template the live viewer serves (@apralabs/apra-fleet-workflow's
+// (<serviceDataDir>/old_runs/<sprintId>.json, apra-fleet-eft.2.3; falling
+// back to the legacy <serviceDataDir>/old_sprints/<sprintId>.json for sprints
+// that finished before the apra-fleet-eft.37.1 rename) using the SAME HTML
+// template the live viewer serves (@apralabs/apra-fleet-workflow's
 // viewer/index.mjs HTML_TEMPLATE), fed a FROZEN state object instead of the
 // live view's fetch('/state') + EventSource('/events') polling loop. A
 // finished sprint has zero running processes, so the page it serves issues
@@ -17,23 +19,38 @@
 // live->finished transition is never a dead proxy; this route
 // (`GET /sprints/:id/history`) is the operator-facing "History" link and
 // always renders the full template, unconditionally, straight from
-// old_sprints/.
+// old_runs/ (merged with the legacy old_sprints/, apra-fleet-eft.37.1).
 //
 // PATH-TRAVERSAL DISCIPLINE (acceptance criterion)
 // -------------------------------------------------
 // A sprintId is an opaque identifier (a stable per-sprint id/UUID -- see
-// sprint-state-paths.mjs), never a path fragment. Any `:id` value containing
-// a path separator or a bare '.'/'..' segment is rejected outright, and the
-// resolved file path is verified (defense in depth) to still land directly
-// inside old_sprints/ before anything ever touches disk -- the renderer reads
-// ONLY from the service data dir's old_sprints/, never an arbitrary repo
-// checkout path.
+// @apralabs/apra-fleet-workflow/viewer/run-state-paths), never a path
+// fragment. Any `:id` value containing a path separator or a bare '.'/'..'
+// segment is rejected outright, and the resolved file path is verified
+// (defense in depth) to still land directly inside old_runs/ or the legacy
+// old_sprints/ before anything ever touches disk -- the renderer reads ONLY
+// from the service data dir's old_runs/ or old_sprints/, never an arbitrary
+// repo checkout path.
 // =============================================================================
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { HTML_TEMPLATE } from '@apralabs/apra-fleet-workflow/viewer';
-import { getOldSprintsDir, getOldSprintStatePath } from '@apralabs/apra-fleet-workflow/viewer/sprint-state-paths';
+import { getOldRunsDir, getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
+import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
+
+/**
+ * BOUNDARY-COMPAT (apra-fleet-eft.37.1/37.2): the legacy pre-rename terminal
+ * state directory. old_runs/ is the canonical write target for every fresh
+ * run; this legacy directory is resolved read-only, purely so history for
+ * sprints that finished BEFORE the rename still renders. Remove once no
+ * legacy old_sprints/ files remain to serve.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string}
+ */
+function getLegacyOldSprintsDir(env) {
+    return path.join(getFleetDataDir(env), 'old_sprints');
+}
 
 /** Writes a small text response with an explicit content-length. */
 function sendPlain(res, status, text) {
@@ -49,7 +66,7 @@ function sendPlain(res, status, text) {
  * True iff `sprintId` is a bare, single path segment -- never a path
  * fragment. sprintIds are opaque identifiers (a stable per-sprint id/UUID),
  * so a path separator or a '.'/'..' segment can only be a path-traversal
- * attempt against old_sprints/.
+ * attempt against old_runs/ or old_sprints/.
  * @param {unknown} sprintId
  * @returns {boolean}
  */
@@ -61,10 +78,14 @@ export function isSafeSprintId(sprintId) {
 }
 
 /**
- * Resolves a sprintId to its old_sprints/<sprintId>.json path. Throws
- * RangeError for an unsafe sprintId, or for the (should-be-impossible once
- * isSafeSprintId has passed) case where the resolved path still lands outside
- * old_sprints/ -- defense in depth, never trusting a single check alone.
+ * Resolves a sprintId to its terminal state path, merging the canonical
+ * old_runs/<sprintId>.json with the legacy old_sprints/<sprintId>.json
+ * (apra-fleet-eft.37.1: getTerminalRunStatePath resolves old_runs/ first,
+ * falling back read-only to old_sprints/ for sprints that finished before the
+ * rename). Throws RangeError for an unsafe sprintId, or for the
+ * (should-be-impossible once isSafeSprintId has passed) case where the
+ * resolved path still lands outside one of those two directories -- defense
+ * in depth, never trusting a single check alone.
  * @param {string} sprintId
  * @param {NodeJS.ProcessEnv} env
  * @returns {string}
@@ -73,18 +94,21 @@ export function resolveOldSprintPath(sprintId, env) {
     if (!isSafeSprintId(sprintId)) {
         throw new RangeError(`refusing to resolve unsafe sprint id: ${JSON.stringify(sprintId)}`);
     }
-    const filePath = getOldSprintStatePath(sprintId, env);
-    const dir = path.resolve(getOldSprintsDir(env));
-    if (path.dirname(path.resolve(filePath)) !== dir) {
-        throw new RangeError(`resolved path for sprint id '${sprintId}' escapes old_sprints/`);
+    const filePath = getTerminalRunStatePath(sprintId, env);
+    const resolvedDir = path.dirname(path.resolve(filePath));
+    const runsDir = path.resolve(getOldRunsDir(env));
+    const legacyDir = path.resolve(getLegacyOldSprintsDir(env));
+    if (resolvedDir !== runsDir && resolvedDir !== legacyDir) {
+        throw new RangeError(`resolved path for sprint id '${sprintId}' escapes old_runs/ or old_sprints/`);
     }
     return filePath;
 }
 
 /**
  * Loads and parses a finished sprint's persisted terminal state from
- * old_sprints/<sprintId>.json. Returns `null` when no such file exists (the
- * caller answers 404) or its content isn't valid JSON; throws only for a
+ * old_runs/<sprintId>.json (or the legacy old_sprints/<sprintId>.json).
+ * Returns `null` when no such file exists (the caller answers 404) or its
+ * content isn't valid JSON; throws only for a
  * rejected (unsafe) sprintId or a genuine I/O failure other than ENOENT.
  * @param {string} sprintId
  * @param {NodeJS.ProcessEnv} [env]
@@ -113,7 +137,7 @@ export async function loadOldSprintState(sprintId, env = process.env, readFile) 
  * HTML_TEMPLATE the live viewer serves, fed the frozen state object directly
  * -- no /events or /state polling, Save/Stop omitted (HTML_TEMPLATE's
  * `opts.history` mode, apra-fleet-eft.6.5).
- * @param {object} state - parsed old_sprints/<sprintId>.json
+ * @param {object} state - parsed old_runs/<sprintId>.json (or legacy old_sprints/)
  * @param {Array} [dashboardExtensions]
  * @returns {string}
  */
@@ -148,8 +172,8 @@ export function createHistoryView(deps = {}) {
 
     /**
      * Renders one sprint's History page, or `null` when it has no persisted
-     * old_sprints/ state (caller answers 404). Throws for an unsafe sprintId
-     * -- callers that want a rejection instead of a thrown error (this
+     * old_runs/ (or legacy old_sprints/) state (caller answers 404). Throws
+     * for an unsafe sprintId -- callers that want a rejection instead of a thrown error (this
      * module's own `handleGet` below) check `isSafeSprintId()` themselves
      * first; the live-proxy's `renderHistory` seam (src/supervisor/proxy.mjs)
      * already treats a throwing renderer as "no history" and answers 404,
@@ -164,7 +188,8 @@ export function createHistoryView(deps = {}) {
     }
 
     // GET /sprints/:id/history -- the dedicated "History" link (apra-fleet-eft.6,
-    // Plan Part 2.3): always renders from old_sprints/, regardless of whether
+    // Plan Part 2.3): always renders from old_runs/ (merged with the legacy
+    // old_sprints/, apra-fleet-eft.37.1), regardless of whether
     // the sprint is (still) live. Never proxies, never touches a live child
     // port. This is a SEPARATE surface from /sprints/:id/live's history
     // fallthrough (eft.6.4, proxy.mjs) -- both call the same `renderForSprint`

@@ -18,15 +18,17 @@
 //   running-unresponsive PID alive but HTTP silent. This is an OPERATOR-ATTENTION
 //                        signal, NOT a death sentence: a wedged/slow child is
 //                        never auto-declared crashed and is never killed here.
-//   crashed              PID gone, and NO terminal state persisted in old_sprints/
-//   finished             PID gone, and a terminal state IS persisted in old_sprints/
+//   crashed              PID gone, and NO terminal state persisted in old_runs/
+//                        (or the legacy old_sprints/, apra-fleet-eft.37.1)
+//   finished             PID gone, and a terminal state IS persisted in old_runs/
+//                        (or the legacy old_sprints/, apra-fleet-eft.37.1)
 //
 // CRITICAL invariants (acceptance criteria):
 //   * The classifier returns EXACTLY ONE of the four statuses per sprint.
 //   * A hung child (PID alive, HTTP not answering) is running-unresponsive --
 //     never crashed, never killed.
-//   * PID-gone WITH an old_sprints/ terminal state => finished; WITHOUT one =>
-//     crashed.
+//   * PID-gone WITH an old_runs/ (or legacy old_sprints/) terminal state =>
+//     finished; WITHOUT one => crashed.
 //   * PID reuse is guarded: the liveness probe validates the PID is plausibly
 //     OUR child (its command line still carries the sprint's unique
 //     `--viewer-port <port>` marker), not just any process that reused the PID
@@ -39,7 +41,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { isPidAlive } from './reconcile.mjs';
-import { getOldSprintStatePath, getRunningSprintStatePath } from '@apralabs/apra-fleet-workflow/viewer/sprint-state-paths';
+import { getTerminalRunStatePath, getRunningRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { writeJsonFileAtomic } from '@apralabs/apra-fleet-workflow/viewer/debounced-writer';
 
 /** The four -- and only four -- statuses the classifier may return. */
@@ -227,11 +229,12 @@ export function probeChildHttp(port, opts = {}) {
  *       apra-fleet-eft.20.1 single-pass-JSON.stringify-plus-atomic-rename
  *       primitive) with a `status: 'failed'` and a `lastError` describing
  *       what the watchdog observed. Written back to running/ IN PLACE
- *       (never moved to old_sprints/) so classifySprint()'s FINISHED/CRASHED
- *       distinction -- which keys off old_sprints/ membership -- is not
- *       disturbed by this write: a sprint the watchdog declared crashed stays
- *       classified crashed on every later tick, it never silently becomes
- *       "finished" just because this recorder touched its file.
+ *       (never moved to old_runs/) so classifySprint()'s FINISHED/CRASHED
+ *       distinction -- which keys off old_runs/ (or legacy old_sprints/)
+ *       membership -- is not disturbed by this write: a sprint the watchdog
+ *       declared crashed stays classified crashed on every later tick, it
+ *       never silently becomes "finished" just because this recorder
+ *       touched its file.
  * @param {{ sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: { log?: Function, error?: Function } }} info
  */
 export function defaultRecordTerminalError({ sprintId, childPid, env, logger }) {
@@ -239,7 +242,7 @@ export function defaultRecordTerminalError({ sprintId, childPid, env, logger }) 
     const message = `Sprint '${sprintId}' (pid ${childPid ?? 'unknown'}) is no longer alive and never recorded a terminal state -- classified CRASHED by the PID-liveness watchdog.`;
     log(`[watchdog] TERMINAL ERROR: ${message}`);
     try {
-        const statePath = getRunningSprintStatePath(sprintId, env);
+        const statePath = getRunningRunStatePath(sprintId, env);
         let existing = {};
         try {
             existing = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
@@ -305,7 +308,10 @@ export function createWatchdog(deps = {}) {
     const hasTerminalState = deps.hasTerminalState
         ?? ((sprintId) => {
             try {
-                return fs.existsSync(getOldSprintStatePath(sprintId, env));
+                // getTerminalRunStatePath resolves old_runs/ first, falling back
+                // to the legacy old_sprints/ (apra-fleet-eft.37.1), so a sprint
+                // that finished before the rename is still classified FINISHED.
+                return fs.existsSync(getTerminalRunStatePath(sprintId, env));
             } catch {
                 return false;
             }
@@ -375,8 +381,9 @@ export function createWatchdog(deps = {}) {
             };
         }
 
-        // PID gone: a persisted terminal state in old_sprints/ means it FINISHED;
-        // its absence means it CRASHED (died without recording a terminal state).
+        // PID gone: a persisted terminal state in old_runs/ (or legacy
+        // old_sprints/) means it FINISHED; its absence means it CRASHED (died
+        // without recording a terminal state).
         const finished = hasTerminalState(sprintId);
         if (!finished) {
             // apra-fleet-eft.20.3: this is the silent-death case the

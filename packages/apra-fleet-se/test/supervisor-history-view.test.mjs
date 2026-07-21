@@ -17,7 +17,8 @@ import { createSupervisor } from '../src/supervisor/server.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 
 // apra-fleet-eft.6.5 -- process-free History view. Renders a finished
-// sprint's persisted old_sprints/<sprintId>.json through the SAME HTML
+// sprint's persisted old_runs/<sprintId>.json (or the legacy
+// old_sprints/<sprintId>.json, apra-fleet-eft.37.1) through the SAME HTML
 // template the live viewer serves, fed a frozen state object: zero live
 // processes, zero /state or /events polling, Save/Stop absent, and the
 // renderer refuses any path-traversal attempt via the :id route param.
@@ -73,11 +74,25 @@ describe('history-view -- isSafeSprintId / resolveOldSprintPath', () => {
         assert.throws(() => resolveOldSprintPath('../evil', { APRA_FLEET_DATA_DIR: '/tmp/fleet-se-data' }), RangeError);
     });
 
-    test('resolveOldSprintPath resolves a safe id to a path directly inside old_sprints/', () => {
+    test('resolveOldSprintPath resolves a never-before-seen id to old_runs/ (the canonical write target, apra-fleet-eft.37.1)', () => {
         const env = { APRA_FLEET_DATA_DIR: '/tmp/fleet-se-data' };
         const resolved = resolveOldSprintPath('sprint-1', env);
-        assert.strictEqual(path.dirname(resolved), path.join('/tmp/fleet-se-data', 'old_sprints'));
+        assert.strictEqual(path.dirname(resolved), path.join('/tmp/fleet-se-data', 'old_runs'));
         assert.strictEqual(path.basename(resolved), 'sprint-1.json');
+    });
+
+    test('resolveOldSprintPath resolves an id that only exists under the legacy old_sprints/ (apra-fleet-eft.37.1 read fallback)', async () => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-history-view-legacy-'));
+        try {
+            await fs.mkdir(path.join(dir, 'old_sprints'), { recursive: true });
+            await fs.writeFile(path.join(dir, 'old_sprints', 'legacy-1.json'), JSON.stringify(SAMPLE_STATE));
+            const env = { APRA_FLEET_DATA_DIR: dir };
+            const resolved = resolveOldSprintPath('legacy-1', env);
+            assert.strictEqual(path.dirname(resolved), path.join(dir, 'old_sprints'));
+            assert.strictEqual(path.basename(resolved), 'legacy-1.json');
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true });
+        }
     });
 });
 

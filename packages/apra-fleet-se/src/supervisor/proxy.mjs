@@ -39,7 +39,8 @@
 // When a sprint has finished there is no live child to proxy to. Rather than
 // 404 or serve a dead proxy, the SAME `/sprints/:id/live` URL falls through to a
 // read-only historical view rendered from the sprint's persisted terminal state
-// (old_sprints/<sprintId>.json). The full history rendering is eft.6.5's job, so
+// (old_runs/<sprintId>.json, falling back to the legacy old_sprints/<sprintId>.json,
+// apra-fleet-eft.37.1). The full history rendering is eft.6.5's job, so
 // the renderer is injectable (`renderHistory`); the default here reads the
 // terminal-state file and renders a compact read-only page (no `/events`, no
 // `/stop`) so the fallthrough is never a dead socket.
@@ -48,7 +49,7 @@
 import http from 'node:http';
 import fsp from 'node:fs/promises';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
-import { getOldSprintStatePath } from '@apralabs/apra-fleet-workflow/viewer/sprint-state-paths';
+import { getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 
 /** Hop-by-hop headers that must never be forwarded verbatim across a proxy. */
 const HOP_BY_HOP = Object.freeze([
@@ -203,10 +204,12 @@ function proxyHtml({ host, port, req, res, prefix, logError, onConnectError }) {
 
 /**
  * Default read-only historical view renderer. Reads the sprint's persisted
- * terminal state (old_sprints/<sprintId>.json) and renders a compact read-only
- * page. Returns `null` when no terminal state exists (caller answers 404).
- * eft.6.5 replaces this with the full History-view rendering; kept minimal here
- * so the fallthrough is never a dead proxy and never a 404 for a finished sprint.
+ * terminal state (old_runs/<sprintId>.json, falling back to the legacy
+ * old_sprints/<sprintId>.json, apra-fleet-eft.37.1) and renders a compact
+ * read-only page. Returns `null` when no terminal state exists (caller
+ * answers 404). eft.6.5 replaces this with the full History-view rendering;
+ * kept minimal here so the fallthrough is never a dead proxy and never a 404
+ * for a finished sprint.
  * @param {string} sprintId
  * @param {NodeJS.ProcessEnv} env
  * @param {(p: string, enc: string) => Promise<string>} [readFile]
@@ -214,7 +217,7 @@ function proxyHtml({ host, port, req, res, prefix, logError, onConnectError }) {
  */
 export async function defaultRenderHistory(sprintId, env, readFile) {
     const read = readFile ?? fsp.readFile;
-    const filePath = getOldSprintStatePath(sprintId, env);
+    const filePath = getTerminalRunStatePath(sprintId, env);
     let raw;
     try {
         raw = await read(filePath, 'utf-8');
@@ -232,7 +235,8 @@ export async function defaultRenderHistory(sprintId, env, readFile) {
  * NO `/events` (SSE) or `/stop` controls -- it is a static, process-free view,
  * so nothing here re-enters the proxy or targets a now-dead child port.
  * @param {string} sprintId
- * @param {object|null} state - parsed old_sprints/<sprintId>.json, if available
+ * @param {object|null} state - parsed terminal state (old_runs/, or legacy
+ *   old_sprints/, apra-fleet-eft.37.1) <sprintId>.json, if available
  * @returns {string}
  */
 export function renderReadOnlyHistoryHtml(sprintId, state) {
