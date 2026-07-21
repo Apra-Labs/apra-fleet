@@ -341,12 +341,100 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
     return html;
 }
 
+/**
+ * apra-fleet-eft.37.3: pure HTML-string builder for the auto-sprint verdict
+ * badge + PR link, moved OUT of the generic workflow core (which used to
+ * mint `state.verdict`/`state.prUrl` by name -- see
+ * docs/workflow-core-boundary-refactoring.md M2) and into this se-owned
+ * extension. Core now only stores the workflow script's own return value
+ * WHOLESALE and opaquely as `state.result`, and renders its top-level
+ * SCALAR fields as a generic, unstyled key/value strip (src/viewer/
+ * index.mjs's `#result-strip`). This function reads the SAME
+ * `state.result` object, but knows the two keys that are meaningful for an
+ * auto-sprint run specifically -- `verdict` (colored by outcome) and
+ * `prUrl` (link-ified) -- exactly the se-domain knowledge that has no
+ * business living in the generic engine.
+ *
+ * Returns '' when `result` carries neither key (e.g. a non-auto-sprint
+ * workflow, or a run that hasn't finished yet), so the caller can hide its
+ * container entirely rather than show an empty badge strip.
+ *
+ * @param {{ verdict?: string|null, prUrl?: string|null }|null|undefined} result
+ * @returns {string}
+ */
+export function renderResultExtrasHtml(result) {
+    const verdict = result && typeof result === 'object' ? result.verdict : undefined;
+    const prUrl = result && typeof result === 'object' ? result.prUrl : undefined;
+    // Nothing se-meaningful to show (non-auto-sprint workflow, or a run that
+    // hasn't finished yet) -- let the caller hide its container entirely.
+    if (verdict == null && prUrl == null) return '';
+
+    // Color signals outcome, same register as the beads status badges above:
+    // a clean PASS/MERGED/APPROVED recedes to green, anything that means
+    // "this needs a human's attention" (FAIL/CHANGES_NEEDED/ABORTED) draws
+    // the eye in red; an unrecognized verdict string still renders, just in
+    // a neutral grey, rather than being silently dropped.
+    const VERDICT_COLORS = {
+        PASS: 'var(--success)',
+        MERGED: 'var(--success)',
+        APPROVED: 'var(--success)',
+        FAIL: 'var(--danger)',
+        CHANGES_NEEDED: 'var(--danger)',
+        ABORTED: 'var(--danger)',
+    };
+    let verdictHtml = '';
+    if (verdict != null) {
+        const key = String(verdict).toUpperCase();
+        const color = VERDICT_COLORS[key] || '#a1a1aa';
+        verdictHtml = '<span style="color: ' + color + '; font-weight: 700; font-size: 11px; ' +
+            'border: 1px solid ' + color + '; border-radius: 4px; padding: 2px 6px; white-space: nowrap;">' +
+            escapeHtml(String(verdict)) + '</span>';
+    }
+
+    let prHtml = '';
+    if (typeof prUrl === 'string' && prUrl.length > 0) {
+        prHtml = '<a href="' + escapeHtml(prUrl) + '" target="_blank" rel="noopener noreferrer" ' +
+            'style="color: var(--accent); font-size: 11px; text-decoration: none; white-space: nowrap;">PR -&gt;</a>';
+    }
+
+    return verdictHtml + prHtml;
+}
+
 export const beadsExtension = {
     id: 'beads',
     title: 'Tasks',
     js: `
         ${escapeHtml.toString()}
         ${renderBeadsHtml.toString()}
+        ${renderResultExtrasHtml.toString()}
+
+        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // link into the header, next to core's generic (unstyled)
+        // #result-strip -- see viewer/index.mjs's 'workflow:result'
+        // CustomEvent, dispatched on every renderState() with
+        // state.result (core's opaque, workflow-declared result) as its
+        // detail. The container is created lazily on first non-empty
+        // render and removed again whenever there is nothing se-specific
+        // to show (e.g. before a run has finished).
+        function renderResultExtras(result) {
+            const html = renderResultExtrasHtml(result);
+            let el = document.getElementById('se-result-extras');
+            if (!html) {
+                if (el) el.remove();
+                return;
+            }
+            if (!el) {
+                const headerActions = document.querySelector('.header-actions');
+                if (!headerActions) return;
+                el = document.createElement('div');
+                el.id = 'se-result-extras';
+                el.style.display = 'flex';
+                el.style.gap = '8px';
+                el.style.alignItems = 'center';
+                headerActions.insertBefore(el, headerActions.firstChild);
+            }
+            el.innerHTML = html;
+        }
 
         // apra-fleet-eft.27.2: on-demand bead-description fetch + browser
         // localStorage cache. GET /state now serves only a short \`summary\`
@@ -432,6 +520,16 @@ export const beadsExtension = {
             const container = document.getElementById('extension-beads');
             if (!container) return;
             container.innerHTML = renderBeadsHtml(data.sprintTasks || [], data.backlogTasks || []);
+        });
+
+        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // link into the header, next to core's generic (unstyled)
+        // #result-strip -- see viewer/index.mjs's 'workflow:result'
+        // CustomEvent, dispatched on every renderState() with
+        // state.result (core's opaque, workflow-declared result) as its
+        // detail.
+        document.addEventListener('workflow:result', (e) => {
+            renderResultExtras(e.detail);
         });
     `
 };

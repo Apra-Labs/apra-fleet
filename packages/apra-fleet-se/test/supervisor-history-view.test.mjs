@@ -126,9 +126,9 @@ describe('history-view -- loadOldSprintState', () => {
         await fs.rm(dir, { recursive: true, force: true });
     });
 
-    test('reads and parses a finished sprint state from old_sprints/', async () => {
+    test('reads and parses a finished sprint state from old_sprints/, backfilling a legacy top-level verdict/prUrl into state.result (BOUNDARY-COMPAT, apra-fleet-eft.37.3)', async () => {
         const state = await loadOldSprintState('finished-1', { APRA_FLEET_DATA_DIR: dir });
-        assert.deepStrictEqual(state, SAMPLE_STATE);
+        assert.deepStrictEqual(state, { ...SAMPLE_STATE, result: { verdict: 'PASS', prUrl: null } });
     });
 
     test('returns null for a sprint id with no persisted history (never throws for a missing file)', async () => {

@@ -105,6 +105,34 @@ export function resolveOldSprintPath(sprintId, env) {
 }
 
 /**
+ * BOUNDARY-COMPAT (apra-fleet-eft.37.3): before the M2 boundary refactor,
+ * core minted top-level `state.verdict`/`state.prUrl` by name; persisted
+ * old_runs/old_sprints files written before this release still have that
+ * shape. Core now stores the workflow script's own return value WHOLESALE
+ * and opaquely as `state.result` (docs/workflow-core-boundary-
+ * refactoring.md M2), which is what both the generic Result strip and this
+ * package's own verdict-badge/PR-link extension (auto-sprint/
+ * viewer-extensions.mjs's `renderResultExtrasHtml`) read. Backfilling
+ * `state.result` here -- the se-owned reader shim -- is what lets a
+ * pre-rename file's verdict/PR still render in the History view without
+ * core ever having to know about this legacy shape. A file that already has
+ * a `result` object (post-M2) is left untouched: legacy top-level fields
+ * never override an already-opaque result. Remove one release after no
+ * legacy verdict/prUrl-shaped files remain to serve.
+ * @param {object} state
+ * @returns {object}
+ */
+function backfillLegacyResult(state) {
+    if (!state || typeof state !== 'object') return state;
+    if (state.result && typeof state.result === 'object') return state;
+    if (state.verdict === undefined && state.prUrl === undefined) return state;
+    return {
+        ...state,
+        result: { verdict: state.verdict ?? null, prUrl: state.prUrl ?? null },
+    };
+}
+
+/**
  * Loads and parses a finished sprint's persisted terminal state from
  * old_runs/<sprintId>.json (or the legacy old_sprints/<sprintId>.json).
  * Returns `null` when no such file exists (the caller answers 404) or its
@@ -126,7 +154,7 @@ export async function loadOldSprintState(sprintId, env = process.env, readFile) 
         throw err;
     }
     try {
-        return JSON.parse(raw);
+        return backfillLegacyResult(JSON.parse(raw));
     } catch {
         return null;
     }

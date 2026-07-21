@@ -223,8 +223,11 @@ describe('apra-fleet-eft.2.4 / eft.37.1: continuous persistence survives a real 
         const finalState = readJson(oldPath);
         assert.strictEqual(finalState.runId, runId);
         assert.strictEqual(finalState.status, 'success');
-        assert.strictEqual(finalState.verdict, 'MERGED');
-        assert.strictEqual(finalState.prUrl, 'https://github.com/example/repo/pull/99');
+        assert.deepStrictEqual(
+            finalState.result,
+            { verdict: 'MERGED', prUrl: 'https://github.com/example/repo/pull/99', steps: iterations },
+            'result must be the workflow script\'s own return value, stored wholesale'
+        );
         assert.ok(finalState.endedAt, 'endedAt must be populated on a normal completion');
         assert.strictEqual(finalState.terminalReason, 'success');
 

@@ -268,7 +268,7 @@ describe('apra-fleet-eft.2.3 / eft.37.1: running/ -> old_runs/ layout under the 
 });
 
 describe('apra-fleet-eft.2.2: persist on every activity/phase/state event and enrich the state file', () => {
-    test('the persisted file is enriched with runId, args, verdict, prUrl, startedAt/updatedAt/endedAt, terminalReason', async () => {
+    test('the persisted file is enriched with runId, args, result, startedAt/updatedAt/endedAt, terminalReason', async () => {
         const env = { ...process.env, APRA_FLEET_DATA_DIR: dataDir };
         const runId = 'run-eft-2-2-a';
         const launchArgs = ['--foo', 'bar'];
@@ -294,8 +294,7 @@ describe('apra-fleet-eft.2.2: persist on every activity/phase/state event and en
             const midRun = JSON.parse(fs.readFileSync(runningPath, 'utf-8'));
             assert.strictEqual(midRun.runId, runId);
             assert.deepStrictEqual(midRun.args, launchArgs);
-            assert.strictEqual(midRun.verdict, null, 'verdict is not yet known mid-run');
-            assert.strictEqual(midRun.prUrl, null);
+            assert.strictEqual(midRun.result, null, 'result is not yet known mid-run');
             assert.ok(midRun.startedAt, 'startedAt must be populated from construction');
             assert.ok(midRun.updatedAt, 'updatedAt must be populated on every persisted event');
             assert.strictEqual(midRun.endedAt, null, 'endedAt must stay null until the run terminates');
@@ -307,8 +306,11 @@ describe('apra-fleet-eft.2.2: persist on every activity/phase/state event and en
             const finalState = JSON.parse(fs.readFileSync(oldPath, 'utf-8'));
             assert.strictEqual(finalState.runId, runId);
             assert.deepStrictEqual(finalState.args, launchArgs);
-            assert.strictEqual(finalState.verdict, 'MERGED', 'verdict must be picked up from the workflow script\'s own return value');
-            assert.strictEqual(finalState.prUrl, 'https://github.com/example/repo/pull/42');
+            assert.deepStrictEqual(
+                finalState.result,
+                { verdict: 'MERGED', prUrl: 'https://github.com/example/repo/pull/42' },
+                'result must be the workflow script\'s own return value, stored wholesale'
+            );
             assert.ok(finalState.endedAt, 'endedAt must be populated on completion');
             assert.strictEqual(finalState.terminalReason, 'success');
             assert.ok(

@@ -169,6 +169,13 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
   <div class="header">
     <h1><span id="workflow-name">Loading...</span></h1>
     <div class="header-actions">
+      <!-- apra-fleet-eft.37.3: generic, workflow-agnostic display of
+           state.result's top-level SCALAR fields -- populated (or hidden,
+           when empty) by renderState() below. Core never knows what keys
+           live inside 'result'; any richer, workflow-specific rendering
+           (e.g. auto-sprint's verdict badge/PR link) is layered on by a
+           dashboard extension's own js, not here. -->
+      <div class="stats-banner" id="result-strip" style="display: none;"></div>
       <div class="stats-banner" id="stats-banner"></div>
       <div id="status-indicator" style="font-size: 12px; font-weight: 600; min-width: 70px; text-align: center;"></div>
       ${isHistory ? '' : '<button class="btn btn-save" onclick="saveState()">Save</button>'}
@@ -586,6 +593,32 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
            <span><strong>\${state.stats.totalTokens.toLocaleString()}</strong> Tokens</span>
            <span><strong>\${formatUptime(dur)}</strong> Uptime</span>\`;
 
+        // apra-fleet-eft.37.3: generic Result strip -- every workflow gets
+        // its terminal result's top-level SCALAR (string/number/boolean/
+        // null) fields rendered as a plain key/value strip, no per-workflow
+        // registration needed. Core does not know or care what these keys
+        // mean; it only knows how to display a scalar. \`workflow:result\`
+        // is also dispatched (below) so a dashboard extension can layer
+        // richer, workflow-specific rendering (e.g. auto-sprint's verdict
+        // badge/PR link) on top of the same \`state.result\` object.
+        const resultStrip = document.getElementById('result-strip');
+        if (resultStrip) {
+            const result = state.result;
+            const scalarEntries = (result && typeof result === 'object' && !Array.isArray(result))
+                ? Object.entries(result).filter(([, v]) => v === null || ['string', 'number', 'boolean'].includes(typeof v))
+                : [];
+            if (scalarEntries.length > 0) {
+                resultStrip.innerHTML = scalarEntries
+                    .map(([k, v]) => \`<span><strong>\${escapeHtml(k)}</strong>: \${escapeHtml(String(v))}</span>\`)
+                    .join('');
+                resultStrip.style.display = 'flex';
+            } else {
+                resultStrip.innerHTML = '';
+                resultStrip.style.display = 'none';
+            }
+            document.dispatchEvent(new CustomEvent('workflow:result', { detail: result ?? null }));
+        }
+
         renderTreeIncremental(state.tree);
 
         if (state.extensions) {
@@ -725,8 +758,13 @@ export function createDashboardViewer(workflow, opts = {}) {
         // the terminal shape.
         runId,
         args: opts.launchArgs ?? null,
-        verdict: null,
-        prUrl: null,
+        // apra-fleet-eft.37.3: `result` is the workflow script's own return
+        // value, stored WHOLESALE and OPAQUELY -- core never inspects or
+        // mints individual keys inside it (that used to be `verdict`/`prUrl`,
+        // sprint-domain concepts that have no business in the generic
+        // engine). Null until the run ends; see the 'end' handler below and
+        // the generic Result-strip renderer in HTML_TEMPLATE's client script.
+        result: null,
         terminalReason: null,
         startedAt: startedAtIso,
         updatedAt: startedAtIso,
@@ -966,13 +1004,12 @@ export function createDashboardViewer(workflow, opts = {}) {
     workflow.on('end', (res) => {
         state.status = res.status;
         state.stats.durationMs = Date.now() - state.stats.startTime;
-        // apra-fleet-eft.2.2: enrich the terminal state with whatever the
-        // workflow script's own return value (res.result, e.g. the
-        // auto-sprint runner's { verdict, notes, ... }) or thrown error
-        // surfaced -- both are best-effort/optional since not every
-        // workflow script returns a verdict/prUrl.
-        state.verdict = res.result && res.result.verdict !== undefined ? res.result.verdict : state.verdict;
-        state.prUrl = res.result && res.result.prUrl !== undefined ? res.result.prUrl : state.prUrl;
+        // apra-fleet-eft.2.2/eft.37.3: enrich the terminal state with
+        // whatever the workflow script's own return value surfaced --
+        // stored WHOLESALE and opaquely as `state.result` (core never reads
+        // or names individual keys inside it; a non-se workflow may return
+        // anything JSON-shaped here, or nothing at all).
+        state.result = (res.result !== undefined) ? res.result : state.result;
         state.endedAt = nowIso();
         state.terminalReason = res.error
             ? (res.error.message || res.error.name || res.status)

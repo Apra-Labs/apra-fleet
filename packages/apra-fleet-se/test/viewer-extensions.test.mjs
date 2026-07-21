@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { beadsExtension, renderBeadsHtml } from '../auto-sprint/viewer-extensions.mjs';
+import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml } from '../auto-sprint/viewer-extensions.mjs';
 
 // Unit tests for apra-fleet-unw.10 (F9/A7-viewer): the beads dashboard
 // extension used to inject `node.title`/`node.description` into `innerHTML`
@@ -448,6 +448,63 @@ describe('apra-fleet-eft.27.2: browser-side fetch + localStorage cache (embedded
             globalThis.localStorage = originalLocalStorage;
             globalThis.fetch = originalFetch;
         }
+    });
+});
+
+// apra-fleet-eft.37.3: renderResultExtrasHtml() is the se-owned piece that
+// moved OUT of core (which used to mint state.verdict/state.prUrl by name)
+// -- it reads the SAME generic state.result object the core Result strip
+// reads, but knows the two auto-sprint-specific keys worth coloring/
+// link-ifying. Pure string-builder, same testing pattern as renderBeadsHtml.
+describe('renderResultExtrasHtml: auto-sprint verdict badge + PR link', () => {
+    test('returns an empty string when result has neither verdict nor prUrl', () => {
+        assert.strictEqual(renderResultExtrasHtml(null), '');
+        assert.strictEqual(renderResultExtrasHtml(undefined), '');
+        assert.strictEqual(renderResultExtrasHtml({}), '');
+        assert.strictEqual(renderResultExtrasHtml({ notes: 'no verdict here' }), '');
+    });
+
+    test('a PASS-family verdict renders in the success color', () => {
+        for (const verdict of ['PASS', 'MERGED', 'APPROVED']) {
+            const html = renderResultExtrasHtml({ verdict });
+            assert.ok(html.includes('var(--success)'), `${verdict} must render success-colored`);
+            assert.ok(html.includes(verdict));
+        }
+    });
+
+    test('a FAIL-family verdict renders in the danger color', () => {
+        for (const verdict of ['FAIL', 'CHANGES_NEEDED', 'ABORTED']) {
+            const html = renderResultExtrasHtml({ verdict });
+            assert.ok(html.includes('var(--danger)'), `${verdict} must render danger-colored`);
+        }
+    });
+
+    test('an unrecognized verdict still renders (neutral grey), never dropped', () => {
+        const html = renderResultExtrasHtml({ verdict: 'SOMETHING_NEW' });
+        assert.ok(html.includes('SOMETHING_NEW'));
+        assert.ok(html.includes('#a1a1aa'));
+    });
+
+    test('a malicious verdict/prUrl is escaped, never a live tag/attribute break-out', () => {
+        const html = renderResultExtrasHtml({
+            verdict: '<script>alert(1)</script>',
+            prUrl: '"><script>alert(2)</script>',
+        });
+        assert.ok(!/<script>alert/i.test(html));
+        assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+    });
+
+    test('prUrl renders as a safe, new-tab link when present', () => {
+        const html = renderResultExtrasHtml({ verdict: 'PASS', prUrl: 'https://github.com/example/repo/pull/1' });
+        assert.ok(html.includes('href="https://github.com/example/repo/pull/1"'));
+        assert.ok(html.includes('target="_blank"'));
+        assert.ok(html.includes('rel="noopener noreferrer"'));
+    });
+
+    test('a null/absent prUrl renders no link at all, but the verdict badge still shows', () => {
+        const html = renderResultExtrasHtml({ verdict: 'PASS', prUrl: null });
+        assert.ok(!html.includes('<a '));
+        assert.ok(html.includes('PASS'));
     });
 });
 
