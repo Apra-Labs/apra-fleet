@@ -1,11 +1,11 @@
 // apra-fleet-eft.27.4: bounds how much of a command activity's captured
-// stdout ever gets STORED into live sprint state (state.tree in
+// stdout ever gets STORED into live run state (state.tree in
 // src/viewer/index.mjs), not just how much GET /state serves per poll (that
 // narrower job belongs to lean-state.mjs, applied only to the outgoing
 // /state payload). Without this, the full text of every `command()`
-// activity survives for the whole sprint in the in-memory `state` object --
-// and therefore in the debounced running/<sprintId>.json write and the
-// terminal sprint-logs/ snapshot too.
+// activity survives for the whole run in the in-memory `state` object --
+// and therefore in the debounced running/<runId>.json write and the
+// terminal snapshot too.
 //
 // Root cause (apra-fleet-eft.27, measured live): a 449-activity sprint's
 // 188 MB /state payload was dominated by 130 command-activity events at
@@ -59,7 +59,7 @@ export function capOutputText(text, opts = {}) {
 // module-level rather than threaded through `state` -- this text must NEVER
 // be serialized into state.tree / GET /state / persisted snapshots, which is
 // the whole point of capping it there in the first place. One dashboard
-// process serves exactly one live sprint, so an unbounded Map here is
+// process serves exactly one live workflow run, so an unbounded Map here is
 // server-side memory only (never transmitted-per-poll or persisted-to-disk
 // as a whole), garbage-collected with the process on exit.
 const fullOutputById = new Map();

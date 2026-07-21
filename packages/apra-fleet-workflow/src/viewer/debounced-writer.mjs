@@ -1,7 +1,7 @@
-// apra-fleet-eft.2.1: debounced sprint-state writer with flush-on-exit.
+// apra-fleet-eft.2.1: debounced run-state writer with flush-on-exit.
 //
 // This is additive to (not a replacement for) the existing
-// sprint-logs/sprint_<HHMMSS>.json write-once-on-end persistState() in
+// terminal snapshot's write-once-on-end persistState() in
 // src/viewer/index.mjs, which stays exactly as-is as the child
 // crash-safety net. This writer coalesces bursts of rapid state changes
 // (e.g. one per activity/phase/state event, see apra-fleet-eft.2.2) into a
@@ -9,7 +9,7 @@
 // before the process actually exits (end, SIGINT, SIGTERM, /stop).
 //
 // The target file path passed in today is a placeholder -- the real
-// running/<sprintId>.json -> old_sprints/<sprintId>.json layout under the
+// running/<runId>.json -> old_runs/<runId>.json layout under the
 // service data directory is wired in a later task (apra-fleet-eft.2.3).
 
 import fs from 'fs';
@@ -20,7 +20,7 @@ export const MAX_DEBOUNCE_MS = 500;
 export const DEFAULT_DEBOUNCE_MS = 300;
 
 // apra-fleet-eft.20.1: single shared atomic-JSON-write primitive for every
-// sprint-state persistence path in this package (the debounced writer below
+// run-state persistence path in this package (the debounced writer below
 // AND the terminal-snapshot persistState() in ../viewer/index.mjs). Centralizing
 // this here guarantees two invariants that a hand-rolled/partial-patch writer
 // could otherwise violate:
@@ -144,7 +144,7 @@ export class DebouncedStateWriter {
             writeJsonFileAtomic(this._filePath, this._getState());
             this._writeCount += 1;
         } catch (e) {
-            // A failed write must never crash or block the sprint's own
+            // A failed write must never crash or block the run's own
             // normal exit behavior -- log and move on, same contract as
             // the existing persistState() in index.mjs.
             console.warn(`[Viewer] Warning: failed to write debounced state file: ${e.message}`);

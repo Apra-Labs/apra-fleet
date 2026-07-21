@@ -5,7 +5,8 @@
  * src/viewer/index.mjs persistState()).
  *
  * This module is domain-neutral core: it knows about "workflow runs", not
- * about sprints. auto-sprint is one workflow that happens to run on top of it.
+ * about the auto-sprint domain. auto-sprint is one workflow that happens to
+ * run on top of it.
  *
  * Layout, under the SERVICE data directory (never the repo checkout, so a
  * `git status`/`git clean` in the working tree never touches it):

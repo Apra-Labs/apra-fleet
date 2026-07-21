@@ -9,14 +9,14 @@
 //
 // This module is a pure, dependency-free transform: it never touches the
 // live `state` object the viewer mutates in place (src/viewer/index.mjs),
-// nor the full-fidelity snapshots persisted to sprint-logs/ and
-// running/<sprintId>.json (those stay complete, unchanged, for
-// audit/resume/History-view purposes) -- it only shapes what GET /state
-// sends over the wire for the LIVE polling view.
+// nor the full-fidelity snapshots persisted to the configured
+// state-snapshot directory and running/<runId>.json (those stay complete,
+// unchanged, for audit/resume/History-view purposes) -- it only shapes what
+// GET /state sends over the wire for the LIVE polling view.
 //
-// Two independent passes, both fully generic (no `beads`- or any other
-// extension-specific field/namespace knowledge, so this stays target- and
-// sprint-agnostic per the parent bug's fix direction):
+// Two independent passes, both fully generic (no extension-specific
+// field/namespace knowledge, so this stays workflow-agnostic per the parent
+// bug's fix direction):
 //
 //   1. leanifyState(): walks state.tree and state.extensions and
 //      (a) merges known "heavy" fields (description/output/error/input/
@@ -126,7 +126,7 @@ function leanifyDeep(value, opts) {
 /**
  * Returns a new state object whose `tree` and `extensions` have been
  * stripped of heavy/unbounded string content (see module doc). Every other
- * top-level field (status, stats, sprintId, ...) is passed through
+ * top-level field (status, stats, runId, ...) is passed through
  * unchanged -- those are already small and fixed-shape.
  *
  * @param {object} state

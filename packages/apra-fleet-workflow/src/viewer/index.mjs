@@ -13,7 +13,7 @@ import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs'
 // object directly into the page instead of the live view's
 // fetch('/state') + EventSource('/events') polling loop, and hides the Save
 // / Stop controls (there is no live workflow left to save/stop, and nothing
-// to stream: a finished sprint's child process, and therefore those
+// to stream: a finished run's child process, and therefore those
 // endpoints, no longer exists). `opts.state` is embedded as a JSON literal;
 // any literal `</script>`-like sequence inside it is escaped so it can never
 // terminate the embedding <script> tag early.
@@ -67,7 +67,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
        min-height is content-sized, which lets a tall Activity list push the
        panel past its parent instead of the inner .stream-list scrolling.
        overflow: hidden alone is not reliable across the nested flex levels
-       here -- without the explicit 0, large sprints ended up with a clipped,
+       here -- without the explicit 0, large runs ended up with a clipped,
        unscrollable activity widget. */
     .main-content { display: flex; flex: 1; overflow: hidden; min-height: 0; }
 
@@ -286,7 +286,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // apra-fleet-eft.38: on-demand full-output fetch for a capped command
     // activity's 'more...' button (see fieldBlock() above). Delegated on
     // streamEl (not one listener per button) since renderTreeIncremental()
-    // keeps appending new activity elements as the sprint progresses.
+    // keeps appending new activity elements as the run progresses.
     // Deliberately scoped to .more-btn clicks only -- never the activity's
     // own <summary> header, which keeps its native <details> expand/collapse
     // behavior untouched.
@@ -353,10 +353,10 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     });
 
     ${isHistory ? '' : `
-    // Coalesce SSE-triggered refreshes: a busy sprint broadcasts one event
+    // Coalesce SSE-triggered refreshes: a busy run broadcasts one event
     // per log line / activity tick, and refetching + re-rendering the full
     // (potentially multi-MB) /state payload for each of them is what made
-    // large sprints sluggish. One trailing refresh per window is enough --
+    // large runs sluggish. One trailing refresh per window is enough --
     // renderState() always paints the latest snapshot, not a delta.
     const POLL_COALESCE_MS = 400;
     let pollTimer = null;
@@ -475,7 +475,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                         // re-render it exactly once. Rewriting every
                         // activity's innerHTML on every tick -- thousands of
                         // DOM subtrees, some holding megabyte agent outputs
-                        // -- is the other half of what made large sprints
+                        // -- is the other half of what made large runs
                         // sluggish, and the constant churn also fought the
                         // user's own scrolling and text selection.
                         if (evEl.dataset.rendered === 'done') return;
@@ -655,7 +655,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     ${isHistory
         ? `// History view: render the frozen state ONCE, directly -- no
     // fetch('/state') and no EventSource('/events') (asserted: zero polling
-    // requests for a finished sprint with zero running processes).
+    // requests for a finished run with zero running processes).
     renderState(${frozenStateLiteral});`
         : 'poll();'}
   </script>
@@ -700,7 +700,7 @@ function findActivityById(state, id) {
 
 // apra-fleet-eft.6.5: exported so the supervisor's process-free History view
 // (packages/apra-fleet-se/src/supervisor/history-view.mjs) can render a
-// finished sprint's persisted terminal state through the SAME template the
+// finished run's persisted terminal state through the SAME template the
 // live viewer serves, fed a frozen state object (opts.history / opts.state)
 // instead of standing up a whole createDashboardViewer() (which owns a live
 // http.createServer + workflow event wiring this read-only view has no use
@@ -755,7 +755,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         // apra-fleet-eft.37.3: `result` is the workflow script's own return
         // value, stored WHOLESALE and OPAQUELY -- core never inspects or
         // mints individual keys inside it (that used to be `verdict`/`prUrl`,
-        // sprint-domain concepts that have no business in the generic
+        // auto-sprint domain concepts that have no business in the generic
         // engine). Null until the run ends; see the 'end' handler below and
         // the generic Result-strip renderer in HTML_TEMPLATE's client script.
         result: null,
@@ -792,20 +792,20 @@ export function createDashboardViewer(workflow, opts = {}) {
         // apra-fleet-eft.2.2: every event that already drives the SSE
         // broadcast (group:start, phase, activity:start/end, log, state)
         // also schedules a debounced state write and bumps updatedAt, so a
-        // mid-sprint read of the persisted file reflects in-progress state
+        // mid-run read of the persisted file reflects in-progress state
         // rather than only the terminal snapshot.
         state.updatedAt = nowIso();
         debouncedWriter.schedule();
     };
 
     // apra-fleet-eft.2.1/2.3: debounced writer, additive to persistState()
-    // above -- that write-once-on-end path (sprint-logs/sprint_HHMMSS.json)
-    // stays exactly as-is as the child crash-safety net. This one coalesces
-    // bursts of rapid state changes into a single write per debounce window
-    // (default DEFAULT_DEBOUNCE_MS, configurable via
+    // above -- that write-once-on-end path (the terminal snapshot dir's
+    // run_<HHMMSS>.json) stays exactly as-is as the child crash-safety net.
+    // This one coalesces bursts of rapid state changes into a single write
+    // per debounce window (default DEFAULT_DEBOUNCE_MS, configurable via
     // opts.debounceMs, must be within 200-500ms), is flushed synchronously
     // on every exit path below, and (apra-fleet-eft.2.3) targets
-    // running/<sprintId>.json under the service data directory by default --
+    // running/<runId>.json under the service data directory by default --
     // never the repo checkout.
     const debouncedWriter = new DebouncedStateWriter({
         getState: () => state,
@@ -891,7 +891,7 @@ export function createDashboardViewer(workflow, opts = {}) {
 
     // Covers reason 3 (CLI process interrupted): SIGINT/SIGTERM had NO
     // handler at all today for a still-running or successfully-finished
-    // sprint (bin/cli.mjs only registers a SIGINT handler inside its
+    // run (bin/cli.mjs only registers a SIGINT handler inside its
     // failure-grace-window Promise). Registering a listener here removes
     // Node's default immediate-exit behavior for the signal, so the handler
     // must explicitly call process.exit() itself after the best-effort save
@@ -954,8 +954,8 @@ export function createDashboardViewer(workflow, opts = {}) {
     workflow.on('activity:end', (meta) => {
         // apra-fleet-eft.27.4: cap a `command` activity's output/error to a
         // head+tail excerpt + byte count BEFORE it lands in state.tree --
-        // this is the object persisted (debounced running/<sprintId>.json,
-        // terminal sprint-logs/ snapshot) and read by GET /state's
+        // this is the object persisted (debounced running/<runId>.json,
+        // terminal snapshot) and read by GET /state's
         // buildListStatePayload() transform, so an uncapped multi-MB command
         // dump written here bloats all three regardless of that transform.
         // Returns the SAME `meta` reference unchanged when there's nothing
@@ -1030,17 +1030,17 @@ export function createDashboardViewer(workflow, opts = {}) {
             req.on('close', () => clients.delete(res));
         } else if (req.url.startsWith('/state')) {
             // apra-fleet-eft.27.1: GET /state is the RECURRING poll endpoint
-            // (every ~250ms-400ms while a sprint is live) -- it must never
+            // (every ~250ms-400ms while a run is live) -- it must never
             // serve the full in-memory `state` object as-is. That object
-            // accumulates one entry per activity for the sprint's entire
+            // accumulates one entry per activity for the run's entire
             // history, and each entry can embed multi-KB command/agent
             // output; on a real 449-activity sprint this endpoint measured a
             // 116 MB payload per poll (apra-fleet-eft.27). buildListStatePayload()
             // (src/viewer/lean-state.mjs) strips descriptions/transcripts
             // down to short summaries and dedupes any remaining repeated
             // strings -- `state` itself (the source of truth persisted to
-            // sprint-logs/ and running/<sprintId>.json, and what the
-            // process-free History view embeds) is never mutated by this.
+            // the configured snapshot dir and running/<runId>.json, and what
+            // the process-free History view embeds) is never mutated by this.
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
             res.end(JSON.stringify(buildListStatePayload(state)));
         } else if (req.method === 'GET' && /^\/extensions\/[^/]+\/detail\/[^/]+$/.test(req.url)) {
@@ -1181,7 +1181,7 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     // Avoid leaking process-level signal listeners: each createDashboardViewer()
-    // call (one per test, one per real sprint run) adds its own SIGINT/SIGTERM
+    // call (one per test, one per real workflow run) adds its own SIGINT/SIGTERM
     // handler above; remove it once this viewer's server is done.
     server.on('close', () => {
         process.removeListener('SIGINT', handleSigint);
