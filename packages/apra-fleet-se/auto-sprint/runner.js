@@ -2453,6 +2453,80 @@ function selectStreaks(candidate, currentReady) {
 }
 
 /**
+ * apra-fleet-eft.76.3 -- deterministic streak grouping from planner-emitted
+ * lane metadata (`streak` / `streakOrder`, recorded by planner.md via the same
+ * beads `--metadata` channel as `model`), intersected with the CURRENT
+ * ready/open set. This is the fast path that retires the runtime LLM
+ * "Streak Assignment" dispatch: when every ready bead already carries a
+ * `streak` id, the grouping is fully determined by the plan and no agent()
+ * call is needed.
+ *
+ * Contract (mirrors selectStreaks' return shape so the two are drop-in
+ * interchangeable at the call site):
+ * - Returns `null` when the plan lacks lane metadata -- i.e. ANY ready bead is
+ *   missing a non-empty `metadata.streak`. A partial-metadata plan (some laned,
+ *   some not) is treated as "no lane metadata" so the caller falls back to the
+ *   LLM assignment path unchanged (back-compat with old plans; a half-laned
+ *   plan must never be grouped by a mix of two different mechanisms).
+ * - Otherwise returns `{ streaks, reason: null }` where `streaks` is an array
+ *   of arrays of the ORIGINAL bead objects (not ids), grouped by `streak` id.
+ *
+ * Determinism (no run-to-run drift, the whole point of retiring the LLM call):
+ * - Within a lane, beads are ordered by numeric `streakOrder` ascending
+ *   (missing/non-numeric sorts last), then by `title`, then `id`. Because this
+ *   set is `bd list --ready` output, every member is already mutually unblocked
+ *   -- a `blocks` edge between two ready beads cannot exist (the blocked side
+ *   would not be ready) -- so `streakOrder` alone honors all blocks-edge
+ *   constraints; the title/id tiebreak only decides otherwise-equal peers.
+ * - Lanes themselves are ordered by their minimum `streakOrder`, then by
+ *   `streak` id, so the outer dispatch order is stable too.
+ *
+ * Pure function: no I/O, no agent() calls -- unit-testable in isolation.
+ * @param {Array<{id: string, title?: string, metadata?: {streak?: string, streakOrder?: number|string}}>} currentReady
+ * @returns {{ streaks: Array<Array<object>>, reason: null } | null}
+ */
+export function groupStreaksFromLaneMetadata(currentReady) {
+    if (!Array.isArray(currentReady) || currentReady.length === 0) {
+        return null;
+    }
+    // A single un-laned bead disqualifies the whole deterministic path.
+    for (const b of currentReady) {
+        const streakId = b && b.metadata && b.metadata.streak;
+        if (typeof streakId !== 'string' || streakId.trim() === '') {
+            return null;
+        }
+    }
+
+    const orderOf = (b) => {
+        const raw = b.metadata.streakOrder;
+        const n = typeof raw === 'number' ? raw : Number.parseInt(raw, 10);
+        return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+    };
+    const withinLane = (a, b) =>
+        orderOf(a) - orderOf(b)
+        || String(a.title || '').localeCompare(String(b.title || ''))
+        || String(a.id).localeCompare(String(b.id));
+
+    const lanes = new Map();
+    for (const b of currentReady) {
+        const streakId = b.metadata.streak;
+        if (!lanes.has(streakId)) lanes.set(streakId, []);
+        lanes.get(streakId).push(b);
+    }
+
+    const laneEntries = [...lanes.entries()].map(([streakId, beads]) => {
+        const sorted = beads.slice().sort(withinLane);
+        const minOrder = Math.min(...sorted.map(orderOf));
+        return { streakId, sorted, minOrder };
+    });
+    laneEntries.sort((x, y) =>
+        x.minOrder - y.minOrder
+        || String(x.streakId).localeCompare(String(y.streakId)));
+
+    return { streaks: laneEntries.map((e) => e.sorted), reason: null };
+}
+
+/**
  * Builds the self-contained doer dispatch prompt for one streak. Per-bead
  * feedback (apra-fleet-unw.16 Work item 5) is routed here ONLY for the
  * bead(s) this streak actually owns -- never a blanket broadcast of the
@@ -5123,12 +5197,36 @@ async function runSprintCycle(context) {
             devRounds++;
             phase(`Develop C${cycle} R${devRounds}`);
 
-            // --- Streak assignment: consumed for real (Work item 2a) -----
+            // --- Streak grouping ------------------------------------------
+            // apra-fleet-eft.76.3: PREFER deterministic grouping straight from
+            // the planner's lane metadata (`streak`/`streakOrder`, emitted per
+            // planner.md via the same `--metadata` channel as `model`),
+            // intersected with THIS round's ready/open set. When every ready
+            // bead carries a `streak` id, the grouping is fully determined by
+            // the plan -- so we skip the runtime "Streak Assignment" LLM
+            // dispatch entirely (deterministic, zero prompt drift, one fewer
+            // agent round-trip). The LLM assignment path below is retained
+            // ONLY as a FALLBACK for plans that lack lane metadata (old plans
+            // predating eft.76, or a partially-laned plan) -- see
+            // groupStreaksFromLaneMetadata() for the "all-or-nothing" rule.
+            let streaks, usedFallback, reason;
+            const laneGrouping = groupStreaksFromLaneMetadata(currentReady);
+            if (laneGrouping) {
+                ({ streaks, reason } = laneGrouping);
+                usedFallback = false;
+                log(
+                    `Streak grouping: deterministic from lane metadata -- ${laneGrouping.streaks.length} streak(s), ` +
+                    `no Streak Assignment dispatch (${laneGrouping.streaks.map((s) => `[${s.map((b) => b.id).join(', ')}]`).join(' ')}).`
+                );
+            } else {
+            // --- Streak assignment (FALLBACK): consumed for real (Work item 2a) --
+            // Reached only when the plan lacks lane metadata (see above).
             // Schema-validated {streaks: string[][]}; falls back to
             // deterministic one-bead-per-streak whenever the candidate
             // doesn't cover every ready bead id exactly once (invalid
             // output, or agent()'s own bounded schema-repair loop was
             // exhausted) -- see selectStreaks() above.
+            log('Streak grouping: no lane metadata on this round\'s ready beads -- falling back to LLM Streak Assignment dispatch (back-compat with pre-eft.76 plans).');
             let streakCandidate = null;
             try {
                 streakCandidate = await agent(
@@ -5162,7 +5260,7 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            let { streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady);
+            ({ streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady));
             // Semantic-repair re-ask (one bounded attempt): agent()'s own
             // schema-repair only fixes JSON-shape problems -- a candidate can
             // be schema-valid yet semantically invalid (observed live in run
@@ -5198,6 +5296,7 @@ async function runSprintCycle(context) {
             if (usedFallback) {
                 log(`Streak Assignment: using one-bead-per-streak fallback (${reason}).`);
             }
+            } // end LLM-fallback branch (no lane metadata) -- apra-fleet-eft.76.3
             // apra-fleet-unw.19: title lookup for the assignedBeadIds sort
             // below -- streaks/doer dispatches themselves run in `parallel`,
             // and the ORDER their outcomes are recorded in is completion-
