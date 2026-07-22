@@ -403,26 +403,34 @@ export async function runWorkflow(argv: string[], depsOverride?: Partial<Workflo
   }
 
   // --- Fleet-server reachability (docs/adr-workflow-server-resolution.md).
-  // Resolve against an env view that already carries the launcher's own
-  // APRA_FLEET_SERVER_BIN default (in SEA mode: this very binary). Without it,
-  // a bare home (no HTTP singleton, no dev-monorepo dist/) exhausted every
-  // resolver tier and warned "could not resolve the fleet server" -- a false
-  // positive, since applyEnvDefaults() handed the workflow that exact default
-  // right after (observed on every green CI build-binary smoke run). The
-  // ambient env still wins when the user set either variable themselves.
+  // Probe with the caller's REAL env first: the shared resolver reads a set
+  // APRA_FLEET_SERVER_BIN as an *explicit stdio request* and skips the
+  // HTTP-singleton probe entirely, so injecting the launcher's own default
+  // into this probe meant `apra-fleet workflow` could never attach to a
+  // running singleton (apra-fleet-eft.61). Only when the unmodified probe
+  // fails (bare home: no singleton, no dev-monorepo dist/ -- the case behind
+  // the old "could not resolve the fleet server" false positive on green CI
+  // build-binary smoke runs) do we retry with the serverBin default, which is
+  // exactly what applyEnvDefaults() hands the workflow child on that path.
   let mode: string | null = null;
   try {
-    const resolutionEnv = { ...deps.env };
-    if (!resolutionEnv.APRA_FLEET_SERVER_BIN && !resolutionEnv.APRA_FLEET_SERVER_CMD) {
-      resolutionEnv.APRA_FLEET_SERVER_BIN = deps.serverBin;
-    }
-    const resolution = await deps.resolveConnection(resolutionEnv);
+    const resolution = await deps.resolveConnection({ ...deps.env });
     mode = resolution.mode;
     deps.log(`[workflow] fleet server: ${resolution.reason}`);
-  } catch (err) {
-    // Not fatal: plenty of workflows never talk to the server (hello-world). The
-    // workflow's own connect will fail with its own message if it does need one.
-    deps.warn(`[warn] could not resolve the fleet server: ${(err as Error).message}`);
+  } catch (firstErr) {
+    const canDefaultServerBin =
+      !deps.env.APRA_FLEET_SERVER_BIN && !deps.env.APRA_FLEET_SERVER_CMD;
+    try {
+      if (!canDefaultServerBin) throw firstErr;
+      const fallbackEnv = { ...deps.env, APRA_FLEET_SERVER_BIN: deps.serverBin };
+      const resolution = await deps.resolveConnection(fallbackEnv);
+      mode = resolution.mode;
+      deps.log(`[workflow] fleet server: ${resolution.reason}`);
+    } catch (err) {
+      // Not fatal: plenty of workflows never talk to the server (hello-world). The
+      // workflow's own connect will fail with its own message if it does need one.
+      deps.warn(`[warn] could not resolve the fleet server: ${(err as Error).message}`);
+    }
   }
 
   applyEnvDefaults(deps, mode);

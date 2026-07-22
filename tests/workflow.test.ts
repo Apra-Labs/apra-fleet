@@ -43,8 +43,10 @@ interface Harness {
   seenArgv: string[] | null;
   /** Each call to deps.selfHeal(), recording the includeBuiltins arg passed. */
   selfHealCalls?: boolean[];
-  /** The env object runWorkflow passed to deps.resolveConnection. */
+  /** The env object runWorkflow passed to deps.resolveConnection (last call). */
   resolutionEnv?: Record<string, string | undefined>;
+  /** Every env object passed to deps.resolveConnection, in call order. */
+  resolutionEnvs: Record<string, string | undefined>[];
 }
 
 /**
@@ -60,6 +62,9 @@ function harness(
     hasAssets?: boolean;
     mode?: string;
     resolveThrows?: Error;
+    /** Simulate the real resolver on a bare home: throws unless the probe env
+     *  carries APRA_FLEET_SERVER_BIN/CMD, then resolves stdio. */
+    resolveBareHome?: boolean;
     moduleExports?: Record<string, unknown>;
     importThrows?: Error;
     /** Simulate `~/.apra-fleet/node_modules` missing (default: present). */
@@ -73,7 +78,7 @@ function harness(
   const errors: string[] = [];
   const imported: string[] = [];
   const selfHealCalls: boolean[] = [];
-  const h: Harness = { logs, warns, errors, imported, seenArgv: null, deps: null as never };
+  const h: Harness = { logs, warns, errors, imported, seenArgv: null, resolutionEnvs: [], deps: null as never };
 
   // A synthetic marker file so `deps.exists(nodeModulesDir)` is true by default --
   // only tests exercising self-heal opt out via `nodeModulesMissing: true`.
@@ -123,8 +128,12 @@ function harness(
     },
     resolveConnection: async (env) => {
       h.resolutionEnv = env;
+      h.resolutionEnvs.push(env);
       if (opts.resolveThrows) throw opts.resolveThrows;
-      const mode = opts.mode ?? 'http';
+      if (opts.resolveBareHome && !env.APRA_FLEET_SERVER_BIN && !env.APRA_FLEET_SERVER_CMD) {
+        throw new Error('exhausted every resolver tier');
+      }
+      const mode = opts.mode ?? (opts.resolveBareHome ? 'stdio' : 'http');
       return { mode, reason: `attached to ${mode}` };
     },
   };
@@ -655,33 +664,57 @@ describe('self-heal -- on-demand extraction (apra-fleet-7pm.8)', () => {
   });
 });
 
-describe('server resolution env defaults (build-binary smoke false positive)', () => {
-  // The launcher knows its own server binary (deps.serverBin -- in SEA mode the
-  // running executable itself), but used to resolve the connection against the
-  // raw ambient env and only apply that default AFTERWARD, so a bare home
-  // (no singleton, no dev dist/) warned "could not resolve the fleet server"
-  // on every green CI build-binary smoke run. The resolver must see the same
-  // default the workflow itself will receive.
-  it('passes serverBin as APRA_FLEET_SERVER_BIN to resolveConnection when the ambient env sets neither variable', async () => {
+describe('server resolution probing (apra-fleet-eft.61 + build-binary smoke false positive)', () => {
+  // Two constraints pull against each other here:
+  // (1) apra-fleet-eft.61: the shared resolver reads a set APRA_FLEET_SERVER_BIN
+  //     as an EXPLICIT STDIO REQUEST and skips the HTTP-singleton probe, so the
+  //     launcher must probe with the caller's unmodified env first or it can
+  //     never attach to a running singleton.
+  // (2) the old CI build-binary smoke false positive: a bare home (no singleton,
+  //     no dev dist/) exhausts every resolver tier, and warning there is wrong
+  //     because applyEnvDefaults() hands the workflow child a serverBin default
+  //     anyway. So on unmodified-probe failure the launcher retries WITH that
+  //     default before warning.
+  it('probes with the unmodified ambient env first, so a healthy HTTP singleton attaches (eft.61)', async () => {
     const h = harness(autoSprintFiles());
     const code = await runWorkflow(['auto-sprint'], h.deps);
     expect(code).toBe(0);
-    expect(h.resolutionEnv?.APRA_FLEET_SERVER_BIN).toBe(SERVER_BIN);
+    expect(h.resolutionEnvs).toHaveLength(1);
+    expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_BIN).toBeUndefined();
+    // http mode: the child env must NOT get the stdio-request default either,
+    // or cli.mjs re-resolves to stdio and refuses to run (Plan Part 2.1).
+    expect(h.deps.env.APRA_FLEET_SERVER_BIN).toBeUndefined();
     expect(h.warns.filter((w) => w.includes('could not resolve'))).toEqual([]);
   });
 
-  it('never overrides an ambient APRA_FLEET_SERVER_BIN', async () => {
-    const h = harness(autoSprintFiles(), { env: { APRA_FLEET_SERVER_BIN: '/custom/bin/apra-fleet' } });
+  it('bare home: retries with the serverBin default instead of warning (smoke false positive)', async () => {
+    const h = harness(autoSprintFiles(), { resolveBareHome: true });
     const code = await runWorkflow(['auto-sprint'], h.deps);
     expect(code).toBe(0);
-    expect(h.resolutionEnv?.APRA_FLEET_SERVER_BIN).toBe('/custom/bin/apra-fleet');
+    expect(h.resolutionEnvs).toHaveLength(2);
+    expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_BIN).toBeUndefined();
+    expect(h.resolutionEnvs[1].APRA_FLEET_SERVER_BIN).toBe(SERVER_BIN);
+    expect(h.warns.filter((w) => w.includes('could not resolve'))).toEqual([]);
   });
 
-  it('never injects SERVER_BIN into the resolution env when APRA_FLEET_SERVER_CMD is set', async () => {
+  it('never overrides an ambient APRA_FLEET_SERVER_BIN, and does not retry when the user set one', async () => {
+    const h = harness(autoSprintFiles(), {
+      env: { APRA_FLEET_SERVER_BIN: '/custom/bin/apra-fleet' },
+      resolveThrows: new Error('custom bin unreachable'),
+    });
+    const code = await runWorkflow(['auto-sprint'], h.deps);
+    expect(code).toBe(0);
+    expect(h.resolutionEnvs).toHaveLength(1);
+    expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_BIN).toBe('/custom/bin/apra-fleet');
+    expect(h.warns.join('\n')).toContain('could not resolve the fleet server: custom bin unreachable');
+  });
+
+  it('never injects SERVER_BIN into any probe when APRA_FLEET_SERVER_CMD is set', async () => {
     const h = harness(autoSprintFiles(), { env: { APRA_FLEET_SERVER_CMD: 'node server.js run' } });
     const code = await runWorkflow(['auto-sprint'], h.deps);
     expect(code).toBe(0);
-    expect(h.resolutionEnv?.APRA_FLEET_SERVER_BIN).toBeUndefined();
-    expect(h.resolutionEnv?.APRA_FLEET_SERVER_CMD).toBe('node server.js run');
+    expect(h.resolutionEnvs).toHaveLength(1);
+    expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_BIN).toBeUndefined();
+    expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_CMD).toBe('node server.js run');
   });
 });
