@@ -2333,6 +2333,19 @@ function buildDoerPrompt({ beadIds, branch, feedback }) {
         'full acceptance criteria, implement and verify the change, then `bd close <id>` ' +
         'once it is done. Return your report strictly as the required JSON schema ' +
         '(status, closedIds, notes).',
+        // apra-fleet-eft.65.2: a permission-blocked tool must be SURFACED, never
+        // routed around. The eft.65 smoke-test doer, finding its Edit/Write
+        // hard-blocked, substituted a Bash heredoc write -- the exact anti-pattern
+        // CLAUDE.md's permission-block policy forbids (and RECOVERY.md's 2026-07-02
+        // precedent). State it in the dispatch prompt so the directive travels with
+        // every doer regardless of what its agent file says.
+        'PERMISSION BLOCKS MUST BE SURFACED, NOT ROUTED AROUND: if any tool or git ' +
+        'invocation (e.g. Edit/Write, git push) is blocked by the permission layer, STOP ' +
+        'and report the block in your notes with status "BLOCKED" -- do NOT substitute a ' +
+        'Bash heredoc/`cat > file`, a wrapper script, an alternate binary, or any other ' +
+        'workaround whose purpose is to bypass the block, even for a brand-new file and ' +
+        'even if you judge the underlying operation safe. This matches this repo\'s ' +
+        'CLAUDE.md permission-block policy.',
     ];
     if (feedback) {
         lines.push(
