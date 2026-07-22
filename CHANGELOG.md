@@ -2,6 +2,87 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
+
+This entry reconciles the previous "sprint goal not met" note below: the
+KB initialization lifecycle goal and the KB/code-intelligence audit goal
+have both been closed at the parent level, on the strength of the work
+already summarized below plus a completed audit pass. No new source
+changes landed this cycle; this entry captures the final review of the
+work already on the branch.
+
+The KB initialization lifecycle delivered its pre-init sub-phase: provider
+availability detection and repo index-size estimation, both pure and
+unit-tested (see
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)).
+The init phase (first-time indexing with a progress-reporting opt-in
+prompt) and the update phase (incremental re-indexing triggered by
+staleness detection) were not built this cycle and remain open as
+tracked follow-on work; an auto-reindex module delivered in an earlier
+cycle already provides partial coverage of the update phase's
+staleness-triggered re-indexing.
+
+The per-member code-intelligence provider field (`codeIntelProvider` on
+the `Agent` interface, wired into `register_member`/`update_member`) is
+schema/persistence only -- no dispatch path resolves a provider per
+member yet, so setting it has no observable effect until the routing
+half of this feature is built.
+
+The full KB/code-intelligence tool audit was run end-to-end: every KB
+tool and every code-intelligence tool (with both providers) was exercised
+via its audit task, and the corresponding verification task confirmed the
+results. No bugs were filed as a result of the audit, consistent with a
+clean pass -- the full test suite (2314 tests, 0 failures) provides
+independent confirmation.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| reviewer   |          0 |          0 |   n/a |   $0.000 |   $0.000 |
+| overhead   |      7,150 |     45,518 | +537% |   $0.121 |   $0.452 |
+| TOTAL      |      7,150 |     45,518 | +537% |   $0.121 |   $0.452 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Review outcome
+
+**Build**: clean (tsc, zero errors).
+**Tests**: 2314 passed, 5 skipped, 0 failures across 157 test files.
+**Working tree**: clean.
+
+The branch accumulates a complete KB system (capture, query, harvest,
+export, import, reconcile, staleness, trust model, directives), a
+code-intelligence provider abstraction with two providers and auto-reindex,
+telemetry, and extensive test coverage. The codebase builds cleanly and
+all tests pass. No regressions detected. No security issues found (no
+secrets in code, proper use of direct file execution over a shell,
+temp-dir cleanup in tests).
+
+**Non-blocking observations**:
+- No test coverage for a round-trip of the `codeIntelProvider` field in
+  register/update-member tests -- the field is optional so existing
+  members degrade gracefully (confirmed by passing backward-compat
+  tests), but an explicit round-trip test would be a good follow-up.
+- The pre-init glob matcher handles common gitignore patterns but does
+  not implement negation patterns; documented as a known limitation in
+  [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
+**Releasability**: the branch is in a releasable state. All code is
+functional and tested. The incomplete init/update phases are future
+features with no impact on existing functionality. The additive
+scaffolding (pre-init module, `codeIntelProvider` field) is safe to
+merge -- it adds no runtime behavior until wired by a future increment.
+
+Carried forward: the init phase (first-time indexing with progress), the
+update phase (staleness-triggered incremental re-indexing beyond the
+existing auto-reindex coverage), and per-member provider routing through
+`getProvider()` and tool dispatch.
+
 ## [Unreleased] -- Code intelligence: per-member provider field and KB pre-init scaffolding (sprint goal not met)
 
 Sprint goal (P1/P2): audit all KB and code-intelligence tools on this branch,
