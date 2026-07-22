@@ -345,6 +345,7 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   result += `  OS:      ${detectedOS}\n`;
   result += `  Folder:  ${tempAgent.workFolder}\n`;
   result += `  Provider: ${tempAgent.llmProvider ?? 'claude'}\n`;
+  result += `  Code-Intel: ${tempAgent.codeIntelProvider ?? 'global default'}\n`;
   if (tempAgent.category) {
     result += `  Category: ${tempAgent.category}\n`;
   }

@@ -248,6 +248,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     result += `  Auth:    ${updated.authType}\n`;
   }
   result += `  Provider: ${updated.llmProvider ?? 'claude'}\n`;
+  result += `  Code-Intel: ${updated.codeIntelProvider ?? 'global default'}\n`;
   if (updated.modelCheap) result += `  Model Cheap: ${updated.modelCheap}\n`;
   if (updated.modelStandard) result += `  Model Standard: ${updated.modelStandard}\n`;
   if (updated.modelPremium) result += `  Model Premium: ${updated.modelPremium}\n`;
