@@ -2224,20 +2224,27 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
 //
 // Builds the self-contained plan-reviewer dispatch prompt. The vendored
 // agents/plan-reviewer.md Inputs section requires exactly one dispatch input:
-// "The sprint root / scope to review (required)". Its
-// agents/schemas/plan-reviewer-input.json declares `required: ["scope"]`, and
-// plan-reviewer.md's missing-input behavior says an unscoped dispatch must
-// return verdict CHANGES_NEEDED. The plan-reviewer has no memory of this
+// "The sprint root / scope to review (required)", plus an OPTIONAL second
+// input -- "Prior-round verdicts for the current review cycle, if any" --
+// present on round N>1 of a cycle's planner<->plan-reviewer loop so the
+// no-goalpost-moving rule (plan-reviewer.md) has something to bind against.
+// Its agents/schemas/plan-reviewer-input.json declares `required: ["scope"]`,
+// and plan-reviewer.md's missing-input behavior says an unscoped dispatch
+// must return verdict CHANGES_NEEDED. The plan-reviewer has no memory of this
 // conversation (apra-fleet-unw.3's `resume: false` default), so the sprint
 // root issue id(s) and goal priority that define the subtree under review are
 // spelled out here rather than assumed. Everything else (the DAG, task
 // metadata) the reviewer reads from beads itself in its Step 1.
 /**
- * @param {{ targetIssues: string[], goal: string }} opts
+ * @param {{
+ *   targetIssues: string[],
+ *   goal: string,
+ *   priorRoundVerdicts?: Array<{ round: number, verdict: string, notes: string|null }>,
+ * }} opts
  * @returns {string}
  */
-function buildPlanReviewerPrompt({ targetIssues, goal }) {
-    return [
+function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [] }) {
+    const lines = [
         'Review the beads DAG created by the planner for this sprint, per your agent contract.',
         `Sprint root / scope to review (the open beads subtree this review pass covers): ` +
         `sprint root issue id(s) ${targetIssues.join(', ')}, goal priority ${goal}. ` +
@@ -2289,7 +2296,34 @@ function buildPlanReviewerPrompt({ targetIssues, goal }) {
         '(targeting the residual mechanism the latest evidence names, never ' +
         'duplicating the closed fix) plus a [test] task. A bug whose notes show no ' +
         'post-closure recurrence stays under the pending-closure rule as before.',
-    ].join('\n\n');
+    ];
+
+    // apra-fleet-eft.71.2: round N>1 of this cycle's planner<->plan-reviewer
+    // loop carries every earlier round's verdict for THIS SAME scope/cycle so
+    // the plan-reviewer can honor the no-goalpost-moving rule (plan-
+    // reviewer.md) -- a resolution an earlier round explicitly accepted binds
+    // unless this round names new evidence. Absent entirely on round 1 (empty
+    // priorRoundVerdicts), matching plan-reviewer.md's "optional, absent only
+    // on round 1" contract. Each verdict's notes are the plan-reviewer's own
+    // prior free text -- untrusted content, so wrapped the same way
+    // buildPlannerPrompt wraps reviewer feedback above.
+    if (priorRoundVerdicts.length > 0) {
+        lines.push(
+            'Prior-round verdicts for THIS SAME review cycle (most recent last) -- per the ' +
+            'no-goalpost-moving rule in your agent contract, a resolution an earlier round ' +
+            'explicitly named acceptable is SETTLED: accept it again this round unless you ' +
+            'can name specific NEW evidence, and never re-litigate it with a different ' +
+            'demanded resolution.'
+        );
+        for (const { round, verdict, notes } of priorRoundVerdicts) {
+            lines.push(wrapUntrustedBlock(
+                `plan-reviewer.round-${round}-verdict`,
+                `round ${round} verdict: ${verdict}\nnotes: ${notes || '(no notes)'}`
+            ));
+        }
+    }
+
+    return lines.join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -4513,6 +4547,13 @@ async function runSprintCycle(context) {
         let planningRounds = 0;
         let plannerFeedback = null;
         let lastVerdict = null;
+        // apra-fleet-eft.71.2: every earlier round's verdict for THIS cycle's
+        // plan-review loop, oldest first -- fed to buildPlanReviewerPrompt on
+        // round N>1 so the no-goalpost-moving rule (plan-reviewer.md) has
+        // prior-round rulings to bind against. Reset per cycle (a verdict is
+        // only trustworthy for the cycle that produced it, same rationale as
+        // lastReviewVerdict above).
+        const priorPlanRoundVerdicts = [];
 
         while (!planApproved && planningRounds < 3) {
             planningRounds++;
@@ -4677,7 +4718,7 @@ async function runSprintCycle(context) {
                 // (pushCode: false) -- G-pull before, no-op G-push after.
                 try {
                     verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
-                        buildPlanReviewerPrompt({ targetIssues, goal: validated.goal }),
+                        buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts }),
                         { ...planReviewerDispatchOpts, member_name: getMemberForRole('plan-reviewer') }
                     ));
                 } catch (err) {
@@ -4726,6 +4767,10 @@ async function runSprintCycle(context) {
             }
             lastVerdict = verdict;
             log(`Plan Reviewer: ${JSON.stringify(verdict)}`);
+            // apra-fleet-eft.71.2: record this round's verdict for THIS cycle
+            // AFTER using (not before) the accumulated prior rounds above, so
+            // round N's dispatch never sees its own not-yet-returned verdict.
+            priorPlanRoundVerdicts.push({ round: planningRounds, verdict: verdict.verdict, notes: verdict.notes });
 
             if (verdict.verdict === 'APPROVED') {
                 planApproved = true;
