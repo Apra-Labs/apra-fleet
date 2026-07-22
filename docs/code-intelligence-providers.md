@@ -139,7 +139,12 @@ best-effort helpers back this phase:
   `out`, `coverage`, `.cache`, `vendor`) that are never meaningful to
   index regardless of gitignore content. Like provider detection, it never
   throws -- any walk failure degrades to a zeroed or partial estimate
-  rather than propagating.
+  rather than propagating. Note the glob matcher does not implement
+  negation patterns (`!pattern`); a gitignore that re-includes a path under
+  an otherwise-excluded directory will still have that path excluded from
+  the estimate. This is acceptable for a rough pre-init size estimate, but
+  the init phase's actual file-selection logic (not yet built) should not
+  assume this matcher's semantics are gitignore-complete.
 
 This pre-init phase is scaffolding for the init phase (first-time repo
 indexing with a progress-reporting opt-in prompt) and the update phase
