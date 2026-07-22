@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import os from 'os';
 import { runCmd as bdRunCmd } from './bd-replay.mjs';
-import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
+import { FleetWorkflow, AgentDispatchError, FleetTransportError } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -969,13 +969,60 @@ export async function runDevelopLoopScenario(tag, {
             error = err;
         }
 
-        const finalBeadsRaw = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
-        const finalBeadsById = new Map(finalBeadsRaw.map((b) => [b.id, b]));
+        // apra-fleet-eft.54.3: a no-mutation terminal dispatch error (the
+        // agent dispatch itself failed -- AgentDispatchError/FleetTransportError,
+        // not a max_turns_exhausted resume case) means there is provably
+        // nothing new in the beads DB for THIS run to have produced, so this
+        // diagnostic `bd list --all --json` read -- a real bd/dolt spawn under
+        // APRA_FLEET_BD_MOCK=off -- is skipped entirely rather than run
+        // unconditionally in this shared harness's post-run teardown. Every
+        // other outcome (success, or a typed sprint-abort that fired AFTER a
+        // dispatch already ran -- e.g. ReviewerContractViolationError/
+        // StalledSprintError -- which may have mutated real beads) keeps the
+        // exact prior behavior; finalBeadsById is simply an empty Map for the
+        // no-mutation case (no existing scenario asserts on it there).
+        const skipFinalBeadsRead = isNoMutationTerminalDispatchError(error);
+        const finalBeadsById = skipFinalBeadsRead
+            ? new Map()
+            : new Map(JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]').map((b) => [b.id, b]));
 
         return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch };
     } finally {
         await teardown(tempDir);
     }
+}
+
+// apra-fleet-eft.54.3 (residual after eft.54.1): true when a thrown error out
+// of engine.executeFile() means the agent dispatch itself never delivered a
+// usable result -- an AgentDispatchError or FleetTransportError -- and
+// therefore provably produced no beads/code mutation for THIS scenario run to
+// verify. runner.js's own withGitSync already skips its per-dispatch real-bd
+// G-push/D-push teardown for exactly this error shape (isNoMutationDispatchFailure,
+// same file); this mirrors that same no-mutation judgment one layer up, at the
+// shared scenario harness's OWN post-run diagnostic read below.
+//
+// Deliberately narrower than runner.js's isNoMutationDispatchFailure (which
+// also folds in isTypedAbortError() -- ANY WorkflowError subclass, including
+// ReviewerContractViolationError/StalledSprintError/SprintPlanRejectedError/
+// BudgetExceededError): those are typed sprint ABORTS that fire only AFTER a
+// dispatch already succeeded and possibly mutated beads (e.g. a doer closed a
+// bead before the reviewer's contract-violation abort fired -- see
+// mock-sprint-stall-contract-violation.test.mjs, which asserts on
+// finalBeadsById for exactly that reason). Only a genuine dispatch-channel
+// failure (the agent never ran / never came back) can be assumed to have
+// mutated nothing.
+//
+// Also excludes an AgentDispatchError whose reason is 'max_turns_exhausted':
+// that is the resumable partial-work case -- the agent DID run and may have
+// committed/closed beads before running out of turns -- so this harness's own
+// post-run bead-state read still needs to reflect real state, same exclusion
+// runner.js's own isNoMutationDispatchFailure makes.
+export function isNoMutationTerminalDispatchError(err) {
+    if (!err) return false;
+    if (err instanceof AgentDispatchError && err.details && err.details.reason === 'max_turns_exhausted') {
+        return false;
+    }
+    return err instanceof AgentDispatchError || err instanceof FleetTransportError;
 }
 
 export const REQUIRED_AGENT_TYPES = ['planner', 'plan-reviewer', 'doer', 'reviewer', 'deployer', 'integ-test-runner', 'harvester'];
