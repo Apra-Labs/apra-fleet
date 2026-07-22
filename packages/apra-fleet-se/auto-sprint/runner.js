@@ -2446,7 +2446,7 @@ function selectStreaks(candidate, currentReady) {
  * @param {{ beadIds: string[], branch: string, feedback: string|null }} opts
  * @returns {string}
  */
-function buildDoerPrompt({ beadIds, branch, feedback }) {
+export function buildDoerPrompt({ beadIds, branch, feedback }) {
     const lines = [
         `Sprint track branch to work on: ${branch}. Work on this branch only; do not push to the base branch.`,
         `Assigned bead ids (comma-separated): ${beadIds.join(', ')}`,
