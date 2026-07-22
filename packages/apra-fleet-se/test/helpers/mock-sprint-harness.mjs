@@ -257,6 +257,18 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // and the terminal-error propagation through main()'s typed-abort
         // catch (publishState('terminal', ...)) end to end.
         plannerHandler = null,
+        // apra-fleet-eft.72.2: optional (opts, tempDir, runCmd, epicBead,
+        // planRound) => result override for the 'plan-reviewer' dispatch,
+        // mirroring plannerHandler above. Lets a scenario script an exact
+        // verdict sequence (e.g. CHANGES_NEEDED every round, with
+        // taskAssignments/notes crafted from the real bead ids created by
+        // this scenario) for the plan-cap-exhaustion deferral scenarios --
+        // something the fixed `planReviewerMode` string switch below can't
+        // express, since it never has access to real created bead ids. When
+        // provided, this takes priority over `planReviewerMode` (but still
+        // runs AFTER the promptHasScope contract check below, so that
+        // regression guard stays in force for every scenario).
+        planReviewerHandler = null,
         addExtraTaskDuringPlan = true,
         // apra-fleet-unw.17 additions:
         deployHandler = null,
@@ -593,6 +605,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     };
                 }
 
+                if (planReviewerHandler) {
+                    return planReviewerHandler({ opts, tempDir, runCmd, epicBead, planRound });
+                }
+
                 // apra-fleet-unw.15: plan-reviewer responses are now
                 // schema-validated JSON (contracts.mjs `planReviewerVerdict`)
                 // consumed via agent()'s { schema } option, not free text.
@@ -905,6 +921,11 @@ export async function runRejectedPlanScenario(tag) {
  */
 export async function runDevelopLoopScenario(tag, {
     members, taskSpecs, doerHandler, reviewerHandler, plannerHandler,
+    // apra-fleet-eft.72.2: optional plan-reviewer override -- see
+    // buildMockFleetApi's `planReviewerHandler` option comment above. When
+    // provided, this scenario's plan phase is driven by the handler instead
+    // of the default 'approve-immediately' mode below.
+    planReviewerHandler,
     // apra-fleet-unw.17 additions:
     deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
     goal = 'P1/P2', maxCycles = 1,
@@ -959,6 +980,7 @@ export async function runDevelopLoopScenario(tag, {
             doerHandler,
             reviewerHandler,
             plannerHandler,
+            planReviewerHandler,
             deployHandler,
             integHandler,
             finalReviewHandler,
