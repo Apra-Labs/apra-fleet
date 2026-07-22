@@ -159,4 +159,5 @@
 {"seq":158,"kind":"command","member":"local","command":"bd config get sync.remote --json"}
 {"seq":159,"kind":"command","member":"local","command":"bd dolt push"}
 {"seq":160,"kind":"command","member":"local","command":"git push -u origin auto-sprint/mock-sprint"}
-{"seq":161,"kind":"command","member":"local","command":"gh pr create --base \"main\" --head \"auto-sprint/mock-sprint\" --title \"Auto-sprint [PASS]: auto-sprint/mock-sprint\" --body \"Automated apra-fleet-se sprint (goal: P1/P2).\n\nFinal Verdict: PASS\nNotes: All goal-priority beads closed, last review APPROVED, deploy/integ phases (if any) succeeded. Excellent velocity and solid implementation.\n\nDo NOT auto-merge -- see pm skill R12; a human must review and merge this PR.\""}
+{"seq":161,"kind":"command","member":"local","command":"git remote get-url origin"}
+{"seq":162,"kind":"command","member":"local","command":"gh pr create --base \"main\" --head \"auto-sprint/mock-sprint\" --title \"Auto-sprint [PASS]: auto-sprint/mock-sprint\" --body \"Automated apra-fleet-se sprint (goal: P1/P2).\n\nFinal Verdict: PASS\nNotes: All goal-priority beads closed, last review APPROVED, deploy/integ phases (if any) succeeded. Excellent velocity and solid implementation.\n\nDo NOT auto-merge -- see pm skill R12; a human must review and merge this PR.\""}

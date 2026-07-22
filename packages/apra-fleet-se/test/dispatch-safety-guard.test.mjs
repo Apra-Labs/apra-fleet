@@ -144,7 +144,13 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // member_name). createChildBeadWithAllocatedId()'s existing `bd create`
 // call site is unchanged in COUNT (its `-d "${description}"` interpolation
 // became `--body-file "${descriptionFile}"`, same single call site).
-const EXPECTED_COMMAND_COUNT = 32;
+// 32 -> 34 (apra-fleet-eft.64.1): the Publish PR step gained two new
+// command() call sites -- `git remote get-url origin` (resolving/
+// classifying the sprint's git remote via isHostedGithubRemote() before
+// deciding whether to attempt `gh pr create`) and `bd close ${id}` (closing
+// the target issue directly on the non-hosted-remote path); both pass
+// member_name: orchestratorMember, verified compliant.
+const EXPECTED_COMMAND_COUNT = 34;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

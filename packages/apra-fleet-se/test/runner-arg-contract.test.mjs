@@ -339,6 +339,16 @@ function buildSpyFleetApi(overrides = {}) {
             if (opts.command.includes("existsSync")) {
                 return mockCmdResult(0, 'not found');
             }
+            // apra-fleet-eft.64.1: the Publish PR step now resolves and
+            // classifies `git remote get-url origin` (isHostedGithubRemote())
+            // BEFORE deciding whether to attempt `gh pr create` -- answer it
+            // with a hosted GitHub URL so this spy's existing generic-fallback
+            // empty stdout (below) doesn't misclassify every scenario in this
+            // suite as a non-hosted remote and silently divert onto the new
+            // skip-PR/direct-close path instead of exercising `gh pr create`.
+            if (/^git remote get-url origin\b/.test(opts.command)) {
+                return mockCmdResult(0, 'https://github.com/mock-org/mock-repo.git');
+            }
             return mockCmdResult(0, '');
         },
         executePrompt: async (opts) => {
@@ -451,9 +461,16 @@ describe('runner.js mock-level execution', () => {
         assert.match(spy.commandLog[firstGitIdx], /^git fetch origin develop/);
         assert.match(spy.commandLog[firstGitIdx + 1], /^git fetch origin auto-sprint\/reach-test\b/);
         assert.ok(spy.commandLog[firstGitIdx + 2].includes('git checkout -B auto-sprint/reach-test origin/auto-sprint/reach-test'));
-        const last2 = spy.commandLog.slice(-2);
-        assert.match(last2[0], /^git push -u origin auto-sprint\/reach-test/);
-        assert.match(last2[1], /^gh pr create --base "develop" --head "auto-sprint\/reach-test"/);
+        // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
+        // `git remote get-url origin` (isHostedGithubRemote()) between the
+        // push and `gh pr create` -- this spy answers it with a hosted
+        // GitHub URL (see the `git remote get-url origin` branch above), so
+        // the hosted-remote `gh pr create` path is exercised unchanged, just
+        // with one extra command in between.
+        const last3 = spy.commandLog.slice(-3);
+        assert.match(last3[0], /^git push -u origin auto-sprint\/reach-test/);
+        assert.match(last3[1], /^git remote get-url origin\b/);
+        assert.match(last3[2], /^gh pr create --base "develop" --head "auto-sprint\/reach-test"/);
     });
 
     test('a malicious issue id is rejected with a validation error and results in ZERO fleet dispatches', async () => {

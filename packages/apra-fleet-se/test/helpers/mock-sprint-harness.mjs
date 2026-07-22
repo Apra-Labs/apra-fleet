@@ -315,6 +315,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // -- which never re-run against the same branch twice -- are
         // unaffected either way).
         prExistsState = new Set(),
+        // apra-fleet-eft.64.1: `git remote get-url origin`'s mocked stdout --
+        // the Publish PR step (runner.js) now resolves and classifies this
+        // URL (isHostedGithubRemote()) BEFORE deciding whether to attempt
+        // `gh pr create` at all, so this mock must answer that specific
+        // command with something the classifier accepts as hosted by
+        // default -- otherwise every existing PR-creation scenario below
+        // would silently divert onto the new non-hosted/direct-close path
+        // instead of exercising `gh pr create` as they did before this
+        // classifier existed. A scenario exercising the non-hosted path
+        // (e.g. a `file://` sandbox mirror) overrides this explicitly.
+        originUrl = 'https://github.com/mock-org/mock-repo.git',
     } = options;
 
     let planRound = 0;
@@ -426,6 +437,18 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                         isError: true,
                         content: [{ text: gitGhFailureMessage || `mock git/gh failure (injected) for: ${opts.command}` }],
                     };
+                }
+
+                // apra-fleet-eft.64.1: answer the Publish PR step's remote-
+                // classification probe with `originUrl` (a hosted GitHub URL
+                // by default -- see the option comment above) so this mock's
+                // command() intercept has a real answer for the ONE git/gh
+                // command besides `gh pr create` itself that the runner now
+                // reads the mocked stdout of, rather than falling through to
+                // the generic 'ok (mocked...)' text below (which is not a
+                // real URL and would misclassify as non-hosted).
+                if (/^git remote get-url origin\b/.test(opts.command)) {
+                    return mockCmdResult(0, originUrl, '');
                 }
 
                 // apra-fleet-unw2.9 (N11): idempotent `gh pr create`
@@ -901,6 +924,12 @@ export async function runDevelopLoopScenario(tag, {
     // separate scenario runs against the exact SAME branch to simulate a
     // re-run of finalization.
     gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
+    // apra-fleet-eft.64.1: optional override for the mocked `git remote
+    // get-url origin` stdout -- see buildMockFleetApi's `originUrl` option
+    // comment above. Lets a scenario simulate a non-hosted remote (e.g.
+    // `file:///path/to/bare-mirror.git`) to exercise the Publish PR step's
+    // skip-PR/direct-close path instead of the default hosted-GitHub path.
+    originUrl,
     // apra-fleet-eft.28.4: optional override for `args.dispatch_timeout_s`
     // (validateArgs floor: integer >= 60; runner.js defaults to 3600 when
     // omitted). Lets a scenario exercise the client-side dispatch-timeout
@@ -939,6 +968,7 @@ export async function runDevelopLoopScenario(tag, {
             gitGhFailurePattern,
             gitGhFailureMessage,
             prExistsState,
+            ...(originUrl !== undefined ? { originUrl } : {}),
         });
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('log', (e) => logs.push(e.msg));

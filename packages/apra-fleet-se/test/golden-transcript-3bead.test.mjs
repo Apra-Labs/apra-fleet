@@ -160,6 +160,18 @@ function build3BeadFleetApi(tempDir, epicBead, dispatchLog) {
             // tempDir is a bare `bd init` scratch dir, not a git repo with
             // an 'origin' remote -- see the identical comment in
             // test/golden-transcript.test.mjs / advanced-mock-runner-test.mjs.
+            // apra-fleet-eft.64.1: answer `git remote get-url origin`
+            // (now resolved+classified by the Publish PR step before it
+            // decides whether to attempt `gh pr create`) with a hosted
+            // GitHub URL, BEFORE the generic git/gh success stub below --
+            // otherwise the generic stub's non-URL text misclassifies as a
+            // non-hosted remote and this golden scenario silently diverts
+            // onto the skip-PR/direct-close path instead of the `gh pr
+            // create` path this fixture was recorded against.
+            if (/^git remote get-url origin\b/.test(opts.command)) {
+                return mockCmdResult(0, 'https://github.com/mock-org/mock-repo.git', '');
+            }
+
             if (/^(git|gh)\s/.test(opts.command)) {
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
             }

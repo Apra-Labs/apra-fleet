@@ -70,11 +70,22 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             run1.commandLog[firstGitIdx + 2] && run1.commandLog[firstGitIdx + 2].includes('git checkout -B auto-sprint/mock-sprint'),
             `Expected third git commandLog entry to be the sprint-branch checkout, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 2])}`
         );
-        const pushIdx = run1.commandLog.length - 2;
+        // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
+        // `git remote get-url origin` (isHostedGithubRemote()) BEFORE
+        // deciding whether to attempt `gh pr create` -- this mock's origin
+        // is a hosted GitHub URL by default (see mock-sprint-harness.mjs's
+        // `originUrl` option), so the existing `gh pr create` path is still
+        // exercised, just with this extra probe command in between.
+        const pushIdx = run1.commandLog.length - 3;
+        const originUrlIdx = run1.commandLog.length - 2;
         const prIdx = run1.commandLog.length - 1;
         check(
             run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith('git push -u origin auto-sprint/mock-sprint'),
-            `Expected second-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
+            `Expected third-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
+        );
+        check(
+            run1.commandLog[originUrlIdx] === 'git remote get-url origin',
+            `Expected second-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
         );
         check(
             run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('gh pr create') && run1.commandLog[prIdx].includes('--base "main"') && run1.commandLog[prIdx].includes('--head "auto-sprint/mock-sprint"'),

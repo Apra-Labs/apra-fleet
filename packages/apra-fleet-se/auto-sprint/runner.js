@@ -2645,6 +2645,39 @@ export function sanitizePrText(text) {
 }
 
 // ---------------------------------------------------------------------------
+// Non-hosted git remote detection for Harvest/Publish (apra-fleet-eft.64.1)
+// ---------------------------------------------------------------------------
+//
+// apra-fleet-eft.64: integ-test-playbook.md's Setup wires the toy sandbox's
+// git 'origin' to a plain `file://` bare mirror, by design, for isolation --
+// it never provisions any GitHub-hosting credential (gh auth login /
+// GH_TOKEN) for that sandbox HOME. The Harvest phase's PR-creation step
+// (`gh pr create`, below) has no fallback for a git remote with no hosting
+// API behind it, so every real smoke-test run that reaches Harvest hits a
+// hard 'gh auth login required' failure and the whole sprint ends FAILED --
+// leaving the target/canary issue open even after a fully APPROVED-quality
+// sprint. This pure classifier lets the Publish PR step (below) detect that
+// case up front and take the non-PR-gated closure path instead, with no
+// dependency on `gh` auth at all.
+/**
+ * Returns true when `remoteUrl` looks like a GitHub remote `gh pr create`
+ * can actually open a PR against (an `https://github.com/...` or
+ * `git@github.com:...`/`ssh://git@github.com/...` URL) -- as opposed to a
+ * non-hosted remote (a plain `file://` bare mirror, or any other host `gh`
+ * has no hosting API for). A missing/empty/unresolvable URL is treated as
+ * non-hosted (fails closed toward the safer "skip PR creation" path rather
+ * than attempting a `gh pr create` that would just fail on auth).
+ * @param {string} remoteUrl
+ * @returns {boolean}
+ */
+export function isHostedGithubRemote(remoteUrl) {
+    const url = String(remoteUrl ?? '').trim();
+    if (!url) return false;
+    if (/^file:\/\//i.test(url)) return false;
+    return /^(https?:\/\/([^/@\s]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url);
+}
+
+// ---------------------------------------------------------------------------
 // Integ report part-2 (smoke test) SHA-freshness validation (apra-fleet-eft.55.2)
 // ---------------------------------------------------------------------------
 //
@@ -5947,52 +5980,103 @@ async function runSprintCycle(context) {
     // verdict still publishes the PR (never suppressed), with the verdict
     // stated plainly so the reviewer can weigh it before merging.
     const finalVerdictLabel = finalVerdictResult.verdict === 'PASS' ? 'PASS' : 'FAIL';
-    const prTitle = `Auto-sprint [${finalVerdictLabel}]: ${validated.branch}`;
-    // apra-fleet-hfs: finalVerdictResult.notes is LLM-authored free text --
-    // sanitize with sanitizePrText() (see comment above its definition)
-    // BEFORE it is ever interpolated into the double-quoted `gh pr create`
-    // command() string below. validated.goal/validated.branch need no
-    // sanitization here: both are already validated against
-    // shell-injection-safe patterns (GOAL_PATTERN/BRANCH_NAME_PATTERN) at
-    // arg-validation time, well before this point.
-    const safeNotes = sanitizePrText(finalVerdictResult.notes);
-    const prBody = [
-        `Automated apra-fleet-se sprint (goal: ${validated.goal}).`,
-        '',
-        `Final Verdict: ${finalVerdictLabel}`,
-        safeNotes ? `Notes: ${safeNotes}` : null,
-        '',
-        'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
-    ].filter((line) => line !== null).join('\n');
 
-    // N11: idempotent PR creation. `gh pr create` is dispatched with
-    // `failSoft: true` (rather than the default throw-on-isError behaviour)
-    // so a re-run of finalization against a branch that ALREADY has an open
-    // PR from a prior, otherwise-successful run can be told apart from a
-    // genuine gh/git failure. `gh pr create` fails with an "already exists"
-    // message in that case -- that specific failure is swallowed (logged,
-    // not thrown) because it means the desired end state (a PR is open for
-    // this branch) already holds. Any OTHER failure (auth, network, a real
-    // API error, the injectable mock failure below) is NOT swallowed -- it
-    // is re-raised as a typed CommandError so it surfaces clearly rather
-    // than being silently invisible.
-    const prCreateRes = await command(
-        `gh pr create --base "${validated.baseBranch}" --head "${validated.branch}" --title "${prTitle}" --body "${prBody}"`,
-        {
-            member_name: orchestratorMember,
-            silent: true,
-            failSoft: true,
-            label: `Raise PR to '${validated.baseBranch}' (not merged)`,
-        }
-    );
-    if (!prCreateRes.ok) {
-        if (/already exists/i.test(prCreateRes.error || '')) {
-            log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success (${prCreateRes.error}).`);
+    // apra-fleet-eft.64.1: resolve the sprint's own git 'origin' remote and
+    // classify it (see isHostedGithubRemote() above) BEFORE ever attempting
+    // `gh pr create`. A non-hosted remote (the integ-test-playbook.md
+    // sandbox's file:// bare mirror, or any other host `gh` has no hosting
+    // API for) means PR creation can never succeed here -- attempting it
+    // anyway is exactly what previously threw a hard 'gh auth login
+    // required' CommandError and failed the whole sprint, leaving the
+    // target/canary issue open even after a fully APPROVED-quality run.
+    // Resolving the remote is itself failSoft (an unresolvable remote is
+    // just treated as non-hosted, per isHostedGithubRemote()'s fail-closed
+    // default) so a transient/portability probe hiccup here can never throw
+    // and kill the sprint the way the old unconditional `gh pr create` did.
+    const originUrlRes = await command('git remote get-url origin', {
+        member_name: orchestratorMember,
+        silent: true,
+        failSoft: true,
+        label: 'Resolve origin remote URL',
+    });
+    const originUrl = originUrlRes.ok ? originUrlRes.output.trim() : '';
+    const hostedRemote = isHostedGithubRemote(originUrl);
+
+    if (!hostedRemote) {
+        log(`Publish PR: origin remote '${originUrl || '(unresolved)'}' is not a gh-hostable GitHub remote -- ` +
+            'skipping PR creation entirely (no dependency on gh auth / GH_TOKEN for this path).');
+        // Closure was previously gated on the PR-creation step succeeding,
+        // which a non-hosted remote can never do -- close the target
+        // issue(s) directly instead, but only when the sprint's own final
+        // verdict actually passed (a FAIL verdict must never be masked by
+        // closing the issue anyway; it still ends the sprint 'failed' via
+        // the return value below, same as the hosted-remote path).
+        if (finalVerdictResult.verdict === 'PASS') {
+            for (const id of targetIssues) {
+                const closeRes = await command(`bd close ${id}`, {
+                    member_name: orchestratorMember,
+                    silent: true,
+                    failSoft: true,
+                    label: `Close target issue '${id}' directly (non-hosted remote, no PR gate)`,
+                });
+                if (closeRes.ok) {
+                    log(`Publish PR: closed target issue '${id}' directly (non-hosted remote, PASS verdict).`);
+                } else {
+                    log(`Publish PR: failed to close target issue '${id}' directly (non-fatal, continuing): ${closeRes.error}`);
+                }
+            }
+            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
         } else {
-            throw new CommandError(
-                `[Publish PR Failed] gh pr create failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prCreateRes.error}`,
-                { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prCreateRes.error } }
-            );
+            log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
+        }
+    } else {
+        // apra-fleet-hfs: finalVerdictResult.notes is LLM-authored free text --
+        // sanitize with sanitizePrText() (see comment above its definition)
+        // BEFORE it is ever interpolated into the double-quoted `gh pr create`
+        // command() string below. validated.goal/validated.branch need no
+        // sanitization here: both are already validated against
+        // shell-injection-safe patterns (GOAL_PATTERN/BRANCH_NAME_PATTERN) at
+        // arg-validation time, well before this point.
+        const prTitle = `Auto-sprint [${finalVerdictLabel}]: ${validated.branch}`;
+        const safeNotes = sanitizePrText(finalVerdictResult.notes);
+        const prBody = [
+            `Automated apra-fleet-se sprint (goal: ${validated.goal}).`,
+            '',
+            `Final Verdict: ${finalVerdictLabel}`,
+            safeNotes ? `Notes: ${safeNotes}` : null,
+            '',
+            'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
+        ].filter((line) => line !== null).join('\n');
+
+        // N11: idempotent PR creation. `gh pr create` is dispatched with
+        // `failSoft: true` (rather than the default throw-on-isError behaviour)
+        // so a re-run of finalization against a branch that ALREADY has an open
+        // PR from a prior, otherwise-successful run can be told apart from a
+        // genuine gh/git failure. `gh pr create` fails with an "already exists"
+        // message in that case -- that specific failure is swallowed (logged,
+        // not thrown) because it means the desired end state (a PR is open for
+        // this branch) already holds. Any OTHER failure (auth, network, a real
+        // API error, the injectable mock failure below) is NOT swallowed -- it
+        // is re-raised as a typed CommandError so it surfaces clearly rather
+        // than being silently invisible.
+        const prCreateRes = await command(
+            `gh pr create --base "${validated.baseBranch}" --head "${validated.branch}" --title "${prTitle}" --body "${prBody}"`,
+            {
+                member_name: orchestratorMember,
+                silent: true,
+                failSoft: true,
+                label: `Raise PR to '${validated.baseBranch}' (not merged)`,
+            }
+        );
+        if (!prCreateRes.ok) {
+            if (/already exists/i.test(prCreateRes.error || '')) {
+                log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success (${prCreateRes.error}).`);
+            } else {
+                throw new CommandError(
+                    `[Publish PR Failed] gh pr create failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prCreateRes.error}`,
+                    { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prCreateRes.error } }
+                );
+            }
         }
     }
 
