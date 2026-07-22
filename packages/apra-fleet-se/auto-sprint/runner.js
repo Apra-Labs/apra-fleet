@@ -7,6 +7,7 @@ import {
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, isNonRetryableDispatchError } from './errors.mjs';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
+import { acquireSprintLock } from './sprint-lock.mjs';
 
 // apra-fleet-eft.8.12: parseUnmergedPaths is re-exported here (rather than
 // only living in conflict-ladder.mjs) so existing imports of it from
@@ -6853,7 +6854,24 @@ export function installFatalDiagnosticsGuard(deps = {}) {
 // that never had a resolvable branch to count commits on in the first
 // place.
 export async function main(context) {
-    const { command, log = () => {}, publishState, phase: rawPhase } = context;
+    const { command, log = () => {}, publishState, phase: rawPhase, args } = context;
+
+    // apra-fleet-eft.75.2: acquire a machine-local pidfile lock keyed on
+    // (branch, members) BEFORE any dispatch (before even the fatal-diagnostics
+    // guard installs) -- a duplicate concurrent `auto-sprint` engine start for
+    // the SAME sprint now fails fast with a distinct, named
+    // SprintLockHeldError instead of silently running two engines against the
+    // same shared git branch/beads DB. Root incident (apra-fleet-eft.75): the
+    // only thing that had stopped a duplicate concurrent runner before this
+    // was an ACCIDENTAL viewer-port-8080 collision -- itself trivially
+    // avoided by passing a different --viewer-port, so it was never a real
+    // guard. Re-validates `args` with the exact same pure, side-effect-free
+    // validateArgs() runSprintCycle() calls again below -- an invalid
+    // branch/members throws HERE with zero dispatches and zero lock ever
+    // acquired, identical to today's pre-dispatch validation behavior (just
+    // one call frame higher up).
+    const validatedForLock = validateArgs(args);
+    const sprintLock = acquireSprintLock({ branch: validatedForLock.branch, members: validatedForLock.members });
 
     // apra-fleet-eft.20.3: track the last phase this run entered (Plan /
     // Develop / Review / Deploy / Test / Harvest / ...) purely by wrapping
@@ -6916,5 +6934,12 @@ export async function main(context) {
         throw err;
     } finally {
         uninstallFatalGuard();
+        // apra-fleet-eft.75.2: always release the sprint lock, on every exit
+        // path (success, typed abort, or an untyped re-thrown error) -- a
+        // lock never released here would falsely block every future launch
+        // of this exact sprint (branch+members) until acquireSprintLock()'s
+        // own dead-pid reclaim kicks in on a LATER attempt, which is a worse
+        // user experience than releasing promptly now.
+        sprintLock.release();
     }
 }

@@ -1,8 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkHarvesterContract, runOnce, runDevelopLoopScenario, withScenarioMarkers, REQUIRED_AGENT_TYPES } from './helpers/mock-sprint-harness.mjs';
+import { checkHarvesterContract, runOnce, runDevelopLoopScenario, withScenarioMarkers, REQUIRED_AGENT_TYPES, uniqueMockBranch } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
+
+// apra-fleet-eft.75.2: runOnce() derives its branch via uniqueMockBranch(tag)
+// (this process's own pid appended) rather than a fixed literal -- see that
+// helper's doc comment in helpers/mock-sprint-harness.mjs. Computed once here
+// so every assertion below that needs to match the exact branch string
+// (including inside a regex, hence the escaped variant) stays in sync with
+// whatever runOnce('run1') actually used.
+const RUN1_BRANCH = uniqueMockBranch('run1');
+const RUN1_BRANCH_RE_SAFE = RUN1_BRANCH.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
 // apra-fleet-fih.1: happy-path + determinism scenarios (run1, run2), split
 // out of the former monolithic advanced-mock-runner-test.mjs. run1/run2 are
@@ -21,7 +30,7 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // apra-fleet-unw.14: branch/base_branch/goal/max_cycles values passed
         // into executeFile() must actually reach and be exposed by the runner,
         // not just be parsed and dropped.
-        check(run1.result && run1.result.branch === 'auto-sprint/mock-sprint', `Run1 result did not expose branch: ${JSON.stringify(run1.result)}`);
+        check(run1.result && run1.result.branch === RUN1_BRANCH, `Run1 result did not expose branch: ${JSON.stringify(run1.result)}`);
         check(run1.result && run1.result.baseBranch === 'main', `Run1 result did not expose baseBranch: ${JSON.stringify(run1.result)}`);
         check(run1.result && run1.result.goal === 'P1/P2', `Run1 result did not expose goal: ${JSON.stringify(run1.result)}`);
         check(run1.result && run1.result.maxCycles === 5, `Run1 result did not expose maxCycles: ${JSON.stringify(run1.result)}`);
@@ -63,11 +72,11 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             `Expected first git commandLog entry to be the base-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx])}`
         );
         check(
-            run1.commandLog[firstGitIdx + 1] && /^git fetch origin auto-sprint\/mock-sprint\b/.test(run1.commandLog[firstGitIdx + 1]),
+            run1.commandLog[firstGitIdx + 1] && new RegExp(`^git fetch origin ${RUN1_BRANCH_RE_SAFE}\\b`).test(run1.commandLog[firstGitIdx + 1]),
             `Expected second git commandLog entry to be the sprint-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 1])}`
         );
         check(
-            run1.commandLog[firstGitIdx + 2] && run1.commandLog[firstGitIdx + 2].includes('git checkout -B auto-sprint/mock-sprint'),
+            run1.commandLog[firstGitIdx + 2] && run1.commandLog[firstGitIdx + 2].includes(`git checkout -B ${RUN1_BRANCH}`),
             `Expected third git commandLog entry to be the sprint-branch checkout, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 2])}`
         );
         // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
@@ -80,7 +89,7 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         const originUrlIdx = run1.commandLog.length - 2;
         const prIdx = run1.commandLog.length - 1;
         check(
-            run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith('git push -u origin auto-sprint/mock-sprint'),
+            run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith(`git push -u origin ${RUN1_BRANCH}`),
             `Expected third-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
         );
         check(
@@ -88,7 +97,7 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             `Expected second-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
         );
         check(
-            run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('gh pr create') && run1.commandLog[prIdx].includes('--base "main"') && run1.commandLog[prIdx].includes('--head "auto-sprint/mock-sprint"'),
+            run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('gh pr create') && run1.commandLog[prIdx].includes('--base "main"') && run1.commandLog[prIdx].includes(`--head "${RUN1_BRANCH}"`),
             `Expected last commandLog entry to be the PR-raise (not merge) command, got: ${JSON.stringify(run1.commandLog[prIdx])}`
         );
         // apra-fleet-eft.8.x (syncMemberBefore/G-pull) legitimately issues
@@ -261,7 +270,7 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         check(doerDispatches.length >= 1, 'Expected at least one doer dispatch in run1');
         for (const d of doerDispatches) {
             check(
-                /Sprint track branch to work on:\s*auto-sprint\/mock-sprint/.test(d.prompt),
+                new RegExp(`Sprint track branch to work on:\\s*${RUN1_BRANCH_RE_SAFE}`).test(d.prompt),
                 `Doer dispatch prompt must supply the sprint track branch (doer-input.json required "branch"): ${d.prompt}`
             );
         }

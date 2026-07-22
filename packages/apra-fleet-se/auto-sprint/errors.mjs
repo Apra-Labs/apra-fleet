@@ -296,3 +296,41 @@ const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace
 export function isNonRetryableDispatchError(err) {
     return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
 }
+
+// ---------------------------------------------------------------------------
+// apra-fleet-eft.75.2 -- sprint-launch machine-local pidfile mutex
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by sprint-lock.mjs's acquireSprintLock() when a duplicate `auto-
+ * sprint` engine start is attempted for the SAME sprint (branch+members)
+ * while a live process already holds that sprint's pidfile lock, OR when a
+ * concurrent process wins a stale-pidfile reclaim race. Root incident
+ * (apra-fleet-eft.75): a duplicate concurrent runner was previously stopped
+ * only by an ACCIDENTAL viewer-port-8080 collision (itself trivially avoided
+ * with a different --viewer-port) -- this is the explicit, always-on mutex
+ * that replaces that accident with a deliberate, named guard. Never caught
+ * inside runner.js -- it unwinds main()'s promise and fails the whole sprint
+ * launch before any fleet dispatch occurs.
+ *
+ * @property {string|null} branch
+ * @property {string[]|null} members
+ * @property {number|null} existingPid - the live pid currently holding the lock (when known)
+ */
+export class SprintLockHeldError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ branch?: string|null, members?: string[]|null, existingPid?: number|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { branch = null, members = null, existingPid = null, details, cause } = opts;
+        super(message, {
+            code: 'SPRINT_LOCK_HELD',
+            details: { branch, members, existingPid, ...details },
+            cause,
+        });
+        this.branch = branch;
+        this.members = members;
+        this.existingPid = existingPid;
+    }
+}

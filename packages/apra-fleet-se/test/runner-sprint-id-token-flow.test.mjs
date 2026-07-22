@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runOnce } from './helpers/mock-sprint-harness.mjs';
+import { runOnce, uniqueMockBranch } from './helpers/mock-sprint-harness.mjs';
 import { createMemberReservationClient } from '../auto-sprint/runner.js';
 
 const check = (cond, msg) => assert.ok(cond, msg);
@@ -29,7 +29,15 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // execute_prompt's dispatch-time reservedBy check can never silently
 // diverge.
 test('sprint-identity token used for member_reservation matches the token stamped on every real dispatch (apra-fleet-eft.29.2)', async () => {
-    const sprintToken = 'auto-sprint/mock-sprint'; // the branch runOnce() always passes as `branch`
+    // apra-fleet-eft.75.2: runOnce() now derives its branch via
+    // uniqueMockBranch(tag) (this process's own pid appended) rather than a
+    // fixed literal -- see that helper's doc comment in
+    // helpers/mock-sprint-harness.mjs for why (the machine-local sprint-lock
+    // mutex now makes a shared hardcoded branch a real cross-file collision
+    // risk). Computed here, in THIS process, with the SAME tag ('run1')
+    // runOnce() below is called with, so it is exactly the string runOnce()
+    // itself will have used as `branch`.
+    const sprintToken = uniqueMockBranch('run1');
 
     // (a) drive a full mock sprint end to end and inspect every dispatched
     // call's sprint_id. Reuses the 'run1' scenario tag (already has a

@@ -18,6 +18,27 @@ const __dirname = path.dirname(__filename);
 // Set MOCK_SPRINT_DELAY_MS to simulate LLM latency locally; defaults to 0 for CI.
 export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 
+// apra-fleet-eft.75.2: runner.js's main() now acquires a machine-local
+// pidfile mutex keyed on (branch, members) BEFORE any dispatch (see
+// auto-sprint/sprint-lock.mjs) -- a REAL guard against two processes running
+// the exact same sprint branch concurrently. Node's test runner spawns one
+// process PER test FILE, and several helpers below (runOnce,
+// runRejectedPlanScenario) used to pass a fixed, hardcoded literal branch
+// string shared across MULTIPLE different test files -- harmless before this
+// lock existed, but a genuine false-conflict risk now if two of those files'
+// mock sprints happen to be in flight at the same moment under
+// --test-concurrency. `uniqueMockBranch(tag)` appends this process's own pid
+// to the tag-derived branch so every mock-sprint invocation gets a branch
+// identity that can NEVER collide with a DIFFERENT test file's process
+// (different pid), while staying stable and reproducible within a single
+// call (a caller that needs to predict the exact string -- e.g.
+// runner-sprint-id-token-flow.test.mjs asserting on its own dispatched
+// sprint_id -- can compute the identical value with the same `tag` from
+// inside its OWN process).
+export function uniqueMockBranch(tag) {
+    return `auto-sprint/mock-sprint-${tag}-${process.pid}`;
+}
+
 // Helper to run shell commands in JS
 // apra-fleet-7ll: replicate the real execute_command MCP tool's response
 // shape (src/tools/execute-command.ts) -- "Exit code: N\n<output>" display
@@ -853,7 +874,7 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
         const result = await engine.executeFile(scriptPath, {
             target_issue: epicBead.id,
             members: ['local'],
-            branch: 'auto-sprint/mock-sprint',
+            branch: uniqueMockBranch(tag),
             base_branch: 'main',
             goal: 'P1/P2',
             max_cycles: 5,
@@ -895,7 +916,7 @@ export async function runRejectedPlanScenario(tag) {
             await engine.executeFile(scriptPath, {
                 target_issue: epicBead.id,
                 members: ['local'],
-                branch: 'auto-sprint/mock-sprint-rejected',
+                branch: uniqueMockBranch(`${tag}-rejected`),
                 base_branch: 'main',
                 goal: 'P1/P2',
                 max_cycles: 5,
