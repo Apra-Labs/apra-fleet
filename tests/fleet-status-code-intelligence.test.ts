@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -6,7 +6,19 @@ import {
   codeIntelligenceHealth,
   codeIntelligenceCompactLine,
   computeTopSymbols,
+  fleetStatus,
 } from '../src/tools/check-status.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { addAgent } from '../src/services/registry.js';
+
+vi.mock('../src/services/strategy.js', () => ({
+  getStrategy: () => ({
+    execCommand: vi.fn().mockResolvedValue({ stdout: 'idle', stderr: '', code: 0 }),
+    testConnection: vi.fn().mockResolvedValue({ ok: true, latencyMs: 5 }),
+    transferFiles: vi.fn(),
+    close: vi.fn(),
+  }),
+}));
 
 // ---------------------------------------------------------------------------
 // codeIntelligenceHealth() / codeIntelligenceCompactLine() (F3.3)
@@ -293,5 +305,44 @@ describe('computeTopSymbols()', () => {
     // readFileSync on a directory throws EISDIR -- must degrade to undefined.
     expect(() => computeTopSymbols(NOW, usageDir, rotatedPath)).not.toThrow();
     expect(computeTopSymbols(NOW, usageDir, rotatedPath)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fleetStatus() per-member codeIntelProvider display (apra-fleet-c6o.1.3)
+// ---------------------------------------------------------------------------
+describe('fleetStatus per-member code-intel provider display', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('shows code-intel=<provider> in compact output for a member that has it set', async () => {
+    const member = makeTestAgent({ friendlyName: 'ci-member', codeIntelProvider: 'gitnexus' });
+    addAgent(member);
+
+    const result = await fleetStatus({ format: 'compact' });
+    expect(result).toContain('code-intel=gitnexus');
+  });
+
+  it('omits code-intel= from compact output for a member without it set', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-ci-member' });
+    addAgent(member);
+
+    const result = await fleetStatus({ format: 'compact' });
+    expect(result).not.toContain('code-intel=');
+  });
+
+  it('includes codeIntelProvider in JSON member rows for a member that has it set', async () => {
+    const member = makeTestAgent({ friendlyName: 'ci-json-member', codeIntelProvider: 'codebase-memory' });
+    addAgent(member);
+
+    const result = await fleetStatus({ format: 'json' });
+    const parsed = JSON.parse(result);
+    const row = parsed.members.find((m: { name: string }) => m.name === 'ci-json-member');
+    expect(row.codeIntelProvider).toBe('codebase-memory');
   });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { updateMember } from '../src/tools/update-member.js';
+import { registerMember } from '../src/tools/register-member.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import type { SSHExecResult } from '../src/types.js';
 
@@ -319,5 +320,47 @@ describe('updateMember -- agent re-provisioning (remote members)', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
     expect(mockUploadContentToHome).not.toHaveBeenCalled();
     expect(result).not.toContain('Could not reach member');
+  });
+});
+
+describe('codeIntelProvider persistence (register_member + update_member)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    mockExecCommand.mockReset();
+    mockTestConnection.mockReset();
+    mockUploadContentToHome.mockReset();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('register_member with code_intel_provider persists the field', async () => {
+    const result = await registerMember({
+      friendly_name: 'ci-provider-register-test',
+      member_type: 'local',
+      work_folder: `/tmp/ci-provider-register-${Date.now()}`,
+      code_intel_provider: 'gitnexus',
+    });
+
+    expect(result).toContain('registered successfully');
+    const created = getAllAgents().find(a => a.friendlyName === 'ci-provider-register-test');
+    expect(created).toBeDefined();
+    expect(created!.codeIntelProvider).toBe('gitnexus');
+  });
+
+  it('update_member with code_intel_provider changes the field', async () => {
+    const member = makeTestLocalAgent({ codeIntelProvider: 'gitnexus' });
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, code_intel_provider: 'codebase-memory' });
+
+    expect(result).toContain('updated');
+    expect(result).toContain('Code-Intel: codebase-memory');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.codeIntelProvider).toBe('codebase-memory');
   });
 });
