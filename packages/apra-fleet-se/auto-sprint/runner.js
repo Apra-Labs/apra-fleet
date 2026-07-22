@@ -1125,7 +1125,7 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote' }>}
  */
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -1137,6 +1137,27 @@ export async function doltPullBefore(member, opts = {}) {
     if (!(await preGateCheckFn(member, { command, log }))) {
         log(`[Dolt] D-pull for member '${member}' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued`);
         return { ok: true, member, skipped: true, reason: 'no-remote' };
+    }
+
+    // apra-fleet-eft.54.6: skipPull runs the sync.remote pre-gate probe above
+    // (so the command sequence and its .54.5 per-clone probe cache are
+    // untouched -- a `sync.remote`-absent clone, i.e. every hermetic bd-init
+    // scratch clone and the golden-transcript snapshot, issues the EXACT same
+    // commands with or without this flag, since it never reaches a real `bd
+    // dolt pull` either way) but deliberately skips the actual `bd dolt pull`
+    // SPAWN even when a remote IS configured. This is the residual real-bd
+    // Dolt sync bracket the terminal auth-abort path was hanging on (eft.54):
+    // on a live/integ clone with a configured sync.remote, the sprint's FIRST
+    // Planner pre-dispatch pull re-pulls a clone the orchestrator's own
+    // pre-sprint-validation doltPullBefore just freshened with nothing mutated
+    // since -- so it is pure redundant latency (and, against a slow/unreachable
+    // remote, an outright hang) on the very bracket a non-retryable auth abort
+    // then fails on. The caller only sets this where that freshness is proven
+    // (see withGitSync's skipPreDispatchDoltPull and the first-Planner-dispatch
+    // gate); every other D-pull keeps the real pull.
+    if (skipPull) {
+        log(`[Dolt] D-pull for member '${member}': skipping the 'bd dolt pull' spawn (beads clone already freshened by the orchestrator's pre-sprint D-pull, nothing mutated since -- first Planner dispatch).`);
+        return { ok: true, member, skipped: true, reason: 'already-fresh' };
     }
 
     const pull = await runDoltStep({
@@ -3588,7 +3609,7 @@ async function runSprintCycle(context) {
     // non-code-writing roles (pushCode:false short-circuits before the
     // conflict path is ever reached) and never fires for a plain, non-
     // conflict divergence.
-    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, skipPreDispatchSync = false } = {}) {
+    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, skipPreDispatchSync = false, skipPreDispatchDoltPull = false } = {}) {
         // apra-fleet-eft.54.1: on a retry that immediately follows a TERMINAL
         // no-mutation dispatch failure for this same member (the Planner retry
         // ladder's 2nd..Nth attempt after a dispatch_failed/auth abort), the
@@ -3609,7 +3630,21 @@ async function runSprintCycle(context) {
             log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
         } else {
             await syncMemberBefore(member, { command, log, branch: validated.branch });
-            await doltPullBefore(member, { command, log });
+            // apra-fleet-eft.54.6: skipPreDispatchDoltPull skips ONLY the real
+            // `bd dolt pull` SPAWN (the residual real-bd Dolt sync bracket the
+            // terminal auth-abort path hung on) while STILL running
+            // doltPullBefore's sync.remote pre-gate probe and keeping the
+            // G-side syncMemberBefore above -- see doltPullBefore's skipPull
+            // doc comment. Because a sync.remote-absent clone (every hermetic
+            // scratch clone, the golden-transcript snapshot) never reaches a
+            // real pull anyway, the emitted command sequence is byte-identical
+            // there with or without this flag; only a live clone with a
+            // configured remote actually drops the redundant pull. Set only for
+            // the sprint's FIRST Planner dispatch, whose beads clone the
+            // orchestrator's own pre-sprint-validation doltPullBefore
+            // (eft.34/eft.58.1 call site) already freshened with nothing
+            // mutated since. Defaults false, so every other dispatch pulls.
+            await doltPullBefore(member, { command, log, skipPull: skipPreDispatchDoltPull });
         }
         // apra-fleet-eft.54.1: track a terminal dispatch failure so the
         // post-dispatch sync teardown can be skipped for it (see the finally).
@@ -4627,10 +4662,10 @@ async function runSprintCycle(context) {
             // own doc comment above for why this is needed in addition to
             // (not instead of) the server-side timeout_s/max_total_s already
             // passed via plannerDispatchOpts below.
-            const dispatchPlannerOnce = ({ skipPreDispatchSync = false } = {}) => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
+            const dispatchPlannerOnce = ({ skipPreDispatchSync = false, skipPreDispatchDoltPull = false } = {}) => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
                 agent(plannerPrompt, { ...plannerDispatchOpts, member_name: getMemberForRole('planner') }),
                 { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Plan (interactive)', log }
-            ), { pushBeads: true, skipPreDispatchSync });
+            ), { pushBeads: true, skipPreDispatchSync, skipPreDispatchDoltPull });
             const dispatchPlannerResume = () => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
                 agent(
                     'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
@@ -4644,9 +4679,9 @@ async function runSprintCycle(context) {
                 ),
                 { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: `Plan (resume, max_turns=${PLANNER_MAX_TURNS * 2})`, log }
             ), { pushBeads: true });
-            const dispatchPlanner = async ({ skipPreDispatchSync = false } = {}) => {
+            const dispatchPlanner = async ({ skipPreDispatchSync = false, skipPreDispatchDoltPull = false } = {}) => {
                 try {
-                    return await dispatchPlannerOnce({ skipPreDispatchSync });
+                    return await dispatchPlannerOnce({ skipPreDispatchSync, skipPreDispatchDoltPull });
                 } catch (err) {
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                         log(`Planner exhausted its turn limit (max_turns=${PLANNER_MAX_TURNS}) -- resuming the same session with max_turns=${PLANNER_MAX_TURNS * 2}.`);
@@ -4694,6 +4729,25 @@ async function runSprintCycle(context) {
             // skipPreDispatchSync doc comment for why this is safe and why it
             // matters for the terminal-abort fast-path budget.
             let skipPreDispatchSyncNext = false;
+            // apra-fleet-eft.54.6: the sprint's FIRST Planner dispatch (cycle 1,
+            // planning round 1, first attempt) reads/mutates the SAME beads clone
+            // the orchestrator's pre-sprint-validation doltPullBefore
+            // (eft.34/eft.58.1 call site above) just freshened, with only
+            // non-mutating `bd list` reads in between -- so that first attempt's
+            // own pre-dispatch `bd dolt pull` is pure redundant real-bd work.
+            // Under APRA_FLEET_BD_MOCK=off with a configured sync.remote it is
+            // the residual Dolt sync bracket the terminal auth-abort path was
+            // still hanging on (eft.54): a non-retryable auth/trust failure
+            // aborts on the very bracket this D-pull sits in. Skip ONLY that
+            // first-attempt D-pull (via withGitSync's skipPreDispatchDoltPull --
+            // the G-side syncMemberBefore and every later attempt/round/cycle are
+            // untouched), with zero correctness loss (the clone was provably just
+            // freshened). Scoped OUT (all keep the full D-pull): cycle>1 (a
+            // re-plan follows real Develop/Review beads mutation), a later
+            // planning round (round 1's Planner already mutated beads), a retry
+            // attempt (i>0), and a Planner on a DISTINCT clone from the
+            // orchestrator (its own clone was never freshened by the setup pull).
+            const plannerSharesOrchestratorClone = getMemberForRole('planner') === orchestratorMember;
             // apra-fleet-eft.60.3: the retry backoff above (~110s total across
             // the 5 attempts) exists purely for PRODUCTION busy-lock resilience
             // -- a real fleet member's execute_prompt busy-lock can take up to
@@ -4725,7 +4779,9 @@ async function runSprintCycle(context) {
                     }
                 }
                 try {
-                    plannerRes = await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext });
+                    const skipPreDispatchDoltPull =
+                        i === 0 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone;
+                    plannerRes = await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext, skipPreDispatchDoltPull });
                     plannerErr = null;
                     break;
                 } catch (err) {
