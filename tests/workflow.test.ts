@@ -718,3 +718,91 @@ describe('server resolution probing (apra-fleet-eft.61 + build-binary smoke fals
     expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_CMD).toBe('node server.js run');
   });
 });
+
+describe('auto-sprint workflow-passthrough CHILD attach path against the REAL resolver (apra-fleet-eft.61.1)', () => {
+  // The prior describe block ('server resolution probing') pins the launcher's own
+  // probe-then-fallback behavior against deps.resolveConnection, which every other
+  // test in this file stubs out entirely -- so it never proves the launcher's fix
+  // actually composes correctly with the ONE real shared resolver
+  // (@apralabs/apra-fleet-client/server-resolution) that both the launcher AND the
+  // imported workflow entry (cli.mjs, in production) call. This block wires
+  // deps.resolveConnection to the REAL resolveFleetServerConnection (only the
+  // HTTP-singleton probe itself is faked, via its own checkRunningInstance
+  // injection point) and has the imported "entry" module re-run that same real
+  // resolver against deps.env -- exactly like cli.mjs's own bare
+  // `resolveFleetServerConnection()` call does against process.env -- to pin the
+  // auto-sprint CHILD path end to end.
+  //
+  // Pre-b77bf3c this failed: the launcher's first probe injected
+  // APRA_FLEET_SERVER_BIN into the resolution env, which the real resolver reads as
+  // an explicit stdio request (skipping the singleton probe) and mode came back
+  // 'stdio' even though the singleton was healthy; applyEnvDefaults then
+  // permanently stamped APRA_FLEET_SERVER_BIN onto deps.env (mode !== 'http'), so
+  // the child's own resolveFleetServerConnection() call also saw the explicit
+  // stdio request and resolved 'stdio' -- exactly cli.mjs's
+  // "No reachable apra-fleet HTTP singleton was found" false positive.
+  it('child resolves mode=http against a healthy HTTP singleton with a clean env (no SERVER_BIN/CMD/TRANSPORT)', async () => {
+    const { resolveFleetServerConnection } = await import(
+      '@apralabs/apra-fleet-client/server-resolution'
+    );
+    // The only fake: the singleton IS running and healthy. Nothing else about the
+    // real resolver's logic (env inspection, stdio-vs-http branching) is mocked.
+    const checkRunningInstance = async () => ({
+      running: true,
+      url: 'http://127.0.0.1:9451/mcp',
+      pid: 4242,
+    });
+
+    let childResolution: { mode: string } | undefined;
+    const h = harness(autoSprintFiles(), { env: {} }); // clean env: no SERVER_BIN/CMD/TRANSPORT
+    h.deps.resolveConnection = (env) => resolveFleetServerConnection({ env, checkRunningInstance });
+    h.deps.importModule = async (url) => {
+      h.imported.push(url);
+      h.seenArgv = [...process.argv];
+      // Mirrors cli.mjs main(): `resolveFleetServerConnection()` re-reads whatever
+      // env the launcher just handed the child (deps.env, which IS process.env in
+      // production) -- never a fresh untouched copy.
+      childResolution = await resolveFleetServerConnection({
+        env: h.deps.env,
+        checkRunningInstance,
+      });
+      return { selfExecuting: true };
+    };
+
+    const code = await runWorkflow(['auto-sprint'], h.deps);
+
+    expect(code).toBe(0);
+    expect(childResolution?.mode).toBe('http');
+    // The launcher's own env defaults must never have stamped the stdio-request
+    // marker onto the env the child re-resolved against.
+    expect(h.deps.env.APRA_FLEET_SERVER_BIN).toBeUndefined();
+    expect(h.deps.env.APRA_FLEET_SERVER_CMD).toBeUndefined();
+    const errText = h.errors.join('\n');
+    expect(errText).not.toMatch(/No reachable apra-fleet HTTP singleton/);
+    expect(errText).not.toMatch(/stdio-request/);
+  });
+
+  it('regression guard: an unconditionally SERVER_BIN-poisoned first probe reproduces the pre-fix false positive', async () => {
+    // This directly exercises the shape of the bug the fix removed: probing with
+    // APRA_FLEET_SERVER_BIN forced into the env (as the pre-b77bf3c launcher did)
+    // makes even a healthy singleton resolve to stdio, and the child inherits that
+    // same false stdio resolution.
+    const { resolveFleetServerConnection } = await import(
+      '@apralabs/apra-fleet-client/server-resolution'
+    );
+    const checkRunningInstance = async () => ({
+      running: true,
+      url: 'http://127.0.0.1:9451/mcp',
+      pid: 4242,
+    });
+    const poisonedEnv = { APRA_FLEET_SERVER_BIN: '/some/apra-fleet' };
+    const poisonedResolution = await resolveFleetServerConnection({
+      env: poisonedEnv,
+      checkRunningInstance,
+    });
+    expect(poisonedResolution.mode).toBe('stdio');
+
+    // Whereas the current, unmodified-env-first probe used by runWorkflow (proven
+    // in the test above) resolves 'http' for the exact same healthy singleton.
+  });
+});
