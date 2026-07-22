@@ -2683,9 +2683,18 @@ export function validateNewTask(newTask) {
  * description path above (see stageCommandBodyMemberSide, eft.73.1), never
  * interpolated into a shell string -- so a human (or the next planner) can
  * still recover it even though it was not auto-filed as its own child bead.
- * Best-effort:
- * a failure to append is logged but never re-thrown, since a rejected
- * finding is already non-fatal to the sprint.
+ * Best-effort, but apra-fleet-eft.73.2: a failure to append IS re-thrown
+ * (after being logged here) -- every one of this function's 5 call sites
+ * (createChildBeadWithAllocatedId's persistNewTaskBestEffort caller plus the
+ * 4 direct rejected-newTask sites) wraps this call in its own try/catch that
+ * exists specifically to log the raw finding VERBATIM (JSON.stringify(newTask))
+ * to the run log as the final fallback rung. That verbatim rung can only ever
+ * fire if this function actually propagates its failure -- swallowing it here
+ * silently (the previous behavior) made every caller's verbatim-preservation
+ * fallback permanently unreachable dead code, defeating the entire point of
+ * the eft.56/eft.73 finding-preservation lineage on the one path (bd note
+ * ALSO fails) it exists to cover. This is still non-fatal to the sprint: the
+ * caller's own catch is what keeps it from aborting anything.
  * @param {{ command: Function, member: string, parentId: string, newTask: unknown, reason: string, cycle?: string|number, log?: Function }} opts
  */
 export async function appendRejectedFindingToParentNotes({ command, member, parentId, newTask, reason, cycle, log = () => {} }) {
@@ -2709,6 +2718,7 @@ export async function appendRejectedFindingToParentNotes({ command, member, pare
         log(`Rejected newTask finding appended verbatim to '${parentId}' notes (residual validation failure: ${reason}).`);
     } catch (err) {
         log(`[newTask notes-fallback] FAILED to append rejected finding to '${parentId}' notes: ${err.message}`);
+        throw err;
     }
 }
 
