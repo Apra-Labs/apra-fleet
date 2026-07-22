@@ -37,6 +37,67 @@ describe('extractPart2Sha', () => {
     });
 });
 
+// apra-fleet-eft.55.3: regression pin for eft.55.2's engine-side report
+// validation, exercised at the level a live cycle actually sees it -- a full
+// mock integ report shaped like the real integ-test-runner output schema
+// (featuresClosed/issuesCreated/passed/bugsFiled/summary; see
+// FALLBACK_integReport in auto-sprint/contracts.mjs), not just a bare
+// { summary } stub. Confirms the engine's report validation (a) rejects a
+// report whose part-2 evidence cites a stale (mismatched) SHA as
+// INCONCLUSIVE, (b) rejects one with no SHA marker at all as INCONCLUSIVE,
+// distinct from a pass/fail verdict, and (c) accepts a matching-SHA report
+// unchanged -- `passed` and the rest of the report fields flow through
+// untouched, mirroring the passed !== true / inconclusive branching in
+// runner.js's cycle loop (see validatePart2Evidence call site).
+describe('engine report validation with a full mock integ report (eft.55.3 pin)', () => {
+    function mockIntegReport(summary, overrides = {}) {
+        return {
+            featuresClosed: 2,
+            issuesCreated: 0,
+            passed: true,
+            bugsFiled: [],
+            summary,
+            ...overrides,
+        };
+    }
+
+    test('a mock integ report with a stale part-2 SHA is rejected as inconclusive', () => {
+        const deployedSha = 'c0ffee1'.repeat(5).slice(0, 40);
+        const staleSha = 'deadbeef'.repeat(5).slice(0, 40);
+        const report = mockIntegReport(`Ran the full playbook, all green. PART2_SHA: ${staleSha}`);
+        const result = validatePart2Evidence(report, deployedSha);
+        assert.strictEqual(result.inconclusive, true);
+        assert.strictEqual(result.reason, 'mismatched');
+        assert.strictEqual(result.reportedSha, staleSha);
+        // Not silently accepted as a pass just because the mock report says
+        // passed:true -- the report object itself is left unchanged; it's
+        // the caller (runner.js's cycle loop) that must treat `inconclusive`
+        // as taking precedence over `passed`.
+        assert.strictEqual(report.passed, true);
+    });
+
+    test('a mock integ report with an absent part-2 SHA is rejected as inconclusive', () => {
+        const deployedSha = 'c0ffee1'.repeat(5).slice(0, 40);
+        const report = mockIntegReport('Ran the full playbook, all green. No SHA marker recorded.');
+        const result = validatePart2Evidence(report, deployedSha);
+        assert.strictEqual(result.inconclusive, true);
+        assert.strictEqual(result.reason, 'absent');
+        assert.strictEqual(result.reportedSha, null);
+    });
+
+    test('a matching-SHA mock integ report is accepted unchanged', () => {
+        const deployedSha = 'c0ffee1'.repeat(5).slice(0, 40);
+        const report = mockIntegReport(`Ran the full playbook, all green. PART2_SHA: ${deployedSha}`);
+        const result = validatePart2Evidence(report, deployedSha);
+        assert.strictEqual(result.inconclusive, false);
+        assert.strictEqual(result.reason, null);
+        assert.strictEqual(result.reportedSha, deployedSha);
+        // The report itself is untouched -- validatePart2Evidence never
+        // mutates its input.
+        assert.deepStrictEqual(report, mockIntegReport(`Ran the full playbook, all green. PART2_SHA: ${deployedSha}`));
+    });
+});
+
 describe('validatePart2Evidence', () => {
     test('happy path: matching full SHA is accepted (not inconclusive)', () => {
         const sha = '19a84a1b'.repeat(5); // 40 chars
