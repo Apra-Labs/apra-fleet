@@ -101,8 +101,8 @@
     "max_sprints_in_sample": 5,
     "sprints_sampled": 5,
     "last_updated": "2026-07-22",
-    "cycle_avg": 1.53376,
-    "reviewer_ratio_avg": 0.5772489538431513,
+    "cycle_avg": 1.627008,
+    "reviewer_ratio_avg": 0.5694162710174946,
     "bucket_avg_tokens": {
       "S": 6117.75,
       "L": 17924,
@@ -110,32 +110,32 @@
     },
     "roles": {
       "setup": {
-        "avg_output_tokens": 4304.19008,
-        "sample_n": 8
+        "avg_output_tokens": 4365.152064,
+        "sample_n": 9
       },
       "sprint-meta": {
-        "avg_output_tokens": 1176.79072,
-        "sample_n": 8
+        "avg_output_tokens": 1349.632576,
+        "sample_n": 9
       },
       "cycle-state": {
-        "avg_output_tokens": 3612.58208,
-        "sample_n": 14
+        "avg_output_tokens": 4017.665664,
+        "sample_n": 16
       },
       "ready-streaks": {
-        "avg_output_tokens": 2064.9730285714286,
-        "sample_n": 29
+        "avg_output_tokens": 2464.928422857143,
+        "sample_n": 33
       },
       "doer": {
-        "avg_output_tokens": 8424.533333333335,
-        "sample_n": 17
+        "avg_output_tokens": 8703.626666666667,
+        "sample_n": 19
       },
       "reviewer": {
-        "avg_output_tokens": 4428.263111111111,
-        "sample_n": 14
+        "avg_output_tokens": 4599.410488888889,
+        "sample_n": 16
       },
       "log-append-iter": {
-        "avg_output_tokens": 2769.4035555555556,
-        "sample_n": 15
+        "avg_output_tokens": 3105.3228444444444,
+        "sample_n": 17
       },
       "feedback-commit-reviewer": {
         "avg_output_tokens": 3396,
@@ -150,12 +150,12 @@
         "sample_n": 2
       },
       "check-blockers": {
-        "avg_output_tokens": 2143.5791999999997,
-        "sample_n": 7
+        "avg_output_tokens": 2619.4633599999997,
+        "sample_n": 8
       },
       "log-append-end": {
-        "avg_output_tokens": 2594.3181866666664,
-        "sample_n": 13
+        "avg_output_tokens": 2604.054549333333,
+        "sample_n": 15
       },
       "ci-watcher": {
         "avg_output_tokens": 1220,
@@ -166,68 +166,68 @@
         "sample_n": 1
       },
       "final-reviewer": {
-        "avg_output_tokens": 9101.08992,
-        "sample_n": 9
+        "avg_output_tokens": 8202.271936000001,
+        "sample_n": 10
       },
       "cycle-meta": {
-        "avg_output_tokens": 1279.4595199999999,
-        "sample_n": 12
+        "avg_output_tokens": 1291.7676159999999,
+        "sample_n": 14
       },
       "push-sha": {
-        "avg_output_tokens": 552.4917333333333,
-        "sample_n": 11
+        "avg_output_tokens": 568.3933866666666,
+        "sample_n": 13
       },
       "exit-check": {
-        "avg_output_tokens": 2886.88896,
-        "sample_n": 11
+        "avg_output_tokens": 3245.6111680000004,
+        "sample_n": 13
       },
       "setup-shell": {
-        "avg_output_tokens": 1762.47104,
-        "sample_n": 7
+        "avg_output_tokens": 1842.576832,
+        "sample_n": 8
       },
       "state-read": {
-        "avg_output_tokens": 773.136,
-        "sample_n": 6
+        "avg_output_tokens": 732.5088,
+        "sample_n": 7
       },
       "preflight-bd-schema": {
-        "avg_output_tokens": 424.65311999999994,
-        "sample_n": 6
+        "avg_output_tokens": 431.32249599999994,
+        "sample_n": 7
       },
       "state-init": {
-        "avg_output_tokens": 1293.77472,
-        "sample_n": 6
+        "avg_output_tokens": 1313.0197759999999,
+        "sample_n": 7
       },
       "stamp-setup": {
-        "avg_output_tokens": 264.37888,
-        "sample_n": 6
+        "avg_output_tokens": 264.30310399999996,
+        "sample_n": 7
       },
       "stamp-plan": {
-        "avg_output_tokens": 342.56416,
-        "sample_n": 8
+        "avg_output_tokens": 347.951328,
+        "sample_n": 10
       },
       "state": {
-        "avg_output_tokens": 1181.3060799999998,
-        "sample_n": 16
+        "avg_output_tokens": 1187.9948639999998,
+        "sample_n": 20
       },
       "stamp-develop": {
-        "avg_output_tokens": 266.7952,
-        "sample_n": 8
+        "avg_output_tokens": 279.03616,
+        "sample_n": 10
       },
       "heartbeat": {
-        "avg_output_tokens": 1663.8081828571426,
-        "sample_n": 15
+        "avg_output_tokens": 1663.246546285714,
+        "sample_n": 19
       },
       "deadlock-diag": {
-        "avg_output_tokens": 1241.2,
-        "sample_n": 2
+        "avg_output_tokens": 1228.3600000000001,
+        "sample_n": 3
       },
       "stamp-harvest": {
-        "avg_output_tokens": 426.45311999999996,
-        "sample_n": 6
+        "avg_output_tokens": 393.36249599999996,
+        "sample_n": 7
       },
       "harvest-clean-process-files": {
-        "avg_output_tokens": 794.3376,
-        "sample_n": 6
+        "avg_output_tokens": 885.0700799999998,
+        "sample_n": 7
       },
       "planner": {
         "avg_output_tokens": 17870,
