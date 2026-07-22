@@ -3797,7 +3797,7 @@ async function runSprintCycle(context) {
      * returning a verdict that could silently accumulate toward
      * stall-abort as if it were legitimate no-progress.
      * @param {{ beadIds: string[], acceptanceCriteriaJson: string }} opts
-     * @returns {Promise<{ verdict: string, notes: string, reopenIds: string[], newTasks: object[] }>}
+     * @returns {Promise<{ verdict: string, notes: string, reopenIds: string[], replanIds?: string[], newTasks: object[] }>}
      */
     async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
@@ -4939,6 +4939,17 @@ async function runSprintCycle(context) {
         // broadcast of the whole reviewer verdict to every doer).
         const perBeadFeedback = new Map();
 
+        // apra-fleet-eft.67.2: union of every bead id a reviewer verdict THIS
+        // cycle has flagged via the optional `replanIds` field (contract:
+        // apra-fleet-eft.67.1) -- the bead was reopened, but its ACCEPTANCE
+        // CRITERIA are themselves defective and can only be corrected by the
+        // next cycle's planner, not re-developed this cycle. Reset per
+        // cycle (a defect flagged in cycle N is re-scoped by cycle N's own
+        // Cycle Eval handoff, so it must not leak into cycle N+1's rounds).
+        // Populated below, after each round's reopenIds are applied; consulted
+        // at the top of the next iteration's currentReady computation.
+        const replanIds = new Set();
+
         const doerPool = getMembersForRole(ROLE_DOER);
 
         while (devRounds < 3) {
@@ -4955,11 +4966,48 @@ async function runSprintCycle(context) {
             // a contract-bound refusal (observed live, run 16 C1 R2: bug bead
             // seeded into its own streak). Same target-issue exemption as the
             // pre-loop site (eft.24 childless-leaf-target case).
-            const currentReady = (await readyLeafBeads())
+            const currentReadyAll = (await readyLeafBeads())
                 .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
-            if (currentReady.length === 0) break;
+            if (currentReadyAll.length === 0) break;
+
+            // apra-fleet-eft.67.2: replan short-circuit. `replanIds` is the
+            // union of every bead id flagged by a reviewer's optional
+            // `replanIds` verdict field THIS cycle (populated below, after a
+            // round's reopenIds are applied) -- those beads are reopened but
+            // their acceptance criteria are themselves defective, so
+            // re-dispatching them to a doer this cycle is a predictably
+            // wasted round (observed live, run 21 C1: eft.60.1 burned a
+            // third develop+review round on exactly this). If EVERY
+            // still-ready bead this round is replan-flagged, skip all
+            // further develop/review rounds this cycle entirely and let
+            // Cycle Eval hand off to the next cycle's planner (which
+            // re-reads bead comments and can re-scope). A MIX of
+            // replan-flagged and normal beads still runs a round --
+            // only the flagged beads are excluded from streak assignment,
+            // so real dev work is never blocked on a defect in an unrelated
+            // bead's acceptance criteria. Absent replanIds (the `replanIds`
+            // set stays empty all cycle) makes this filter a no-op,
+            // preserving today's behavior exactly -- no new dispatch sites.
+            const currentReady = currentReadyAll.filter((b) => !replanIds.has(b.id));
+            if (currentReady.length === 0) {
+                log(
+                    `[auto-sprint] replan short-circuit: all ${currentReadyAll.length} still-ready bead(s) this cycle ` +
+                    `are replan-flagged (${currentReadyAll.map((b) => b.id).join(', ')}) -- their acceptance criteria ` +
+                    `need planner correction, not re-development. Skipping remaining develop/review rounds this cycle ` +
+                    `and proceeding to Cycle Eval.`
+                );
+                break;
+            }
+            if (currentReady.length < currentReadyAll.length) {
+                const excludedIds = currentReadyAll.filter((b) => replanIds.has(b.id)).map((b) => b.id);
+                log(
+                    `[auto-sprint] replan short-circuit: excluding replan-flagged bead(s) ${excludedIds.join(', ')} from ` +
+                    `this round's streak assignment (acceptance criteria defect flagged by reviewer; will be re-scoped ` +
+                    `by the next cycle's planner) -- the remaining ${currentReady.length} bead(s) still run this round.`
+                );
+            }
 
             devRounds++;
             phase(`Develop C${cycle} R${devRounds}`);
@@ -5420,6 +5468,12 @@ async function runSprintCycle(context) {
                     reopenAllowlist = null; // lookup failed -- apply reopens unguarded rather than dropping them
                 }
             }
+            // apra-fleet-eft.67.2: ids actually reopened this round (survived
+            // the goal-scope allowlist above) -- gates which `replanIds`
+            // entries below are trusted, so a reviewer naming a replanIds id
+            // that was never really reopened (out of scope, or simply absent
+            // from reopenIds) can never short-circuit the loop.
+            const reopenedIds = new Set();
             for (const id of verdict.reopenIds) {
                 const bead = reopenAllowlist ? reopenAllowlist.get(id) : null;
                 if (reopenAllowlist && bead && typeof bead.priority === 'number' && bead.priority > goalMax) {
@@ -5436,6 +5490,18 @@ async function runSprintCycle(context) {
                 // in reopenIds carry this round's feedback into the next
                 // round's doer prompt -- never a blanket broadcast.
                 perBeadFeedback.set(id, verdict.notes);
+                reopenedIds.add(id);
+            }
+            // apra-fleet-eft.67.2: fold this round's reviewer `replanIds`
+            // (contract: apra-fleet-eft.67.1; absent/undefined on older or
+            // unflagged verdicts, so this is a no-op then) into the cycle's
+            // running union, consulted at the top of the next iteration's
+            // currentReady computation above. Only ids that were ACTUALLY
+            // reopened this round are tracked.
+            for (const id of (verdict.replanIds || [])) {
+                if (reopenedIds.has(id)) {
+                    replanIds.add(id);
+                }
             }
             for (const newTask of verdict.newTasks) {
                 // N3: validate BEFORE interpolation -- see validateNewTask()

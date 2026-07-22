@@ -401,6 +401,15 @@ const FALLBACK_reviewerVerdict = {
         verdict: { type: 'string', enum: ['APPROVED', 'CHANGES_NEEDED'] },
         notes: { type: 'string' },
         reopenIds: { type: 'array', items: { type: 'string' } },
+        // apra-fleet-eft.67.2: optional, deliberately NOT in `required` below
+        // -- mirrors vendor/apra-pm/agents/schemas/reviewer-output.json
+        // (apra-fleet-eft.67.1). Flags reopened beads whose ACCEPTANCE
+        // CRITERIA are themselves defective and can only be corrected by a
+        // planner, not re-developed this cycle (see runner.js's replan
+        // short-circuit in the develop/review loop). Absent field is
+        // schema-valid and semantically a no-op, preserving pre-eft.67
+        // behavior exactly.
+        replanIds: { type: 'array', items: { type: 'string' } },
         newTasks: {
             type: 'array',
             items: {

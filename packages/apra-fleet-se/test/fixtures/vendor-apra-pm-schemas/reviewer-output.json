@@ -18,6 +18,10 @@
       "type": "array",
       "items": { "type": "string" }
     },
+    "replanIds": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "newTasks": {
       "type": "array",
       "items": {
