@@ -158,7 +158,17 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // orchestrator-side bd mutation, not a new agent() dispatch -- EXPECTED_AGENT_COUNT
 // below is unchanged. Both new sites pass member_name: orchestratorMember,
 // verified compliant.
-const EXPECTED_COMMAND_COUNT = 36;
+// 36 -> 37 (apra-fleet-eft.73.1): the host-agnostic body transport centralizes
+// member-side body staging in stageCommandBodyMemberSide(), which adds exactly
+// ONE new command() call site -- the `node -e "..." "<base64>"` dispatch that
+// writes the body to a member-LOCAL temp file (member_name: member/
+// orchestratorMember, verified compliant). The three call sites that used to
+// write the body on the orchestrator host (createChildBeadWithAllocatedId's
+// `bd create --body-file`, appendRejectedFindingToParentNotes' `bd note
+// --file`, and the plan-cap deferral `bd note --file`) each keep their SAME
+// single bd command() site -- only the file's provenance moved host -> member
+// -- so the net change is +1, not +3.
+const EXPECTED_COMMAND_COUNT = 37;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

@@ -1,7 +1,5 @@
 import fs from 'fs/promises';
-import os from 'os';
-import path from 'path';
-import { createHash, randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, CommandError, WorkflowError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
 import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
@@ -1742,37 +1740,50 @@ export function createMemberReservationClient(opts = {}) {
 }
 
 /**
- * apra-fleet-eft.56.1 -- writes `content` to a fresh temp file on the
- * orchestrating process's own local filesystem (the same host
- * `orchestratorMember` dispatches `command()` calls back to -- see the
- * ROLE_ORCHESTRATOR / orchestratorMember doc comment above: "this file,
- * issuing bd/git commands directly") and returns its path. This is the seam
- * that lets reviewer-authored free text (newTask descriptions, and rejected-
- * finding notes below) reach `bd` via a `--body-file`/`--file`/`--stdin`-
- * style flag instead of ever being interpolated into a shell command-line
- * string -- see the SAFE_TEXT_RE comment for why interpolation is unsafe
- * across the mixed POSIX/PowerShell/cmd.exe shells sprint members run.
- * @param {string} content
- * @returns {Promise<string>} the temp file path
+ * apra-fleet-eft.73.1 -- stage `content` to a fresh temp file ON THE MEMBER
+ * that will run the subsequent `bd` command, and return that MEMBER-LOCAL
+ * absolute path. This replaces the old orchestrator-host-local
+ * writeCommandBodyTempFile() (eft.56.1), which wrote the body to the
+ * workflow-engine HOST's own os.tmpdir() and then handed that path to `bd
+ * ... --body-file <hostpath>`. Run 22 (2026-07-22) aborted because in the
+ * fleet-rev topology `command()` dispatches `bd` to a DIFFERENT, remote
+ * member, where that host path does not exist ("reading body file: no such
+ * file or directory"). Staging via `command()` (member_name: member)
+ * guarantees the body file lands on the SAME filesystem `bd` reads it from,
+ * whether the engine host and member share a machine or not.
+ *
+ * The write is performed by a member-side `node` one-liner -- `node` is
+ * present on every fleet member (it runs the agent SDK) and the recipe is
+ * shell-agnostic: it contains no `$`-expansion, backticks, template literals,
+ * or `%`-vars, so it is inert as syntax in POSIX shells, PowerShell, and
+ * cmd.exe alike. `content` is base64-encoded and passed as a SINGLE argv
+ * token whose alphabet (A-Za-z0-9+/=) is likewise inert in all of those
+ * shells, and node decodes it back to the exact literal bytes -- so the
+ * eft.56.1 injection-safety property is preserved AND strengthened: reviewer-
+ * authored free text is NEVER interpolated into the shell command string,
+ * and '$(', backticks, '=' all ride across as inert base64, never evaluated.
+ * The staged file is a member-side OS temp file the member's OS reaps on its
+ * own (same disposition as the old cleanupCommandBodyTempFile()).
+ * @param {{ command: Function, member: string, content: string, label?: string }} opts
+ * @returns {Promise<string>} the MEMBER-LOCAL temp file path
  */
-async function writeCommandBodyTempFile(content) {
-    const filePath = path.join(os.tmpdir(), `auto-sprint-body-${randomUUID()}.txt`);
-    await fs.writeFile(filePath, content, 'utf-8');
-    return filePath;
-}
-
-/**
- * Best-effort cleanup for a file written by writeCommandBodyTempFile() --
- * never lets a delete failure propagate (it's already just an OS temp file
- * that will be reaped regardless).
- * @param {string} filePath
- */
-async function cleanupCommandBodyTempFile(filePath) {
-    try {
-        await fs.unlink(filePath);
-    } catch {
-        // best-effort
-    }
+async function stageCommandBodyMemberSide({ command, member, content, label }) {
+    const b64 = Buffer.from(content, 'utf-8').toString('base64');
+    // No backticks / no `$` / no template literals: inert across POSIX,
+    // PowerShell, and cmd.exe. Reads the base64 body from argv[1] (the first
+    // arg after the `-e` script), decodes it to raw bytes, writes them to a
+    // fresh member-local temp file, and prints ONLY that path to stdout.
+    const stageScript =
+        "const os=require('os'),p=require('path'),fs=require('fs');" +
+        "const f=p.join(os.tmpdir(),'auto-sprint-body-'+process.pid+'-'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.txt');" +
+        "fs.writeFileSync(f,Buffer.from(process.argv[1],'base64'));process.stdout.write(f)";
+    const out = await command(
+        `node -e "${stageScript}" "${b64}"`,
+        { member_name: member, silent: true, label: label ?? 'Stage bd body file member-side' }
+    );
+    const staged = String(out ?? '').trim();
+    if (!staged) throw new Error('member-side body staging returned an empty path');
+    return staged;
 }
 
 /**
@@ -1833,15 +1844,19 @@ export async function createChildBeadWithAllocatedId(opts) {
     const { command, allocator, member, title, description, priority, parentId, sprintId, floor, label, log = () => {} } = opts;
     const grant = await allocator.allocate(parentId, { pid: process.pid, sprintId, floor });
     const idFlag = grant.childId ? ` --id ${grant.childId}` : '';
-    // apra-fleet-eft.56.1: the description is reviewer-authored free text
-    // (LLM output whose own context includes the diff under review) -- write
-    // it to a local temp file and hand it to `bd create --body-file` instead
-    // of interpolating it into the shell command-line string below. Only
-    // `title` (short, still allowlist-validated by validateNewTask's
-    // SAFE_TEXT_RE) remains inline.
-    let descriptionFile = null;
+    // apra-fleet-eft.56.1 / eft.73.1: the description is reviewer-authored
+    // free text (LLM output whose own context includes the diff under review)
+    // -- stage it to a MEMBER-LOCAL temp file (see stageCommandBodyMemberSide)
+    // and hand THAT path to `bd create --body-file` instead of interpolating
+    // it into the shell command-line string below. Staging member-side (not on
+    // the orchestrator host) is what makes `--body-file` reachable when `bd`
+    // runs on a remote member (eft.73). Only `title` (short, still allowlist-
+    // validated by validateNewTask's SAFE_TEXT_RE) remains inline.
     try {
-        descriptionFile = await writeCommandBodyTempFile(description);
+        const descriptionFile = await stageCommandBodyMemberSide({
+            command, member, content: description,
+            label: `Stage newTask description for '${title}'`,
+        });
         await command(
             `bd create "${title}" --body-file "${descriptionFile}" -p "${priority}" --parent ${parentId}${idFlag} --silent`,
             { member_name: member, silent: true, label: label ?? `Create follow-up task: ${title}` }
@@ -1852,8 +1867,6 @@ export async function createChildBeadWithAllocatedId(opts) {
         await allocator.release(grant.token);
         log(`[id-allocator] bd create failed for '${grant.childId ?? '(bd-derived)'}'; released reservation: ${err.message}`);
         throw err;
-    } finally {
-        if (descriptionFile) await cleanupCommandBodyTempFile(descriptionFile);
     }
     // The create landed locally -- durably commit the id BEFORE the D-push, so a
     // crash after this point can never reclaim an id that now genuinely exists.
@@ -1867,9 +1880,11 @@ export async function createChildBeadWithAllocatedId(opts) {
  * `bd create --body-file` referenced a temp file written on the
  * workflow-engine host while the command executed on a remote orchestrator
  * member -- the file cannot exist there, the create threw, and the whole run
- * aborted over a hygiene task. Until the cross-host body transport is fixed,
- * every newTask persistence path degrades instead of throwing:
- * bd create -> parent-bead notes -> this run log, in that order.
+ * aborted over a hygiene task. eft.73.1 fixed the transport itself (the body
+ * is now staged member-side via stageCommandBodyMemberSide, so `--body-file`
+ * is reachable wherever `bd` runs), but this best-effort ladder stays as
+ * defense in depth: every newTask persistence path still degrades instead of
+ * throwing -- bd create -> parent-bead notes -> this run log, in that order.
  */
 export async function persistNewTaskBestEffort({ createFn, command, member, parentId, newTask, cycle, log = () => {}, stage }) {
     try {
@@ -2584,9 +2599,11 @@ export function extractContestedBeadIds(verdict) {
 // and Windows member shells.
 //
 // `description` no longer reaches this shell-interpolation risk at all
-// (apra-fleet-eft.56.1): createChildBeadWithAllocatedId() writes it to a
-// local temp file and hands it to `bd create --body-file`, never
-// interpolating it into a command string. That removed the injection
+// (apra-fleet-eft.56.1, transport hardened in eft.73.1):
+// createChildBeadWithAllocatedId() stages it to a member-local temp file
+// (base64-carried, member-side) and hands that path to `bd create
+// --body-file`, never interpolating it into a command string. That removed
+// the injection
 // surface SAFE_TEXT_RE existed to close for descriptions, so
 // SAFE_DESCRIPTION_RE only enforces the repo's own ASCII-only convention
 // (plus non-empty) -- legitimate technical characters ('=', '&', '+', '"',
@@ -2662,10 +2679,11 @@ export function validateNewTask(newTask) {
  * FAIL-finding follow-up tasks were silently dropped in run 19, including
  * the P1 unblock task for eft.48. This persists the raw, UNMODIFIED finding
  * (title/description/priority/rejection reason) into the parent bead's
- * notes via `bd note --file` -- the same local-temp-file seam as the
- * description path above (see writeCommandBodyTempFile), never interpolated
- * into a shell string -- so a human (or the next planner) can still recover
- * it even though it was not auto-filed as its own child bead. Best-effort:
+ * notes via `bd note --file` -- the same member-side staging seam as the
+ * description path above (see stageCommandBodyMemberSide, eft.73.1), never
+ * interpolated into a shell string -- so a human (or the next planner) can
+ * still recover it even though it was not auto-filed as its own child bead.
+ * Best-effort:
  * a failure to append is logged but never re-thrown, since a rejected
  * finding is already non-fatal to the sprint.
  * @param {{ command: Function, member: string, parentId: string, newTask: unknown, reason: string, cycle?: string|number, log?: Function }} opts
@@ -2679,9 +2697,11 @@ export async function appendRejectedFindingToParentNotes({ command, member, pare
         priority: newTask && newTask.priority,
     };
     const noteBody = `[auto-sprint newTask REJECTED -- residual validation failure, appended verbatim]\n${JSON.stringify(raw, null, 2)}`;
-    let noteFile = null;
     try {
-        noteFile = await writeCommandBodyTempFile(noteBody);
+        const noteFile = await stageCommandBodyMemberSide({
+            command, member, content: noteBody,
+            label: `Stage rejected newTask finding for ${parentId} notes`,
+        });
         await command(
             `bd note ${parentId} --file "${noteFile}"`,
             { member_name: member, silent: true, label: `Append rejected newTask finding to ${parentId} notes` }
@@ -2689,8 +2709,6 @@ export async function appendRejectedFindingToParentNotes({ command, member, pare
         log(`Rejected newTask finding appended verbatim to '${parentId}' notes (residual validation failure: ${reason}).`);
     } catch (err) {
         log(`[newTask notes-fallback] FAILED to append rejected finding to '${parentId}' notes: ${err.message}`);
-    } finally {
-        if (noteFile) await cleanupCommandBodyTempFile(noteFile);
     }
 }
 
@@ -4823,19 +4841,21 @@ async function runSprintCycle(context) {
                     `bd update ${id} --status=deferred`,
                     { member_name: orchestratorMember, silent: true, label: `Defer contested bead ${id} per plan-cap exhaustion` }
                 );
-                let noteFile = null;
-                try {
-                    noteFile = await writeCommandBodyTempFile(
+                // eft.73.1: stage the deferral note member-side too -- the
+                // orchestrator member is itself remote in the fleet-rev
+                // topology, so a host-local body-file path is just as
+                // unreachable here as on the newTask path.
+                const noteFile = await stageCommandBodyMemberSide({
+                    command, member: orchestratorMember,
+                    content:
                         `[auto-sprint plan-cap deferral] Deferred after ${planningRounds} plan round(s) of CHANGES_NEEDED ` +
-                        `confined to this bead (cycle ${cycle}). Plan reviewer finding:\n${lastVerdict.notes}`
-                    );
-                    await command(
-                        `bd note ${id} --file "${noteFile}"`,
-                        { member_name: orchestratorMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
-                    );
-                } finally {
-                    if (noteFile) await cleanupCommandBodyTempFile(noteFile);
-                }
+                        `confined to this bead (cycle ${cycle}). Plan reviewer finding:\n${lastVerdict.notes}`,
+                    label: `Stage plan-cap deferral finding for ${id}`,
+                });
+                await command(
+                    `bd note ${id} --file "${noteFile}"`,
+                    { member_name: orchestratorMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
+                );
             }
             await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
             planCapDeferredIds = contestedIds;
