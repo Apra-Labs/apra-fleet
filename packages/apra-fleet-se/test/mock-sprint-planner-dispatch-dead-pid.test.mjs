@@ -68,11 +68,29 @@ test('mock sprint: Planner dispatch failure from a dead-PID interactive session 
         // 30000, 60000], ~110s total across 5 attempts) is itself a FINITE,
         // deterministic ceiling -- nowhere near the multi-minutes-with-
         // zero-output silence apra-fleet-eft.28 observed, and nowhere near
-        // a single dispatch's up-to-3600s timeout_s. 150s gives headroom
-        // above that 110s ceiling without being anywhere near "hung".
+        // a single dispatch's up-to-3600s timeout_s.
+        //
+        // apra-fleet-eft.60.1: this used to assert `elapsedMs < 150000` (only
+        // ~40s of headroom above the ~110s fixed backoff). That was the exact
+        // same brittle-margin shape eft.54.1 already found and fixed for this
+        // file's structurally-identical sibling, mock-sprint-planner-dispatch-
+        // attempt1-clean-fail-attempt2-dead-session.test.mjs (eft.50.2): under
+        // real bd (APRA_FLEET_BD_MOCK=off), per-attempt real git/dolt
+        // sync-bracket overhead plus one-time scenario setup pushed observed
+        // elapsed time to 155499ms -- past 150000ms even with every retry's
+        // pre-dispatch G-pull/D-pull and post-dispatch G-push/D-push already
+        // short-circuited (see withGitSync's skipPreDispatchSync /
+        // isNoMutationDispatchFailure short-circuits, apra-fleet-eft.54.1).
+        // Anchor to this test's own documented file timeout instead of a
+        // hand-tuned figure sitting close above the fixed backoff -- same fix
+        // eft.50.2 already applies, for the same reason: it keeps the
+        // meaningful discrimination (a fast typed-failure abort, ~110-160s,
+        // versus a hung or watchdog-bounded run, which would blow the file
+        // timeout anyway) while eliminating the flake.
+        const FAST_ABORT_CEILING_MS = 180000; // the test's own file timeout
         check(
-            elapsedMs < 150000,
-            `Expected the sprint to abort well under the retry-backoff ceiling (~110s), took ${elapsedMs}ms`
+            elapsedMs < FAST_ABORT_CEILING_MS,
+            `Expected the sprint to abort on its own via fast typed failures (~110s backoff + setup, well under the ${FAST_ABORT_CEILING_MS}ms file timeout) -- not a watchdog-bounded or hung run -- took ${elapsedMs}ms`
         );
 
         // (a) written to the fleet server log: runner.js logs each failed
