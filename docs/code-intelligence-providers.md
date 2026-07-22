@@ -106,14 +106,27 @@ should be able to opt out of code intelligence entirely, and a member with
 an explicit provider name should route to that provider regardless of the
 global config.
 
-As things stand, the field is only persisted to the agent registry -- no
-downstream logic reads it yet. `getProvider()` still resolves purely from
-the global config file, and no code-intel tool dispatch path consults the
-calling member's `codeIntelProvider`. The routing half of this feature
-(resolving `getProvider()` per-member and wiring member context into the
-`code_graph`/`code_impact`/etc. tool handlers) is a separate, not-yet-built
-increment. Until that lands, setting `code_intel_provider` on a member has
-no observable effect.
+As things stand, the field is persisted to the agent registry and surfaced
+back to the operator -- `fleet_status` shows each member's code-intel
+provider (compact output appends `code-intel=<provider>` when set; JSON
+output includes the raw field), and both `register_member` and
+`update_member` echo `Code-Intel: <provider or "global default">` in their
+confirmation output -- but no downstream logic reads it yet. `getProvider()`
+still resolves purely from the global config file, and no code-intel tool
+dispatch path consults the calling member's `codeIntelProvider`. The routing
+half of this feature (resolving `getProvider()` per-member and wiring member
+context into the `code_graph`/`code_impact`/etc. tool handlers) is a
+separate, not-yet-built increment. Until that lands, setting
+`code_intel_provider` on a member is visible in status/registration output
+but has no effect on which provider actually answers a code-intel call.
+
+A per-repo opt-out layer is planned on top of this: a config reader for a
+per-repo `.apra-fleet/code-intel.json` file (with an `isCodeIntelEnabled()`
+check that `getProvider()` would consult before resolving a provider) so an
+individual repo can disable code intelligence entirely regardless of member
+or global settings. That reader is designed to depend on the per-member
+routing above being wired first, since the opt-out check is meant to sit
+alongside the same dispatch path that resolves a member's provider.
 
 ## KB initialization lifecycle: pre-init phase
 
