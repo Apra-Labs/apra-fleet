@@ -4694,10 +4694,35 @@ async function runSprintCycle(context) {
             // skipPreDispatchSync doc comment for why this is safe and why it
             // matters for the terminal-abort fast-path budget.
             let skipPreDispatchSyncNext = false;
+            // apra-fleet-eft.60.3: the retry backoff above (~110s total across
+            // the 5 attempts) exists purely for PRODUCTION busy-lock resilience
+            // -- a real fleet member's execute_prompt busy-lock can take up to
+            // ~110s to clear (see the delay-array rationale above). A hermetic
+            // mock-sprint run has no real busy-lock to wait out, so sleeping the
+            // full ~110s of REAL wall-clock per ladder is dead time that, stacked
+            // on the one-time real-bd setup/read overhead, is what pushes the
+            // dead-session retry-ladder regression test (mock-sprint-planner-
+            // dispatch-attempt1-clean-fail-attempt2-dead-session, eft.50.2/eft.60)
+            // up against its 180s file timeout on a slow CI host. It is NOT any
+            // per-attempt real-bd D-pull: that bracket is already skipped on
+            // retries 2..N by withGitSync's skipPreDispatchSync (eft.54.1), and
+            // its sync.remote pre-gate probe / `bd dolt pull` are cached
+            // per-clone under real bd by bd-replay's realDoltSyncCache
+            // (eft.17.1 / eft.54.5), so the D-pull already runs at most once per
+            // ladder either way. The delay VALUES and the real timed sleep are
+            // UNCHANGED for production (busy-lock resilience intact); only the
+            // hermetic mock harness opts into a zero-wait backoff (via this
+            // env flag, set by mock-sprint-harness.mjs) so it exercises the full
+            // 5-attempt ladder LOGIC without the dead wall-clock. The "waiting
+            // Ns" log line still reports the real configured delay, so the
+            // ladder's observable behavior is identical.
+            const instantRetryBackoff = process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
             for (let i = 0; i < PLANNER_DISPATCH_RETRY_DELAYS_MS.length; i++) {
                 if (PLANNER_DISPATCH_RETRY_DELAYS_MS[i] > 0) {
                     log(`Planner dispatch: waiting ${PLANNER_DISPATCH_RETRY_DELAYS_MS[i] / 1000}s before retry attempt ${i + 1}/${PLANNER_DISPATCH_RETRY_DELAYS_MS.length}...`);
-                    await new Promise((resolve) => setTimeout(resolve, PLANNER_DISPATCH_RETRY_DELAYS_MS[i]));
+                    if (!instantRetryBackoff) {
+                        await new Promise((resolve) => setTimeout(resolve, PLANNER_DISPATCH_RETRY_DELAYS_MS[i]));
+                    }
                 }
                 try {
                     plannerRes = await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext });

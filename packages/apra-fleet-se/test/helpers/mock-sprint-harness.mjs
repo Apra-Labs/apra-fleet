@@ -973,6 +973,20 @@ export async function runDevelopLoopScenario(tag, {
     const memberGitState = new Map();
     const logs = [];
     const states = [];
+    // apra-fleet-eft.60.3: opt this hermetic run into the runner's zero-wait
+    // Planner-dispatch retry backoff. The ~110s of real PLANNER_DISPATCH_RETRY_
+    // DELAYS_MS backoff only models a real fleet member's execute_prompt
+    // busy-lock clearing -- there is no such lock in this in-process mock, so
+    // burning it as real wall-clock is dead time that (stacked on the one-time
+    // real-bd setup/read overhead under APRA_FLEET_BD_MOCK=off) pushed the
+    // dead-session/dead-pid retry-ladder regression tests up against their 180s
+    // file timeout on slow CI hosts. The runner still runs the FULL 5-attempt
+    // ladder and logs each "waiting Ns" line with the real configured delay;
+    // production behavior (real timed sleep, unchanged delay values) is
+    // untouched -- only this env-gated test path skips the sleep. Restored in
+    // the finally so it never leaks past this scenario.
+    const priorInstantRetryBackoff = process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF;
+    process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = '1';
     try {
         const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
             planReviewerMode: 'approve-immediately',
@@ -1040,6 +1054,13 @@ export async function runDevelopLoopScenario(tag, {
 
         return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch };
     } finally {
+        // apra-fleet-eft.60.3: restore the caller's prior value (never leak the
+        // instant-backoff flag past this scenario).
+        if (priorInstantRetryBackoff === undefined) {
+            delete process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF;
+        } else {
+            process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = priorInstantRetryBackoff;
+        }
         await teardown(tempDir);
     }
 }

@@ -121,29 +121,37 @@ test('mock sprint: Planner retry attempt 1 fails cleanly (dispatch_failed) as a 
         // attempts x ~90s ~= 450s if every attempt hit it), and nowhere near
         // apra-fleet-eft.50's observed 6m+ (360s+) silent hang on retry attempt
         // 2 alone. Every attempt here fails via its own typed error, so the
-        // real elapsed time is just the fixed PLANNER_DISPATCH_RETRY_DELAYS_MS
-        // backoff (~110s total across 5 attempts) plus one-time real-bd
-        // scenario setup and normal per-attempt dolt/bd overhead.
+        // real elapsed time is just the one-time real-bd scenario setup/read
+        // overhead plus normal per-attempt dolt/bd work.
         //
-        // apra-fleet-eft.54.1: this bound is anchored to the test's own
-        // documented file timeout ({ timeout: 180000 } above), which a fast
-        // typed-failure run always meets, NOT a hand-tuned 150s ceiling. The
-        // earlier 150s value sat only ~40s above the fixed ~110s backoff, so
-        // real-bd scenario-setup + per-attempt sync latency variance could tip
-        // it over intermittently (observed 150264ms) even though the sprint
-        // aborted correctly and fast. eft.54.1's runner short-circuits (skip
-        // the post-dispatch teardown on every no-mutation failure, and skip the
-        // redundant pre-dispatch G-pull/D-pull on each subsequent retry) remove
-        // that variance's dominant source; anchoring the assertion to the file
-        // timeout keeps the meaningful discrimination -- a fast typed-failure
-        // abort (~110-150s) versus a watchdog-bounded (~450s) or 6m+ hung run
-        // -- while eliminating the flake, since anything watchdog-bounded or
-        // hung is comfortably above 180s (and the file timeout would fail the
-        // test first regardless).
+        // apra-fleet-eft.60.3: the fixed PLANNER_DISPATCH_RETRY_DELAYS_MS
+        // backoff (~110s total across the 5 attempts) used to dominate this
+        // elapsed and sat right under the 180s file timeout, so on a slow CI
+        // host the one-time real-bd overhead stacked on top of it could tip the
+        // run over the timeout (observed 180003ms). That ~110s backoff only
+        // models a real fleet member's execute_prompt busy-lock clearing; there
+        // is no such lock in this in-process mock, so the mock-sprint harness
+        // now opts the runner into a zero-wait backoff (see mock-sprint-
+        // harness.mjs / runner.js APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF). The
+        // runner still runs the FULL 5-attempt ladder and still logs each
+        // "waiting Ns" line with the real configured delay (asserted below);
+        // production keeps the real timed backoff and unchanged delay values.
+        // The per-attempt real-bd D-pull is NOT the cost here either: it is
+        // skipped on retries 2..N by withGitSync's skipPreDispatchSync
+        // (eft.54.1) and cached per-clone under real bd by bd-replay's
+        // realDoltSyncCache (eft.17.1 / eft.54.5).
+        //
+        // apra-fleet-eft.54.1: this bound stays anchored to the test's own
+        // documented file timeout ({ timeout: 180000 } above), NOT a hand-tuned
+        // ceiling -- it keeps the meaningful discrimination (a fast typed-
+        // failure abort versus a watchdog-bounded ~450s or 6m+ hung run) while
+        // eliminating the flake, since anything watchdog-bounded or hung is
+        // comfortably above 180s (and the file timeout would fail the test
+        // first regardless).
         const FAST_ABORT_CEILING_MS = 180000; // the test's own file timeout
         check(
             elapsedMs < FAST_ABORT_CEILING_MS,
-            `Expected the sprint to abort on its own via fast typed failures (~110s backoff + setup, well under the ${FAST_ABORT_CEILING_MS}ms file timeout) -- not a watchdog-bounded (~450s) or 6m+ hung run -- took ${elapsedMs}ms`
+            `Expected the sprint to abort on its own via fast typed failures (well under the ${FAST_ABORT_CEILING_MS}ms file timeout) -- not a watchdog-bounded (~450s) or 6m+ hung run -- took ${elapsedMs}ms`
         );
 
         // No code path resumes a dead session's persistent channel: every one
