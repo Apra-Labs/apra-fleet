@@ -133,6 +133,13 @@ export class WindowsCommands implements OsCommands {
       if (autoFlag) argList += ` ${autoFlag}`;
     } else if (unattended === 'dangerous') {
       argList += ` ${provider.skipPermissionsFlag()}`;
+    } else {
+      // apra-fleet-eft.65.1: interactive-session parity for the work folder --
+      // grant Edit/Write of a brand-new file in the dispatched agent's own work
+      // folder without the broad --dangerously-skip-permissions bypass. Providers
+      // without such a surgical flag omit the method, leaving behavior unchanged.
+      const editFlag = provider.workspaceEditPermissionFlag?.();
+      if (editFlag) argList += ` ${editFlag}`;
     }
     if (model) {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;

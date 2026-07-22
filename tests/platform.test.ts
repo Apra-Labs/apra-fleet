@@ -137,6 +137,30 @@ describe('OsCommands via getOsCommands', () => {
         expect(cmd).toContain('--max-turns 50');
       });
 
+      // apra-fleet-eft.65.1: a headless dispatch with no explicit unattended mode
+      // must grant the dispatched agent Edit/Write parity for its own work folder
+      // (--permission-mode acceptEdits) so a brand-new file is not hard-blocked --
+      // WITHOUT the broad --dangerously-skip-permissions bypass.
+      for (const [name, cmds] of all) {
+        it(`${name}: claude default dispatch grants work-folder edit parity, not the broad bypass`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
+          expect(cmd).toContain('--permission-mode acceptEdits');
+          expect(cmd).not.toContain('--dangerously-skip-permissions');
+        });
+
+        it(`${name}: unattended=dangerous keeps the broad bypass, not acceptEdits`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, unattended: 'dangerous' });
+          expect(cmd).toContain('--dangerously-skip-permissions');
+          expect(cmd).not.toContain('acceptEdits');
+        });
+
+        it(`${name}: unattended=auto keeps --permission-mode auto, not acceptEdits`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, unattended: 'auto' });
+          expect(cmd).toContain('--permission-mode auto');
+          expect(cmd).not.toContain('acceptEdits');
+        });
+      }
+
       for (const [name, cmds] of all) {
         it(`${name}: buildAgentPromptCommand wraps command with PID-capture shell wrapper`, () => {
           const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);

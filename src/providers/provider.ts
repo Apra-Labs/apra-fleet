@@ -103,6 +103,14 @@ export interface ProviderAdapter {
   skipPermissionsFlag(): string;
   /** Returns the CLI flag for unattended='auto', or null if the provider does not support it. */
   permissionModeAutoFlag(): string | null;
+  /** apra-fleet-eft.65.1: CLI flag that grants the dispatched agent Edit/Write
+   *  parity for its OWN work folder when running headless with no explicit
+   *  unattended mode (a headless `-p` dispatch cannot present a permission prompt,
+   *  so file edits of a brand-new file would otherwise hard-block). Scoped to
+   *  file-edit tools on the working directory -- it must NOT broaden Bash/network
+   *  permissions the way skipPermissionsFlag() does. Optional: providers that have
+   *  no such surgical flag omit it (undefined), leaving current behavior unchanged. */
+  workspaceEditPermissionFlag?(): string | null;
 
   // Response parsing
   parseResponse(result: SSHExecResult): ParsedResponse;

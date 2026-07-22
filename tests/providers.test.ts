@@ -63,6 +63,19 @@ describe('ClaudeProvider', () => {
     expect(cmd).toContain('--max-turns 50');
     expect(cmd).not.toContain('--resume');
     expect(cmd).not.toContain('--dangerously-skip-permissions');
+    // apra-fleet-eft.65.1: the default (no explicit unattended mode) headless
+    // dispatch grants Edit/Write parity for the work folder via acceptEdits.
+    expect(cmd).toContain('--permission-mode acceptEdits');
+  });
+
+  it('builds prompt command with unattended=false grants work-folder edit parity, not the broad bypass', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: false });
+    expect(cmd).toContain('--permission-mode acceptEdits');
+    expect(cmd).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('workspaceEditPermissionFlag returns the surgical acceptEdits flag', () => {
+    expect(p.workspaceEditPermissionFlag()).toBe('--permission-mode acceptEdits');
   });
 
   it('builds prompt command with new session using --session-id', () => {
