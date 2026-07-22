@@ -896,6 +896,24 @@ const DOLT_NO_REMOTE_PATTERNS = [
     /\bno remote\b/i,
 ];
 
+// Substrings that mark a `bd dolt pull` failure as an EMPTY-REMOTE
+// (apra-fleet-eft.63): the sync.remote IS configured (unlike no-remote above)
+// but has genuinely never had anything pushed into it -- e.g. the playbook's
+// ## Reset fast-path re-derives sync.remote from a bare git-only mirror that
+// Dolt itself has never pushed a branch into. This is distinct from BOTH
+// no-remote (nothing configured at all) and a genuine divergence/conflict
+// (something IS there, but it disagrees with the local clone): a remote with
+// zero branches has nothing to reconcile, so pulling it is a benign no-op,
+// not a fatal DOLT_SYNC_FAILED. Matched on Dolt's own specific Error 1105
+// wording so this can never accidentally swallow a real pull failure that
+// merely happens to mention "remote" -- checked FIRST, before the diverged/
+// transient patterns below, same reasoning as DOLT_NO_REMOTE_PATTERNS: this
+// text does not collide with either, so order only matters for clarity.
+const DOLT_EMPTY_REMOTE_PATTERNS = [
+    /error 1105.*no branches found in remote/i,
+    /no branches found in remote/i,
+];
+
 // Substrings that mark a `bd dolt` failure as a DIVERGENCE (the remote moved
 // under us / a data or merge conflict). Reconciled once by the push loser, or
 // surfaced as DoltDivergedError -- never retried blindly.
@@ -946,12 +964,19 @@ const DOLT_TRANSIENT_PATTERNS = [
  * state must never be misread as transient and retried blindly, even if its
  * message also happens to contain a lock/network word.
  *
+ * apra-fleet-eft.63: empty-remote (a configured sync.remote with genuinely
+ * zero branches ever pushed into it -- distinct from no-remote, where
+ * nothing is configured at all) is also checked before diverged/transient,
+ * for the same reason: its text ("no branches found in remote") must never
+ * be misread as a real divergence/conflict.
+ *
  * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
- * @returns {'no-remote'|'diverged'|'transient'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'diverged'|'transient'|'unknown'}
  */
 export function classifyDoltFailure(output) {
     const text = String(output == null ? '' : output);
     for (const re of DOLT_NO_REMOTE_PATTERNS) if (re.test(text)) return 'no-remote';
+    for (const re of DOLT_EMPTY_REMOTE_PATTERNS) if (re.test(text)) return 'empty-remote';
     for (const re of DOLT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
     for (const re of DOLT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
     return 'unknown';
@@ -1027,7 +1052,7 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
  * retrying ONLY transient failures up to `maxTransientRetries` times. A
  * diverged (or unknown) failure is returned immediately, never retried.
  *
- * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'transient'|'unknown' }>}
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'diverged'|'transient'|'unknown' }>}
  */
 async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries }) {
     let attempt = 0;
@@ -1090,9 +1115,16 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  * Override the check with `opts.checkSyncRemoteConfigured` (same test hook
  * doltPushAfter exposes).
  *
+ * apra-fleet-eft.63: distinct from the no-remote skip above, a `sync.remote`
+ * that IS configured but has genuinely never had anything pushed into it
+ * (Dolt's own "no branches found in remote" Error 1105) is ALSO a benign
+ * no-op skip -- `{ ok: true, skipped: true, reason: 'empty-remote' }` --
+ * since there is nothing to reconcile. A real divergence/conflict pull
+ * failure still throws DoltDivergedError, unchanged.
+ *
  * @param {string} member
  * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote' }>}
+ * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote' }>}
  */
 export async function doltPullBefore(member, opts = {}) {
     const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured } = opts;
@@ -1117,6 +1149,17 @@ export async function doltPullBefore(member, opts = {}) {
         if (pull.kind === 'no-remote') {
             log(`[Dolt] D-pull for member '${member}' skipped: no dolt remote configured (nothing to pull)`);
             return { ok: true, member, skipped: true, reason: 'no-remote' };
+        }
+        if (pull.kind === 'empty-remote') {
+            // apra-fleet-eft.63: sync.remote IS configured but has never had
+            // anything pushed into it (e.g. the playbook's ## Reset fast-path
+            // re-derives sync.remote from a bare mirror Dolt has never pushed
+            // to) -- there is nothing to reconcile, so this is a benign no-op,
+            // not a divergence/conflict. Genuine divergence/conflict pulls
+            // still fall through to the DoltDivergedError branch below,
+            // unchanged.
+            log(`[Dolt] D-pull for member '${member}' skipped: dolt remote has zero branches (nothing pushed yet, nothing to pull)`);
+            return { ok: true, member, skipped: true, reason: 'empty-remote' };
         }
         if (pull.kind === 'diverged') {
             throw new DoltDivergedError(
@@ -1195,13 +1238,14 @@ export function extractConflictingTables(doltOutput) {
  * reaches both the main log and the dashboard with no separate plumbing.
  *
  * A non-divergence D-pull failure (DoltSyncError -- transient/unknown, or
- * the benign no-remote skip) is NOT rewritten here: it already carries its
- * own actionable message from doltPullBefore(), and is not the bug this gate
- * targets, so it is re-thrown/returned unchanged.
+ * the benign no-remote/empty-remote skip -- apra-fleet-eft.63) is NOT
+ * rewritten here: it already carries its own actionable message from
+ * doltPullBefore(), and is not the bug this gate targets, so it is
+ * re-thrown/returned unchanged.
  *
  * @param {string} member
  * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote' }>}
+ * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote' }>}
  */
 export async function preflightBeadsHealthGate(member, opts = {}) {
     const { command, log = () => {} } = opts;
