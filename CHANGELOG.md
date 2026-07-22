@@ -2,6 +2,81 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Code intelligence: per-member provider field and KB pre-init scaffolding (sprint goal not met)
+
+Sprint goal (P1/P2): audit all KB and code-intelligence tools on this branch,
+and build out the KB initialization lifecycle (pre-init/init/update phases)
+plus per-member code-intelligence provider selection. Both goals remain
+open; this cycle landed two small, unblocking increments toward them and
+ended before the larger routing and lifecycle work was built.
+
+The `Agent` interface now carries an optional `codeIntelProvider` field, and
+`register_member` / `update_member` accept a matching input so a member's
+preferred code-intelligence provider can be set or changed. This is schema
+and persistence only -- no dispatch path yet resolves a provider per member,
+so the field currently has no observable effect; see
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
+The KB pre-init phase also gained its first two building blocks: a
+provider-availability check (never throws; degrades to a structured
+not-available result) and a repo index-size estimator (gitignore-aware
+file walk projecting file count, byte size, and indexing time). Both are
+pure, unit-tested, and not yet wired into any init-phase caller -- they
+exist ahead of the init/update phases that will consume them. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
+Carried forward to a future sprint: the full KB tool audit, per-member
+provider routing through `getProvider()` and tool dispatch, the init phase
+(first-time indexing with progress and an opt-in prompt), and the update
+phase (staleness detection and incremental re-indexing).
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |      8,016 |   n/a |   $0.000 |   $0.120 |
+| reviewer   |          0 |     10,424 |   n/a |   $0.000 |   $0.156 |
+| overhead   |      7,150 |     80,655 | +1028% |   $0.121 |   $0.575 |
+| TOTAL      |      7,150 |     99,095 | +1286% |   $0.121 |   $0.851 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Review outcome
+
+**Build**: passes (tsc clean).
+**Tests**: 2314 passed, 5 skipped, 0 failures across 157 test files.
+**Working tree**: clean (only sprint log modified, expected).
+
+**Sprint goal assessment**: Both sprint-goal issues remain open. The sprint
+produced three functional commits: the `codeIntelProvider` field on the
+`Agent` interface wired into register/update schemas and handlers; a new
+pre-init module with provider-availability detection and index-size
+estimation; and unit tests for that module.
+
+**Observations (non-blocking)**:
+- The pre-init module is not imported by any other module in `src/` --
+  it is forward-looking scaffolding for the init phase, which was not
+  built this sprint. This is dead code today but has test coverage and
+  will be consumed once the init phase is implemented.
+- `codeIntelProvider` is stored during register/update but never read by
+  any downstream logic (no routing or provisioning consumes it yet).
+- Neither observation is a regression or quality concern; both are
+  incomplete increments from a sprint that ended early.
+
+**Code quality**: The new code follows existing patterns (zod schemas,
+never-throw error handling, vitest mocks with hoisted references). No
+security issues (uses a direct file-execution call rather than a shell,
+proper temp-dir cleanup in tests, no secrets). ASCII-only. Consistent with
+project conventions.
+
+**Overall branch state**: The accumulated work across all prior sprint
+cycles builds cleanly and passes all tests. No regressions detected. The
+branch is in a releasable state for what was completed. Both sprint-goal
+issues remain open for future completion.
+
 ## [Unreleased] -- Code intelligence provider abstraction: codebase-memory-mcp shipped as default
 
 Sprint goal (P1/P2): finish the CodeIntelligenceProvider abstraction begun in
