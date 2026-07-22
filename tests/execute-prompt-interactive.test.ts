@@ -563,3 +563,90 @@ describe('interactive routing requires the channel opt-in handshake (apra-fleet-
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 });
+
+// apra-fleet-eft.74.2: self-heal. Even if a session IS interactive-routed, an
+// interactive delivery that times out with no verifiable live pid must evict
+// the sessionRegistry entry so the NEXT execute_prompt does not re-route to the
+// phantom channel and re-burn the full timeout_s forever (the observed 5x 900s
+// wedge). A session that still has a verifiably live pid is left registered.
+describe('self-heal: evict a pid-less interactive session on interactive-route timeout (apra-fleet-eft.74.2)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    restoreRegistry();
+    if (memberId) {
+      inFlightAgents.delete(memberId);
+      sessionRegistry.unregister(getTokenIssuer().workspaceId(), memberId);
+    }
+  });
+
+  it('evicts the interactive session on timeout when it has no verifiable live pid, so the NEXT dispatch takes the subprocess path', async () => {
+    const member = makeTestAgent({ friendlyName: 'timeout-no-pid-member' });
+    memberId = member.id;
+    addAgent(member);
+
+    const notification = vi.fn().mockResolvedValue(undefined);
+    const workspaceId = getTokenIssuer().workspaceId();
+    // A channel-capable interactive session with NO pid and NO lastKnownPid --
+    // the mid-wait liveness poll never fires (nothing to probe), so this reaches
+    // the plain-timeout path.
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      status: 'online',
+      channelCapable: true,
+    });
+
+    const first = await executePrompt({ member_id: memberId, prompt: 'nobody answers', resume: false, timeout_s: 0.2 });
+    expect(resultText(first)).toContain('Timed out');
+    // The phantom session was evicted by the self-heal.
+    expect(sessionRegistry.get(workspaceId, memberId)).toBeUndefined();
+    expect(notification).toHaveBeenCalledTimes(1);
+
+    // The NEXT dispatch finds no interactive session and falls back to subprocess.
+    const second = await executePrompt({ member_id: memberId, prompt: 'retry after wedge', resume: false, timeout_s: 5 });
+    expect(mockExecCommand).toHaveBeenCalled();
+    expect(resultText(second)).toContain('timeout-no-pid-member');
+    // No second interactive push -- the wedge did not repeat.
+    expect(notification).toHaveBeenCalledTimes(1);
+    expect(inFlightAgents.has(memberId)).toBe(false);
+  }, 10000);
+
+  it('does NOT evict a timed-out session that still has a verifiably live pid (member alive, just slow)', async () => {
+    const member = makeTestAgent({ friendlyName: 'timeout-live-pid-member' });
+    memberId = member.id;
+    addAgent(member);
+
+    // The pid is always reported alive -- kill(pid, 0) succeeds.
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true as any);
+
+    const notification = vi.fn().mockResolvedValue(undefined);
+    const workspaceId = getTokenIssuer().workspaceId();
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      pid: 4242,
+      status: 'online',
+      channelCapable: true,
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'slow but alive', resume: false, timeout_s: 0.2 });
+    expect(resultText(result)).toContain('Timed out');
+    // The live-pid session is preserved -- the member is alive, merely slow.
+    expect(sessionRegistry.get(workspaceId, memberId)).toBeDefined();
+    expect(killSpy).toHaveBeenCalledWith(4242, 0);
+    expect(inFlightAgents.has(memberId)).toBe(false);
+  }, 10000);
+});

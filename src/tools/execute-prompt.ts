@@ -316,6 +316,21 @@ async function executePromptInteractive(
       return `[ERROR] "${agent.friendlyName}"'s interactive claude process died while this dispatch was waiting for a response (${err.message}). The prompt was delivered but nothing will ever answer it -- re-launch the member (re-run register_member) before retrying.`;
     }
     scope.abort(`interactive timeout: ${err.message}`);
+    // apra-fleet-eft.74.2: self-heal on interactive-route timeout. A session
+    // with no verifiable live pid that just timed out is a phantom channel
+    // (the eft.74 wedge): re-routing the NEXT execute_prompt to it would
+    // silently re-burn the full timeout_s, forever (observed 5x 900s). Evict
+    // it here so the next dispatch finds no interactive session and falls back
+    // to the subprocess path. A session that DOES have a verifiably live pid is
+    // left registered -- the member is alive, merely slow, so a later dispatch
+    // may legitimately reach it interactively again.
+    const timedOutSession = sessionRegistry.get(workspaceId, agent.id);
+    const timedOutPid = timedOutSession?.pid ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
+    const hasVerifiableLivePid = timedOutPid !== undefined && isPidAlive(timedOutPid);
+    if (!hasVerifiableLivePid) {
+      sessionRegistry.unregister(workspaceId, agent.id);
+      scope.info(`[interactive] timed-out session for "${agent.friendlyName}" has no verifiable live pid (pid=${timedOutPid ?? 'none'}) -- evicting so the next dispatch falls back to subprocess`);
+    }
     return `❌ Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`;
   }
 }
