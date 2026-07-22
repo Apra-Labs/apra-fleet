@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-member code-intel provider now visible in status/registration output; routing still pending
+
+This sprint targeted three goals -- per-member code-intelligence provider
+routing, first-time repo indexing (KB init phase), and per-repo opt-out
+config -- but only completed a small display-layer slice of the first.
+
+The `codeIntelProvider` field on a member (already persisted to the agent
+registry from a prior cycle) is now surfaced back to the operator:
+`fleet_status` shows it per member (compact output appends
+`code-intel=<provider>` when set; JSON output carries the raw field), and
+both the registration and update confirmation messages report the
+member's code-intel provider or `global default` when unset. Test coverage
+was added verifying the field persists and displays correctly across the
+register/update/status lifecycle. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
+None of the three sprint goals reached completion: the display change above
+only closes out the display sub-piece of per-member provider selection --
+the routing half (making `getProvider()` actually resolve per-member and
+consult the selection at code-intel tool dispatch time) was not started.
+The KB init phase (first-time indexing with progress reporting) and the
+per-repo opt-out config reader were also not started this cycle; the latter
+is designed to depend on the per-member routing work landing first. All
+three goals remain open and carry forward.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     19,640 |   n/a |   $0.000 |   $0.230 |
+| reviewer   |          0 |     10,568 |   n/a |   $0.000 |   $0.158 |
+| overhead   |      7,150 |     91,235 | +1176% |   $0.121 |   $0.548 |
+| TOTAL      |      7,150 |    121,443 | +1599% |   $0.121 |   $0.937 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the
