@@ -415,6 +415,102 @@ export function checkCleanEnvRealClaudeAuth(fleetHome = defaultFleetHome(), deps
   };
 }
 
+// Mirrors src/utils/auth-env.ts#buildAuthEnvPrefix's POSIX branch (double-
+// quoted export, escaping backslash/dollar/backtick/double-quote/bang) so
+// checkCleanEnvRealClaudeAuthViaEnvVar reproduces the exact inline
+// 'export NAME="<value>" && ...' text that dispatch actually injects into
+// the clean shell, not an approximation of it.
+function escapeDoubleQuotedForExport(value) {
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '\\$')
+    .replace(/`/g, '\\`')
+    .replace(/!/g, '\\!');
+}
+
+/**
+ * apra-fleet-eft.48.9: regression pin for the encryptedEnvVars/registry.json
+ * provisioning path apra-fleet-eft.48.8 made PRIMARY -- distinct from
+ * checkCleanEnvRealClaudeAuth (which probes the credentials-FILE path).
+ *
+ * REAL, non-mocked probe: runs the actual installed `claude` CLI through
+ * LocalStrategy's exact clean-env dispatch exec path, with the token
+ * injected the same way buildAuthEnvPrefix() (src/utils/auth-env.ts) does
+ * for a member whose encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN is populated
+ * -- an inline 'export CLAUDE_CODE_OAUTH_TOKEN="<token>" && ...' prefix
+ * INSIDE the same 'env -i <seed> bash -l -c ...' clean shell, never a
+ * credentials file. Classifies whether the CLI authenticated the same way
+ * checkCleanEnvRealClaudeAuth does (deliberate bogus probe model, "Not
+ * logged in" vs a parseable {"type":"result"} payload).
+ *
+ * Callers should also assert fleetHome/.claude/.credentials.json is absent
+ * to prove this really exercised the env-var-ONLY branch, not a
+ * coincidentally-present file (see defaultCredentialsPath).
+ *
+ * Requires a REAL, currently-valid OAuth access token -- see
+ * checkCleanEnvRealClaudeAuth's caveat: an invalid token fails auth
+ * regardless of provisioning path, so it can't exercise this regression
+ * either way.
+ *
+ * @param {string} token REAL OAuth access token
+ * @param {string} [fleetHome]
+ * @param {{execSync: typeof execSync}} [deps] injectable for tests
+ * @returns {{ok: boolean, authenticated: boolean, message: string, raw: string}}
+ */
+export function checkCleanEnvRealClaudeAuthViaEnvVar(token, fleetHome = defaultFleetHome(), deps = {}) {
+  const run = deps.execSync ?? execSync;
+  // Same platform reality as checkCleanEnvRealClaudeAuth: the POSIX
+  // 'env -i ... bash -l -c' exec path this probe reproduces does not exist
+  // on Windows.
+  if (!deps.execSync && process.platform === 'win32') {
+    return {
+      ok: false,
+      authenticated: false,
+      raw: '',
+      message: `UNSUPPORTED (win32): the POSIX clean-env exec path this probe reproduces ('env -i ... bash -l -c export ${CREDENTIAL_ENV_VAR}=... claude ...') does not exist on Windows -- LocalStrategy there uses a PowerShell registry-derived clean env. Run this probe on a POSIX runner (or inject deps.execSync for unit coverage).`,
+    };
+  }
+  if (!token || typeof token !== 'string') {
+    return {
+      ok: false,
+      authenticated: false,
+      raw: '',
+      message: 'PROBE-ERROR: checkCleanEnvRealClaudeAuthViaEnvVar requires a non-empty token.',
+    };
+  }
+  const seedParts = cleanEnvSeedParts(fleetHome);
+  const exportedToken = escapeDoubleQuotedForExport(token);
+  // stdin/stderr/exit-code handling identical to checkCleanEnvRealClaudeAuth
+  // -- see the comment there. The only difference is the additional
+  // 'export CLAUDE_CODE_OAUTH_TOKEN="..." && ' prefix INSIDE the clean
+  // shell, reproducing buildAuthEnvPrefix()'s exact inline-export shape
+  // rather than anything written to disk.
+  const script = `env -i ${seedParts.join(' ')} bash -l -c 'export ${CREDENTIAL_ENV_VAR}="${exportedToken}" && claude -p "hi" --model ${shellQuote(AUTH_PROBE_MODEL_ID)} --output-format json </dev/null 2>/dev/null || true'`;
+
+  let output;
+  try {
+    output = run(script, { encoding: 'utf-8', shell: PROBE_SHELL });
+  } catch (err) {
+    return {
+      ok: false,
+      authenticated: false,
+      raw: '',
+      message: `PROBE-ERROR: real-CLI clean-env env-var probe failed to run against fleet home '${fleetHome}': ${err.message}`,
+    };
+  }
+
+  const authenticated = isAuthenticatedClaudeCliResult(output);
+  return {
+    ok: authenticated,
+    authenticated,
+    raw: output,
+    message: authenticated
+      ? `AUTHENTICATED (real-CLI clean-env env-var probe): the installed claude CLI accepted the exported ${CREDENTIAL_ENV_VAR} as a valid logged-in session and reached past auth (deliberate bogus probe model '${AUTH_PROBE_MODEL_ID}' resolution error), with no credentials file involved.`
+      : `NOT-AUTHENTICATED (real-CLI clean-env env-var probe): the installed claude CLI rejected the exported ${CREDENTIAL_ENV_VAR} -- "Not logged in" (or an unparseable/empty response). Raw: ${output.trim().slice(0, 500)}`,
+  };
+}
+
 /**
  * Extract claudeAiOauth.expiresAt out of a `.credentials.json` file's text,
  * or 0 if absent/unparseable (stabilization Issue 43).
