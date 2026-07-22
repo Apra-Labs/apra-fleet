@@ -3328,9 +3328,29 @@ async function runSprintCycle(context) {
     // non-code-writing roles (pushCode:false short-circuits before the
     // conflict path is ever reached) and never fires for a plain, non-
     // conflict divergence.
-    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false } = {}) {
-        await syncMemberBefore(member, { command, log, branch: validated.branch });
-        await doltPullBefore(member, { command, log });
+    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, skipPreDispatchSync = false } = {}) {
+        // apra-fleet-eft.54.1: on a retry that immediately follows a TERMINAL
+        // no-mutation dispatch failure for this same member (the Planner retry
+        // ladder's 2nd..Nth attempt after a dispatch_failed/auth abort), the
+        // prior attempt published nothing, so the local G/D workspace is
+        // unchanged since the pre-dispatch pull that already ran on that
+        // attempt -- re-issuing syncMemberBefore + doltPullBefore is pure
+        // wasted real-bd work (extra bd/dolt spawns per retry). This is the
+        // SETUP-side twin of the finally's teardown short-circuit below: under
+        // APRA_FLEET_BD_MOCK=off those redundant pre-dispatch brackets, run on
+        // every one of the 5 retry attempts, were the residual real-bd latency
+        // that pushed eft.50's regression test intermittently over its
+        // fast-abort assertion even after the teardown skip landed. Skipping
+        // them here keeps the terminal-abort path anchored to just the fixed
+        // PLANNER_DISPATCH_RETRY_DELAYS_MS backoff. The first attempt (and
+        // every non-retry / happy-path call) keeps the exact prior pre-dispatch
+        // behaviour -- skipPreDispatchSync defaults false.
+        if (skipPreDispatchSync) {
+            log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
+        } else {
+            await syncMemberBefore(member, { command, log, branch: validated.branch });
+            await doltPullBefore(member, { command, log });
+        }
         // apra-fleet-eft.54.1: track a terminal dispatch failure so the
         // post-dispatch sync teardown can be skipped for it (see the finally).
         let dispatchThrew = null;
@@ -4340,10 +4360,10 @@ async function runSprintCycle(context) {
             // own doc comment above for why this is needed in addition to
             // (not instead of) the server-side timeout_s/max_total_s already
             // passed via plannerDispatchOpts below.
-            const dispatchPlannerOnce = () => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
+            const dispatchPlannerOnce = ({ skipPreDispatchSync = false } = {}) => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
                 agent(plannerPrompt, { ...plannerDispatchOpts, member_name: getMemberForRole('planner') }),
                 { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Plan (interactive)', log }
-            ), { pushBeads: true });
+            ), { pushBeads: true, skipPreDispatchSync });
             const dispatchPlannerResume = () => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
                 agent(
                     'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
@@ -4357,12 +4377,15 @@ async function runSprintCycle(context) {
                 ),
                 { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: `Plan (resume, max_turns=${PLANNER_MAX_TURNS * 2})`, log }
             ), { pushBeads: true });
-            const dispatchPlanner = async () => {
+            const dispatchPlanner = async ({ skipPreDispatchSync = false } = {}) => {
                 try {
-                    return await dispatchPlannerOnce();
+                    return await dispatchPlannerOnce({ skipPreDispatchSync });
                 } catch (err) {
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                         log(`Planner exhausted its turn limit (max_turns=${PLANNER_MAX_TURNS}) -- resuming the same session with max_turns=${PLANNER_MAX_TURNS * 2}.`);
+                        // A resume follows an agent that DID run (max_turns_exhausted
+                        // is a resumable partial-work case, not a no-mutation
+                        // failure) -- so it always runs the full pre-dispatch sync.
                         return await dispatchPlannerResume();
                     }
                     throw err;
@@ -4397,17 +4420,29 @@ async function runSprintCycle(context) {
             const PLANNER_DISPATCH_RETRY_DELAYS_MS = [0, 5000, 15000, 30000, 60000];
             let plannerRes;
             let plannerErr = null;
+            // apra-fleet-eft.54.1: when the previous attempt failed terminally
+            // with no mutation to publish, its pre-dispatch G-pull/D-pull is
+            // still fresh (nothing was pushed since), so the next attempt skips
+            // re-running those real-bd brackets. See withGitSync's
+            // skipPreDispatchSync doc comment for why this is safe and why it
+            // matters for the terminal-abort fast-path budget.
+            let skipPreDispatchSyncNext = false;
             for (let i = 0; i < PLANNER_DISPATCH_RETRY_DELAYS_MS.length; i++) {
                 if (PLANNER_DISPATCH_RETRY_DELAYS_MS[i] > 0) {
                     log(`Planner dispatch: waiting ${PLANNER_DISPATCH_RETRY_DELAYS_MS[i] / 1000}s before retry attempt ${i + 1}/${PLANNER_DISPATCH_RETRY_DELAYS_MS.length}...`);
                     await new Promise((resolve) => setTimeout(resolve, PLANNER_DISPATCH_RETRY_DELAYS_MS[i]));
                 }
                 try {
-                    plannerRes = await dispatchPlanner();
+                    plannerRes = await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext });
                     plannerErr = null;
                     break;
                 } catch (err) {
                     plannerErr = err;
+                    // apra-fleet-eft.54.1: only a no-mutation dispatch failure
+                    // leaves the workspace provably unchanged, so only then may
+                    // the next attempt skip its pre-dispatch sync. Any other
+                    // error re-arms the full pre-dispatch sync on the next try.
+                    skipPreDispatchSyncNext = isNoMutationDispatchFailure(err);
                     // Stabilization Issue 43: auth/workspace-trust failures are
                     // deterministic -- no retry can ever succeed, so abort the
                     // loop immediately instead of burning the remaining
