@@ -35,6 +35,25 @@ test('unit: isNonRetryableDispatchError matches auth/trust signatures and nothin
     assert.equal(isNonRetryableDispatchError({}), false);
 });
 
+// apra-fleet-eft.54.2: regression pin, run under real bd
+// (APRA_FLEET_BD_MOCK=off -- see scripts/run-tests.mjs's `real` mode / repro:
+// `APRA_FLEET_BD_MOCK=off node --test test/mock-sprint-planner-auth-failure-
+// no-retry.test.mjs`, or a full real-bd pass via
+// scripts/run-integ-suites.mjs). Before apra-fleet-eft.54.1's shared
+// withGitSync teardown short-circuit (skip the redundant post-dispatch
+// G-push/D-push teardown -- and, on a subsequent retry, the redundant
+// pre-dispatch G-pull/D-pull -- for a terminal no-mutation dispatch failure),
+// this scenario's real-bd sync brackets around a single Planner attempt were
+// enough overhead, layered under the harness's own scenario setup/teardown,
+// to push the run past the node:test harness's own { timeout: 120000 } file
+// limit -- the test would be KILLED by the harness before its own
+// `elapsedMs < 60000` assertion ever got a chance to run or fail, i.e. this
+// is not a normal assertion failure, it is a hang-to-timeout. Post-fix, only
+// ONE Planner attempt is ever dispatched (auth failures are non-retryable --
+// see isNonRetryableDispatchError below), so there is only one pre-dispatch
+// sync bracket to begin with and no retry-driven teardown/re-sync overhead
+// to skip; measured real-bd runs complete in ~25-30s, comfortably under both
+// the test's own 60000ms fast-abort bound and the harness's 120000ms limit.
 test('mock sprint: Planner auth failure aborts the retry loop after ONE attempt instead of exhausting the backoff', { timeout: 120000 }, async () => {
     await withScenarioMarkers('plannerauthnoretry', async () => {
         console.log('Running mock sprint scenario (Planner dispatch always fails with an Authentication failed response)...');
