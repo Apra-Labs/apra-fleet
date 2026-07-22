@@ -720,7 +720,11 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // (read-side, no pushBeads -- pushBeads count below unchanged).
     assert.equal(sites.length, 16, `expected 16 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
-    const hasPushBeads = (t) => /\{\s*pushBeads:\s*true\s*\}/.test(t);
+    // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
+    // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
+    // sync skip), so match pushBeads: true anywhere inside the options object
+    // literal rather than requiring it to be the object's only property.
+    const hasPushBeads = (t) => /\{[^{}]*\bpushBeads:\s*true\b[^{}]*\}/.test(t);
     const pushBeadsSites = sites.filter(hasPushBeads);
 
     // Four roles mutate beads: planner (new tasks), doer (closes),

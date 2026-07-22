@@ -433,9 +433,24 @@ describe('runner.js mock-level execution', () => {
         // interceptor succeeds for any command by default, so the fetch
         // "succeeds" here and the checkout adopts origin/<branch> as its
         // start point, not origin/<baseBranch>.
-        assert.match(spy.commandLog[0], /^git fetch origin develop/);
-        assert.match(spy.commandLog[1], /^git fetch origin auto-sprint\/reach-test\b/);
-        assert.ok(spy.commandLog[2].includes('git checkout -B auto-sprint/reach-test origin/auto-sprint/reach-test'));
+        // apra-fleet-eft.58.1: preflightBeadsHealthGate() now runs strictly
+        // BEFORE the branch-ensure loop's first git command, so the log leads
+        // with its bd-level probe commands ('bd config get sync.remote --json'
+        // + 'bd dolt pull'). Pin that ordering contract (only bd commands may
+        // precede the first git command) and anchor the git triplet at the
+        // first git index instead of hardcoding index 0.
+        const firstGitIdx = spy.commandLog.findIndex((c) => /^git /.test(c));
+        assert.ok(firstGitIdx >= 0, 'expected at least one git command in the log');
+        for (const pre of spy.commandLog.slice(0, firstGitIdx)) {
+            assert.match(
+                pre,
+                /^bd /,
+                `only the beads-health gate's bd commands may precede the first git command, saw: ${pre}`,
+            );
+        }
+        assert.match(spy.commandLog[firstGitIdx], /^git fetch origin develop/);
+        assert.match(spy.commandLog[firstGitIdx + 1], /^git fetch origin auto-sprint\/reach-test\b/);
+        assert.ok(spy.commandLog[firstGitIdx + 2].includes('git checkout -B auto-sprint/reach-test origin/auto-sprint/reach-test'));
         const last2 = spy.commandLog.slice(-2);
         assert.match(last2[0], /^git push -u origin auto-sprint\/reach-test/);
         assert.match(last2[1], /^gh pr create --base "develop" --head "auto-sprint\/reach-test"/);
