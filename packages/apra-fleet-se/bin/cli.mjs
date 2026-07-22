@@ -705,18 +705,28 @@ async function main() {
 
     try {
         const scriptPath = resolveRunnerScriptPath();
-        const res = await engine.executeFile(scriptPath, buildRunnerArgs({
-            targetIssues,
-            members: validMembers,
-            branch: branchName,
-            baseBranch,
-            goal,
-            maxCycles,
-            requirementsFile,
-            roleMap,
-            budget,
-            dispatchTimeoutS,
-        }));
+        const res = await engine.executeFile(scriptPath, {
+            ...buildRunnerArgs({
+                targetIssues,
+                members: validMembers,
+                branch: branchName,
+                baseBranch,
+                goal,
+                maxCycles,
+                requirementsFile,
+                roleMap,
+                budget,
+                dispatchTimeoutS,
+            }),
+            // apra-fleet-eft.75.1: wires this already-connected mcpClient
+            // through to runner.js's createMemberSessionGuard (see its doc
+            // comment), so a resume re-dispatch after a presumed-dead/timed-
+            // out session (max_turns_exhausted) calls the fleet's own
+            // stop_prompt tool for that member FIRST -- verifying/killing a
+            // still-alive prior process before spawning a second one.
+            // Mirrors createMemberReservationClient's callTool wiring above.
+            callTool: (name, toolArgs) => mcpClient.callTool(name, toolArgs),
+        });
         process.removeListener('SIGINT', onSigint);
         await releaseReservationOnce();
         console.log('Sprint finished:', res);

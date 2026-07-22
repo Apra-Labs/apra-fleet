@@ -256,6 +256,17 @@ const KNOWN_ARG_KEYS = new Set([
     // Optional; when omitted the per-bead work-claiming prevention layer stays
     // dormant and bead selection uses the legacy unassigned `bd list --ready`.
     'assignee',
+    // apra-fleet-eft.75.1: an optional live `(name, args) => Promise<any>`
+    // MCP tool-call function, wired by bin/cli.mjs from its already-connected
+    // `mcpClient.callTool` (see the call site there). Consumed by
+    // createMemberSessionGuard() (this file) to call the fleet's own
+    // `stop_prompt` tool before a resume re-dispatch. This is a live function
+    // reference, not a JSON-serializable value -- safe only because
+    // WorkflowEngine.executeFile() runs runner.js in-process (dynamic
+    // `import()`, never a subprocess boundary). Absent for direct
+    // runSprintCycle()/main() test calls, where the guard is a no-op (see
+    // createMemberSessionGuard's doc comment).
+    'callTool',
 ]);
 
 /**
@@ -1756,6 +1767,73 @@ export function createMemberReservationClient(opts = {}) {
         async releaseAll() {
             if (!active) return;
             for (const member of members) await callFor('release', member);
+        },
+    };
+}
+
+/**
+ * apra-fleet-eft.75.1 -- guards every "resume" re-dispatch below (every
+ * `dispatch*Resume()` / inline resume call, all triggered when a prior
+ * attempt threw `AgentDispatchError` reason `'max_turns_exhausted'`) against
+ * spawning a second concurrent session on a member whose PRIOR process for
+ * that same logical dispatch is presumed dead/timed out but may actually
+ * still be alive.
+ *
+ * Root incident (apra-fleet-eft.75, run 23 integ C1): the engine's resume of
+ * the integ-test-runner re-dispatched to the same member without first
+ * confirming the prior attempt's process had actually exited -- both stayed
+ * alive concurrently for 50+ minutes, and the orphaned first session's own
+ * side effect (it had launched a smoke-test sprint) was duplicated by the
+ * second.
+ *
+ * Fix: before firing a resume, call the fleet's own `stop_prompt` tool
+ * (src/tools/stop-prompt.ts) for that member. `stop_prompt` already reuses
+ * the shared pid-liveness helpers (`isPidAlive`/`tryKillPid`,
+ * src/utils/pid-helpers.ts) to kill whatever process is still on record for
+ * that member and is a no-op when nothing is running -- so this file does
+ * not reimplement pid liveness, it just makes sure that existing tool is
+ * called before every resume re-dispatch.
+ *
+ * `callTool` is injected exactly like `createMemberReservationClient`'s
+ * (the caller's MCP client, e.g. `mcpClient.callTool`), so this stays
+ * transport-agnostic and unit-testable without a live fleet server.
+ * Omitted (e.g. a direct `runSprintCycle()`/`main()` unit test call that
+ * never wires one): `killIfAlive()` is a no-op -- there is no live fleet
+ * connection to guard against, matching every other best-effort client in
+ * this file (dolt-mutex, id-allocator, member-reservation) when its
+ * transport is absent.
+ *
+ * Best-effort by design: a `stop_prompt` failure (transport error, member
+ * not found, etc.) is logged and swallowed rather than blocking the resume
+ * -- the resume itself is what the sprint actually needs to make progress;
+ * this guard's job is to REDUCE (not gate) the chance of a duplicate
+ * concurrent session, mirroring the non-fatal posture of every other
+ * best-effort client already in this file.
+ *
+ * @param {{ callTool?: (name: string, args: object) => Promise<any>, log?: Function }} opts
+ * @returns {{ killIfAlive: (member: string) => Promise<void> }}
+ */
+export function createMemberSessionGuard(opts = {}) {
+    const { callTool, log = () => {} } = opts;
+    const active = typeof callTool === 'function';
+
+    function resultText(result) {
+        if (typeof result === 'string') return result;
+        if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
+            return result.content[0].text;
+        }
+        return '';
+    }
+
+    return {
+        async killIfAlive(member) {
+            if (!active || !member) return;
+            try {
+                const result = await callTool('stop_prompt', { member_name: member });
+                log(`[member-session-guard] pre-resume stop_prompt for '${member}': ${resultText(result) || '(no detail)'}`);
+            } catch (err) {
+                log(`[member-session-guard] pre-resume stop_prompt for '${member}' failed (non-fatal; resume proceeds): ${err.message}`);
+            }
         },
     };
 }
@@ -3581,6 +3659,28 @@ async function runSprintCycle(context) {
             }
     );
 
+    // apra-fleet-eft.75.1: guards every resume re-dispatch below against
+    // spawning a second concurrent session on top of a prior one that is
+    // presumed dead/timed out but may still be alive (see
+    // createMemberSessionGuard's doc comment for the root incident). Two-
+    // source precedence, matching the mutex/allocator clients above minus
+    // the supervisor-HTTP source (stop_prompt lives on the fleet MCP server
+    // every launch path already connects to, not the supervisor):
+    //   1. `context.memberSessionGuard` -- an explicitly-injected guard
+    //      (tests wire an in-process one here to prove the pre-resume kill
+    //      fires without a live fleet server).
+    //   2. `args.callTool` -- the REAL end-to-end path: bin/cli.mjs wires
+    //      its already-connected `mcpClient.callTool` through here so a
+    //      resume re-dispatch can call the fleet's own `stop_prompt` tool.
+    //   3. neither -- a no-op guard: nothing to call `stop_prompt` against,
+    //      so every resume proceeds exactly as it did before this guard
+    //      existed (e.g. every other existing test that calls
+    //      `runSprintCycle()`/`main()` directly without wiring `callTool`).
+    const memberSessionGuard = context.memberSessionGuard ?? createMemberSessionGuard({
+        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        log,
+    });
+
     // Validate BEFORE any agent()/command() dispatch (apra-fleet-unw.14,
     // A7 defense in depth): a rejected/malformed arg must result in zero
     // fleet dispatches.
@@ -3997,6 +4097,7 @@ async function runSprintCycle(context) {
                 } catch (err) {
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                         log(`Reviewer exhausted its turn limit (max_turns=${BASE_REVIEWER_MAX_TURNS}) -- resuming the same session with max_turns=${BASE_REVIEWER_MAX_TURNS * 2} instead of restarting the review.`);
+                        await memberSessionGuard.killIfAlive(reviewerPool[0]);
                         verdict = await dispatchReviewerResume();
                     } else {
                         throw err;
@@ -4762,6 +4863,7 @@ async function runSprintCycle(context) {
                         // A resume follows an agent that DID run (max_turns_exhausted
                         // is a resumable partial-work case, not a no-mutation
                         // failure) -- so it always runs the full pre-dispatch sync.
+                        await memberSessionGuard.killIfAlive(getMemberForRole('planner'));
                         return await dispatchPlannerResume();
                     }
                     throw err;
@@ -4907,6 +5009,7 @@ async function runSprintCycle(context) {
                 } catch (err) {
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                         log(`Plan Reviewer exhausted its turn limit (max_turns=${PLAN_REVIEWER_MAX_TURNS}) -- resuming the same session with max_turns=${PLAN_REVIEWER_MAX_TURNS * 2}.`);
+                        await memberSessionGuard.killIfAlive(getMemberForRole('plan-reviewer'));
                         verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
                             'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
                             {
@@ -5542,6 +5645,7 @@ async function runSprintCycle(context) {
                             resumeAttempt += 1;
                             log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=${currentMaxTurns} (attempt ${resumeAttempt}/${MAX_TURN_RESUME_ATTEMPTS}) instead of giving up or regrouping.`);
                             try {
+                                await memberSessionGuard.killIfAlive(doerMember);
                                 report = await dispatchDoerResume(currentMaxTurns);
                                 dispatchError = null;
                                 break;
@@ -5832,6 +5936,7 @@ async function runSprintCycle(context) {
                 } catch (err) {
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                         log(`Deployer exhausted its turn limit (max_turns=${DEPLOYER_MAX_TURNS}) -- resuming the same session with max_turns=${DEPLOYER_MAX_TURNS * 2}.`);
+                        await memberSessionGuard.killIfAlive(getMemberForRole('deployer'));
                         deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
                             'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
                             {
@@ -6026,6 +6131,7 @@ async function runSprintCycle(context) {
                 } catch (err) {
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                         log(`Integ Test Runner exhausted its turn limit (max_turns=${INTEG_TEST_MAX_TURNS}) -- resuming the same session with max_turns=${INTEG_TEST_MAX_TURNS * 2} instead of restarting the run.`);
+                        await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
                         integResult = await dispatchIntegResume();
                     } else {
                         throw err;
@@ -6311,6 +6417,7 @@ async function runSprintCycle(context) {
         } catch (err) {
             if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                 log(`Final Review exhausted its turn limit (max_turns=${FINAL_REVIEW_MAX_TURNS}) -- resuming the same session with max_turns=${FINAL_REVIEW_MAX_TURNS * 2} instead of restarting the review.`);
+                await memberSessionGuard.killIfAlive(getMemberForRole('reviewer'));
                 return await dispatchFinalReviewResume();
             }
             throw err;
@@ -6473,6 +6580,7 @@ async function runSprintCycle(context) {
         } catch (err) {
             if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                 log(`Harvester exhausted its turn limit (max_turns=${HARVESTER_MAX_TURNS}) -- resuming the same session with max_turns=${HARVESTER_MAX_TURNS * 2}.`);
+                await memberSessionGuard.killIfAlive(getMemberForRole('harvester'));
                 harvesterResult = await withGitSync(getMemberForRole('harvester'), true, () => agent(
                     'Continue your harvest exactly where you left off in this same session -- do not redo docs or changelog sections already written. Finish the remaining updates, commit them, and return your final report now.',
                     {
