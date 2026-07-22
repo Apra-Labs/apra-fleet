@@ -5787,7 +5787,13 @@ async function runSprintCycle(context) {
                 // the reviewer/final-review dispatches already have (observed
                 // live, run 13 C2: max_turns_exhausted with no resume path
                 // silently cost the cycle's entire feature-closure pass).
-                const INTEG_TEST_MAX_TURNS = 100;
+                // Runs 21+23 both exhausted 100 turns before part 1 even
+                // finished: a ~75-minute real suite plus the contract's
+                // liveness-poll cadence spends ~1 turn/poll, so 100 was
+                // guaranteed-insufficient by construction (transcript audit,
+                // run 23: 50 of 96 turns were poll loop). Start at 200; the
+                // resume ladder still doubles from there if ever needed.
+                const INTEG_TEST_MAX_TURNS = 200;
                 const integDispatchOpts = {
                     member_name: getMemberForRole('integ-test-runner'),
                     agentType: 'integ-test-runner',
