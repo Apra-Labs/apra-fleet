@@ -46,7 +46,7 @@ interface AgentStatusRow {
   tokenUsage?: { input: number; output: number };
   category: string | null;
   tags?: string[];
-  codeIntelProvider?: string;
+  codeIntelProvider: string;
 }
 
 /**
@@ -92,7 +92,7 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
     tokenUsage: agent.tokenUsage,
     category: agent.category?.trim() || null,
     tags: agent.tags && agent.tags.length > 0 ? agent.tags : undefined,
-    codeIntelProvider: agent.codeIntelProvider,
+    codeIntelProvider: agent.codeIntelProvider ?? 'global default',
   };
 
   const strategy = getStrategy(agent);
@@ -475,7 +475,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       lastActivity: formatTimeAgo(agent.lastUsed),
       category: agent.category?.trim() || null,
       tags: agent.tags && agent.tags.length > 0 ? agent.tags : undefined,
-      codeIntelProvider: agent.codeIntelProvider,
+      codeIntelProvider: agent.codeIntelProvider ?? 'global default',
     };
   });
 
@@ -588,7 +588,7 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       const tokenStr = (r.tokenUsage && (r.tokenUsage.input > 0 || r.tokenUsage.output > 0))
         ? ` | tokens=in:${r.tokenUsage.input} out:${r.tokenUsage.output}` : '';
       const tagsStr = (r.tags && r.tags.length > 0) ? ` | tags=[${r.tags.join(', ')}]` : '';
-      const codeIntelStr = r.codeIntelProvider ? ` | code-intel=${r.codeIntelProvider}` : '';
+      const codeIntelStr = ` | code-intel=${r.codeIntelProvider}`;
       let line = `  ${r.icon} ${r.name}: ${r.host} | session=${r.session} | ${r.lastActivity}${branchStr}${tokenStr}${tagsStr}${codeIntelStr}`;
       if (r.cloudInfo) {
         const ci = r.cloudInfo;

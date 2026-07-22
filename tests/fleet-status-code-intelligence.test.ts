@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -6,7 +6,19 @@ import {
   codeIntelligenceHealth,
   codeIntelligenceCompactLine,
   computeTopSymbols,
+  fleetStatus,
 } from '../src/tools/check-status.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { addAgent } from '../src/services/registry.js';
+
+vi.mock('../src/services/strategy.js', () => ({
+  getStrategy: () => ({
+    execCommand: vi.fn().mockResolvedValue({ stdout: 'idle', stderr: '', code: 0 }),
+    testConnection: vi.fn().mockResolvedValue({ ok: true, latencyMs: 5 }),
+    transferFiles: vi.fn(),
+    close: vi.fn(),
+  }),
+}));
 
 // ---------------------------------------------------------------------------
 // codeIntelligenceHealth() / codeIntelligenceCompactLine() (F3.3)
@@ -293,5 +305,56 @@ describe('computeTopSymbols()', () => {
     // readFileSync on a directory throws EISDIR -- must degrade to undefined.
     expect(() => computeTopSymbols(NOW, usageDir, rotatedPath)).not.toThrow();
     expect(computeTopSymbols(NOW, usageDir, rotatedPath)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fleetStatus() per-member code-intel provider display (c6o.1.2)
+//
+// fleet_status shows each member's code-intel provider, or "global default"
+// when the member has not overridden it.
+// ---------------------------------------------------------------------------
+describe('fleetStatus per-member code-intel provider display', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('compact output shows the provider for members that have it set', async () => {
+    const member = makeTestAgent({ friendlyName: 'gitnexus-member', codeIntelProvider: 'gitnexus' });
+    addAgent(member);
+
+    const result = await fleetStatus({ format: 'compact' });
+    expect(result).toContain('code-intel=gitnexus');
+  });
+
+  it('compact output shows "global default" for members without a provider set', async () => {
+    const member = makeTestAgent({ friendlyName: 'default-member' });
+    addAgent(member);
+
+    const result = await fleetStatus({ format: 'compact' });
+    expect(result).toContain('code-intel=global default');
+  });
+
+  it('JSON output includes the provider for members that have it set', async () => {
+    const member = makeTestAgent({ friendlyName: 'json-gitnexus-member', codeIntelProvider: 'codebase-memory' });
+    addAgent(member);
+
+    const result = await fleetStatus({ format: 'json' });
+    const parsed = JSON.parse(result);
+    expect(parsed.members[0].codeIntelProvider).toBe('codebase-memory');
+  });
+
+  it('JSON output shows "global default" for members without a provider set', async () => {
+    const member = makeTestAgent({ friendlyName: 'json-default-member' });
+    addAgent(member);
+
+    const result = await fleetStatus({ format: 'json' });
+    const parsed = JSON.parse(result);
+    expect(parsed.members[0].codeIntelProvider).toBe('global default');
   });
 });

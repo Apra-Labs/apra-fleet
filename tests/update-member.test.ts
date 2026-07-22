@@ -188,6 +188,16 @@ describe('updateMember', () => {
     expect(updated?.tags).toEqual(['new-tag']);
   });
 
+  it('changes code_intel_provider on a member', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, code_intel_provider: 'gitnexus' });
+    expect(result).toContain('updated');
+    expect(result).toContain('Code-Intel: gitnexus');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.codeIntelProvider).toBe('gitnexus');
+  });
+
   it('does not warn when updating a cloud member', async () => {
     const member = makeTestAgent({ // A remote member with a cloud property
       cloud: {
