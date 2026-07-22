@@ -264,6 +264,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     const mt = updated.modelTiers;
     result += `  Model Tiers: cheap=${mt.cheap ?? '-'} standard=${mt.standard ?? '-'} premium=${mt.premium ?? '-'}\n`;
   }
+  if (updated.codeIntelProvider) {
+    result += `  Code-Intel: ${updated.codeIntelProvider}\n`;
+  }
 
   if (warnings.length > 0) {
     result += '\n';

@@ -358,6 +358,9 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     const mt = tempAgent.modelTiers;
     result += `  Model Tiers: cheap=${mt.cheap ?? '-'} standard=${mt.standard ?? '-'} premium=${mt.premium ?? '-'}\n`;
   }
+  if (tempAgent.codeIntelProvider) {
+    result += `  Code-Intel: ${tempAgent.codeIntelProvider}\n`;
+  }
   if (claudeVersion) {
     result += `  CLI:     ${claudeVersion}\n`;
   }
