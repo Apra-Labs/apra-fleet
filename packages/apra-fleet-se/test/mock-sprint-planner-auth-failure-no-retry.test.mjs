@@ -54,6 +54,16 @@ test('unit: isNonRetryableDispatchError matches auth/trust signatures and nothin
 // sync bracket to begin with and no retry-driven teardown/re-sync overhead
 // to skip; measured real-bd runs complete in ~25-30s, comfortably under both
 // the test's own 60000ms fast-abort bound and the harness's 120000ms limit.
+//
+// apra-fleet-eft.54.4: the .54.2 pin above did not actually hold -- a
+// residual real-bd hang on the terminal auth-abort path (fixed by .54.3's
+// shared-harness sync-teardown short-circuit and .54.5's stable
+// sync.remote pre-gate cache) kept this file dying at the node:test
+// harness's own { timeout: 120000 } limit before its assertions ever ran.
+// Re-verified green under real bd (APRA_FLEET_BD_MOCK=off) at the combined
+// .54.3+.54.5 fix SHA: elapsedMs ~24.8s, all post-error assertions
+// (plannerCalls===1, non-retryable log line, terminal-state persistence)
+// reached and passing, no harness timeout.
 test('mock sprint: Planner auth failure aborts the retry loop after ONE attempt instead of exhausting the backoff', { timeout: 120000 }, async () => {
     await withScenarioMarkers('plannerauthnoretry', async () => {
         console.log('Running mock sprint scenario (Planner dispatch always fails with an Authentication failed response)...');
