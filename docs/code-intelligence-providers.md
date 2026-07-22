@@ -93,3 +93,58 @@ in the provider config, but is no longer the default. The `JoernProvider`
 file remains in source with a deprecation notice and the evaluation summary
 above; it was never registered in `PROVIDERS` and carries no runtime
 behavior.
+
+## Per-member provider selection (schema only; routing not yet wired)
+
+The `Agent` interface carries an optional `codeIntelProvider` field
+(`'codebase-memory' | 'gitnexus' | 'none'`), and `register_member` /
+`update_member` accept a matching `code_intel_provider` input so an
+individual member's preferred provider can be set at registration time or
+changed later. The intent is per-member override of the fleet-wide default
+selected by `getProvider()`: a member with `codeIntelProvider: 'none'`
+should be able to opt out of code intelligence entirely, and a member with
+an explicit provider name should route to that provider regardless of the
+global config.
+
+As things stand, the field is only persisted to the agent registry -- no
+downstream logic reads it yet. `getProvider()` still resolves purely from
+the global config file, and no code-intel tool dispatch path consults the
+calling member's `codeIntelProvider`. The routing half of this feature
+(resolving `getProvider()` per-member and wiring member context into the
+`code_graph`/`code_impact`/etc. tool handlers) is a separate, not-yet-built
+increment. Until that lands, setting `code_intel_provider` on a member has
+no observable effect.
+
+## KB initialization lifecycle: pre-init phase
+
+Before a repo is indexed for code intelligence, a pre-init phase gathers
+the information needed to show the user an informed opt-in prompt rather
+than silently indexing (or silently failing) on first use. Two pure,
+best-effort helpers back this phase:
+
+- **Provider availability detection** -- checks whether the code-intel
+  provider binary is installed and executable by invoking it with a
+  version flag. It never throws: any spawn failure (binary missing,
+  non-zero exit, timeout) degrades to a structured "not available" result
+  carrying the underlying error message, rather than raising an exception
+  that would need to be caught by every caller.
+
+- **Index size estimation** -- walks a repo's file tree to project file
+  count, total byte size, and an estimated indexing time, so the opt-in
+  prompt can tell the user roughly what indexing will cost before they
+  agree to it. The walk respects `.gitignore` patterns (a minimal glob
+  matcher, not a full gitignore spec implementation, but covering the
+  common anchored/unanchored/wildcard cases repos actually use) plus a
+  fixed set of default excludes (`node_modules`, `.git`, `dist`, `build`,
+  `out`, `coverage`, `.cache`, `vendor`) that are never meaningful to
+  index regardless of gitignore content. Like provider detection, it never
+  throws -- any walk failure degrades to a zeroed or partial estimate
+  rather than propagating.
+
+This pre-init phase is scaffolding for the init phase (first-time repo
+indexing with a progress-reporting opt-in prompt) and the update phase
+(incremental re-indexing on code changes triggered by staleness
+detection). Neither the init nor the update phase has been built yet, so
+the pre-init helpers are not currently invoked from any call path -- they
+exist ahead of their consumer, with unit test coverage locking in their
+contract so the init-phase implementation can build on a stable interface.
