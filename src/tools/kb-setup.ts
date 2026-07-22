@@ -1,9 +1,17 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { installKbPostCommitHook } from './kb-invalidate.js';
 import { encryptPassword } from '../utils/crypto.js';
+import { detectProviderAvailability } from '../services/knowledge/pre-init.js';
+import { readRepoCodeIntelConfig, writeRepoCodeIntelConfig } from '../services/knowledge/repo-config.js';
+
+// Generous ceiling on how long a first-time index can run before kb_setup
+// gives up and reports failure -- long enough for large repos, short enough
+// to not hang the calling process forever.
+const INDEX_TIMEOUT_MS = 10 * 60 * 1000;
 
 export const kbSetupSchema = z.object({
   repo_path: z.string().optional()
@@ -55,5 +63,35 @@ export async function kbSetup(input: KbSetupInput): Promise<string> {
   fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify(config, null, 2), { mode: 0o600 });
   steps.push('Wrote KB config to ' + KB_CONFIG_PATH);
 
-  return JSON.stringify({ success: true, steps });
+  // First-time code-intel indexing: skip if already indexed (idempotent),
+  // skip if the provider isn't installed, otherwise index and record the
+  // result in .apra-fleet/code-intel.json.
+  let indexError: string | undefined;
+  const existingCodeIntelConfig = readRepoCodeIntelConfig(repoPath);
+  if (existingCodeIntelConfig?.indexedAt) {
+    steps.push(`Code intelligence already indexed at ${existingCodeIntelConfig.indexedAt}, skipping re-index`);
+  } else {
+    const availability = detectProviderAvailability();
+    if (!availability.available) {
+      steps.push(`Skipped code-intel indexing: provider not available (${availability.error})`);
+    } else {
+      try {
+        execFileSync(availability.provider, ['cli', 'index_repository', JSON.stringify({ repo_path: repoPath })], {
+          encoding: 'utf-8',
+          timeout: INDEX_TIMEOUT_MS,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        writeRepoCodeIntelConfig(repoPath, { enabled: true, indexedAt: new Date().toISOString() });
+        steps.push('Indexed repository for code intelligence');
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        indexError =
+          `Code-intel indexing failed: ${detail}. Run '${availability.provider} cli index_repository ` +
+          `\'{"repo_path": "${repoPath}"}\'' manually and retry kb_setup.`;
+        steps.push(indexError);
+      }
+    }
+  }
+
+  return JSON.stringify({ success: !indexError, steps, ...(indexError ? { error: indexError } : {}) });
 }
