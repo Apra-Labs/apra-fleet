@@ -94,6 +94,20 @@ const isBdCommand = (cmd) => /^\s*bd(\s|$)/.test(cmd);
 // record/replay layer.
 const isDoltSyncCommand = (cmd) => /^\s*bd\s+dolt\s+(pull|push)\b/.test(cmd);
 
+// apra-fleet-eft.56.1: commands that pass reviewer-authored free text via a
+// local temp file (`bd create --body-file "<path>"`, `bd note <id> --file
+// "<path>"` -- see writeCommandBodyTempFile()/appendRejectedFindingToParentNotes()
+// in runner.js) embed a fresh randomUUID()-named path on EVERY invocation, so
+// the raw command string can never be byte-identical between the recording
+// run and a later replay run. Record/replay matching below is
+// content-keyed on the exact command string (see the module header comment),
+// so without normalization every such command would look like permanent
+// "recording drift" on replay, even though nothing about the test's actual
+// behavior changed. Normalize the quoted path argument to a stable
+// placeholder for MATCHING purposes only -- record/real mode still executes
+// the real, unmodified `cmd` (with the real path bd must actually read).
+const normalizeCommandForMatching = (cmd) => cmd.replace(/(--body-file|--file)\s+"[^"]*"/g, '$1 "<TMPFILE>"');
+
 // ---------------------------------------------------------------------------
 // real-mode D-pull/D-push bracket caching (apra-fleet-eft.17.1)
 // ---------------------------------------------------------------------------
@@ -185,7 +199,14 @@ async function recordBd(cmd, cwd) {
     // for identical command strings land in invocation order (the order
     // FIFO replay will serve them back in) even when two calls' exec()s
     // overlap and complete out of order.
-    const entry = { command: cmd, exitCode: null, stdout: '', stderr: '' };
+    //
+    // apra-fleet-eft.56.1: the recorded `command` field is the NORMALIZED
+    // form (temp-file paths replaced with a stable placeholder) so a later
+    // replay run -- which will generate its own, different random temp path
+    // for the same logical call -- still matches this entry. The real,
+    // unmodified `cmd` (real path and all) is still what actually executes
+    // against bd below.
+    const entry = { command: normalizeCommandForMatching(cmd), exitCode: null, stdout: '', stderr: '' };
     session.entries.push(entry);
 
     const res = await execCmd(cmd, cwd);
@@ -225,8 +246,15 @@ function loadReplaySession(key) {
     const entries = loadRecording(file);
     const byCommand = new Map();
     for (const entry of entries) {
-        if (!byCommand.has(entry.command)) byCommand.set(entry.command, []);
-        byCommand.get(entry.command).push(entry);
+        // apra-fleet-eft.56.1: normalize on load too, so an OLDER recording
+        // captured before this normalization existed (its `command` field
+        // still has a raw, one-off temp path baked in) still matches a fresh
+        // replay run's differently-randomized path for the same logical
+        // call. Normalization is a no-op for every command without a
+        // --body-file/--file argument.
+        const matchKey = normalizeCommandForMatching(entry.command);
+        if (!byCommand.has(matchKey)) byCommand.set(matchKey, []);
+        byCommand.get(matchKey).push(entry);
     }
     return { byCommand, total: entries.length, file };
 }
@@ -239,7 +267,8 @@ function replayBd(cmd, cwd) {
         replaySessions.set(key, session);
     }
 
-    const queue = session.byCommand.get(cmd);
+    const matchKey = normalizeCommandForMatching(cmd);
+    const queue = session.byCommand.get(matchKey);
     if (!queue || queue.length === 0) {
         const remaining = [...session.byCommand.entries()]
             .filter(([, q]) => q.length > 0)

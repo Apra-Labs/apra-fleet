@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
-import { createHash } from 'crypto';
+import os from 'os';
+import path from 'path';
+import { createHash, randomUUID } from 'crypto';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, CommandError, WorkflowError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
 import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
@@ -1696,6 +1698,40 @@ export function createMemberReservationClient(opts = {}) {
 }
 
 /**
+ * apra-fleet-eft.56.1 -- writes `content` to a fresh temp file on the
+ * orchestrating process's own local filesystem (the same host
+ * `orchestratorMember` dispatches `command()` calls back to -- see the
+ * ROLE_ORCHESTRATOR / orchestratorMember doc comment above: "this file,
+ * issuing bd/git commands directly") and returns its path. This is the seam
+ * that lets reviewer-authored free text (newTask descriptions, and rejected-
+ * finding notes below) reach `bd` via a `--body-file`/`--file`/`--stdin`-
+ * style flag instead of ever being interpolated into a shell command-line
+ * string -- see the SAFE_TEXT_RE comment for why interpolation is unsafe
+ * across the mixed POSIX/PowerShell/cmd.exe shells sprint members run.
+ * @param {string} content
+ * @returns {Promise<string>} the temp file path
+ */
+async function writeCommandBodyTempFile(content) {
+    const filePath = path.join(os.tmpdir(), `auto-sprint-body-${randomUUID()}.txt`);
+    await fs.writeFile(filePath, content, 'utf-8');
+    return filePath;
+}
+
+/**
+ * Best-effort cleanup for a file written by writeCommandBodyTempFile() --
+ * never lets a delete failure propagate (it's already just an OS temp file
+ * that will be reaped regardless).
+ * @param {string} filePath
+ */
+async function cleanupCommandBodyTempFile(filePath) {
+    try {
+        await fs.unlink(filePath);
+    } catch {
+        // best-effort
+    }
+}
+
+/**
  * apra-fleet-eft.9.3 -- create a child bead under `parentId` using a
  * supervisor-allocated, collision-free explicit id. This is the single
  * bead-creation seam every reviewer-proposed newTask flows through so that two
@@ -1753,9 +1789,17 @@ export async function createChildBeadWithAllocatedId(opts) {
     const { command, allocator, member, title, description, priority, parentId, sprintId, floor, label, log = () => {} } = opts;
     const grant = await allocator.allocate(parentId, { pid: process.pid, sprintId, floor });
     const idFlag = grant.childId ? ` --id ${grant.childId}` : '';
+    // apra-fleet-eft.56.1: the description is reviewer-authored free text
+    // (LLM output whose own context includes the diff under review) -- write
+    // it to a local temp file and hand it to `bd create --body-file` instead
+    // of interpolating it into the shell command-line string below. Only
+    // `title` (short, still allowlist-validated by validateNewTask's
+    // SAFE_TEXT_RE) remains inline.
+    let descriptionFile = null;
     try {
+        descriptionFile = await writeCommandBodyTempFile(description);
         await command(
-            `bd create "${title}" -d "${description}" -p "${priority}" --parent ${parentId}${idFlag} --silent`,
+            `bd create "${title}" --body-file "${descriptionFile}" -p "${priority}" --parent ${parentId}${idFlag} --silent`,
             { member_name: member, silent: true, label: label ?? `Create follow-up task: ${title}` }
         );
     } catch (err) {
@@ -1764,6 +1808,8 @@ export async function createChildBeadWithAllocatedId(opts) {
         await allocator.release(grant.token);
         log(`[id-allocator] bd create failed for '${grant.childId ?? '(bd-derived)'}'; released reservation: ${err.message}`);
         throw err;
+    } finally {
+        if (descriptionFile) await cleanupCommandBodyTempFile(descriptionFile);
     }
     // The create landed locally -- durably commit the id BEFORE the D-push, so a
     // crash after this point can never reclaim an id that now genuinely exists.
@@ -2360,37 +2406,53 @@ function isReviewerContractViolation(verdict) {
 }
 
 // ---------------------------------------------------------------------------
-// newTasks validation (apra-fleet-unw2.3 / N3): reviewer-authored newTasks
-// are LLM output -- and the reviewer's own context includes the diff under
-// review, so an adversarial diff/commit could try to steer the reviewer
-// into emitting a title/description crafted to break out of the
-// double-quoted `bd create "..."` shell command below (backticks and
-// `$(...)` both survive inside POSIX double quotes; a trailing backslash
-// can neutralize/escape the closing quote). Because sprint members run
-// mixed shells (POSIX vs Windows), no single escaping scheme is reliably
-// safe across all of them -- so this validates with an ALLOWLIST instead of
-// trying to escape: anything outside the allowlist is rejected before it
-// ever reaches `command()`, independent of whatever escaping the member
-// shell would otherwise need.
+// newTasks validation (apra-fleet-unw2.3 / N3, tightened by apra-fleet-56.1):
+// reviewer-authored newTasks are LLM output -- and the reviewer's own
+// context includes the diff under review, so an adversarial diff/commit
+// could try to steer the reviewer into emitting a title/description crafted
+// to break out of a shell command. `title` is still interpolated inline into
+// the double-quoted `bd create "..."` shell command in
+// createChildBeadWithAllocatedId() (backticks and `$(...)` both survive
+// inside POSIX double quotes; a trailing backslash can neutralize/escape the
+// closing quote). Because sprint members run mixed shells (POSIX vs
+// Windows), no single escaping scheme is reliably safe across all of them --
+// so title validates with an ALLOWLIST instead of trying to escape: anything
+// outside the allowlist is rejected before it ever reaches `command()`,
+// independent of whatever escaping the member shell would otherwise need.
 //
-// SAFE_TEXT_RE deliberately excludes: backtick, `$`, double-quote (the
-// command's own quoting delimiter -- allowing it back in would let a
-// title/description close the quote early regardless of any other
+// SAFE_TEXT_RE (title only) deliberately excludes: backtick, `$`,
+// double-quote (the command's own quoting delimiter -- allowing it back in
+// would let a title close the quote early regardless of any other
 // restriction), and backslash (blocks a trailing-backslash "escape the
 // closing quote" trick as well as any other backslash-based escape
 // sequence). The allowed punctuation (`.,:;!?()'-_/` plus space) covers
-// realistic task titles/descriptions while remaining inert as shell syntax
-// in both POSIX and Windows member shells.
+// realistic task titles while remaining inert as shell syntax in both POSIX
+// and Windows member shells.
+//
+// `description` no longer reaches this shell-interpolation risk at all
+// (apra-fleet-eft.56.1): createChildBeadWithAllocatedId() writes it to a
+// local temp file and hands it to `bd create --body-file`, never
+// interpolating it into a command string. That removed the injection
+// surface SAFE_TEXT_RE existed to close for descriptions, so
+// SAFE_DESCRIPTION_RE only enforces the repo's own ASCII-only convention
+// (plus non-empty) -- legitimate technical characters ('=', '&', '+', '"',
+// backticks-as-text, '%', '#', '[', ']', etc.) are allowed again.
 const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/-]+$/;
+const SAFE_DESCRIPTION_RE = /^[\t\n\r\x20-\x7E]+$/;
 const SAFE_PRIORITY_RE = /^P[0-4]$/;
 
 /**
- * Validates one reviewer-authored newTask entry BEFORE it is ever
- * interpolated into a `bd create` command string. Returns either
- * `{ ok: true, title, description, priority }` (safe to interpolate) or
+ * Validates one reviewer-authored newTask entry. `title` is validated
+ * against SAFE_TEXT_RE because it is still interpolated inline into a `bd
+ * create` command string; `description` is validated against the more
+ * permissive SAFE_DESCRIPTION_RE (ASCII-printable, non-empty) because it is
+ * written to a local temp file and passed via `bd create --body-file` --
+ * never shell-interpolated (see createChildBeadWithAllocatedId). Returns
+ * either `{ ok: true, title, description, priority }` (safe to use) or
  * `{ ok: false, reason }` (must be rejected -- logged, surfaced in the run
- * summary, and never sent to `command()`; rejection is non-fatal, the
- * sprint continues).
+ * summary, appended verbatim to the parent bead's notes as a fallback, and
+ * never sent to `command()` as a `bd create` interpolation; rejection is
+ * non-fatal, the sprint continues).
  * @param {{ title: unknown, description: unknown, priority: unknown }} newTask
  * @returns {{ ok: true, title: string, description: string, priority: string } | { ok: false, reason: string }}
  */
@@ -2433,10 +2495,49 @@ export function validateNewTask(newTask) {
         return { ok: false, reason: `title fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(title)}` };
     }
     const description = String(newTask && newTask.description);
-    if (!description || !SAFE_TEXT_RE.test(description)) {
-        return { ok: false, reason: `description fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(description)}` };
+    if (!description || !SAFE_DESCRIPTION_RE.test(description)) {
+        return { ok: false, reason: `description fails ASCII-printable validation ${SAFE_DESCRIPTION_RE} (or is empty): ${JSON.stringify(description)}` };
     }
     return { ok: true, title, description, priority };
+}
+
+/**
+ * apra-fleet-eft.56.1 -- a newTask that STILL fails validateNewTask() (e.g.
+ * its title fails the shell-interpolation-safety allowlist, or its priority
+ * is malformed) must never simply vanish: see the eft.56 bug, where 3 of 4
+ * FAIL-finding follow-up tasks were silently dropped in run 19, including
+ * the P1 unblock task for eft.48. This persists the raw, UNMODIFIED finding
+ * (title/description/priority/rejection reason) into the parent bead's
+ * notes via `bd note --file` -- the same local-temp-file seam as the
+ * description path above (see writeCommandBodyTempFile), never interpolated
+ * into a shell string -- so a human (or the next planner) can still recover
+ * it even though it was not auto-filed as its own child bead. Best-effort:
+ * a failure to append is logged but never re-thrown, since a rejected
+ * finding is already non-fatal to the sprint.
+ * @param {{ command: Function, member: string, parentId: string, newTask: unknown, reason: string, cycle?: string|number, log?: Function }} opts
+ */
+export async function appendRejectedFindingToParentNotes({ command, member, parentId, newTask, reason, cycle, log = () => {} }) {
+    const raw = {
+        cycle,
+        rejectionReason: reason,
+        title: newTask && newTask.title,
+        description: newTask && newTask.description,
+        priority: newTask && newTask.priority,
+    };
+    const noteBody = `[auto-sprint newTask REJECTED -- residual validation failure, appended verbatim]\n${JSON.stringify(raw, null, 2)}`;
+    let noteFile = null;
+    try {
+        noteFile = await writeCommandBodyTempFile(noteBody);
+        await command(
+            `bd note ${parentId} --file "${noteFile}"`,
+            { member_name: member, silent: true, label: `Append rejected newTask finding to ${parentId} notes` }
+        );
+        log(`Rejected newTask finding appended verbatim to '${parentId}' notes (residual validation failure: ${reason}).`);
+    } catch (err) {
+        log(`[newTask notes-fallback] FAILED to append rejected finding to '${parentId}' notes: ${err.message}`);
+    } finally {
+        if (noteFile) await cleanupCommandBodyTempFile(noteFile);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4998,6 +5099,13 @@ async function runSprintCycle(context) {
                 if (!validation.ok) {
                     log(`Reviewer newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
+                    // apra-fleet-eft.56.1: a rejected finding must never
+                    // simply vanish -- persist it verbatim to the parent
+                    // bead's notes as a fallback.
+                    await appendRejectedFindingToParentNotes({
+                        command, member: orchestratorMember, parentId: targetIssues[0],
+                        newTask, reason: validation.reason, cycle, log,
+                    });
                     continue;
                 }
                 const { title, description, priority } = validation;
@@ -5414,6 +5522,13 @@ async function runSprintCycle(context) {
                 if (!validation.ok) {
                     log(`Re-review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
+                    // apra-fleet-eft.56.1: never let a rejected finding
+                    // vanish -- persist it verbatim to the parent bead's
+                    // notes as a fallback.
+                    await appendRejectedFindingToParentNotes({
+                        command, member: orchestratorMember, parentId: targetIssues[0],
+                        newTask, reason: validation.reason, cycle, log,
+                    });
                     continue;
                 }
                 const { title, description, priority } = validation;
@@ -5596,6 +5711,15 @@ async function runSprintCycle(context) {
             if (!validation.ok) {
                 log(`Final Review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                 rejectedNewTasks.push({ cycle: finalCycleLabel, reason: validation.reason, raw: newTask });
+                // apra-fleet-eft.56.1: never let a rejected finding vanish --
+                // persist it verbatim to the parent bead's notes as a
+                // fallback (this is Final Review's FAIL findings -- the
+                // highest-stakes site, since this is the handoff to the next
+                // sprint's planner).
+                await appendRejectedFindingToParentNotes({
+                    command, member: orchestratorMember, parentId: targetIssues[0],
+                    newTask, reason: validation.reason, cycle: finalCycleLabel, log,
+                });
                 continue;
             }
             const { title, description, priority } = validation;
