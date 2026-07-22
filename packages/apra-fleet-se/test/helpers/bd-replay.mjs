@@ -94,6 +94,25 @@ const isBdCommand = (cmd) => /^\s*bd(\s|$)/.test(cmd);
 // record/replay layer.
 const isDoltSyncCommand = (cmd) => /^\s*bd\s+dolt\s+(pull|push)\b/.test(cmd);
 
+// apra-fleet-eft.54.5: `bd config get sync.remote --json` is the sync-remote
+// pre-gate every D-pull/D-push bracket consults (isMemberSyncRemoteConfigured
+// in runner.js -- doltPullBefore AND doltPushAfter both call it BEFORE
+// deciding whether to issue their real `bd dolt` command). Under real bd it is
+// a full `bd` CLI spawn (cold-starting the embedded dolt engine, ~0.6-2s+ per
+// spawn, worse on a cold CI host), and it is issued once per sync bracket even
+// though a clone's sync.remote is FIXED for the whole scenario (set at `bd
+// init`, never mutated by any mock-sprint scenario). On the terminal-abort
+// scenarios (mock-sprint-planner-auth-failure-no-retry / -deadpid /
+// -stalledsession) the sync brackets around Sprint Setup + the pre-plan reads
+// + the single Planner attempt issue this identical probe three times back to
+// back, each a redundant real spawn that eats into the test's documented
+// fast-abort budget (elapsedMs < 60000) with zero information gain. Cache it
+// per clone exactly like the D-pull/D-push brackets below (same eft.17.1
+// rationale and safety: keyed by cwd, the value cannot vary for a given clone,
+// distinct scenarios use distinct tempDirs, and caching the Promise also
+// dedupes concurrent probes from parallel doer streaks).
+const isStableConfigProbe = (cmd) => /^\s*bd\s+config\s+get\s+sync\.remote\b/.test(cmd);
+
 // apra-fleet-eft.56.1: commands that pass reviewer-authored free text via a
 // local temp file (`bd create --body-file "<path>"`, `bd note <id> --file
 // "<path>"` -- see writeCommandBodyTempFile()/appendRejectedFindingToParentNotes()
@@ -132,6 +151,9 @@ const normalizeCommandForMatching = (cmd) => cmd.replace(/(--body-file|--file)\s
 // use distinct tempDirs (unique cwd), so each fixture still pays exactly one real
 // round-trip per verb. Caching the Promise (not just the resolved value) also
 // dedupes concurrent bracket calls from parallel doer streaks.
+// apra-fleet-eft.54.5: also serves the stable `bd config get sync.remote
+// --json` sync-remote pre-gate probe (isStableConfigProbe above) -- same
+// per-clone caching contract as the D-pull/D-push brackets.
 const realDoltSyncCache = new Map(); // `${cwd} ${normalizedCmd}` -> Promise<{err,stdout,stderr}>
 
 function realDoltSyncCached(cmd, cwd) {
@@ -305,8 +327,9 @@ export function runCmd(cmd, cwd) {
     const mode = bdMode();
     if (mode === 'real') {
         // Hydrate each fixture's dolt clone once, then serve repeat D-pull/
-        // D-push brackets from cache (see realDoltSyncCached above).
-        if (isDoltSyncCommand(cmd)) return realDoltSyncCached(cmd, cwd);
+        // D-push brackets -- and the stable sync.remote pre-gate probe every
+        // bracket consults -- from cache (see realDoltSyncCached above).
+        if (isDoltSyncCommand(cmd) || isStableConfigProbe(cmd)) return realDoltSyncCached(cmd, cwd);
         return execCmd(cmd, cwd);
     }
     // Dolt sync brackets are mock-mode no-ops (see isDoltSyncCommand above):
