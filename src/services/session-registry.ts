@@ -15,6 +15,18 @@ export interface SessionState {
   status: SessionStatus;
   /** Optional grouping label inside a workspace; zero security weight. */
   project_id?: string;
+  /**
+   * apra-fleet-eft.74.1: whether this session completed the explicit
+   * interactive opt-in handshake -- i.e. the connecting client declared the
+   * provider-branded `claude/channel` capability at MCP initialize. ONLY a
+   * session with this flag set is eligible for execute_prompt's interactive
+   * (server-push send_message) routing. A plain subprocess connect-back that
+   * merely presents a member JWT registers a live `server` here WITHOUT this
+   * flag (it can never receive `notifications/claude/channel`), so it must NOT
+   * be interactive-routed -- otherwise every later execute_prompt pushes to a
+   * session nothing reads and burns the full timeout_s (the eft.74 wedge).
+   */
+  channelCapable?: boolean;
 }
 
 /**

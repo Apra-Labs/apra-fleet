@@ -180,6 +180,18 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         const clientCaps = body?.params?.capabilities ?? {};
         const capKeys = Object.keys(clientCaps).join(',');
 
+        // apra-fleet-eft.74.1: the explicit interactive opt-in handshake. Only a
+        // client that declares the provider-branded `claude/channel` capability
+        // at initialize can receive the `notifications/claude/channel`
+        // server-push that execute_prompt's interactive routing depends on. A
+        // plain subprocess connect-back (a Doer's tool-access MCP session) still
+        // presents a valid member JWT and registers a live `server` below, but
+        // it does NOT declare this capability -- so it must never be flagged
+        // interactive-routable. Mirrors the capability the server itself
+        // advertises (experimental['claude/channel']).
+        const channelCapable = !!(clientCaps as { experimental?: Record<string, unknown> })
+          ?.experimental?.['claude/channel'];
+
         // Identity keying is unified on the member UUID. The URL ?member= param
         // (unauthenticated local fallback) historically carried the friendly
         // name; new URLs carry the UUID, and legacy friendly names are resolved
@@ -235,8 +247,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 sessionId: sid,
                 status: 'online',
                 pid: (postClaims as any).pid ?? priorPid,
+                channelCapable,
               });
-              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid}`);
+              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid} channelCapable=${channelCapable}`);
             } else if (fallbackMemberId) {
               // apra-fleet-eft.50.1: same durable launch-pid fallback as the
               // JWT branch above, so a URL-param reconnect on a retry keeps a
@@ -252,8 +265,9 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 sessionId: sid,
                 status: 'online',
                 pid: priorPid,
+                channelCapable,
               });
-              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${sid}`);
+              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${sid} channelCapable=${channelCapable}`);
             }
           },
           onsessionclosed: (sid) => {

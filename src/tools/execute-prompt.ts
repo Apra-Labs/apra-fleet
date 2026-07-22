@@ -426,7 +426,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // spend the full timeout_s waiting for a response that can never arrive.
   const isClaudeMember = (agent.llmProvider ?? 'claude') === 'claude';
   const workspaceId = getTokenIssuer().workspaceId();
-  let interactiveSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
+  const rawSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
+  // apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
+  // opt-in handshake, not mere JWT registration. A plain subprocess
+  // connect-back (a Doer that opened an MCP tool-access session with a member
+  // JWT but never declared the `claude/channel` capability) registers a live
+  // `server` here, yet can never receive the `notifications/claude/channel`
+  // push -- routing to it would enqueue a message nothing reads and burn the
+  // full timeout_s on every later dispatch (the eft.74 wedge). Only a
+  // channel-capable session is an interactive-routing candidate; anything else
+  // (including that Doer's live tool session, which must be left untouched)
+  // falls through to the unchanged subprocess path below.
+  let interactiveSession = rawSession?.channelCapable ? rawSession : undefined;
   // apra-fleet-eft.50.1: resolve the pid to test FRESH on every dispatch
   // (never cached from a prior attempt) and fall back to the durable
   // launch-pid anchor when this reused session lost its own pid on a

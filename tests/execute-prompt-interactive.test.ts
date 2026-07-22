@@ -60,6 +60,7 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
       work_folder: member.workFolder,
       server: { server: { notification } } as any,
       status: 'online',
+      channelCapable: true,
     });
 
     const promptPromise = executePrompt({ member_id: memberId, prompt: 'do the thing', resume: false, timeout_s: 5 });
@@ -94,6 +95,7 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
       work_folder: member.workFolder,
       server: { server: { notification } } as any,
       status: 'online',
+      channelCapable: true,
     });
 
     const promptPromise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
@@ -120,6 +122,7 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
       work_folder: member.workFolder,
       server: { server: { notification } } as any,
       status: 'online',
+      channelCapable: true,
     });
 
     const firstPromise = executePrompt({ member_id: memberId, prompt: 'first', resume: false, timeout_s: 5 });
@@ -147,6 +150,7 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
       work_folder: member.workFolder,
       server: { server: { notification } } as any,
       status: 'online',
+      channelCapable: true,
     });
 
     const result = await executePrompt({ member_id: memberId, prompt: 'nobody answers', resume: false, timeout_s: 0.2 });
@@ -245,6 +249,7 @@ describe('dead interactive session detection (apra-fleet-eft.28.1)', () => {
       server: { server: { notification } } as any,
       pid: 424242,
       status: 'online',
+      channelCapable: true,
     });
 
     const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
@@ -282,6 +287,7 @@ describe('dead interactive session detection (apra-fleet-eft.28.1)', () => {
       server: { server: { notification } } as any,
       // no pid captured
       status: 'online',
+      channelCapable: true,
     });
 
     const promptPromise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
@@ -322,6 +328,7 @@ describe('dead interactive session detection (apra-fleet-eft.28.1)', () => {
       server: { server: { notification } } as any,
       pid: 777,
       status: 'online',
+      channelCapable: true,
     });
 
     vi.useFakeTimers();
@@ -417,6 +424,7 @@ describe('dead interactive session detection across retries (apra-fleet-eft.50.1
       server: { server: { notification } } as any,
       // pid deliberately undefined -- lost on reconnect.
       status: 'online',
+      channelCapable: true,
     });
     expect(sessionRegistry.get(workspaceId, memberId)?.pid).toBeUndefined();
 
@@ -456,6 +464,7 @@ describe('dead interactive session detection across retries (apra-fleet-eft.50.1
       server: { server: { notification } } as any,
       // no pid ever captured
       status: 'online',
+      channelCapable: true,
     });
 
     const promptPromise = executePrompt({ member_id: memberId, prompt: 'attempt 2 no anchor', resume: false, timeout_s: 5 });
@@ -466,6 +475,91 @@ describe('dead interactive session detection across retries (apra-fleet-eft.50.1
     const result = await promptPromise;
     expect(resultText(result)).toContain('answered normally');
     // No subprocess re-dispatch -- interactive routing carried it.
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+});
+
+// apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
+// opt-in handshake (the connecting client declared the `claude/channel`
+// capability at MCP initialize, recorded as channelCapable), NOT mere JWT
+// registration. The eft.74 wedge was a plain subprocess connect-back (a Doer
+// that opened an MCP tool-access session with a member JWT, no pid, no channel
+// capability) getting registered with a live `server` and thereby made
+// interactive-routable -- so every later execute_prompt pushed a send_message
+// to a session nothing reads and burned the full timeout_s.
+describe('interactive routing requires the channel opt-in handshake (apra-fleet-eft.74.1)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    if (memberId) {
+      inFlightAgents.delete(memberId);
+      sessionRegistry.unregister(getTokenIssuer().workspaceId(), memberId);
+    }
+  });
+
+  it('a JWT connect-back session with a live server but NO channel capability does NOT interactive-route -- it falls through to the subprocess path', async () => {
+    const member = makeTestAgent({ friendlyName: 'jwt-only-no-channel' });
+    memberId = member.id;
+    addAgent(member);
+
+    // A plain subprocess connect-back: live MCP server (tool access), member
+    // JWT, but channelCapable is unset/false -- it never declared the
+    // `claude/channel` capability, so it can never receive the interactive push.
+    const notification = vi.fn().mockResolvedValue(undefined);
+    const workspaceId = getTokenIssuer().workspaceId();
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      status: 'online',
+      // channelCapable deliberately omitted -- no interactive opt-in handshake.
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    // Subprocess path taken, interactive push NEVER fired.
+    expect(mockExecCommand).toHaveBeenCalled();
+    expect(notification).not.toHaveBeenCalled();
+    expect(resultText(result)).toContain('jwt-only-no-channel');
+    // The Doer's live tool-access session must be left untouched -- it is NOT a
+    // dead interactive session to be evicted.
+    expect(sessionRegistry.get(workspaceId, memberId)).toBeDefined();
+    expect(inFlightAgents.has(memberId)).toBe(false);
+  });
+
+  it('a session that DID complete the channel handshake (channelCapable=true) still routes interactively (no regression)', async () => {
+    const member = makeTestAgent({ friendlyName: 'channel-capable-member' });
+    memberId = member.id;
+    addAgent(member);
+
+    const notification = vi.fn().mockResolvedValue(undefined);
+    const workspaceId = getTokenIssuer().workspaceId();
+    sessionRegistry.register({
+      member_id: memberId,
+      workspace_id: workspaceId,
+      role: 'doer',
+      work_folder: member.workFolder,
+      server: { server: { notification } } as any,
+      status: 'online',
+      channelCapable: true,
+    });
+
+    const promptPromise = executePrompt({ member_id: memberId, prompt: 'do it interactively', resume: false, timeout_s: 5 });
+    await vi.waitFor(() => expect(notification).toHaveBeenCalledTimes(1));
+    const msgid = notification.mock.calls[0][0].params.meta.msgid;
+    await respondToMessage({ reply_to: msgid, content: 'interactive reply' });
+
+    const result = await promptPromise;
+    expect(resultText(result)).toContain('interactive reply');
+    // Interactive routing carried it -- no subprocess dispatch.
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 });
