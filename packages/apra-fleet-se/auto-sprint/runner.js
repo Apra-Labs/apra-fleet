@@ -2686,18 +2686,30 @@ export function isHostedGithubRemote(remoteUrl) {
 // before the cycle's fixes were deployed, then issued verification verdicts
 // from that stale evidence. The Integ Test dispatch (runSprintCycle, below)
 // hands the runner this cycle's deploy-verified SHA and instructs it to echo
-// that SHA back in its report's `summary` using the literal marker
-// "PART2_SHA: <sha>" once part 2 has actually run against it (see
-// `part2ShaClause`). These two pure functions extract and validate that
-// marker; the dispatch call site treats an absent/mismatched SHA as
-// INCONCLUSIVE rather than trusting the report's `passed` field.
+// that SHA back in its report.
+//
+// apra-fleet-eft.66 / eft.66.1: originally the runner was asked to echo the
+// SHA back via a "PART2_SHA: <sha>" marker embedded in the free-text
+// `summary` field, which bypassed the role's own output schema and forced
+// this consumer to grep prose. vendor/apra-pm commit 844112e
+// (fix/integ-runner-part2-sha-freshness) added a proper, optional
+// `deployedSha` field to integ-test-runner-output.json for exactly this
+// purpose. `validatePart2Evidence` now reads `integResult.deployedSha` as
+// the PRIMARY source of the reported SHA; the `PART2_SHA:` summary-marker
+// grep (`extractPart2Sha`) is kept ONLY as a legacy fallback for reports
+// from an integ-test-runner build that predates the schema field, and its
+// use is logged as a deprecation warning so stragglers are visible rather
+// than silently tolerated forever.
 
 // Case-insensitive; matches a short or full git SHA following the marker.
 const PART2_SHA_MARKER_RE = /PART2_SHA:\s*([0-9a-f]{7,40})/i;
 
 /**
  * Extracts a `PART2_SHA: <sha>` marker from an integ-test-runner report's
- * free-text `summary`, if present.
+ * free-text `summary`, if present. LEGACY fallback only -- see
+ * `validatePart2Evidence`'s doc comment; the structured `deployedSha`
+ * report field is the primary source and this is consulted only when that
+ * field is absent.
  * @param {unknown} summary
  * @returns {string|null} the SHA, lowercased, or null if no marker is found.
  */
@@ -2708,16 +2720,38 @@ export function extractPart2Sha(summary) {
 }
 
 /**
+ * Normalizes an integ-test-runner report's structured `deployedSha` field:
+ * trims and lowercases a non-empty string, otherwise null.
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function normalizeReportedShaField(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed.toLowerCase() : null;
+}
+
+/**
  * Validates that an integ-test-runner report's part-2 (smoke test) evidence
  * is fresh -- i.e. cites THIS cycle's deploy-verified SHA, not a prior
- * deploy's stale result carried over by a resumed session. Pure/testable:
- * takes the already-dispatched integ report and the engine-computed
- * deploy-verified SHA for this cycle; does no I/O itself.
+ * deploy's stale result carried over by a resumed session. Mostly
+ * pure/testable: takes the already-dispatched integ report and the
+ * engine-computed deploy-verified SHA for this cycle, and does no I/O of its
+ * own beyond an optional deprecation console.warn (see below).
+ *
+ * The reported SHA is read PRIMARILY from the report's structured
+ * `deployedSha` field (apra-pm commit 844112e). Only when that field is
+ * absent does this fall back to grepping a legacy `PART2_SHA: <sha>` marker
+ * out of the report's free-text `summary` (`extractPart2Sha`) -- a report
+ * from an integ-test-runner build that predates the schema field. That
+ * fallback path logs a one-line deprecation warning so lingering marker-only
+ * reports stay visible instead of silently normalizing forever.
  *
  * A short SHA on either side is accepted as a match via prefix comparison
  * (git's own short-SHA convention), so a runner that only has `git rev-parse
  * --short HEAD` available is not unfairly penalized.
- * @param {{summary?: string}} integResult - the integ-test-runner's report.
+ * @param {{deployedSha?: string, summary?: string}} integResult - the
+ *   integ-test-runner's report.
  * @param {string|null} deployedSha - this cycle's deploy-verified SHA
  *   (lowercased), or null if the engine could not resolve one this cycle --
  *   in which case there is nothing to validate against, so this always
@@ -2725,7 +2759,18 @@ export function extractPart2Sha(summary) {
  * @returns {{ inconclusive: boolean, reason: ('absent'|'mismatched'|null), reportedSha: (string|null) }}
  */
 export function validatePart2Evidence(integResult, deployedSha) {
-    const reportedSha = extractPart2Sha(integResult && integResult.summary);
+    let reportedSha = normalizeReportedShaField(integResult && integResult.deployedSha);
+    if (!reportedSha) {
+        reportedSha = extractPart2Sha(integResult && integResult.summary);
+        if (reportedSha) {
+            console.warn(
+                '[deprecated] validatePart2Evidence: no structured `deployedSha` report field found; ' +
+                'falling back to the legacy "PART2_SHA: <sha>" summary-marker grep. Upgrade the ' +
+                'integ-test-runner agent (vendor/apra-pm >= 844112e) to emit the deployedSha field ' +
+                '-- this fallback exists only for reports from a pre-upgrade build and will be removed.'
+            );
+        }
+    }
     if (!deployedSha) {
         return { inconclusive: false, reason: null, reportedSha };
     }
@@ -5422,12 +5467,19 @@ async function runSprintCycle(context) {
                 // incident). Omitted entirely when deployedSha could not be
                 // resolved this cycle (see getDeployedSha) -- nothing to
                 // require freshness against.
+                //
+                // apra-fleet-eft.66.1: request the structured `deployedSha`
+                // output-schema field (vendor/apra-pm commit 844112e) rather
+                // than a prose marker embedded in `summary` -- the schema
+                // field is the primary evidence source `validatePart2Evidence`
+                // reads; the old "PART2_SHA: <sha>" summary marker is kept
+                // engine-side only as a legacy fallback for pre-upgrade
+                // integ-test-runner builds.
                 const part2ShaClause = deployedSha
                     ? ` This cycle's deploy-verified SHA is ${deployedSha}. Part 2 (the smoke test) MUST be ` +
                       `(re)run fresh against this deployed SHA this cycle -- a part-2 result reused from a ` +
                       `resumed session's earlier, pre-fix run does NOT satisfy this. Record this exact SHA in ` +
-                      `your report's summary using the literal marker "PART2_SHA: ${deployedSha}" once part 2 ` +
-                      `has actually run against it.`
+                      `your report's "deployedSha" output field once part 2 has actually run against it.`
                     : '';
                 const featurePrompt = (openFeatures.length > 0
                     ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
@@ -5536,8 +5588,8 @@ async function runSprintCycle(context) {
             const part2Evidence = validatePart2Evidence(integResult, deployedSha);
             if (part2Evidence.inconclusive) {
                 const reasonText = part2Evidence.reason === 'absent'
-                    ? 'the report carries no PART2_SHA marker'
-                    : `the report's PART2_SHA (${part2Evidence.reportedSha}) does not match this cycle's deploy-verified SHA (${deployedSha})`;
+                    ? 'the report carries no deployedSha (nor legacy PART2_SHA marker)'
+                    : `the report's deployedSha (${part2Evidence.reportedSha}) does not match this cycle's deploy-verified SHA (${deployedSha})`;
                 const inconclusiveNote = `INCONCLUSIVE (part-2/smoke evidence not verified fresh -- ${reasonText}): ${integResult.summary}`;
                 integFailures.push({ cycle, notes: inconclusiveNote, bugsFiled: integResult.bugsFiled, inconclusive: true });
                 log(`Integration tests INCONCLUSIVE this cycle (C${cycle}): ${reasonText}. Not accepted as pass or fail evidence.`);

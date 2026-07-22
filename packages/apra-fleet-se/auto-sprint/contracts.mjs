@@ -468,6 +468,10 @@ const FALLBACK_deployerReport = {
 
 // Fallback for role "integ-test-runner". Canonical source once the
 // submodule pointer is bumped: vendor/apra-pm/agents/schemas/integ-test-runner-output.json.
+// apra-fleet-eft.66.1: `deployedSha` added (optional) alongside the vendor/
+// apra-pm bump to commit 844112e -- validatePart2Evidence (runner.js) reads
+// it as the primary part-2 SHA-freshness evidence source, falling back to
+// the legacy PART2_SHA summary marker only when this field is absent.
 const FALLBACK_integReport = {
     $id: 'integReport',
     type: 'object',
@@ -477,6 +481,10 @@ const FALLBACK_integReport = {
         passed: { type: 'boolean' },
         bugsFiled: { type: 'array', items: { type: 'string' } },
         summary: { type: 'string' },
+        deployedSha: {
+            type: 'string',
+            description: "The deploy-verified git commit part 2 (smoke test) actually ran against. Optional for backward compatibility, but an orchestrator that supplied a deployed SHA in the dispatch prompt treats a missing or mismatching value as INCONCLUSIVE evidence (never a pass). See integ-test-runner.md 'Part-2 evidence freshness'.",
+        },
     },
     required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary'],
 };
