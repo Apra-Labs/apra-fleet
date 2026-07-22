@@ -1862,6 +1862,34 @@ export async function createChildBeadWithAllocatedId(opts) {
 }
 
 /**
+ * Follow-up-task persistence is bookkeeping -- it must NEVER abort the
+ * sprint. Run 22 (2026-07-22) died mid-Review C1 R1 because a newTask's
+ * `bd create --body-file` referenced a temp file written on the
+ * workflow-engine host while the command executed on a remote orchestrator
+ * member -- the file cannot exist there, the create threw, and the whole run
+ * aborted over a hygiene task. Until the cross-host body transport is fixed,
+ * every newTask persistence path degrades instead of throwing:
+ * bd create -> parent-bead notes -> this run log, in that order.
+ */
+export async function persistNewTaskBestEffort({ createFn, command, member, parentId, newTask, cycle, log = () => {}, stage }) {
+    try {
+        await createFn();
+        return true;
+    } catch (err) {
+        log(`[auto-sprint] newTask bd create FAILED (non-fatal, ${stage}): ${err.message} -- falling back to parent-bead notes.`);
+        try {
+            await appendRejectedFindingToParentNotes({
+                command, member, parentId, newTask,
+                reason: `bd create failed (${stage}): ${err.message}`, cycle, log,
+            });
+        } catch (err2) {
+            log(`[auto-sprint] newTask persistence FAILED at every level (non-fatal, ${stage}); finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)} -- last error: ${err2.message}`);
+        }
+        return false;
+    }
+}
+
+/**
  * apra-fleet-eft.9.1 (Plan Part 3.3) -- the orchestrator's post-streak
  * verification read, with its mandatory D-pull. This is the single most
  * divergence-sensitive read in the file: a remote doer closes its assigned
@@ -5376,11 +5404,16 @@ async function runSprintCycle(context) {
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
                     // apra-fleet-eft.56.1: a rejected finding must never
                     // simply vanish -- persist it verbatim to the parent
-                    // bead's notes as a fallback.
-                    await appendRejectedFindingToParentNotes({
-                        command, member: orchestratorMember, parentId: targetIssues[0],
-                        newTask, reason: validation.reason, cycle, log,
-                    });
+                    // bead's notes as a fallback (itself non-fatal: a notes
+                    // write failure degrades to the run log, never an abort).
+                    try {
+                        await appendRejectedFindingToParentNotes({
+                            command, member: orchestratorMember, parentId: targetIssues[0],
+                            newTask, reason: validation.reason, cycle, log,
+                        });
+                    } catch (noteErr) {
+                        log(`[auto-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
+                    }
                     continue;
                 }
                 const { title, description, priority } = validation;
@@ -5392,12 +5425,18 @@ async function runSprintCycle(context) {
                 // follow-up work under the SAME parent never derive the same
                 // child id (constraint C.4). Under the null client (lone sprint)
                 // childId is null and bd derives the id as before.
-                const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
-                await createChildBeadWithAllocatedId({
-                    command, allocator: childIdAllocator, member: orchestratorMember,
-                    title, description, priority, parentId: targetIssues[0],
-                    sprintId: sprintMutexId, floor, log,
-                    label: `Create follow-up task from reviewer newTasks: ${title}`,
+                await persistNewTaskBestEffort({
+                    command, member: orchestratorMember, parentId: targetIssues[0],
+                    newTask, cycle, log, stage: 'develop-review',
+                    createFn: async () => {
+                        const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
+                        await createChildBeadWithAllocatedId({
+                            command, allocator: childIdAllocator, member: orchestratorMember,
+                            title, description, priority, parentId: targetIssues[0],
+                            sprintId: sprintMutexId, floor, log,
+                            label: `Create follow-up task from reviewer newTasks: ${title}`,
+                        });
+                    },
                 });
             }
 
@@ -5806,11 +5845,15 @@ async function runSprintCycle(context) {
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
                     // apra-fleet-eft.56.1: never let a rejected finding
                     // vanish -- persist it verbatim to the parent bead's
-                    // notes as a fallback.
-                    await appendRejectedFindingToParentNotes({
-                        command, member: orchestratorMember, parentId: targetIssues[0],
-                        newTask, reason: validation.reason, cycle, log,
-                    });
+                    // notes as a fallback (non-fatal; degrades to run log).
+                    try {
+                        await appendRejectedFindingToParentNotes({
+                            command, member: orchestratorMember, parentId: targetIssues[0],
+                            newTask, reason: validation.reason, cycle, log,
+                        });
+                    } catch (noteErr) {
+                        log(`[auto-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
+                    }
                     continue;
                 }
                 const { title, description, priority } = validation;
@@ -5824,12 +5867,18 @@ async function runSprintCycle(context) {
                 // as the Develop/Review newTasks site above -- concurrent
                 // sprints must never mint the same child id under a shared
                 // parent (constraint C.4).
-                const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
-                await createChildBeadWithAllocatedId({
-                    command, allocator: childIdAllocator, member: orchestratorMember,
-                    title, description, priority, parentId: targetIssues[0],
-                    sprintId: sprintMutexId, floor, log,
-                    label: `Create follow-up task from re-review newTasks: ${title}`,
+                await persistNewTaskBestEffort({
+                    command, member: orchestratorMember, parentId: targetIssues[0],
+                    newTask, cycle, log, stage: 're-review',
+                    createFn: async () => {
+                        const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
+                        await createChildBeadWithAllocatedId({
+                            command, allocator: childIdAllocator, member: orchestratorMember,
+                            title, description, priority, parentId: targetIssues[0],
+                            sprintId: sprintMutexId, floor, log,
+                            label: `Create follow-up task from re-review newTasks: ${title}`,
+                        });
+                    },
                 });
             }
 
@@ -5997,22 +6046,32 @@ async function runSprintCycle(context) {
                 // persist it verbatim to the parent bead's notes as a
                 // fallback (this is Final Review's FAIL findings -- the
                 // highest-stakes site, since this is the handoff to the next
-                // sprint's planner).
-                await appendRejectedFindingToParentNotes({
-                    command, member: orchestratorMember, parentId: targetIssues[0],
-                    newTask, reason: validation.reason, cycle: finalCycleLabel, log,
-                });
+                // sprint's planner). Non-fatal; degrades to the run log.
+                try {
+                    await appendRejectedFindingToParentNotes({
+                        command, member: orchestratorMember, parentId: targetIssues[0],
+                        newTask, reason: validation.reason, cycle: finalCycleLabel, log,
+                    });
+                } catch (noteErr) {
+                    log(`[auto-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
+                }
                 continue;
             }
             const { title, description, priority } = validation;
-            const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
-            await createChildBeadWithAllocatedId({
-                command, allocator: childIdAllocator, member: orchestratorMember,
-                title, description, priority, parentId: targetIssues[0],
-                sprintId: sprintMutexId, floor, log,
-                label: `Create follow-up task from Final Review FAIL findings: ${title}`,
+            const created = await persistNewTaskBestEffort({
+                command, member: orchestratorMember, parentId: targetIssues[0],
+                newTask, cycle: finalCycleLabel, log, stage: 'final-review',
+                createFn: async () => {
+                    const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
+                    await createChildBeadWithAllocatedId({
+                        command, allocator: childIdAllocator, member: orchestratorMember,
+                        title, description, priority, parentId: targetIssues[0],
+                        sprintId: sprintMutexId, floor, log,
+                        label: `Create follow-up task from Final Review FAIL findings: ${title}`,
+                    });
+                },
             });
-            createdCount += 1;
+            if (created) createdCount += 1;
         }
         if (createdCount > 0) {
             log(`Final Review: persisted ${createdCount} FAIL finding(s) to beads as follow-up task(s) under ${targetIssues[0]}.`);
