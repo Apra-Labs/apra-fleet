@@ -2462,6 +2462,41 @@ function isReviewerContractViolation(verdict) {
         && (!verdict.newTasks || verdict.newTasks.length === 0);
 }
 
+/**
+ * apra-fleet-eft.72.1: on plan-cap exhaustion (planningRounds exhausted with
+ * CHANGES_NEEDED), determines whether the plan-reviewer's last verdict is
+ * CONFINED to specific beads rather than spanning the whole plan. The
+ * plan-reviewer contract (plan-reviewer.md Step 4) does not carry a
+ * structured per-bead findings field -- `notes` is free text that "names the
+ * specific beads ID and what is wrong" -- so this scans `notes` for literal
+ * occurrences of each id already known to be in scope via `taskAssignments`
+ * (populated on every round, including CHANGES_NEEDED -- see
+ * plan-reviewer.md: "Always populate taskAssignments even on CHANGES_NEEDED").
+ *
+ * An id is matched only at a non-identifier-character boundary (or the
+ * string start/end) so e.g. 'apra-fleet-eft.50' does not false-positive
+ * inside 'apra-fleet-eft.500'.
+ *
+ * @param {{ notes?: string, taskAssignments?: Array<{ id?: string }> }} verdict
+ * @returns {string[]} the subset of taskAssignments ids that notes calls out by name
+ */
+export function extractContestedBeadIds(verdict) {
+    if (!verdict || typeof verdict.notes !== 'string' || !Array.isArray(verdict.taskAssignments)) {
+        return [];
+    }
+    const notes = verdict.notes;
+    const allIds = verdict.taskAssignments
+        .map((a) => a && a.id)
+        .filter((id) => typeof id === 'string' && id.length > 0);
+    return allIds.filter((id) => {
+        const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const boundary = '(?:^|[^A-Za-z0-9_-])';
+        const endBoundary = '(?:$|[^A-Za-z0-9_-])';
+        const re = new RegExp(`${boundary}${escaped}${endBoundary}`);
+        return re.test(notes);
+    });
+}
+
 // ---------------------------------------------------------------------------
 // newTasks validation (apra-fleet-unw2.3 / N3, tightened by apra-fleet-56.1):
 // reviewer-authored newTasks are LLM output -- and the reviewer's own
@@ -4672,16 +4707,65 @@ async function runSprintCycle(context) {
             await updateDashboard();
         }
 
+        // apra-fleet-eft.72.1: plan-cap exhaustion (3 CHANGES_NEEDED rounds,
+        // never an APPROVED) used to be an unconditional finalizeAbort of the
+        // WHOLE run regardless of how much of the plan was actually approved
+        // (observed live, run 21: one bead's bookkeeping pinned the verdict
+        // at CHANGES_NEEDED while 11 tasks across 5 bugs were otherwise
+        // clean). When the last verdict's findings name specific beads
+        // rather than the whole plan, defer just those contested beads
+        // (status=deferred + the finding attached as a note) and proceed to
+        // Develop with the remaining approved task set -- abort only when
+        // the contested set is the whole plan, or when deferring it would
+        // leave nothing ready to dispatch (checked once readyBeads is
+        // computed below).
+        let planCapDeferredIds = [];
         if (!planApproved) {
-            throw new SprintPlanRejectedError(
-                `Plan phase for cycle ${cycle} was not approved after ${planningRounds} round(s). ` +
-                'Refusing to proceed to Develop with an unapproved plan.',
-                {
-                    notes: lastVerdict ? lastVerdict.notes : null,
-                    cycle,
-                    planningRounds,
+            const allTaskIds = (lastVerdict && Array.isArray(lastVerdict.taskAssignments))
+                ? lastVerdict.taskAssignments.map((a) => a && a.id).filter((id) => typeof id === 'string' && id.length > 0)
+                : [];
+            const contestedIds = extractContestedBeadIds(lastVerdict);
+            const wholePlanContested = allTaskIds.length === 0
+                || contestedIds.length === 0
+                || contestedIds.length >= allTaskIds.length;
+
+            if (wholePlanContested) {
+                throw new SprintPlanRejectedError(
+                    `Plan phase for cycle ${cycle} was not approved after ${planningRounds} round(s). ` +
+                    'Refusing to proceed to Develop with an unapproved plan.',
+                    {
+                        notes: lastVerdict ? lastVerdict.notes : null,
+                        cycle,
+                        planningRounds,
+                    }
+                );
+            }
+
+            log(`[auto-sprint] plan-cap deferral: cycle ${cycle} exhausted ${planningRounds} plan round(s) with ` +
+                `CHANGES_NEEDED confined to bead(s) [${contestedIds.join(', ')}] -- deferring ${contestedIds.length === 1 ? 'it' : 'them'} ` +
+                `and proceeding to Develop with the remaining approved task set.`);
+
+            for (const id of contestedIds) {
+                await command(
+                    `bd update ${id} --status=deferred`,
+                    { member_name: orchestratorMember, silent: true, label: `Defer contested bead ${id} per plan-cap exhaustion` }
+                );
+                let noteFile = null;
+                try {
+                    noteFile = await writeCommandBodyTempFile(
+                        `[auto-sprint plan-cap deferral] Deferred after ${planningRounds} plan round(s) of CHANGES_NEEDED ` +
+                        `confined to this bead (cycle ${cycle}). Plan reviewer finding:\n${lastVerdict.notes}`
+                    );
+                    await command(
+                        `bd note ${id} --file "${noteFile}"`,
+                        { member_name: orchestratorMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
+                    );
+                } finally {
+                    if (noteFile) await cleanupCommandBodyTempFile(noteFile);
                 }
-            );
+            }
+            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            planCapDeferredIds = contestedIds;
         }
 
         // =======================
@@ -4728,6 +4812,27 @@ async function runSprintCycle(context) {
         const readyBeads = (await readyLeafBeads())
             .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
             .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+
+        // apra-fleet-eft.72.1: the OTHER plan-cap-deferral abort condition --
+        // deferring the contested bead(s) above must never be allowed to
+        // silently leave nothing dispatchable this cycle. A normal (non-
+        // deferral) empty readyBeads list is not itself an abort signal (the
+        // Cycle Evaluation section below is what decides sprint completion),
+        // but immediately after a plan-cap deferral it means the "approved
+        // remainder" was empty all along, so this must abort exactly like a
+        // whole-plan-contested exhaustion would have.
+        if (planCapDeferredIds.length > 0 && readyBeads.length === 0) {
+            throw new SprintPlanRejectedError(
+                `Plan phase for cycle ${cycle}: after deferring contested bead(s) ` +
+                `[${planCapDeferredIds.join(', ')}] per plan-cap exhaustion, the resulting ready set is empty. ` +
+                'Refusing to proceed to Develop with nothing dispatchable.',
+                {
+                    notes: lastVerdict ? lastVerdict.notes : null,
+                    cycle,
+                    planningRounds,
+                }
+            );
+        }
 
         // A5: an empty `--ready` list is NOT, by itself, evidence the sprint
         // is complete -- it only means there's nothing dispatchable to a

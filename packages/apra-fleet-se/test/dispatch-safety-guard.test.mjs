@@ -150,7 +150,15 @@ const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
 // deciding whether to attempt `gh pr create`) and `bd close ${id}` (closing
 // the target issue directly on the non-hosted-remote path); both pass
 // member_name: orchestratorMember, verified compliant.
-const EXPECTED_COMMAND_COUNT = 34;
+// 34 -> 36 (apra-fleet-eft.72.1): plan-cap exhaustion confined to specific
+// beads now defers those beads instead of aborting the whole run -- two new
+// command() call sites, `bd update ${id} --status=deferred` and
+// `bd note ${id} --file "${noteFile}"` (attaching the plan-reviewer's
+// finding), both inside the Plan phase's new deferral loop. This is a plain
+// orchestrator-side bd mutation, not a new agent() dispatch -- EXPECTED_AGENT_COUNT
+// below is unchanged. Both new sites pass member_name: orchestratorMember,
+// verified compliant.
+const EXPECTED_COMMAND_COUNT = 36;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
