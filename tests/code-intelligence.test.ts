@@ -119,6 +119,15 @@ describe('getProvider()', () => {
     expect(mockReadFile).not.toHaveBeenCalled();
   });
 
+  it('returns CodebaseMemoryProvider when member codeIntelProvider is codebase-memory', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-cm', codeIntelProvider: 'codebase-memory' });
+
+    const provider = await getProvider('agent-cm');
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+    expect(provider).toBeInstanceOf(CodebaseMemoryProvider);
+    expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
   it('returns NullProvider when member codeIntelProvider is none', async () => {
     mockGetAgent.mockReturnValue({ id: 'agent-2', codeIntelProvider: 'none' });
 
