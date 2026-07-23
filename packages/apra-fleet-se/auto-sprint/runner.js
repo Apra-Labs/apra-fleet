@@ -5682,9 +5682,23 @@ async function runSprintCycle(context) {
                 }
 
                 if (dispatchError) {
+                    // apra-fleet-eft.76.4 (per-bead failure attribution): a
+                    // dispatch-level throw (crash, transport error, exhausted
+                    // resumes) does NOT mean none of this streak's beads
+                    // closed -- a doer can close bead 1 of 2, then error out
+                    // on bead 2. Verify via `bd show` (same D-pull-then-read
+                    // as the happy path below) rather than blindly assuming
+                    // every bead in the streak is still open, so completed
+                    // work is never discarded just because a sibling in the
+                    // same streak was never reached.
+                    const unclosedIds = await verifyDoerStreakClosed({
+                        command, orchestratorMember, beadIds: actualBeadIds, log,
+                    });
+                    const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
+                    log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
                     streakOutcomes.push({
                         beadIds: actualBeadIds, doerMember, outcome: 'failed', wasRetried,
-                        report: null, unclosedIds: actualBeadIds, error: dispatchError.message,
+                        report: null, unclosedIds, closedIds, error: dispatchError.message,
                     });
                     // Rethrow so parallel()'s continueOnError:true isolates
                     // this failure from sibling streaks (the outcome above
@@ -5712,13 +5726,24 @@ async function runSprintCycle(context) {
                 const unclosedIds = await verifyDoerStreakClosed({
                     command, orchestratorMember, beadIds: actualBeadIds, log,
                 });
+                const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
+
+                // apra-fleet-eft.76.4: per-bead failure attribution -- always
+                // emitted (not only when something failed) so every streak's
+                // report leaves an audit trail of exactly which beads closed
+                // vs which stayed open. Closed beads stay closed regardless
+                // of a sibling bead in the same streak being refused; only
+                // the still-open ones are eligible for re-laning next round
+                // (the next dev round's `currentReady` query naturally omits
+                // whatever already closed here).
+                log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}].`);
 
                 if (unclosedIds.length > 0) {
                     log(`Doer streak [${actualBeadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
                 }
 
                 streakOutcomes.push({
-                    beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds,
+                    beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds, closedIds,
                     outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
                 });
                 await updateDashboard();
