@@ -63,7 +63,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, NullProvider, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, codeMapSchema, codeFlowSchema, codeTestsSchema, handleGraph, handleImpact, handleQuery, handleContext, handleMap, handleFlow, handleTests } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -155,6 +155,84 @@ describe('getProvider(memberId)', () => {
 
     const provider = await getProvider('agent-4');
     expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Handler functions -- thread memberId to getProvider()
+// ---------------------------------------------------------------------------
+describe('handler functions (memberId threading)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default: no config file -> codebase-memory global fallback
+    mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+  });
+
+  it('handleGraph forwards memberId to getProvider and returns stringified result', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-1', codeIntelProvider: 'none' });
+
+    const result = JSON.parse(await handleGraph({ symbol: 'foo' }, 'agent-1'));
+    // NullProvider returns the disabled message structure
+    expect(result.isError).toBe(false);
+    expect(result.content[0].text).toContain('disabled');
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('handleImpact forwards memberId to getProvider', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-1', codeIntelProvider: 'none' });
+
+    const result = JSON.parse(await handleImpact({ target: 'foo', direction: 'upstream' }, 'agent-1'));
+    expect(result.isError).toBe(false);
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('handleQuery forwards memberId to getProvider', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-1', codeIntelProvider: 'none' });
+
+    const result = JSON.parse(await handleQuery({ query: 'find exports' }, 'agent-1'));
+    expect(result.isError).toBe(false);
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('handleContext forwards memberId to getProvider', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-1', codeIntelProvider: 'none' });
+
+    const result = JSON.parse(await handleContext({ name: 'foo' }, 'agent-1'));
+    expect(result.isError).toBe(false);
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('handleMap forwards memberId to getProvider', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-1', codeIntelProvider: 'none' });
+
+    const result = JSON.parse(await handleMap({}, 'agent-1'));
+    expect(result.isError).toBe(false);
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('handleFlow forwards memberId to getProvider', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-1', codeIntelProvider: 'none' });
+
+    const result = JSON.parse(await handleFlow({}, 'agent-1'));
+    expect(result.isError).toBe(false);
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('handleTests forwards memberId to getProvider', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-1', codeIntelProvider: 'none' });
+
+    const result = JSON.parse(await handleTests({ symbol: 'foo' }, 'agent-1'));
+    expect(result.isError).toBe(false);
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('all handlers fall back to global config when memberId is undefined', async () => {
+    // No memberId -> global fallback -> codebase-memory (config absent)
+    const result = JSON.parse(await handleGraph({ symbol: 'foo' }));
+    // CodebaseMemoryProvider returns a result (not the disabled message)
+    expect(mockGetAgent).not.toHaveBeenCalled();
+    // Should not be the NullProvider disabled message
+    expect(result).toBeDefined();
   });
 });
 

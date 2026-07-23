@@ -79,6 +79,46 @@ export const codeTestsSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
+// ---------------------------------------------------------------------------
+// Tool handler functions -- thin wrappers that thread memberId to getProvider()
+// so the correct per-member provider is resolved. Called from the MCP tool
+// registrations in index.ts; memberId is internal (never in the tool schema).
+// ---------------------------------------------------------------------------
+export async function handleGraph(input: Record<string, unknown>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  return JSON.stringify(await provider.graph(input));
+}
+
+export async function handleImpact(input: Record<string, unknown>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  return JSON.stringify(await provider.impact(input));
+}
+
+export async function handleQuery(input: Record<string, unknown>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  return JSON.stringify(await provider.query(input));
+}
+
+export async function handleContext(input: Record<string, unknown>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  return JSON.stringify(await provider.context(input));
+}
+
+export async function handleMap(input: Record<string, unknown>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  return JSON.stringify(await provider.map(input));
+}
+
+export async function handleFlow(input: Record<string, unknown>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  return JSON.stringify(await provider.flow(input));
+}
+
+export async function handleTests(input: Record<string, unknown>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  return JSON.stringify(await provider.tests(input));
+}
+
 export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
   // When a memberId is provided, check the agent's per-member override first.
   if (memberId) {
