@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { bdMode, realSyncSpawnCount } from './helpers/bd-replay.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -214,5 +215,54 @@ test('mock sprint: Planner retry attempt 1 fails cleanly (dispatch_failed) as a 
             terminalStates.some((s) => s.data && typeof s.data.message === 'string' && /dispatch_failed/.test(s.data.message)),
             `Expected the persisted terminal state to carry the dispatch_failed marker (the attempt-2+ dead-session failure's own typed reason, not a watchdog-timeout marker), states: ${JSON.stringify(terminalStates)}`
         );
+
+        // apra-fleet-eft.60.4: regression pin for eft.60.3's fix, at the
+        // real-spawn level rather than just the elapsedMs budget above.
+        // `commandLog` (asserted on elsewhere in this suite) only records
+        // logical requests issued to executeCommand -- it cannot tell "issued
+        // N times, served from the per-clone cache" apart from "actually
+        // spawned N times". `realSyncSpawnCount` reads bd-replay.mjs's
+        // real-mode dolt-sync cache directly, so it proves the CACHING
+        // mechanism itself (not just this run's wall-clock) is what's keeping
+        // this ladder fast: a regression that re-introduced a fresh real `bd
+        // dolt pull` / sync-remote-probe spawn per Planner retry attempt
+        // would inflate these counts (toward 5+, one per attempt, across the
+        // orchestrator's own pre-sprint/pre-plan D-pulls too) even on a fast
+        // host where elapsedMs alone might not catch it.
+        //
+        // Only meaningful under real bd (APRA_FLEET_BD_MOCK=off): in the
+        // default replay mode, dolt-sync commands are synthesized directly in
+        // runCmd() and never touch this cache at all (see bd-replay.mjs), so
+        // both counts are trivially 0 there regardless of caching behavior.
+        if (bdMode() === 'real') {
+            // This scenario's beads clone (a bare `bd init` scratch dir, no
+            // git origin) has no configured dolt sync.remote, so
+            // isMemberSyncRemoteConfigured's pre-gate probe short-circuits
+            // EVERY doltPullBefore() call in this run -- across the
+            // orchestrator's own setup/pre-plan D-pulls AND all 5 Planner
+            // retry attempts -- to a skip before the real 'bd dolt pull'
+            // command is ever issued. So the real 'bd dolt pull' spawn itself
+            // must fire zero times here; asserting "at most once" (rather
+            // than "exactly zero") keeps this pin robust to a future harness
+            // change that configures a sync.remote for this scenario, while
+            // still catching the eft.60 regression (which would blow well
+            // past 1 by re-spawning per attempt).
+            const doltPullSpawns = realSyncSpawnCount(scenario.tempDir, /^bd\s+dolt\s+pull$/);
+            check(
+                doltPullSpawns <= 1,
+                `Expected the real 'bd dolt pull' bracket to spawn at most once across the whole 5-attempt ladder (cached per clone, eft.17.1/eft.54.5), got ${doltPullSpawns} real spawn(s)`
+            );
+
+            // The cheap-but-still-real `bd config get sync.remote --json`
+            // pre-gate probe every D-pull/D-push bracket consults (eft.54.5)
+            // IS actually exercised many times over in this run (every
+            // doltPullBefore call issues it, gate skip or not) -- so this
+            // count is the more direct proof the cache is doing its job here.
+            const syncRemoteProbeSpawns = realSyncSpawnCount(scenario.tempDir, /^bd\s+config\s+get\s+sync\.remote\b/);
+            check(
+                syncRemoteProbeSpawns <= 1,
+                `Expected the 'bd config get sync.remote' pre-gate probe to spawn at most once across the whole scenario (cached per clone, eft.54.5), got ${syncRemoteProbeSpawns} real spawn(s) -- a regression here would mean re-introduced per-attempt Dolt overhead`
+            );
+        }
     });
 });

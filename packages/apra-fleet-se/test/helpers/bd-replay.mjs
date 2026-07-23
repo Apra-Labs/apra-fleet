@@ -166,6 +166,32 @@ function realDoltSyncCached(cmd, cwd) {
     return pending;
 }
 
+// apra-fleet-eft.60.4: test-only introspection for the per-clone real-mode
+// dolt-sync spawn cache above. Answers "how many REAL child-process spawns
+// has the cache actually performed for commands matching `pattern`, under
+// this cwd" -- distinct from a command LOG (e.g. mock-sprint-harness.mjs's
+// `commandLog`), which records every logical request issued to
+// executeCommand however many of those requests were subsequently served
+// from this cache without spawning anything. Each entry in `realDoltSyncCache`
+// represents exactly one real spawn no matter how many times its key was
+// requested, so this is the right tool to pin that the eft.17.1/eft.54.5
+// caching is actually deduping repeat identical D-pull/D-push/sync-remote-
+// probe requests within one scenario -- not once per Planner retry attempt
+// (the eft.60 family regression) -- rather than merely happening to return a
+// correct result slowly. Only meaningful under real bd (`bdMode() ===
+// 'real'`): in the default replay mode dolt-sync commands never populate
+// this cache at all (see runCmd below), so callers should gate on that.
+export function realSyncSpawnCount(cwd, pattern) {
+    let count = 0;
+    const prefix = `${cwd} `;
+    for (const key of realDoltSyncCache.keys()) {
+        if (!key.startsWith(prefix)) continue;
+        const cmd = key.slice(prefix.length);
+        if (!pattern || pattern.test(cmd)) count += 1;
+    }
+    return count;
+}
+
 export function scenarioKeyFromCwd(cwd) {
     return path.basename(cwd).replace(/-\d+-\d+$/, '');
 }

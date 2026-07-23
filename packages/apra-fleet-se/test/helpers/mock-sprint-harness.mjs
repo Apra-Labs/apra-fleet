@@ -1073,7 +1073,13 @@ export async function runDevelopLoopScenario(tag, {
             ? new Map()
             : new Map(JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]').map((b) => [b.id, b]));
 
-        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch };
+        // apra-fleet-eft.60.4: tempDir is returned (in addition to the
+        // per-command commandLog) so a scenario can query the real-mode
+        // per-clone dolt-sync spawn cache (bd-replay.mjs's
+        // realSyncSpawnCount(tempDir, ...)) -- the commandLog alone cannot
+        // distinguish "requested N times, served from cache" from "actually
+        // spawned N times".
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir };
     } finally {
         // apra-fleet-eft.60.3: restore the caller's prior value (never leak the
         // instant-backoff flag past this scenario).
