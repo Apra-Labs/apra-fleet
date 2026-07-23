@@ -4,6 +4,7 @@ import { join } from 'path';
 import { z } from 'zod';
 import { GitNexusProvider } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
+import { getAgent } from '../services/registry.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -21,6 +22,22 @@ export const PROVIDERS: Record<string, CodeIntelligenceProvider> = {
   'codebase-memory': new CodebaseMemoryProvider(),
   gitnexus: new GitNexusProvider(),
 };
+
+function nullResponse(method: string): { content: { type: string; text: string }[] } {
+  return {
+    content: [{ type: 'text', text: `Code intelligence is disabled for this member (method: ${method}).` }],
+  };
+}
+
+export class NullProvider implements CodeIntelligenceProvider {
+  async graph(_params: Record<string, unknown>): Promise<unknown> { return nullResponse('graph'); }
+  async impact(_params: Record<string, unknown>): Promise<unknown> { return nullResponse('impact'); }
+  async query(_params: Record<string, unknown>): Promise<unknown> { return nullResponse('query'); }
+  async context(_params: Record<string, unknown>): Promise<unknown> { return nullResponse('context'); }
+  async map(_params: Record<string, unknown>): Promise<unknown> { return nullResponse('map'); }
+  async flow(_params: Record<string, unknown>): Promise<unknown> { return nullResponse('flow'); }
+  async tests(_params: Record<string, unknown>): Promise<unknown> { return nullResponse('tests'); }
+}
 
 export const codeGraphSchema = z.object({
   symbol: z.string().describe('Function, class, or method name to trace in the call graph'),
@@ -61,7 +78,21 @@ export const codeTestsSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
-export async function getProvider(): Promise<CodeIntelligenceProvider> {
+const nullProvider = new NullProvider();
+
+export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
+  // When a memberId is supplied, check the agent's per-member override first.
+  if (memberId) {
+    const agent = getAgent(memberId);
+    if (agent?.codeIntelProvider) {
+      if (agent.codeIntelProvider === 'none') return nullProvider;
+      const memberProvider = PROVIDERS[agent.codeIntelProvider];
+      if (memberProvider) return memberProvider;
+      // Fall through to global config if the stored key has no matching provider.
+    }
+  }
+
+  // Global provider resolution (backward compatible).
   let providerKey = 'codebase-memory';
   try {
     const raw = await readFile(CONFIG_PATH, 'utf8');
