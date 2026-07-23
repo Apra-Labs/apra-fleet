@@ -158,13 +158,21 @@ storage directly into its target directory and would otherwise collide with
 `$GIT_MIRROR`'s git-bare-repo layout. This is safety-invariant layer (2):
 
 ```bash
-cd "$TOY_REPO"
-rm -rf .beads/embeddeddolt .beads/.local_version
-DOLT_REMOTE="$HOME/.apra-fleet-toy-dolt-remote"
-rm -rf "$DOLT_REMOTE"
-bd init --from-jsonl --prefix gh-toy --remote "file://$DOLT_REMOTE" --non-interactive
-bd dolt push
+node "<repo-root>/scripts/sandbox-seed-beads.mjs" --sandbox-root "$HOME" --toy-repo "$TOY_REPO"
 ```
+
+The script performs the seed steps that used to be inlined here (clear the
+toy clone's local Dolt state, recreate `$HOME/.apra-fleet-toy-dolt-remote`,
+`bd init --from-jsonl --prefix gh-toy --remote file://... --non-interactive`,
+`bd dolt push`) -- but only after hard path-guard assertions: the toy repo
+and the Dolt remote must both resolve INSIDE the sandbox root, and the
+sandbox root must be fully disjoint from the product repo the script lives
+in. Any violation is a named `[sandbox-seed guard]` failure with zero
+mutations performed. Do NOT run `bd init`, `bd dolt remote`, or any other
+beads remote-rewiring command by hand in this playbook -- this guarded
+script is the only sanctioned entry point (run-24 incident: an ad-hoc
+inline seed rewired the HOST repo's sync.remote to a sandbox path and
+aborted the sprint when the sandbox was deleted).
 
 `bd init --from-jsonl` imports the issues committed in `.beads/issues.jsonl`
 into a fresh local Dolt DB and refuses to run at all if the `--remote`

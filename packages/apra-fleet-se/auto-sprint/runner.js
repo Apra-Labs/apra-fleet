@@ -965,6 +965,36 @@ const DOLT_TRANSIENT_PATTERNS = [
     /lock/i,
 ];
 
+// Run-24 abort root cause: substrings that mark a `bd dolt` failure as
+// REMOTE-UNREACHABLE -- the configured sync remote itself cannot be opened
+// (deleted directory behind a file:// remote, dead path, missing remote db).
+// Distinct from 'transient' (retrying cannot help: the target is gone, not
+// busy) and from 'no-remote' (here a remote IS configured -- it just points
+// at nothing). Checked before 'diverged'/'transient' so a stat/open failure
+// is never misread as a conflict or retried blindly.
+const DOLT_REMOTE_UNREACHABLE_PATTERNS = [
+    /could not be accessed/i,
+    /failed to get remote db/i,
+    /stat [^:]+: no such file or directory/i,
+];
+
+/**
+ * Best-effort extraction of the remote URL named in a remote-unreachable
+ * `bd dolt` failure, for the named diagnosis message. Returns null when the
+ * output carries no recognizable URL.
+ *
+ * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
+ * @returns {string|null}
+ */
+export function extractDoltRemoteUrl(output) {
+    const text = String(output == null ? '' : output);
+    const quoted = text.match(/the remote: \S+ '([^']+)' could not be accessed/i);
+    if (quoted) return quoted[1];
+    const scheme = text.match(/(?:file|https?|git\+https?|ssh):\/\/[^\s'"]+/i);
+    if (scheme) return scheme[0];
+    return null;
+}
+
 /**
  * Classify a failed `bd dolt` command's output into the failure classes the
  * Dolt brackets route differently. no-remote is checked FIRST (apra-fleet-
@@ -981,12 +1011,13 @@ const DOLT_TRANSIENT_PATTERNS = [
  * be misread as a real divergence/conflict.
  *
  * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
- * @returns {'no-remote'|'empty-remote'|'diverged'|'transient'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'transient'|'unknown'}
  */
 export function classifyDoltFailure(output) {
     const text = String(output == null ? '' : output);
     for (const re of DOLT_NO_REMOTE_PATTERNS) if (re.test(text)) return 'no-remote';
     for (const re of DOLT_EMPTY_REMOTE_PATTERNS) if (re.test(text)) return 'empty-remote';
+    for (const re of DOLT_REMOTE_UNREACHABLE_PATTERNS) if (re.test(text)) return 'remote-unreachable';
     for (const re of DOLT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
     for (const re of DOLT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
     return 'unknown';
@@ -1196,6 +1227,13 @@ export async function doltPullBefore(member, opts = {}) {
             throw new DoltDivergedError(
                 `[Dolt] D-pull for member '${member}' hit an unmergeable beads conflict and must not be auto-resolved by judgment: ${pull.error}`,
                 { member, doltOutput: pull.error, operation: 'pull' },
+            );
+        }
+        if (pull.kind === 'remote-unreachable') {
+            const url = extractDoltRemoteUrl(pull.error);
+            throw new DoltSyncError(
+                `[Dolt] member '${member}' beads sync remote is unreachable/misconfigured${url ? ` (${url})` : ''} -- the clone's sync.remote points at a path or URL that cannot be opened (e.g. a deleted test sandbox). Repair the member's .beads sync remote before re-running; retrying cannot succeed. Raw: ${pull.error}`,
+                { member, doltOutput: pull.error, remoteUrl: url },
             );
         }
         throw new DoltSyncError(
@@ -1438,6 +1476,13 @@ export async function doltPushAfter(member, opts = {}) {
         if (!syncRemoteConfigured) {
             log(`[Dolt] D-push for member '${member}' skipped: no dolt remote configured (bd-level sync.remote neutralized/absent; push failure treated as benign: ${push.error})`);
             return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };
+        }
+        if (push.kind === 'remote-unreachable') {
+            const url = extractDoltRemoteUrl(push.error);
+            throw new DoltSyncError(
+                `[Dolt] member '${member}' beads sync remote is unreachable/misconfigured${url ? ` (${url})` : ''} -- the clone's sync.remote points at a path or URL that cannot be opened (e.g. a deleted test sandbox). Repair the member's .beads sync remote before re-running; retrying cannot succeed. Raw: ${push.error}`,
+                { member, doltOutput: push.error, remoteUrl: url },
+            );
         }
         throw new DoltSyncError(
             `[Dolt] D-push for member '${member}' failed: ${push.error}`,
