@@ -5,10 +5,10 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Test suite to run. s*.1/.2/.3 = co-located fleet members (local processes, still registered+paired via fleet); s8.x = all-agy; fleet-less local-subagent runs are in fleet-lite-e2e (s10).'
+        description: 'Test suite to run. fleet-s*.1/.2/.3 = co-located fleet members (local processes, still registered+paired via fleet); fleet-s8.x = all-agy; fleet-less local-subagent (opencode) coverage now lives in the pm harness as pm-s9.'
         required: true
         type: choice
-        options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s8.1, s8.2, s8.3, s9, s9.1, s9.2, s9.3]
+        options: [fleet-s1, fleet-s1.1, fleet-s1.2, fleet-s1.3, fleet-s2, fleet-s3, fleet-s4, fleet-s5, fleet-s6, fleet-s8.1, fleet-s8.2, fleet-s8.3, fleet-s9, fleet-s9.1, fleet-s9.2, fleet-s9.3]
 
 jobs:
   e2e:
@@ -17,22 +17,22 @@ jobs:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
     runs-on:
       - self-hosted
-      - ${{ inputs.suite == 's1'   && 'fleet-windows'
-         || inputs.suite == 's1.1' && 'fleet-windows'
-         || inputs.suite == 's1.2' && 'fleet-linux'
-         || inputs.suite == 's1.3' && 'fleet-macos'
-         || inputs.suite == 's2'   && 'fleet-linux'
-         || inputs.suite == 's3'   && 'fleet-macos'
-         || inputs.suite == 's4'   && 'fleet-windows'
-         || inputs.suite == 's5'   && 'fleet-linux'
-         || inputs.suite == 's6'   && 'fleet-macos'
-         || inputs.suite == 's8.1' && 'fleet-windows'
-         || inputs.suite == 's8.2' && 'fleet-linux'
-         || inputs.suite == 's8.3' && 'fleet-macos'
-         || inputs.suite == 's9'   && 'ubuntu-latest'
-         || inputs.suite == 's9.1' && 'windows-latest'
-         || inputs.suite == 's9.2' && 'ubuntu-latest'
-         || inputs.suite == 's9.3' && 'macos-latest'
+      - ${{ inputs.suite == 'fleet-s1'   && 'fleet-windows'
+         || inputs.suite == 'fleet-s1.1' && 'fleet-windows'
+         || inputs.suite == 'fleet-s1.2' && 'fleet-linux'
+         || inputs.suite == 'fleet-s1.3' && 'fleet-macos'
+         || inputs.suite == 'fleet-s2'   && 'fleet-linux'
+         || inputs.suite == 'fleet-s3'   && 'fleet-macos'
+         || inputs.suite == 'fleet-s4'   && 'fleet-windows'
+         || inputs.suite == 'fleet-s5'   && 'fleet-linux'
+         || inputs.suite == 'fleet-s6'   && 'fleet-macos'
+         || inputs.suite == 'fleet-s8.1' && 'fleet-windows'
+         || inputs.suite == 'fleet-s8.2' && 'fleet-linux'
+         || inputs.suite == 'fleet-s8.3' && 'fleet-macos'
+         || inputs.suite == 'fleet-s9'   && 'ubuntu-latest'
+         || inputs.suite == 'fleet-s9.1' && 'windows-latest'
+         || inputs.suite == 'fleet-s9.2' && 'ubuntu-latest'
+         || inputs.suite == 'fleet-s9.3' && 'macos-latest'
          || 'fleet-macos' }}
 
     steps:
@@ -58,18 +58,18 @@ jobs:
         shell: bash
         run: |
           SUITE='${{ inputs.suite }}'
-          CONFIG=$(cat .github/e2e/suites.json)
+          CONFIG=$(cat e2e/suites.json)
           MEMBERS=$(cat .github/e2e/members.json)
 
-          PM_PROVIDER=$(echo $CONFIG | jq -r ".suites[\"$SUITE\"].pm.provider")
-          PM_OS=$(echo $CONFIG      | jq -r ".suites[\"$SUITE\"].pm.os")
-          DOER_OS=$(echo $CONFIG    | jq -r ".suites[\"$SUITE\"].doer.os")
-          DOER_PROV=$(echo $CONFIG  | jq -r ".suites[\"$SUITE\"].doer.provider")
-          DOER_TYPE=$(echo $CONFIG  | jq -r ".suites[\"$SUITE\"].doer.type")
-          REV_OS=$(echo $CONFIG     | jq -r ".suites[\"$SUITE\"].reviewer.os")
-          REV_PROV=$(echo $CONFIG   | jq -r ".suites[\"$SUITE\"].reviewer.provider")
-          REV_TYPE=$(echo $CONFIG   | jq -r ".suites[\"$SUITE\"].reviewer.type")
-          VCS=$(echo $CONFIG        | jq -r ".suites[\"$SUITE\"].vcs")
+          PM_PROVIDER=$(echo $CONFIG | jq -r ".fleet.suites[\"$SUITE\"].pm.provider")
+          PM_OS=$(echo $CONFIG      | jq -r ".fleet.suites[\"$SUITE\"].pm.os")
+          DOER_OS=$(echo $CONFIG    | jq -r ".fleet.suites[\"$SUITE\"].doer.os")
+          DOER_PROV=$(echo $CONFIG  | jq -r ".fleet.suites[\"$SUITE\"].doer.provider")
+          DOER_TYPE=$(echo $CONFIG  | jq -r ".fleet.suites[\"$SUITE\"].doer.type")
+          REV_OS=$(echo $CONFIG     | jq -r ".fleet.suites[\"$SUITE\"].reviewer.os")
+          REV_PROV=$(echo $CONFIG   | jq -r ".fleet.suites[\"$SUITE\"].reviewer.provider")
+          REV_TYPE=$(echo $CONFIG   | jq -r ".fleet.suites[\"$SUITE\"].reviewer.type")
+          VCS=$(echo $CONFIG        | jq -r ".fleet.suites[\"$SUITE\"].vcs")
 
           DOER_HOST=$(echo $MEMBERS   | jq -r ".$DOER_OS.host")
           DOER_USER=$(echo $MEMBERS   | jq -r ".$DOER_OS.username // empty")
@@ -469,7 +469,7 @@ jobs:
           echo "session_id=$SESSION_ID" >> "$GITHUB_OUTPUT"
 
           # Assemble results.json from both phases
-          node "$GITHUB_WORKSPACE/.github/e2e/extract-results.mjs" \
+          node "$GITHUB_WORKSPACE/e2e/lib/extract-results.mjs" \
             '${{ inputs.suite }}' \
             '${{ steps.suite.outputs.pm_os }}' \
             '${{ steps.suite.outputs.pm_provider }}' \
@@ -506,7 +506,7 @@ jobs:
         shell: bash
         run: |
           [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
-          node "$GITHUB_WORKSPACE/.github/e2e/extract-results.mjs" \
+          node "$GITHUB_WORKSPACE/e2e/lib/extract-results.mjs" \
             '${{ inputs.suite }}' \
             '${{ steps.suite.outputs.pm_os }}' \
             '${{ steps.suite.outputs.pm_provider }}' \
@@ -532,7 +532,7 @@ jobs:
         shell: bash
         run: |
           [ -n "$RUN_DIR" ] && cd "$RUN_DIR" || exit 1
-          node "$GITHUB_WORKSPACE/.github/e2e/post-summary.mjs"
+          node "$GITHUB_WORKSPACE/e2e/lib/post-summary.mjs"
         env:
           SUITE: ${{ inputs.suite }}
 

@@ -1,29 +1,40 @@
-// Independent post-sprint validation gates.
+#!/usr/bin/env node
+// Independent post-sprint validation gates (shared by the fleet and pm e2e harnesses).
 //
 // "All checkpoints PASS" is self-reported by the orchestrator and proves nothing.
 // These gates assert, from the pushed branch and the real PR, that a disciplined
-// plan -> doer -> review sprint actually took place:
+// plan -> doer -> review sprint actually took place. The full (pm) gate set is:
 //
 //   1. pr-exists              a PR was raised for the branch
 //   2. commits>=N             the work landed as N+ real commits (beads-only exports excluded)
 //   3. final-changeset-clean  the PR's net diff carries NO process scaffolding
-//                             (requirements.md, feedback.md)
-//   4. process-discipline     those scaffolding files DID appear in intermediate commits
-//                             AND feedback.md contained an APPROVED/CHANGES NEEDED verdict.
-//                             skills/pm/*.md forbids the reviewer/plan-reviewer from ever
-//                             writing feedback.md (structured output only), so every
-//                             skill-driven suite (s1/s7/s8/s9) excludes this gate. s10 runs
-//                             .claude/workflows/auto-sprint.js instead, which still writes
-//                             and strips feedback.md as a file-based message bus, but it
-//                             excludes the gate too (see suites.json history) -- so no
-//                             suite currently exercises it. Left in place for a future
-//                             suite that wants to assert on auto-sprint.js's feedback.md
-//                             mechanism specifically.
+//   4. process-discipline     scaffolding files DID appear in intermediate commits
+//                             (pm profile additionally requires feedback.md to have carried
+//                             an APPROVED/CHANGES NEEDED verdict; the fleet profile does not)
 //   5. planner-created-tasks  a "plan:" commit exists in the branch history
 //   6. beads-closed           P1 issues were closed (from any durable source)
 //   7. beads-sprint-closed    P1 closures evidenced in committed branch .beads/*.jsonl
 //   8. harvester-ran          a harvest artifact (docs/, CHANGELOG, .analysis.md) is in
 //                             the net diff
+// plus two conditional gates when expectArgsSkill is set (s10-style auto-sprint suites):
+//   args-skill-installed / args-skill-used  -- the auto-sprint-args helper skill is BOTH
+//                             installed AND actually exercised, proving it useful end-to-end.
+//
+// Per-suite tuning happens two ways:
+//   - profile ('pm' default | 'fleet') selects the scaffold set, whether process-discipline
+//     requires a feedback verdict, whether the commits gate counts raw or source-touching
+//     commits, and a baseline set of excluded gates. The fleet harness historically ran a
+//     5-gate subset (pr-exists, commits>=N, final-changeset-clean, process-discipline,
+//     beads-closed) over a wider scaffold set (requirements/plan/feedback/progress) without
+//     the verdict check -- profile 'fleet' reproduces exactly that.
+//   - excludeGates opts individual gates out on top of the profile (e.g. pm suites exclude
+//     process-discipline; s10 also excludes harvester-ran). skip = profile.exclude U excludeGates.
+//
+// Historical note on process-discipline: skills/pm/*.md forbids the reviewer/plan-reviewer
+// from ever writing feedback.md (structured output only), so every skill-driven pm suite
+// excludes this gate; s10 drives auto-sprint.js (which still writes/strips feedback.md as a
+// file-based bus) but excludes it too -- so no pm suite currently exercises the verdict form.
+// It is kept for a future suite that wants to assert on auto-sprint.js's feedback.md mechanism.
 //
 // evaluateGates() is pure (takes gathered facts, returns verdicts) so it is unit
 // testable; validateSprint() gathers those facts from a git clone + the PR object.
@@ -32,23 +43,49 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
 
-const SCAFFOLD = ['requirements.md', 'feedback.md'];
 const baseName = (p) => p.split('/').pop().toLowerCase();
+
+// Behavioral bundles. Each profile picks the scaffold set the gates police, whether
+// process-discipline requires a feedback verdict, whether the commits gate counts raw
+// commits or only source-touching ("real") ones, and which gates are excluded by default.
+const PROFILES = {
+  pm: {
+    scaffold: ['requirements.md', 'feedback.md'],
+    requireVerdict: true,
+    rawCommitGate: false,
+    exclude: [],
+  },
+  fleet: {
+    scaffold: ['requirements.md', 'plan.md', 'feedback.md', 'progress.json'],
+    requireVerdict: false,
+    rawCommitGate: true,
+    exclude: ['planner-created-tasks', 'beads-sprint-closed', 'harvester-ran'],
+  },
+};
 
 // ---- pure verdict logic -------------------------------------------------------
 
 export function evaluateGates(d) {
+  const prof = PROFILES[d.profile] || PROFILES.pm;
+  const SCAFFOLD = d.scaffold || prof.scaffold;
+  const requireVerdict = d.requireVerdict ?? prof.requireVerdict;
+  const rawCommitGate = d.rawCommitGate ?? prof.rawCommitGate;
+
   const gates = [];
-  const skip = new Set(d.excludeGates || []);
+  const skip = new Set([...(prof.exclude || []), ...(d.excludeGates || [])]);
   const add = (name, pass, detail = '') => { if (!skip.has(name)) gates.push({ name, pass, detail }); };
 
   add('pr-exists', !!(d.pr && d.pr.url), d.pr ? `#${d.pr.number}` : 'no PR found');
 
   const minCommits = d.minCommits ?? 10;
-  const real = d.realCommitCount ?? d.commitCount ?? 0;
-  const total = d.commitCount ?? 0;
-  add(`commits>=${minCommits}`, real >= minCommits,
-    `${real} real commits (${total} total)`);
+  if (rawCommitGate) {
+    const total = d.commitCount || 0;
+    add(`commits>=${minCommits}`, total >= minCommits, `${total} commits`);
+  } else {
+    const total = d.commitCount ?? 0;
+    const real = d.realCommitCount ?? total;
+    add(`commits>=${minCommits}`, real >= minCommits, `${real} real commits (${total} total)`);
+  }
 
   const finalBases = (d.finalFiles || []).map(baseName);
   const leaked = SCAFFOLD.filter((f) => finalBases.includes(f));
@@ -57,15 +94,20 @@ export function evaluateGates(d) {
 
   const touched = new Set((d.touchedBasenames || []).map((s) => s.toLowerCase()));
   const missing = SCAFFOLD.filter((f) => !touched.has(f));
-  const hasVerdict = (d.feedbackVerdicts || []).length > 0;
-  const disciplineFail = missing.length > 0 || !hasVerdict;
-  add('process-discipline', !disciplineFail,
-    disciplineFail
-      ? [
-          missing.length ? `never committed: ${missing.join(', ')}` : '',
-          !hasVerdict ? 'feedback.md never contained APPROVED/CHANGES NEEDED' : '',
-        ].filter(Boolean).join('; ')
-      : 'scaffold committed and feedback.md contained a verdict');
+  if (requireVerdict) {
+    const hasVerdict = (d.feedbackVerdicts || []).length > 0;
+    const disciplineFail = missing.length > 0 || !hasVerdict;
+    add('process-discipline', !disciplineFail,
+      disciplineFail
+        ? [
+            missing.length ? `never committed: ${missing.join(', ')}` : '',
+            !hasVerdict ? 'feedback.md never contained APPROVED/CHANGES NEEDED' : '',
+          ].filter(Boolean).join('; ')
+        : 'scaffold committed and feedback.md contained a verdict');
+  } else {
+    add('process-discipline', missing.length === 0,
+      missing.length ? `never committed (no discipline proof): ${missing.join(', ')}` : 'all process files appeared in intermediate commits');
+  }
 
   const plannerRan = !!(d.plannerRan);
   add('planner-created-tasks', plannerRan,
@@ -189,7 +231,7 @@ function bdSaysClosed(repo, id) {
 // Gather facts from the pushed branch and evaluate. `repo` is the local clone whose
 // origin is the toy; the branch is fetched fresh so this works even though the work
 // was done in a worktree sharing the same .git.
-export function validateSprint({ repo, branch, pr, minCommits = 10, expectedIssues = 3, excludeGates = [], expectArgsSkill = false, logPath = null, provider = 'claude' }) {
+export function validateSprint({ repo, branch, pr, minCommits = 10, expectedIssues = 3, excludeGates = [], expectArgsSkill = false, logPath = null, provider = 'claude', profile = 'pm' }) {
   const argsSkillFacts = expectArgsSkill
     ? { expectArgsSkill: true, argsSkillInstalled: argsSkillInstalledFor(provider), argsSkillUsed: argsSkillUsedIn(logPath) }
     : {};
@@ -200,7 +242,7 @@ export function validateSprint({ repo, branch, pr, minCommits = 10, expectedIssu
   const base = (git(repo, ['rev-parse', 'origin/main']).stdout || '').trim();
 
   if (!head || !base) {
-    return evaluateGates({ pr, commitCount: 0, realCommitCount: 0, finalFiles: [], touchedBasenames: [], feedbackVerdicts: [], closedP1: [], beadsSprintClosed: [], plannerRan: false, minCommits, expectedIssues, excludeGates, ...argsSkillFacts });
+    return evaluateGates({ pr, commitCount: 0, realCommitCount: 0, finalFiles: [], touchedBasenames: [], feedbackVerdicts: [], closedP1: [], beadsSprintClosed: [], plannerRan: false, minCommits, expectedIssues, excludeGates, profile, ...argsSkillFacts });
   }
   const range = `${base}..${head}`;
 
@@ -266,5 +308,35 @@ export function validateSprint({ repo, branch, pr, minCommits = 10, expectedIssu
   // C3/C4: closure evidenced in committed branch jsonl (headB), not just disk/live db
   const beadsSprintClosed = candidates.filter(id => isClosed(headB.get(id)));
 
-  return evaluateGates({ pr, commitCount, realCommitCount, finalFiles, touchedBasenames, touchedPaths, feedbackVerdicts, closedP1, beadsSprintClosed, plannerRan, minCommits, expectedIssues, excludeGates, ...argsSkillFacts });
+  return evaluateGates({ pr, commitCount, realCommitCount, finalFiles, touchedBasenames, touchedPaths, feedbackVerdicts, closedP1, beadsSprintClosed, plannerRan, minCommits, expectedIssues, excludeGates, profile, ...argsSkillFacts });
+}
+
+// ---- CLI entry ----------------------------------------------------------------
+// Standalone invocation runs the fleet-profile 5-gate subset against a branch/PR.
+// (Import-safe: the guard is false when another module imports this file.)
+
+if (process.argv[1] && (process.argv[1].endsWith('validate-sprint.mjs') || process.argv[1].endsWith('validate-sprint'))) {
+  const args = process.argv.slice(2);
+  if (args.length < 2) {
+    process.stderr.write('Usage: validate-sprint.mjs <repo> <branch> [--pr-url <url>] [--min-commits N] [--expected-issues N]\n');
+    process.exit(1);
+  }
+  const repo = args[0];
+  const branch = args[1];
+  let prUrl = '';
+  let prNumber = 0;
+  let minCommits = 10;
+  let expectedIssues = 3;
+  for (let i = 2; i < args.length; i++) {
+    if (args[i] === '--pr-url' && args[i + 1]) { prUrl = args[++i]; prNumber = parseInt(prUrl.split('/').pop(), 10) || 0; }
+    if (args[i] === '--min-commits' && args[i + 1]) { minCommits = parseInt(args[++i], 10); }
+    if (args[i] === '--expected-issues' && args[i + 1]) { expectedIssues = parseInt(args[++i], 10); }
+  }
+  const pr = prUrl ? { url: prUrl, number: prNumber } : null;
+  const result = validateSprint({ repo, branch, pr, minCommits, expectedIssues, profile: 'fleet' });
+  for (const g of result.gates) {
+    process.stdout.write(`${g.pass ? 'PASS' : 'FAIL'} ${g.name}: ${g.detail}\n`);
+  }
+  process.stdout.write(`\nOverall: ${result.pass ? 'PASS' : 'FAIL'}\n`);
+  process.exit(result.pass ? 0 : 1);
 }

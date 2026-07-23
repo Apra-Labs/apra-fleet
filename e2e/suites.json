@@ -1,0 +1,118 @@
+{
+  "_comment": "Unified e2e suite registry. IDs are namespaced to retire the old colliding s1..s10 scheme. Two namespaces: 'fleet' suites (fleet-s*) drive the full fleet harness (a PM plus remote/local members registered and paired via fleet) and are read by .github/workflows/fleet-e2e.yml (jq over .fleet.suites, keyed by suite id -> pm/doer/reviewer topology). 'pm' suites (pm-s*) drive the fleet-less pm skill headless (no members, no MCP) and are read by packages/apra-fleet-se/apra-pm/e2e/run-e2e.mjs (cfg = registry.pm; cfg.suites is an array, cfg.toy is the toy repo). The two sections keep their historical shapes on purpose -- the fleet section describes machine/provider topology, the pm section describes per-run gate config. The retired lite mode (old fleet s10) is gone; its opencode fleet-less coverage lives in pm-s9.",
+  "fleet": {
+    "suites": {
+      "fleet-s1": {
+        "pm":       { "os": "windows", "provider": "claude", "runner": "fleet-windows" },
+        "doer":     { "os": "linux",   "provider": "claude", "type": "remote" },
+        "reviewer": { "os": "macos",   "provider": "claude", "type": "remote" },
+        "vcs": "github"
+      },
+      "fleet-s2": {
+        "pm":       { "os": "linux",   "provider": "claude", "runner": "fleet-linux" },
+        "doer":     { "os": "windows", "provider": "agy", "type": "remote" },
+        "reviewer": { "os": "macos",   "provider": "agy", "type": "remote" },
+        "vcs": "github"
+      },
+      "fleet-s3": {
+        "pm":       { "os": "macos",   "provider": "claude", "runner": "fleet-macos" },
+        "doer":     { "os": "linux",   "provider": "agy", "type": "remote" },
+        "reviewer": { "os": "windows", "provider": "claude", "type": "remote" },
+        "vcs": "bitbucket"
+      },
+      "fleet-s4": {
+        "pm":       { "os": "windows", "provider": "agy", "runner": "fleet-windows" },
+        "doer":     { "os": "macos",   "provider": "claude", "type": "remote" },
+        "reviewer": { "os": "linux",   "provider": "agy", "type": "remote" },
+        "vcs": "bitbucket"
+      },
+      "fleet-s5": {
+        "pm":       { "os": "linux",   "provider": "agy", "runner": "fleet-linux" },
+        "doer":     { "os": "windows", "provider": "claude", "type": "remote" },
+        "reviewer": { "os": "macos",   "provider": "claude", "type": "remote" },
+        "vcs": "azdevops"
+      },
+      "fleet-s6": {
+        "pm":       { "os": "macos",   "provider": "agy", "runner": "fleet-macos" },
+        "doer":     { "os": "windows", "provider": "agy", "type": "remote" },
+        "reviewer": { "os": "linux",   "provider": "claude", "type": "remote" },
+        "vcs": "azdevops"
+      },
+      "fleet-s1.1": {
+        "pm":       { "os": "windows", "provider": "claude", "runner": "fleet-windows" },
+        "doer":     { "os": "local_doer_windows",     "provider": "claude", "type": "local" },
+        "reviewer": { "os": "local_reviewer_windows", "provider": "claude", "type": "local" },
+        "vcs": "github"
+      },
+      "fleet-s1.2": {
+        "pm":       { "os": "linux",   "provider": "claude", "runner": "fleet-linux" },
+        "doer":     { "os": "local_doer_linux",     "provider": "claude", "type": "local" },
+        "reviewer": { "os": "local_reviewer_linux", "provider": "claude", "type": "local" },
+        "vcs": "github"
+      },
+      "fleet-s1.3": {
+        "pm":       { "os": "macos",   "provider": "claude", "runner": "fleet-macos" },
+        "doer":     { "os": "local_doer_macos",     "provider": "claude", "type": "local" },
+        "reviewer": { "os": "local_reviewer_macos", "provider": "claude", "type": "local" },
+        "vcs": "github"
+      },
+      "fleet-s8.1": {
+        "pm":       { "os": "windows", "provider": "agy", "runner": "fleet-windows" },
+        "doer":     { "os": "local_doer_windows",     "provider": "agy", "type": "local" },
+        "reviewer": { "os": "local_reviewer_windows", "provider": "agy", "type": "local" },
+        "vcs": "github"
+      },
+      "fleet-s8.2": {
+        "pm":       { "os": "linux",   "provider": "agy", "runner": "fleet-linux" },
+        "doer":     { "os": "local_doer_linux",     "provider": "agy", "type": "local" },
+        "reviewer": { "os": "local_reviewer_linux", "provider": "agy", "type": "local" },
+        "vcs": "github"
+      },
+      "fleet-s8.3": {
+        "pm":       { "os": "macos",   "provider": "agy", "runner": "fleet-macos" },
+        "doer":     { "os": "local_doer_macos",     "provider": "agy", "type": "local" },
+        "reviewer": { "os": "local_reviewer_macos", "provider": "agy", "type": "local" },
+        "vcs": "github"
+      },
+      "fleet-s9": {
+        "pm":       { "os": "linux",   "provider": "opencode", "runner": "fleet-opencode" },
+        "doer":     { "os": "linux",   "provider": "opencode", "type": "remote" },
+        "reviewer": { "os": "linux",   "provider": "opencode", "type": "remote" },
+        "model": "opencode/deepseek-v4-flash-free",
+        "vcs": "github"
+      },
+      "fleet-s9.1": {
+        "pm":       { "os": "windows", "provider": "opencode", "runner": "fleet-opencode-win" },
+        "doer":     { "os": "local_doer_windows",     "provider": "opencode", "type": "local" },
+        "reviewer": { "os": "local_reviewer_windows", "provider": "opencode", "type": "local" },
+        "model": "opencode/deepseek-v4-flash-free",
+        "vcs": "github"
+      },
+      "fleet-s9.2": {
+        "pm":       { "os": "linux",   "provider": "opencode", "runner": "fleet-opencode" },
+        "doer":     { "os": "local_doer_linux",     "provider": "opencode", "type": "local" },
+        "reviewer": { "os": "local_reviewer_linux", "provider": "opencode", "type": "local" },
+        "model": "opencode/deepseek-v4-flash-free",
+        "vcs": "github"
+      },
+      "fleet-s9.3": {
+        "pm":       { "os": "macos",   "provider": "opencode", "runner": "fleet-opencode-mac" },
+        "doer":     { "os": "local_doer_macos",     "provider": "opencode", "type": "local" },
+        "reviewer": { "os": "local_reviewer_macos", "provider": "opencode", "type": "local" },
+        "model": "opencode/deepseek-v4-flash-free",
+        "vcs": "github"
+      }
+    }
+  },
+  "pm": {
+    "description": "pm e2e suites. Each suite drives the pm skill headless on one machine (no members, no MCP) through a full plan -> start -> cleanup sprint on the fleet-e2e-toy repo, picking 3 ready P1 beads issues. Success is judged by independent validation gates against the resulting branch + PR (see e2e/lib/validate-sprint.mjs), not self-reported checkpoints. Suites are OS-independent; the runner is chosen via the workflow runner input.",
+    "toy": "https://github.com/Apra-Labs/fleet-e2e-toy",
+    "suites": [
+      { "id": "pm-s1", "provider": "claude", "cli": "claude", "minCommits": 5, "expectedIssues": 3, "excludeGates": ["process-discipline"] },
+      { "id": "pm-s7", "provider": "gemini", "cli": "gemini", "minCommits": 5, "expectedIssues": 3, "excludeGates": ["process-discipline"] },
+      { "id": "pm-s8", "provider": "agy", "cli": "agy", "minCommits": 5, "expectedIssues": 3, "excludeGates": ["process-discipline"] },
+      { "id": "pm-s9", "provider": "opencode", "cli": "opencode", "model": "opencode/mimo-v2.5-free", "scenario": "scenario-opencode.md", "minCommits": 5, "expectedIssues": 3, "excludeGates": ["process-discipline"] },
+      { "id": "pm-s10", "provider": "claude", "cli": "claude", "scenario": "scenario-auto-sprint.md", "minCommits": 3, "expectedIssues": 3, "excludeGates": ["process-discipline", "harvester-ran"], "expectArgsSkill": true }
+    ]
+  }
+}

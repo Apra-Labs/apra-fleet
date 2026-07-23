@@ -15,9 +15,9 @@
 // cache) is captured per run and reported in the summary for cost-regression tracking.
 //
 // Usage:
-//   node e2e/run-e2e.mjs [--suite s1,s10] [--provider claude|gemini|agy|opencode] [--timeout 1800] [--keep-pr] [--keep-install]
+//   node e2e/run-e2e.mjs [--suite pm-s1,pm-s10] [--provider claude|gemini|agy|opencode] [--timeout 1800] [--keep-pr] [--keep-install]
 //
-// Selection: default is all suites. --suite accepts comma-separated IDs (e.g. s1,s10)
+// Selection: default is all suites. --suite accepts comma-separated IDs (e.g. pm-s1,pm-s10)
 // and may be repeated. --provider filters by provider. The skill must be installed
 // first (node install.mjs --llm <provider>).
 //
@@ -42,12 +42,15 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseTelemetryFile, diagnoseFailure } from './extract-results.mjs';
-import { validateSprint } from './validate-sprint.mjs';
-import { postSummary } from './post-summary.mjs';
+import { parseTelemetryFile, diagnoseFailure } from '../../../../e2e/lib/extract-results.mjs';
+import { validateSprint } from '../../../../e2e/lib/validate-sprint.mjs';
+import { postSummary } from '../../../../e2e/lib/post-summary.mjs';
 
 const E2E = path.dirname(fileURLToPath(import.meta.url));
-const cfg = JSON.parse(fs.readFileSync(path.join(E2E, 'suites.json'), 'utf-8'));
+// Suite registry lives at the repo-root e2e/ tree (shared with the fleet harness).
+// This runner drives the 'pm' namespace; cfg keeps the historical { toy, suites[] } shape.
+const REGISTRY = JSON.parse(fs.readFileSync(path.join(E2E, '..', '..', '..', '..', 'e2e', 'suites.json'), 'utf-8'));
+const cfg = REGISTRY.pm;
 
 // Each suite may specify a custom scenario file via the "scenario" field.
 // Falls back to the shared scenario.md when not set.
