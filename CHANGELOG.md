@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-member code-intelligence provider routing: review confirms all four acceptance criteria met
+
+A follow-up review pass re-verified the per-member code-intelligence
+provider routing increment described below against its four acceptance
+criteria, all of which are met: `getProvider(memberId?)` resolves a
+per-member provider when the calling member's `codeIntelProvider` is
+set; it falls back to the fleet-wide config when the member has no
+preference; a member configured with `'none'` gets a structured
+"disabled for this member" result from every provider method instead
+of an error; and code-intelligence tool calls dispatched through
+`execute_prompt` thread the calling member's identity into provider
+resolution via the in-flight-member heuristic documented in
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+The full test suite passes with no regressions, and the build compiles
+cleanly.
+
+One pre-existing import (`handleContext` in the tool-registration entry
+point) is unused because `code_context` intentionally inlines its own
+`getProvider(memberId)` + `provider.context()` call to layer knowledge-base
+enrichment on top of the raw provider response; this is a minor,
+non-blocking cleanup opportunity for a future pass, not a defect.
+
+The known concurrent-dispatch limitation -- per-member routing falls back
+to the global config whenever more than one member has an `execute_prompt`
+in flight at the same time -- remains an accepted design trade-off,
+documented alongside the routing design itself. End-to-end verification
+that a live `execute_prompt` dispatch reaches its configured provider
+through the running MCP server (as opposed to calling handler functions
+directly) is still outstanding, so the parent per-member-provider-selection
+goal remains open pending that verification.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |      2,967 |   n/a |   $0.000 |   $0.074 |
+| reviewer   |          0 |      5,431 |   n/a |   $0.000 |   $0.136 |
+| overhead   |      7,150 |     65,844 | +821% |   $0.121 |   $0.459 |
+| TOTAL      |      7,150 |     74,242 | +938% |   $0.121 |   $0.669 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
 ## [Unreleased] -- Per-member code-intelligence provider routing
 
 This sprint implemented per-member routing for the code-intelligence
