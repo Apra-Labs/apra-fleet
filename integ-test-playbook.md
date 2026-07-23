@@ -227,9 +227,15 @@ cd "$HOME/toy-repo"
 git fetch origin
 git reset --hard origin/main
 git clean -fdx
-rm -rf .beads/embeddeddolt .beads/.local_version
-bd init --from-jsonl --prefix gh-toy --non-interactive
+node "<repo-root>/scripts/sandbox-seed-beads.mjs" --sandbox-root "$HOME" --toy-repo "$HOME/toy-repo" --mode reset
 ```
+
+The `--mode reset` form performs the re-seed that used to be inlined here
+(clear the local Dolt state, `bd init --from-jsonl` with the auto-derived
+sandbox-local remote) behind the same `[sandbox-seed guard]` path
+assertions as `## Setup` -- see the Setup section: the guarded script is
+the ONLY sanctioned entry point for beads seeding/rewiring in this
+playbook.
 
 `rm -rf .beads/embeddeddolt` (plus `.local_version`, so `bd` never tries to
 forward-migrate a stale schema marker) throws away the local Dolt DB

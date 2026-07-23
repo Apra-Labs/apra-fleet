@@ -76,12 +76,16 @@ export function validateSandboxSeedPaths({ sandboxRoot, toyRepo, doltRemote, hos
 }
 
 function parseArgs(argv) {
-    const out = { prefix: 'gh-toy' };
+    const out = { prefix: 'gh-toy', mode: 'setup' };
     for (let i = 0; i < argv.length; i += 1) {
         if (argv[i] === '--sandbox-root') out.sandboxRoot = argv[++i];
         else if (argv[i] === '--toy-repo') out.toyRepo = argv[++i];
         else if (argv[i] === '--prefix') out.prefix = argv[++i];
+        else if (argv[i] === '--mode') out.mode = argv[++i];
         else throw new Error(`${GUARD} unknown argument: ${argv[i]}`);
+    }
+    if (out.mode !== 'setup' && out.mode !== 'reset') {
+        throw new Error(`${GUARD} --mode must be 'setup' or 'reset' (got '${out.mode}')`);
     }
     return out;
 }
@@ -101,10 +105,22 @@ function main() {
 
     rmSync(path.join(repo, '.beads', 'embeddeddolt'), { recursive: true, force: true });
     rmSync(path.join(repo, '.beads', '.local_version'), { force: true });
-    rmSync(remote, { recursive: true, force: true });
 
+    if (args.mode === 'reset') {
+        // Reset re-seed: bd auto-derives its Dolt remote from the toy clone's
+        // own git origin (already sandbox-local, asserted by the playbook's
+        // check script). No explicit remote is written and nothing is pushed.
+        execFileSync('bd', ['init', '--from-jsonl', '--prefix', args.prefix, '--non-interactive'], {
+            cwd: repo,
+            stdio: 'inherit',
+        });
+        console.log(`[sandbox-seed] OK (reset): re-seeded '${repo}' from its committed JSONL (no remote rewiring)`);
+        return;
+    }
+
+    rmSync(remote, { recursive: true, force: true });
     const remoteUrl = pathToFileURL(remote).href;
-    execFileSync('bd', ['init', '--from-jsonl', `--prefix`, args.prefix, '--remote', remoteUrl, '--non-interactive'], {
+    execFileSync('bd', ['init', '--from-jsonl', '--prefix', args.prefix, '--remote', remoteUrl, '--non-interactive'], {
         cwd: repo,
         stdio: 'inherit',
     });
