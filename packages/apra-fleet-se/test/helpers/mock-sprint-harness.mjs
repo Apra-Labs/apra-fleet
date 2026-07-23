@@ -979,6 +979,13 @@ export async function runDevelopLoopScenario(tag, {
     // deterministic budget instead of waiting on the hour-long production
     // default.
     dispatchTimeoutS,
+    // apra-fleet-eft.75.3: optional `args.callTool` passthrough -- the exact
+    // same known arg key bin/cli.mjs wires from its live `mcpClient.callTool`
+    // (apra-fleet-eft.75.1) -- so a scenario can inject a spy and prove the
+    // REAL runner.js call sites (e.g. the doer max-turns resume ladder) drive
+    // createMemberSessionGuard()'s `stop_prompt` call end-to-end, rather than
+    // only unit-testing the guard helper in isolation.
+    callTool,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -1051,6 +1058,7 @@ export async function runDevelopLoopScenario(tag, {
                 goal,
                 max_cycles: maxCycles,
                 ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
+                ...(callTool !== undefined ? { callTool } : {}),
             }, true);
         } catch (err) {
             error = err;
