@@ -162,6 +162,12 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const {
+    codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema,
+    codeMapSchema, codeFlowSchema, codeTestsSchema,
+    handleGraph, handleImpact, handleQuery, handleContext,
+    handleMap, handleFlow, handleTests, getActiveMemberId,
+  } = await import('./tools/code-intelligence.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -293,6 +299,30 @@ async function startServer() {
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
+
+  // --- Code Intelligence ---
+  // Context-aware wrapper: resolves the active member context (set by
+  // execute_prompt) so the correct per-member provider is used without
+  // exposing memberId in tool schemas. Direct MCP calls (no active member)
+  // fall back to the global provider.
+  function wrapCodeIntelTool(
+    toolName: string,
+    handler: (params: Record<string, unknown>, memberId?: string) => Promise<unknown>,
+  ) {
+    return wrapTool(toolName, async (input: any) => {
+      const memberId = getActiveMemberId();
+      const result = await handler(input, memberId);
+      return typeof result === 'string' ? result : JSON.stringify(result);
+    });
+  }
+
+  server.tool('code_graph', 'Look up a symbol in the code graph. Returns callers, callees, and type relationships.', codeGraphSchema.shape, wrapCodeIntelTool('code_graph', handleGraph));
+  server.tool('code_impact', 'Analyze the downstream impact of changing a symbol. Returns affected files, functions, and tests.', codeImpactSchema.shape, wrapCodeIntelTool('code_impact', handleImpact));
+  server.tool('code_query', 'Natural language query about the codebase. Returns relevant symbols, files, and explanations.', codeQuerySchema.shape, wrapCodeIntelTool('code_query', handleQuery));
+  server.tool('code_context', 'Get context for a symbol or file path. Returns surrounding code, documentation, and usage patterns.', codeContextSchema.shape, wrapCodeIntelTool('code_context', handleContext));
+  server.tool('code_map', 'Map the structure of a directory or the entire project. Returns modules, exports, and dependency relationships.', codeMapSchema.shape, wrapCodeIntelTool('code_map', handleMap));
+  server.tool('code_flow', 'Trace data or control flow through a symbol. Returns the chain of calls and transformations.', codeFlowSchema.shape, wrapCodeIntelTool('code_flow', handleFlow));
+  server.tool('code_tests', 'Find tests related to a symbol or file. Returns test files, test names, and coverage information.', codeTestsSchema.shape, wrapCodeIntelTool('code_tests', handleTests));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

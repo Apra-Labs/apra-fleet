@@ -22,6 +22,7 @@ import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
+import { setActiveMemberId } from './code-intelligence.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
@@ -167,6 +168,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`;
   }
   inFlightAgents.add(agent.id);
+  setActiveMemberId(agent.id);
 
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
@@ -365,6 +367,7 @@ session: ${parsed.sessionId}`;
     return `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`;
   } finally {
     extra?.signal?.removeEventListener('abort', abortHandler);
+    setActiveMemberId(undefined);
     const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens}` : '';
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);

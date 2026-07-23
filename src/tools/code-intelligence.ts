@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
+import { z } from 'zod';
 import { getAgent } from '../services/registry.js';
 
 export interface CodeIntelligenceProvider {
@@ -11,6 +12,20 @@ export interface CodeIntelligenceProvider {
   map(params: Record<string, unknown>): Promise<unknown>;
   flow(params: Record<string, unknown>): Promise<unknown>;
   tests(params: Record<string, unknown>): Promise<unknown>;
+}
+
+// --- Active member context for threading from execute_prompt ---
+// When execute_prompt dispatches to a member, it sets this so that
+// code-intel tool calls during the same server turn resolve the
+// correct per-member provider without exposing memberId in schemas.
+let _activeMemberId: string | undefined;
+
+export function setActiveMemberId(memberId: string | undefined): void {
+  _activeMemberId = memberId;
+}
+
+export function getActiveMemberId(): string | undefined {
+  return _activeMemberId;
 }
 
 const DISABLED_MESSAGE = 'Code intelligence is disabled for this member.';
@@ -91,4 +106,71 @@ export async function getProvider(memberId?: string): Promise<CodeIntelligencePr
     );
   }
   return provider;
+}
+
+// --- Schemas for MCP tool registration (memberId is internal, not exposed) ---
+
+export const codeGraphSchema = z.object({
+  symbol: z.string().describe('Symbol name to look up in the code graph'),
+});
+
+export const codeImpactSchema = z.object({
+  symbol: z.string().describe('Symbol to analyze for downstream impact'),
+});
+
+export const codeQuerySchema = z.object({
+  query: z.string().describe('Natural language query about the codebase'),
+});
+
+export const codeContextSchema = z.object({
+  symbol: z.string().describe('Symbol or file path to get context for'),
+});
+
+export const codeMapSchema = z.object({
+  path: z.string().optional().describe('Directory path to map (defaults to project root)'),
+});
+
+export const codeFlowSchema = z.object({
+  symbol: z.string().describe('Symbol to trace data/control flow for'),
+});
+
+export const codeTestsSchema = z.object({
+  symbol: z.string().describe('Symbol or file to find related tests for'),
+});
+
+// --- Handler functions: accept optional memberId for per-member routing ---
+
+export async function handleGraph(params: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.graph(params);
+}
+
+export async function handleImpact(params: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.impact(params);
+}
+
+export async function handleQuery(params: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.query(params);
+}
+
+export async function handleContext(params: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.context(params);
+}
+
+export async function handleMap(params: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.map(params);
+}
+
+export async function handleFlow(params: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.flow(params);
+}
+
+export async function handleTests(params: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.tests(params);
 }
