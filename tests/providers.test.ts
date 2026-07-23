@@ -978,8 +978,8 @@ describe('AgyProvider', () => {
 
   it('builds prompt command with defaults', () => {
     const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md' });
-    expect(cmd).toContain('agy -p');
-    expect(cmd).not.toContain('--model');
+    expect(cmd).toContain('agy --model');
+    expect(cmd).toContain('-p');
     expect(cmd).not.toContain('--conversation');
     expect(cmd).not.toContain('--dangerously-skip-permissions');
   });

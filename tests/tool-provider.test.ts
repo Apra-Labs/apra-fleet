@@ -110,7 +110,7 @@ describe('executePrompt — provider routing', () => {
 
     // calls[0] = writePromptFile, calls[1] = main prompt command
     const cmd = mockExecCommand.mock.calls[1][0] as string;
-    expect(cmd).toContain('agy -p');
+    expect(cmd).toContain('agy --model');
   });
 
   it('routes Codex member through codex CLI', async () => {

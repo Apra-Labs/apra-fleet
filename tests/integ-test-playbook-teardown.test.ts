@@ -34,7 +34,16 @@ import { execSync } from 'node:child_process';
 // The behavior under test is bash tilde expansion, so the shell must be bash
 // on every platform: /bin/bash on POSIX, PATH-resolved bash.exe (Git Bash) on
 // Windows -- a hard-coded /bin/bash is ENOENT there.
-const BASH_SHELL = process.platform === 'win32' ? 'bash.exe' : '/bin/bash';
+const BASH_SHELL = (() => {
+  if (process.platform === 'win32') {
+    const gitBashPath = 'C:\\Program Files\\Git\\bin\\bash.exe';
+    if (fs.existsSync(gitBashPath)) {
+      return gitBashPath;
+    }
+    return 'bash.exe';
+  }
+  return '/bin/bash';
+})();
 
 describe('integ-test-playbook.md Teardown tilde-resolution regression', () => {
   let scratchRoot: string;

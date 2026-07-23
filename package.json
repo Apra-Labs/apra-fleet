@@ -30,7 +30,6 @@
     "dist/",
     "hooks/",
     "scripts/fleet-statusline.sh",
-    "scripts/agy-settings-merge.js",
     "scripts/agy-transcript-reader.js",
     "skills/",
     "version.json"

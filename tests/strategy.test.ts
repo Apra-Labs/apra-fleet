@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getStrategy } from '../src/services/strategy.js';
+import { getOsCommands } from '../src/os/index.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import { makeTestAgent, makeTestLocalAgent } from './test-helpers.js';
 
@@ -58,32 +59,25 @@ describe('LocalStrategy', () => {
   // LocalStrategy hands to the child process).
   it('LocalStrategy clean-env exec preserves the provider-composed Edit/Write permission-parity flag for a headless coding-agent dispatch', async () => {
     const provider = new ClaudeProvider();
-    const built = provider.buildPromptCommand({ folder: tmpDir, promptFile: '.fleet-task.md' });
+    const cmds = getOsCommands(os.platform() === 'win32' ? 'windows' : 'linux');
+    const built = cmds.buildAgentPromptCommand(provider, { folder: tmpDir, promptFile: '.fleet-task.md' });
     // Same command LocalStrategy would actually spawn for a real coding-agent
-    // dispatch, except the `claude` binary is swapped for an echo stub so this
-    // test doesn't depend on a real CLI being installed -- we only need to
-    // prove the permission flag survives LocalStrategy's clean-env wrapping
-    // intact. On Windows, LocalStrategy's clean-env shell is Windows
-    // PowerShell 5.1, which has no `&&` operator and no space-joining `echo`
-    // (Write-Output emits each argv token on its own line), so the
-    // POSIX-composed `cd "..." && claude ...` prefix is rewritten to its
-    // PowerShell equivalent and the stub is a function that joins its argv --
-    // the provider-composed argument list itself is passed through unchanged.
-    const claudeArgv = built.slice(built.indexOf('&& claude') + '&& claude'.length);
-    const echoCmd = process.platform === 'win32'
-      ? `function claude { $args -join ' ' }; Set-Location "${tmpDir}"; claude${claudeArgv}`
-      : built.replace(/&& claude/, '&& echo');
+    // dispatch, except the `claude` binary is swapped for `echo` so this test
+    // doesn't depend on a real CLI being installed -- we only need to prove
+    // the permission flag survives LocalStrategy's clean-env wrapping intact.
+    const echoCmd = built.replace(/claude(\.cmd)?\s+-p/, 'echo -p');
 
     const member = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(member);
     const result = await strategy.execCommand(echoCmd);
-
+    console.log('strategy.test.ts result:', result);
     expect(result.code).toBe(0);
     // The tool-permission configuration handed to the dispatched agent
     // grants Edit/Write parity for the work folder (no hard-block)...
-    expect(result.stdout).toContain('--permission-mode acceptEdits');
+    const stdoutNormalized = result.stdout.replace(/\s+/g, ' ');
+    expect(stdoutNormalized).toContain('--permission-mode acceptEdits');
     // ...via the surgical flag, never the broad permission-bypass escape hatch.
-    expect(result.stdout).not.toContain('--dangerously-skip-permissions');
+    expect(stdoutNormalized).not.toContain('--dangerously-skip-permissions');
   });
 
   it('execCommand() returns non-zero code for failed commands', async () => {
