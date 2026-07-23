@@ -131,3 +131,37 @@ describe('register_member: agent provisioning integration', () => {
     expect(mockUploadContentToHome).not.toHaveBeenCalled();
   });
 });
+
+describe('register_member: code-intel provider in success message', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('shows the Code-Intel line when code_intel_provider is set', async () => {
+    const result = await registerMember({
+      friendly_name: 'ci-provider-test',
+      member_type: 'local',
+      work_folder: `/tmp/ci-provider-${Date.now()}`,
+      code_intel_provider: 'gitnexus',
+    });
+
+    expect(result).toContain('registered successfully');
+    expect(result).toContain('Code-Intel: gitnexus');
+  });
+
+  it('omits the Code-Intel line when code_intel_provider is not set', async () => {
+    const result = await registerMember({
+      friendly_name: 'ci-provider-unset-test',
+      member_type: 'local',
+      work_folder: `/tmp/ci-provider-unset-${Date.now()}`,
+    });
+
+    expect(result).toContain('registered successfully');
+    expect(result).not.toContain('Code-Intel:');
+  });
+});
