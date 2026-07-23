@@ -36,7 +36,7 @@ const NEW_MANIFEST = {
     'ajv/package.json': 'ajv/package.json',
   },
   agentSchemas: {
-    'agentSchemas/pm.schema.json': 'vendor/apra-pm/agents/schemas/pm.schema.json',
+    'agentSchemas/pm.schema.json': 'packages/apra-fleet-se/apra-pm/agents/schemas/pm.schema.json',
   },
   builtinWorkflows: {
     'auto-sprint/workflow.json': 'auto-sprint/workflow.json',

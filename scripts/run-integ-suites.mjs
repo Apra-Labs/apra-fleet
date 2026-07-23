@@ -301,10 +301,9 @@ function cmdStart(files) {
   const child = spawn(
     process.execPath,
     [scriptPath, '--supervise', ...pending],
-    { detached: true, stdio: ['ignore', logFd, logFd], windowsHide: true }
+    { stdio: 'inherit' }
   );
-  child.unref();
-  closeSync(logFd);
+  child.on('exit', (code) => process.exit(code));
 
   status.run = {
     pid: child.pid,
@@ -321,7 +320,6 @@ function cmdStart(files) {
     `(concurrency=${TEST_CONCURRENCY}). Poll with: node scripts/run-integ-suites.mjs --status --wait=45`
   );
   console.log(`[integ-suites] supervisor log: ${logFile}`);
-  process.exit(0);
 }
 
 // Runs one node --test invocation over `files` at the given concurrency and

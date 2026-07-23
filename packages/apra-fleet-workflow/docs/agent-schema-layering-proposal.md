@@ -1,29 +1,29 @@
 # Proposal: Role-Owned Output Schemas (Agent-Def Layering Fix)
 
 Design note: this proposes an approach not yet part of the current implementation. It spans
-three components: `vendor/apra-pm` (the agent-role definitions consumed by fleet members),
+three components: `packages/apra-fleet-se/apra-pm` (the agent-role definitions consumed by fleet members),
 `packages/apra-fleet-se/auto-sprint/contracts.mjs` (auto-sprint's application-layer schema
 adapter), and `packages/apra-fleet-workflow/src/workflow/index.mjs`'s `agent()` schema
 handling. Only the last of these lives in this package, and per the recommendation below its
 change is documentation-only (see section 4, item 4) -- the `AgentOptions.schema` jsdoc in
 `index.mjs` already carries a cross-reference to this document. The rest of the proposal
-(shipping schema files inside `vendor/apra-pm`, reframing `contracts.mjs` as a thin adapter
+(shipping schema files inside `packages/apra-fleet-se/apra-pm`, reframing `contracts.mjs` as a thin adapter
 over them) is scoped to those other components and has not been implemented there either, as
 of this document's writing.
 
 Status: PROPOSED, pending sign-off before implementation begins.
-Affects: `vendor/apra-pm` agent-role definitions, `packages/apra-fleet-se/auto-sprint/
+Affects: `packages/apra-fleet-se/apra-pm` agent-role definitions, `packages/apra-fleet-se/auto-sprint/
 contracts.mjs`, and (documentation-only) `packages/apra-fleet-workflow/src/workflow/
 index.mjs`'s `agent()` schema handling.
 
 ## Problem Statement
 
-`vendor/apra-pm` is a generic, reusable agent-role package. Its `agents/*.md`
+`packages/apra-fleet-se/apra-pm` is a generic, reusable agent-role package. Its `agents/*.md`
 files are consumed by at least three distinct callers:
 
 1. **auto-sprint** (`packages/apra-fleet-se/auto-sprint/runner.js`) via the
    fleet -- `agent(prompt, { agentType: 'reviewer', ... })`.
-2. **The manual pm skill** (`vendor/apra-pm/skills/pm/SKILL.md`) -- a human or
+2. **The manual pm skill** (`packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md`) -- a human or
    Claude Code orchestrator session dispatching the same roles as local
    subagents.
 3. **Any future workflow script** written against `apra-fleet-workflow`.
@@ -48,10 +48,10 @@ source and a documented precedence rule for the prompt channel.
 
 ---
 
-## 1. Audit: application-layer references in `vendor/apra-pm`
+## 1. Audit: application-layer references in `packages/apra-fleet-se/apra-pm`
 
 This audit covers the `agents/*.md` role-definition files plus `skills/pm/*` in
-`vendor/apra-pm`.
+`packages/apra-fleet-se/apra-pm`.
 
 ### 1.1 True cross-repo layering violations (must fix before upstream PR)
 
@@ -102,7 +102,7 @@ problem around, which is what the rest of this proposal addresses.
 Role-to-member binding is real and specific, not hypothetical:
 
 - `apra-fleet`'s installer (`src/cli/install.ts`, lines ~129-139) copies
-  `vendor/apra-pm/agents/*.md` to the provider-specific agents directory on
+  `packages/apra-fleet-se/apra-pm/agents/*.md` to the provider-specific agents directory on
   the member machine (`~/.claude/agents/` for Claude, `~/.gemini/agents/`
   for Gemini, etc. -- see `src/cli/config.ts`).
 - `execute_prompt` (`src/tools/execute-prompt.ts`, lines 47-58) takes an
@@ -296,7 +296,7 @@ itself.** Concretely:
    `appendSchemaInstruction`, and `finalVerdict` -- which correctly has no
    role file because it is the orchestrator's own synthesized gate). The
    seven hand-copied role schemas are replaced by loading
-   `vendor/apra-pm/agents/schemas/*.json` at module init, re-exported under
+   `packages/apra-fleet-se/apra-pm/agents/schemas/*.json` at module init, re-exported under
    the existing names so the runner's schema-passing call sites are unaffected. A version-pin
    check throws at load if a vendored schema's `$id` major version is not
    the expected one -- so a submodule bump that changes a contract fails
@@ -366,7 +366,7 @@ layering violation described above and must not be pushed upstream as-is.**
 ### 5.2 Reframe contracts.mjs (small diff, not a rewrite)
 
 - Replace the seven schema literals with a loader over
-  `vendor/apra-pm/agents/schemas/*.json` + version pin; keep export names,
+  `packages/apra-fleet-se/apra-pm/agents/schemas/*.json` + version pin; keep export names,
   `SCHEMAS`, `VALIDATORS`, `validateVerdict` signatures identical.
 - Keep `ROLES`, helpers, and `finalVerdict` as-is (application-owned).
 - Delete divergence notes that become moot once the vendored prose and the

@@ -4,12 +4,12 @@ Every AI agent role auto-sprint dispatches (`planner`, `plan-reviewer`,
 `doer`, `reviewer`, `deployer`, `integ-test-runner`, `harvester`, plus
 `ci-watcher` which is defined but not currently dispatched by this runner)
 has a canonical, prose behavioral definition vendored into this repo at
-`vendor/apra-pm/agents/<role>.md` -- a git submodule pointing at
+`packages/apra-fleet-se/apra-pm/agents/<role>.md` -- a git submodule pointing at
 `Apra-Labs/apra-pm`. `auto-sprint/contracts.mjs` is this package's
 application-side reader/adapter for those definitions; it does not author
 role behavior, it consumes and structurally validates it.
 
-## What a `vendor/apra-pm/agents/<role>.md` file defines
+## What a `packages/apra-fleet-se/apra-pm/agents/<role>.md` file defines
 
 Each file is Markdown with YAML frontmatter:
 
@@ -35,7 +35,7 @@ dispatched -- `docs/overview.md`'s role summaries are derived from them.
 
 `ROLES` (in `contracts.mjs`) is the exact, frozen array of lowercase role
 name strings, one per `name:` frontmatter field across
-`vendor/apra-pm/agents/*.md`:
+`packages/apra-fleet-se/apra-pm/agents/*.md`:
 
 ```js
 ['planner', 'plan-reviewer', 'doer', 'reviewer', 'deployer',
@@ -68,7 +68,7 @@ export const harvesterReport = ...
 Each is resolved by `resolveOutputSchema(role, expectedMajor, fallback)`,
 which:
 
-1. Tries to load `vendor/apra-pm/agents/schemas/<role>-output.json` from the
+1. Tries to load `packages/apra-fleet-se/apra-pm/agents/schemas/<role>-output.json` from the
    submodule (`loadVendorSchema()`).
 2. If found, checks its `$id`'s trailing `@<major>` version segment against
    an expected major version (`assertVersionPin()`) -- a submodule bump that
@@ -87,7 +87,7 @@ creates, not a structured verdict) and is allow-listed in
 `finalVerdict` (the sprint-level PASS/FAIL gate) are **application-owned**
 schemas with no vendored counterpart at all -- they exist only because this
 runner invented those two dispatch shapes itself; there is no
-`vendor/apra-pm/agents/streak-assignment.md` or `.../final-verdict.md`.
+`packages/apra-fleet-se/apra-pm/agents/streak-assignment.md` or `.../final-verdict.md`.
 
 **Schema directory resolution** (`resolveSchemasDir()` in `contracts.mjs`,
 apra-fleet-bun): layout-aware and bundled-location-first, so this package
@@ -96,7 +96,7 @@ standalone install, or bundled into the root `@apralabs/apra-fleet` package.
 In order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override; a bundled
 `dist/agents/schemas` copy (already populated by the root package's
 `prepublishOnly`); a package-local `vendor/schemas/` copy (populated by
-`scripts/vendor-schemas.mjs`); this monorepo's live `vendor/apra-pm`
+`scripts/vendor-schemas.mjs`); this monorepo's live `packages/apra-fleet-se/apra-pm`
 submodule checkout as a last-resort dev fallback (warns once when used,
 since it won't exist in an installed package). If none of those resolve,
 `loadVendorSchema()` returns `null` for every role and every schema falls
@@ -115,7 +115,7 @@ runs a schema by name, returning `{ valid, errors }`.
 ### 3. Pre-flight input validation (defined but not yet wired into `runner.js`)
 
 `validateRoleInput(role, context)` compiles and runs
-`vendor/apra-pm/agents/schemas/<role>-input.json` (if present) against an
+`packages/apra-fleet-se/apra-pm/agents/schemas/<role>-input.json` (if present) against an
 assembled dispatch context, entirely locally and before any `agent()` call --
 a missing/malformed required input is a deterministic local fact, not
 something worth a paid fleet dispatch to discover. Unlike output schemas,
@@ -174,9 +174,9 @@ success.
 `contracts.mjs` resolves its schema directory via `resolveSchemasDir()`, in
 order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override, a bundled `dist/agents/schemas`
 copy, a package-local `vendor/schemas/` copy (populated by
-`scripts/vendor-schemas.mjs`), then the monorepo's `vendor/apra-pm` submodule
+`scripts/vendor-schemas.mjs`), then the monorepo's `packages/apra-fleet-se/apra-pm` submodule
 checkout as a last-resort dev fallback. This package's tests point the loader
-at `test/fixtures/vendor-apra-pm-schemas/` (a snapshot of the real vendored
+at `test/fixtures/apra-pm-schemas/` (a snapshot of the real vendored
 schema files) via the `APRA_FLEET_SE_SCHEMAS_DIR` env override, so
 schema-loading behavior can be exercised deterministically regardless of
 which of those directories actually exist in the checkout running the test.

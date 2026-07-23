@@ -1,20 +1,20 @@
 // apra-fleet-unw.12 -- canonical, code-level definition of the sprint role
 // names, plus (apra-fleet-unw.22) a thin adapter that sources each role's
-// verdict/input schemas from vendor/apra-pm/agents/schemas/ instead of
+// verdict/input schemas from packages/apra-fleet-se/apra-pm/agents/schemas/ instead of
 // owning them.
 //
 // This module is the single source of truth (application-side) for:
 //   1. The eight sprint-role name strings (lowercase, matching the
-//      `name:` frontmatter of vendor/apra-pm/agents/*.md exactly).
+//      `name:` frontmatter of packages/apra-fleet-se/apra-pm/agents/*.md exactly).
 //   2. An ajv-compatible JSON schema for every role's structured verdict --
-//      as of apra-fleet-unw.22, LOADED from vendor/apra-pm/agents/schemas/
+//      as of apra-fleet-unw.22, LOADED from packages/apra-fleet-se/apra-pm/agents/schemas/
 //      <role>-output.json rather than hand-copied inline, per
 //      docs/agent-schema-layering-proposal.md section 4.3/5.2. The role
 //      itself is the canonical author of its output contract; this module
 //      is a reader/re-exporter, not the source.
 //   3. A pre-flight input-validation helper (`validateRoleInput`) that
 //      checks an assembled dispatch context against
-//      vendor/apra-pm/agents/schemas/<role>-input.json BEFORE any agent()
+//      packages/apra-fleet-se/apra-pm/agents/schemas/<role>-input.json BEFORE any agent()
 //      call is made -- proposal section 6.3. Deterministic, zero-cost,
 //      caller-side; never shown to the LLM.
 //   4. A pure, testable helper for fencing untrusted inter-agent text
@@ -47,7 +47,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---------------------------------------------------------------------------
 
 // Exact lowercase strings, one per `name:` frontmatter field in
-// vendor/apra-pm/agents/*.md. Order matches the SKILL.md taxonomy:
+// packages/apra-fleet-se/apra-pm/agents/*.md. Order matches the SKILL.md taxonomy:
 // sprint-core roles first (planner, plan-reviewer, doer, reviewer), then
 // lifecycle-support roles (deployer, integ-test-runner, ci-watcher,
 // harvester).
@@ -94,8 +94,7 @@ export function validateRole(role) {
 // bun), because apra-fleet-se must resolve its vendored role schemas
 // correctly regardless of how it ended up on disk: a full monorepo git
 // clone (this repo, today), a standalone `npm install @apralabs/apra-fleet-
-// se` (schemas do not exist three levels up in that layout -- nothing does),
-// or bundled into the root @apralabs/apra-fleet package's dist/auto-
+// se`, or bundled into the root @apralabs/apra-fleet package's dist/auto-
 // sprint.mjs. `resolveSchemasDir()` below tries, in order:
 //
 //   1. process.env.APRA_FLEET_SE_SCHEMAS_DIR, if set -- an explicit
@@ -104,33 +103,22 @@ export function validateRole(role) {
 //      an exact schemas directory.
 //   2. <root>/dist/agents/schemas -- the sibling directory scripts/vendor-
 //      pm.mjs ALREADY populates at the root package's `prepublishOnly`
-//      (cpSync of vendor/apra-pm/agents -> dist/agents, which includes its
+//      (cpSync of packages/apra-fleet-se/apra-pm/agents -> dist/agents, which includes its
 //      schemas/ subdir). This is what a dist/auto-sprint.mjs bundle
 //      resolves once apra-fleet-3ns.2 ships it as a dist/ sibling -- no new
 //      copy step needed, this artifact already exists today.
-//   3. packages/apra-fleet-se/vendor/schemas -- a package-local copy inside
-//      apra-fleet-se's OWN directory tree, populated by the build script
-//      scripts/vendor-schemas.mjs (apra-fleet-bun.2). This is what a
-//      standalone install of @apralabs/apra-fleet-se resolves, or a dev
-//      checkout that has run the build/vendor step.
-//   4. vendor/apra-pm/agents/schemas, three levels up from this file --
-//      this repo's live submodule checkout. A dev-convenience fallback ONLY:
-//      it does not exist once the package is installed standalone or
-//      published, so reaching this branch means neither of the two bundled
-//      copies (2, 3) has been built yet. Emits a one-time console.warn when
-//      used, since silently depending on it would mask a missing build step.
+//   3. packages/apra-fleet-se/apra-pm/agents/schemas -- the package-local apra-pm 
+//      directory. This is what a standalone install of @apralabs/apra-fleet-se
+//      resolves, or a dev checkout.
 //
-// If none of 1-4 exist as a directory, `resolveSchemasDir()` returns `null`;
+// If none of 1-3 exist as a directory, `resolveSchemasDir()` returns `null`;
 // `loadVendorSchema` already treats a null/absent directory as the expected,
 // quiet graceful-degradation case (every schema falls back to its hand-
 // written literal in section 3) -- unchanged from before apra-fleet-bun.
 const PACKAGE_ROOT = path.join(__dirname, '..');
 const REPO_ROOT = path.join(PACKAGE_ROOT, '..', '..');
 const DIST_BUNDLED_SCHEMAS_DIR = path.join(REPO_ROOT, 'dist', 'agents', 'schemas');
-const PACKAGE_VENDORED_SCHEMAS_DIR = path.join(PACKAGE_ROOT, 'vendor', 'schemas');
-const MONOREPO_SCHEMAS_DIR = path.join(REPO_ROOT, 'vendor', 'apra-pm', 'agents', 'schemas');
-
-let warnedMonorepoFallback = false;
+const PACKAGE_LOCAL_SCHEMAS_DIR = path.join(PACKAGE_ROOT, 'apra-pm', 'agents', 'schemas');
 
 function isDirectory(candidate) {
     try {
@@ -156,20 +144,7 @@ export function resolveSchemasDir(deps = {}) {
     if (override) return override;
 
     if (exists(DIST_BUNDLED_SCHEMAS_DIR)) return DIST_BUNDLED_SCHEMAS_DIR;
-    if (exists(PACKAGE_VENDORED_SCHEMAS_DIR)) return PACKAGE_VENDORED_SCHEMAS_DIR;
-
-    if (exists(MONOREPO_SCHEMAS_DIR)) {
-        if (!warnedMonorepoFallback) {
-            warnedMonorepoFallback = true;
-            console.warn(
-                `[contracts] Using the live vendor/apra-pm submodule at ${MONOREPO_SCHEMAS_DIR} -- neither ` +
-                    `${DIST_BUNDLED_SCHEMAS_DIR} nor ${PACKAGE_VENDORED_SCHEMAS_DIR} exists yet. This works in a ` +
-                    'monorepo dev checkout but will NOT work once apra-fleet-se is packaged/installed standalone. ' +
-                    'Run: node packages/apra-fleet-se/scripts/vendor-schemas.mjs',
-            );
-        }
-        return MONOREPO_SCHEMAS_DIR;
-    }
+    if (exists(PACKAGE_LOCAL_SCHEMAS_DIR)) return PACKAGE_LOCAL_SCHEMAS_DIR;
 
     return null;
 }
@@ -182,8 +157,8 @@ const VENDOR_SCHEMAS_DIR = resolveSchemasDir();
  * Exported (in addition to being used internally) so tests can point it at
  * a fixture directory to prove the loader reads real schema content
  * correctly, independent of whichever schemas directory resolveSchemasDir()
- * would pick in this checkout -- see test/fixtures/vendor-apra-pm-schemas/
- * (a snapshot of vendor/apra-pm/agents/schemas/) and
+ * would pick in this checkout -- see test/fixtures/apra-pm-schemas/
+ * (a snapshot of packages/apra-fleet-se/apra-pm/agents/schemas/) and
  * test/contracts-schema-loader.test.mjs.
  *
  * Returns `null` (not a throw) when the file does not exist -- this is the
@@ -254,7 +229,7 @@ export function assertVersionPin(role, schema, expectedMajor) {
         throw new Error(
             `[contracts] Version-pin mismatch for role "${role}": this module was written against ` +
                 `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` +
-                `${JSON.stringify(schema && schema.$id)}. A vendor/apra-pm submodule bump changed this ` +
+                `${JSON.stringify(schema && schema.$id)}. A packages/apra-fleet-se/apra-pm submodule bump changed this ` +
                 `role's contract -- update contracts.mjs (and re-verify every call site that consumes ` +
                 `this schema) before accepting the new vendored version.`,
         );
@@ -317,11 +292,11 @@ export function warnIfVendorFileUnexpectedlyMissing(role, fileBaseName) {
     if (!dirExists) return; // whole-directory absence: quiet, documented fallback state
 
     console.warn(
-        `[contracts] WARNING: vendor/apra-pm/agents/schemas/ exists (${VENDOR_SCHEMAS_DIR}) but ` +
+        `[contracts] WARNING: apra-pm schemas directory exists (${VENDOR_SCHEMAS_DIR}) but ` +
             `${fileBaseName}.json is missing from it. Role "${role}" is silently falling back to a ` +
             `possibly-stale hand-written literal in contracts.mjs instead of the newly-vendored ` +
             `contract. If this role legitimately has no output schema, add it to ` +
-            `ROLES_WITHOUT_OUTPUT_SCHEMA in contracts.mjs; otherwise this looks like a submodule bump ` +
+            `ROLES_WITHOUT_OUTPUT_SCHEMA in contracts.mjs; otherwise this looks like an apra-pm update ` +
             `that dropped/renamed a schema file this module expects -- investigate before trusting the ` +
             `fallback.`,
     );
@@ -364,7 +339,7 @@ function resolveOutputSchema(role, expectedMajor, fallback) {
 // should degrade to a working, if possibly stale, validator rather than
 // crash contracts.mjs at import time and break every consumer (runner.js,
 // cli.mjs). Each literal was originally cross-checked against its role's
-// prose contract in vendor/apra-pm/agents/<role>.md; apra-fleet-unw.21
+// prose contract in packages/apra-fleet-se/apra-pm/agents/<role>.md; apra-fleet-unw.21
 // subsequently aligned that prose (and added the sibling
 // agents/schemas/<role>-output.json this module now prefers) to these exact
 // shapes, so there is no live prose/schema divergence to document here.
@@ -380,7 +355,7 @@ const taskAssignmentSchema = {
 };
 
 // Fallback for role "plan-reviewer". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/plan-reviewer-output.json.
+// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/plan-reviewer-output.json.
 const FALLBACK_planReviewerVerdict = {
     $id: 'planReviewerVerdict',
     type: 'object',
@@ -393,7 +368,7 @@ const FALLBACK_planReviewerVerdict = {
 };
 
 // Fallback for role "reviewer". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/reviewer-output.json.
+// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json.
 const FALLBACK_reviewerVerdict = {
     $id: 'reviewerVerdict',
     type: 'object',
@@ -402,7 +377,7 @@ const FALLBACK_reviewerVerdict = {
         notes: { type: 'string' },
         reopenIds: { type: 'array', items: { type: 'string' } },
         // apra-fleet-eft.67.2: optional, deliberately NOT in `required` below
-        // -- mirrors vendor/apra-pm/agents/schemas/reviewer-output.json
+        // -- mirrors packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json
         // (apra-fleet-eft.67.1). Flags reopened beads whose ACCEPTANCE
         // CRITERIA are themselves defective and can only be corrected by a
         // planner, not re-developed this cycle (see runner.js's replan
@@ -427,7 +402,7 @@ const FALLBACK_reviewerVerdict = {
 };
 
 // Fallback for role "doer". Canonical source once the submodule pointer is
-// bumped: vendor/apra-pm/agents/schemas/doer-output.json.
+// bumped: packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json.
 const FALLBACK_doerReport = {
     $id: 'doerReport',
     type: 'object',
@@ -464,7 +439,7 @@ export const streakAssignment = {
 };
 
 // Fallback for role "deployer". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/deployer-output.json.
+// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/deployer-output.json.
 const FALLBACK_deployerReport = {
     $id: 'deployerReport',
     type: 'object',
@@ -476,7 +451,7 @@ const FALLBACK_deployerReport = {
 };
 
 // Fallback for role "integ-test-runner". Canonical source once the
-// submodule pointer is bumped: vendor/apra-pm/agents/schemas/integ-test-runner-output.json.
+// submodule pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/integ-test-runner-output.json.
 // apra-fleet-eft.66.1: `deployedSha` added (optional) alongside the vendor/
 // apra-pm bump to commit 844112e -- validatePart2Evidence (runner.js) reads
 // it as the primary part-2 SHA-freshness evidence source, falling back to
@@ -499,7 +474,7 @@ const FALLBACK_integReport = {
 };
 
 // Fallback for role "ci-watcher". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/ci-watcher-output.json.
+// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/ci-watcher-output.json.
 const FALLBACK_ciReport = {
     $id: 'ciReport',
     type: 'object',
@@ -511,7 +486,7 @@ const FALLBACK_ciReport = {
 };
 
 // Fallback for role "harvester". Canonical source once the submodule
-// pointer is bumped: vendor/apra-pm/agents/schemas/harvester-output.json.
+// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/harvester-output.json.
 const FALLBACK_harvesterReport = {
     $id: 'harvesterReport',
     type: 'object',
@@ -526,7 +501,7 @@ const FALLBACK_harvesterReport = {
 // orchestrator's own synthesized pass/fail gate at the end of a sprint
 // cycle (feedback.md finding A6: today's "Fail" verdict is a no-op).
 // Application-owned per the layering proposal (section 4.4): there is
-// nothing to load from vendor/apra-pm for this one, and there never will
+// nothing to load from packages/apra-fleet-se/apra-pm for this one, and there never will
 // be.
 export const finalVerdict = {
     $id: 'finalVerdict',
@@ -590,7 +565,7 @@ export const FALLBACK_SCHEMAS = Object.freeze({
 });
 
 // Map of the SCHEMAS/FALLBACK_SCHEMAS export name -> the role string whose
-// vendor/apra-pm/agents/schemas/<role>-output.json it resolves from.
+// packages/apra-fleet-se/apra-pm/agents/schemas/<role>-output.json it resolves from.
 // Exported for the same test-only reason as FALLBACK_SCHEMAS above.
 export const ROLE_FOR_SCHEMA_NAME = Object.freeze({
     planReviewerVerdict: 'plan-reviewer',
@@ -741,7 +716,7 @@ function getInputValidator(role) {
 
 /**
  * Validates an assembled role-dispatch context object against the role's
- * input schema (vendor/apra-pm/agents/schemas/<role>-input.json), BEFORE
+ * input schema (packages/apra-fleet-se/apra-pm/agents/schemas/<role>-input.json), BEFORE
  * any agent() call is made. See the section 5 header comment above for the
  * full rationale, the no-op case, and how a future runner.js integration
  * should call this.

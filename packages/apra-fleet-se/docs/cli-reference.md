@@ -168,11 +168,11 @@ independent of the server-command resolution above:
    practice: the launcher sets it to `~/.apra-fleet/schemas` whenever it is
    unset (see `docs/authoring-workflows.md` Section 4/7), so `contracts.mjs`
    itself requires no code change for the installed-binary case.
-2. `dist/agents/schemas/` -- populated by the root package's `scripts/vendor-pm.mjs`
+2. `dist/agents/schemas/` -- populated by the root package's `scripts/dist-pm.mjs`
    at `prepublishOnly` (the same artifact `dist/auto-sprint.mjs` ships next to).
 3. `packages/apra-fleet-se/vendor/schemas/` -- a package-local copy inside
    this package's own directory tree, populated by `scripts/vendor-schemas.mjs`.
-4. `vendor/apra-pm/agents/schemas/`, three levels up -- this monorepo's live
+4. `packages/apra-fleet-se/apra-pm/agents/schemas/`, three levels up -- this monorepo's live
    submodule checkout. Dev-convenience fallback only; emits a one-time
    `console.warn` when used, since it does not exist in a packaged/installed
    layout.

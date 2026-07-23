@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 // dynamic import.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-apra-pm-schemas');
+const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
 
 /**
  * Dynamically (re)imports contracts.mjs with
@@ -83,7 +83,7 @@ function makeTmpFixtureCopy(prefix, { omit = [] } = {}) {
 }
 
 describe('whole-directory absence stays quiet (documented fallback state)', () => {
-    test('no console.warn when vendor/apra-pm/agents/schemas/ does not exist at all', async () => {
+    test('no console.warn when packages/apra-fleet-se/apra-pm/agents/schemas/ does not exist at all', async () => {
         const missingDir = path.join(__dirname, 'fixtures', 'does-not-exist-vendor-schemas-dir');
         assert.ok(!fs.existsSync(missingDir), 'test setup: this directory must not exist');
 

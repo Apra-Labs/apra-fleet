@@ -343,7 +343,7 @@ test('(c) concurrent same-parent child-id allocation never collides (constraint 
         const seqs = grants.map((g) => g.seq).sort((a, b) => a - b);
         assert.deepEqual(seqs, Array.from({ length: N }, (_, i) => i + 1), 'seqs are a dense, gap-free 1..N');
     } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch(e) {}
     }
 });
 
@@ -411,7 +411,7 @@ test('(d) Path A resolves a REAL single-row wedged clone with zero data loss', {
         assert.equal(dolt(wc.cloneB, ['push', 'origin', 'main'], wc.rootPath).code, 0, 'the reconciled clone republishes cleanly');
     } finally {
         // Teardown even on failure: remove the whole temp workspace.
-        fs.rmSync(root, { recursive: true, force: true });
+        try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch(e) {}
     }
 });
 
@@ -482,7 +482,7 @@ test('(e) Path B discards, re-bootstraps a REAL wedged clone, and replays the pe
         assert.ok(replayed.length > 0, 'the replayed pending mutation reached the shared remote (not lost)');
         assert.equal(replayed[0].status, 'open', 'the replayed mutation has its original value');
     } finally {
-        fs.rmSync(root, { recursive: true, force: true });
+        try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch(e) {}
     }
 });
 

@@ -205,7 +205,7 @@ a max-cycles knob. `runner.js` never reads `args.branch`, `args.goal`, `args.bas
 `args.max_cycles` -- `MAX_CYCLES = 5` is hardcoded (runner.js:9). There is no `git` interaction
 anywhere in runner.js: no branch creation, no commits verified, no PR -- despite the CLI help
 (cli.mjs:33-38), the auto-sprint skill contract (issues/branch/goal/max_cycles/base_branch/
-requirementsFile), and the pm skill (`vendor/apra-pm/skills/pm/SKILL.md`) all promising
+requirementsFile), and the pm skill (`packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md`) all promising
 branch+PR semantics. The diagram (`SE/auto-sprint/docs/auto-sprint-diagram.md`) is broadly
 faithful to runner.js's loop shape but inherits none of the goal-priority exit it advertises
 externally.

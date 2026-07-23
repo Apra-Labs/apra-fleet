@@ -64,7 +64,7 @@ a single member.
 pseudo-role** (the constant `ROLE_ORCHESTRATOR = 'orchestrator'`): it names
 which physical member the orchestrating process itself (this script, issuing
 every `bd`/`git` command directly) runs as. It has no
-`vendor/apra-pm/agents/*.md` definition, no schema, and is never passed to
+`packages/apra-fleet-se/apra-pm/agents/*.md` definition, no schema, and is never passed to
 `agent()`. `getMemberForRole(ROLE_ORCHESTRATOR)` resolves the orchestrator
 member the same way any other role resolves via `roleMap`/fallback.
 

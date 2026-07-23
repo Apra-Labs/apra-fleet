@@ -811,7 +811,7 @@ describe('runInstall multi-provider', () => {
         const ps = p.toString();
         if (ps.includes('version.json')) return true;
         if (ps.includes('hooks-config.json')) return true;
-        if (ps.includes('vendor') && ps.includes('agents')) return true;
+        if (ps.includes('apra-pm') && ps.includes('agents')) return true;
         return false;
       });
 
@@ -845,7 +845,7 @@ describe('runInstall multi-provider', () => {
       const ps = p.toString();
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('vendor') && ps.includes('agents')) return true;
+      if (ps.includes('apra-pm') && ps.includes('agents')) return true;
       return false;
     });
 
@@ -914,7 +914,7 @@ describe('runInstall multi-provider', () => {
         const ps = p.toString();
         if (ps.includes('version.json')) return true;
         if (ps.includes('hooks-config.json')) return true;
-        if (ps.includes('vendor') && ps.includes('agents')) return true;
+        if (ps.includes('apra-pm') && ps.includes('agents')) return true;
         return false;
       });
 
@@ -947,7 +947,7 @@ describe('runInstall multi-provider', () => {
       const ps = p.toString();
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('vendor') && ps.includes('agents')) return true;
+      if (ps.includes('apra-pm') && ps.includes('agents')) return true;
       return false;
     });
 
@@ -1186,7 +1186,7 @@ describe('runInstall multi-provider', () => {
       const ps = p.toString();
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('vendor') && ps.includes('agents')) return true;
+      if (ps.includes('apra-pm') && ps.includes('agents')) return true;
       return false;
     });
 

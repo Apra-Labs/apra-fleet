@@ -1067,7 +1067,7 @@ on the Windows host in an isolated sandbox (own HOME, port, throwaway
 remotes), with real model dispatches. The rehearsal surfaced six holes, four
 of which would have failed the real run:
 
-1. (doc) Playbook assumes a built repo: `dist/` present and `vendor/apra-pm`
+1. (doc) Playbook assumes a built repo: `dist/` present and `packages/apra-fleet-se/apra-pm`
    submodule initialized. Fresh checkout fails at `install` step 6/12.
    Fix: prerequisites block (recursive clone/`git submodule update --init
    --recursive`, `npm install && npm run build`).

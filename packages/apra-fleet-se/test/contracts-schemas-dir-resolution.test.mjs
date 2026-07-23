@@ -30,24 +30,15 @@ describe('resolveSchemasDir', () => {
         assert.ok(candidate_matches(result, 'dist', 'agents', 'schemas'), result);
     });
 
-    test('branch 3: falls through to packages/apra-fleet-se/vendor/schemas when dist/agents/schemas is absent', () => {
+    test('branch 3: falls through to packages/apra-fleet-se/apra-pm/agents/schemas when dist/agents/schemas is absent', () => {
         const result = resolveSchemasDir({
             env: {},
             exists: (candidate) => !candidate_matches(candidate, 'dist', 'agents', 'schemas'),
         });
-        assert.ok(candidate_matches(result, 'apra-fleet-se', 'vendor', 'schemas'), result);
+        assert.ok(candidate_matches(result, 'apra-fleet-se', 'apra-pm', 'agents', 'schemas'), result);
     });
 
-    test('branch 4: falls through to the monorepo vendor/apra-pm submodule path when neither bundled copy exists', () => {
-        const result = resolveSchemasDir({
-            env: {},
-            exists: (candidate) => candidate_matches(candidate, 'vendor', 'apra-pm', 'agents', 'schemas'),
-        });
-        assert.ok(candidate_matches(result, 'vendor', 'apra-pm', 'agents', 'schemas'), result);
-        assert.ok(!candidate_matches(result, 'apra-fleet-se', 'vendor', 'schemas'), result);
-    });
-
-    test('branch 5: returns null when none of the four candidates exist -- the quiet fallback-literal signal', () => {
+    test('branch 4: returns null when none of the candidates exist -- the quiet fallback-literal signal', () => {
         const result = resolveSchemasDir({ env: {}, exists: () => false });
         assert.strictEqual(result, null);
     });

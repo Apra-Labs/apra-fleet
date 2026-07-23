@@ -155,7 +155,7 @@ export async function defaultReadConfig(configPath = DEFAULT_CONFIG_PATH) {
  */
 export async function defaultRemovePath(targetPath) {
     const fs = await import('node:fs/promises');
-    await fs.rm(targetPath, { recursive: true, force: true });
+    await fs.rm(targetPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
 /**

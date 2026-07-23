@@ -46,8 +46,8 @@ const ROLE_REVIEWER = roleConst('reviewer');
 //
 // 'orchestrator' is deliberately NOT a member of `contracts.ROLES` and must
 // never be added to it: that enum is vendored (it mirrors the `name:`
-// frontmatter of vendor/apra-pm/agents/*.md 1:1) and this repo must not
-// diverge from it. 'orchestrator' has no vendor/apra-pm/agents/*.md
+// frontmatter of packages/apra-fleet-se/apra-pm/agents/*.md 1:1) and this repo must not
+// diverge from it. 'orchestrator' has no packages/apra-fleet-se/apra-pm/agents/*.md
 // definition, no output/input schema, and is never passed to `agent()` --
 // it is never dispatched as a fleet agent at all. It exists purely as an
 // APPLICATION-LEVEL pseudo-role: a `roleMap` key a caller can use to pin
@@ -2271,7 +2271,7 @@ export function validateArgs(args) {
 // ---------------------------------------------------------------------------
 //
 // Builds a self-contained planner prompt per the vendored
-// vendor/apra-pm/agents/planner.md contract: the planner has no memory of
+// packages/apra-fleet-se/apra-pm/agents/planner.md contract: the planner has no memory of
 // this conversation, so every fact it needs (which sprint root issue(s) are
 // in scope, the goal priority, the requirements file content, and -- for a
 // re-planning cycle -- explicit "gaps only" framing) must be spelled out in
@@ -3035,7 +3035,7 @@ export function isHostedGithubRemote(remoteUrl) {
 // apra-fleet-eft.66 / eft.66.1: originally the runner was asked to echo the
 // SHA back via a "PART2_SHA: <sha>" marker embedded in the free-text
 // `summary` field, which bypassed the role's own output schema and forced
-// this consumer to grep prose. vendor/apra-pm commit 844112e
+// this consumer to grep prose. packages/apra-fleet-se/apra-pm commit 844112e
 // (fix/integ-runner-part2-sha-freshness) added a proper, optional
 // `deployedSha` field to integ-test-runner-output.json for exactly this
 // purpose. `validatePart2Evidence` now reads `integResult.deployedSha` as
@@ -3110,7 +3110,7 @@ export function validatePart2Evidence(integResult, deployedSha) {
             console.warn(
                 '[deprecated] validatePart2Evidence: no structured `deployedSha` report field found; ' +
                 'falling back to the legacy "PART2_SHA: <sha>" summary-marker grep. Upgrade the ' +
-                'integ-test-runner agent (vendor/apra-pm >= 844112e) to emit the deployedSha field ' +
+                'integ-test-runner agent (packages/apra-fleet-se/apra-pm >= 844112e) to emit the deployedSha field ' +
                 '-- this fallback exists only for reports from a pre-upgrade build and will be removed.'
             );
         }
@@ -4646,7 +4646,7 @@ async function runSprintCycle(context) {
             // apra-fleet-xbu.C4: the specific, self-inflicted deadlock shape
             // this incident traced back to -- a `parent-child` edge one way
             // plus a `blocks` edge the other way between the SAME two beads
-            // (see vendor/apra-pm/agents/_shared/GRAPH-SEMANTICS.md). `bd
+            // (see packages/apra-fleet-se/apra-pm/agents/_shared/GRAPH-SEMANTICS.md). `bd
             // dep cycles` does not detect this shape (it does not walk
             // parent-child edges), so it silently reads as "everything
             // blocked" with no actionable diagnosis. Check for it here,
@@ -6110,7 +6110,7 @@ async function runSprintCycle(context) {
                 // require freshness against.
                 //
                 // apra-fleet-eft.66.1: request the structured `deployedSha`
-                // output-schema field (vendor/apra-pm commit 844112e) rather
+                // output-schema field (packages/apra-fleet-se/apra-pm commit 844112e) rather
                 // than a prose marker embedded in `summary` -- the schema
                 // field is the primary evidence source `validatePart2Evidence`
                 // reads; the old "PART2_SHA: <sha>" summary marker is kept

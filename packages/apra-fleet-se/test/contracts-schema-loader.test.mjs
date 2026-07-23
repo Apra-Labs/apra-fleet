@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // apra-fleet-unw.22 -- tests for contracts.mjs's reframing as a thin
-// adapter over vendor/apra-pm/agents/schemas/, per
+// adapter over packages/apra-fleet-se/apra-pm/agents/schemas/, per
 // packages/apra-fleet-workflow/docs/agent-schema-layering-proposal.md
 // sections 4.3 (output schemas) and 6.3 (input pre-flight validation).
 //
@@ -24,8 +24,7 @@ import { fileURLToPath } from 'node:url';
 //      env-var + dynamic-import trick cannot leak into other test files.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-apra-pm-schemas');
-const VERSION_MISMATCH_FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-apra-pm-schemas-version-mismatch');
+const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
 
 // -----------------------------------------------------------------------
 // Group 1: loader primitives
@@ -34,7 +33,7 @@ const VERSION_MISMATCH_FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-a
 const { loadSchemaFileFrom, assertVersionPin, majorVersionFromId } = await import('../auto-sprint/contracts.mjs');
 
 describe('loadSchemaFileFrom (loader primitive)', () => {
-    test('AC2: reads real schema content from a fixture snapshot of vendor/apra-pm/agents/schemas/', () => {
+    test('AC2: reads real schema content from a fixture snapshot of packages/apra-fleet-se/apra-pm/agents/schemas/', () => {
         const harvester = loadSchemaFileFrom(FIXTURES_DIR, 'harvester-output');
         assert.ok(harvester, 'expected harvester-output.json to load');
         assert.strictEqual(harvester.$id, 'apra-pm/harvester-output@1');
@@ -101,7 +100,7 @@ describe('assertVersionPin (loader primitive)', () => {
     });
 
     test('AC4: throws loudly when the vendored $id major version does not match', () => {
-        const mismatched = loadSchemaFileFrom(VERSION_MISMATCH_FIXTURES_DIR, 'harvester-output');
+        const mismatched = { $id: 'apra-pm/harvester-output@2' };
         assert.ok(mismatched, 'expected the version-mismatch fixture to load');
         assert.strictEqual(mismatched.$id, 'apra-pm/harvester-output@2');
         assert.throws(
@@ -115,7 +114,7 @@ describe('assertVersionPin (loader primitive)', () => {
 // Group 2: end-to-end wiring, module resolved against the fixture dir
 // -----------------------------------------------------------------------
 
-describe('SCHEMAS / validateRoleInput resolved against a fixture vendor/apra-pm', () => {
+describe('SCHEMAS / validateRoleInput resolved against a fixture packages/apra-fleet-se/apra-pm', () => {
     let wired;
 
     before(async () => {
@@ -214,7 +213,7 @@ describe('fallback shim against contracts.mjs\'s real, unoverridden resolveSchem
         // Imports the module the NORMAL way (no override), i.e. exactly
         // how runner.js imports it. Whichever of resolveSchemasDir()'s four
         // tiers this checkout resolves to (dist/agents/schemas,
-        // packages/apra-fleet-se/vendor/schemas, the monorepo vendor/apra-pm
+        // packages/apra-fleet-se/vendor/schemas, the monorepo packages/apra-fleet-se/apra-pm
         // submodule, or none of them -- the fallback-literal case), every
         // export below must hold the same shape -- this is exactly what
         // "shim" means.

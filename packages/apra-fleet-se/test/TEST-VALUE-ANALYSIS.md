@@ -191,7 +191,7 @@ covered elsewhere) / **LOW** (cheap change-detector, marginal protection) /
 | 61 | mock-sprint-stall-detection | contradictory CHANGES_NEEDED -> ReviewerContractViolationError | 35,108 | HIGH | N8b: a finished sprint misreported as stalled; empty-reopenIds CHANGES_NEEDED looping forever | none | fake-bd |
 | 62 | newtasks-validation | validateNewTask | 8 | HIGH | The N3 injection allowlist loosening ($(...), backticks, trailing backslash, bogus priority reaching bd create) | wiring proven in #38 | -- |
 | 63 | regen-vendor-schema-fixtures | pure copy mechanics | 27 | LOW | A dev script's read/copy/diff helpers | #64 is the part that matters | -- |
-| 64 | regen-vendor-schema-fixtures | checked-in fixture consistency | 13 | HIGH | The fixture snapshot drifting from the real vendor/apra-pm submodule -- every fixture-based schema test in the suite silently tests stale schemas without this | none (it validates the others' foundation) | -- |
+| 64 | regen-vendor-schema-fixtures | checked-in fixture consistency | 13 | HIGH | The fixture snapshot drifting from the real packages/apra-fleet-se/apra-pm submodule -- every fixture-based schema test in the suite silently tests stale schemas without this | none (it validates the others' foundation) | -- |
 | 65 | runner-arg-contract | validateIssueId | 5 | HIGH | Shell-injection ids reaching command() | #67 aggregates | -- |
 | 66 | runner-arg-contract | validateBranchName | 2 | HIGH | Shell-injection branch names | #67 | -- |
 | 67 | runner-arg-contract | validateArgs | 12 | HIGH | Contract defaults/required args; roleMap normalization + collision; unknown args | #5 (CLI side) | -- |

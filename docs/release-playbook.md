@@ -2,18 +2,18 @@
 
 How to cut a release. That's it.
 
-## 0. Check the vendor/apra-pm submodule
+## 0. Check the packages/apra-fleet-se/apra-pm submodule
 
-apra-fleet vendors the apra-pm skill at `vendor/apra-pm`. Before releasing,
+apra-fleet vendors the apra-pm skill at `packages/apra-fleet-se/apra-pm`. Before releasing,
 make sure it points at a real, merged commit on apra-pm's `main` -- not a
 feature-branch tip or a leftover detached-HEAD commit from development.
 
 ```bash
-cd vendor/apra-pm
+cd packages/apra-fleet-se/apra-pm
 git fetch origin
 git checkout main && git pull origin main   # move to latest merged apra-pm
 cd ../..
-git add vendor/apra-pm
+git add packages/apra-fleet-se/apra-pm
 git commit -m "chore(vendor): repoint apra-pm submodule to main"
 ```
 

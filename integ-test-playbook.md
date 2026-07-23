@@ -83,7 +83,7 @@ Prerequisites (stabilization Issue 43: a fresh checkout fails without
 these; a sprint workspace normally has all three already):
 - `<repo-root>` cloned recursively (`git clone --recursive`, or
   `git submodule update --init --recursive` after checkout) -- `install`
-  fails at its fleet-skill step if `vendor/apra-pm` is empty.
+  fails at its fleet-skill step if `packages/apra-fleet-se/apra-pm` is empty.
 - `npm install && npm run build` has been run -- every step below invokes
   `node dist/index.js`.
 - The runner's real session has a live Claude credential (see the
@@ -122,7 +122,7 @@ and reports the server listening on `18700`.
 
 ### Seed the sandbox beads DB (structural isolation, no bootstrap, no neutralize)
 
-Adopts the e2e suite's own technique (see `vendor/apra-pm/e2e/run-e2e.mjs`):
+Adopts the e2e suite's own technique (see `packages/apra-fleet-se/apra-pm/e2e/run-e2e.mjs`):
 seed the sandbox's local beads DB straight from the git-committed
 `.beads/issues.jsonl` already sitting in the clone above, rather than the
 retired local-DB-recovery path this file previously documented here
@@ -210,7 +210,7 @@ node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
 A faster alternative to Teardown + Setup between test runs in the same
 session. It restores the toy repo and its beads state to pristine without
 reinstalling or re-cloning, using the same e2e-pattern reset the e2e suite
-uses on this toy repo (see `vendor/apra-pm/e2e/run-e2e.mjs`): reset the git
+uses on this toy repo (see `packages/apra-fleet-se/apra-pm/e2e/run-e2e.mjs`): reset the git
 working tree to the sandbox-local mirror's `main`, then throw away and
 re-seed the local beads DB from the git-tracked JSONL. The git `origin`
 remote wired during `## Setup` (the sandbox-local `$GIT_MIRROR`) is

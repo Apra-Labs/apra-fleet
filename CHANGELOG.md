@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] -- Auto-sprint as a service: always-on multi-sprint supervisor
 
+- **apra-pm architectural reorg** -- The `vendor/apra-pm` git submodule has been removed and replaced with a package-local deep copy under `packages/apra-fleet-se/apra-pm`. This eliminates silent submodule synchronization drift and significantly streamlines packaging, CI, and E2E processes that previously depended on the submodule being manually initialized.
+
 Sprint goal: turn the single-shot, run-to-completion auto-sprint CLI into an always-on
 supervisor service that runs multiple concurrent sprints with member+issue-scope
 reservation, a sprint-stack dashboard, and orchestrator-bracketed git+Dolt sync, with the

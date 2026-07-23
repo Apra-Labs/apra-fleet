@@ -115,6 +115,6 @@ explicitly).
 | `ci-watcher` | Not dispatched by this runner today (contract exists in `contracts.mjs`/vendor for future use) | -- | -- |
 
 Each role's full behavioral contract (what it reads, what it does, what it
-must return) lives in the vendored `vendor/apra-pm/agents/<role>.md` files;
+must return) lives in the vendored `packages/apra-fleet-se/apra-pm/agents/<role>.md` files;
 see `docs/role-contracts.md` in this folder for how this package consumes
 those definitions.

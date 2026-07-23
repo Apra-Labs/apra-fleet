@@ -236,7 +236,7 @@ standalone npm packages. (`packages/fleet-api-contract` is the one exception
 Inside `dist/`, two independent build steps contribute content beyond tsc's
 own TypeScript output:
 
-- `scripts/vendor-pm.mjs` (prepublishOnly) copies the `vendor/apra-pm`
+- `scripts/dist-pm.mjs` (prepublishOnly) copies the `packages/apra-fleet-se/apra-pm`
   submodule's `skills/pm`, `agents/` (including `agents/schemas/*.json`),
   and `.claude/workflows/` into `dist/skills/pm`, `dist/agents/`, and
   `dist/workflows/` respectively -- needed because `npm install` never
@@ -249,7 +249,7 @@ own TypeScript output:
   (loaded at runtime via `engine.executeFile()`, not importable/bundlable) to
   `dist/auto-sprint-runner.mjs` as a sibling asset. `dist/auto-sprint.mjs`
   resolves its role schemas from the `dist/agents/schemas/` directory
-  `vendor-pm.mjs` already populated -- no separate copy step for that
+  `dist-pm.mjs` already populated -- no separate copy step for that
   (apra-fleet-bun / apra-fleet-3ns.2.1). See
   `packages/apra-fleet-se/docs/cli-reference.md` for the full schema- and
   server-resolution order.
@@ -267,7 +267,7 @@ own TypeScript output:
 **What is NOT shipped:** `src/` (TypeScript source), `tsconfig.json`, build
 scripts (`scripts/build-sea.mjs`, `scripts/gen-sea-config.mjs`,
 `scripts/package-sea.mjs`, `scripts/install-hooks.mjs`, `scripts/bundle-se.mjs`,
-`scripts/vendor-pm.mjs`), `node_modules/`, SEA artifacts (`dist/sea-bundle.cjs`,
+`scripts/dist-pm.mjs`), `node_modules/`, SEA artifacts (`dist/sea-bundle.cjs`,
 `dist/sea-prep.blob`, `dist/*.exe`, platform binaries). The `packages/`
 workspace source directories themselves are also not shipped -- only their
 bundled/copied output inside `dist/`; `packages/apra-fleet-se`,
@@ -290,7 +290,7 @@ Validated tarball size (post apra-fleet-3ns.2): ~2.7 MB unpacked, 744 files.
 | `bin` | `{ "apra-fleet": "dist/index.js", "auto-sprint": "dist/auto-sprint.mjs" }` | npm sets the executable bit; both entries' shebangs are preserved (tsc for the former, esbuild for the latter) |
 | `engines.node` | `>=22.0.0` | Node 22 required for `node:sea` API + native `fetch` |
 | `publishConfig.access` | `public` | Required for scoped packages on public npm |
-| `prepublishOnly` | `node scripts/vendor-pm.mjs && npm run vendor-schemas --workspace=@apralabs/apra-fleet-se && npm run build && npm run build:se` | Vendors submodule content, snapshots apra-fleet-se's package-local schema copy, runs tsc, then esbuild-bundles auto-sprint -- see above |
+| `prepublishOnly` | `node scripts/dist-pm.mjs && npm run vendor-schemas --workspace=@apralabs/apra-fleet-se && npm run build && npm run build:se` | Vendors submodule content, snapshots apra-fleet-se's package-local schema copy, runs tsc, then esbuild-bundles auto-sprint -- see above |
 | `type` | `module` | ESM output; tsc emits `.js` (not `.mjs`); the esbuild auto-sprint bundle emits `.mjs` |
 
 ---

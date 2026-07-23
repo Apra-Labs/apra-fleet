@@ -223,23 +223,16 @@ function buildDevManifest(root: string): AssetManifest {
     scripts[entry] = `scripts/${entry}`;
   }
 
-  // Source PM skills from vendor/apra-pm submodule (dev mode), fall back to
-  // dist/ for npm global installs where submodule is absent. Skills have no
-  // build-time resolution step, so reading the submodule directly is safe.
-  const vendorPmSkills = path.join(root, 'vendor', 'apra-pm', 'skills', 'pm');
+  // Source PM skills from apra-pm local package copy (dev mode), fall back to
+  // dist/ for npm global installs. Skills have no
+  // build-time resolution step, so reading directly is safe.
+  const vendorPmSkills = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'skills', 'pm');
   const pmSkillsDir = fs.existsSync(vendorPmSkills) ? vendorPmSkills : path.join(root, 'dist', 'skills', 'pm');
-  const pmBase = fs.existsSync(vendorPmSkills) ? 'vendor/apra-pm/skills/pm' : 'dist/skills/pm';
+  const pmBase = fs.existsSync(vendorPmSkills) ? 'packages/apra-fleet-se/apra-pm/skills/pm' : 'dist/skills/pm';
 
-  // Read straight from the submodule -- same as skills above. (Each
-  // vendor/apra-pm/agents/*.md file used to contain an unresolved
-  // `<!-- GRAPH-SEMANTICS -->` marker that only scripts/vendor-pm.mjs's
-  // submodule -> dist/agents copy step resolved, which is why this used to
-  // prefer dist/agents when present and warn on the raw-submodule fallback.
-  // apra-pm PR#29 replaced that marker with an explicit prose pointer to
-  // vendor/apra-pm/agents/_shared/GRAPH-SEMANTICS.md in every agent file, so
-  // there is nothing left to resolve and no dist/agents dependency here.)
-  const agentsDir = path.join(root, 'vendor', 'apra-pm', 'agents');
-  const agentsBase = 'vendor/apra-pm/agents';
+  // Read straight from the local package copy -- same as skills above.
+  const agentsDir = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents');
+  const agentsBase = 'packages/apra-fleet-se/apra-pm/agents';
 
   const skills = collectFilesRec(pmSkillsDir, pmBase, pmBase);
   const agents = collectFilesRec(agentsDir, agentsBase, agentsBase);
@@ -247,16 +240,16 @@ function buildDevManifest(root: string): AssetManifest {
 
   // auto-sprint-args helper skill (vendored alongside apra-pm's auto-sprint workflow;
   // claude-only install target, see the install flow's PM cost/workflow step).
-  const vendorArgsSkill = path.join(root, 'vendor', 'apra-pm', '.claude', 'skills', 'auto-sprint-args');
+  const vendorArgsSkill = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'skills', 'auto-sprint-args');
   const distArgsSkill = path.join(root, 'dist', 'skills', 'auto-sprint-args');
   const argsSkillDir = fs.existsSync(vendorArgsSkill) ? vendorArgsSkill : distArgsSkill;
   const argsSkillBase = fs.existsSync(vendorArgsSkill)
-    ? 'vendor/apra-pm/.claude/skills/auto-sprint-args'
+    ? 'packages/apra-fleet-se/apra-pm/.claude/skills/auto-sprint-args'
     : 'dist/skills/auto-sprint-args';
   const autoSprintArgsSkill = collectFilesRec(argsSkillDir, argsSkillBase, argsSkillBase);
 
-  // Collect auto-sprint.js from vendor/apra-pm/.claude/workflows (or dist/workflows fallback)
-  const vendorWorkflows = path.join(root, 'vendor', 'apra-pm', '.claude', 'workflows');
+  // Collect auto-sprint.js from apra-pm/.claude/workflows (or dist/workflows fallback)
+  const vendorWorkflows = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'workflows');
   const workflowsSrc = fs.existsSync(vendorWorkflows)
     ? vendorWorkflows
     : path.join(root, 'dist', 'workflows');
@@ -357,9 +350,9 @@ export function loadAgentAssets(): Array<{ relPath: string; content: string }> {
   }
 
   const root = findProjectRoot();
-  const vendorAgents = path.join(root, 'vendor', 'apra-pm', 'agents');
+  const vendorAgents = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents');
   const agentsSrc = fs.existsSync(vendorAgents) ? vendorAgents : path.join(root, 'dist', 'agents');
-  const agentsBase = fs.existsSync(vendorAgents) ? 'vendor/apra-pm/agents' : 'dist/agents';
+  const agentsBase = fs.existsSync(vendorAgents) ? 'packages/apra-fleet-se/apra-pm/agents' : 'dist/agents';
 
   const collected = collectFilesRec(agentsSrc, agentsBase, agentsBase);
   for (const [relPath, rootRelativeLabel] of Object.entries(collected)) {
@@ -981,20 +974,6 @@ ${killHint}
   }
 
   // --- Step 7: Install PM skill (optional) ---
-  // Empty-submodule guard: vendor/apra-pm dir exists but was not initialized
-  if (installPm && !isSea()) {
-    const root = findProjectRoot();
-    const vendorDir = path.join(root, 'vendor', 'apra-pm');
-    if (fs.existsSync(vendorDir)) {
-      const skillMarker = path.join(vendorDir, 'skills', 'pm', 'SKILL.md');
-      if (!fs.existsSync(skillMarker)) {
-        console.error(`Error: vendor/apra-pm exists but appears empty (non-recursive clone).
-Run:  git submodule update --init --recursive
-Then re-run:  apra-fleet install`);
-        process.exit(1);
-      }
-    }
-  }
   if (installPm) {
     console.log(`  [7/${totalSteps}] Installing PM skill...`);
     clearDirSync(paths.skillsDir);
@@ -1005,9 +984,9 @@ Then re-run:  apra-fleet install`);
         writeAssetFile(path.join(paths.skillsDir, name), content);
       }
     } else {
-      // Dev/npm mode: prefer vendor/apra-pm submodule, fall back to dist/
+      // Dev/npm mode: prefer apra-pm local copy, fall back to dist/
       const root = findProjectRoot();
-      const vendorPm = path.join(root, 'vendor', 'apra-pm', 'skills', 'pm');
+      const vendorPm = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'skills', 'pm');
       const pmSrc = fs.existsSync(vendorPm) ? vendorPm : path.join(root, 'dist', 'skills', 'pm');
       copyDirSync(pmSrc, paths.skillsDir);
     }
@@ -1082,11 +1061,11 @@ Then re-run:  apra-fleet install`);
           }))
         : (() => {
             const root = findProjectRoot();
-            const vendorArgsSkill = path.join(root, 'vendor', 'apra-pm', '.claude', 'skills', AUTO_SPRINT_ARGS_SKILL_NAME);
+            const vendorArgsSkill = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'skills', AUTO_SPRINT_ARGS_SKILL_NAME);
             const distArgsSkill = path.join(root, 'dist', 'skills', AUTO_SPRINT_ARGS_SKILL_NAME);
             const argsSkillSrc = fs.existsSync(vendorArgsSkill) ? vendorArgsSkill : distArgsSkill;
             const argsSkillBase = fs.existsSync(vendorArgsSkill)
-              ? `vendor/apra-pm/.claude/skills/${AUTO_SPRINT_ARGS_SKILL_NAME}`
+              ? `packages/apra-fleet-se/apra-pm/.claude/skills/${AUTO_SPRINT_ARGS_SKILL_NAME}`
               : `dist/skills/${AUTO_SPRINT_ARGS_SKILL_NAME}`;
             const collected = collectFilesRec(argsSkillSrc, argsSkillBase, argsSkillBase);
             return Object.entries(collected).map(([relPath, rootRelativeLabel]) => ({
@@ -1117,7 +1096,7 @@ Then re-run:  apra-fleet install`);
     const agentsDestDir = paths.agentsDir!;
     fs.mkdirSync(agentsDestDir, { recursive: true });
     // #336's loadAgentAssets() unifies SEA and dev-mode sourcing; its
-    // dev-mode path reads vendor/apra-pm/agents directly (dist/agents only
+    // dev-mode path reads packages/apra-fleet-se/apra-pm/agents directly (dist/agents only
     // as a fallback), preserving this branch's no-dist/agents rule, and it
     // recurses into _shared/ and schemas/ which the old flat readdir missed.
     for (const { relPath, content: rawContent } of loadAgentAssets()) {

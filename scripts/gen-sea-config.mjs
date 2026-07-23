@@ -86,35 +86,33 @@ for (const [name, assetPath] of Object.entries(allScripts)) {
   if (!name.endsWith('.mjs')) scripts[name] = assetPath;
 }
 
-const skills = collectFiles(join(root, 'vendor', 'apra-pm', 'skills', 'pm'), 'vendor/apra-pm/skills/pm', 'vendor/apra-pm/skills/pm');
+const skills = collectFiles(join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'skills', 'pm'), 'packages/apra-fleet-se/apra-pm/skills/pm', 'packages/apra-fleet-se/apra-pm/skills/pm');
 const fleetSkills = collectFiles(join(root, 'skills', 'fleet'), 'skills/fleet');
-// Sourced straight from the submodule, same as agentSchemas below -- no dist/agents
-// copy step required. (Used to read from dist/agents so scripts/vendor-pm.mjs could
+// Sourced straight from apra-pm, same as agentSchemas below -- no dist/agents
+// copy step required. (Used to read from dist/agents so scripts/dist-pm.mjs could
 // inline a `<!-- GRAPH-SEMANTICS -->` marker into each agent file first; apra-pm
 // PR#29 replaced that marker with an explicit prose pointer to
-// vendor/apra-pm/agents/_shared/GRAPH-SEMANTICS.md in every agent file, so there is
-// nothing left for vendor-pm.mjs to resolve here.)
-const agentsDir = join(root, 'vendor', 'apra-pm', 'agents');
-const agents = collectFiles(agentsDir, 'vendor/apra-pm/agents', 'vendor/apra-pm/agents');
+// apra-pm/agents/_shared/GRAPH-SEMANTICS.md in every agent file, so there is
+// nothing left for dist-pm.mjs to resolve here.)
+const agentsDir = join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents');
+const agents = collectFiles(agentsDir, 'packages/apra-fleet-se/apra-pm/agents', 'packages/apra-fleet-se/apra-pm/agents');
 const autoSprintArgsSkill = collectFiles(
-  join(root, 'vendor', 'apra-pm', '.claude', 'skills', 'auto-sprint-args'),
-  'vendor/apra-pm/.claude/skills/auto-sprint-args',
-  'vendor/apra-pm/.claude/skills/auto-sprint-args'
+  join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'skills', 'auto-sprint-args'),
+  'packages/apra-fleet-se/apra-pm/.claude/skills/auto-sprint-args',
+  'packages/apra-fleet-se/apra-pm/.claude/skills/auto-sprint-args'
 );
 
 if (Object.keys(skills).length === 0) {
-  console.error('Error: vendor/apra-pm submodule is not initialized (skills/pm is empty).');
-  console.error('Run: git submodule update --init');
+  console.error('Error: apra-pm directory is missing (skills/pm is empty).');
   process.exit(1);
 }
 if (Object.keys(agents).length === 0) {
-  console.error('Error: vendor/apra-pm submodule is not initialized (agents is empty).');
-  console.error('Run: git submodule update --init');
+  console.error('Error: apra-pm directory is missing (agents is empty).');
   process.exit(1);
 }
 
-// Workflows: vendor source preferred, dist/ fallback (from vendor-pm.mjs copy)
-const workflowsVendorDir = join(root, 'vendor', 'apra-pm', '.claude', 'workflows');
+// Workflows: apra-pm source preferred, dist/ fallback (from dist-pm.mjs copy)
+const workflowsVendorDir = join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'workflows');
 const workflowsDistDir = join(root, 'dist', 'workflows');
 const workflowsSrcDir = existsSync(workflowsVendorDir) ? workflowsVendorDir : workflowsDistDir;
 const workflows = {};
@@ -169,14 +167,13 @@ for (const dep of Object.keys(clientPkg.dependencies ?? {})) {
   }
 }
 
-// Agent role schemas: the glob over vendor/apra-pm/agents/schemas is
+// Agent role schemas: the glob over apra-pm/agents/schemas is
 // authoritative for the file count -- do not hardcode it. Hard-fail if the
-// submodule directory is missing (same guard pattern as the skills/agents
+// directory is missing (same guard pattern as the skills/agents
 // check above).
-const agentSchemasDir = join(root, 'vendor', 'apra-pm', 'agents', 'schemas');
+const agentSchemasDir = join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents', 'schemas');
 if (!existsSync(agentSchemasDir)) {
-  console.error('Error: vendor/apra-pm/agents/schemas is missing (vendor/apra-pm submodule not initialized).');
-  console.error('Run: git submodule update --init');
+  console.error('Error: packages/apra-fleet-se/apra-pm/agents/schemas is missing.');
   process.exit(1);
 }
 const agentSchemas = collectPackageTree(agentSchemasDir, 'agentSchemas');

@@ -13,8 +13,8 @@ import { fileURLToPath } from 'node:url';
 //     runner.js's actual prompt-builder fixes are a PARALLEL issue
 //     (apra-fleet-unw2.1). This file only reads runner.js as text and reads
 //     contracts.mjs's validateRoleInput against the REAL vendored input
-//     schemas (fixture snapshot at test/fixtures/vendor-apra-pm-schemas/*,
-//     a mirror of this repo's vendor/apra-pm/agents/schemas/).
+//     schemas (fixture snapshot at test/fixtures/apra-pm-schemas/*,
+//     a mirror of this repo's packages/apra-fleet-se/apra-pm/agents/schemas/).
 //
 //   - For every role runner.js dispatches, it reconstructs the SAME context
 //     object the corresponding prompt builder (or inline dispatch) in
@@ -50,7 +50,7 @@ import { fileURLToPath } from 'node:url';
 // EXPECTED GREEN.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-apra-pm-schemas');
+const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
 const RUNNER_PATH = path.join(__dirname, '..', 'auto-sprint', 'runner.js');
 
 // contracts.mjs resolves its vendored-schema dir at MODULE-LOAD time from

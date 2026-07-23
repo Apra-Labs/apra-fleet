@@ -1,5 +1,5 @@
 <!-- llm-context: This document describes the auto-sprint workflow installation pipeline -- how auto-sprint.js is sourced from the apra-pm submodule, bundled into the SEA binary, and installed as cost.js (all providers) plus a ~/.claude/workflows/auto-sprint.js copy (Claude only) with appropriate permissions. -->
-<!-- keywords: auto-sprint, cost.js, workflow, SEA asset, AssetManifest, PURE_FUNCTIONS_BEGIN, mergePermissions, vendor/apra-pm, install pipeline -->
+<!-- keywords: auto-sprint, cost.js, workflow, SEA asset, AssetManifest, PURE_FUNCTIONS_BEGIN, mergePermissions, packages/apra-fleet-se/apra-pm, install pipeline -->
 <!-- see-also: ../architecture.md, ../install.md, ../npm-packaging.md -->
 
 # Auto-Sprint Workflow Install Pipeline
@@ -17,9 +17,9 @@ from `auto-sprint.js`. It is safe to `require()` in any Node.js context.
 
 ## Architecture decisions
 
-### Single source of truth: vendor/apra-pm submodule
+### Single source of truth: packages/apra-fleet-se/apra-pm submodule
 
-`auto-sprint.js` lives in `vendor/apra-pm/.claude/workflows/`. The installer reads
+`auto-sprint.js` lives in `packages/apra-fleet-se/apra-pm/.claude/workflows/`. The installer reads
 from that path in dev/npm mode, or from an embedded SEA asset in binary mode. This
 means cost functions stay in sync with the PM skill automatically -- updating the
 submodule pin updates all three artifacts.
@@ -51,14 +51,14 @@ The seven exported functions are:
 
 `AssetManifest` gained a `workflows: Record<string, string>` field alongside
 `skills`, `agents`, etc. In dev/npm mode, `buildDevManifest` populates it from
-`vendor/apra-pm/.claude/workflows/` (falling back to `dist/workflows/`). In SEA
+`packages/apra-fleet-se/apra-pm/.claude/workflows/` (falling back to `dist/workflows/`). In SEA
 mode, `gen-sea-config.mjs` embeds `auto-sprint.js` as a named SEA asset. The key
 used for `getAsset()` is the filename directly (e.g. `auto-sprint.js`).
 
 ### npm / SEA dual-mode vendoring
 
-`vendor-pm.mjs` (run as `prepublishOnly`) copies
-`vendor/apra-pm/.claude/workflows/` to `dist/workflows/` before `npm pack`.
+`dist-pm.mjs` (run as `prepublishOnly`) copies
+`packages/apra-fleet-se/apra-pm/.claude/workflows/` to `dist/workflows/` before `npm pack`.
 This ensures npm global installs -- where the submodule is absent -- still contain
 the workflow file and can write `cost.js`. The same dist fallback logic applies in
 `buildDevManifest` and in the Step 8 installer code.
@@ -95,7 +95,7 @@ Step 8: cost.js extraction + auto-sprint workflow copy
   functions are added to the pure block in `auto-sprint.js`, the export list must
   be updated in both `install.ts` and any tests that validate the exports.
 - `cost.js` is auto-generated -- it must not be edited directly. The source of
-  truth is `vendor/apra-pm/.claude/workflows/auto-sprint.js`.
+  truth is `packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js`.
 - `workflows` is a required field in `AssetManifest`. Tests that build a mock
   manifest via `_setManifestOverride` must include a `workflows: {}` key (or a
   populated one if testing workflow install).

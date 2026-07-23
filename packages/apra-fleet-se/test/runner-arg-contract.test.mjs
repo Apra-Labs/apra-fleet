@@ -630,7 +630,7 @@ describe('runner.js mock-level execution', () => {
             assert.strictEqual(member_name, 'member-y', `expected command "${command}" to dispatch to 'member-y', got '${member_name}'`);
         }
         // 'orchestrator' must never surface as a dispatched agent role (it
-        // has no vendor/apra-pm/agents/*.md definition/schema): confirm no
+        // has no packages/apra-fleet-se/apra-pm/agents/*.md definition/schema): confirm no
         // executePrompt() call ever used agent === 'orchestrator'.
         assert.ok(
             spy.promptLog.every((p) => p.agent !== 'orchestrator'),

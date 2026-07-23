@@ -44,7 +44,7 @@ import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './he
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
-const VENDOR_AGENTS_DIR = path.join(__dirname, '../../../vendor/apra-pm/agents');
+const VENDOR_AGENTS_DIR = path.join(__dirname, '../apra-pm/agents');
 
 const check = (cond, msg) => assert.ok(cond, msg);
 

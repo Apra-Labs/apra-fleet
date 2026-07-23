@@ -209,8 +209,10 @@ describe('dispatch/golden fixture requests the deployedSha field (eft.66.2)', ()
     test('the vendored integ-test-runner output schema fixture declares a deployedSha property', () => {
         const schemaPath = path.join(
             __dirname,
-            'fixtures',
-            'vendor-apra-pm-schemas',
+            '..',
+            'apra-pm',
+            'agents',
+            'schemas',
             'integ-test-runner-output.json'
         );
         const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
