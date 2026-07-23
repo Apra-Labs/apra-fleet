@@ -371,27 +371,38 @@ async function startServer() {
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
 
   // --- Code Intelligence ---
-  server.tool('code_graph', 'Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeGraphSchema.shape, wrapTool('code_graph', async (input) => {
+
+  // Extract optional memberId from MCP request _meta for per-member provider routing.
+  // The MCP protocol's _meta field accepts arbitrary keys ($loose schema), so callers
+  // (e.g. the orchestrator during execute_prompt context) can pass { memberId: "<id>" }
+  // without touching the tool's zod schema.  When absent, getProvider() falls back to
+  // the global config.
+  function codeIntelMemberId(extra?: any): string | undefined {
+    const id = extra?._meta?.memberId;
+    return typeof id === 'string' ? id : undefined;
+  }
+
+  server.tool('code_graph', 'Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeGraphSchema.shape, wrapTool('code_graph', async (input, extra) => {
     // Usage telemetry (P8, design D8): recorded here in the shared
     // handler layer, not inside GitNexusProvider, so the provider stays a
     // pure proxy. Fire-and-forget -- never blocks or fails the call.
     recordUsage('code_graph', input.symbol, input.repo ?? null);
-    const provider = await getProvider();
+    const provider = await getProvider(codeIntelMemberId(extra));
     return JSON.stringify(await provider.graph(input));
   }));
-  server.tool('code_impact', 'Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeImpactSchema.shape, wrapTool('code_impact', async (input) => {
+  server.tool('code_impact', 'Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeImpactSchema.shape, wrapTool('code_impact', async (input, extra) => {
     recordUsage('code_impact', input.target, input.repo ?? null);
-    const provider = await getProvider();
+    const provider = await getProvider(codeIntelMemberId(extra));
     return JSON.stringify(await provider.impact(input));
   }));
-  server.tool('code_query', 'Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeQuerySchema.shape, wrapTool('code_query', async (input) => {
+  server.tool('code_query', 'Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeQuerySchema.shape, wrapTool('code_query', async (input, extra) => {
     recordUsage('code_query', input.query, input.repo ?? null);
-    const provider = await getProvider();
+    const provider = await getProvider(codeIntelMemberId(extra));
     return JSON.stringify(await provider.query(input));
   }));
-  server.tool('code_context', 'Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeContextSchema.shape, wrapTool('code_context', async (input) => {
+  server.tool('code_context', 'Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeContextSchema.shape, wrapTool('code_context', async (input, extra) => {
     recordUsage('code_context', input.name, input.repo ?? null);
-    const provider = await getProvider();
+    const provider = await getProvider(codeIntelMemberId(extra));
     const result = await provider.context(input);
     // P4a (design D4): KB enrichment lives one layer up from the provider --
     // the gitnexus provider file must not import the KB service. Only this
@@ -399,19 +410,19 @@ async function startServer() {
     const enriched = await enrichContextWithKb(input.name, result);
     return JSON.stringify(enriched);
   }));
-  server.tool('code_map', 'Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.', codeMapSchema.shape, wrapTool('code_map', async (input) => {
+  server.tool('code_map', 'Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.', codeMapSchema.shape, wrapTool('code_map', async (input, extra) => {
     recordUsage('code_map', '', input.repo ?? null);
-    const provider = await getProvider();
+    const provider = await getProvider(codeIntelMemberId(extra));
     return JSON.stringify(await provider.map(input));
   }));
-  server.tool('code_flow', 'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.', codeFlowSchema.shape, wrapTool('code_flow', async (input) => {
+  server.tool('code_flow', 'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.', codeFlowSchema.shape, wrapTool('code_flow', async (input, extra) => {
     recordUsage('code_flow', input.name ?? input.from ?? input.to ?? '', input.repo ?? null);
-    const provider = await getProvider();
+    const provider = await getProvider(codeIntelMemberId(extra));
     return JSON.stringify(await provider.flow(input));
   }));
-  server.tool('code_tests', 'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.', codeTestsSchema.shape, wrapTool('code_tests', async (input) => {
+  server.tool('code_tests', 'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.', codeTestsSchema.shape, wrapTool('code_tests', async (input, extra) => {
     recordUsage('code_tests', input.symbol, input.repo ?? null);
-    const provider = await getProvider();
+    const provider = await getProvider(codeIntelMemberId(extra));
     return JSON.stringify(await provider.tests(input));
   }));
 
