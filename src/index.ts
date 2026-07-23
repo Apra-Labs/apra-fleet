@@ -162,6 +162,15 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const {
+    symbolLookupSchema, symbolLookup,
+    callChainSchema, callChain,
+    impactAnalysisSchema, impactAnalysis,
+    codeContextSchema, codeContext,
+    codeQuerySchema, codeQuery,
+    codeGraphSchema, codeGraph,
+    indexStatusSchema, indexStatus,
+  } = await import('./tools/code-intelligence.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -293,6 +302,15 @@ async function startServer() {
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
+
+  // --- Code Intelligence ---
+  server.tool('code_symbol_lookup', 'Look up a symbol by name or pattern in the codebase index.', symbolLookupSchema.shape, wrapTool('code_symbol_lookup', (input) => symbolLookup(input as any)));
+  server.tool('code_call_chain', 'Trace the call chain for a given symbol.', callChainSchema.shape, wrapTool('code_call_chain', (input) => callChain(input as any)));
+  server.tool('code_impact_analysis', 'Analyze the downstream impact of changes to a symbol.', impactAnalysisSchema.shape, wrapTool('code_impact_analysis', (input) => impactAnalysis(input as any)));
+  server.tool('code_context', 'Retrieve contextual information for a file path.', codeContextSchema.shape, wrapTool('code_context', (input) => codeContext(input as any)));
+  server.tool('code_query', 'Run a structural query against the codebase.', codeQuerySchema.shape, wrapTool('code_query', (input) => codeQuery(input as any)));
+  server.tool('code_graph', 'Retrieve the dependency graph for a symbol.', codeGraphSchema.shape, wrapTool('code_graph', (input) => codeGraph(input as any)));
+  server.tool('code_index_status', 'Check the status of the code-intelligence index.', indexStatusSchema.shape, wrapTool('code_index_status', () => indexStatus({})));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

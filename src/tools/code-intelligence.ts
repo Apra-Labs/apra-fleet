@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { getAgent } from '../services/registry.js';
 import { getGlobalCodeIntelProvider } from '../services/user-config.js';
 import type { CodeIntelProvider } from '../types.js';
@@ -140,4 +141,114 @@ export function getCodeIntelProvider(memberId?: string): CodeIntelAdapter | unde
   }
 
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Member context -- set by execute_prompt so code-intel tool handlers resolve
+// the calling member's provider without exposing memberId in MCP schemas.
+// ---------------------------------------------------------------------------
+
+let _currentMemberId: string | undefined;
+
+/** Set the active member context (call before dispatching code-intel tools). */
+export function setMemberContext(memberId: string | undefined): void {
+  _currentMemberId = memberId;
+}
+
+/** Get the active member context. */
+export function getMemberContext(): string | undefined {
+  return _currentMemberId;
+}
+
+// ---------------------------------------------------------------------------
+// Tool schemas -- memberId is NOT exposed; it flows via member context.
+// ---------------------------------------------------------------------------
+
+export const symbolLookupSchema = z.object({
+  query: z.string().describe('Symbol name or pattern to look up'),
+});
+
+export const callChainSchema = z.object({
+  symbol: z.string().describe('Fully-qualified symbol to trace call chain for'),
+});
+
+export const impactAnalysisSchema = z.object({
+  symbol: z.string().describe('Symbol to analyze downstream impact for'),
+});
+
+export const codeContextSchema = z.object({
+  file_path: z.string().describe('File path to retrieve context for'),
+});
+
+export const codeQuerySchema = z.object({
+  query: z.string().describe('Structural query to run against the codebase'),
+});
+
+export const codeGraphSchema = z.object({
+  symbol: z.string().describe('Symbol to retrieve dependency graph for'),
+});
+
+export const indexStatusSchema = z.object({});
+
+// ---------------------------------------------------------------------------
+// Tool handler helpers
+// ---------------------------------------------------------------------------
+
+function formatResult(result: CodeIntelResult): string {
+  if (result.ok) {
+    return JSON.stringify({ ok: true, data: result.data, message: result.message });
+  }
+  return JSON.stringify({ ok: false, message: result.message });
+}
+
+function resolveProvider(memberId?: string): CodeIntelAdapter | undefined {
+  return getCodeIntelProvider(memberId ?? _currentMemberId);
+}
+
+const NO_PROVIDER_MSG = 'No code-intelligence provider configured. Set codeIntelProvider on the member or in config.json.';
+
+// ---------------------------------------------------------------------------
+// Tool handler functions -- each accepts optional memberId for internal use
+// ---------------------------------------------------------------------------
+
+export async function symbolLookup(input: z.infer<typeof symbolLookupSchema>, memberId?: string): Promise<string> {
+  const provider = resolveProvider(memberId);
+  if (!provider) return JSON.stringify({ ok: false, message: NO_PROVIDER_MSG });
+  return formatResult(await provider.symbolLookup(input.query));
+}
+
+export async function callChain(input: z.infer<typeof callChainSchema>, memberId?: string): Promise<string> {
+  const provider = resolveProvider(memberId);
+  if (!provider) return JSON.stringify({ ok: false, message: NO_PROVIDER_MSG });
+  return formatResult(await provider.callChain(input.symbol));
+}
+
+export async function impactAnalysis(input: z.infer<typeof impactAnalysisSchema>, memberId?: string): Promise<string> {
+  const provider = resolveProvider(memberId);
+  if (!provider) return JSON.stringify({ ok: false, message: NO_PROVIDER_MSG });
+  return formatResult(await provider.impactAnalysis(input.symbol));
+}
+
+export async function codeContext(input: z.infer<typeof codeContextSchema>, memberId?: string): Promise<string> {
+  const provider = resolveProvider(memberId);
+  if (!provider) return JSON.stringify({ ok: false, message: NO_PROVIDER_MSG });
+  return formatResult(await provider.codeContext(input.file_path));
+}
+
+export async function codeQuery(input: z.infer<typeof codeQuerySchema>, memberId?: string): Promise<string> {
+  const provider = resolveProvider(memberId);
+  if (!provider) return JSON.stringify({ ok: false, message: NO_PROVIDER_MSG });
+  return formatResult(await provider.codeQuery(input.query));
+}
+
+export async function codeGraph(input: z.infer<typeof codeGraphSchema>, memberId?: string): Promise<string> {
+  const provider = resolveProvider(memberId);
+  if (!provider) return JSON.stringify({ ok: false, message: NO_PROVIDER_MSG });
+  return formatResult(await provider.codeGraph(input.symbol));
+}
+
+export async function indexStatus(_input: z.infer<typeof indexStatusSchema>, memberId?: string): Promise<string> {
+  const provider = resolveProvider(memberId);
+  if (!provider) return JSON.stringify({ ok: false, message: NO_PROVIDER_MSG });
+  return formatResult(await provider.indexStatus());
 }
