@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-member code-intelligence provider routing wired end-to-end
+
+`getProvider()` in the code-intelligence layer now accepts an optional
+member id and resolves that member's `codeIntelProvider` preference (set
+via `register_member`/`update_member`) ahead of the global config, falling
+back to the global config when the member has no preference, is unknown,
+or no member id is supplied at all. A member configured with `none` is
+routed to a new `NullProvider`, which implements the full
+`CodeIntelligenceProvider` interface but returns a structured
+"disabled" response from every method instead of erroring -- so an opted-out
+member's tool calls degrade gracefully rather than failing. Member context
+reaches this resolution step through the MCP `_meta` field on tool-call
+requests rather than through the tools' input schemas, keeping the
+schemas focused purely on the caller's semantic request. This closes out
+the per-member code-intelligence provider selection feature: the field
+added in an earlier cycle (schema/persistence only) now has an effect on
+which provider a member's `code_graph`/`code_impact`/`code_query`/
+`code_context`/`code_map`/`code_flow`/`code_tests` calls are actually
+routed to. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)
+for the full design.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     24,071 |   n/a |   $0.000 |   $0.553 |
+| reviewer   |          0 |     12,780 |   n/a |   $0.000 |   $0.276 |
+| overhead   |      7,150 |     56,058 | +684% |   $0.121 |   $0.401 |
+| TOTAL      |      7,150 |     92,909 | +1199% |   $0.121 |   $1.229 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Review outcome
+
+All acceptance criteria for the per-member provider-routing feature and
+its three child tasks are met.
+
+Code changes (3 files, +148/-16 lines):
+- `src/tools/code-intelligence.ts`: `getProvider()` extended with an
+  optional member-id parameter, `NullProvider` class added, `PROVIDERS`
+  map includes a `none` entry. Member lookup falls back to the global
+  config when the member has no override or is unknown.
+- `src/index.ts`: all seven code-intel tool handlers updated to accept
+  the MCP `extra` parameter and extract the member id via a small
+  `_meta`-reading helper. No changes to the zod schemas -- the member id
+  travels via MCP's `_meta`, the correct protocol-level mechanism for
+  orchestration context that isn't part of the caller's semantic request.
+- `tests/code-intelligence.test.ts`: new coverage for per-member provider
+  routing (`gitnexus`, `codebase-memory`, `none`), global fallback when a
+  member has no preference, fallback when the member id isn't found in
+  the registry, backward compatibility with no member id, and
+  `NullProvider`'s structural output for all seven methods.
+
+Build: `tsc` passes cleanly.
+Tests: 157 test files, 2323 passed, 5 skipped, 0 failures.
+File hygiene: all modified files trace directly to the sprint tasks; no
+temp files, no unrelated changes.
+Security: no issues -- the member id is used only for registry lookup,
+no injection surface.
+Regressions: none detected -- existing tool behavior is preserved via
+the fallback path.
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the
