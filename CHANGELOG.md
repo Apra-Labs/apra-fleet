@@ -2,6 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-member code-intelligence provider routing
+
+`getProvider()` in the code-intelligence tool layer now accepts an optional
+member ID and resolves that member's `codeIntelProvider` preference (set via
+`register_member`/`update_member`) ahead of the existing global-config
+fallback, closing out the routing half of per-member code-intelligence
+provider selection. A member with an explicit provider name routes to that
+provider regardless of the global default; a member with `'none'` gets a new
+`NullProvider` that returns a structured "disabled for this member" response
+from all seven provider methods instead of throwing; a member with no
+preference, or a direct call with no member ID at all, falls through
+unchanged to the pre-existing global resolution. Each of the seven
+`code_graph`/`code_impact`/`code_query`/`code_context`/`code_map`/`code_flow`/
+`code_tests` MCP tool handlers now goes through a thin per-tool wrapper that
+resolves the provider via this member-aware path and forwards to it; the
+member ID is threaded internally rather than exposed on any tool's input
+schema, so the external tool contract is unchanged.
+
+Full test suite passes (2338 tests, 157 files) with a clean build; new
+coverage exercises member-scoped provider resolution across all supported
+provider values, all seven `NullProvider` methods, and all seven tool
+handlers forwarding member context correctly (plus the no-member-ID global
+fallback).
+
+Carried forward: the member-aware resolution and handler wiring are
+complete and independently tested, but nothing in the dispatch path yet
+activates the per-member context store during a real tool call -- the
+integration point that sets the active member for the duration of a
+member's `execute_prompt` session is the natural next increment. Until that
+lands, per-member routing is exercised in tests but not yet observable end
+to end in production dispatch.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     25,842 |   n/a |   $0.000 |   $0.617 |
+| reviewer   |          0 |     18,638 |   n/a |   $0.000 |   $0.411 |
+| overhead   |      7,150 |     57,124 | +699% |   $0.121 |   $0.494 |
+| TOTAL      |      7,150 |    101,604 | +1321% |   $0.121 |   $1.522 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the
