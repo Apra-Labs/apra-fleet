@@ -208,6 +208,15 @@ describe('tool handler functions forward memberId to getProvider()', () => {
     expect(mockGetAgent).not.toHaveBeenCalled();
   });
 
+  it('handleCodeGraph returns NullProvider disabled message when codeIntelProvider=none', () => {
+    mockGetAgent.mockReturnValue(makeAgent({ codeIntelProvider: 'none' }));
+    const result = JSON.parse(handleCodeGraph({ symbol: 'foo' }, 'test-agent'));
+    expect(result.success).toBe(false);
+    expect(result.provider).toBe('none');
+    expect(result.message).toContain('Code intelligence disabled');
+    expect(result.message).toContain('foo');
+  });
+
   it('handleCodeImpact forwards memberId', () => {
     mockGetAgent.mockReturnValue(makeAgent({ codeIntelProvider: 'none' }));
     const result = JSON.parse(handleCodeImpact({ target: 'sym', direction: 'upstream' as const }, 'test-agent'));
