@@ -1,0 +1,54 @@
+[
+  {
+    "id": "0e7367a1-7537-446f-8786-e16d0623097d",
+    "type": "knowledge",
+    "title": "getProvider(memberId) resolves per-member code-intel provider with global fallback",
+    "summary": "getProvider() in src/tools/code-intelligence.ts looks up the Agent record via getAgent(memberId) and returns PROVIDERS[agent.codeIntelProvider]. Falls back to the global default ('codebase-memory') when memberId is omitted/empty, the agent is not found, or codeIntelProvider is unset -- preserving backward compatibility for existing single-provider setups.",
+    "symbols": [
+      "getProvider",
+      "PROVIDERS",
+      "CodeIntelProviderAdapter"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence.ts",
+      "src/types.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-23T15:56:39.920Z"
+  },
+  {
+    "id": "3252eb56-43f6-45e2-8c83-a2b011173b9f",
+    "type": "knowledge",
+    "title": "NullProvider covers all 7 code-intel methods with structured disabled messages, never throws",
+    "summary": "NullProvider (src/tools/code-intelligence.ts) implements CodeIntelProviderAdapter for members with codeIntelProvider='none'. Every method (query, callChain, impact, context, map, flow, tests) returns {success:false, provider:'none', message:'Code intelligence disabled for this member. ...'} instead of throwing, so downstream tool handlers can always JSON.stringify the result safely.",
+    "symbols": [
+      "NullProvider",
+      "CodeIntelResult"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-23T15:56:44.868Z"
+  },
+  {
+    "id": "90335b43-76d7-45dc-bb60-1a246e9fd531",
+    "type": "knowledge",
+    "title": "Member context threading: inFlightAgents-size heuristic + setActiveMember hook in src/index.ts",
+    "summary": "resolveCodeIntelMember() in src/index.ts infers which member a code-intel tool call belongs to without adding memberId to any tool's zod schema. Priority: explicit getActiveMember() (set via setActiveMember, exported from code-intelligence.ts) first, then inFlightAgents.size===1 inference, else undefined (global fallback via getProvider()).",
+    "symbols": [
+      "resolveCodeIntelMember",
+      "wrapCodeIntelTool",
+      "getActiveMember",
+      "setActiveMember",
+      "inFlightAgents"
+    ],
+    "source_files": [
+      "src/index.ts",
+      "src/tools/code-intelligence.ts",
+      "src/tools/execute-prompt.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-23T15:55:08.747Z"
+  }
+]
