@@ -15,6 +15,7 @@ const mockExecFileSync = vi.hoisted(() => vi.fn());
 const mockMaybeScheduleReindex = vi.hoisted(() => vi.fn());
 const mockLogWarn = vi.hoisted(() => vi.fn());
 const mockLogError = vi.hoisted(() => vi.fn());
+const mockGetAgent = vi.hoisted(() => vi.fn());
 
 vi.mock('fs/promises', () => ({
   readFile: mockReadFile,
@@ -40,6 +41,10 @@ vi.mock('../src/utils/log-helpers.js', () => ({
   logError: mockLogError,
 }));
 
+vi.mock('../src/services/registry.js', () => ({
+  getAgent: mockGetAgent,
+}));
+
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
   // Must use a class or regular function (not arrow) so `new` works correctly.
   class MockClient {
@@ -58,7 +63,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -98,10 +103,80 @@ describe('getProvider()', () => {
     await expect(getProvider()).rejects.toThrow('not configured');
   });
 
-  it('PROVIDERS map contains both gitnexus and codebase-memory entries', () => {
+  it('PROVIDERS map contains gitnexus, codebase-memory, and none entries', () => {
     expect(PROVIDERS.gitnexus).toBeInstanceOf(GitNexusProvider);
     expect(PROVIDERS['codebase-memory']).toBeInstanceOf(CodebaseMemoryProvider);
+    expect(PROVIDERS.none).toBeInstanceOf(NullProvider);
   });
+});
+
+// ---------------------------------------------------------------------------
+// getProvider(memberId) -- per-member provider resolution
+// ---------------------------------------------------------------------------
+describe('getProvider(memberId)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the member-specific provider when codeIntelProvider is set on the agent', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-1', codeIntelProvider: 'gitnexus' });
+
+    const provider = await getProvider('agent-1');
+    expect(provider).toBe(PROVIDERS.gitnexus);
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('returns NullProvider when agent has codeIntelProvider=none', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-2', codeIntelProvider: 'none' });
+
+    const provider = await getProvider('agent-2');
+    expect(provider).toBeInstanceOf(NullProvider);
+    expect(provider).toBe(PROVIDERS.none);
+  });
+
+  it('falls back to global config when agent has no codeIntelProvider set', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-3' });
+    mockReadFile.mockResolvedValue('{"provider":"gitnexus"}');
+
+    const provider = await getProvider('agent-3');
+    expect(provider).toBe(PROVIDERS.gitnexus);
+  });
+
+  it('falls back to global config when memberId does not match any agent', async () => {
+    mockGetAgent.mockReturnValue(undefined);
+    mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+
+    const provider = await getProvider('nonexistent');
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+
+  it('returns codebase-memory member provider when agent has codeIntelProvider=codebase-memory', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-4', codeIntelProvider: 'codebase-memory' });
+
+    const provider = await getProvider('agent-4');
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NullProvider -- structured disabled messages
+// ---------------------------------------------------------------------------
+describe('NullProvider', () => {
+  const nullProvider = new NullProvider();
+  const methods = ['graph', 'impact', 'query', 'context', 'map', 'flow', 'tests'] as const;
+
+  for (const method of methods) {
+    it(`${method}() returns a structured disabled message and never throws`, async () => {
+      const result = (await nullProvider[method]({})) as {
+        isError: boolean;
+        content: { type: string; text: string }[];
+      };
+      expect(result.isError).toBe(false);
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toBe('Code intelligence is disabled for this member.');
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
