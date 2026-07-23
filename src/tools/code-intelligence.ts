@@ -4,6 +4,7 @@ import { join } from 'path';
 import { z } from 'zod';
 import { GitNexusProvider } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
+import { getAgent } from '../services/registry.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -17,9 +18,29 @@ export interface CodeIntelligenceProvider {
 
 const CONFIG_PATH = join(homedir(), '.apra-fleet', 'data', 'code-intelligence', 'config.json');
 
+function nullResult(method: string): { content: { type: string; text: string }[] } {
+  return {
+    content: [{
+      type: 'text',
+      text: `Code intelligence is disabled for this member (provider=none). Skipped: ${method}`,
+    }],
+  };
+}
+
+export class NullProvider implements CodeIntelligenceProvider {
+  graph(_params: Record<string, unknown>): Promise<unknown> { return Promise.resolve(nullResult('graph')); }
+  impact(_params: Record<string, unknown>): Promise<unknown> { return Promise.resolve(nullResult('impact')); }
+  query(_params: Record<string, unknown>): Promise<unknown> { return Promise.resolve(nullResult('query')); }
+  context(_params: Record<string, unknown>): Promise<unknown> { return Promise.resolve(nullResult('context')); }
+  map(_params: Record<string, unknown>): Promise<unknown> { return Promise.resolve(nullResult('map')); }
+  flow(_params: Record<string, unknown>): Promise<unknown> { return Promise.resolve(nullResult('flow')); }
+  tests(_params: Record<string, unknown>): Promise<unknown> { return Promise.resolve(nullResult('tests')); }
+}
+
 export const PROVIDERS: Record<string, CodeIntelligenceProvider> = {
   'codebase-memory': new CodebaseMemoryProvider(),
   gitnexus: new GitNexusProvider(),
+  none: new NullProvider(),
 };
 
 export const codeGraphSchema = z.object({
@@ -61,7 +82,22 @@ export const codeTestsSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
-export async function getProvider(): Promise<CodeIntelligenceProvider> {
+export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
+  // When a memberId is provided, check the agent's per-member override first.
+  if (memberId) {
+    const agent = getAgent(memberId);
+    if (agent?.codeIntelProvider) {
+      const memberProvider = PROVIDERS[agent.codeIntelProvider];
+      if (!memberProvider) {
+        throw new Error(
+          `Code intelligence provider '${agent.codeIntelProvider}' is not configured. Run 'apra-fleet install' to set up.`,
+        );
+      }
+      return memberProvider;
+    }
+  }
+
+  // Fall back to the global config.
   let providerKey = 'codebase-memory';
   try {
     const raw = await readFile(CONFIG_PATH, 'utf8');

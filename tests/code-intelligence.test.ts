@@ -15,6 +15,7 @@ const mockExecFileSync = vi.hoisted(() => vi.fn());
 const mockMaybeScheduleReindex = vi.hoisted(() => vi.fn());
 const mockLogWarn = vi.hoisted(() => vi.fn());
 const mockLogError = vi.hoisted(() => vi.fn());
+const mockGetAgent = vi.hoisted(() => vi.fn());
 
 vi.mock('fs/promises', () => ({
   readFile: mockReadFile,
@@ -40,6 +41,10 @@ vi.mock('../src/utils/log-helpers.js', () => ({
   logError: mockLogError,
 }));
 
+vi.mock('../src/services/registry.js', () => ({
+  getAgent: mockGetAgent,
+}));
+
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
   // Must use a class or regular function (not arrow) so `new` works correctly.
   class MockClient {
@@ -58,7 +63,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -98,10 +103,67 @@ describe('getProvider()', () => {
     await expect(getProvider()).rejects.toThrow('not configured');
   });
 
-  it('PROVIDERS map contains both gitnexus and codebase-memory entries', () => {
+  it('PROVIDERS map contains gitnexus, codebase-memory, and none entries', () => {
     expect(PROVIDERS.gitnexus).toBeInstanceOf(GitNexusProvider);
     expect(PROVIDERS['codebase-memory']).toBeInstanceOf(CodebaseMemoryProvider);
+    expect(PROVIDERS.none).toBeInstanceOf(NullProvider);
   });
+
+  it('returns member-specific provider when memberId has codeIntelProvider set', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-1', codeIntelProvider: 'gitnexus' });
+
+    const provider = await getProvider('agent-1');
+    expect(provider).toBe(PROVIDERS.gitnexus);
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-1');
+    // Should not read the global config file
+    expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
+  it('returns NullProvider when member codeIntelProvider is none', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-2', codeIntelProvider: 'none' });
+
+    const provider = await getProvider('agent-2');
+    expect(provider).toBe(PROVIDERS.none);
+    expect(provider).toBeInstanceOf(NullProvider);
+    expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
+  it('falls back to global config when member has no codeIntelProvider', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-3' });
+    mockReadFile.mockResolvedValue('{"provider":"gitnexus"}');
+
+    const provider = await getProvider('agent-3');
+    expect(provider).toBe(PROVIDERS.gitnexus);
+  });
+
+  it('falls back to global config when memberId is not found in registry', async () => {
+    mockGetAgent.mockReturnValue(undefined);
+    mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+
+    const provider = await getProvider('nonexistent');
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NullProvider tests
+// ---------------------------------------------------------------------------
+describe('NullProvider', () => {
+  const methods = ['graph', 'impact', 'query', 'context', 'map', 'flow', 'tests'] as const;
+
+  for (const method of methods) {
+    it(`${method}() returns a structured disabled message and never throws`, async () => {
+      const provider = new NullProvider();
+      const result = await provider[method]({ symbol: 'test' }) as {
+        content: { type: string; text: string }[];
+      };
+
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toContain('Code intelligence is disabled for this member');
+      expect(result.content[0].text).toContain(method);
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
