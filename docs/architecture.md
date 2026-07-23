@@ -187,6 +187,9 @@ One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy
 **[Observability](tools-observability.md)**  -- `fleet_status`, `member_detail`
 Two-layer monitoring. `fleet_status` gives a quick summary table across all members with fleet-aware busy detection (distinguishes between Claude processes serving this member vs unrelated Claude activity). `member_detail` drills into one member with connectivity, CLI version, session state, and system resource metrics.
 
+**[Code Intelligence](code-intelligence-providers.md)**  -- `code_graph`, `code_impact`, `code_query`, `code_context`, `code_map`, `code_flow`, `code_tests`
+Provider-abstracted codebase lookup tools. Each member can select its own provider (or opt out entirely) independent of the fleet's global default.
+
 ## Cross-Platform Support
 
 Members can run Windows, macOS, or Linux. The `platform.ts` utility generates the right shell commands for each OS  -- different commands for checking processes, reading memory, setting environment variables. The OS is auto-detected during registration (`uname -s` on Unix, `cmd /c ver` on Windows) and stored in the member record so subsequent tool calls don't need to re-detect.
