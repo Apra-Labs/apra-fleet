@@ -198,7 +198,7 @@ MCP tools that ship with the KB:
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
-| `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+| `kb_setup` | Install git hook, write provider config, store remote token encrypted, trigger first-time code-intel indexing (idempotent) |
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.

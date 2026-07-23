@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-member code-intel visibility and first-time indexing: sprint goal not fully met
+
+This sprint targeted per-repo code-intelligence opt-out and per-member
+provider routing. Neither top-level goal was completed, but several
+supporting pieces landed cleanly and are ready to build on:
+
+- **Per-repo code-intel config module** (new): a reader/writer for
+  `.apra-fleet/code-intel.json` that tolerates a missing or corrupt file
+  by treating it as "not yet indexed," and creates the config directory
+  on demand when writing. This is idempotency-marker plumbing for the KB
+  init phase; the opt-out gate it is meant to eventually serve (code-intel
+  tools checking `enabled: false` before dispatching) is not wired yet.
+- **`kb_setup` now triggers first-time code-intel indexing**: idempotent
+  (skips if already indexed), degrades gracefully when the provider binary
+  is unavailable, and reports an actionable manual-retry command on
+  indexing failure. Progress reporting during indexing and partial-index
+  cleanup on failure are not yet implemented.
+- **Per-member code-intel provider is now visible everywhere a member is
+  inspected**: `fleet_status` (compact and JSON) shows each member's
+  provider or falls back to `"global default"` when unset, and
+  `register_member`/`update_member` success messages include a
+  `Code-Intel:` line when the field is set. This is display-only -- the
+  provider selection still does not change which backend actually
+  services a member's code-intel calls; that routing logic remains
+  unbuilt.
+
+See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)
+for the full design and what remains open.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     11,183 |   n/a |   $0.000 |   $0.107 |
+| reviewer   |          0 |     18,135 |   n/a |   $0.000 |   $0.272 |
+| overhead   |      7,150 |    102,753 | +1337% |   $0.121 |   $0.629 |
+| TOTAL      |      7,150 |    132,071 | +1747% |   $0.121 |   $1.008 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Review outcome
+
+**Build**: clean. **Tests**: all 157 test files pass (2325 tests, 0
+failures). **Working tree**: additive only, no regressions, no security
+issues, no file-hygiene problems.
+
+Gaps remaining, not blocking approval of the work that did land: the
+per-repo opt-out check (`isCodeIntelEnabled()`) and its wiring into
+`getProvider()` are not yet implemented; progress reporting and
+partial-index cleanup for the KB init phase are not addressed; the
+per-member provider routing (resolving `getProvider()` per member and
+threading member context through code-intel tool dispatch) remains open.
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the
