@@ -80,6 +80,25 @@ export const codeTestsSchema = z.object({
 
 const nullProvider = new NullProvider();
 
+// ---------------------------------------------------------------------------
+// Active-member context store
+//
+// When the MCP host is operating on behalf of a specific fleet member (e.g.
+// code-intel tools invoked during execute_prompt), setActiveCodeIntelMember()
+// makes that member's ID available to the tool handlers so they resolve the
+// correct per-member provider via getProvider(memberId).  Direct MCP calls
+// with no member context leave this undefined -- global fallback applies.
+// ---------------------------------------------------------------------------
+let _activeMemberId: string | undefined;
+
+export function setActiveCodeIntelMember(memberId: string | undefined): void {
+  _activeMemberId = memberId;
+}
+
+export function getActiveCodeIntelMember(): string | undefined {
+  return _activeMemberId;
+}
+
 export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
   // When a memberId is supplied, check the agent's per-member override first.
   if (memberId) {
@@ -109,4 +128,45 @@ export async function getProvider(memberId?: string): Promise<CodeIntelligencePr
     );
   }
   return provider;
+}
+
+// ---------------------------------------------------------------------------
+// Handler functions -- thin wrappers that resolve the correct per-member
+// provider and delegate to it.  memberId is internal (not in tool schemas).
+// When memberId is undefined the global fallback applies.
+// ---------------------------------------------------------------------------
+
+export async function handleGraph(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.graph(input);
+}
+
+export async function handleImpact(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.impact(input);
+}
+
+export async function handleQuery(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.query(input);
+}
+
+export async function handleContext(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.context(input);
+}
+
+export async function handleMap(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.map(input);
+}
+
+export async function handleFlow(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.flow(input);
+}
+
+export async function handleTests(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.tests(input);
 }

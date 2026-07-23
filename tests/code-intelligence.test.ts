@@ -63,7 +63,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, NullProvider, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, codeMapSchema, codeFlowSchema, codeTestsSchema, setActiveCodeIntelMember, getActiveCodeIntelMember, handleGraph, handleImpact, handleQuery, handleContext, handleMap, handleFlow, handleTests } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -181,6 +181,109 @@ describe('NullProvider', () => {
       expect(result.content[0].text).toContain(method);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Active-member context store
+// ---------------------------------------------------------------------------
+describe('setActiveCodeIntelMember / getActiveCodeIntelMember', () => {
+  afterEach(() => {
+    setActiveCodeIntelMember(undefined);
+  });
+
+  it('returns undefined when no member is set', () => {
+    expect(getActiveCodeIntelMember()).toBeUndefined();
+  });
+
+  it('returns the member id after setActiveCodeIntelMember is called', () => {
+    setActiveCodeIntelMember('member-42');
+    expect(getActiveCodeIntelMember()).toBe('member-42');
+  });
+
+  it('clears the member when set to undefined', () => {
+    setActiveCodeIntelMember('member-42');
+    setActiveCodeIntelMember(undefined);
+    expect(getActiveCodeIntelMember()).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Handler functions -- forward memberId to getProvider()
+// ---------------------------------------------------------------------------
+describe('handler functions forward memberId', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+  });
+
+  afterEach(() => {
+    setActiveCodeIntelMember(undefined);
+  });
+
+  it('handleGraph resolves per-member provider when memberId is supplied', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-g', codeIntelProvider: 'none' });
+    const result = await handleGraph({ symbol: 'foo' }, 'agent-g') as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-g');
+    expect(result.content[0].text).toContain('disabled for this member');
+  });
+
+  it('handleImpact resolves per-member provider when memberId is supplied', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-i', codeIntelProvider: 'none' });
+    const result = await handleImpact({ target: 'foo', direction: 'upstream' }, 'agent-i') as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-i');
+    expect(result.content[0].text).toContain('disabled for this member');
+  });
+
+  it('handleQuery resolves per-member provider when memberId is supplied', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-q', codeIntelProvider: 'none' });
+    const result = await handleQuery({ query: 'foo' }, 'agent-q') as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-q');
+    expect(result.content[0].text).toContain('disabled for this member');
+  });
+
+  it('handleContext resolves per-member provider when memberId is supplied', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-c', codeIntelProvider: 'none' });
+    const result = await handleContext({ name: 'foo' }, 'agent-c') as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-c');
+    expect(result.content[0].text).toContain('disabled for this member');
+  });
+
+  it('handleMap resolves per-member provider when memberId is supplied', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-m', codeIntelProvider: 'none' });
+    const result = await handleMap({}, 'agent-m') as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-m');
+    expect(result.content[0].text).toContain('disabled for this member');
+  });
+
+  it('handleFlow resolves per-member provider when memberId is supplied', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-f', codeIntelProvider: 'none' });
+    const result = await handleFlow({}, 'agent-f') as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-f');
+    expect(result.content[0].text).toContain('disabled for this member');
+  });
+
+  it('handleTests resolves per-member provider when memberId is supplied', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-t', codeIntelProvider: 'none' });
+    const result = await handleTests({ symbol: 'foo' }, 'agent-t') as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-t');
+    expect(result.content[0].text).toContain('disabled for this member');
+  });
+
+  it('handleGraph falls back to global provider when memberId is undefined', async () => {
+    const provider = await getProvider();
+    // The global default is codebase-memory (config file missing per beforeEach)
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+    // handleGraph with no memberId should use the same global path (no agent lookup)
+    await handleGraph({ symbol: 'foo' });
+    expect(mockGetAgent).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
