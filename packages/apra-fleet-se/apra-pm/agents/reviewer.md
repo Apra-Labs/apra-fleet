@@ -152,12 +152,6 @@ this contract; if it differs, follow the dispatch prompt.
 use), report the same decision fields, in this JSON shape if the caller is an orchestrator,
 or as prose if you are answering a human directly.
 
-## Token tracking
-
-After completing your review, run:
-```
-bd remember "<your-label> <model> tokens: input=<N> output=<N>"
-```
 
 ## Rules
 

@@ -117,6 +117,9 @@ At sprint close, after the harvester runs:
    startedAt, taskAssignments, logEntries)` and write the result back to
    `sprint-logs/calibration.json`. Commit it. This blends the actual token counts
    into the historical averages so future quotes improve.
+4. **Update fleet token memory**: Parse the `tuple_averages` from the updated
+   calibration object into a flat array: `const tokenEstimates = { averages: Object.values(updatedCalibration.historical?.tuple_averages || {}) }`. Then write it to the beads persistent memory:
+   `bd remember '<json_string>' --key token-estimates-json`
 
 ## Sprint log
 

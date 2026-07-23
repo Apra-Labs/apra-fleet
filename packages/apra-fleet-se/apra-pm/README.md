@@ -89,11 +89,14 @@ estimated USD before the doer dispatch, ready-task count at iter entry, and
 reviewer verdict (APPROVED / CHANGES NEEDED) with task ids after review. Agent
 session labels carry the same task-id suffix for searchability.
 
-### Exit check scoped to sprint roots
+### Exit check scoped to open leaf work
 
-`parseBlockers()` accepts an optional `rootIds` argument. When provided, only
-open issues whose id is in the sprint's root set count as blockers. Unrelated
-open P1 issues anywhere in the beads database do not prevent `goalMet`.
+`parseBlockers()` in leaf mode (`{ rootIds, leaf: true, includeFeatures }`) counts
+only open `type=task` (plus `type=feature` when integ tests run) inside the sprint
+subtree, excluding the root goals. Roots close at Harvest, so counting them would
+make `goalMet` unreachable in-loop; leaf-scoping keeps the exit and no-progress
+checks meaningful. Unrelated open issues elsewhere in the beads DB never affect
+`goalMet`.
 
 ### CI pipeline task dedup guard
 

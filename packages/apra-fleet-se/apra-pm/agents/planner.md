@@ -134,27 +134,34 @@ Wire dependencies (semantics: `bd dep add A B` means A is blocked by B -- B must
 
 ## Step 4 -- Validate your own DAG
 
-Before finishing, run (scoped to your sprint -- see the graph-semantics section above for
-why bare `bd ready`/`bd blocked` are the wrong check):
+Before finishing, run these PER SPRINT ROOT (if you were given more than one sprint goal,
+run each and reason over the COMBINED result -- `--parent` takes exactly one id per call;
+see the graph-semantics section above for why bare `bd ready`/`bd blocked` are the wrong
+check):
 ```bash
-bd graph --compact <sprint-id>
-bd blocked --parent <sprint-id>
-bd list --parent <sprint-id> --ready --json
+bd graph --compact <root-id>
+bd blocked --parent <root-id>
+bd list --parent <root-id> --ready --type=task --json
 ```
 
-**Acyclicity check (mandatory):** A correct DAG has no cycles. Verify:
-1. `bd list --parent <sprint-id> --ready --json` must return at least one issue whenever
-   open work exists under `<sprint-id>`. If it returns nothing, there is a cycle -- every
-   issue is blocked by another. Find and break the cycle before finishing. (A bare `bd
-   ready` is NOT a valid substitute for this check -- it returns project-wide results and
-   will show unrelated ready work even when your entire sprint scope is deadlocked.)
+**Acyclicity check (mandatory):** A correct DAG has no cycles. The invariant is on the
+UNION of ready work across all roots, NOT each root alone. Verify:
+1. The COMBINED `--ready` list across all sprint roots must contain at least one issue
+   whenever open work exists anywhere in scope. If the union is empty while open work
+   remains, there is a cycle -- find and break it before finishing. A SINGLE root whose
+   own `--ready` list is empty is FINE when its open tasks are legitimately blocked by an
+   open task in a DIFFERENT root (a cross-goal ordering edge) -- that is not a cycle, do
+   NOT remove the edge. (A bare `bd ready` is NOT a valid substitute -- it returns
+   project-wide results and will show unrelated ready work even when your entire sprint
+   scope is deadlocked.)
 2. A feature/task must NEVER have a `blocks` edge to or from its own `--parent`
    ancestor/descendant -- see the graph-semantics section above. Only `parent-child` edges
    (via `--parent`) should exist between a bead and its parent; `blocks` edges belong only
    between siblings.
-3. Check `bd blocked --parent <sprint-id>` -- every blocked issue must be blocked by
-   something that is itself unblocked (eventually reachable from the scoped `--ready`
-   list). If a blocked issue traces back to itself, that is a cycle.
+3. Check `bd blocked --parent <root-id>` for each root -- every blocked issue must be
+   blocked by something that is itself unblocked (eventually reachable from the union
+   `--ready` list, possibly in another root). Only if a blocked issue traces back to
+   itself is that a cycle.
 
 If you find a cycle: remove the offending dependency with `bd dep remove <A> <B>`, fix the
 direction, and re-run the scoped `--ready` query to confirm issues are unblocked.

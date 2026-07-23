@@ -1,5 +1,30 @@
 # Changelog
 
+## fix/token-maths -- multi-root scope remediation
+
+Fixes the auto-sprint plan/exit gates that falsely deadlocked a sprint whose goals are
+passed as separate roots with cross-root `blocks` edges (e2e s10 regression). See
+`docs/multiroot-scope-remediation.md`.
+
+- **plan-reviewer Criterion 9 + planner Step 4 + planner dispatch prompt**: the ready-work
+  check is now scoped to the UNION of ready leaf work across all roots, not per root. A
+  root legitimately gated by a sibling root is no longer treated as a cycle; only an
+  empty union (or a `--parent` self-edge) is a real deadlock. Criterion 9 and the prompts
+  now use `bd list --parent <root> --ready --type=task --json` (matches the workflow).
+- **plan-reviewer dispatch**: prior-round verdicts are now passed to the reviewer so its
+  No-goalpost-moving rule has the binding input it requires; the misleading bare
+  `bd ready` instruction was replaced with the scoped per-root union check.
+- **plan-reviewer Step 1**: `bd list --status=open` scoped to `--parent <scope>`.
+- **exit-check / no-progress (`parseBlockers` leaf mode)**: the sprint done-condition is now
+  open leaf work in the subtree (open `type=task`, plus `type=feature` only when integ
+  tests run), excluding roots -- roots close only at Harvest, so the old roots-only count
+  made `goalMet` unreachable and forced a false "no progress" abort on cycle 2. The 4-arg
+  `parseBlockers` form is unchanged. `test/exit-check-roots-scope.test.mjs` was replaced by
+  `test/exit-check-leaf-scope.test.mjs`.
+- **planDone bypass**: a resumed/pre-planned cycle now still runs one plan-reviewer pass
+  (only the planner dispatch is skipped on round 0), so `taskAssignments`/`sprintQuote`
+  populate and the quality gate is enforced.
+
 ## feat/pm-tag-dispatch -- 2026-07-01 (cycles 3, goal met)
 
 **Sprint goal:** Document tag-based member selection in SKILL.md (apra-pm-g6q Phase 5). Goal met -- all sprint issues closed.

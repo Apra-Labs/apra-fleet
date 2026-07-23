@@ -164,13 +164,6 @@ children are all closed and confirmed to satisfy it) is yours to close once its 
 criteria are met, exactly like a leaf `task` bead.
 Do NOT continue past VERIFY.
 
-## Token tracking
-
-Before committing your last task, run:
-```
-bd remember "<your-label> <model> tokens: input=<N> output=<N>"
-```
-Estimate input as total tokens you received; output as total tokens you generated.
 
 ## Branch and secrets rules
 

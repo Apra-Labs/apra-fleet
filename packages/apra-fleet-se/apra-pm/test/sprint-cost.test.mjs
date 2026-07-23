@@ -248,14 +248,20 @@ test('computeUpdatedCalibration: role avg_output_tokens set on first sprint', ()
   assert.equal(u.historical.roles['doer'].sample_n, 2);
 });
 
-test('computeUpdatedCalibration: rolling blend capped at max_sprints_in_sample', () => {
+test('computeUpdatedCalibration: rolling blend capped at max_samples_in_average', () => {
   let cal = DEFAULT_CALIBRATION;
+  // Set the cap to 5 so we don't have to loop 50 times
+  cal = JSON.parse(JSON.stringify(cal));
+  cal.historical = { max_samples_in_average: 5 };
+  
   const analysis = { ...SAMPLE_ANALYSIS, actualCycles: 2 };
-  // Run 6 sprints -- window is 5
+  // Run 6 sprints -- each adds 1 cycle sample
   for (let i = 0; i < 6; i++) {
     cal = computeUpdatedCalibration(cal, analysis, '20260620_130000');
   }
-  assert.equal(cal.historical.sprints_sampled, 5); // capped at max
+  // cycle_sample_n should cap at 5, sprints_sampled will just be 6
+  assert.equal(cal.historical.cycle_sample_n, 5);
+  assert.equal(cal.historical.sprints_sampled, 6);
 });
 
 test('computeUpdatedCalibration: does not mutate original calibration', () => {
@@ -368,12 +374,13 @@ test('computeUpdatedCalibration: populates bucket_avg_tokens for exercised bucke
 
 test('computeUpdatedCalibration: blends bucket_avg_tokens against prior history', () => {
   const cal = JSON.parse(JSON.stringify(DEFAULT_CALIBRATION));
-  cal.historical.sprints_sampled = 1;            // prev=1
+  cal.historical.bucket_sample_n = { M: 1 };            // prev=1 sample
   cal.historical.bucket_avg_tokens = { M: 1000 };
-  const logEntries = [{ label: 'doer-c1-i1', context: 'tasks BD-2', outTokens: 2000 }]; // M=2000
+  const logEntries = [{ label: 'doer-c1-i1', context: 'tasks BD-2', outTokens: 2000 }]; // M=2000 (1 sample)
   const u = computeUpdatedCalibration(cal, SAMPLE_ANALYSIS, '20260621_090000', BUCKET_ASSIGNMENTS, logEntries);
   // blend(1000, 2000) with prev=1, n=2 => (1000*1 + 2000)/2 = 1500
   assert.equal(u.historical.bucket_avg_tokens.M, 1500);
+  assert.equal(u.historical.bucket_sample_n.M, 2);
 });
 
 test('computeUpdatedCalibration: bucket join populated value flows into computeSprintQuote', () => {

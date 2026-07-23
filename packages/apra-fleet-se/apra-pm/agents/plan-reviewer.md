@@ -55,8 +55,10 @@ plan correctly implemented what a prior round said was acceptable.
 ## Step 1 -- Inspect the DAG
 
 ```bash
-bd list --status=open
+bd list --parent <scope> --status=open --json
 ```
+(run once per supplied scope root -- do NOT use a bare `bd list --status=open`, which
+lists the whole database, not just these sprint goals)
 
 For each open feature and its tasks, run `bd show <id>` to read the full description and metadata.
 
@@ -70,21 +72,30 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
 6. **No scope creep**: tasks address only the original sprint goals and open bugs/features
 7. **No duplicate work**: no two tasks do the same thing
 8. **Feasibility**: no task assumes something that has not been built yet
-9. **Ready-work check, scoped to this review's subtree** (see the graph-semantics section
-   above): run `bd list --parent <scope> --ready --json` -- NOT bare `bd ready`, which
-   lists ready work across the entire database and is not a signal about this DAG. The
-   scoped `--ready` list should be non-empty whenever open tasks exist under `<scope>`; if
-   it is empty while open tasks remain, there is a cycle -- diagnose with `bd blocked
-   --parent <scope>` and `bd dep list <id>` on the suspicious issues, hard CHANGES NEEDED,
-   list every ID in the cycle. Do NOT assume this cycle is structurally impossible for any
-   scope-root type except `epic` -- bd's protection is narrower than that (see the
-   graph-semantics section); treat this scoped check as the only reliable signal,
-   regardless of the scope root's issue_type. Epic-level completion tracking (has
-   everything under this epic actually finished) is a separate question -- use `bd epic
-   status <scope>` for that ONLY when `<scope>` is itself `issue_type=epic` (check via `bd
-   show <scope> --json` first: on a non-epic scope, `bd epic status` silently lists
-   unrelated epics instead of erroring) -- fall back to `dependent_count`/manual child
-   inspection for non-epic scopes.
+9. **Ready-work check -- scoped to the UNION of this review's roots, not each root alone**
+   (see the graph-semantics section above): run `bd list --parent <scope> --ready
+   --type=task --json` for EACH sprint root and reason over the COMBINED result. The
+   invariant is that the UNION of ready work across all roots is non-empty whenever open
+   tasks remain anywhere in scope -- NOT that every root independently has ready work. Do
+   NOT use bare `bd ready`, which lists ready work across the entire database and is not a
+   signal about this DAG.
+   - A single root whose scoped `--ready` list is EMPTY is NOT a failure when its open
+     tasks are blocked (directly or transitively) by an open task in a DIFFERENT root that
+     is itself ready now or reachable from the union ready-set. That is legitimate
+     cross-goal sequencing (a seeded or intended cross-root `blocks` edge), not a cycle --
+     do NOT tear out the edge and do NOT hard-fail for it.
+   - Hard CHANGES NEEDED only when EITHER (a) the union of `--ready` across every root is
+     empty while open tasks remain anywhere in scope (the whole sprint cannot start -- a
+     true deadlock), OR (b) a root's blocked chain traces back into its OWN subtree (a
+     self-cycle -- a `blocks` edge to a `--parent` ancestor/descendant). Diagnose with `bd
+     blocked --parent <scope>` and `bd dep list <id>` on the suspicious issues; list every
+     ID in the cycle. Do NOT assume a self-cycle is structurally impossible for any
+     scope-root type except `epic` -- bd's protection is narrower than that.
+   Epic-level completion tracking (has everything under this epic actually finished) is a
+   separate question -- use `bd epic status <scope>` for that ONLY when `<scope>` is itself
+   `issue_type=epic` (check via `bd show <scope> --json` first: on a non-epic scope, `bd
+   epic status` silently lists unrelated epics instead of erroring) -- fall back to
+   `dependent_count`/manual child inspection for non-epic scopes.
 10. **Model metadata**: every task has a model tier set as beads metadata, i.e.
     `--metadata '{"model": "..."}'` at creation (visible as the `model` key in `bd show <id>`'s
     metadata output). This is the single location the tier lives in -- `planner.md` Step 3
