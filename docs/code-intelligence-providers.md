@@ -94,26 +94,53 @@ file remains in source with a deprecation notice and the evaluation summary
 above; it was never registered in `PROVIDERS` and carries no runtime
 behavior.
 
-## Per-member provider selection (schema only; routing not yet wired)
+## Per-member provider selection
 
 The `Agent` interface carries an optional `codeIntelProvider` field
 (`'codebase-memory' | 'gitnexus' | 'none'`), and `register_member` /
 `update_member` accept a matching `code_intel_provider` input so an
 individual member's preferred provider can be set at registration time or
-changed later. The intent is per-member override of the fleet-wide default
-selected by `getProvider()`: a member with `codeIntelProvider: 'none'`
-should be able to opt out of code intelligence entirely, and a member with
-an explicit provider name should route to that provider regardless of the
-global config.
+changed later. `getProvider(memberId?)` resolves this per-member override
+ahead of the fleet-wide default: when the calling member has
+`codeIntelProvider` set, that provider wins; otherwise `getProvider()`
+falls back to the global config file exactly as before. A member with
+`codeIntelProvider: 'none'` resolves to a `NullProvider` -- an
+implementation of `CodeIntelligenceProvider` whose seven methods each
+return a structured "disabled for this member" result (`isError: false`,
+same MCP content-array shape as every other provider) instead of throwing
+or silently falling through to the default. This keeps opt-out
+indistinguishable, from the caller's perspective, from a normal tool
+response -- callers never need special-case handling for a member who has
+turned code intelligence off.
 
-As things stand, the field is only persisted to the agent registry -- no
-downstream logic reads it yet. `getProvider()` still resolves purely from
-the global config file, and no code-intel tool dispatch path consults the
-calling member's `codeIntelProvider`. The routing half of this feature
-(resolving `getProvider()` per-member and wiring member context into the
-`code_graph`/`code_impact`/etc. tool handlers) is a separate, not-yet-built
-increment. Until that lands, setting `code_intel_provider` on a member has
-no observable effect.
+Member context reaches the code-intel tool handlers (`code_graph`,
+`code_impact`, `code_query`, `code_context`, `code_map`, `code_flow`,
+`code_tests`) through a resolver that inspects which member's
+`execute_prompt` dispatch is currently in flight. This is a heuristic, not
+an explicit parameter on the tool schema: an MCP tool call carries no
+caller identity of its own, so the dispatch layer infers it from
+process-wide in-flight state. When exactly one member's `execute_prompt`
+is in flight, that member's id is used to resolve the provider. When zero
+or more than one member is in flight at the same time, the resolution is
+ambiguous and the call falls back to the global config, the same as if no
+member context were available at all. This means concurrent dispatch to
+multiple members currently loses per-member code-intel routing for the
+duration of the overlap -- a known limitation of inferring identity from
+shared process state rather than threading it explicitly through the MCP
+call. If concurrent multi-member dispatch becomes common, the fix is to
+thread member identity through the MCP tool call itself (e.g. as an
+out-of-band header or session key) rather than inferring it from
+in-flight set cardinality.
+
+Unit coverage exercises `getProvider(memberId)` resolution (member
+override, `none` -> `NullProvider`, fallback to global config, unknown
+member id), the `NullProvider` contract (all seven methods return the
+disabled message and never throw), and the handler functions that thread
+`memberId` through to `getProvider()`. End-to-end verification of the
+full dispatch path -- confirming `execute_prompt` for a real member
+actually reaches its configured provider through the running MCP
+server, not just through directly-called handler functions -- is still
+outstanding follow-on work.
 
 ## KB initialization lifecycle: pre-init phase
 
