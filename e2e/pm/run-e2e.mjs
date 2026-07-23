@@ -33,7 +33,7 @@
 // runner's ambient git + gh credentials.
 //
 // CLI flags vary by tool/version; override a provider's command with
-//   PMLITE_E2E_CMD_CLAUDE="claude -p {PROMPT} --permission-mode acceptEdits"
+//   E2E_CMD_CLAUDE="claude -p {PROMPT} --permission-mode acceptEdits"
 // ({PROMPT} is substituted with the rendered scenario).
 
 import fs from 'node:fs';
@@ -45,6 +45,22 @@ import { fileURLToPath } from 'node:url';
 import { parseTelemetryFile, diagnoseFailure } from '../lib/extract-results.mjs';
 import { validateSprint } from '../lib/validate-sprint.mjs';
 import { postSummary } from '../lib/post-summary.mjs';
+
+// One-release backcompat: prefer the E2E_* env var; fall back to the retired
+// PMLITE_E2E_* name if the new one is unset, warning once per name so stragglers
+// get flagged without spamming the log on every read.
+const warnedEnvCompat = new Set();
+function envCompat(newName, oldName) {
+  if (process.env[newName] !== undefined) return process.env[newName];
+  if (process.env[oldName] !== undefined) {
+    if (!warnedEnvCompat.has(oldName)) {
+      warnedEnvCompat.add(oldName);
+      console.error(`[e2e] ${oldName} is deprecated -- use ${newName} instead`);
+    }
+    return process.env[oldName];
+  }
+  return undefined;
+}
 
 const E2E = path.dirname(fileURLToPath(import.meta.url));
 // This runner lives at the repo-root e2e/pm/ tree. The apra-pm package (whose
@@ -66,7 +82,7 @@ function scenarioFor(suite) {
 // Default headless command per provider. {PROMPT} is replaced with the scenario.
 // The autonomy flags matter: without them the CLI stalls on permission/trust gates
 // (e.g. when dispatching a subagent) and times out. stream-json output is what lets
-// us account tokens. Override with PMLITE_E2E_CMD_<P>.
+// us account tokens. Override with E2E_CMD_<P>.
 const CLI = {
   claude: ['claude', '-p', '{PROMPT}', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose', '--max-turns', '100'],
   gemini: ['gemini', '-p', '{PROMPT}', '--model', 'auto', '--skip-trust', '--output-format', 'stream-json'],
@@ -104,10 +120,10 @@ function ghEnv(token) { return token ? { ...process.env, GH_TOKEN: token } : pro
 
 // LLM processes must not inherit write-access tokens on public runners -- the
 // token is already embedded in the git remote URL before the sprint starts.
-// Set PMLITE_E2E_TRUST_LLM=1 on self-hosted (private) runners where leakage
+// Set E2E_TRUST_LLM=1 on self-hosted (private) runners where leakage
 // is not a concern and the LLM may need the token for gh CLI calls.
 function llmEnv() {
-  const e = process.env.PMLITE_E2E_TRUST_LLM === '1' ? { ...process.env } : (() => {
+  const e = envCompat('E2E_TRUST_LLM', 'PMLITE_E2E_TRUST_LLM') === '1' ? { ...process.env } : (() => {
     const x = { ...process.env }; delete x.GH_TOKEN; delete x.E2E_GH_TOKEN; return x;
   })();
   // Workflows run as background tasks in Claude Code's print mode. Without this
@@ -171,9 +187,9 @@ function teardownInstall(provider, repoRoot) {
 // Running this every teardown (rather than on a schedule) means any drift -- a stray push,
 // a bd version that ignored the init-time `dolt remote remove`, a manual mistake -- heals
 // on the very next run. Best effort: never fail a suite over the seed heal.
-// Opt out with PMLITE_E2E_NO_HEAL=1 (e.g. local debugging against a throwaway toy fork).
+// Opt out with E2E_NO_HEAL=1 (e.g. local debugging against a throwaway toy fork).
 function healDoltSeed(token) {
-  if (process.env.PMLITE_E2E_NO_HEAL === '1') { console.log('[heal-seed] PMLITE_E2E_NO_HEAL=1 -- skipping'); return; }
+  if (envCompat('E2E_NO_HEAL', 'PMLITE_E2E_NO_HEAL') === '1') { console.log('[heal-seed] E2E_NO_HEAL=1 -- skipping'); return; }
   if (!token || !OWNER_REPO) { console.log('[heal-seed] no token/OWNER_REPO -- skipping'); return; }
   let work;
   try {
@@ -224,9 +240,9 @@ function selectSuites(a) {
 }
 
 function commandFor(provider, prompt, model) {
-  // PMLITE_E2E_MODEL overrides the suite's model -- easy to switch without editing suites.json.
-  const effectiveModel = process.env.PMLITE_E2E_MODEL || model;
-  const override = process.env[`PMLITE_E2E_CMD_${provider.toUpperCase()}`];
+  // E2E_MODEL overrides the suite's model -- easy to switch without editing suites.json.
+  const effectiveModel = envCompat('E2E_MODEL', 'PMLITE_E2E_MODEL') || model;
+  const override = envCompat(`E2E_CMD_${provider.toUpperCase()}`, `PMLITE_E2E_CMD_${provider.toUpperCase()}`);
   const tokens = override ? override.split(' ') : CLI[provider];
   const filled = tokens.map((t) => (t === '{PROMPT}' ? prompt : t));
   if (!override && effectiveModel && provider === 'opencode') {
@@ -256,10 +272,10 @@ const AGY_TRANSCRIPT_SCRIPT =
   "const cache=JSON.parse(fs.readFileSync(path.join(home,'.gemini','antigravity-cli','cache','last_conversations.json'),'utf8'));" +
   "const norm=p=>path.resolve(p).toLowerCase().split(path.sep).join('/');const target=norm(process.argv[1]);" +
   "let id='';for(const k of Object.keys(cache)){if(norm(k)===target){id=cache[k];break;}}" +
-  "if(!id){process.stdout.write('FLEET_TRANSCRIPT_MISSING:NO_CONV\\n');process.exit(0);}" +
+  "if(!id){process.stdout.write('E2E_TRANSCRIPT_MISSING:NO_CONV\\n');process.exit(0);}" +
   "const tp=path.join(home,'.gemini','antigravity-cli','brain',id,'.system_generated','logs','transcript.jsonl');" +
-  "if(fs.existsSync(tp)){process.stdout.write('FLEET_TRANSCRIPT_START\\n');process.stdout.write(fs.readFileSync(tp,'utf8'));process.stdout.write('\\nFLEET_TRANSCRIPT_END\\n');}" +
-  "else{process.stdout.write('FLEET_TRANSCRIPT_MISSING:'+id+'\\n');}";
+  "if(fs.existsSync(tp)){process.stdout.write('E2E_TRANSCRIPT_START\\n');process.stdout.write(fs.readFileSync(tp,'utf8'));process.stdout.write('\\nE2E_TRANSCRIPT_END\\n');}" +
+  "else{process.stdout.write('E2E_TRANSCRIPT_MISSING:'+id+'\\n');}";
 
 function appendAgyTranscript(cwd, logPath) {
   const r = spawnSync('node', ['-e', AGY_TRANSCRIPT_SCRIPT, cwd], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 });

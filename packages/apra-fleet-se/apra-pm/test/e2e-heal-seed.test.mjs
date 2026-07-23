@@ -48,5 +48,5 @@ test('healDoltSeed force-pushes the golden seed and is best-effort', () => {
   assert.match(body, /'dolt', 'push', '--force', '--remote', 'origin'/, 'must force-push the seed');
   // Best effort: guarded by try/catch, never throws to fail the suite.
   assert.match(body, /try \{/, 'must wrap the heal in try/catch (best effort)');
-  assert.match(body, /PMLITE_E2E_NO_HEAL/, 'must support an opt-out env var');
+  assert.match(body, /E2E_NO_HEAL/, 'must support an opt-out env var');
 });

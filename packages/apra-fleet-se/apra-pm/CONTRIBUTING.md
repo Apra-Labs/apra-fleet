@@ -53,7 +53,7 @@ Unit tests cover the sprint cost arithmetic in `lib/sprint-cost.mjs`:
 ```bash
 npm test                              # run 45 unit tests (node built-in test runner)
 node --check install.mjs              # syntax-check the installer
-node e2e/run-e2e.mjs --suite s1.2     # run one e2e suite (needs the provider CLI + bd)
+npm run e2e -- --suite s1.2           # run one e2e suite (needs the provider CLI + bd)
 ```
 
 Agent and skill correctness is exercised end-to-end. See `e2e/` and the README

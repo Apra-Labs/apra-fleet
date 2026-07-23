@@ -9,7 +9,7 @@
 //       diagnoseFailure -- one-line failure reason from the last result event.
 //   - CLI (invoked by .github/workflows/fleet-e2e.yml): assembles a results.json report from
 //       one or more raw provider logs (claude JSONL, gemini result.stats, opencode parts, agy
-//       FLEET_TRANSCRIPT-wrapped transcript) plus member-log JSONL, and writes it to stdout.
+//       E2E_TRANSCRIPT-wrapped transcript) plus member-log JSONL, and writes it to stdout.
 //
 // Checkpoints: primary source is the checkpoints.json file the orchestrator appends
 // to (one JSON object per line); a stdout parser is provided as a fallback. A run
@@ -215,7 +215,7 @@ export function diagnoseFailure(file) {
 // ---------------------------------------------------- CLI report assembly (fleet)
 
 // Parse a single raw provider log into assistant text + token usage. Handles the agy
-// FLEET_TRANSCRIPT-wrapped transcript, opencode parts, gemini result.stats, and claude
+// E2E_TRANSCRIPT-wrapped transcript, opencode parts, gemini result.stats, and claude
 // assistant/result events.
 function processRawFile(filePath, provider) {
   let assistantText = '';
@@ -232,11 +232,12 @@ function processRawFile(filePath, provider) {
 
   if (provider === 'agy') {
     // The raw file contains the stdout of the agy invocation. After agy exits,
-    // fleet appends the transcript JSONL wrapped in FLEET_TRANSCRIPT_START/END markers.
-    // We extract text from PLANNER_RESPONSE entries in the JSONL so that CHECKPOINT lines
-    // embedded in the agent's responses can be detected.
-    const startMarker = 'FLEET_TRANSCRIPT_START';
-    const endMarker = 'FLEET_TRANSCRIPT_END';
+    // the e2e AGY transcript script (embedded in run-e2e.mjs / fleet-e2e.yml) appends
+    // the transcript JSONL wrapped in E2E_TRANSCRIPT_START/END markers. Dual-accept the
+    // retired FLEET_TRANSCRIPT_* markers for one release in case a runner is still on a
+    // stale checkout of the writer script.
+    const startMarker = content.includes('E2E_TRANSCRIPT_START') ? 'E2E_TRANSCRIPT_START' : 'FLEET_TRANSCRIPT_START';
+    const endMarker = content.includes('E2E_TRANSCRIPT_END') ? 'E2E_TRANSCRIPT_END' : 'FLEET_TRANSCRIPT_END';
     const startIdx = content.indexOf(startMarker);
     const endIdx = content.indexOf(endMarker);
     if (startIdx !== -1 && endIdx !== -1) {

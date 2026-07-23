@@ -210,9 +210,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
           # Self-hosted runners are trusted; pass token so the LLM can use gh CLI.
-          PMLITE_E2E_TRUST_LLM: "1"
+          E2E_TRUST_LLM: "1"
           # Model override: workflow input wins, otherwise suites.json default is used.
-          PMLITE_E2E_MODEL: ${{ inputs.model }}
+          E2E_MODEL: ${{ inputs.model }}
         run: node e2e/pm/run-e2e.mjs --suite "${{ inputs.suite }}"
 
       - name: Upload results
