@@ -60,10 +60,19 @@ describe('LocalStrategy', () => {
     const provider = new ClaudeProvider();
     const built = provider.buildPromptCommand({ folder: tmpDir, promptFile: '.fleet-task.md' });
     // Same command LocalStrategy would actually spawn for a real coding-agent
-    // dispatch, except the `claude` binary is swapped for `echo` so this test
-    // doesn't depend on a real CLI being installed -- we only need to prove
-    // the permission flag survives LocalStrategy's clean-env wrapping intact.
-    const echoCmd = built.replace(/&& claude/, '&& echo');
+    // dispatch, except the `claude` binary is swapped for an echo stub so this
+    // test doesn't depend on a real CLI being installed -- we only need to
+    // prove the permission flag survives LocalStrategy's clean-env wrapping
+    // intact. On Windows, LocalStrategy's clean-env shell is Windows
+    // PowerShell 5.1, which has no `&&` operator and no space-joining `echo`
+    // (Write-Output emits each argv token on its own line), so the
+    // POSIX-composed `cd "..." && claude ...` prefix is rewritten to its
+    // PowerShell equivalent and the stub is a function that joins its argv --
+    // the provider-composed argument list itself is passed through unchanged.
+    const claudeArgv = built.slice(built.indexOf('&& claude') + '&& claude'.length);
+    const echoCmd = process.platform === 'win32'
+      ? `function claude { $args -join ' ' }; Set-Location "${tmpDir}"; claude${claudeArgv}`
+      : built.replace(/&& claude/, '&& echo');
 
     const member = makeLocalAgent({ workFolder: tmpDir });
     const strategy = getStrategy(member);
