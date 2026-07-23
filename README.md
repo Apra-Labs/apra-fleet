@@ -322,6 +322,7 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 | Live member activity (`apra-fleet watch`, `logging.previewChars`) | [docs/features/watch.md](docs/features/watch.md) |
 | Secure credentials and passwords | [docs/features/oob-auth.md](docs/features/oob-auth.md) |
 | Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
+| Per-member code-intelligence providers | [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |

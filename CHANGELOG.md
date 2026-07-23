@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-member code-intelligence provider routing
+
+Sprint goal: route code-intelligence tool calls (`code_graph`, `code_impact`,
+`code_query`, `code_context`, `code_map`, `code_flow`, `code_tests`) through
+each member's own provider preference instead of a single fleet-wide
+provider, with a clean opt-out path for members that should not use code
+intelligence at all. Goal met.
+
+Implements the `CodeIntelligenceProvider` interface plus a `NullProvider`
+opt-out implementation, extends `getProvider()` to resolve per-member
+before falling back to the global config (preserving backward compatibility
+for existing installs), and threads the active member's identity through
+`execute_prompt` dispatch into the code-intel tool handlers without adding
+a member-id parameter to any public tool schema. The full build passes
+type-checking; the new test suite (7 tests covering global fallback,
+opt-out routing, member-specific routing, and the no-throw guarantee of
+`NullProvider`) passes, alongside the pre-existing suite (two pre-existing
+failures unrelated to this change remain, in files this work did not
+touch).
+
+Two follow-ups are tracked as backlog and did not block this release:
+the module-level "active member" marker used to thread context is shared
+across concurrent dispatches and can cross-resolve providers if two
+members are dispatched at the same time (no impact for fleets that dispatch
+members sequentially); and the opt-out message returned by `NullProvider`
+is serialized through a generic JSON-stringify step, which is functionally
+correct but renders less cleanly than plain text -- a candidate for a small
+follow-up cleanup rather than a behavior fix.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     32,733 |   n/a |   $0.000 |   $0.818 |
+| reviewer   |          0 |      9,380 |   n/a |   $0.000 |   $0.234 |
+| overhead   |      7,150 |    100,634 | +1307% |   $0.121 |   $0.749 |
+| TOTAL      |      7,150 |    142,747 | +1896% |   $0.121 |   $1.802 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Added
+
+- **Per-member code-intelligence provider selection** -- `register_member`
+  and `update_member` accept an optional code-intelligence provider choice
+  (a supported provider name, or "none" to opt out). When set, it overrides
+  the fleet's global provider for that member only; when unset, the member
+  continues to use the fleet-wide default.
+- **`NullProvider` opt-out path** -- members with code intelligence disabled
+  receive a structured "disabled" response from every code-intel tool
+  instead of an error, so opting out is visibly distinct from a failure.
+- **Member-context-aware tool dispatch** -- code-intel tool calls made
+  during a member's turn automatically resolve that member's provider
+  preference; direct tool calls made outside a member dispatch continue to
+  use the global default.
+
+### Carried forward
+
+- End-to-end test coverage for per-member provider routing through the full
+  MCP tool dispatch path (unit-level coverage landed this sprint; broader
+  end-to-end verification did not).
+- Fixing the shared-state concurrency hazard in the active-member context
+  marker described above.
+
 ## [v0.3.3] -- feat/install-default
 
 ### Breaking change -- MCP server start command changed
