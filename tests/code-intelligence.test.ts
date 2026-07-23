@@ -122,6 +122,15 @@ describe('getProvider()', () => {
     expect(mockReadFile).not.toHaveBeenCalled();
   });
 
+  it('returns CodebaseMemoryProvider when memberId has codeIntelProvider set to codebase-memory', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-4', codeIntelProvider: 'codebase-memory' });
+
+    const provider = await getProvider('agent-4');
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+    expect(provider).toBeInstanceOf(CodebaseMemoryProvider);
+    expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
   it('returns NullProvider when memberId has codeIntelProvider set to none', async () => {
     mockGetAgent.mockReturnValue({ id: 'agent-2', codeIntelProvider: 'none' });
 
@@ -160,6 +169,19 @@ describe('getProvider()', () => {
 // NullProvider tests
 // ---------------------------------------------------------------------------
 describe('NullProvider', () => {
+  it('graph() returns a structured disabled message', async () => {
+    const nullProvider = new NullProvider();
+    const result = await nullProvider.graph({ symbol: 'handleIPChange' }) as {
+      content: Array<{ type: string; text: string }>;
+      isError: boolean;
+    };
+
+    expect(result.isError).toBe(false);
+    expect(result.content).toEqual([
+      { type: 'text', text: 'Code intelligence is disabled for this member.' },
+    ]);
+  });
+
   it('returns structured disabled message from every method without throwing', async () => {
     const nullProvider = new NullProvider();
     const methods = ['graph', 'impact', 'query', 'context', 'map', 'flow', 'tests'] as const;
