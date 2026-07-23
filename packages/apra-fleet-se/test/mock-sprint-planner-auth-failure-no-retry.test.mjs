@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { bdMode, realSyncSpawnCount } from './helpers/bd-replay.mjs';
 import { isNonRetryableDispatchError } from '../auto-sprint/errors.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
@@ -64,6 +65,20 @@ test('unit: isNonRetryableDispatchError matches auth/trust signatures and nothin
 // .54.3+.54.5 fix SHA: elapsedMs ~24.8s, all post-error assertions
 // (plannerCalls===1, non-retryable log line, terminal-state persistence)
 // reached and passing, no harness timeout.
+//
+// apra-fleet-eft.54.7: even THAT re-verification turned out to still be
+// masking a residual real-bd hang -- .54.6 found and fixed a real 'bd dolt
+// pull' SPAWN still executing on the sprint's FIRST Planner dispatch before
+// the non-retryable auth abort ever fires on it (doltPullBefore's new
+// skipPull option, threaded through withGitSync's skipPreDispatchDoltPull,
+// set only for that first attempt). This is the REGRESSION pin for .54.6:
+// beyond the elapsedMs budget above (a wall-clock proxy that a fast host
+// could pass even with the bracket re-introduced), assert directly on
+// bd-replay.mjs's real-mode dolt-sync spawn cache
+// (realSyncSpawnCount, same mechanism eft.60.4 uses) that NO real 'bd dolt
+// pull'/'bd dolt push' spawn occurs on this abort path at all, so a
+// reintroduction of the residual sync bracket fails this test even on a
+// host fast enough to still slip under 60s.
 test('mock sprint: Planner auth failure aborts the retry loop after ONE attempt instead of exhausting the backoff', { timeout: 120000 }, async () => {
     await withScenarioMarkers('plannerauthnoretry', async () => {
         console.log('Running mock sprint scenario (Planner dispatch always fails with an Authentication failed response)...');
@@ -116,6 +131,37 @@ test('mock sprint: Planner auth failure aborts the retry loop after ONE attempt 
         check(
             terminalStates.some((s) => s.data && typeof s.data.message === 'string' && /Authentication failed/.test(s.data.message)),
             `Expected the persisted terminal state to carry the auth-failure message, states: ${JSON.stringify(terminalStates)}`
+        );
+
+        // apra-fleet-eft.54.7: regression pin for .54.6's fix, at the
+        // real-spawn level rather than just the elapsedMs budget above (same
+        // mechanism as eft.60.4's retry-ladder pin). This scenario's beads
+        // clone is a bare `bd init` scratch dir with no configured
+        // sync.remote, so isMemberSyncRemoteConfigured's pre-gate probe
+        // short-circuits EVERY doltPullBefore/doltPushAfter call -- across
+        // the orchestrator's own pre-sprint/pre-plan D-pulls AND the single
+        // Planner attempt -- to a skip before a real 'bd dolt pull'/'bd dolt
+        // push' command is ever issued. So both spawn counts must be exactly
+        // ZERO here; a re-introduction of the residual sync bracket .54.6
+        // fixed (or any other new real-bd Dolt spawn on this abort path)
+        // would push these above zero even on a host fast enough to still
+        // slip under the elapsedMs<60000 bound above.
+        //
+        // Only meaningful under real bd (APRA_FLEET_BD_MOCK=off): in the
+        // default replay mode, dolt-sync commands are synthesized directly
+        // in runCmd() and never touch this cache at all (see bd-replay.mjs),
+        // so both counts are trivially 0 there regardless of caching/skip
+        // behavior -- the assertion still runs (and passes) in that mode,
+        // it just isn't the thing proving the fix there.
+        const doltPullSpawns = realSyncSpawnCount(scenario.tempDir, /^bd\s+dolt\s+pull$/);
+        check(
+            doltPullSpawns === 0,
+            `Expected NO real 'bd dolt pull' spawn on the auth-abort path (bd mode: ${bdMode()}), got ${doltPullSpawns} real spawn(s)`
+        );
+        const doltPushSpawns = realSyncSpawnCount(scenario.tempDir, /^bd\s+dolt\s+push$/);
+        check(
+            doltPushSpawns === 0,
+            `Expected NO real 'bd dolt push' spawn on the auth-abort path (bd mode: ${bdMode()}), got ${doltPushSpawns} real spawn(s)`
         );
     });
 });
