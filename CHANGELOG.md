@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-member code-intelligence routing: infrastructure landed, MCP wiring gap remains
+
+`getProvider()` in the code-intelligence tool layer now accepts an optional
+member id and resolves that member's `codeIntelProvider` preference ahead
+of the global config file, falling back to the existing global-config
+resolution when no member id is given or the member has no preference set.
+A `NullProvider` was added and registered under the `none` provider key: it
+implements the full provider interface and returns a structured
+"disabled for this member" result for every method instead of erroring, so
+a member that opts out of code intelligence gets a clean, predictable
+response rather than a failure. Every `code_graph`/`code_impact`/
+`code_query`/`code_context`/`code_map`/`code_flow`/`code_tests` handler
+function was updated to accept and thread through an optional member id.
+
+The MCP tool registrations that invoke these handlers do not yet pass a
+member id through -- the stdio MCP transport has no per-session identity to
+source one from, so completing that last-mile wiring is separate,
+unstarted follow-up work. Until it lands, per-member `codeIntelProvider`
+preferences have no observable effect on live tool calls; the global
+config fallback continues to govern all code-intelligence dispatch in
+practice. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)
+for the full routing design and current status.
+
+Build passes, all 2333 tests pass, no regressions.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     23,124 |   n/a |   $0.000 |   $0.552 |
+| reviewer   |          0 |     16,575 |   n/a |   $0.000 |   $0.361 |
+| overhead   |      7,150 |     87,970 | +1130% |   $0.121 |   $0.754 |
+| TOTAL      |      7,150 |    127,669 | +1686% |   $0.121 |   $1.666 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the
