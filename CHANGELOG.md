@@ -2,6 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-member code-intelligence provider routing
+
+This sprint implemented per-member routing for the code-intelligence
+tools. `getProvider()` now accepts an optional member id: when the
+calling member has `codeIntelProvider` set, that provider is used ahead
+of the fleet-wide default; otherwise resolution falls back to the global
+config file exactly as before. A member with `codeIntelProvider: 'none'`
+now resolves to a new `NullProvider`, which returns a structured
+"disabled for this member" result from all seven provider methods
+instead of throwing or silently falling through to the default. Member
+context reaches the `code_graph`/`code_impact`/`code_query`/`code_context`/
+`code_map`/`code_flow`/`code_tests` tool handlers via a resolver that
+infers the calling member from in-flight `execute_prompt` dispatch state;
+when exactly one member is in flight its id is used, and when zero or
+more than one member is in flight the call falls back to the global
+config (see [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)
+for the full design and its known concurrent-dispatch limitation).
+
+All four acceptance criteria for this increment are met: per-member
+resolution, fallback to global config, structured disabled-message for
+`none`, and member context threaded from `execute_prompt` dispatch into
+the tool handlers. Build is clean (tsc, zero errors) and the full test
+suite passes (157 files, 2334 passed, 0 failed, 5 skipped) with no
+regressions; new unit coverage exercises `getProvider(memberId)`
+resolution, all seven `NullProvider` methods, and memberId-threading
+through each handler function. Not covered by this sprint: end-to-end
+verification that a real `execute_prompt` dispatch reaches its
+configured provider through the running MCP server (as opposed to
+calling the handler functions directly) remains open follow-on work, so
+the parent per-member-provider-selection goal for this sprint is not yet
+considered fully met.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     24,870 |   n/a |   $0.000 |   $0.622 |
+| reviewer   |          0 |     11,086 |   n/a |   $0.000 |   $0.277 |
+| overhead   |      7,150 |     87,538 | +1124% |   $0.121 |   $0.655 |
+| TOTAL      |      7,150 |    123,494 | +1627% |   $0.121 |   $1.554 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the
