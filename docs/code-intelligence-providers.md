@@ -94,26 +94,52 @@ file remains in source with a deprecation notice and the evaluation summary
 above; it was never registered in `PROVIDERS` and carries no runtime
 behavior.
 
-## Per-member provider selection (schema only; routing not yet wired)
+## Per-member provider selection
 
 The `Agent` interface carries an optional `codeIntelProvider` field
 (`'codebase-memory' | 'gitnexus' | 'none'`), and `register_member` /
 `update_member` accept a matching `code_intel_provider` input so an
 individual member's preferred provider can be set at registration time or
-changed later. The intent is per-member override of the fleet-wide default
-selected by `getProvider()`: a member with `codeIntelProvider: 'none'`
-should be able to opt out of code intelligence entirely, and a member with
-an explicit provider name should route to that provider regardless of the
-global config.
+changed later. This is a per-member override of the fleet-wide default
+selected by `getProvider()`: a member with `codeIntelProvider: 'none'` opts
+out of code intelligence entirely, and a member with an explicit provider
+name routes to that provider regardless of the global config.
 
-As things stand, the field is only persisted to the agent registry -- no
-downstream logic reads it yet. `getProvider()` still resolves purely from
-the global config file, and no code-intel tool dispatch path consults the
-calling member's `codeIntelProvider`. The routing half of this feature
-(resolving `getProvider()` per-member and wiring member context into the
-`code_graph`/`code_impact`/etc. tool handlers) is a separate, not-yet-built
-increment. Until that lands, setting `code_intel_provider` on a member has
-no observable effect.
+`getProvider()` now accepts an optional `memberId`. When supplied, it looks
+up the agent's `codeIntelProvider` via the registry first: an explicit
+provider name resolves to that entry in the `PROVIDERS` map, `'none'`
+resolves to a shared `NullProvider` singleton, and an unrecognized or unset
+value falls through to the existing global-config resolution (so
+`getProvider()` called with no arguments, or for a member with no
+preference, is unchanged). This keeps the per-member check as a strict
+prefix in front of the pre-existing global lookup rather than a parallel
+resolution path, so backward compatibility does not depend on duplicating
+the config-reading logic.
+
+`NullProvider` implements all seven `CodeIntelligenceProvider` methods and
+returns a structured MCP content-array response ("code intelligence is
+disabled for this member") for each one rather than throwing or returning
+`undefined` -- callers that always expect a provider object with all seven
+methods do not need a separate disabled-state branch.
+
+Each of the seven `code_*` MCP tool handlers now calls a thin
+`handle*(input, memberId?)` wrapper (`handleGraph`, `handleImpact`,
+`handleQuery`, `handleContext`, `handleMap`, `handleFlow`, `handleTests`)
+that resolves the provider via `getProvider(memberId)` and delegates to it,
+rather than calling `getProvider()` and the provider method directly inline.
+`memberId` is not part of any tool's Zod input schema -- it is threaded in
+as an internal parameter, resolved from a module-level "active member"
+context store (`getActiveCodeIntelMember()` / `setActiveCodeIntelMember()`)
+rather than a schema field, so the caller-facing tool contract is unchanged
+whether or not member routing is in play.
+
+Note: `setActiveCodeIntelMember()` is exported and unit-tested, but nothing
+in the dispatch path calls it yet -- the context store will return
+`undefined` (global fallback) until whichever `execute_prompt` integration
+sets the active member ID for the duration of a member's tool calls. The
+provider-resolution and handler-wiring halves of this feature are complete
+and independently correct; only the call site that activates per-member
+context during a real dispatch remains to be wired.
 
 ## KB initialization lifecycle: pre-init phase
 
