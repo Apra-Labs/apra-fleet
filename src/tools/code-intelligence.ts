@@ -4,6 +4,7 @@ import { join } from 'path';
 import { z } from 'zod';
 import { GitNexusProvider } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
+import { getAgent } from '../services/registry.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -15,11 +16,28 @@ export interface CodeIntelligenceProvider {
   tests(params: Record<string, unknown>): Promise<unknown>;
 }
 
+const DISABLED_MESSAGE = 'Code intelligence is disabled for this member.';
+
+function disabledResult(): { content: Array<{ type: 'text'; text: string }>; isError: false } {
+  return { content: [{ type: 'text', text: DISABLED_MESSAGE }], isError: false };
+}
+
+export class NullProvider implements CodeIntelligenceProvider {
+  async graph(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async impact(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async query(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async context(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async map(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async flow(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async tests(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+}
+
 const CONFIG_PATH = join(homedir(), '.apra-fleet', 'data', 'code-intelligence', 'config.json');
 
 export const PROVIDERS: Record<string, CodeIntelligenceProvider> = {
   'codebase-memory': new CodebaseMemoryProvider(),
   gitnexus: new GitNexusProvider(),
+  none: new NullProvider(),
 };
 
 export const codeGraphSchema = z.object({
@@ -61,7 +79,17 @@ export const codeTestsSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
-export async function getProvider(): Promise<CodeIntelligenceProvider> {
+export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
+  // When a memberId is provided, check the agent's per-member override first.
+  if (memberId) {
+    const agent = getAgent(memberId);
+    if (agent?.codeIntelProvider) {
+      const memberProvider = PROVIDERS[agent.codeIntelProvider];
+      if (memberProvider) return memberProvider;
+    }
+  }
+
+  // Fall back to global config.
   let providerKey = 'codebase-memory';
   try {
     const raw = await readFile(CONFIG_PATH, 'utf8');
