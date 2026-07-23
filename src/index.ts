@@ -162,6 +162,14 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const {
+    codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema,
+    codeMapSchema, codeFlowSchema, codeTestsSchema,
+    handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext,
+    handleCodeMap, handleCodeFlow, handleCodeTests,
+    getActiveMember,
+  } = await import('./tools/code-intelligence.js');
+  const { inFlightAgents } = await import('./tools/execute-prompt.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -293,6 +301,35 @@ async function startServer() {
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
+
+  // --- Code Intelligence ---
+  // Context-aware wrapper: resolves the active member from inFlightAgents when
+  // exactly one member is in flight, so code-intel tools automatically use the
+  // correct per-member provider during execute_prompt without exposing memberId
+  // in the tool schema. Falls back to global default otherwise.
+  function resolveCodeIntelMember(): string | undefined {
+    // Explicit active member (set via setActiveMember) takes priority
+    const active = getActiveMember();
+    if (active) return active;
+    // Single in-flight member: infer context
+    if (inFlightAgents.size === 1) return [...inFlightAgents][0];
+    return undefined;
+  }
+
+  function wrapCodeIntelTool(toolName: string, handler: (input: any, memberId?: string) => string) {
+    return wrapTool(toolName, async (input: any) => {
+      const memberId = resolveCodeIntelMember();
+      return handler(input, memberId);
+    });
+  }
+
+  server.tool('code_graph', 'Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeGraphSchema.shape, wrapCodeIntelTool('code_graph', handleCodeGraph));
+  server.tool('code_impact', 'Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeImpactSchema.shape, wrapCodeIntelTool('code_impact', handleCodeImpact));
+  server.tool('code_query', 'Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeQuerySchema.shape, wrapCodeIntelTool('code_query', handleCodeQuery));
+  server.tool('code_context', 'Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeContextSchema.shape, wrapCodeIntelTool('code_context', handleCodeContext));
+  server.tool('code_map', 'Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.', codeMapSchema.shape, wrapCodeIntelTool('code_map', handleCodeMap));
+  server.tool('code_flow', 'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.', codeFlowSchema.shape, wrapCodeIntelTool('code_flow', handleCodeFlow));
+  server.tool('code_tests', 'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.', codeTestsSchema.shape, wrapCodeIntelTool('code_tests', handleCodeTests));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();
