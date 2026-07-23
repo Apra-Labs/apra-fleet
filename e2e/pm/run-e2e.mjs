@@ -15,7 +15,7 @@
 // cache) is captured per run and reported in the summary for cost-regression tracking.
 //
 // Usage:
-//   node e2e/run-e2e.mjs [--suite pm-s1,pm-s10] [--provider claude|gemini|agy|opencode] [--timeout 1800] [--keep-pr] [--keep-install]
+//   node e2e/pm/run-e2e.mjs [--suite pm-s1,pm-s10] [--provider claude|gemini|agy|opencode] [--timeout 1800] [--keep-pr] [--keep-install]
 //
 // Selection: default is all suites. --suite accepts comma-separated IDs (e.g. pm-s1,pm-s10)
 // and may be repeated. --provider filters by provider. The skill must be installed
@@ -42,14 +42,18 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseTelemetryFile, diagnoseFailure } from '../../../../e2e/lib/extract-results.mjs';
-import { validateSprint } from '../../../../e2e/lib/validate-sprint.mjs';
-import { postSummary } from '../../../../e2e/lib/post-summary.mjs';
+import { parseTelemetryFile, diagnoseFailure } from '../lib/extract-results.mjs';
+import { validateSprint } from '../lib/validate-sprint.mjs';
+import { postSummary } from '../lib/post-summary.mjs';
 
 const E2E = path.dirname(fileURLToPath(import.meta.url));
+// This runner lives at the repo-root e2e/pm/ tree. The apra-pm package (whose
+// installer this drives for teardown) is NOT this dir's parent anymore, so point
+// at it explicitly relative to the repo root (E2E/../..).
+const PM_PKG_ROOT = path.join(E2E, '..', '..', 'packages', 'apra-fleet-se', 'apra-pm');
 // Suite registry lives at the repo-root e2e/ tree (shared with the fleet harness).
 // This runner drives the 'pm' namespace; cfg keeps the historical { toy, suites[] } shape.
-const REGISTRY = JSON.parse(fs.readFileSync(path.join(E2E, '..', '..', '..', '..', 'e2e', 'suites.json'), 'utf-8'));
+const REGISTRY = JSON.parse(fs.readFileSync(path.join(E2E, '..', 'suites.json'), 'utf-8'));
 const cfg = REGISTRY.pm;
 
 // Each suite may specify a custom scenario file via the "scenario" field.
@@ -376,7 +380,7 @@ function runSuite(suite, timeoutS, keepPr, keepInstall) {
   }
 
   if (!keepPr) teardownPr(branch, token);
-  if (!keepInstall) teardownInstall(suite.provider, path.join(E2E, '..'));
+  if (!keepInstall) teardownInstall(suite.provider, PM_PKG_ROOT);
   // Always heal the shared Dolt seed back to golden as part of teardown (all suites).
   healDoltSeed(token);
   return res;
@@ -395,7 +399,7 @@ async function main() {
     results.push(r);
   }
 
-  const outDir = path.join(E2E, '..', 'e2e-results');
+  const outDir = path.join(E2E, 'e2e-results');
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'results.json'), JSON.stringify({ results }, null, 2) + '\n');
 

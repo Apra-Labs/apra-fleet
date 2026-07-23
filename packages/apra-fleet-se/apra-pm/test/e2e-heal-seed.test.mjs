@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 // self-healing Action -- the heal now rides on every run's teardown instead.
 
 const src = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '../e2e/run-e2e.mjs'),
+  join(dirname(fileURLToPath(import.meta.url)), '../../../../e2e/pm/run-e2e.mjs'),
   'utf-8',
 );
 

@@ -10,7 +10,7 @@
   "scripts": {
     "install-skill": "node install.mjs",
     "test": "node --test test/**/*.test.mjs",
-    "e2e": "node e2e/run-e2e.mjs"
+    "e2e": "node ../../../e2e/pm/run-e2e.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -59,7 +59,7 @@ jobs:
         run: |
           SUITE='${{ inputs.suite }}'
           CONFIG=$(cat e2e/suites.json)
-          MEMBERS=$(cat .github/e2e/members.json)
+          MEMBERS=$(cat e2e/fleet/members.json)
 
           PM_PROVIDER=$(echo $CONFIG | jq -r ".fleet.suites[\"$SUITE\"].pm.provider")
           PM_OS=$(echo $CONFIG      | jq -r ".fleet.suites[\"$SUITE\"].pm.os")
@@ -292,8 +292,8 @@ jobs:
             printf '%s\n' "$content" > "$2"
           }
 
-          render .github/e2e/setup-script.md "$RUN_DIR/rendered-setup.md"
-          render .github/e2e/sprint-script.md "$RUN_DIR/rendered-sprint.md"
+          render e2e/fleet/setup-script.md "$RUN_DIR/rendered-setup.md"
+          render e2e/fleet/sprint-script.md "$RUN_DIR/rendered-sprint.md"
 
       - name: Seed PM permissions
         shell: bash
@@ -301,16 +301,16 @@ jobs:
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "claude" ]; then
             mkdir -p "$RUN_DIR/.claude"
-            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/claude.settings.json" "$RUN_DIR/.claude/settings.json"
+            cp "$GITHUB_WORKSPACE/e2e/fleet/pm-settings/claude.settings.json" "$RUN_DIR/.claude/settings.json"
           elif [ "$PROVIDER" = "gemini" ]; then
             mkdir -p "$RUN_DIR/.gemini"
-            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/settings.json"
+            cp "$GITHUB_WORKSPACE/e2e/fleet/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/settings.json"
           elif [ "$PROVIDER" = "opencode" ]; then
             mkdir -p "$RUN_DIR/.config/opencode"
             echo '{"permissions":{"allow":["*"]}}' > "$RUN_DIR/.config/opencode/opencode.json"
           else
             mkdir -p "$RUN_DIR/.gemini/antigravity-cli"
-            cp "$GITHUB_WORKSPACE/.github/e2e/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/antigravity-cli/settings.json"
+            cp "$GITHUB_WORKSPACE/e2e/fleet/pm-settings/gemini.settings.json" "$RUN_DIR/.gemini/antigravity-cli/settings.json"
           fi
           echo "Seeded $PROVIDER PM permissions into $RUN_DIR"
 
@@ -543,13 +543,13 @@ jobs:
         run: |
           PROVIDER='${{ steps.suite.outputs.pm_provider }}'
           if [ "$PROVIDER" = "claude" ]; then
-            claude -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" --model haiku > "$RUN_DIR/t6-output.txt" 2>&1 || true
+            claude -p "$(cat "$GITHUB_WORKSPACE/e2e/fleet/t6-teardown.md")" --model haiku > "$RUN_DIR/t6-output.txt" 2>&1 || true
           elif [ "$PROVIDER" = "gemini" ]; then
-            gemini --skip-trust -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
+            gemini --skip-trust -p "$(cat "$GITHUB_WORKSPACE/e2e/fleet/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
           elif [ "$PROVIDER" = "opencode" ]; then
-            opencode run "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" --format json --dangerously-skip-permissions > "$RUN_DIR/t6-output.txt" 2>&1 || true
+            opencode run "$(cat "$GITHUB_WORKSPACE/e2e/fleet/t6-teardown.md")" --format json --dangerously-skip-permissions > "$RUN_DIR/t6-output.txt" 2>&1 || true
           else
-            agy --dangerously-skip-permissions --print-timeout 45m -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
+            agy --dangerously-skip-permissions --print-timeout 45m -p "$(cat "$GITHUB_WORKSPACE/e2e/fleet/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
           fi
 
       - name: Upload results

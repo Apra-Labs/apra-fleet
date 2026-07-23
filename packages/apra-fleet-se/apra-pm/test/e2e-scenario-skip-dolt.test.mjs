@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 
 test('the auto-sprint e2e scenario instructs skip_dolt_push = true', () => {
-  const scenario = readFileSync(join(here, '../e2e/scenario-auto-sprint.md'), 'utf-8');
+  const scenario = readFileSync(join(here, '../../../../e2e/pm/scenario-auto-sprint.md'), 'utf-8');
   assert.match(scenario, /skip_dolt_push/,
     'scenario-auto-sprint.md must mention skip_dolt_push');
   assert.match(scenario, /skip_dolt_push[^\n]*\btrue\b/i,

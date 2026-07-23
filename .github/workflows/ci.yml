@@ -6,11 +6,11 @@ on:
     branches: [main]
     tags: ['v*']
     paths-ignore:
-      - '.github/e2e/**'
+      - 'e2e/**'
   pull_request:
     branches: [main]
     paths-ignore:
-      - '.github/e2e/**'
+      - 'e2e/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -283,7 +283,7 @@ jobs:
           $bin = Join-Path $PWD "dist\${{ matrix.binary }}"
           $out = & $bin workflow hello-world one two
           $out | Write-Host
-          if (-not ($out -join "`n").Contains('[OK] hello-world: args=one,two engine=resolved')) {
+          if (-not ($out -join [char]10).Contains('[OK] hello-world: args=one,two engine=resolved')) {
             Write-Error "unexpected stdout from workflow hello-world"
             exit 1
           }
@@ -350,7 +350,7 @@ jobs:
             Write-Error "expected exit code 1 from workflow does-not-exist, got $code"
             exit 1
           }
-          $outText = ($out -join "`n")
+          $outText = ($out -join [char]10)
           if ($outText -notmatch '(?i)workflow "does-not-exist" not found in') {
             Write-Error "missing not-found message in output"
             exit 1
@@ -362,7 +362,7 @@ jobs:
 
           $listOut = & $bin workflow --list
           $listOut | Write-Host
-          $listText = ($listOut -join "`n")
+          $listText = ($listOut -join [char]10)
           if ($listText -notmatch 'auto-sprint') {
             Write-Error "workflow --list output missing auto-sprint"
             exit 1
@@ -444,7 +444,7 @@ jobs:
             Write-Error "workflow auto-sprint --help exited $code"
             exit 1
           }
-          $outText = ($out -join "`n")
+          $outText = ($out -join [char]10)
           if (-not $outText.Contains('Usage: fleet-se sprint [options]')) {
             Write-Error "unexpected stdout from workflow auto-sprint --help"
             exit 1

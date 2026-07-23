@@ -213,18 +213,18 @@ jobs:
           PMLITE_E2E_TRUST_LLM: "1"
           # Model override: workflow input wins, otherwise suites.json default is used.
           PMLITE_E2E_MODEL: ${{ inputs.model }}
-        run: node packages/apra-fleet-se/apra-pm/e2e/run-e2e.mjs --suite "${{ inputs.suite }}"
+        run: node e2e/pm/run-e2e.mjs --suite "${{ inputs.suite }}"
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pm-e2e-${{ inputs.suite }}
-          path: packages/apra-fleet-se/apra-pm/e2e-results/
+          path: e2e/pm/e2e-results/
           if-no-files-found: ignore
 
       # Safety net: run-e2e.mjs already uninstalls pm after each suite (see
-      # teardownInstall() in e2e/run-e2e.mjs). This step only catches the case
+      # teardownInstall() in e2e/pm/run-e2e.mjs). This step only catches the case
       # where the script itself crashed or was killed by timeout-minutes before
       # reaching that teardown, so runners never carry stale pm state (skill,
       # agents, auto-sprint workflow, permissions) into the next e2e run.
