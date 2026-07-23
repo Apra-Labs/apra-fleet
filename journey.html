@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apra Fleet -- End-to-End Command Journey</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    background: #0f1117;
+    color: #c9d1d9;
+    padding: 24px 16px;
+  }
+  .page { max-width: 900px; margin: 0 auto; }
+
+  h1 { font-size: 22px; font-weight: 700; color: #e6edf3; margin-bottom: 4px; }
+  .subtitle { color: #8b949e; font-size: 13px; margin-bottom: 32px; }
+
+  h2 { font-size: 15px; font-weight: 700; color: #e6edf3; margin-bottom: 12px; letter-spacing: 0.3px; }
+  h3 { font-size: 13px; font-weight: 600; color: #79c0ff; margin-bottom: 8px; margin-top: 16px; }
+
+  .phase {
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+  .phase-header {
+    background: #161b22;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid #30363d;
+  }
+  .phase-num {
+    background: #1f6feb;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .phase-title { font-weight: 700; color: #e6edf3; font-size: 14px; }
+  .phase-when { color: #8b949e; font-size: 12px; margin-left: auto; }
+  .phase-body { padding: 16px; }
+
+  .flow {
+    background: #0d1117;
+    border: 1px solid #21262d;
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 12px;
+    overflow-x: auto;
+    margin-bottom: 12px;
+    line-height: 1.8;
+  }
+  .flow .actor { color: #79c0ff; font-weight: 600; }
+  .flow .cmd   { color: #ffa657; }
+  .flow .tool  { color: #7ee787; }
+  .flow .note  { color: #8b949e; font-style: italic; }
+  .flow .arrow { color: #6e7681; }
+  .flow .indent { padding-left: 20px; display: block; }
+  .flow .indent2 { padding-left: 40px; display: block; }
+  .flow .indent3 { padding-left: 60px; display: block; }
+  .flow .section { color: #d2a8ff; font-weight: 600; }
+
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+  @media (max-width: 600px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 12px;
+  }
+  .card-label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .card-val { font-size: 13px; color: #e6edf3; }
+
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 12px;
+    margin-right: 4px;
+    margin-bottom: 4px;
+  }
+  .tag-blue   { background: #1f6feb33; color: #79c0ff; border: 1px solid #1f6feb55; }
+  .tag-green  { background: #23863633; color: #7ee787; border: 1px solid #23863655; }
+  .tag-orange { background: #9e6a0333; color: #ffa657; border: 1px solid #9e6a0355; }
+  .tag-purple { background: #8957e533; color: #d2a8ff; border: 1px solid #8957e555; }
+  .tag-red    { background: #da363333; color: #f85149; border: 1px solid #da363355; }
+
+  .note-box {
+    background: #161b22;
+    border-left: 3px solid #1f6feb;
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: #8b949e;
+  }
+  .note-box strong { color: #79c0ff; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 12px; }
+  th { background: #161b22; color: #8b949e; text-transform: uppercase; font-size: 11px; letter-spacing: 0.4px; padding: 8px 10px; text-align: left; border-bottom: 1px solid #30363d; }
+  td { padding: 7px 10px; border-bottom: 1px solid #21262d; color: #c9d1d9; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td code { background: #1f2937; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 11px; color: #ffa657; }
+
+  .separator { border: none; border-top: 1px solid #21262d; margin: 24px 0; }
+
+  .toc { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 16px; margin-bottom: 28px; }
+  .toc-title { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .toc a { color: #79c0ff; text-decoration: none; font-size: 13px; display: block; padding: 2px 0; }
+  .toc a:hover { text-decoration: underline; }
+  .toc-num { color: #6e7681; margin-right: 6px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Apra Fleet -- End-to-End Command Journey</h1>
+<p class="subtitle">How every command, tool, and agent fits together from install to PR</p>
+
+<div class="toc">
+  <div class="toc-title">Sections</div>
+  <a href="#install"><span class="toc-num">1.</span> One-Time Install</a>
+  <a href="#members"><span class="toc-num">2.</span> Member Registration</a>
+  <a href="#init"><span class="toc-num">3.</span> /pm init &lt;project&gt;</a>
+  <a href="#plan"><span class="toc-num">4.</span> /pm plan &lt;requirement&gt;</a>
+  <a href="#start"><span class="toc-num">5.</span> /pm start &lt;member&gt;</a>
+  <a href="#inside-session"><span class="toc-num">6.</span> Inside a Member Session</a>
+  <a href="#verify"><span class="toc-num">7.</span> VERIFY Checkpoint -- Doer-Reviewer Loop</a>
+  <a href="#code-intel"><span class="toc-num">8.</span> Code Intelligence Tool Call Chain</a>
+  <a href="#kb"><span class="toc-num">9.</span> Knowledge Bank Flow</a>
+  <a href="#index"><span class="toc-num">10.</span> /pm index &lt;project&gt;</a>
+  <a href="#cleanup"><span class="toc-num">11.</span> /pm cleanup + PR</a>
+</div>
+
+
+<!-- 1. INSTALL -->
+<div class="phase" id="install">
+  <div class="phase-header">
+    <div class="phase-num">1</div>
+    <div class="phase-title">One-Time Install</div>
+    <div class="phase-when">once per machine</div>
+  </div>
+  <div class="phase-body">
+    <p style="color:#8b949e;font-size:13px;margin-bottom:12px;">
+      Everything starts with <code style="color:#ffa657;background:#1f2937;padding:1px 5px;border-radius:3px;">apra-fleet install</code> run from inside a git repo. This wires the MCP server into Claude Code globally and deploys all skills.
+    </p>
+    <div class="flow">
+<span class="actor">User</span> <span class="arrow">$</span> <span class="cmd">apra-fleet install</span><br>
+<span class="indent note"># or: node dist/index.js install (dev mode)</span><br><br>
+<span class="indent section">Step 1-6: Binary, hooks, statusline, MCP registration</span><br>
+<span class="indent2 arrow">-> Writes MCP entry into Claude Code settings (global, not per-project)</span><br>
+<span class="indent2 arrow">-> Installs git hooks: post-commit triggers kb_invalidate (marks changed files stale in KB)</span><br><br>
+<span class="indent section">Step 7: Install PM skill</span><br>
+<span class="indent2 arrow">-> Copies skills from vendor/apra-pm OR dist/skills/pm</span><br>
+<span class="indent2 arrow">-> THEN overlays skills/pm/ from repo root (apra-fleet-owned overrides)</span><br>
+<span class="indent2 arrow">-> Destination: ~/.claude/skills/pm/  (SKILL.md, init.md, index.md, tpl-*.md, ...)</span><br><br>
+<span class="indent section">Step 8: Install fleet skill</span><br>
+<span class="indent2 arrow">-> Copies skills/fleet/ -> ~/.claude/skills/fleet/</span><br><br>
+<span class="indent section">Step 8b: Install Beads (bd CLI)</span><br>
+<span class="indent2 arrow">-> npm install -g @beads/bd (idempotent)</span><br><br>
+<span class="indent section">Step 9: KB + code intelligence setup</span><br>
+<span class="indent2 arrow">-> Removes legacy gitnexus entry from .mcp.json (cleanup)</span><br>
+<span class="indent2 arrow">-> Writes ~/.apra-fleet/data/code-intelligence/config.json  {provider: 'gitnexus'}</span><br>
+<span class="indent2 arrow">-> Appends to ~/.claude/CLAUDE.md (sentinel-guarded, idempotent):</span><br>
+<span class="indent3 note">"When code_graph/impact/query/context tools are available, use them for</span><br>
+<span class="indent3 note"> symbol lookups -- never use grep or file reads for structural questions"</span><br><br>
+<span class="actor">Result</span><br>
+<span class="indent arrow">-> Fleet MCP server runs globally, all 12 tools available in every Claude Code session</span><br>
+<span class="indent arrow">-> /pm and fleet skills installed and ready</span><br>
+<span class="indent arrow">-> Claude Code is instructed to prefer fleet code intelligence tools automatically</span>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-label">MCP Tools Available After Install</div>
+        <div class="card-val">
+          <span class="tag tag-blue">code_graph</span><span class="tag tag-blue">code_impact</span><span class="tag tag-blue">code_query</span><span class="tag tag-blue">code_context</span>
+          <span class="tag tag-green">kb_capture</span><span class="tag tag-green">kb_session_prime</span><span class="tag tag-green">kb_harvest</span><span class="tag tag-green">kb_query</span><span class="tag tag-green">kb_invalidate</span><span class="tag tag-green">kb_promote</span><span class="tag tag-green">kb_context</span><span class="tag tag-green">kb_setup</span>
+          <span class="tag tag-orange">execute_prompt</span><span class="tag tag-orange">execute_command</span><span class="tag tag-orange">send_files</span><span class="tag tag-orange">receive_files</span><span class="tag tag-orange">register_member</span><span class="tag tag-orange">fleet_status</span>...
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Skills Installed</div>
+        <div class="card-val">
+          <code style="color:#7ee787;background:#161b22;font-size:11px;">~/.claude/skills/pm/</code><br>
+          SKILL.md, init.md, index.md, doer-reviewer.md,<br>
+          cleanup.md, beads.md, tpl-doer.md, tpl-reviewer.md, ...<br><br>
+          <code style="color:#7ee787;background:#161b22;font-size:11px;">~/.claude/skills/fleet/</code><br>
+          SKILL.md, permissions.md, knowledge-agent.md, ...
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- 2. MEMBER REGISTRATION -->
+<div class="phase" id="members">
+  <div class="phase-header">
+    <div class="phase-num">2</div>
+    <div class="phase-title">Member Registration</div>
+    <div class="phase-when">once per member machine</div>
+  </div>
+  <div class="phase-body">
+    <div class="flow">
+<span class="actor">User</span> <span class="arrow">calls</span> <span class="tool">register_member</span><br>
+<span class="indent note"># friendly_name, work_folder, llm_provider, auth details</span><br><br>
+<span class="actor">Fleet Server</span><br>
+<span class="indent arrow">-> Validates connectivity (SSH handshake or local check)</span><br>
+<span class="indent arrow">-> Assigns icon, stores in registry (~/.apra-fleet/data/agents.json)</span><br>
+<span class="indent arrow">-> Member is now addressable by name or UUID in all fleet tools</span>
+    </div>
+
+    <table>
+      <tr><th>Field</th><th>Purpose</th><th>Notes</th></tr>
+      <tr><td><code>llm_provider</code></td><td>Which CLI to invoke</td><td>claude (default), gemini, opencode, codex, copilot, agy</td></tr>
+      <tr><td><code>model_tiers</code></td><td>Map tier name -> model ID</td><td>Overrides provider defaults. Prefer over legacy model_cheap/standard/premium</td></tr>
+      <tr><td><code>unattended</code></td><td>Permission bypass mode</td><td>false (interactive), 'auto' (safe ops), 'dangerous' (all bypassed)</td></tr>
+      <tr><td><code>work_folder</code></td><td>Root directory for the member</td><td>Prompt file (.fleet-task.md) lands here; context files (CLAUDE.md etc) go here</td></tr>
+      <tr><td><code>cloud</code></td><td>AWS EC2 instance</td><td>Fleet auto-starts/stops the instance; ensureCloudReady() runs before every execute_prompt</td></tr>
+    </table>
+  </div>
+</div>
+
+
+<!-- 3. PM INIT -->
+<div class="phase" id="init">
+  <div class="phase-header">
+    <div class="phase-num">3</div>
+    <div class="phase-title">/pm init &lt;project&gt;</div>
+    <div class="phase-when">once per project</div>
+  </div>
+  <div class="phase-body">
+    <div class="flow">
+<span class="actor">User</span> <span class="arrow">types</span> <span class="cmd">/pm init streamsurv</span><br><br>
+<span class="actor">PM Skill</span> <span class="note">(reads init.md)</span><br>
+<span class="indent arrow">-> Determines PM context file name from llmProvider (CLAUDE.md / GEMINI.md / AGENTS.md)</span><br>
+<span class="indent arrow">-> Creates ~/pm/streamsurv/ folder</span><br>
+<span class="indent arrow">-> Writes from templates: status.md, requirements.md, design.md, deploy.md, permissions.json</span><br>
+<span class="indent arrow">-> Adds row to projects.md</span><br><br>
+<span class="indent section">Step 5: Code intelligence index</span><br>
+<span class="indent2 tool">execute_command</span> <span class="arrow">on any available member -> repo root</span><br>
+<span class="indent3 arrow">npx gitnexus analyze  (timeout 300s, non-fatal)</span><br>
+<span class="indent3 note"># Indexes codebase so code_graph/impact/query/context tools work</span><br>
+<span class="indent3 note"># Now delegated to /pm index if not run at init</span><br><br>
+<span class="indent section">Step 6: Beads init</span><br>
+<span class="indent2 arrow">cd ~/pm && bd init  (idempotent, one central DB for all projects)</span><br>
+<span class="indent2 arrow">bd create "sprint: streamsurv" --type epic  -> epic-id saved in status.md</span>
+    </div>
+
+    <div class="note-box">
+      <strong>PM root is one folder:</strong> ~/pm/ contains one subfolder per project.
+      Beads DB is in ~/pm/ (not inside each project repo). All sprint artifacts (PLAN.md,
+      progress.json, feedback.md) live in ~/pm/&lt;project&gt;/ -- never inside the git repo
+      until the member sends them there.
+    </div>
+  </div>
+</div>
+
+
+<!-- 4. PM PLAN -->
+<div class="phase" id="plan">
+  <div class="phase-header">
+    <div class="phase-num">4</div>
+    <div class="phase-title">/pm plan &lt;requirement&gt;</div>
+    <div class="phase-when">start of each sprint</div>
+  </div>
+  <div class="phase-body">
+    <div class="flow">
+<span class="actor">User</span> <span class="arrow">provides</span> <span class="cmd">requirements.md</span> <span class="note">(written by PM or user)</span><br><br>
+<span class="actor">PM Skill</span> <span class="note">(reads single-pair-sprint.md, plan-prompt.md)</span><br><br>
+<span class="indent section">Phase 2a: Generate plan</span><br>
+<span class="indent2 tool">send_files</span> <span class="arrow">-> doer: requirements.md + tpl-plan.md</span><br>
+<span class="indent2 tool">execute_prompt</span> <span class="arrow">-> doer (resume=false)</span><br>
+<span class="indent3 note"># Doer reads files, produces PLAN.md with phase-ordered tasks + tier per task</span><br>
+<span class="indent2 tool">receive_files</span> <span class="arrow"><- doer: PLAN.md</span><br><br>
+<span class="indent section">Phase 2b: Plan review loop</span><br>
+<span class="indent2 tool">send_files</span> <span class="arrow">-> reviewer: PLAN.md + requirements.md + tpl-reviewer-plan.md</span><br>
+<span class="indent2 tool">execute_prompt</span> <span class="arrow">-> reviewer (model=premium, resume=false)</span><br>
+<span class="indent3 note"># Reviewer checks: tasks cover requirements, risks front-loaded, tiers correct</span><br>
+<span class="indent2 tool">receive_files</span> <span class="arrow"><- reviewer: feedback.md</span><br>
+<span class="indent2 arrow">-> APPROVED: save planned.json (immutable copy), push Beads tasks</span><br>
+<span class="indent2 arrow">-> CHANGES NEEDED: send feedback to doer, doer revises PLAN.md, re-review</span><br><br>
+<span class="indent section">After plan approval</span><br>
+<span class="indent2 arrow">bd create "T1.1: &lt;title&gt;" -p 1 --parent &lt;epic&gt; --assignee doer   (one per task)</span><br>
+<span class="indent2 arrow">bd dep add &lt;T1.2-id&gt; &lt;T1.1-id&gt;   (wire dependencies from PLAN.md)</span>
+    </div>
+  </div>
+</div>
+
+
+<!-- 5. PM START -->
+<div class="phase" id="start">
+  <div class="phase-header">
+    <div class="phase-num">5</div>
+    <div class="phase-title">/pm start &lt;member&gt;</div>
+    <div class="phase-when">each execution phase</div>
+  </div>
+  <div class="phase-body">
+    <div class="flow">
+<span class="actor">PM Skill</span> <span class="note">(reads doer-reviewer.md)</span><br><br>
+<span class="indent section">Setup (doer-reviewer.md checklist)</span><br>
+<span class="indent2 arrow">1. update_member(doer, icon=circle, unattended='auto')</span><br>
+<span class="indent2 arrow">2. update_member(reviewer, icon=square, same color)</span><br>
+<span class="indent2 tool">compose_permissions</span> <span class="arrow">-> doer (role=doer, project_folder)</span><br>
+<span class="indent3 note"># Detects stacks (node/python/rust), writes .claude/settings.local.json</span><br><br>
+<span class="indent section">Pre-flight checks</span><br>
+<span class="indent2 tool">fleet_status</span> <span class="arrow">-> confirm doer is idle</span><br>
+<span class="indent2 tool">execute_command</span> <span class="arrow">-> doer: git status &amp;&amp; git branch --show-current</span><br>
+<span class="indent3 note"># Confirm clean tree, correct branch</span><br><br>
+<span class="indent section">Resolve next task</span><br>
+<span class="indent2 arrow">nextTask = planned.json.tasks.find(t => t.status === "pending")</span><br>
+<span class="indent2 arrow">tier = nextTask.tier  (cheap / standard / premium)</span><br>
+<span class="indent2 arrow">resume = (nextTask.phase === lastDispatchedPhase)  from status.md</span><br><br>
+<span class="indent section">Send task harness</span><br>
+<span class="indent2 tool">send_files</span> <span class="arrow">-> doer:</span><br>
+<span class="indent3 arrow">CLAUDE.md (filled tpl-doer.md: {{PROJECT_NAME}}, {{branch}}, {{base_branch}})</span><br>
+<span class="indent3 arrow">PLAN.md, progress.json, requirements.md, design.md</span><br><br>
+<span class="indent2 tool">execute_command</span> <span class="arrow">-> doer: echo 'CLAUDE.md' >> .gitignore</span><br>
+<span class="indent3 note"># Ensure context file is never committed</span><br><br>
+<span class="indent2 arrow">bd update &lt;task-id&gt; --status in_progress</span><br><br>
+<span class="indent section">Dispatch (always in background Agent)</span><br>
+<span class="indent2 tool">execute_prompt</span> <span class="arrow">member=doer, model=&lt;tier&gt;, resume=&lt;bool&gt;, timeout_s=600</span><br>
+<span class="indent3 note"># PM rule 8: club all fleet calls into ONE background Agent -- never call execute_prompt</span><br>
+<span class="indent3 note"># directly from PM context; always wrap in Agent(run_in_background=true)</span>
+    </div>
+  </div>
+</div>
+
+
+<!-- 6. INSIDE SESSION -->
+<div class="phase" id="inside-session">
+  <div class="phase-header">
+    <div class="phase-num">6</div>
+    <div class="phase-title">Inside a Member Session</div>
+    <div class="phase-when">every execute_prompt call</div>
+  </div>
+  <div class="phase-body">
+    <p style="color:#8b949e;font-size:13px;margin-bottom:12px;">
+      This is what happens inside the fleet server and on the member machine when execute_prompt fires.
+    </p>
+    <div class="flow">
+<span class="actor">Fleet Server</span> <span class="note">(execute-prompt.ts)</span><br><br>
+<span class="indent arrow">1. Resolve member from registry</span><br>
+<span class="indent arrow">2. ensureCloudReady() -- start EC2 instance if stopped (cloud members only)</span><br>
+<span class="indent arrow">3. Guard: reject if member already inFlight (one-at-a-time)</span><br>
+<span class="indent arrow">4. getProvider(agent.llmProvider) -- claude / gemini / opencode / ...</span><br>
+<span class="indent arrow">5. Resolve model:</span><br>
+<span class="indent2 note">modelTiers (free-form) -> modelCheap/Standard/Premium (legacy enum)</span><br>
+<span class="indent2 note">-> user global override -> provider defaults</span><br>
+<span class="indent arrow">6. Build auth env prefix (API keys, SSH agent forwarding)</span><br>
+<span class="indent arrow">7. Mint session UUID (or reuse existing sessionId for resume)</span><br>
+<span class="indent arrow">8. writePromptFile: write prompt to .fleet-task.md in member workFolder</span><br>
+<span class="indent arrow">9. stallDetector.add: background monitor (clears busy state if stalled)</span><br>
+<span class="indent arrow">10. Build CLI command, e.g.:</span><br>
+<span class="indent2 note">claude -p --session &lt;uuid&gt; --model &lt;model&gt; --dangerously-skip-permissions</span><br>
+<span class="indent2 note">       --output-format stream-json --max-turns 50</span><br>
+<span class="indent arrow">11. execCommand -- run via SSH (remote) or direct (local)</span><br>
+<span class="indent arrow">12. Stale session retry if exit != 0 and had a prior session</span><br>
+<span class="indent arrow">13. Server overload retry (wait 5s, fresh session)</span><br>
+<span class="indent arrow">14. parseResponse -- extract text, sessionId, token usage</span><br>
+<span class="indent arrow">15. touchAgent -- persist sessionId for next resume</span><br>
+<span class="indent arrow">16. *** AUTO-HARVEST (fire-and-forget) ***</span><br>
+<span class="indent2 note">kb_harvest({ session_transcript: parsed.result })  -- extracts learnings from output</span><br>
+<span class="indent2 note">Runs AFTER session ends, on PM side. Member never sees it.</span><br>
+<span class="indent arrow">17. deletePromptFile -- clean up .fleet-task.md</span><br>
+<span class="indent arrow">18. Return response text to PM</span><br><br>
+
+<span class="actor">Member Machine</span> <span class="note">(Claude Code CLI, running in member workFolder)</span><br><br>
+<span class="indent arrow">-> Reads .fleet-task.md (the prompt)</span><br>
+<span class="indent arrow">-> Reads CLAUDE.md (context file -- role, branch, rules, KB instructions)</span><br>
+<span class="indent arrow">-> Reads progress.json (find next pending task)</span><br>
+<span class="indent arrow">-> Reads PLAN.md (task details)</span><br>
+<span class="indent tool">kb_session_prime</span> <span class="arrow">-- prime KB context (see section 9)</span><br>
+<span class="indent arrow">-> Dispatches recommended code intelligence calls</span><br>
+<span class="indent arrow">-> Executes task (Edit / Write / Bash / Read / Grep)</span><br>
+<span class="indent tool">kb_capture</span> <span class="arrow">-- after key decisions/discoveries</span><br>
+<span class="indent arrow">-> Commits: ONE task at a time, then tests, then commit</span><br>
+<span class="indent arrow">-> Updates progress.json (task -> "completed")</span><br>
+<span class="indent arrow">-> Continues to next pending task</span><br>
+<span class="indent arrow">-> At VERIFY checkpoint: git push, report status, STOP</span><br>
+<span class="indent tool">kb_harvest</span> <span class="arrow">-- at end of session (explicit, inside session)</span>
+    </div>
+  </div>
+</div>
+
+
+<!-- 7. VERIFY -->
+<div class="phase" id="verify">
+  <div class="phase-header">
+    <div class="phase-num">7</div>
+    <div class="phase-title">VERIFY Checkpoint -- Doer-Reviewer Loop</div>
+    <div class="phase-when">at every verify task in PLAN.md</div>
+  </div>
+  <div class="phase-body">
+    <div class="flow">
+<span class="actor">PM</span> <span class="note">detects VERIFY task in progress.json</span><br><br>
+<span class="indent section">Sync reviewer to doer HEAD</span><br>
+<span class="indent2 tool">execute_command</span> <span class="arrow">-> reviewer:</span><br>
+<span class="indent3 arrow">git fetch origin &amp;&amp; git checkout &lt;branch&gt; &amp;&amp; git reset --hard origin/&lt;branch&gt;</span><br>
+<span class="indent2 tool">execute_command</span> <span class="arrow">-> reviewer: git rev-parse HEAD  (must match doer's pushed HEAD)</span><br><br>
+<span class="indent section">Prepare reviewer</span><br>
+<span class="indent2 tool">compose_permissions</span> <span class="arrow">-> reviewer (role=reviewer)</span><br>
+<span class="indent2 tool">send_files</span> <span class="arrow">-> reviewer: CLAUDE.md (filled tpl-reviewer.md)</span><br>
+<span class="indent2 arrow">bd update &lt;verify-id&gt; --status in_progress</span><br><br>
+<span class="indent section">Dispatch reviewer</span><br>
+<span class="indent2 tool">execute_prompt</span> <span class="arrow">reviewer, model=premium, resume=false</span><br><br>
+<span class="indent section">Reviewer runs (inside session)</span><br>
+<span class="indent2 arrow">git log --oneline &lt;base&gt;..&lt;branch&gt;   -- scope the diff</span><br>
+<span class="indent2 arrow">Read progress.json, PLAN.md, requirements.md</span><br>
+<span class="indent2 arrow">git diff -- check all changed files against sprint requirements</span><br>
+<span class="indent2 arrow">npm run build / npm test -- must all pass</span><br>
+<span class="indent2 arrow">Verify each task against done criteria in PLAN.md</span><br>
+<span class="indent2 arrow">Check file hygiene (no temp files, no unrelated changes, CLAUDE.md not committed)</span><br>
+<span class="indent2 arrow">Writes feedback.md (APPROVED or CHANGES NEEDED)</span><br>
+<span class="indent2 arrow">git commit feedback.md &amp;&amp; git push</span><br><br>
+<span class="indent section">PM reads verdict</span><br>
+<span class="indent2 arrow">APPROVED -></span><br>
+<span class="indent3 arrow">bd close &lt;verify-id&gt;</span><br>
+<span class="indent3 arrow">Proceed to next phase (or sprint completion)</span><br>
+<span class="indent2 arrow">CHANGES NEEDED -></span><br>
+<span class="indent3 arrow">bd create "&lt;finding&gt;" -p 0 --parent &lt;epic&gt;  (one per HIGH finding)</span><br>
+<span class="indent3 arrow">execute_prompt -> doer (resume=true): fix feedback</span><br>
+<span class="indent3 arrow">Re-dispatch reviewer (resume=true) to re-check</span><br>
+<span class="indent3 note"># Safeguard: 3 cycles max; if still unresolved after 3, escalate to user</span>
+    </div>
+
+    <table>
+      <tr><th>Dispatch Condition</th><th>resume value</th></tr>
+      <tr><td>New phase (phase number changed)</td><td><code>false</code></td></tr>
+      <tr><td>Same phase, continuing tasks</td><td><code>true</code></td></tr>
+      <tr><td>Reviewer CHANGES NEEDED -> doer fix</td><td><code>true</code></td></tr>
+      <tr><td>Role switch (doer <-> reviewer)</td><td><code>false</code></td></tr>
+      <tr><td>After stop_prompt cancellation</td><td><code>false</code></td></tr>
+      <tr><td>Initial review dispatch</td><td><code>false</code></td></tr>
+      <tr><td>Re-review after doer fixes</td><td><code>true</code></td></tr>
+    </table>
+  </div>
+</div>
+
+
+<!-- 8. CODE INTELLIGENCE CALL CHAIN -->
+<div class="phase" id="code-intel">
+  <div class="phase-header">
+    <div class="phase-num">8</div>
+    <div class="phase-title">Code Intelligence Tool Call Chain</div>
+    <div class="phase-when">any time a member calls code_graph / code_impact / code_query / code_context</div>
+  </div>
+  <div class="phase-body">
+    <div class="flow">
+<span class="actor">Member</span> <span class="arrow">calls</span> <span class="tool">code_graph</span><span class="note">({ symbol: "handleIPChange", repo: "/path/to/repo" })</span><br><br>
+<span class="actor">Fleet MCP Server</span> <span class="note">(src/tools/code-intelligence.ts)</span><br>
+<span class="indent arrow">-> getProvider()</span><br>
+<span class="indent2 arrow">reads ~/.apra-fleet/data/code-intelligence/config.json</span><br>
+<span class="indent2 arrow">{ provider: 'gitnexus' }  (default)</span><br>
+<span class="indent2 arrow">PROVIDERS['gitnexus'] -> GitNexusProvider instance</span><br><br>
+<span class="actor">GitNexusProvider</span> <span class="note">(src/tools/code-intelligence-gitnexus.ts)</span><br>
+<span class="indent arrow">-> getGitNexusClient()  (singleton MCP client)</span><br>
+<span class="indent2 arrow">First call: spawns  npx -y gitnexus mcp  (StdioClientTransport)</span><br>
+<span class="indent2 arrow">Subsequent calls: reuses the same process</span><br>
+<span class="indent arrow">-> client.callTool({ name: 'call_graph', arguments: { symbol, repo } })</span><br>
+<span class="indent3 note"># Fleet tool names -> gitnexus tool names:</span><br>
+<span class="indent3 note">code_graph  -> call_graph</span><br>
+<span class="indent3 note">code_impact -> impact</span><br>
+<span class="indent3 note">code_query  -> query</span><br>
+<span class="indent3 note">code_context -> context</span><br><br>
+<span class="actor">gitnexus MCP server</span> <span class="note">(npx gitnexus mcp, local process)</span><br>
+<span class="indent arrow">-> Queries its local index (built by npx gitnexus analyze)</span><br>
+<span class="indent arrow">-> Returns call graph / impact / search results<br><br>
+<span class="actor">Member receives</span> the structured result and uses it for the task
+    </div>
+
+    <div class="note-box">
+      <strong>Adding a new provider:</strong> Create one file implementing the CodeIntelligenceProvider
+      interface (4 methods: graph, impact, query, context) and add one entry to the PROVIDERS map.
+      Nothing else changes -- fleet routing, tool schemas, member templates all stay the same.
+    </div>
+  </div>
+</div>
+
+
+<!-- 9. KB FLOW -->
+<div class="phase" id="kb">
+  <div class="phase-header">
+    <div class="phase-num">9</div>
+    <div class="phase-title">Knowledge Bank Flow</div>
+    <div class="phase-when">across every session</div>
+  </div>
+  <div class="phase-body">
+    <div class="flow">
+<span class="section">SESSION START -- Prime</span><br>
+<span class="actor">Member</span> <span class="arrow">calls</span> <span class="tool">kb_session_prime</span><span class="note">({ session_files, hint_symbols, hint_modules })</span><br>
+<span class="indent arrow">-> SQLiteProvider.prime()</span><br>
+<span class="indent2 arrow">Checks freshness of session_files against KB hashes</span><br>
+<span class="indent2 arrow">Fetches top KB entries (L1 FTS on title+summary)</span><br>
+<span class="indent2 arrow">Also queries global KB (top 3 matching entries merged in)</span><br>
+<span class="indent2 arrow">Builds recommended_code_calls:</span><br>
+<span class="indent3 note">{ tool: 'code_context', args: { name: symbol } }  for each hint_symbol</span><br>
+<span class="indent3 note">{ tool: 'code_impact', args: { target: file, direction: 'upstream' } }  for each file</span><br>
+<span class="indent arrow">Returns: { session_warm, stale_files, top_entries, fresh_summaries, recommended_code_calls, token_estimate }</span><br><br>
+<span class="actor">Member</span><br>
+<span class="indent arrow">-> Re-reads stale files (their KB cache is outdated)</span><br>
+<span class="indent arrow">-> Dispatches each recommended_code_calls entry using fleet code intel tools</span><br><br>
+
+<span class="section">DURING SESSION -- Capture</span><br>
+<span class="actor">Member</span> <span class="arrow">calls</span> <span class="tool">kb_capture</span><span class="note">({ type, title, summary, content, symbols, source_files })</span><br>
+<span class="indent arrow">-> AUDN deduplication runs:</span><br>
+<span class="indent2 note">add (new): no match found</span><br>
+<span class="indent2 note">none (duplicate): skip, return existing id</span><br>
+<span class="indent2 note">update (refines): link new entry to old by default -- both stay live; pass supersedes to retire the old one for real</span><br>
+<span class="indent2 note">flagged (contradiction): flag for review, keep both with reference</span><br>
+<span class="indent arrow">-> Stored in ~/.apra-fleet/data/knowledge/&lt;repo-slug&gt;/kb.sqlite</span><br><br>
+
+<span class="section">SESSION END -- Harvest (two paths)</span><br>
+<span class="actor">Member</span> <span class="arrow">calls</span> <span class="tool">kb_harvest</span><span class="note">({ session_transcript })  -- explicit, inside session</span><br>
+<span class="indent arrow">-> Scans transcript for learnings</span><br>
+<span class="indent arrow">-> Calls kb_capture for each finding (AUDN dedup applies)</span><br>
+<span class="indent arrow">-> Returns { entries_captured, entries_updated, entries_skipped }</span><br><br>
+<span class="actor">Fleet Server</span> <span class="arrow">auto-calls</span> <span class="tool">kb_harvest</span> <span class="note">fire-and-forget -- AFTER session ends</span><br>
+<span class="indent2 note">kb_harvest({ session_transcript: full_output, session_id })  from execute-prompt.ts:323</span><br>
+<span class="indent2 note">Runs on PM side. Member never sees it. Belt-and-suspenders on top of explicit harvest.</span><br><br>
+
+<span class="section">GIT HOOK -- Auto-invalidate</span><br>
+<span class="actor">Post-commit hook</span> <span class="note">(installed by apra-fleet install)</span><br>
+<span class="indent arrow">-> Runs on every commit in project repos</span><br>
+<span class="indent tool">kb_invalidate</span><span class="arrow">({ files: [changed files] })</span><br>
+<span class="indent2 arrow">-> Marks those files stale in the KB</span><br>
+<span class="indent2 arrow">-> Next kb_session_prime will include them in stale_files -> member re-reads them</span>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-label">KB Storage</div>
+        <div class="card-val">
+          Project KB: <code style="color:#7ee787;background:#0d1117;font-size:11px;">~/.apra-fleet/data/knowledge/&lt;slug&gt;/kb.sqlite</code><br>
+          Global KB: <code style="color:#7ee787;background:#0d1117;font-size:11px;">~/.apra-fleet/data/knowledge/global/kb.sqlite</code><br><br>
+          Slug derived from git remote URL. Two repos on the same machine get separate KBs.
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">KB Entry Types</div>
+        <div class="card-val">
+          <span class="tag tag-green">context-cache</span> file summaries (hash-checked for freshness)<br>
+          <span class="tag tag-blue">learning</span> session insights<br>
+          <span class="tag tag-purple">knowledge</span> codebase facts<br>
+          <span class="tag tag-orange">runbook</span> procedures<br><br>
+          Confidence: UNVERIFIED -> INFERRED -> CONFIRMED (via kb_promote)
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- 10. PM INDEX -->
+<div class="phase" id="index">
+  <div class="phase-header">
+    <div class="phase-num">10</div>
+    <div class="phase-title">/pm index &lt;project&gt;</div>
+    <div class="phase-when">after init, large merges, or when code intel feels stale</div>
+  </div>
+  <div class="phase-body">
+    <div class="flow">
+<span class="actor">User</span> <span class="arrow">types</span> <span class="cmd">/pm index streamsurv</span><br><br>
+<span class="actor">PM Skill</span> <span class="note">(reads index.md)</span><br>
+<span class="indent arrow">1. Read ~/pm/streamsurv/status.md -- find repo path + available member</span><br>
+<span class="indent arrow">2. Pick member whose work_folder is the project repo</span><br>
+<span class="indent2 note">   If none, use any local online member, set run_from to repo path</span><br>
+<span class="indent3 tool">execute_command</span><br>
+<span class="indent3 arrow">run_from: /path/to/repo</span><br>
+<span class="indent3 arrow">command:  npx gitnexus analyze</span><br>
+<span class="indent3 arrow">timeout_s: 300</span><br>
+<span class="indent3 note">Non-fatal: if fails (no package.json, bad language), log and continue</span><br><br>
+<span class="actor">gitnexus analyze</span><br>
+<span class="indent arrow">-> Parses source tree, builds call graph, writes local index on disk</span><br>
+<span class="indent arrow">-> Subsequent calls are incremental (only changed files re-parsed)</span><br>
+<span class="indent arrow">-> Index used by GitNexusProvider for all 4 fleet code intel tools</span>
+    </div>
+  </div>
+</div>
+
+
+<!-- 11. CLEANUP + PR -->
+<div class="phase" id="cleanup">
+  <div class="phase-header">
+    <div class="phase-num">11</div>
+    <div class="phase-title">/pm cleanup + PR</div>
+    <div class="phase-when">after all phases APPROVED, when user says "raise a PR"</div>
+  </div>
+  <div class="phase-body">
+    <div class="flow">
+<span class="actor">PM Skill</span> <span class="note">(reads cleanup.md)</span><br><br>
+<span class="indent section">Cleanup on both doer and reviewer</span><br>
+<span class="indent2 tool">execute_command</span> <span class="arrow">on each member:</span><br>
+<span class="indent3 arrow">git rm --cached .fleet-task*.md  (remove ephemeral prompt files)</span><br>
+<span class="indent3 arrow">git rm PLAN.md progress.json feedback.md requirements.md design.md</span><br>
+<span class="indent3 arrow">For CLAUDE.md/GEMINI.md/AGENTS.md: restore from origin/main if it existed there</span><br>
+<span class="indent3 note">  (preserves project deliverable; only deletes if it was a pure sprint artifact)</span><br>
+<span class="indent3 arrow">git commit -m "cleanup: remove fleet control files" &amp;&amp; git push</span><br><br>
+<span class="indent section">Close Beads epic</span><br>
+<span class="indent2 arrow">bd close &lt;epic-id&gt;</span><br><br>
+<span class="indent section">Raise PR (PM runs gh directly -- never delegates to member)</span><br>
+<span class="indent2 arrow">gh pr create --title "..." --body "..."</span><br>
+<span class="indent2 arrow">gh pr checks  (wait for CI)</span><br>
+<span class="indent2 arrow">bd note &lt;epic-id&gt; "PR: &lt;url&gt;"</span><br><br>
+<span class="indent section">STOP</span><br>
+<span class="indent2 arrow">Surface PR URL + CI status to user</span><br>
+<span class="indent2 note">Do NOT merge. Merge is always the user's decision.</span>
+    </div>
+  </div>
+</div>
+
+
+<hr class="separator">
+
+<h2 style="margin-bottom:16px;">Command Quick Reference</h2>
+<table>
+  <tr><th>Command</th><th>When</th><th>What it does</th></tr>
+  <tr><td><code>/pm init &lt;project&gt;</code></td><td>Once per project</td><td>Create PM folder, templates, Beads epic. Optional gitnexus analyze.</td></tr>
+  <tr><td><code>/pm index &lt;project&gt;</code></td><td>After init, big merges, stale intel</td><td>Run npx gitnexus analyze in project repo via member.</td></tr>
+  <tr><td><code>/pm pair &lt;doer&gt; &lt;reviewer&gt;</code></td><td>Before each sprint</td><td>Set icons, compose permissions, send context files.</td></tr>
+  <tr><td><code>/pm plan &lt;requirement&gt;</code></td><td>Start of each sprint</td><td>Doer generates PLAN.md, reviewer approves, PM creates Beads tasks.</td></tr>
+  <tr><td><code>/pm start &lt;member&gt;</code></td><td>After plan approved</td><td>Send task harness, dispatch doer. Drive until VERIFY checkpoint.</td></tr>
+  <tr><td><code>/pm status &lt;member&gt;</code></td><td>Any time</td><td>bd list + progress.json + git log check.</td></tr>
+  <tr><td><code>/pm resume &lt;member&gt;</code></td><td>After VERIFY checkpoint</td><td>Re-dispatch doer for next phase or task.</td></tr>
+  <tr><td><code>/pm recover &lt;project&gt;</code></td><td>After PM session restart</td><td>bd ready + fleet_status + progress.json audit per member.</td></tr>
+  <tr><td><code>/pm deploy &lt;member&gt;</code></td><td>After sprint APPROVED</td><td>Run deploy.md steps, verify, rollback on failure.</td></tr>
+  <tr><td><code>/pm cleanup &lt;project&gt;</code></td><td>Sprint done; user says raise PR</td><td>Remove fleet files, close Beads epic, gh pr create, gh pr checks.</td></tr>
+  <tr><td><code>/pm backlog</code></td><td>Any time</td><td>Query/manage deferred items (MEDIUM/LOW findings from reviewer).</td></tr>
+  <tr><td><code>/pm tasks</code></td><td>During sprint</td><td>bd show &lt;epic-id&gt; --tree</td></tr>
+</table>
+
+</div>
+</body>
+</html>

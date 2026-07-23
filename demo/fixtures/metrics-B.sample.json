@@ -1,0 +1,96 @@
+[
+  {
+    "env": "B",
+    "sprint": "sprint1",
+    "collected_at": "2026-07-10T12:00:00.000Z",
+    "sandbox_dir": "C:\\ws_yash\\demo-upgrade\\sandbox-b",
+    "data_dir": "C:\\ws_yash\\demo-upgrade\\data-b",
+    "git": { "available": true, "commit_count": 5, "recent": [], "notes": [] },
+    "progress": {
+      "found": true,
+      "path": "C:\\ws_yash\\demo-upgrade\\sandbox-b\\progress.json",
+      "totals": { "tokens": 91200, "toolUses": 103, "ms": 251000, "count": 5 },
+      "by_role": {
+        "planner": { "tokens": 24600, "toolUses": 30, "ms": 55000, "count": 1 },
+        "plan-reviewer": { "tokens": 7300, "toolUses": 6, "ms": 14000, "count": 1 },
+        "doer": { "tokens": 45900, "toolUses": 55, "ms": 148000, "count": 2 },
+        "reviewer": { "tokens": 13400, "toolUses": 12, "ms": 34000, "count": 1 }
+      },
+      "doer_model_mix": [
+        { "model": "claude-sonnet-4-5", "tokens": 33900, "count": 1 },
+        { "model": "claude-opus-4-1", "tokens": 12000, "count": 1 }
+      ],
+      "notes": []
+    },
+    "kb": {
+      "available": true,
+      "db_path": "C:\\ws_yash\\demo-upgrade\\data-b\\knowledge\\sandbox-b\\kb.sqlite",
+      "slug": "sandbox-b",
+      "totals": {
+        "by_confidence": { "CONFIRMED": 3, "INFERRED": 9, "UNVERIFIED": 2 },
+        "by_type": { "context-cache": 4, "learning": 5, "knowledge": 4, "runbook": 0, "user-directive": 1 },
+        "total": 14
+      },
+      "stale": 0,
+      "flagged": 0,
+      "superseded": 0,
+      "retrieval": { "entries_retrieved": 2, "total_uses": 3, "hit_rate": 0.2 },
+      "notes": []
+    },
+    "bible": { "present": true, "entries": 1, "commits": 1, "notes": [] },
+    "usage": {
+      "available": true,
+      "total_calls": 12,
+      "by_tool": { "code_query": 5, "code_graph": 4, "kb_session_prime": 3 },
+      "notes": ["usage.jsonl is NOT env-isolated (hardcoded to real homedir, ignores APRA_FLEET_DATA_DIR) -- counts are filtered by repo path match, not by file location"]
+    },
+    "notes": ["usage.jsonl is NOT env-isolated (hardcoded to real homedir, ignores APRA_FLEET_DATA_DIR) -- counts are filtered by repo path match, not by file location"]
+  },
+  {
+    "env": "B",
+    "sprint": "sprint2",
+    "collected_at": "2026-07-10T13:45:00.000Z",
+    "sandbox_dir": "C:\\ws_yash\\demo-upgrade\\sandbox-b",
+    "data_dir": "C:\\ws_yash\\demo-upgrade\\data-b",
+    "git": { "available": true, "commit_count": 8, "recent": [], "notes": [] },
+    "progress": {
+      "found": true,
+      "path": "C:\\ws_yash\\demo-upgrade\\sandbox-b\\progress.json",
+      "totals": { "tokens": 22100, "toolUses": 26, "ms": 61000, "count": 5 },
+      "by_role": {
+        "planner": { "tokens": 5100, "toolUses": 6, "ms": 11000, "count": 1 },
+        "plan-reviewer": { "tokens": 1900, "toolUses": 2, "ms": 5000, "count": 1 },
+        "doer": { "tokens": 10800, "toolUses": 13, "ms": 32000, "count": 2 },
+        "reviewer": { "tokens": 4300, "toolUses": 5, "ms": 13000, "count": 1 }
+      },
+      "doer_model_mix": [
+        { "model": "claude-haiku-4-5", "tokens": 7600, "count": 1 },
+        { "model": "claude-opus-4-1", "tokens": 3200, "count": 1 }
+      ],
+      "notes": []
+    },
+    "kb": {
+      "available": true,
+      "db_path": "C:\\ws_yash\\demo-upgrade\\data-b\\knowledge\\sandbox-b\\kb.sqlite",
+      "slug": "sandbox-b",
+      "totals": {
+        "by_confidence": { "CONFIRMED": 5, "INFERRED": 11, "UNVERIFIED": 2 },
+        "by_type": { "context-cache": 5, "learning": 7, "knowledge": 5, "runbook": 0, "user-directive": 1 },
+        "total": 18
+      },
+      "stale": 0,
+      "flagged": 0,
+      "superseded": 1,
+      "retrieval": { "entries_retrieved": 6, "total_uses": 9, "hit_rate": 0.4 },
+      "notes": []
+    },
+    "bible": { "present": true, "entries": 2, "commits": 2, "notes": [] },
+    "usage": {
+      "available": true,
+      "total_calls": 9,
+      "by_tool": { "kb_session_prime": 2, "code_query": 3, "kb_stats": 2, "code_graph": 2 },
+      "notes": ["usage.jsonl is NOT env-isolated (hardcoded to real homedir, ignores APRA_FLEET_DATA_DIR) -- counts are filtered by repo path match, not by file location"]
+    },
+    "notes": ["usage.jsonl is NOT env-isolated (hardcoded to real homedir, ignores APRA_FLEET_DATA_DIR) -- counts are filtered by repo path match, not by file location"]
+  }
+]

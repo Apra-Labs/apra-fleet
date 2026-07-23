@@ -41,6 +41,11 @@ Usage:
   apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
+  apra-fleet kb directives                             List pending + active user-directives
+  apra-fleet kb approve-directive <id>                 Activate a pending directive proposal (human-only)
+  apra-fleet kb reject-directive <id>                  Reject a proposal or retire an active directive
+  apra-fleet kb add-directive "<text>" [--symbols a,b] Create an already-active directive (human-only)
+  apra-fleet kb commit [--repo <path>] [--global]      Re-export + auto-commit the canonical bible (manual/recovery)
   apra-fleet --version        Print version
   apra-fleet --help           Show this help`);
   process.exit(0);
@@ -91,6 +96,58 @@ Usage:
     import('./cli/update.js')
       .then(m => m.runUpdate())
       .catch(err => { logError('cli', `Update failed: ${err.message}`); process.exit(1); });
+  }
+} else if (arg === 'kb-server') {
+  import('./commands/kb-server.js')
+    .then(async m => {
+      const opts = m.parseKbServerArgs(process.argv.slice(3));
+      await m.startKbServer(opts.port, opts.generateToken, opts.dbPath);
+    })
+    .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'kb') {
+  const subCmd = process.argv[3];
+  if (subCmd === 'invalidate') {
+    const files = process.argv.slice(4);
+    if (files.length === 0) {
+      console.error('Usage: apra-fleet kb invalidate <file1> [file2 ...]');
+      process.exit(1);
+    }
+    import('./services/knowledge/kb-service.js')
+      .then(async m => {
+        const service = m.getKBService();
+        const provider = service.getProvider();
+        await provider.init();
+        const result = await provider.invalidate(files);
+        console.log(`Invalidated ${result.invalidated} entries.`);
+        process.exit(0);
+      })
+      .catch(err => { logError('cli', `kb invalidate failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'directives' || subCmd === 'approve-directive' || subCmd === 'reject-directive' || subCmd === 'add-directive') {
+    // F1 (D1): human-terminal directive activation surface -- the only
+    // unforgeable channel for turning a pending proposal into an active
+    // directive. Never exposed over MCP.
+    import('./cli/kb-directives.js')
+      .then(m => m.runKbDirectives(subCmd, process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb ${subCmd} failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'commit') {
+    // T3.7b: manual/recovery re-export + commit -- the command the amended-D5
+    // fleet_status bible-drift anomaly message tells operators to run.
+    // kb_export owns all commit/no-commit decisions; this is a thin wrapper.
+    import('./cli/kb-commit.js')
+      .then(m => m.runKbCommit(process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb commit failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'import') {
+    // T2.2 (F4, D3): post-merge entry point for absorbing a merged bible into
+    // the local KB. Thin wrapper over the same kbImport the MCP tool uses.
+    import('./cli/kb-import.js')
+      .then(m => m.runKbImport(process.argv.slice(4)))
+      .then(code => process.exit(code))
+      .catch(err => { logError('cli', `kb import failed: ${err.message}`); process.exit(1); });
+  } else {
+    console.error(`Error: unknown kb subcommand '${subCmd}'`);
+    process.exit(1);
   }
 } else if (arg === 'watch') {
   import('./cli/watch.js')
@@ -162,6 +219,26 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const { getProvider, handleGraph, handleImpact, handleQuery, handleContext, handleMap, handleFlow, handleTests, codeGraphSchema, codeImpactSchema, codeQuerySchema, codeContextSchema, codeMapSchema, codeFlowSchema, codeTestsSchema } = await import('./tools/code-intelligence.js');
+  const { inFlightAgents } = await import('./tools/execute-prompt.js');
+  const { enrichContextWithKb } = await import('./tools/code-intelligence-kb-enrich.js');
+  const { recordUsage } = await import('./tools/code-intelligence-telemetry.js');
+  const { kbCaptureSchema, kbCapture } = await import('./tools/kb-capture.js');
+  const { kbInvalidateSchema, kbInvalidate } = await import('./tools/kb-invalidate.js');
+  const { kbContextSchema, kbContext } = await import('./tools/kb-context.js');
+  const { kbSessionPrimeSchema, kbSessionPrime } = await import('./tools/kb-session-prime.js');
+  const { kbQuerySchema, kbQuery } = await import('./tools/kb-query.js');
+  const { kbListSchema, kbList } = await import('./tools/kb-list.js');
+  const { kbExportSchema, kbExport } = await import('./tools/kb-export.js');
+  const { kbStatsSchema, kbStats } = await import('./tools/kb-stats.js');
+  const { kbFeedbackSchema, kbFeedback } = await import('./tools/kb-feedback.js');
+  const { kbHarvestSchema, kbHarvest } = await import('./tools/kb-harvest.js');
+  const { kbPromoteSchema, kbPromote } = await import('./tools/kb-promote.js');
+  const { kbFreshnessSweepSchema, kbFreshnessSweep } = await import('./tools/kb-freshness-sweep.js');
+  const { kbImportSchema, kbImport } = await import('./tools/kb-import.js');
+  const { kbResolveContradictionSchema, kbResolveContradiction } = await import('./tools/kb-resolve-contradiction.js');
+  const { kbReconcilePrefilterSchema, kbReconcilePrefilter } = await import('./tools/kb-reconcile-prefilter.js');
+  const { kbSetupSchema, kbSetup } = await import('./tools/kb-setup.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -293,6 +370,74 @@ async function startServer() {
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
   server.tool('credential_store_delete', 'Delete a named credential from the store (both session and persistent tiers).', credentialStoreDeleteSchema.shape, wrapTool('credential_store_delete', (input) => credentialStoreDelete(input as any)));
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
+
+  // --- Code Intelligence ---
+  // Resolve the member whose execute_prompt is in-flight so code-intel calls
+  // route through the correct per-member provider. When zero or multiple members
+  // are in flight (ambiguous), returns undefined -> global fallback in getProvider().
+  function resolveActiveMemberId(): string | undefined {
+    if (inFlightAgents.size === 1) {
+      return inFlightAgents.values().next().value as string;
+    }
+    return undefined;
+  }
+
+  server.tool('code_graph', 'Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeGraphSchema.shape, wrapTool('code_graph', async (input) => {
+    // Usage telemetry (P8, design D8): recorded here in the shared
+    // handler layer, not inside GitNexusProvider, so the provider stays a
+    // pure proxy. Fire-and-forget -- never blocks or fails the call.
+    recordUsage('code_graph', input.symbol, input.repo ?? null);
+    return handleGraph(input, resolveActiveMemberId());
+  }));
+  server.tool('code_impact', 'Find what is affected by changes to a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeImpactSchema.shape, wrapTool('code_impact', async (input) => {
+    recordUsage('code_impact', input.target, input.repo ?? null);
+    return handleImpact(input, resolveActiveMemberId());
+  }));
+  server.tool('code_query', 'Search the codebase for symbols, patterns, or concepts using natural language or code patterns. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeQuerySchema.shape, wrapTool('code_query', async (input) => {
+    recordUsage('code_query', input.query, input.repo ?? null);
+    return handleQuery(input, resolveActiveMemberId());
+  }));
+  server.tool('code_context', 'Get callers, callees, and execution flows for a symbol. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.', codeContextSchema.shape, wrapTool('code_context', async (input) => {
+    recordUsage('code_context', input.name, input.repo ?? null);
+    const memberId = resolveActiveMemberId();
+    const provider = await getProvider(memberId);
+    const result = await provider.context(input);
+    // P4a (design D4): KB enrichment lives one layer up from the provider --
+    // the gitnexus provider file must not import the KB service. Only this
+    // handler calls the helper, then merges.
+    const enriched = await enrichContextWithKb(input.name, result);
+    return JSON.stringify(enriched);
+  }));
+  server.tool('code_map', 'Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.', codeMapSchema.shape, wrapTool('code_map', async (input) => {
+    recordUsage('code_map', '', input.repo ?? null);
+    return handleMap(input, resolveActiveMemberId());
+  }));
+  server.tool('code_flow', 'Find process flows (entry -> steps -> exit) matching a name or endpoints. Prefer this over manually tracing call chains across files -- the flows are pre-indexed.', codeFlowSchema.shape, wrapTool('code_flow', async (input) => {
+    recordUsage('code_flow', input.name ?? input.from ?? input.to ?? '', input.repo ?? null);
+    return handleFlow(input, resolveActiveMemberId());
+  }));
+  server.tool('code_tests', 'Find the test files and test functions that exercise a symbol (transitive callers, depth 2). Use this to run targeted tests for the code you changed instead of the full suite. Prefer this over Grep for test discovery -- the call graph is pre-indexed.', codeTestsSchema.shape, wrapTool('code_tests', async (input) => {
+    recordUsage('code_tests', input.symbol, input.repo ?? null);
+    return handleTests(input, resolveActiveMemberId());
+  }));
+
+  // --- Knowledge Bank ---
+  server.tool('kb_capture', 'Capture a learning, fact, or file summary into the knowledge bank. Confidence is capped at INFERRED: any CONFIRMED passed here is downgraded to INFERRED (result carries confidence_clamped:true). CONFIRMED is minted ONLY via kb_promote. Returns {id, audn_decision, confidence_clamped}. audn_decision: add=new entry, none=duplicate skipped, update=same-topic predecessor linked (refines; both entries stay live), flagged=contradiction flagged for review. Pass supersedes:<id> to retire that entry instead (only takes effect if AUDN independently matched it).', kbCaptureSchema.shape, wrapTool('kb_capture', (input) => kbCapture(input as any)));
+  server.tool('kb_invalidate', 'Mark context-cache entries stale for the given file paths. Call after modifying files to ensure the KB reflects the current state.', kbInvalidateSchema.shape, wrapTool('kb_invalidate', (input) => kbInvalidate(input as any)));
+  server.tool('kb_context', 'Check freshness of files against the knowledge bank. Returns {fresh, stale, missing} -- fresh files can be skipped, stale/missing files must be re-read.', kbContextSchema.shape, wrapTool('kb_context', (input) => kbContext(input as any)));
+  server.tool('kb_session_prime', 'Prime a session with KB context. Returns session_warm status, stale files needing re-read, top KB entries, and recommended GitNexus calls.', kbSessionPrimeSchema.shape, wrapTool('kb_session_prime', (input) => kbSessionPrime(input as any)));
+  server.tool('kb_query', 'Two-level knowledge bank search. L1: FTS5 on title+summary (up to 20 results). L2: full content for top 5 hits (max 800 tokens each). Excludes stale/superseded by default. Optional tag filter (exact match) ANDs alongside other filters without touching FTS/OR-join logic, and may be used alone (no query) to list all entries carrying the tag. Pass flagged_only: true to list all contradiction-flagged entry pairs for resolution.', kbQuerySchema.shape, wrapTool('kb_query', (input) => kbQuery(input as any)));
+  server.tool('kb_list', 'List KB entries by confidence/type/module/symbol/tag -- audit the CONFIRMED set (or any tier) without touching FTS ranking or use_count telemetry. Excludes superseded/stale entries. Returns {results, total} with each entry as {id, type, confidence, title, summary, symbols, source_files}.', kbListSchema.shape, wrapTool('kb_list', (input) => kbList(input as any)));
+  server.tool('kb_harvest', 'Scan a session transcript for learnings and capture them into the KB. Returns {entries_captured, entries_updated, entries_skipped}. Extracted entries are UNVERIFIED and author=harvest, source=harvest.', kbHarvestSchema.shape, wrapTool('kb_harvest', (input) => kbHarvest(input as any)));
+  server.tool('kb_promote', 'Upgrade KB entry confidence: UNVERIFIED -> INFERRED -> CONFIRMED. Appends promotion note to content as evidence trail. CONFIRMED entries are no-op.', kbPromoteSchema.shape, wrapTool('kb_promote', (input) => kbPromote(input as any)));
+  server.tool('kb_freshness_sweep', 'Bounded full-KB bidirectional freshness sweep: re-hash every entry that has a stored per-file basis against the CURRENT worktree, mark mismatches stale, and revive stale entries whose full basis matches again (superseded, feedback-downvoted, and invalidated entries stay retired). This is the branch-switch revival surface kb_session_prime cannot be (prime excludes stale entries). Returns {checked, staled, unstaled}.', kbFreshnessSweepSchema.shape, wrapTool('kb_freshness_sweep', (input) => kbFreshnessSweep(input as any)));
+  server.tool('kb_import', 'Import a merged bible (.fleet/kb-canonical.json) into the warm local KB -- the post-merge write path (the prime-time cold-seed is output-only). Reads the repo-resolved bible, or an explicit --path file. Each entry routes through the AUDN choke point (duplicate -> skipped, refinement -> linked, contradiction -> flagged); non-directive entries KEEP their bible confidence (the bible is a git-reviewed, human-merged artifact), stamped source="import"; type="user-directive" entries are FORCED to pending proposals (never active -- a bible cannot smuggle an active directive). Idempotent (re-import of the same bible adds nothing). Runs a freshness sweep after import so entries whose basis does not match this worktree are staled. Returns {imported, skipped, linked, flagged, sweep:{checked, staled, unstaled}}. TRUST BOUNDARY: importing the repo-resolved bible is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust, equivalent in power to kb_promote. Directives are quarantined either way; activation stays CLI-only.', kbImportSchema.shape, wrapTool('kb_import', (input) => kbImport(input as any)));
+  server.tool('kb_resolve_contradiction', 'Resolve a KB contradiction pair: {winnerId, loserId, evidence}. The SINGLE write path for reconcile resolutions (used by kb_reconcile_prefilter and the reconciler agent alike). Winner ends confidence=CONFIRMED with the evidence note appended and both flag fields cleared (flagged_for_review + contradiction_of); stale is cleared ONLY if the D2 un-stale predicate holds on the post-flag-clear row (so a downvoted or invalidated winner still stays retired -- it wins the contradiction, not its reputation). Loser ends superseded_at=now + stale=1 + flag cleared, never deleted. REFUSES (throws, writes nothing) when either id is missing, either entry is already superseded, the ids do not form a genuinely linked contradiction pair, or the pair involves an ACTIVE user-directive.', kbResolveContradictionSchema.shape, wrapTool('kb_resolve_contradiction', (input) => kbResolveContradiction(input as any)));
+  server.tool('kb_reconcile_prefilter', 'Mechanical hash-basis prefilter over all flagged contradiction pairs (including stale members -- see flaggedPairs liveness contract). Re-hashes both sides of each pair against the CURRENT worktree: exactly one side fully matching wins mechanically via kb_resolve_contradiction (evidence "hash-basis match on merged worktree"); both match, both mismatch, or an empty/missing basis on either side leaves the pair for the reconciler agent. Pairs involving an ACTIVE user-directive are never touched. Returns {pairs, resolved, left_for_agent, skipped_directive}. Run after kb_import + kb_freshness_sweep, before dispatching the reconciler agent.', kbReconcilePrefilterSchema.shape, wrapTool('kb_reconcile_prefilter', (input) => kbReconcilePrefilter(input as any)));
+  server.tool('kb_setup', 'Set up KB: install git post-commit hook, write provider config, store remote credentials encrypted. Run once per repo.', kbSetupSchema.shape, wrapTool('kb_setup', (input) => kbSetup(input as any)));
+  server.tool('kb_export', 'Export all CONFIRMED, non-superseded, non-stale KB entries to a canonical bible file (stable field set, deterministic id order, ASCII-safe). scope="project" (default): reads the project KB, writes <repo>/.fleet/kb-canonical.json. scope="global": reads the GLOBAL KB, writes <repo>/.fleet/kb-canonical-global.json (in practice the apra-fleet platform repo, committed there so the installer can distribute it to every project on the machine -- D8/F9). Run after kb_promote so the canonical set stays current. F6a: the tool itself auto-commits the bible file (pathspec-only, identity pm-kb) when the repo is a git repo and the content changed -- this is code, not agent discretion, so no manual git step is needed, and this applies to the global file too. Non-fatal on any git failure; push is not automatic. Config off-switch: FLEET_DIR/knowledge/config.json { bible: { autoCommit: false } }.', kbExportSchema.shape, wrapTool('kb_export', (input) => kbExport(input as any)));
+  server.tool('kb_stats', 'Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible presence/drift, and optional per-symbol coverage. Never bumps use_count/last_accessed (kb_list pattern). Bible drift is visibility for the machine that owns the KB -- CI cannot see the local kb.sqlite, so there is no CI gate on it.', kbStatsSchema.shape, wrapTool('kb_stats', (input) => kbStats(input as any)));
+  server.tool('kb_feedback', 'Downvote a KB entry that proved wrong in practice: { id, reason, role? }. Marks the entry stale=1 + flagged_for_review=1 and appends an ASCII feedback note "[feedback <ISO>] <validated-role>: <reason>" (CONTENT_CAP respected). NEVER deletes and NEVER touches confidence -- a downvoted CONFIRMED entry stays CONFIRMED-but-stale-flagged; the human resolves it in kb-review, this tool only flags it for that review. Exception: an ACTIVE user-directive is flagged for review but NOT staled (directives outrank agent experience -- the human decides); a pending directive proposal stales normally.', kbFeedbackSchema.shape, wrapTool('kb_feedback', (input) => kbFeedback(input as any)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

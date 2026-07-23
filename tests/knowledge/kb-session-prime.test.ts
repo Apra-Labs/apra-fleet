@@ -1,0 +1,866 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+
+const mockExecFile = vi.hoisted(() => vi.fn());
+
+vi.mock('node:child_process', () => ({
+  execFile: mockExecFile,
+}));
+
+import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
+import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { FLEET_DIR } from '../../src/paths.js';
+
+function gitBlobHash(data: Buffer): string {
+  const header = Buffer.from(`blob ${data.length}\0`);
+  return createHash('sha1').update(header).update(data).digest('hex');
+}
+
+function setupGitSuccess(): void {
+  mockExecFile.mockImplementation((...allArgs: unknown[]) => {
+    const cb = allArgs[allArgs.length - 1] as (err: Error | null, stdout: string, stderr: string) => void;
+    const fileArgs = (allArgs[1] as string[]).slice(1);
+    const hashes = fileArgs.map((f: string) => {
+      try {
+        const data = fs.readFileSync(f) as Buffer;
+        return gitBlobHash(data);
+      } catch {
+        return '';
+      }
+    });
+    cb(null, hashes.join('\n') + '\n', '');
+  });
+}
+
+function makeContextCache(file: string, hash: string): KBEntryInput {
+  return {
+    type: 'context-cache',
+    title: `Summary of ${path.basename(file)}`,
+    summary: `Handles ${path.basename(file)} logic.`,
+    content: `Detailed content for ${file}`,
+    source_files: [file],
+    symbols: ['someFunc'],
+    tags: [],
+    content_hash: hash,
+    content_hash_type: 'git',
+    flagged_for_review: false,
+    author: 'test-agent',
+    source: 'doer',
+    confidence: 'INFERRED',
+  };
+}
+
+let provider: SqliteProvider;
+let tmpDir: string;
+
+beforeEach(async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-test-'));
+  mockExecFile.mockReset();
+  setupGitSuccess();
+  provider = new SqliteProvider(':memory:');
+  await provider.init();
+});
+
+afterEach(() => {
+  provider.close();
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+describe('kb_session_prime', () => {
+  it('cold session: stale_files has entries, session_warm=false', async () => {
+    const filePath = path.join(tmpDir, 'cold.ts');
+    fs.writeFileSync(filePath, 'const cold = true;');
+
+    const result = await provider.prime({ session_files: [filePath] });
+    expect(result.session_warm).toBe(false);
+    expect(result.stale_files).toContain(filePath);
+  });
+
+  it('warm session: stale_files empty, session_warm=true', async () => {
+    const filePath = path.join(tmpDir, 'warm.ts');
+    const content = 'const warm = true;';
+    fs.writeFileSync(filePath, content);
+    const hash = gitBlobHash(Buffer.from(content));
+
+    await provider.capture(makeContextCache(filePath, hash));
+
+    const result = await provider.prime({ session_files: [filePath] });
+    expect(result.session_warm).toBe(true);
+    expect(result.stale_files).toHaveLength(0);
+    expect(result.fresh_summaries).toHaveLength(1);
+  });
+
+  it('recommended_code_calls is array of objects with tool+args keys', async () => {
+    const result = await provider.prime({
+      session_files: ['src/registry.ts'],
+      hint_symbols: ['initRegistry'],
+    });
+
+    expect(Array.isArray(result.recommended_code_calls)).toBe(true);
+    for (const call of result.recommended_code_calls) {
+      expect(call).toHaveProperty('tool');
+      expect(call).toHaveProperty('args');
+      expect(typeof call.tool).toBe('string');
+      expect(typeof call.args).toBe('object');
+    }
+
+    const symbolCall = result.recommended_code_calls.find(c => c.tool === 'code_context');
+    expect(symbolCall).toBeDefined();
+    expect(symbolCall!.args).toEqual({ name: 'initRegistry' });
+
+    const impactCall = result.recommended_code_calls.find(c => c.tool === 'code_impact');
+    expect(impactCall).toBeDefined();
+    expect(impactCall!.args).toEqual({ target: 'src/registry.ts', direction: 'upstream' });
+  });
+
+  it('no hints: recommended_code_calls is empty array', async () => {
+    const result = await provider.prime({});
+    expect(result.recommended_code_calls).toEqual([]);
+    expect(result.session_warm).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Graph-neighbor expansion (T1.3 P4b) -- exercises the kbSessionPrime wrapper
+// with the KB providers and the code-intelligence provider fully mocked. KB
+// constraint 1: module-level singletons -> vi.resetModules() + dynamic import
+// at the start of each test; mock fns hoisted via vi.hoisted().
+// ---------------------------------------------------------------------------
+
+import type { KBEntry } from '../../src/services/knowledge/types.js';
+
+const mockPrime = vi.hoisted(() => vi.fn());
+const mockProjectQuery = vi.hoisted(() => vi.fn());
+const mockGlobalQuery = vi.hoisted(() => vi.fn());
+const mockContext = vi.hoisted(() => vi.fn());
+const mockGetProvider = vi.hoisted(() => vi.fn());
+const mockGetKbProviders = vi.hoisted(() => vi.fn());
+const mockValidateFilePaths = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/services/knowledge/kb-providers.js', () => ({
+  getKbProviders: mockGetKbProviders,
+}));
+vi.mock('../../src/tools/code-intelligence.js', () => ({
+  getProvider: mockGetProvider,
+}));
+vi.mock('../../src/services/knowledge/path-validation.js', () => ({
+  validateFilePaths: mockValidateFilePaths,
+}));
+
+function entry(id: string, type: KBEntry['type'] = 'knowledge'): KBEntry {
+  return {
+    id,
+    type,
+    title: id,
+    summary: `summary-${id}`,
+    content: '',
+    source_files: [],
+    symbols: [],
+    tags: [],
+    content_hash: '',
+    content_hash_type: 'sha256',
+    stale: false,
+    flagged_for_review: false,
+    author: '',
+    source: 'doer',
+    confidence: 'CONFIRMED',
+    created_at: '2026-01-01T00:00:00.000Z',
+    use_count: 0,
+  };
+}
+
+// Build a code-intelligence `context` MCP result carrying the given neighbor
+// names as incoming calls.
+function contextResult(names: string[]): unknown {
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          status: 'found',
+          symbol: { name: 'root' },
+          incoming: { calls: names.map(n => ({ name: n })) },
+          outgoing: { calls: [] },
+        }),
+      },
+    ],
+  };
+}
+
+function primedContext(top: KBEntry[]) {
+  return {
+    session_warm: true,
+    stale_files: [],
+    top_entries: top,
+    fresh_summaries: [],
+    recommended_code_calls: [],
+    token_estimate: 0,
+  };
+}
+
+describe('kb_session_prime graph-neighbor expansion', () => {
+  // ISOLATION (F1/D1, KB c5a129ed): the canonical-bible cold-seed resolves the
+  // repo root via resolveRepoPath() -> process.cwd() when no repo_path is given
+  // (kb-session-prime.ts:90-91). Any test here whose live+neighbor hits stay
+  // below COLD_KB_MAX (3) triggers that cold-seed; with an unmocked cwd it read
+  // THIS repo's real .fleet/kb-canonical.json and leaked its entries into
+  // top_entries. Point cwd at an empty temp dir so the cold-seed finds no bible
+  // and the assertions run against the mocks alone. FLEET_DIR (global bible) is
+  // already isolated by tests/setup.ts's APRA_FLEET_DATA_DIR override.
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+  let emptyCwdDir: string;
+
+  beforeEach(() => {
+    vi.resetModules();
+    mockPrime.mockReset();
+    mockProjectQuery.mockReset();
+    mockGlobalQuery.mockReset();
+    mockContext.mockReset();
+    mockGetProvider.mockReset();
+    mockGetKbProviders.mockReset();
+    mockValidateFilePaths.mockReset();
+
+    mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+    mockGetKbProviders.mockResolvedValue({
+      project: { prime: mockPrime, query: mockProjectQuery },
+      global: { query: mockGlobalQuery },
+      projectSlug: 'test',
+    });
+    mockGetProvider.mockResolvedValue({ context: mockContext });
+
+    emptyCwdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-neighbor-cwd-'));
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(emptyCwdDir);
+  });
+
+  afterEach(() => {
+    cwdSpy.mockRestore();
+    fs.rmSync(emptyCwdDir, { recursive: true, force: true });
+  });
+
+  it('appends neighbor-derived entries below direct hits with via marker', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a'), entry('b')]));
+    mockContext.mockResolvedValue(contextResult(['nbrX']));
+    mockProjectQuery.mockResolvedValue({ results: [entry('c')], total: 1, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['a'] }));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'b', 'c']);
+    // Direct hits carry no via marker; neighbor entry does.
+    expect(parsed.top_entries[0].via).toBeUndefined();
+    expect(parsed.top_entries[1].via).toBeUndefined();
+    expect(parsed.top_entries[2].via).toBe('graph-neighbor');
+  });
+
+  it('caps neighbors queried at NEIGHBOR_CAP (11 -> 10)', async () => {
+    const eleven = Array.from({ length: 11 }, (_, i) => 'nbr' + i);
+    mockPrime.mockResolvedValue(primedContext([]));
+    mockContext.mockResolvedValue(contextResult(eleven));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { kbSessionPrime, NEIGHBOR_CAP } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ hint_symbols: ['root'] });
+
+    expect(NEIGHBOR_CAP).toBe(10);
+    expect(mockProjectQuery).toHaveBeenCalledTimes(1);
+    const passedTerms = mockProjectQuery.mock.calls[0][0].fts_terms as string[];
+    // 10 neighbors survive the cap; the 11th is excluded.
+    expect(passedTerms).toHaveLength(NEIGHBOR_CAP);
+    expect(passedTerms).not.toContain('nbr10');
+  });
+
+  it('caps additions at ADDED_ENTRY_CAP (8 candidates -> 5 added)', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('d0')]));
+    mockContext.mockResolvedValue(contextResult(['nbrX']));
+    const eight = Array.from({ length: 8 }, (_, i) => entry('n' + i));
+    mockProjectQuery.mockResolvedValue({ results: eight, total: 8, l1_only: true });
+
+    const { kbSessionPrime, ADDED_ENTRY_CAP } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['root'] }));
+
+    expect(ADDED_ENTRY_CAP).toBe(5);
+    const added = parsed.top_entries.filter((e: KBEntry & { via?: string }) => e.via === 'graph-neighbor');
+    expect(added).toHaveLength(ADDED_ENTRY_CAP);
+    // Direct hit is preserved and ranked first.
+    expect(parsed.top_entries[0].id).toBe('d0');
+  });
+
+  it('dedupes neighbor entries against direct hits by id', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a'), entry('b')]));
+    mockContext.mockResolvedValue(contextResult(['nbrX']));
+    // query returns b (already a direct hit) plus new c, d
+    mockProjectQuery.mockResolvedValue({
+      results: [entry('b'), entry('c'), entry('d')],
+      total: 3,
+      l1_only: true,
+    });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['a'] }));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'b', 'c', 'd']);
+    const added = parsed.top_entries.filter((e: KBEntry & { via?: string }) => e.via === 'graph-neighbor');
+    expect(added.map((e: KBEntry) => e.id)).toEqual(['c', 'd']);
+  });
+
+  it('graceful skip: CI provider throws -> output identical to non-expanded prime', async () => {
+    const direct = primedContext([entry('a'), entry('b')]);
+    mockPrime.mockResolvedValue(direct);
+    mockGetProvider.mockRejectedValue(new Error('graph offline'));
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const withExpansion = JSON.parse(await kbSessionPrime({ hint_symbols: ['a'] }));
+
+    // No neighbor query attempted, no additions, output matches direct hits.
+    expect(mockProjectQuery).not.toHaveBeenCalled();
+    expect(withExpansion.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'b']);
+    expect(withExpansion.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  it('graceful skip: context() throws for every symbol -> no query, no additions', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    mockContext.mockRejectedValue(new Error('boom'));
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['a', 'b'] }));
+
+    expect(mockProjectQuery).not.toHaveBeenCalled();
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+  });
+
+  it('skips expansion entirely when hint_symbols is absent', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ session_files: [] });
+
+    expect(mockGetProvider).not.toHaveBeenCalled();
+    expect(mockProjectQuery).not.toHaveBeenCalled();
+  });
+
+  it('isError context result yields no neighbors (no query)', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    mockContext.mockResolvedValue({ content: [{ type: 'text', text: 'Error: Unknown tool' }], isError: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['a'] }));
+
+    expect(mockProjectQuery).not.toHaveBeenCalled();
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+  });
+
+  it('FTS-hostile neighbor is skipped without killing the batch', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    // "(" sanitizes to nothing; "goodName" survives.
+    mockContext.mockResolvedValue(contextResult(['((', 'goodName']));
+    mockProjectQuery.mockResolvedValue({ results: [entry('c')], total: 1, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['root'] }));
+
+    expect(mockProjectQuery).toHaveBeenCalledTimes(1);
+    const passedTerms = mockProjectQuery.mock.calls[0][0].fts_terms as string[];
+    expect(passedTerms).toEqual(['((', 'goodName']);
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['c']);
+  });
+
+  // -- T2.1 / D4: the tool passes RAW terms via fts_terms and does not
+  // sanitize or pre-build an FTS expression itself; query() is the single
+  // sanitization point and OR-joins across terms (implicit AND is on query()).
+
+  it('neighbor batch passes raw terms via fts_terms (not implicit AND)', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    mockContext.mockResolvedValue(contextResult(['alpha', 'beta']));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ hint_symbols: ['root'] });
+
+    expect(mockProjectQuery).toHaveBeenCalledTimes(1);
+    const passed = mockProjectQuery.mock.calls[0][0];
+    expect(passed.fts_terms).toEqual(['alpha', 'beta']);
+    expect(passed.query).toBeUndefined();
+  });
+
+  it('global-append passes raw hint_symbols via fts_terms (not implicit AND)', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    mockContext.mockResolvedValue(contextResult([]));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+    mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ hint_symbols: ['alpha', 'beta'] });
+
+    expect(mockGlobalQuery).toHaveBeenCalledTimes(1);
+    const passed = mockGlobalQuery.mock.calls[0][0];
+    expect(passed.fts_terms).toEqual(['alpha', 'beta']);
+    expect(passed.query).toBeUndefined();
+  });
+
+  it('global-append passes raw session_files through untouched via fts_terms', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({ session_files: ['src/tools/kb-capture.ts', 'src/services/knowledge/audn.ts'] });
+
+    expect(mockGlobalQuery).toHaveBeenCalledTimes(1);
+    const passed = mockGlobalQuery.mock.calls[0][0];
+    // Raw paths are passed through untouched -- the tool does not sanitize;
+    // query() is the single sanitization point.
+    expect(passed.fts_terms).toEqual(['src/tools/kb-capture.ts', 'src/services/knowledge/audn.ts']);
+    expect(passed.query).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Canonical-bible cold-seed (T3.5, F8c, D8) -- LAST sequenced block in
+// kbSessionPrime, after the T2.1 global-append and graph-neighbor merges.
+// Uses REAL node:fs against a controlled tmp dir (process.cwd() spied) rather
+// than mocking node:fs -- the first describe block in this file already
+// exercises real fs via tmpDir, and mocking the fs module globally would
+// collide with that. KB constraint 1 still applies to the mocked modules
+// (kb-providers, code-intelligence, path-validation): vi.resetModules() +
+// dynamic import per test.
+// ---------------------------------------------------------------------------
+
+describe('kb_session_prime canonical-bible cold-seed', () => {
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+  let bibleTmpDir: string;
+
+  function canonicalEntry(id: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id,
+      type: 'knowledge',
+      title: 'Canonical ' + id,
+      summary: 'Canonical summary for ' + id,
+      symbols: [],
+      source_files: [],
+      confidence: 'CONFIRMED',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function writeCanonicalFile(entries: unknown): void {
+    const fleetDir = path.join(bibleTmpDir, '.fleet');
+    fs.mkdirSync(fleetDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(fleetDir, 'kb-canonical.json'),
+      typeof entries === 'string' ? entries : JSON.stringify(entries),
+      'utf-8',
+    );
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    mockPrime.mockReset();
+    mockProjectQuery.mockReset();
+    mockGlobalQuery.mockReset();
+    mockContext.mockReset();
+    mockGetProvider.mockReset();
+    mockGetKbProviders.mockReset();
+    mockValidateFilePaths.mockReset();
+
+    mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+    mockGetKbProviders.mockResolvedValue({
+      project: { prime: mockPrime, query: mockProjectQuery },
+      global: { query: mockGlobalQuery },
+      projectSlug: 'test',
+    });
+    mockGetProvider.mockResolvedValue({ context: mockContext });
+    mockContext.mockResolvedValue(contextResult([]));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    bibleTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-canonical-test-'));
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(bibleTmpDir);
+  });
+
+  afterEach(() => {
+    cwdSpy.mockRestore();
+    fs.rmSync(bibleTmpDir, { recursive: true, force: true });
+  });
+
+  it('cold KB + fixture canonical file: entries appear via canonical-bible below live hits', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile([canonicalEntry('c1'), canonicalEntry('c2')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1', 'c2']);
+    expect(parsed.top_entries[0].via).toBeUndefined();
+    expect(parsed.top_entries[1].via).toBe('canonical-bible');
+    expect(parsed.top_entries[2].via).toBe('canonical-bible');
+  });
+
+  it('file absent: output identical to today (no canonical merge)', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    // No writeCanonicalFile call -- .fleet/kb-canonical.json does not exist.
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+    expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  it('malformed JSON: output identical to today', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile('{ this is not valid json');
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+    expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  it('bad shape (not an array, or entries missing required fields): output identical to today', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile({ not: 'an array' });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+  });
+
+  it('invalid entries within an otherwise-valid array are dropped, valid ones still seed', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    writeCanonicalFile([
+      { id: 'bad', title: 'missing summary/symbols/source_files' },
+      canonicalEntry('good1'),
+    ]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['good1']);
+  });
+
+  it('warm KB (>= COLD_KB_MAX live hits): no canonical merge', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a'), entry('b'), entry('c')]));
+    writeCanonicalFile([canonicalEntry('c1')]);
+
+    const { kbSessionPrime, COLD_KB_MAX } = await import('../../src/tools/kb-session-prime.js');
+    expect(COLD_KB_MAX).toBe(3);
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'b', 'c']);
+    expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  it('dedupes canonical entries already present among live hits by id', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile([canonicalEntry('a'), canonicalEntry('c1')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1']);
+  });
+
+  it('caps canonical additions at ADDED_ENTRY_CAP', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    const many = Array.from({ length: 8 }, (_, i) => canonicalEntry('cap' + i));
+    writeCanonicalFile(many);
+
+    const { kbSessionPrime, ADDED_ENTRY_CAP } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries).toHaveLength(ADDED_ENTRY_CAP);
+  });
+
+  it('prefers canonical entries whose symbols match hint_symbols', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    writeCanonicalFile([
+      canonicalEntry('noMatch1'),
+      canonicalEntry('matchA', { symbols: ['wantedSymbol'] }),
+      canonicalEntry('noMatch2'),
+    ]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_symbols: ['wantedSymbol'] }));
+
+    expect(parsed.top_entries[0].id).toBe('matchA');
+  });
+
+  it('prefers canonical entries whose source_files match hint_modules', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    writeCanonicalFile([
+      canonicalEntry('noMatch1'),
+      canonicalEntry('matchB', { source_files: ['src/tools/kb-list.ts'] }),
+    ]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({ hint_modules: ['src/tools'] }));
+
+    expect(parsed.top_entries[0].id).toBe('matchB');
+  });
+
+  // F4 (T1.6): repo path resolution precedence -- explicit repo_path input >
+  // validated session context (process.cwd(), validated) > skip silently.
+  // No bare process.cwd() fallback: the session-context tier is validated
+  // the same way explicit input is, and an invalid explicit input does NOT
+  // fall through to cwd.
+  describe('repo path precedence (F4, T1.6)', () => {
+    it('explicit repo_path takes precedence over the session working directory', async () => {
+      mockPrime.mockResolvedValue(primedContext([entry('a')]));
+      writeCanonicalFile([canonicalEntry('c1')]);
+
+      // cwd points somewhere with NO canonical file; explicit repo_path
+      // points at bibleTmpDir, which HAS one.
+      const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-empty-'));
+      cwdSpy.mockReturnValue(emptyDir);
+      try {
+        const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+        const parsed = JSON.parse(await kbSessionPrime({ repo_path: bibleTmpDir }));
+
+        expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1']);
+      } finally {
+        fs.rmSync(emptyDir, { recursive: true, force: true });
+      }
+    });
+
+    it('invalid explicit repo_path skips silently -- no fallback to the session working directory', async () => {
+      mockPrime.mockResolvedValue(primedContext([entry('a')]));
+      // cwd (bibleTmpDir) DOES have a valid canonical file, but the explicit
+      // repo_path below does not exist -- it must not silently fall back to
+      // the cwd tier.
+      writeCanonicalFile([canonicalEntry('c1')]);
+
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({
+        repo_path: path.join(bibleTmpDir, 'does-not-exist'),
+      }));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+      expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+    });
+
+    it('omitted repo_path falls back to the validated session working directory', async () => {
+      mockPrime.mockResolvedValue(primedContext([entry('a')]));
+      writeCanonicalFile([canonicalEntry('c1')]);
+
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({}));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1']);
+    });
+
+    it('neither explicit repo_path nor the session working directory validate -- skips silently', async () => {
+      mockPrime.mockResolvedValue(primedContext([entry('a')]));
+      writeCanonicalFile([canonicalEntry('c1')]);
+
+      // cwd is valid AND has a canonical file, but that must not matter once
+      // an explicit (invalid) repo_path is given -- and separately, an
+      // invalid cwd with no explicit repo_path must also skip silently.
+      const missingCwd = path.join(bibleTmpDir, 'does-not-exist-cwd');
+      cwdSpy.mockReturnValue(missingCwd);
+
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({}));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+      expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Global-bible cold-seed (T3.5, F9c, D8) -- appended AFTER the existing
+// project-bible cold-seed block (design Phasing note). Real node:fs against
+// FLEET_DIR (resolved by tests/setup.ts's APRA_FLEET_DATA_DIR override),
+// mirroring the sibling canonical-bible describe block's approach rather than
+// mocking node:fs globally. Module-singleton pattern (KB learning 989d00c3):
+// vi.resetModules() + dynamic import per test, reusing the hoisted mocks
+// declared above (mockPrime/mockProjectQuery/mockGlobalQuery/mockContext/
+// mockGetProvider/mockGetKbProviders/mockValidateFilePaths).
+// ---------------------------------------------------------------------------
+
+describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
+  const globalBibleDir = path.join(FLEET_DIR, 'knowledge', 'global');
+  const globalBiblePath = path.join(globalBibleDir, 'kb-canonical-global.json');
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+  let emptyCwdDir: string;
+
+  function canonicalEntry(id: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id,
+      type: 'knowledge',
+      title: 'Global canonical ' + id,
+      summary: 'Global canonical summary for ' + id,
+      symbols: [],
+      source_files: [],
+      confidence: 'CONFIRMED',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function writeGlobalBibleFile(entries: unknown): void {
+    fs.mkdirSync(globalBibleDir, { recursive: true });
+    fs.writeFileSync(
+      globalBiblePath,
+      typeof entries === 'string' ? entries : JSON.stringify(entries),
+      'utf-8',
+    );
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    mockPrime.mockReset();
+    mockProjectQuery.mockReset();
+    mockGlobalQuery.mockReset();
+    mockContext.mockReset();
+    mockGetProvider.mockReset();
+    mockGetKbProviders.mockReset();
+    mockValidateFilePaths.mockReset();
+
+    mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+    mockGetKbProviders.mockResolvedValue({
+      project: { prime: mockPrime, query: mockProjectQuery },
+      global: { query: mockGlobalQuery },
+      projectSlug: 'test',
+    });
+    mockGetProvider.mockResolvedValue({ context: mockContext });
+    mockContext.mockResolvedValue(contextResult([]));
+    mockProjectQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
+
+    // Point the PROJECT-bible cold-seed's cwd tier at a fresh dir with no
+    // .fleet/kb-canonical.json, so only the global-bible block is exercised
+    // unless a test explicitly writes a project bible file too.
+    emptyCwdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-prime-global-cwd-'));
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(emptyCwdDir);
+
+    // Clean slate in case a prior run left the real global bible file behind.
+    fs.rmSync(globalBiblePath, { force: true });
+  });
+
+  afterEach(() => {
+    cwdSpy.mockRestore();
+    fs.rmSync(emptyCwdDir, { recursive: true, force: true });
+    fs.rmSync(globalBiblePath, { force: true });
+  });
+
+  it('cold KB + fixture global bible: entries appear via canonical-bible-global below live hits', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeGlobalBibleFile([canonicalEntry('g1'), canonicalEntry('g2')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'g1', 'g2']);
+    expect(parsed.top_entries[0].via).toBeUndefined();
+    expect(parsed.top_entries[1].via).toBe('canonical-bible-global');
+    expect(parsed.top_entries[2].via).toBe('canonical-bible-global');
+  });
+
+  it('ordering: live hits > project-bible > global-bible', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+
+    const projectFleetDir = path.join(emptyCwdDir, '.fleet');
+    fs.mkdirSync(projectFleetDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectFleetDir, 'kb-canonical.json'),
+      JSON.stringify([canonicalEntry('p1')]),
+      'utf-8',
+    );
+    writeGlobalBibleFile([canonicalEntry('g1')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'p1', 'g1']);
+    expect(parsed.top_entries[1].via).toBe('canonical-bible');
+    expect(parsed.top_entries[2].via).toBe('canonical-bible-global');
+  });
+
+  it('absent global bible file: output identical to today (no global merge)', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    // No writeGlobalBibleFile call -- the global bible file does not exist.
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+  });
+
+  it('malformed global bible JSON: degrades to current behavior (hard skip)', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeGlobalBibleFile('{ not valid json');
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+  });
+
+  it('bad shape (not an array): degrades to current behavior', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeGlobalBibleFile({ not: 'an array' });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+  });
+
+  it('warm session (>= COLD_KB_MAX live hits): no global merge', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a'), entry('b'), entry('c')]));
+    writeGlobalBibleFile([canonicalEntry('g1')]);
+
+    const { kbSessionPrime, COLD_KB_MAX } = await import('../../src/tools/kb-session-prime.js');
+    expect(COLD_KB_MAX).toBe(3);
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'b', 'c']);
+    expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  it('dedupes global-bible entries already present among live hits by id', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeGlobalBibleFile([canonicalEntry('a'), canonicalEntry('g1')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'g1']);
+  });
+
+  it('dedupes global-bible entries already present via the project bible by id', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+
+    const projectFleetDir = path.join(emptyCwdDir, '.fleet');
+    fs.mkdirSync(projectFleetDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectFleetDir, 'kb-canonical.json'),
+      JSON.stringify([canonicalEntry('shared')]),
+      'utf-8',
+    );
+    // Global bible carries the SAME id -- must not duplicate.
+    writeGlobalBibleFile([canonicalEntry('shared'), canonicalEntry('g1')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['shared', 'g1']);
+    expect(parsed.top_entries[0].via).toBe('canonical-bible');
+    expect(parsed.top_entries[1].via).toBe('canonical-bible-global');
+  });
+
+  it('caps global-bible additions at ADDED_ENTRY_CAP', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    const many = Array.from({ length: 8 }, (_, i) => canonicalEntry('gcap' + i));
+    writeGlobalBibleFile(many);
+
+    const { kbSessionPrime, ADDED_ENTRY_CAP } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries).toHaveLength(ADDED_ENTRY_CAP);
+  });
+});

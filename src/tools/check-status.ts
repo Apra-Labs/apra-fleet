@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { existsSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { join } from 'path';
 import { getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -14,6 +17,9 @@ import { estimateCost, hourlyRate, formatUptimeDuration, uptimeHoursFromLaunch, 
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import { getUpdateNotice } from '../services/update-check.js';
 import { getActiveLogFile } from '../utils/log-helpers.js';
+import { USAGE_LOG_PATH, ROTATED_USAGE_LOG_PATH } from './code-intelligence-telemetry.js';
+import { kbStats } from './kb-stats.js';
+import { checkVersionMismatch, type VersionMismatch } from '../services/version-check.js';
 
 export const fleetStatusSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -193,6 +199,253 @@ async function checkAgent(agent: ReturnType<typeof getAllAgents>[number]): Promi
   return row;
 }
 
+// ---------------------------------------------------------------------------
+// Code intelligence health (F3.3)
+//
+// Read-only, fast, no MCP child spawn, no network. Reports whether the
+// current working repo has a gitnexus index, its stats, and whether the
+// indexed commit matches current git HEAD. Never throws -- every failure
+// (missing/unparseable meta.json, git unavailable, unknown lastCommit)
+// degrades to a graceful "unavailable" state instead of failing fleet_status.
+// ---------------------------------------------------------------------------
+export interface TopSymbol {
+  target: string;
+  count: number;
+}
+
+export interface CodeIntelligenceHealth {
+  present: boolean;
+  nodes?: number;
+  edges?: number;
+  files?: number;
+  indexedAt?: string;
+  lastCommit?: string;
+  headStatus?: 'matching' | 'behind' | 'unavailable';
+  commitsBehind?: number;
+  topSymbols?: TopSymbol[];
+}
+
+interface GitNexusMeta {
+  lastCommit?: string;
+  indexedAt?: string;
+  stats?: { files?: number; nodes?: number; edges?: number };
+}
+
+function readGitNexusMeta(repoDir: string): GitNexusMeta | null {
+  const metaPath = join(repoDir, '.gitnexus', 'meta.json');
+  if (!existsSync(metaPath)) return null;
+  try {
+    return JSON.parse(readFileSync(metaPath, 'utf-8')) as GitNexusMeta;
+  } catch {
+    return null;
+  }
+}
+
+function currentHead(repoDir: string): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function commitsBehindCount(repoDir: string, lastCommit: string, head: string): number | null {
+  try {
+    const out = execFileSync('git', ['rev-list', '--count', `${lastCommit}..${head}`], {
+      cwd: repoDir, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const count = Number.parseInt(out, 10);
+    return Number.isFinite(count) ? count : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Top symbols read (T4.2, design D8 read spec). Single pass over usage.jsonl
+// AND usage.jsonl.1 (if present), 30-day window, aggregate count by target,
+// top 5. Degraded-safe: no usage file, an unreadable file, or any other
+// error -> undefined (field/segment omitted entirely from fleet_status).
+// Unparseable individual lines are skipped rather than failing the pass.
+// ---------------------------------------------------------------------------
+const TOP_SYMBOLS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const TOP_SYMBOLS_LIMIT = 5;
+
+function readUsageLines(path: string): string[] {
+  try {
+    return readFileSync(path, 'utf-8').split('\n').filter((line) => line.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function computeTopSymbols(
+  now: number = Date.now(),
+  usagePath: string = USAGE_LOG_PATH,
+  rotatedUsagePath: string = ROTATED_USAGE_LOG_PATH,
+): TopSymbol[] | undefined {
+  try {
+    const lines = [...readUsageLines(usagePath), ...readUsageLines(rotatedUsagePath)];
+    if (lines.length === 0) return undefined;
+
+    const cutoff = now - TOP_SYMBOLS_WINDOW_MS;
+    const counts = new Map<string, number>();
+    for (const line of lines) {
+      try {
+        const record = JSON.parse(line) as { ts?: unknown; target?: unknown };
+        if (typeof record.ts !== 'string' || typeof record.target !== 'string') continue;
+        const ts = new Date(record.ts).getTime();
+        if (!Number.isFinite(ts) || ts < cutoff) continue;
+        counts.set(record.target, (counts.get(record.target) ?? 0) + 1);
+      } catch {
+        // Unparseable line -- skip it, keep going.
+      }
+    }
+
+    if (counts.size === 0) return undefined;
+
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOP_SYMBOLS_LIMIT)
+      .map(([target, count]) => ({ target, count }));
+  } catch {
+    return undefined;
+  }
+}
+
+export function codeIntelligenceHealth(repoDir: string): CodeIntelligenceHealth {
+  const meta = readGitNexusMeta(repoDir);
+  if (!meta) return { present: false };
+
+  const health: CodeIntelligenceHealth = {
+    present: true,
+    nodes: meta.stats?.nodes,
+    edges: meta.stats?.edges,
+    files: meta.stats?.files,
+    indexedAt: meta.indexedAt,
+    lastCommit: meta.lastCommit,
+  };
+
+  if (!meta.lastCommit) {
+    health.headStatus = 'unavailable';
+    return health;
+  }
+
+  const head = currentHead(repoDir);
+  if (!head) {
+    health.headStatus = 'unavailable';
+    return health;
+  }
+
+  if (head === meta.lastCommit) {
+    health.headStatus = 'matching';
+    return health;
+  }
+
+  const behind = commitsBehindCount(repoDir, meta.lastCommit, head);
+  if (behind === null) {
+    health.headStatus = 'unavailable';
+    return health;
+  }
+
+  health.headStatus = 'behind';
+  health.commitsBehind = behind;
+  return health;
+}
+
+/**
+ * Render the trailing head-comparison fragment used by the compact
+ * fleet_status line, e.g. "matching HEAD", "5 commits behind HEAD", or
+ * "indexed a1b2c3d4, HEAD comparison unavailable".
+ */
+function headComparisonLabel(health: CodeIntelligenceHealth): string {
+  if (health.headStatus === 'matching') return 'matching HEAD';
+  if (health.headStatus === 'behind') return `${health.commitsBehind} commits behind HEAD`;
+  const shortSha = health.lastCommit ? health.lastCommit.slice(0, 8) : 'unknown';
+  return `indexed ${shortSha}, HEAD comparison unavailable`;
+}
+
+/** Render the trailing "top symbols (30d): a (12), b (9), ..." fragment, or "" when absent. */
+function topSymbolsFragment(topSymbols?: TopSymbol[]): string {
+  if (!topSymbols || topSymbols.length === 0) return '';
+  const rendered = topSymbols.map((s) => `${s.target} (${s.count})`).join(', ');
+  return ` | top symbols (30d): ${rendered}`;
+}
+
+/** Render the one-line compact fleet_status code intelligence summary. */
+export function codeIntelligenceCompactLine(health: CodeIntelligenceHealth): string {
+  if (!health.present) {
+    return "code-intel: no index (run 'npx gitnexus analyze' or /pm index)" + topSymbolsFragment(health.topSymbols);
+  }
+  const nodes = health.nodes ?? 0;
+  const edges = health.edges ?? 0;
+  const files = health.files ?? 0;
+  const indexedAt = health.indexedAt ?? 'unknown';
+  return `code-intel: index present | ${nodes} nodes / ${edges} edges / ${files} files | indexed ${indexedAt} | ${headComparisonLabel(health)}${topSymbolsFragment(health.topSymbols)}`;
+}
+
+// ---------------------------------------------------------------------------
+// KB health (T2.2, F5/F6, D4/D5 amended). Degraded-safe: reuses kb_stats
+// (T2.1) for the numbers rather than re-querying the DB directly, following
+// the code-intelligence health precedent (KB 4e11460c) -- wrap ALL I/O in
+// try/catch, return null on any failure, never throw, never block status.
+// ---------------------------------------------------------------------------
+export interface KbHealthBible {
+  present: boolean;
+  entries: number;
+  drift: number;
+}
+
+export interface KbHealth {
+  totals: { by_confidence: Record<string, number>; by_type: Record<string, number>; total: number };
+  stale: number;
+  flagged: number;
+  superseded: number;
+  retrieval: { entries_retrieved: number; total_uses: number; hit_rate: number | null };
+  promote_ratio: number | null;
+  bible: KbHealthBible;
+}
+
+/** Read kb_stats and shape it for fleet_status. Never throws -- any failure (DB unavailable, bad JSON) yields null so the caller omits the KB section entirely. */
+export async function kbHealthSummary(): Promise<KbHealth | null> {
+  try {
+    const raw = await kbStats({});
+    return JSON.parse(raw) as KbHealth;
+  } catch {
+    return null;
+  }
+}
+
+// D5 (AMENDED): with F6a auto-commit in place inside kb_export, nonzero drift
+// is an ANOMALY signal (a failed auto-commit), not a routine reminder -- the
+// wording says so explicitly. Omitted entirely when drift is not positive
+// (nothing anomalous to report).
+function bibleDriftFragment(bible: KbHealthBible): string {
+  if (bible.drift <= 0) return '';
+  return ` | bible: ${bible.drift} promotions behind (auto-commit may have failed -- run apra-fleet kb commit)`;
+}
+
+/** Render the one-line compact fleet_status KB health summary. */
+export function kbHealthCompactLine(health: KbHealth): string {
+  const hitRatePct = health.retrieval.hit_rate === null ? 'n/a' : `${Math.round(health.retrieval.hit_rate * 100)}%`;
+  const promotePct = health.promote_ratio === null ? 'n/a' : `${Math.round(health.promote_ratio * 100)}%`;
+  const confirmed = health.totals.by_confidence.CONFIRMED ?? 0;
+  return `kb: ${health.totals.total} entries (confirmed:${confirmed} stale:${health.stale} flagged:${health.flagged}) | hit-rate:${hitRatePct} | promote-ratio:${promotePct}${bibleDriftFragment(health.bible)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Server version handshake (T2.4, F7, D6). Compares the compiled-in
+// serverVersion against a fresh on-disk read (src/services/version-check.ts)
+// of the code this process was launched from -- catches the "rebuilt dist
+// but forgot to restart the MCP client" scenario. Degraded-safe: disk read
+// failure -> omit silently; no auto-restart, surface only.
+// ---------------------------------------------------------------------------
+export function versionMismatchCompactLine(mismatch: VersionMismatch): string {
+  return `server running ${mismatch.running}, disk has ${mismatch.disk} -- restart your MCP client`;
+}
+
 export type FleetStatusInput = z.infer<typeof fleetStatusSchema>;
 
 export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
@@ -246,13 +499,57 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
 
   const updateNotice = getUpdateNotice();
   const logFile = getActiveLogFile();
+  let codeIntelligence: CodeIntelligenceHealth;
+  try {
+    codeIntelligence = codeIntelligenceHealth(process.cwd());
+  } catch {
+    // Defensive: codeIntelligenceHealth() already degrades gracefully
+    // internally, but fleet_status must never fail because of this section.
+    codeIntelligence = { present: false };
+  }
+
+  // T4.2: usage-telemetry top symbols (30d), independent of index presence --
+  // recordUsage() fires on every code_* call regardless of whether the repo
+  // has an index. Defensive on top of computeTopSymbols()'s own try/catch;
+  // any failure here just omits the field, never fails fleet_status.
+  try {
+    const topSymbols = computeTopSymbols();
+    if (topSymbols) codeIntelligence.topSymbols = topSymbols;
+  } catch {
+    // omit -- see comment above
+  }
+
+  // T2.2 (F5/F6, D4/D5 amended): KB health -- degraded-safe, mirrors the
+  // code-intelligence section above. kbHealthSummary() already catches
+  // internally; the outer try/catch here is defensive belt-and-suspenders
+  // (same rationale as the codeIntelligence call above), so fleet_status
+  // NEVER fails because of the KB.
+  let kbHealth: KbHealth | null = null;
+  try {
+    kbHealth = await kbHealthSummary();
+  } catch {
+    kbHealth = null;
+  }
+
+  // T2.4 (F7, D6): version handshake -- degraded-safe, same belt-and-
+  // suspenders shape as the two sections above. checkVersionMismatch()
+  // already catches internally; the outer try/catch is defensive.
+  let versionMismatch: VersionMismatch | null = null;
+  try {
+    versionMismatch = checkVersionMismatch(serverVersion);
+  } catch {
+    versionMismatch = null;
+  }
 
   if (format === 'json') {
     const payload: Record<string, unknown> = {
       version: serverVersion,
       summary: { total: rows.length, online, offline: rows.length - online },
       members: rows,
+      codeIntelligence,
     };
+    if (kbHealth) payload.kbHealth = kbHealth;
+    if (versionMismatch) payload.versionMismatch = versionMismatch;
     if (logFile) payload.logFile = logFile;
     if (updateNotice) {
       const m = updateNotice.match(/apra-fleet (v[\d.]+) is available \(installed: (v[\d.]+)/);
@@ -304,5 +601,8 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
       t += line + '\n';
     }
   }
+  t += codeIntelligenceCompactLine(codeIntelligence) + '\n';
+  if (kbHealth) t += kbHealthCompactLine(kbHealth) + '\n';
+  if (versionMismatch) t += versionMismatchCompactLine(versionMismatch) + '\n';
   return t;
 }

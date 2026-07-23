@@ -36,6 +36,7 @@ export interface Agent {
   modelTiers?: { cheap?: string; standard?: string; premium?: string };
   category?: string;
   tags?: string[];
+  codeIntelProvider?: 'codebase-memory' | 'gitnexus' | 'none';
 }
 
 export interface GitHubAppConfig {

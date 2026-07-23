@@ -1,0 +1,1609 @@
+[
+  {
+    "id": "01ac9836-fa7c-4adc-af95-c2316e6d7cfe",
+    "type": "knowledge",
+    "title": "gitnexus 1.6.7 MCP child tool inventory (13 tools)",
+    "summary": "gitnexus 1.6.7 exposes exactly 13 MCP tools (confirmed via listTools() + source cross-check). Key tools: query, cypher, context, impact, detect_changes; NO direct call_graph, communities, flows, processes, or tests tools. cypher returns Markdown table {markdown, row_count}, NOT JSON rows -- composing providers must parse. Communities reachable via cypher over (c:Community) + MEMBER_OF edges; flows via cypher over (p:Process) + STEP_IN_PROCESS edges ordered by r.step.",
+    "symbols": [
+      "callGitNexus",
+      "GitNexusProvider",
+      "query",
+      "cypher",
+      "context",
+      "impact"
+    ],
+    "source_files": [
+      "docs/code-intelligence-child-surface.md",
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:02.771Z"
+  },
+  {
+    "id": "04e578fa-8ec8-4799-bcc6-aa00e9d67da2",
+    "type": "learning",
+    "title": "KB-integrity sprint capstone: trust model made real across 15 tasks (Phase 1-3, APPROVED)",
+    "summary": "The kb-integrity sprint implemented a real, enforced KB trust model across three phases and 15 tasks: confidence gate with INFERRED clamp (kb_promote sole path to CONFIRMED), promotion semantics (promote-then-supersede), cross-type contradiction flagging, OR-join FTS retrieval fix, auto-staleness keyed off source_files, tool-stamped provenance enums, the highest-trust user-directive type with its forgeable trust gap (yashr-9ha, design follow-up), honest low-trust autowired harvest (UNVERIFIED), and the shareable .fleet/kb-canonical.json bible with cold-seed. All tasks reviewer-APPROVED.",
+    "symbols": [],
+    "source_files": [
+      "feedback.md",
+      "PLAN.md",
+      "docs/architecture.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:55:29.833Z"
+  },
+  {
+    "id": "05480f94-abab-4752-bee7-116a7809e303",
+    "type": "knowledge",
+    "title": "CRITICAL BUG: call_graph tool does not exist in gitnexus 1.6.7",
+    "summary": "GitNexusProvider.graph() routes to callGitNexus('call_graph', params), but gitnexus 1.6.7 has NO tool named 'call_graph'. A live call always returns isError: true, text 'Error: Unknown tool: call_graph'. The fleet's code_graph tool is effectively broken against this gitnexus version. Tracked as yashr-5t9 (backlog). Intended call-graph data is available via context (categorized incoming/outgoing calls) or cypher on CALLS edges.",
+    "symbols": [
+      "GitNexusProvider.graph",
+      "callGitNexus"
+    ],
+    "source_files": [
+      "docs/code-intelligence-child-surface.md",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:10.464Z"
+  },
+  {
+    "id": "08f903c1-2ad6-4072-b3f2-c486468d6773",
+    "type": "learning",
+    "title": "kb_import post-sweep stales pre-existing wrong-branch entries, not fresh imports",
+    "summary": "SqliteProvider.capture() always recomputes source_file_hashes from the CURRENT worktree, and the bible (CanonicalEntry) carries no hashes. So a freshly imported entry whose referenced file exists is FRESH by construction (basis == current). The post-import freshnessSweep()'s real value is retiring PRE-EXISTING (branch-A) entries whose files the merge changed -- the wrong-branch claims D3 targets -- and reviving matches. This is a documented deviation from T2.1 test-6's literal wording ('bible entry ends stale'); test 6 proves the pre-existing-entry staling instead.",
+    "symbols": [
+      "freshnessSweep",
+      "computeSourceFileHashes",
+      "kbImport",
+      "basisFullyMatches"
+    ],
+    "source_files": [
+      "src/tools/kb-import.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/file-hash.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:48:08.451Z"
+  },
+  {
+    "id": "13ea4d65-72ef-4b68-b325-565f331446d5",
+    "type": "knowledge",
+    "title": "kb_export bible includes only CONFIRMED, stale=0, non-superseded entries",
+    "summary": "kbExport calls provider.list({confidence:'CONFIRMED'}) and list() hard-filters superseded_at IS NULL AND stale=0. Any reconcile winner that ends UNVERIFIED/INFERRED or stale=1 is silently absent from .fleet/kb-canonical.json. The reconcile ladder must end the winner at CONFIRMED and stale=0 or the exported bible will not reflect the reconciled truth.",
+    "symbols": [
+      "kbExport",
+      "list"
+    ],
+    "source_files": [
+      "src/tools/kb-export.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:13:23.681Z"
+  },
+  {
+    "id": "15eabb3f-5fd6-49cc-b996-43d4e2abd1a7",
+    "type": "knowledge",
+    "title": "CALLS-edge cypher call-graph recipe: verified working on gitnexus 1.6.7",
+    "summary": "Durable recipe for querying call graphs on gitnexus 1.6.7: use depth-bounded cypher MATCH p = (a)-[:CodeRelation*1..2 {type:\"CALLS\"}]->(b) with symbol as $symbol PARAM (injection-safe). Returns markdown table with symbol + filePath + depth columns. Tested live: callers query returned 11 rows, callees returned 9 rows. CALLS edges only; does NOT exist as a standalone tool.",
+    "symbols": [
+      "GitNexusProvider.graph",
+      "callGitNexus"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T20:30:49.302Z"
+  },
+  {
+    "id": "16e5b35a-cfbf-404a-9c5f-8171687d47df",
+    "type": "knowledge",
+    "title": "Freshness metadata appended to tool responses (F2.2)",
+    "summary": "When tool results depend on indexed state (like code intelligence), append a non-blocking freshness note when the index is stale. Pattern: pure comparison function in a separate module (to avoid circular imports), called after successful tool call, appended as extra text block when outdated.",
+    "symbols": [
+      "freshnessNote",
+      "appendFreshnessNote"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence-freshness.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:22.290Z"
+  },
+  {
+    "id": "1a585cf0-6313-41b7-9c15-f917ea84d536",
+    "type": "knowledge",
+    "title": "Cross-type contradiction now fires end-to-end via OR-join discovery (T2.1 + T1.4)",
+    "summary": "makeAudnDecision contradiction path (symbol-overlap + signal) is cross-type and cross-file; pre-T2.1 AND-join blocked discovery. T2.1's OR-join makes ANY symbol-match a candidate for contradiction detection, enabling real cross-type contradictions like 'code_graph broken' (knowledge) vs 'code_graph fixed' (learning).",
+    "symbols": [
+      "makeAudnDecision",
+      "hasContradictionKeywords",
+      "hasOppositePolarity"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:12.246Z"
+  },
+  {
+    "id": "1a9ef430-f258-497a-8702-c8fe44ec0df5",
+    "type": "knowledge",
+    "title": "code_flow tool: filtered Process node query + stepped step-in-process (T2.2)",
+    "summary": "Phase 2 T2.2 added code_flow(codeFlowSchema) to CodeIntelligenceProvider. Queries Process nodes via CONTAINS filters on name/from/to, then performs up to 5 STEP_IN_PROCESS queries per matched process to expand steps. Schema: {from?, to?, name?, repo?}. Implements flow() method reusing parseMarkdownTable + asciiSanitizeLabel. Row_count reflects pre-cap process count but only top-5 get steps (tracked as yashr-92q backlog item). Registered in src/index.ts; MCP description routes callers to code-intelligence over file search for data flow queries.",
+    "symbols": [
+      "code_flow",
+      "flow",
+      "codeFlowSchema",
+      "CodeIntelligenceProvider",
+      "Process",
+      "STEP_IN_PROCESS"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:35.142Z"
+  },
+  {
+    "id": "1fdb4588-b1f1-47a5-a45a-edac6fea9f35",
+    "type": "knowledge",
+    "title": "Freshness note wiring in callGitNexus (Phase 2 T2.1)",
+    "summary": "callGitNexus wires freshness reporting for all four GitNexusProvider methods. After successful callTool when params.repo is set and F3.1 pre-flight confirms index exists, reads meta.json.lastCommit + git rev-parse HEAD (execFileSync, 3s timeout, same as check-status.ts). If SHAs differ, appends freshness note as extra text block via appendFreshnessNote(); all IO try/caught with graceful degradation.",
+    "symbols": [
+      "callGitNexus",
+      "appendFreshnessNote",
+      "freshnessNote",
+      "GitNexusProvider"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence-freshness.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:51:25.361Z"
+  },
+  {
+    "id": "22818a94-5c57-42f8-83bc-6c8766217290",
+    "type": "knowledge",
+    "title": "Supersede marks superseded_at AND stale only when the caller opts in",
+    "summary": "When evaluateAudn's 'update' branch executes (T1.2), the old entry is marked with BOTH superseded_at=now AND stale=1 ONLY when the caller explicitly opts in by passing supersedes:<matchedId>. By DEFAULT (no explicit supersedes match) the update branch leaves the old entry live and instead records a 'refines' link from the new entry to the matched entry -- two distinct facts are kept, not merged. Any KB reader relying on include_stale:true to see a superseded row only applies to the opt-in path.",
+    "symbols": [
+      "evaluateAudn",
+      "query",
+      "context",
+      "getLinked",
+      "prime"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T22:18:57.907Z"
+  },
+  {
+    "id": "2577ebaa-2f13-4948-ab52-735c775d70e8",
+    "type": "knowledge",
+    "title": "fleetStatus code intelligence integration",
+    "summary": "fleetStatus() calls codeIntelligenceHealth(process.cwd()) once per invocation and includes the CodeIntelligenceHealth object in JSON output (codeIntelligence key). Compact format includes one trailing line via codeIntelligenceCompactLine(). Whole section wrapped in defensive catch to never fail fleet_status output.",
+    "symbols": [
+      "fleetStatus"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:25.651Z"
+  },
+  {
+    "id": "28a1e6b5-c30f-4e9d-ac40-3246778acad7",
+    "type": "knowledge",
+    "title": "Guard rekeys: supersede and decay guard now key on type + CONFIRMED (D1, T1.1, L2)",
+    "summary": "Two directive-specific guard rules protect ACTIVE (CONFIRMED) directives from agent actions: (1) supersede guard in makeAudnDecision (audn.ts:224) skips update/merge when candidate is type='user-directive' AND confidence='CONFIRMED', allowing only contradiction-flagging; (2) decay guard in decayConceptEntries (sqlite-provider.ts:402) excludes from staleness check when type='user-directive' AND confidence='CONFIRMED'. A PENDING proposal (always UNVERIFIED) bypasses both guards and follows normal same-type dedup/decay rules.",
+    "symbols": [
+      "makeAudnDecision",
+      "decayConceptEntries"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:53:55.913Z"
+  },
+  {
+    "id": "34b9b7a6-2d9d-4fa0-a5b8-e7990d3de13e",
+    "type": "knowledge",
+    "title": "AUTO-COMMIT AT HARVEST in kb_export (T2.3, user directive 2026-07-07)",
+    "summary": "kb_export now commits the canonical bible automatically at export time. Constraints: pathspec-only (unrelated staged/dirty state preserved), dedicated identity pm-kb <kb@pm.local>, content-gated (no commit if unchanged), non-fatal on git failure (export still succeeds + logWarn), config-gated via FLEET_DIR/knowledge/config.json {bible:{autoCommit:false}} default true, injection-safe (execFileSync argv, no shell).",
+    "symbols": [
+      "maybeAutoCommitBible",
+      "autoCommitEnabled",
+      "bibleContentChanged"
+    ],
+    "source_files": [
+      "src/tools/kb-export.ts",
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:43:51.818Z"
+  },
+  {
+    "id": "3587e7f4-50aa-4561-8087-9d786359d8fd",
+    "type": "learning",
+    "title": "SPRINT CAPSTONE: KB trust model holds through all 3 phases + measurement + reach",
+    "summary": "kb-trust-ops sprint (yashr-bp2) closed all 20+1 tasks APPROVED across Phases 1-3. Security gates proven: directive activation CLI-only, global bible inheritance safe, feedback never elevates. Measurement added: kb_stats + fleet_status health + version handshake. Reach extended: kb_feedback downvotes, global bible, quantitative model assignment.",
+    "symbols": [],
+    "source_files": [
+      "feedback.md",
+      "requirements.md",
+      "docs/design.md",
+      "PLAN.md",
+      "progress.json"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T07:52:52.197Z"
+  },
+  {
+    "id": "35899f07-32c2-4de5-82a5-abfb715d19e4",
+    "type": "knowledge",
+    "title": "isTestPath matcher: recognizing test files with critical negative cases (T4.3)",
+    "summary": "T4.3 exports pure isTestPath(path):boolean identifying test files. Returns true when ANY path segment is test/tests/spec (case-insensitive) OR filename matches /\\.(test|spec)\\.[^.]+$/. Handles / and \\\\ separators. CRITICAL: correctly rejects contest, attest, testfile, protest.spec, attestation, specimen\u2014these negative cases are non-obvious but essential.",
+    "symbols": [
+      "isTestPath"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:58:37.168Z"
+  },
+  {
+    "id": "369fb127-27d4-4f1d-9914-c6dc95663828",
+    "type": "learning",
+    "title": "Code intelligence surface: 7-tool ecosystem with telemetry + KB enrichment (Phase 4 sprint-capstone)",
+    "summary": "Sprint code-intelligence-power (4 phases, 17 tasks) APPROVED. The code intelligence surface now comprises 7 MCP tools (code_graph[known broken on 1.6.7, yashr-5t9], code_impact, code_query, code_context[+KB enrichment], code_map, code_flow, code_tests), with layered subsystems: freshness reporting (30d window), auto-reindex self-healing (cooldown+single-flight), KB enrichment (one-way handler layer), usage telemetry (handler-layer only), and semantic-search embeddings (LOCAL, opt-in). All subsystems are load-bearing non-blocking: failures degrade gracefully, never surface to caller.",
+    "symbols": [
+      "code_graph",
+      "code_impact",
+      "code_query",
+      "code_context",
+      "code_map",
+      "code_flow",
+      "code_tests"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:59:15.894Z"
+  },
+  {
+    "id": "3dc9718e-f242-4d2c-a89d-78ca534e9e6c",
+    "type": "knowledge",
+    "title": "LOW finding tracking: code_map/code_flow empty-string telemetry targets (yashr-h3v)",
+    "summary": "APPROVED LOW finding: code_map and code_flow tools do not require a symbol/target parameter (they take repo and filter options instead). When called argument-less, recordUsage receives empty string as target, resulting in blank-labelled entries in usage.jsonl and possible blank entries in top-symbols reporting. Tracked as yashr-h3v for future cleanup. Not critical (metrics still valid), but worth filtering or relabeling in analytics.",
+    "symbols": [
+      "recordUsage",
+      "code_map",
+      "code_flow"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:59:23.378Z"
+  },
+  {
+    "id": "3ed9cff8-c165-4769-a3e8-6adefcf97c29",
+    "type": "knowledge",
+    "title": "codeIntelligenceHealth graceful degradation (F3.3)",
+    "summary": "Read-only, fast health checker returning CodeIntelligenceHealth object with present flag, stats (nodes/edges/files), and HEAD comparison status. Every failure path (missing meta.json, unparseable JSON, git unavailable, unknown lastCommit) degrades gracefully to a usable state instead of throwing. Never spawns child process or network access.",
+    "symbols": [
+      "codeIntelligenceHealth",
+      "codeIntelligenceCompactLine",
+      "readGitNexusMeta",
+      "currentHead",
+      "commitsBehindCount"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:21.564Z"
+  },
+  {
+    "id": "3fa771af-e687-4978-ae6b-a741b3d6cf38",
+    "type": "runbook",
+    "title": "gitnexus analyze injects non-ASCII blocks into AGENTS.md and CLAUDE.md (recurring gotcha)",
+    "summary": "Running 'npx gitnexus analyze' injects non-ASCII gitnexus:start/end block markers into AGENTS.md and CLAUDE.md, violating ASCII-only convention. This happens in every VERIFY phase. Fix: run 'git checkout -- AGENTS.md CLAUDE.md' immediately after analyze to discard injected markers, keeping only the real code intelligence updates to other files.",
+    "symbols": [
+      "npx gitnexus analyze",
+      "gitnexus:start",
+      "gitnexus:end"
+    ],
+    "source_files": [
+      "skills/pm/doer-reviewer-loop.md",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".gitnexus/"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:51:41.674Z"
+  },
+  {
+    "id": "46e9af43-a304-4924-ac0a-97166019a783",
+    "type": "knowledge",
+    "title": "Top symbols reporting in fleet_status (T4.2: computeTopSymbols)",
+    "summary": "T4.2 extends check-status.ts with computeTopSymbols() parsing usage.jsonl + .1, filtering to 30-day window (boundary-inclusive), aggregating by target, returning top 5. JSON output + compact \\\"top symbols (30d): ...\\\" segment. Triple-nested degraded-safe: missing file/bad JSON lines/stale data -> segment omitted, never throws.",
+    "symbols": [
+      "computeTopSymbols"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:58:56.341Z"
+  },
+  {
+    "id": "492cabfd-6d5f-490a-b600-368564e85bb4",
+    "type": "knowledge",
+    "title": "Contradiction detection now fires cross-type without file overlap",
+    "summary": "makeAudnDecision flags contradictions on symbol-overlap + contradiction-signal (CONTRADICTION_KEYWORDS OR hasOppositePolarity antonym pair) regardless of file/type. findAudnCandidates dropped its type filter for discovery. Dedup/update re-impose same-type + file overlap. This catches live cross-file/cross-type pairs like 'code_graph broken' vs 'code_graph fixed'.",
+    "symbols": [
+      "makeAudnDecision",
+      "hasOppositePolarity",
+      "hasContradictionKeywords",
+      "findAudnCandidates"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T22:19:12.110Z"
+  },
+  {
+    "id": "4b3b8c9f-a2cc-4f43-b2a3-57a4a5f9f91f",
+    "type": "knowledge",
+    "title": "callGitNexus connection resilience pattern (F3.2)",
+    "summary": "Single guarded entry point for all GitNexusProvider methods with connection failure reset, transport/client death detection, and state recovery. Failure clears the poisoned connectionPromise (rethrowing to caller), allowing next call to retry fresh connection. Transport/client death handler guards on identity (sharedClient === client) to avoid clobbering newer connections.",
+    "symbols": [
+      "callGitNexus",
+      "resetConnection",
+      "getGitNexusClient"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:11.185Z"
+  },
+  {
+    "id": "4b87fbce-06e1-4ff7-a1ef-effb80528482",
+    "type": "knowledge",
+    "title": "kb_feedback downvote mechanism (T3.1, Phase 3)",
+    "summary": "kb_feedback() flags KB entries without deletion or demotion. Non-directive entries: stale=1, flagged_for_review=1. Active directives (type='user-directive' AND confidence='CONFIRMED'): flagged_for_review=1 only, stale untouched. Content note appended with ISO timestamp and author.",
+    "symbols": [
+      "SqliteProvider.feedback",
+      "kbFeedback"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-feedback.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T07:51:54.540Z"
+  },
+  {
+    "id": "4cdf2a5d-f29e-49d2-938e-329f16a4f8dd",
+    "type": "knowledge",
+    "title": "LOW carry-forward: hasOppositePolarity substring false-positive (yashr-hzd)",
+    "summary": "hasOppositePolarity uses String.includes on bare tokens ('fixed', 'resolved') which collide with superstrings ('prefixed', 'suffixed', 'unresolved'). T2.1's OR-join surfaces more symbol-overlap candidates, marginalizing broader surface area. Impact: bounded (requires symbol overlap + signal; consequence is review flag not data loss). Recommend word-boundary matching in follow-up.",
+    "symbols": [
+      "hasOppositePolarity",
+      "POLARITY_NEGATIVE",
+      "POLARITY_POSITIVE"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:31.192Z"
+  },
+  {
+    "id": "4e11460c-df2f-43ad-beed-0c031b4bf35c",
+    "type": "knowledge",
+    "title": "Code intelligence health surfacing in fleet_status (F3.3)",
+    "summary": "Expose tool health in status endpoints via read-only, degraded-safe health functions. Pattern: separate functions (codeIntelligenceHealth, codeIntelligenceCompactLine) read .gitnexus/meta.json and compare git HEAD, wrapping all I/O in try/catch, returning null on any failure. Never throw, never block status queries.",
+    "symbols": [
+      "codeIntelligenceHealth",
+      "codeIntelligenceCompactLine"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts",
+      "tests/fleet-status-code-intelligence.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:29.268Z"
+  },
+  {
+    "id": "4f9637b6-5309-4734-be12-3c72b1208f3c",
+    "type": "knowledge",
+    "title": "FTS OR-join centralized at two sites closes yashr-5n2 (T2.1)",
+    "summary": "Shared orJoinFtsTerms helper (audn.ts) is called at exactly TWO sites: makeFtsQuery (audn.ts) and SqliteProvider.query(). The two kb-session-prime sites (neighbor batch and global-append) now pass raw terms via fts_terms and do not sanitize themselves -- query() sanitizes centrally. Each term still ftsSafeTerm-quoted; single-term unchanged. ORDER BY rank + LIMIT bound output so OR breadth does not flood.",
+    "symbols": [
+      "orJoinFtsTerms",
+      "ftsSafeTerm",
+      "makeFtsQuery"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-session-prime.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:10.152Z"
+  },
+  {
+    "id": "56ce0077-7b2f-478c-8e2d-b6baa59697fe",
+    "type": "knowledge",
+    "title": "callGitNexus resilience pattern for shared MCP client lifecycle",
+    "summary": "The shared GitNexus MCP client requires defensive lifecycle management: failed connection promises must be cleared for retry, client/connection must reset on transport close/error, and callTool errors must return structured results not throws. Pattern: guard all four code_* tool calls through a single callGitNexus helper that (1) pre-checks index existence, (2) clears rejected connectionPromise, (3) manages onclose/onerror event listeners on client+transport, (4) wraps callTool to return {isError, message} shape.",
+    "symbols": [
+      "callGitNexus",
+      "getGitNexusClient"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:09.764Z"
+  },
+  {
+    "id": "5755825e-7d8e-4317-8412-b726e7950a5c",
+    "type": "knowledge",
+    "title": "kb commit CLI added and closes Phase 2 LOW-1 (T3.7b, Phase 3)",
+    "summary": "kb_commit subcommand added in Phase 3. Thin wrapper over kbExport (kb-commit.ts): parses [--repo] [--global], calls exportFn, prints result. CLI-only (not MCP-exposed), wired to kb dispatch in index.ts:129-136. Closes dangling Phase 2 reference in fleet_status drift anomaly message.",
+    "symbols": [
+      "kbCommitCmd"
+    ],
+    "source_files": [
+      "src/cli/kb-commit.ts",
+      "src/index.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T07:52:16.783Z"
+  },
+  {
+    "id": "57a03d39-fd87-47ab-ad5e-2f182f3952b9",
+    "type": "knowledge",
+    "title": "kb_resolve_contradiction needs pair-linkage verification and flag-clear-before-predicate order",
+    "summary": "Two residual gaps in the hardened D4 resolveContradiction spec (plan 3374fc9): (1) the MCP-exposed tool refuses only missing ids and active-directive pairs, not unlinked ids -- without verifying contradiction_of linkage it is a one-call UNVERIFIED->CONFIRMED mint plus one-call permanent supersede of any entry pair; (2) the winner path lists predicate-guarded un-stale BEFORE flag clearing, but the shared D2 predicate contains flagged_for_review=0, so a flagged old-side winner fails the predicate and stays stale, excluded from the bible.",
+    "symbols": [
+      "resolveContradiction",
+      "flaggedPairs",
+      "makeAudnDecision"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/audn.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:29:01.833Z"
+  },
+  {
+    "id": "57fc6968-6fd8-4de6-99d6-cd1a790f3192",
+    "type": "knowledge",
+    "title": "Version handshake: compiled-in vs on-disk mismatch detection (T2.4, F7/D6)",
+    "summary": "fleet_status detects server version drift via fresh on-disk read in version-check.ts. Strips dev git-hash suffix (_abcdef) from running version before comparing. Returns null (no mismatch or read failure) rather than throwing, so version check never blocks fleet_status. Disk-read failure (missing file, malformed JSON, non-string version) silently omits the check from output.",
+    "symbols": [
+      "readDiskVersion",
+      "checkVersionMismatch",
+      "VersionMismatch"
+    ],
+    "source_files": [
+      "src/services/version-check.ts",
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:16.776Z"
+  },
+  {
+    "id": "5e97ea10-29cd-4d3e-8d18-5b95461ea509",
+    "type": "knowledge",
+    "title": "LOW-2: Theoretical HTTP provider edge case in kb_stats (Phase 2 T2.1)",
+    "summary": "kb_stats bible.drift calculation calls providers.project.list() for live-CONFIRMED entries. If PROJECT provider were ever an HttpKbProvider, that call would throw (HttpKbProvider has no list() method). Bible would degrade to {present:false, drift:0} instead of the intended all-live-CONFIRMED count. Unreachable in normal operation (providers.project is always local SqliteProvider; HTTP is the sync peer). Cosmetic only; no action needed.",
+    "symbols": [
+      "kbStats",
+      "providers.project.list"
+    ],
+    "source_files": [
+      "src/tools/kb-stats.ts",
+      "src/services/knowledge/kb-providers.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:35.106Z"
+  },
+  {
+    "id": "5edfa184-305a-4896-afbc-3450937bc1c7",
+    "type": "learning",
+    "title": "T1.3 shared un-stale predicate + freshnessSweep for reuse by import/reconcile",
+    "summary": "SqliteProvider now has a shared un-stale eligibility predicate freshnessRevivable() plus a full-KB bidirectional freshnessSweep(). T2.1 kb_import calls freshnessSweep() after its entry loop; T3.1 resolveContradiction's winner path must reuse the SAME predicate (not a copy) to clear stale only when safe.",
+    "symbols": [
+      "freshnessSweep",
+      "freshnessRevivable",
+      "basisFullyMatches",
+      "checkFreshness",
+      "parseBasis",
+      "kbFreshnessSweep"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-freshness-sweep.ts",
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:06:23.327Z"
+  },
+  {
+    "id": "601c8a65-27c5-4b5b-af99-f89803d7b745",
+    "type": "knowledge",
+    "title": "Load-bearing safety invariant: subsystems cannot degrade tool calls",
+    "summary": "Design principle verified across Phase 3 (reindex-scheduling, freshness-suffix, KB-enrichment): none of the code-intelligence subsystems can make a code_* tool call throw, block, or return degraded core content when their subsystem fails. All three add metadata/scheduling off the critical path; all wrap IO in try/catch; all default to no-op on error. This is the consistent load-bearing invariant of the code-intelligence surface.",
+    "symbols": [
+      "shouldStartReindex",
+      "freshnessNote",
+      "enrichKBContext"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-reindex.ts",
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-kb-enrich.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:57:36.581Z"
+  },
+  {
+    "id": "61770438-29c0-4b63-b480-096fca805897",
+    "type": "knowledge",
+    "title": "user-directive: sole CONFIRMED clamp exemption (T3.1, D6)",
+    "summary": "type='user-directive' is the only ContentType that bypasses the kb_capture confidence clamp. When a caller specifies type='user-directive', kb_capture forces confidence=CONFIRMED without clamping, stamps author='user' and source='user-directive' server-side, and the entry is never auto-decayed (decayConceptEntries guard) and never agent-supersedable (makeAudnDecision guard). Relies on T1.4 cross-type findAudnCandidates.",
+    "symbols": [
+      "kbCaptureSchema",
+      "ContentType",
+      "user-directive"
+    ],
+    "source_files": [
+      "src/services/knowledge/types.ts",
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/audn.ts",
+      "tests/kb-user-directive.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:55:22.609Z"
+  },
+  {
+    "id": "648d7411-14e8-44e1-8406-dd800c016ada",
+    "type": "knowledge",
+    "title": "Cypher composition toolkit: parseMarkdownTable + asciiSanitizeLabel + extractCypherPayload (T2.1/T2.2)",
+    "summary": "Phase 2 T2.1 and T2.2 introduced three reusable pure-function helpers in src/tools/code-intelligence-gitnexus.ts for parsing gitnexus Cypher query results. parseMarkdownTable() decodes the markdown table format returned by gitnexus child queries; asciiSanitizeLabel() transforms non-ASCII arrows to ASCII-safe equivalents (unicode -> \"->\", others -> \"?\"); extractCypherPayload() strips the \"\\n\\n---\\n**Next:**\" hint suffix before JSON.parse. All live-verified by reviewer spawning npx gitnexus mcp and testing against real index.",
+    "symbols": [
+      "parseMarkdownTable",
+      "asciiSanitizeLabel",
+      "extractCypherPayload"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:09.648Z"
+  },
+  {
+    "id": "66eea2fd-682a-4a8a-827a-afc4def098b5",
+    "type": "learning",
+    "title": "kb_import (T2.1): capture() import-mode is 2nd param, HTTP/MCP unreachable",
+    "summary": "The HTTP /api/kb/capture route calls provider.capture(JSON.parse(body)) with exactly ONE argument (kb-server.ts:139) and the kb_capture MCP handler builds the input from zod fields then calls target.capture({...}) one-arg (kb-capture.ts:118). So making import mode a SECOND parameter of SqliteProvider.capture (opts: {importMode, preferredId}) is structurally unreachable from any deserialized route -- R4 airtight. Kept opts on SqliteProvider only (not the MemoryProvider interface) since kb-import uses providers.project (concrete SqliteProvider); extra optional param still satisfies the interface.",
+    "symbols": [
+      "capture",
+      "hasEntry",
+      "freshnessSweep",
+      "kbImport",
+      "CaptureSource"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-import.ts",
+      "src/services/knowledge/types.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:30:44.242Z"
+  },
+  {
+    "id": "6cdfb072-1472-48a4-9b83-c48d9ab58271",
+    "type": "knowledge",
+    "title": "GitNexusProvider routing pattern",
+    "summary": "All four GitNexusProvider methods (graph, impact, query, context) route through the single callGitNexus helper, passing method name and params. Returns callGitNexus result unchanged, which is either the MCP tool response or a structured error result with isError=true.",
+    "symbols": [
+      "GitNexusProvider",
+      "CodeIntelligenceProvider"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:28.461Z"
+  },
+  {
+    "id": "7080bb26-43d4-4ac9-a64d-0fb0bc6830b8",
+    "type": "knowledge",
+    "title": "Parameterized LIMIT binds on gitnexus 1.6.7 + LadybugDB (load-bearing risk CONFIRMED)",
+    "summary": "Reviewer live-verified that parameterized LIMIT clauses work with Kuzu/LadybugDB on gitnexus 1.6.7. This was a load-bearing risk: historically Kuzu rejects parameterized LIMIT, which would have made code_map and code_flow DOA. Reviewer spawned npx gitnexus mcp, ran real map()/flow() queries against the live index with LIMIT $top bindings -- ALL succeeded. This fact is CONFIRMED for the duration of gitnexus 1.6.7 and the LadybugDB version it ships.",
+    "symbols": [
+      "code_map",
+      "code_flow",
+      "LIMIT",
+      "parameterized"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:17.458Z"
+  },
+  {
+    "id": "719b1c16-83bc-44c6-a1e5-3e2cce4d5f50",
+    "type": "knowledge",
+    "title": "Phase 1 suite isolation fix achieves zero failures (T1.1)",
+    "summary": "Test isolation fix (T1.1, commit 9ece587) resolves cwd cold-seed leak and sub-hour TZ assertion flakes. Full suite: 2006 passed, 14 skipped, 0 FAILED. Six-failure allowlist is retired.",
+    "symbols": [
+      "kb_session_prime",
+      "checkFreshness"
+    ],
+    "source_files": [
+      "tests/knowledge/kb-session-prime.test.ts",
+      "tests/time-utils.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:26:56.645Z"
+  },
+  {
+    "id": "720d1482-bdb7-4f51-8c75-707bbdc96b93",
+    "type": "knowledge",
+    "title": "Design invariant: reconcile tools re-hash against process.cwd()",
+    "summary": "The reconcile tools (reconcilePrefilter, resolveContradiction winner un-stale) re-hash against process.cwd() by design. No repo param. Future hardening candidate for symmetry with kb_import sweep (which has explicit cwd anchor).",
+    "symbols": [
+      "reconcilePrefilter",
+      "resolveContradiction",
+      "computeFileHashBatch"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T14:45:51.758Z"
+  },
+  {
+    "id": "75ade624-765b-4ac4-b595-999282cfd98e",
+    "type": "context-cache",
+    "title": "code intelligence health section in check-status",
+    "summary": "fleetStatus() integrates code intelligence health reporting via codeIntelligenceHealth()/codeIntelligenceCompactLine(). Helper functions read .gitnexus/meta.json and compare HEAD to indexed commit via git commands with 3s timeouts. All paths degrade gracefully, never throwing. Outputs CodeIntelligenceHealth object in JSON and one-line summary in compact format.",
+    "symbols": [
+      "codeIntelligenceHealth",
+      "codeIntelligenceCompactLine",
+      "CodeIntelligenceHealth"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:43.175Z"
+  },
+  {
+    "id": "768c3e62-0f14-4c72-a6c4-a6554c7dc94c",
+    "type": "knowledge",
+    "title": "QueryOptions.tags/symbols/source_files were declared but unused before tag filter",
+    "summary": "Before the T-tag-filter change, QueryOptions in src/services/knowledge/types.ts declared tags?: string[], symbols?: string[], and source_files?: string[] fields that SqliteProvider.query() never read -- dead interface fields. Only the new tag?: string field (singular, exact-match) is actually wired into query()'s WHERE-clause conditions array.",
+    "symbols": [
+      "QueryOptions",
+      "query"
+    ],
+    "source_files": [
+      "src/services/knowledge/types.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T08:37:14.810Z"
+  },
+  {
+    "id": "7964b900-6a82-4daf-ad2f-992cb988db5f",
+    "type": "knowledge",
+    "title": "kb_list: read-only audit via dedicated SqliteProvider.list() (T3.3, D8)",
+    "summary": "kb_list is a read-only audit tool that uses a dedicated SqliteProvider.list() method (NOT query()), which issues a pure SELECT without incrementing use_count or last_accessed telemetry. It filters by confidence, type, module, symbol (via json_each) and supports limit. Always excludes superseded and stale entries by default (no override). Returns stable reduced field set {id, type, confidence, title, summary, symbols, source_files} + total, ordered deterministically by id ASC.",
+    "symbols": [
+      "SqliteProvider.list",
+      "kb_list"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-list.ts",
+      "tests/kb-list.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:55:25.190Z"
+  },
+  {
+    "id": "7b1aea53-b060-454f-9fd1-130c4d61d527",
+    "type": "learning",
+    "title": "main install/dispatch refactor changed CLI defaults + install step counting (merge gotcha)",
+    "summary": "Merging origin/main into feat/code-intelligence-abstraction surfaced two structural changes in main that any KB/code-intel feature must reconcile: (1) main's #315 dispatch refactor made `arg===undefined` mean install-default and moved MCP-server startup behind a `run`/`start`/`--stdio` branch, so .mcp.json must invoke `[\"dist/index.js\",\"run\"]`; (2) main added an extra install progress step via `if (installPm) totalSteps++` for cost.js/workflow, so our KB step count must layer on top of that.",
+    "symbols": [
+      "runInstall",
+      "startServer",
+      "beadsStep",
+      "totalSteps",
+      "runWatch",
+      "kbHarvest"
+    ],
+    "source_files": [
+      "src/index.ts",
+      "src/cli/install.ts",
+      "src/tools/execute-prompt.ts",
+      ".mcp.json"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T15:53:52.607Z"
+  },
+  {
+    "id": "7b4b3b94-5e32-42d9-9fe9-2de50d07f4e8",
+    "type": "knowledge",
+    "title": "KB-enrichment layering: helper above provider (D4 design)",
+    "summary": "T3.3 (P4a) adds src/tools/code-intelligence-kb-enrich.ts imported ONLY by code_context handler in src/index.ts (not by gitnexus provider). After successful code_context, queries KB via getKbProviders() filtering to CONFIRMED entries whose symbols array contains exact name. Appends \\\"[knowledge-bank] N confirmed entries for <name>:\\\" block. Zero matches or KB errors -> no block, never fails the call. One-way dependency: index.ts -> kb-enrich -> KB; never: provider -> kb-enrich.",
+    "symbols": [
+      "enrichKBContext",
+      "code_context"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-kb-enrich.ts",
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:57:28.715Z"
+  },
+  {
+    "id": "7f31b39d-7e27-407e-bc5a-0107423e529a",
+    "type": "knowledge",
+    "title": "Prefilter flag-clear on a downvoted winner can launder a feedback downvote",
+    "summary": "feedback() and the contradiction flag share the single flagged_for_review bit. An entry that is both contradiction-flagged and feedback-downvoted (stale=1, flagged=1, '[feedback ...]' content note, superseded_at NULL) can win the hash prefilter; clearing its flag makes it satisfy the D2 un-stale predicate, so a later sweep revives it -- erasing the downvote. The loser side is always safe (supersede sets superseded_at). Disambiguator: contradiction flag alone leaves stale=0; only feedback sets stale+flag together, plus the content note.",
+    "symbols": [
+      "feedback",
+      "approveDirective",
+      "promote"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:14:04.278Z"
+  },
+  {
+    "id": "83726d75-4af9-442c-abf2-0f215fb19c77",
+    "type": "knowledge",
+    "title": "FTS5 sanitization is now centralized in query()",
+    "summary": "SqliteProvider.query() is the SINGLE point where free text is sanitized into an FTS5 MATCH expression: it OR-joins terms via orJoinFtsTerms itself. Callers hand it either raw free text (query:) or a list of raw, unsanitized terms (fts_terms: string[]) -- e.g. kb-session-prime's multi-neighbor batch. Callers must NEVER pre-build an FTS expression and pass it as query:, since query() re-tokenizes query: through /[A-Za-z0-9_]+/g, swallowing a literal 'OR' as a search token.",
+    "symbols": [
+      "SqliteProvider.query",
+      "entries_fts",
+      "ftsSafeTerm",
+      "kbSessionPrime"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-session-prime.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:56.752Z"
+  },
+  {
+    "id": "83a5a04a-df62-4689-a736-7dc080a78220",
+    "type": "knowledge",
+    "title": "Auto-reindex self-healing design: in-memory single-flight + cooldown",
+    "summary": "T3.1 implements fire-and-forget reindexing off the critical path. Module-level Map tracks per-repo state (runningChild, lastFinishedAt). shouldStartReindex(entry, now, cooldownMs) is pure decision fn checking cooldown + single-flight. maybeScheduleReindex spawns npx gitnexus analyze detached, never awaits, never throws, logs stderr on non-zero exit. Windows: shell:true flag. Design: reindex is self-healing background process that cannot block or degrade tool calls.",
+    "symbols": [
+      "shouldStartReindex",
+      "maybeScheduleReindex",
+      "code-intelligence-reindex.ts"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-reindex.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:57:12.233Z"
+  },
+  {
+    "id": "89420324-f971-46b4-9592-a324c6f992f9",
+    "type": "runbook",
+    "title": "Child-tool surface guard: regression test pattern against MCP child tool drift",
+    "summary": "Reusable defense pattern from yashr-5t9 fix: Exercise every provider method reaching the child tool, collect invoked tool names, assert each exists in mocked listTools surface. Catches fleet-side incorrect mapping; delegates real child-side renames to out-of-band probes. Exemplified in tests/code-intelligence.test.ts for all 7 code-intelligence tools.",
+    "symbols": [
+      "callGitNexus",
+      "GitNexusProvider"
+    ],
+    "source_files": [
+      "tests/code-intelligence.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T20:30:38.096Z"
+  },
+  {
+    "id": "89c3f703-58a2-4e67-af97-f51463da2e53",
+    "type": "knowledge",
+    "title": "HTTP /api/kb/capture cannot reach a second capture() arg but can forge source",
+    "summary": "src/commands/kb-server.ts:133-141 parses the request body as KBEntryInput and calls provider.capture(input) with exactly one argument, so an import-mode flag carried in a separate opts parameter of capture() is unreachable from HTTP. However input.source (and author) are caller-controlled and insertEntry writes input.source verbatim, so an HTTP caller can stamp source='import' on a clamped entry -- provenance forgery without confidence escalation.",
+    "symbols": [
+      "startKbServer",
+      "capture",
+      "insertEntry"
+    ],
+    "source_files": [
+      "src/commands/kb-server.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/tools/kb-capture.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:13:48.745Z"
+  },
+  {
+    "id": "8de251dc-1fad-4b81-b424-ac9cdc9aceb0",
+    "type": "knowledge",
+    "title": "DIRECTIVE GATE CLOSED: user-directive entries are PROPOSAL-ONLY (F1, D1, closes yashr-9ha)",
+    "summary": "The directive type is no longer forgeable. Any kb_capture call with type='user-directive' is transformed by SqliteProvider.capture() into a PENDING PROPOSAL (confidence forced to UNVERIFIED, flagged_for_review=true, tagged 'directive:pending') -- the single choke point closes both the kb_capture handler AND the HTTP /api/kb/capture route. Activation is CLI-only via 'apra-fleet kb approve-directive <id>' (the human terminal is the trust boundary). Supersedes the outdated yashr-9ha KB entry claiming directives are forgeable.",
+    "symbols": [
+      "SqliteProvider.capture",
+      "kbCapture",
+      "makeAudnDecision",
+      "decayConceptEntries",
+      "query"
+    ],
+    "source_files": [
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/audn.ts",
+      "src/cli/kb-directives.ts",
+      "index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:53:46.131Z"
+  },
+  {
+    "id": "8e23a5cf-0466-4d0a-8e69-9c46fec7aac2",
+    "type": "knowledge",
+    "title": "fleet_status KB health surfaces with degraded-safe pattern (T2.2, F5/F6)",
+    "summary": "fleet_status integrates KB health reporting via kbHealthSummary() and kbHealthCompactLine(), surfacing entry counts, retrieval metrics, and drift with anomaly wording. Degraded-safe throughout: any failure (DB unavailable, bad JSON) yields null so the KB section is omitted; fleet_status never fails because of the KB.",
+    "symbols": [
+      "kbHealthSummary",
+      "kbHealthCompactLine",
+      "KbHealth",
+      "fleetStatus"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts",
+      "src/tools/kb-stats.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:08.097Z"
+  },
+  {
+    "id": "93ea6f8f-a965-4d96-8628-ecaf13005a8f",
+    "type": "knowledge",
+    "title": "kb_list's reduced output omits tags -- use kb_query to inspect an entry's tags",
+    "summary": "kb-list.ts's kbList() maps each entry down to {id, type, confidence, title, summary, symbols, source_files} before returning JSON -- tags is deliberately not in that reduced set (confirmed by the existing \"returns the stable reduced field set\" test in tests/knowledge/kb-list.test.ts). kb_query's l1_results, by contrast, return full KBEntry objects (minus content when l1_only), so tags IS present there.",
+    "symbols": [
+      "kbList",
+      "kbQuery"
+    ],
+    "source_files": [
+      "src/tools/kb-list.ts",
+      "src/tools/kb-query.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T08:37:20.850Z"
+  },
+  {
+    "id": "9462ab04-192b-4b2f-8549-7c6b1130edc2",
+    "type": "knowledge",
+    "title": "HTTP /api/kb/capture bypasses general confidence clamp for non-directive types (yasyr-f3g, pre-existing LOW)",
+    "summary": "The general CONFIRMED->INFERRED confidence clamp lives in the kb_capture tool handler (lines 97-101), not in SqliteProvider.capture(). This leaves the HTTP /api/kb/capture route exposed for non-directive types: a remote caller holding the KB server bearer token can POST type='learning', confidence='CONFIRMED' and mint a CONFIRMED entry directly to capture(). The directive gate IS closed on HTTP (forcing PROPOSAL-only via capture() choke point, verified phase-1 attack). This general clamp gap is pre-existing (accepted at kb-integrity sprint start), affects remote-KB deployments only, and tracked as yasyr-f3g. Recommendation: future sprint should relocate general clamp into capture() so the choke point enforces both invariants uniformly.",
+    "symbols": [
+      "kbCapture",
+      "SqliteProvider.capture"
+    ],
+    "source_files": [
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/kb/kb-server.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:54:39.396Z"
+  },
+  {
+    "id": "979b52ae-e983-41da-9f04-8de47d98dd7d",
+    "type": "knowledge",
+    "title": "code_map tool: Cypher-backed Community node query (T2.1)",
+    "summary": "Phase 2 T2.1 added code_map(codeMapSchema) to CodeIntelligenceProvider and GitNexusProvider. Queries Community nodes via callGitNexus('cypher', ...) with optional repo/top filters. Returns list of code communities (e.g., function groups, module clusters) from the indexed graph. Implements map() method reusing parseMarkdownTable + asciiSanitizeLabel. Registered in src/index.ts; schema validates {repo?, top?}; MCP description routes callers to prefer this over Glob/Grep for structural queries.",
+    "symbols": [
+      "code_map",
+      "map",
+      "codeMapSchema",
+      "CodeIntelligenceProvider",
+      "GitNexusProvider"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:25.356Z"
+  },
+  {
+    "id": "a2781b82-b659-427d-b448-ff96ffef4fa1",
+    "type": "knowledge",
+    "title": "Flagged pipeline e2e resolution: contradiction + feedback flags (T3.7, Phase 3)",
+    "summary": "kb-flagged-pipeline.test.ts drives flagged-only entries resolution. Stages: (1) contradiction -> flagged + contradiction_of; (2) kb_feedback downvote -> stale + flagged; (3) flagged_only lists all with content; (4-5) promote(winner) + supersede(loser) resolves. Promoted entry keeps contradiction_of; separately downvoted entries stay flagged until resolved independently.",
+    "symbols": [],
+    "source_files": [
+      "tests/knowledge/kb-flagged-pipeline.test.ts",
+      "docs/kb-review.md",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T07:52:34.266Z"
+  },
+  {
+    "id": "a6f9d52f-3227-4390-8eee-52d64f047344",
+    "type": "knowledge",
+    "title": "VERIFY sequence includes automatic incremental re-index (Phase 2 T2.2)",
+    "summary": "doer-reviewer-loop.md and index.md updated to include 'npx gitnexus analyze' as non-fatal step in VERIFY sequence (between tests and push). This performs automatic incremental re-indexing when code changes, keeping .gitnexus/meta.json fresh without requiring manual '/pm index' during VERIFY.",
+    "symbols": [
+      "npx gitnexus analyze",
+      "VERIFY"
+    ],
+    "source_files": [
+      "skills/pm/doer-reviewer-loop.md",
+      "skills/pm/index.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:51:49.005Z"
+  },
+  {
+    "id": "b7a35cbf-d7f5-44a4-b2de-f882460b0b54",
+    "type": "knowledge",
+    "title": "missingIndexResult pre-flight check (F3.1)",
+    "summary": "Pre-flight index check runs fs.existsSync(<repo>/.gitnexus/meta.json) at the top of callGitNexus BEFORE awaiting getGitNexusClient(). Missing index never spawns the child process, returns actionable error message. Calls without repo param are forwarded untouched.",
+    "symbols": [
+      "missingIndexResult",
+      "callGitNexus"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:15.438Z"
+  },
+  {
+    "id": "b7bedf28-31b6-4e16-ae5d-0dbe96f071a5",
+    "type": "learning",
+    "title": "kb_import Phase 2 review findings",
+    "summary": "Reviewer findings from Phase 2 review of kb-branch-reconcile import trust surface.",
+    "symbols": [],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T13:42:47.748Z"
+  },
+  {
+    "id": "b9df569a-bb5c-4922-a123-7ed28a1a9803",
+    "type": "knowledge",
+    "title": "kb_export + cold-seed: CONFIRMED KB to .fleet/kb-canonical.json (T3.4/T3.5, D8)",
+    "summary": "kb_export writes all live CONFIRMED entries to &lt;repo&gt;/.fleet/kb-canonical.json in a stable, deterministic, ASCII-safe format. kb_session_prime cold-seeds from this canonical bible when the session KB is sparse (fewer than 3 live hits), merging canonical entries marked via:'canonical-bible' BELOW live hits. Non-fatal: missing file/JSON/entries are handled gracefully with hard-skip contract.",
+    "symbols": [
+      "kb_export",
+      "kb_session_prime",
+      "asciiSafeStringify"
+    ],
+    "source_files": [
+      "src/tools/kb-export.ts",
+      "src/services/knowledge/kb-session-prime.ts",
+      "tests/kb-export.test.ts",
+      "tests/kb-session-prime.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:55:27.334Z"
+  },
+  {
+    "id": "c1184f49-b52b-4050-beaf-db517d17ea33",
+    "type": "knowledge",
+    "title": "Code intelligence telemetry: handler-layer placement (D8 principle, T4.1)",
+    "summary": "T4.1 introduces recordUsage(tool, target, repo) appended to ~/.apra-fleet/data/code-intelligence/usage.jsonl with fire-and-forget error handling. Telemetry wired exclusively in src/index.ts HANDLER LAYER for all 7 code_* tools; provider file code-intelligence-gitnexus.ts is pure proxy. Rotation at 5MB via fs.rename to usage.jsonl.1. Telemetry failure never surfaces to caller\u2014exemplifies D8: telemetry lives in handler, provider stays pure.",
+    "symbols": [
+      "recordUsage",
+      "recordUsageSync",
+      "recordUsageAsync",
+      "code-intelligence-telemetry.ts"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:58:27.390Z"
+  },
+  {
+    "id": "c19d9cb5-469a-474f-b71a-762ab472e5ff",
+    "type": "knowledge",
+    "title": "FIX VERIFIED: code_graph now works via cypher CALLS-edge traversal on gitnexus 1.6.7",
+    "summary": "yashr-5t9 FIXED: GitNexusProvider.graph() retargeted from non-existent 'call_graph' to depth-bounded cypher CALLS-edge traversals. Reviewer LIVE-VERIFIED against real child: both callers + callees queries returned correctly (11 + 9 rows depth-1/2). call_graph never existed on gitnexus 1.6.7 and must not be used. code_graph now returns {symbol, maxDepth, callers[], callees[]} with depth column per row.",
+    "symbols": [
+      "GitNexusProvider.graph",
+      "callGitNexus",
+      "code_graph"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence.test.ts",
+      "docs/code-intelligence-child-surface.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T20:30:27.339Z"
+  },
+  {
+    "id": "c275ca15-563d-477f-b43e-bdd14965fe73",
+    "type": "context-cache",
+    "title": "code-intelligence-gitnexus module structure",
+    "summary": "GitNexus MCP client wrapper with module-level sharedClient/connectionPromise singletons. Exports GitNexusProvider class implementing CodeIntelligenceProvider. Contains callGitNexus helper with connection resilience (F3.2) and pre-flight index check (F3.1), plus helper functions for connection lifecycle and error handling.",
+    "symbols": [
+      "GitNexusProvider",
+      "callGitNexus",
+      "getGitNexusClient",
+      "missingIndexResult",
+      "resetConnection"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:22:36.788Z"
+  },
+  {
+    "id": "c35f1927-6662-48ff-8e37-0a9bc5a5e752",
+    "type": "knowledge",
+    "title": "Pre-commit-hook ASCII scope: .md/.yml/.sh only (NOT .ts/.js) - permits Unicode in code (T2.2 finding)",
+    "summary": "Phase 2 LOW finding clarifies pre-commit-hook behavior: ASCII-only enforcement applies to .md, .yml, .yaml, .sh files only, NOT .ts/.js. This explains why asciiSanitizeLabel is about OUTPUT correctness (MCP responses must be ASCII) not INPUT validation (source code can carry Unicode arrows). Policy-permitted: unicode arrows in .ts source files; requirement: sanitize when emitting to tools or documentation.",
+    "symbols": [
+      "asciiSanitizeLabel",
+      "pre-commit",
+      "ASCII"
+    ],
+    "source_files": [
+      ".husky/pre-commit",
+      ".git/hooks/pre-commit",
+      "CLAUDE.md",
+      "src/tools/code-intelligence-gitnexus.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:40.275Z"
+  },
+  {
+    "id": "c5a129ed-2046-41e3-ad2a-fab13eadfffd",
+    "type": "learning",
+    "title": "LOW-3: kb-session-prime graph-neighbor test failures are environmental (Phase 1 carryover)",
+    "summary": "4 kb-session-prime graph-neighbor tests fail (yashr-bwc) due to unmocked process.cwd() reading this repo's own .fleet/kb-canonical.json during test execution. Environmental real-KB leak, not a Phase 2 regression. Tests pass with KB mock isolation; issue is pre-existing and already tracked, orthogonal to kb-trust-ops sprint work.",
+    "symbols": [
+      "kb-session-prime"
+    ],
+    "source_files": [
+      "feedback.md",
+      "progress.json"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:40.490Z"
+  },
+  {
+    "id": "c5f1f415-b9be-4511-8241-c694253ab26b",
+    "type": "knowledge",
+    "title": "T1.2: Confidence clamp relocated into provider.capture() choke point (both handler + provider)",
+    "summary": "The INFERRED clamp for non-directive types is now enforced at SqliteProvider.capture() (after the directive gate) in addition to the kb_capture handler. Non-directive CONFIRMED downgrades to INFERRED + bracketed note. Directive path verified unchanged (test asserts UNVERIFIED + flagged + directive:pending, no double clamp note). promote() still mints CONFIRMED. HTTP route covered.",
+    "symbols": [
+      "kbCapture",
+      "SqliteProvider.capture",
+      "promote"
+    ],
+    "source_files": [
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/commands/kb-server.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:27:25.827Z"
+  },
+  {
+    "id": "c6789713-15f5-4b5e-96fd-59062fa22212",
+    "type": "knowledge",
+    "title": "Pre-flight validation pattern for external tooling (F3.1)",
+    "summary": "When wrapping external tools (like GitNexus), validate preconditions cheaply (fs.existsSync) BEFORE spawning or connecting. Pattern: pre-flight check in the guard function, before any async operation. Absent precondition returns a structured error (not empty result). Calls without the checked parameter bypass the check.",
+    "symbols": [
+      "missingIndexResult",
+      "callGitNexus"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-gitnexus.ts",
+      "tests/code-intelligence.test.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:15.749Z"
+  },
+  {
+    "id": "c724a84a-1794-48d5-8fe7-8a57665edf94",
+    "type": "knowledge",
+    "title": "AUDN flagged branch forces new contradiction entry to UNVERIFIED",
+    "summary": "In audn.ts makeAudnDecision, the contradiction path returns newEntryOverrides {confidence:'UNVERIFIED', contradiction_of:candidate.id, flagged_for_review:false} and flags only the EXISTING entry. So an imported bible entry that lands as a contradiction is stored UNVERIFIED regardless of import-mode confidence preservation, and the pair is asymmetric: old side carries flagged_for_review=1, new side carries contradiction_of.",
+    "symbols": [
+      "makeAudnDecision",
+      "evaluateAudn"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:13:16.443Z"
+  },
+  {
+    "id": "cbc2e7ff-5e79-4c02-9f08-7bf00b0ecc1c",
+    "type": "knowledge",
+    "title": "P4b graph-neighbor expansion design in kb-session-prime wrapper",
+    "summary": "T1.3 P4b graph-neighbor expansion locates above kb-session-prime wrapper (NOT in SqliteProvider.prime/HttpKbProvider.prime, works for both). After prime, sweeps hint_symbols through getProvider().context() to get neighbor symbols. Defensive parsing handles isError/missing/unparseable. ONE batch KB query over neighbors; merges into top_entries with via:'graph-neighbor' marker ranked below direct hits. Caps: NEIGHBOR_CAP=10, ADDED_ENTRY_CAP=5. Entire block try/catch hard-skip -> prime output identical on failure. 13/13 tests green (vi.resetModules + dynamic import pattern).",
+    "symbols": [
+      "kbSessionPrime",
+      "parseContextNeighbors",
+      "ftsSafeTerm",
+      "NEIGHBOR_CAP",
+      "ADDED_ENTRY_CAP"
+    ],
+    "source_files": [
+      "src/tools/kb-session-prime.ts",
+      "tests/knowledge/kb-session-prime.test.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:47.401Z"
+  },
+  {
+    "id": "cf0ce11e-1565-480c-9504-361c38a1ac42",
+    "type": "knowledge",
+    "title": "kb_capture confidence gate is enforced server-side",
+    "summary": "kb_capture handler now clamps any incoming CONFIRMED to INFERRED and appends a bracketed note, returning confidence_clamped flag. kb_promote is the sole path to CONFIRMED. Exception: 'user-directive' type (forward-compat, T3.1). Enforcement is server-side at tool handler layer; direct provider.capture() not clamped.",
+    "symbols": [
+      "kbCapture",
+      "promote"
+    ],
+    "source_files": [
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T22:18:45.991Z"
+  },
+  {
+    "id": "cfd839e8-954e-4298-bdc9-d90b7dec9cfe",
+    "type": "knowledge",
+    "title": "invalidate() is a fourth stale=1 actor the D2 un-stale predicate misses",
+    "summary": "SqliteProvider.invalidate() sets content_hash='invalidated' and stale=1 on context-cache entries but leaves flagged_for_review=0 and superseded_at NULL and does not touch source_file_hashes. The D2 un-stale predicate (stale=1 AND superseded_at IS NULL AND flagged_for_review=0 AND full basis match) would REVIVE an explicitly invalidated entry whose files never changed. Predicate needs content_hash != 'invalidated' as a fourth exclusion.",
+    "symbols": [
+      "invalidate",
+      "checkFreshness",
+      "feedback"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:13:40.195Z"
+  },
+  {
+    "id": "d036ab13-ba03-4ade-8ed8-f0d2dd5fcfbd",
+    "type": "knowledge",
+    "title": "CaptureSource union lacks 'import' -- F4 kb_import must extend it (types.ts:20)",
+    "summary": "Verified 2026-07-07 on feat/code-intelligence-abstraction: CaptureSource = 'session' | 'review' | 'harvest' | 'promotion' | 'user-directive' | 'unknown' (src/services/knowledge/types.ts:20). No 'import' member exists, so the kb-branch-reconcile F4 task must add 'import' to the union before stamping source='import' provenance on bible-imported entries (design D3).",
+    "symbols": [
+      "CaptureSource"
+    ],
+    "source_files": [
+      "src/services/knowledge/types.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T10:02:51.566Z"
+  },
+  {
+    "id": "d11067ac-bb1b-4081-8a29-734f7c59d93b",
+    "type": "learning",
+    "title": "kb-branch-reconcile: Sprint capstone -- team-knowledge story complete",
+    "summary": "Sprint kb-branch-reconcile delivered the complete team-knowledge story: zero-failure suite, HTTP clamp closed, bidirectional staleness fixed, trusted-channel import with directive quarantine, code-arbitrated contradiction reconciliation. All 11 tasks APPROVED across 3 phases with 3 plan-review rounds and two live-attack reviews.",
+    "symbols": [],
+    "source_files": [
+      "PLAN.md",
+      "feedback.md",
+      "requirements.md",
+      "design.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T14:45:51.757Z"
+  },
+  {
+    "id": "d137252c-4bd7-4c0f-896b-869a4c3ec994",
+    "type": "knowledge",
+    "title": "Embeddings LOCAL classification: --embeddings flag + local ONNX model",
+    "summary": "gitnexus 1.6.7 --embeddings flag populates embeddings via a local ONNX CPU model (Snowflake/snowflake-arctic-embed-xs, 384-dim), ~87MB one-time HuggingFace download then fully offline. OFF by default, preserved across plain re-index, only cleared by --drop-embeddings. Platform caveat: LadybugDB VECTOR index unavailable on win32 -> semantic query falls back to exact-scan (capped 10000 chunks), still works. T2.3 LOCAL branch wires --embeddings into /pm index step; remote opt-in path exists via env vars (GITNEXUS_EMBEDDING_URL/_MODEL/_API_KEY) but not required.",
+    "symbols": [
+      "analyze",
+      "embeddings",
+      "gitnexus"
+    ],
+    "source_files": [
+      "docs/code-intelligence-embeddings.md",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T13:38:27.302Z"
+  },
+  {
+    "id": "d1c6f758-bc58-4bdd-a016-ea0f6bfe82e3",
+    "type": "knowledge",
+    "title": "Auto-staleness at prime via checkFreshness (T2.2, F3)",
+    "summary": "source_file_hashes column stores per-file hash basis at capture time; checkFreshness() at prime time re-hashes the basis files union (once, bounded to primed set) and marks stale=1 if any basis file changed or disappeared. Empty-basis entries never falsely stale. Non-fatal: wrapped in try/catch.",
+    "symbols": [
+      "checkFreshness",
+      "computeSourceFileHashes",
+      "computeFileHashBatch"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/file-hash.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:14.657Z"
+  },
+  {
+    "id": "d5193cb9-c8fe-47f6-adbb-85fdce1a7574",
+    "type": "knowledge",
+    "title": "resolveRepoPath: shared precedence pattern for repo path resolution (T1.6, closes yasyr-u2h)",
+    "summary": "Both kb-export.ts and kb-session-prime.ts implement resolveRepoPath(explicit?) with identical precedence: explicit input > validated process.cwd() > refuse/skip. Both validate via fs.existsSync + isDirectory before returning. kb-export throws on failure (fatal); kb-session-prime returns null (non-fatal cold-seed). No blind process.cwd() fallback; no path accepted without validation. Closes yasyr-u2h (unvalidated cwd fallback).",
+    "symbols": [
+      "resolveRepoPath"
+    ],
+    "source_files": [
+      "src/tools/kb-export.ts",
+      "src/tools/kb-session-prime.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:54:14.666Z"
+  },
+  {
+    "id": "d9ba91ac-73fa-4cc3-9b39-1f7ab626b8e9",
+    "type": "learning",
+    "title": "Code-intelligence-hardening sprint: 3-phase risk-frontload structure",
+    "summary": "Sprint delivered 8 fixes across 3 phases organized by risk. Phase 1 (riskiest): connection resilience + pre-flight checks + health surfacing. Phase 2 (mid-sprint staleness): VERIFY re-index + freshness metadata. Phase 3 (routing): tool description guidance + template reinforcement. APPROVED with 0 findings.",
+    "symbols": [],
+    "source_files": [
+      "PLAN.md",
+      "progress.json",
+      "feedback.md",
+      "requirements.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:09:37.757Z"
+  },
+  {
+    "id": "daf640f5-24ad-4b76-b481-48f3ade92f1d",
+    "type": "knowledge",
+    "title": "Provenance enums fixed via tool-layer validation (T2.3, F5/D5)",
+    "summary": "Author and CaptureSource are fixed union types in types.ts. Tool-layer (kb-capture, promote, kb-harvest) stamps them; zod schema removed free-string paths. Callers pass a role hint; validator derives source. Reads are tolerant of legacy values; no migration.",
+    "symbols": [
+      "validateAuthor",
+      "Author",
+      "CaptureSource"
+    ],
+    "source_files": [
+      "src/services/knowledge/types.ts",
+      "src/tools/kb-capture.ts",
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T23:00:19.207Z"
+  },
+  {
+    "id": "dce15085-c54a-4708-afa5-6fbc8e6bc891",
+    "type": "knowledge",
+    "title": "CI pins Windows runner to windows-2022 (node-gyp vs VS 18)",
+    "summary": ".github/workflows/ci.yml pins the Windows CI runner to windows-2022 instead of windows-latest. Rationale (commit 2ff1a5a, 2026-06-12): GitHub's windows-latest migrated to windows-2025-vs2026 (Visual Studio 18); node-gyp 11.5.0 fails VS detection against VS 18 with a maxBuffer error, breaking native module compilation. windows-2022 ships VS 17, which node-gyp fully supports. The same commit also switched GYP_MSVS_VERSION (a Python gyp var) to npm_config_msvs_version (read by node-gyp via npm env) as a source-compile fallback if the prebuild download fails.",
+    "symbols": [],
+    "source_files": [
+      ".github/workflows/ci.yml"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T16:16:55.101Z"
+  },
+  {
+    "id": "dd85cf6e-00ec-4b56-a178-6931f9de6c4b",
+    "type": "knowledge",
+    "title": "code_tests tool: impact-based test discovery (T4.4)",
+    "summary": "T4.4 adds code_tests(symbol, repo?) using impact-based recipe: calls callGitNexus('impact', {target:symbol, direction:'upstream', maxDepth:2, includeTests:true, repo}), collects results from depth 1 and 2, filters to isTestPath(), returns test file dependencies. Schema registered in src/index.ts; telemetry wired; inherits pre-flight/resilience/freshness via callGitNexus.",
+    "symbols": [
+      "code_tests",
+      "codeTestsSchema"
+    ],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T19:58:46.628Z"
+  },
+  {
+    "id": "deb2b048-c155-49bf-8783-1ae42709eb69",
+    "type": "learning",
+    "title": "Phase 2 verification: Cypher integration foundation proven under load (T2.1+T2.2 confirmed)",
+    "summary": "Phase 2 reviewer live-verified the entire Cypher integration foundation: parseMarkdownTable/asciiSanitizeLabel/extractCypherPayload helpers all work correctly on real gitnexus index; both code_map (Community nodes) and code_flow (Process nodes + steps) queries execute successfully with parameterized LIMIT binding; markdown parsing matches byte-for-byte. This unblocks Phase 3 code-intelligence routing guidance and confirms gitnexus 1.6.7 + LadybugDB foundation is stable for long-term use.",
+    "symbols": [
+      "code_map",
+      "code_flow",
+      "parseMarkdownTable",
+      "asciiSanitizeLabel",
+      "extractCypherPayload"
+    ],
+    "source_files": [
+      "feedback.md",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "PLAN.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:26:08.984Z"
+  },
+  {
+    "id": "e00d97f5-9e15-457e-9494-56a9c335363e",
+    "type": "learning",
+    "title": "kb-branch-reconcile: resolveContradiction is the SINGLE write path",
+    "summary": "The reconcile write path is hardened: resolveContradiction enforces linkage refusal, superseded refusal, and active-directive refusal BEFORE any write. Winner order is critical: CONFIRMED+note, flag-clear FIRST, THEN D2 predicate + full-basis re-hash.",
+    "symbols": [
+      "resolveContradiction"
+    ],
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T14:45:51.751Z"
+  },
+  {
+    "id": "e3fd3e49-4caf-435a-942d-dea4a38bb439",
+    "type": "knowledge",
+    "title": "Freshness suffix wiring: reindexScheduled param (T3.2)",
+    "summary": "T3.2 extends freshnessNote(lastCommit, head, reindexScheduled) with reindexScheduled boolean. When true, appends exact suffix \\\" A background re-index has been started.\\\" (leading space) to freshness message. computeFreshnessNote calls maybeScheduleReindex fire-and-forget, passes result to freshnessNote(). code_impact verified single trigger point: callGitNexus -> computeFreshnessNote. Suffixed message is non-blocking metadata; never degrades core result.",
+    "symbols": [
+      "freshnessNote",
+      "computeFreshnessNote",
+      "maybeScheduleReindex"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "src/tools/code-intelligence-reindex.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:57:19.458Z"
+  },
+  {
+    "id": "e4dc6485-8d5e-4a9e-bfac-263c8fcb8fc2",
+    "type": "knowledge",
+    "title": "Code intelligence routing in tool descriptions (Phase 3)",
+    "summary": "All four code_* tools (code_graph, code_impact, code_query, code_context) now carry the unified routing guidance: \"Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.\" This guidance is registered in MCP server tool descriptions and appears on every agent dispatch.",
+    "symbols": [
+      "code_graph",
+      "code_impact",
+      "code_query",
+      "code_context"
+    ],
+    "source_files": [
+      "src/index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:08:33.691Z"
+  },
+  {
+    "id": "e67ee0d8-789d-4a49-a022-88d3912dba31",
+    "type": "knowledge",
+    "title": "Tool descriptions as universal dispatch routing layer",
+    "summary": "Tool descriptions in MCP server registration are the ONLY instruction channel present on EVERY code intelligence dispatch path. Dispatch templates cover only the paths the PM remembers to patch. This is why routing guidance (prefer code_* over Glob/Grep) lives in tool descriptions as the base layer, with templates as reinforcement.",
+    "symbols": [],
+    "source_files": [
+      "src/index.ts",
+      "requirements.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:08:30.954Z"
+  },
+  {
+    "id": "e7b86a91-c7ba-4cb6-b31b-3c26b32499c3",
+    "type": "knowledge",
+    "title": "kb_stats: read-only aggregation tool (T2.1, F5/D4)",
+    "summary": "kb_stats is a telemetry-free aggregation tool that reports KB health: confidence/type totals, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible drift, and optional per-symbol coverage. Never bumps use_count/last_accessed; drift counts live-CONFIRMED entries newer than bible's newest updated_at; null denominators render as null, never NaN.",
+    "symbols": [
+      "kbStats",
+      "kbHealthSummary",
+      "kbHealthCompactLine"
+    ],
+    "source_files": [
+      "src/tools/kb-stats.ts",
+      "src/tools/check-status.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:00.699Z"
+  },
+  {
+    "id": "e7da8cd0-5045-443a-b469-5ac53257cf83",
+    "type": "knowledge",
+    "title": "Embeddings support: LOCAL branch wiring + --embeddings flag (T2.3)",
+    "summary": "Phase 2 T2.3 (LOCAL branch) implements embeddings support. Changes: skills/pm/index.md step 3 documents --embeddings flag; skills/pm/doer-reviewer-loop.md VERIFY re-index step notes ~87MB one-time model download for embedding inference. Documentation + flag only; no src/ code builds analyze command line yet. Win32 caveat: exact-scan (requires long filename support) may fail on some Windows setups. Documented limitations; feature ready for src/ wiring in Phase 3 or later sprint.",
+    "symbols": [
+      "--embeddings",
+      "embedding",
+      "inference",
+      "exact-scan"
+    ],
+    "source_files": [
+      "skills/pm/index.md",
+      "skills/pm/doer-reviewer-loop.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T14:25:47.993Z"
+  },
+  {
+    "id": "e86910b8-9835-43ed-a106-67fcb6328f4d",
+    "type": "knowledge",
+    "title": "Circular-import avoidance: code-intelligence-freshness.ts kept separate (Phase 2 T2.1)",
+    "summary": "code-intelligence-freshness.ts is a separate module (not merged into code-intelligence.ts) to avoid circular import. code-intelligence-gitnexus.ts needs to import freshnessNote/appendFreshnessNote as values at module load time, but code-intelligence.ts re-exports GitNexusProvider from gitnexus, creating a cycle if freshness lived there.",
+    "symbols": [
+      "freshnessNote",
+      "appendFreshnessNote",
+      "code-intelligence-freshness.ts"
+    ],
+    "source_files": [
+      "src/tools/code-intelligence-freshness.ts",
+      "src/tools/code-intelligence-gitnexus.ts",
+      "src/tools/code-intelligence.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T10:51:33.121Z"
+  },
+  {
+    "id": "ec1f0fa0-b06d-4eae-bb05-466f991d0563",
+    "type": "knowledge",
+    "title": "PM standing instructions flow: capture -> pending proposal -> CLI approval (T1.4, D1)",
+    "summary": "PM skill documents the standing-instructions pattern (SKILL.md lines 235-244, tpl-kb-agent.md lines 108-133, kb-review.md): when user issues a standing instruction during sprint (\\\"always do X\\\", \\\"never do Y\\\", \\\"we decided Z\\\"), PM proposes via kb_capture(type='user-directive', ...) which is proposal-only (UNVERIFIED, flagged, 'directive:pending'). No trust gained by capture. Human activates via 'apra-fleet kb approve-directive <id>' in their own terminal (the trust boundary). PM tells user the directive is PENDING and surfaces the exact activation command.",
+    "symbols": [
+      "kb_capture",
+      "approveDirective",
+      "kbCapture"
+    ],
+    "source_files": [
+      "skills/pm/SKILL.md",
+      "skills/pm/tpl-kb-agent.md",
+      "skills/pm/kb-review.md",
+      "src/cli/kb-directives.ts",
+      "index.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:54:27.571Z"
+  },
+  {
+    "id": "f173d00a-6199-49a1-a4fb-30d86a00a9e1",
+    "type": "knowledge",
+    "title": "Global KB bible chain: export -> copy -> cold-seed (T3.3/T3.4/T3.5, Phase 3)",
+    "summary": "Three-stage pipeline: (T3.3) kb_export scope='global' exports CONFIRMED global-scope entries to .fleet/kb-canonical-global.json. (T3.4) Installer copies this file to ~/.apra-fleet/data/knowledge/global/. (T3.5) kb_session_prime cold-seed merges it into session context after project bible, deduped, marked via='canonical-bible-global'.",
+    "symbols": [
+      "kbExport",
+      "copyGlobalBible",
+      "primeSession"
+    ],
+    "source_files": [
+      "src/tools/kb-export.ts",
+      "src/services/install.ts",
+      "src/services/knowledge/kb-session-prime.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T07:52:06.109Z"
+  },
+  {
+    "id": "f28eaa21-5a91-4284-b0c9-a85e065c0c27",
+    "type": "knowledge",
+    "title": "Quantitative model assignment via kb_stats coverage (T3.6, Phase 3)",
+    "summary": "Planner templates (tpl-planner.md, doer-reviewer-loop.md) now instruct coverage-based model selection: coverage >= 0.8 -> cheap/standard; < 0.3 -> premium + front-load; between -> judgment. PLAN.md must cite the coverage number in model rationale. kb_stats unavailable -> qualitative fallback.",
+    "symbols": [],
+    "source_files": [
+      "templates/tpl-planner.md",
+      "templates/doer-reviewer-loop.md",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T07:52:23.330Z"
+  },
+  {
+    "id": "f68e41ae-a758-41d5-9af9-7e30ac38f6c2",
+    "type": "knowledge",
+    "title": "LOW-1: Dangling command reference in KB drift anomaly message (Phase 2 T2.2)",
+    "summary": "The amended-D5 anomaly message (check-status.ts:423) points users to 'apra-fleet kb commit' for drift remediation, but no such subcommand exists. kb group implements only directives/approve-directive/reject-directive/add-directive (src/cli/kb-directives.ts). Wording is verbatim-faithful to binding D5 spec, so this is NOT a spec deviation; non-blocking, recommend future task to either add the command or reword to a real remediation (re-run kb_export / inspect logged warning).",
+    "symbols": [
+      "bibleDriftFragment"
+    ],
+    "source_files": [
+      "src/tools/check-status.ts",
+      "feedback.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T04:44:28.954Z"
+  },
+  {
+    "id": "f782fa69-4cc1-421c-8fb6-0ade248dfc35",
+    "type": "knowledge",
+    "title": "hasOppositePolarity uses word-boundary regex matching, not substring (T1.5, closes yashr-hzd)",
+    "summary": "The polarity-check function in audn.ts:50-56 uses precompiled \\b-anchored regexes (lines 39-44) to detect negative/positive polarity phrases, eliminating false positives from substring collisions. 'prefixed' no longer matches 'fixed', 'unresolved' no longer matches 'resolved', and 'suffixed' no longer matches 'fixed'. Multi-word phrases like \\\"doesn't work\\\" match correctly (apostrophe sits inside phrase boundary, not at the break).",
+    "symbols": [
+      "hasOppositePolarity",
+      "toWordBoundaryPattern",
+      "NEGATIVE_PATTERNS",
+      "POSITIVE_PATTERNS"
+    ],
+    "source_files": [
+      "src/services/knowledge/audn.ts"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T03:54:05.318Z"
+  },
+  {
+    "id": "fccb50ff-4384-4d3c-8404-9684fcb53cc1",
+    "type": "knowledge",
+    "title": "Code intelligence guidance coverage across all role templates",
+    "summary": "All sprint role templates (planner, doer, reviewer in both fleet-mode and doer-reviewer-loop dispatch) now carry explicit code intelligence guidance + kb_session_prime instructions. Phase 3 completed coverage across all dispatch paths.",
+    "symbols": [],
+    "source_files": [
+      "skills/pm/tpl-planner.md",
+      "skills/pm/tpl-doer.md",
+      "skills/pm/tpl-reviewer.md",
+      "skills/pm/doer-reviewer-loop.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-06T11:08:39.110Z"
+  },
+  {
+    "id": "fdaf76cc-c574-4d9c-ad0c-cc868b091026",
+    "type": "runbook",
+    "title": "kb-branch-reconcile: /pm kb-reconcile full flow",
+    "summary": "The /pm kb-reconcile command runs a 5-step pipeline: kb_import -> kb_freshness_sweep -> kb_reconcile_prefilter -> reconciler agent -> kb_export. Each step has a trust boundary and no post-prefilter sweep is needed.",
+    "symbols": [],
+    "source_files": [
+      "docs/kb-reconcile.md",
+      "skills/fleet/knowledge-agent.md"
+    ],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T14:45:51.755Z"
+  },
+  {
+    "id": "ff1fc29f-fcbf-4c56-9daf-8bc8f594912a",
+    "type": "learning",
+    "title": "Phase 1 kb-branch-reconcile review APPROVED reviewer role",
+    "summary": "Phase 1 tasks reviewed and approved with one low finding. Tags sprint kb-branch-reconcile phase 1.",
+    "symbols": [],
+    "source_files": [],
+    "confidence": "CONFIRMED",
+    "updated_at": "2026-07-07T11:26:38.736Z"
+  }
+]
