@@ -3,6 +3,8 @@ import type { CloudConfig } from './services/cloud/types.js';
 
 export type LlmProvider = 'claude' | 'gemini' | 'codex' | 'copilot' | 'agy' | 'opencode';
 
+export type CodeIntelProvider = 'codebase-memory' | 'gitnexus' | 'none';
+
 export interface Agent {
   id: string;
   friendlyName: string;
@@ -36,6 +38,7 @@ export interface Agent {
   modelTiers?: { cheap?: string; standard?: string; premium?: string };
   category?: string;
   tags?: string[];
+  codeIntelProvider?: CodeIntelProvider;
 }
 
 export interface GitHubAppConfig {

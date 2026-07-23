@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { FLEET_DIR } from '../paths.js';
-import type { LlmProvider } from '../types.js';
+import type { LlmProvider, CodeIntelProvider } from '../types.js';
 
 export type ModelTier = 'cheap' | 'standard' | 'premium';
 
@@ -13,6 +13,7 @@ export interface UserConfig {
     /** How many characters of a command/prompt to keep on its fleet-log line. */
     previewChars?: number;
   };
+  codeIntelProvider?: CodeIntelProvider;
 }
 
 /**
@@ -100,6 +101,13 @@ export function loadUserConfig(): UserConfig {
     }
   }
 
+  const VALID_CODE_INTEL = new Set(['codebase-memory', 'gitnexus', 'none']);
+  if (typeof obj.codeIntelProvider === 'string' && VALID_CODE_INTEL.has(obj.codeIntelProvider)) {
+    result.codeIntelProvider = obj.codeIntelProvider as CodeIntelProvider;
+  } else if (obj.codeIntelProvider !== undefined) {
+    console.error('[fleet] user config: invalid codeIntelProvider, ignoring');
+  }
+
   cached = result;
   return cached;
 }
@@ -112,6 +120,11 @@ export function getModelOverride(provider: LlmProvider, tier: ModelTier): string
 /** Characters of command/prompt text to keep on a fleet-log line (config-driven). */
 export function getLogPreviewChars(): number {
   return loadUserConfig().logging?.previewChars ?? DEFAULT_LOG_PREVIEW_CHARS;
+}
+
+/** Global code-intelligence provider from config.json (undefined = not configured). */
+export function getGlobalCodeIntelProvider(): CodeIntelProvider | undefined {
+  return loadUserConfig().codeIntelProvider;
 }
 
 /** Reset the cached config -- for testing only. */
