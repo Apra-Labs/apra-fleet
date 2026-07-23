@@ -63,7 +63,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, NullProvider, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, codeMapSchema, codeFlowSchema, codeTestsSchema, handleGraph, handleImpact, handleQuery, handleContext, handleMap, handleFlow, handleTests } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -164,6 +164,95 @@ describe('NullProvider', () => {
       expect(result.content[0].text).toContain(method);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Handler functions (handleGraph, handleImpact, etc.) -- per-member wiring
+//
+// These handlers accept an optional memberId and thread it to getProvider().
+// When memberId is present and the agent has a codeIntelProvider override,
+// the handler resolves the per-member provider instead of the global default.
+// ---------------------------------------------------------------------------
+describe('handler functions thread memberId to getProvider()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('handleGraph forwards memberId and resolves NullProvider for provider=none member', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-null', codeIntelProvider: 'none' });
+
+    const result = await handleGraph({ symbol: 'test' }, 'agent-null') as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-null');
+    expect(result.content[0].text).toContain('Code intelligence is disabled');
+    // Should not read the global config file
+    expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
+  it('handleImpact forwards memberId and resolves NullProvider for provider=none member', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-null', codeIntelProvider: 'none' });
+
+    const result = await handleImpact({ target: 'x', direction: 'upstream' as const }, 'agent-null') as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-null');
+    expect(result.content[0].text).toContain('Code intelligence is disabled');
+  });
+
+  it('handleQuery forwards memberId and resolves NullProvider for provider=none member', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-null', codeIntelProvider: 'none' });
+
+    const result = await handleQuery({ query: 'test' }, 'agent-null') as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-null');
+    expect(result.content[0].text).toContain('Code intelligence is disabled');
+  });
+
+  it('handleContext forwards memberId and resolves NullProvider for provider=none member', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-null', codeIntelProvider: 'none' });
+
+    const result = await handleContext({ name: 'testSymbol' }, 'agent-null') as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('agent-null');
+    expect(result.content[0].text).toContain('Code intelligence is disabled');
+  });
+
+  it('handleMap forwards memberId and resolves NullProvider for provider=none member', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-null', codeIntelProvider: 'none' });
+
+    const result = await handleMap({}, 'agent-null') as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0].text).toContain('Code intelligence is disabled');
+  });
+
+  it('handleFlow forwards memberId and resolves NullProvider for provider=none member', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-null', codeIntelProvider: 'none' });
+
+    const result = await handleFlow({}, 'agent-null') as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0].text).toContain('Code intelligence is disabled');
+  });
+
+  it('handleTests forwards memberId and resolves NullProvider for provider=none member', async () => {
+    mockGetAgent.mockReturnValue({ id: 'agent-null', codeIntelProvider: 'none' });
+
+    const result = await handleTests({ symbol: 'test' }, 'agent-null') as {
+      content: { type: string; text: string }[];
+    };
+
+    expect(result.content[0].text).toContain('Code intelligence is disabled');
+  });
 });
 
 // ---------------------------------------------------------------------------

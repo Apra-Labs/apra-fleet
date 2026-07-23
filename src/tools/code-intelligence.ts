@@ -82,6 +82,46 @@ export const codeTestsSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
+// --- Handler functions ---
+// Each handler accepts an optional memberId to resolve the per-member provider.
+// When memberId is undefined (direct MCP call with no member context), getProvider
+// falls back to the global config.
+
+export async function handleGraph(input: z.infer<typeof codeGraphSchema>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.graph(input);
+}
+
+export async function handleImpact(input: z.infer<typeof codeImpactSchema>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.impact(input);
+}
+
+export async function handleQuery(input: z.infer<typeof codeQuerySchema>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.query(input);
+}
+
+export async function handleContext(input: z.infer<typeof codeContextSchema>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.context(input);
+}
+
+export async function handleMap(input: z.infer<typeof codeMapSchema>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.map(input);
+}
+
+export async function handleFlow(input: z.infer<typeof codeFlowSchema>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.flow(input);
+}
+
+export async function handleTests(input: z.infer<typeof codeTestsSchema>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.tests(input);
+}
+
 export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
   // When a memberId is provided, check the agent's per-member override first.
   if (memberId) {
