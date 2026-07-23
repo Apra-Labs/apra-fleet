@@ -311,19 +311,24 @@ branch emits the existing id without calling `bd create`.
 
 ---
 
-## Exit check: scoped to sprint roots only
+## Exit check: scoped to open leaf work in the sprint subtree
 
-`parseBlockers(outputs, rootCount, openListIdx, threshold, rootIds)` accepts an
-optional `rootIds` array. When provided, an open issue is counted as a blocker
-only when its id appears in `rootIds` (the sprint's root goals), in addition to
-satisfying the subtree membership and priority-threshold tests.
+`parseBlockers(outputs, rootCount, openListIdx, threshold, opts)` takes an optional
+`opts` bag. In the exit-check leaf mode (`{ rootIds, leaf: true, includeFeatures }`)
+an open issue counts as a blocker only when it is inside the sprint subtree, at
+priority <= threshold, and is a `type=task` (or a `type=feature` when
+`includeFeatures` is set), EXCLUDING the root goals themselves. Omitting `opts`
+(the 4-arg form) keeps the historical whole-subtree count used by the
+pure-function tests.
 
-Both exit-check callsites pass `rootIds`:
+Both exit-check callsites pass leaf mode with `includeFeatures = integTestEnabled`:
 
-- `countBeadsBlockers` (line ~901) -- used by the cycle-end blocker count.
-- The inline exit-check dispatch (line ~1579) -- used by the goal-met decision.
+- `countBeadsBlockers` -- used by the cycle-end blocker count (fallback path).
+- The inline exit-check dispatch -- used by the goal-met decision.
 
-**Why this matters:** without scoping, a non-root P1 issue anywhere in the beads
-database would block `goalMet` even if the sprint never targeted it. The sprint
-should exit (goal met) once all its root goals and their subtrees are closed,
-regardless of unrelated open issues in the DB.
+**Why this matters:** the root goals close only at Harvest (after the develop
+loop), and features close in-loop only when integration tests run. Counting roots
+(or untested features) would make `goalMet` unreachable in-loop and fire a false
+"no progress" abort on cycle 2. Leaf-scoping counts the work that actually closes
+during develop, so `goalMet` becomes reachable and the no-progress guard stays a
+real deadlock detector.

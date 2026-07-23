@@ -183,6 +183,64 @@
         "avg_output_tokens": 1349,
         "sample_n": 1
       }
+    },
+    "tuple_averages": {
+      "doer|M|sonnet": {
+        "role": "doer",
+        "size": "M",
+        "model": "sonnet",
+        "avg_output_tokens": 4285,
+        "sample_n": 337
+      },
+      "doer|M|opus": {
+        "role": "doer",
+        "size": "M",
+        "model": "opus",
+        "avg_output_tokens": 9550,
+        "sample_n": 36
+      },
+      "reviewer|N/A|sonnet": {
+        "role": "reviewer",
+        "size": "N/A",
+        "model": "sonnet",
+        "avg_output_tokens": 5140,
+        "sample_n": 47
+      },
+      "doer|M|haiku": {
+        "role": "doer",
+        "size": "M",
+        "model": "haiku",
+        "avg_output_tokens": 930,
+        "sample_n": 5
+      },
+      "reviewer|N/A|opus": {
+        "role": "reviewer",
+        "size": "N/A",
+        "model": "opus",
+        "avg_output_tokens": 3217,
+        "sample_n": 6
+      },
+      "final-reviewer|N/A|sonnet": {
+        "role": "final-reviewer",
+        "size": "N/A",
+        "model": "sonnet",
+        "avg_output_tokens": 2600,
+        "sample_n": 1
+      },
+      "integ-test-runner|N/A|sonnet": {
+        "role": "integ-test-runner",
+        "size": "N/A",
+        "model": "sonnet",
+        "avg_output_tokens": 6000,
+        "sample_n": 2
+      },
+      "final-reviewer|N/A|opus": {
+        "role": "final-reviewer",
+        "size": "N/A",
+        "model": "opus",
+        "avg_output_tokens": 4200,
+        "sample_n": 2
+      }
     }
   }
 }
