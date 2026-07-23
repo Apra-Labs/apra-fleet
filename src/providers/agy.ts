@@ -60,16 +60,17 @@ export class AgyProvider implements ProviderAdapter {
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    // AGY activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
-    if (agentName) {
-      instruction = `@${agentName} ${instruction}`;
-    }
+
 
     // Write per-workspace model override before launching agy.
     const tier = inputTier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
 
-    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}" -p "${instruction}"`;
+    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}"`;
+    if (agentName) {
+      cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
+    }
+    cmd += ` -p "${instruction}"`;
 
     // Only pass --conversation when resuming an existing session. For fresh sessions,
     // agy ignores the UUID we pass and creates its own -- use folder lookup instead.

@@ -29,11 +29,11 @@ Workflow invocation.
 ```bash
 node packages/apra-fleet-se/bin/cli.mjs \
   --issue apra-fleet-eft \
-  --members fleet-reorg \
+  --members fleet-rev \
   --branch auto-sprint/eft-service \
   --base feat/fleet-reorg \
   --viewer-port 18300 \
-  > ./sprint-logs/auto-sprint.log 2>&1 &
+  > ./sprint-logs/agy-run25.log 2>&1 &
 disown
 ```
 
