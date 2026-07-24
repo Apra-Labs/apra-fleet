@@ -347,3 +347,28 @@ daily; 13/0 will change -- possibly to 13/1, which is a BETTER story:
   callouts restyled as amber-tinted pills, tagline moved into a
   hero-style eyebrow title block ("FLEET TOPOLOGY"). Both variants
   verified by headless-Chrome render.
+- 2026-07-24 (standalone graphic for the undecided "memory" pitch,
+  user-directed): produced assets/marketing/workflow-memory-{dark,light}.svg
+  (1280x660) to help evaluate Kashyap's "Reliable Deterministic Workflows +
+  Memory" angle -- NOT wired into the draft or the positioning section,
+  since that angle is still undecided (open question logged above). Same
+  asset family: hero 80px grid + palette (near-black/white grounds, amber
+  #f2a93b dark / #c97a1e light), hero-style eyebrow title block. Chart
+  grammar deliberately differs from cost-collapse's bar chart -- this is a
+  two-lane run timeline. Argument grounds strictly in the real resumable-run
+  mechanism (apra-fleet-workflow-architecture.md sec 5 + 4.5): every
+  agent()/command() call is written to an append-only journal.jsonl; on
+  resume each call recomputes a deterministic replay key and a COMPLETED
+  match is returned straight from the journal with zero re-dispatch (no LLM
+  call, no cost, no shell re-run), while the budget re-debits the journaled
+  cost so the resumed total reflects the whole logical run. Lane A (memory
+  on) shows steps 1-4 replayed free from a ghosted/checked journal band,
+  an honest CRASH break at the in-flight step 5, then live steps 5-6-7 to a
+  done terminal. Lane B (stateless) shows the same four steps thrown away by
+  a cold-restart loop-back arrow. A "what it costs you" ledger crystallizes
+  it: time lost either way, but work + spend kept only with the journal.
+  No fabricated dollar/time figures (no specific resumed run to cite yet) --
+  qualitative labels only. Both variants verified by headless-Chrome render
+  with a collision check. Complements cost-collapse (which covers the
+  "deterministic control flow is cheaper" half); this carries the
+  "memory / graceful failure" half nothing else covered.
