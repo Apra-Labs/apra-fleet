@@ -111,6 +111,34 @@
  * @property {boolean} [force] - Remove even if the member is currently busy
  */
 
+/**
+ * @typedef {Object} ProvisionLlmAuthOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {string} [api_key] - AI provider API key. If omitted, the local OAuth
+ *   session is copied to the member instead. Supports {{secure.NAME}} token --
+ *   resolved from the credential store server-side before use.
+ */
+
+/**
+ * @typedef {Object} ComposePermissionsOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {"doer" | "reviewer"} [role] - Base profile. Provide at least one of role or tags.
+ * @property {string[]} [tags] - Member tags; "doer"/"reviewer" sets the primary mode
+ *   and wins over role when both are given. Other tags load tag-<name>.json profiles.
+ * @property {string} [project_folder] - Local project folder containing the
+ *   permissions.json ledger. Omit to skip ledger merge.
+ * @property {string[]} [grant] - Reactive mode: additional permissions to grant.
+ * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
+ */
+
+/**
+ * @typedef {Object} SetupSshKeyOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ */
+
 
 // Grace margin added on top of the payload's own timeout hint (timeout_s /
 // max_total_s) so the client doesn't race the server's own deadline -- the
@@ -230,5 +258,48 @@ export class ApraFleet {
      */
     async removeMember(options) {
         return this.mcpClient.callTool('remove_member', options);
+    }
+
+    /**
+     * Provision LLM auth (OAuth session copy or API key) onto a member.
+     * @param {ProvisionLlmAuthOptions} options
+     */
+    async provisionLlmAuth(options) {
+        return this.mcpClient.callTool('provision_llm_auth', options);
+    }
+
+    /**
+     * Compose and deliver a scoped permission profile to a member.
+     * @param {ComposePermissionsOptions} options
+     */
+    async composePermissions(options) {
+        return this.mcpClient.callTool('compose_permissions', options);
+    }
+
+    /**
+     * Convert a remote member from password to SSH key authentication.
+     * @param {SetupSshKeyOptions} options
+     */
+    async setupSshKey(options) {
+        return this.mcpClient.callTool('setup_ssh_key', options);
+    }
+
+    /**
+     * Gracefully shut down the fleet server this client is connected to.
+     * Self-terminates the server process (deletes the singleton pointer,
+     * closes the HTTP transport and all SSH connections) -- does not touch
+     * the OS service-manager layer at all, so it works even when service
+     * registration (systemd/schtasks) never succeeded.
+     *
+     * The server closing its own transport as part of shutting down can race
+     * this very request's response -- callers should treat ANY outcome
+     * (resolve, reject, or timeout) as inconclusive on its own and verify via
+     * a direct status check instead. opts.timeoutMs (default 5000) keeps a
+     * lost response from hanging the caller up to the SDK's normal 15-minute
+     * default.
+     * @param {{ timeoutMs?: number }} [opts]
+     */
+    async shutdownServer(opts = {}) {
+        return this.mcpClient.callTool('shutdown_server', {}, { timeoutMs: opts.timeoutMs ?? 5000 });
     }
 }

@@ -133,4 +133,102 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(calledArgs, options);
         assert.deepStrictEqual(result, { status: 'ok' });
     });
+
+    test('provisionLlmAuth', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_name: 'alice' };
+        const result = await fleet.provisionLlmAuth(options);
+
+        assert.strictEqual(calledName, 'provision_llm_auth');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('composePermissions', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_name: 'alice', tags: ['doer'], project_folder: '/work/alice' };
+        const result = await fleet.composePermissions(options);
+
+        assert.strictEqual(calledName, 'compose_permissions');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('setupSshKey', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_name: 'alice' };
+        const result = await fleet.setupSshKey(options);
+
+        assert.strictEqual(calledName, 'setup_ssh_key');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('shutdownServer', async () => {
+        let calledName, calledArgs, calledOpts;
+        const mockClient = {
+            async callTool(name, args, opts) {
+                calledName = name;
+                calledArgs = args;
+                calledOpts = opts;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const result = await fleet.shutdownServer();
+
+        assert.strictEqual(calledName, 'shutdown_server');
+        // shutdown_server takes no arguments -- unlike every other wrapped
+        // tool, callers never pass options here.
+        assert.deepStrictEqual(calledArgs, {});
+        // Defaults to a short timeout: the server closing its own transport
+        // as part of shutting down can race this request's response, so
+        // callers must not be left hanging up to the SDK's normal 15-minute
+        // default waiting for a response that may never arrive.
+        assert.deepStrictEqual(calledOpts, { timeoutMs: 5000 });
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('shutdownServer honors an explicit timeoutMs override', async () => {
+        let calledOpts;
+        const mockClient = {
+            async callTool(name, args, opts) {
+                calledOpts = opts;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        await fleet.shutdownServer({ timeoutMs: 2000 });
+
+        assert.deepStrictEqual(calledOpts, { timeoutMs: 2000 });
+    });
 });
