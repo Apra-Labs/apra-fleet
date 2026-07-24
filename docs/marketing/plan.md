@@ -126,17 +126,29 @@ Reader sees, in order:
 - [x] Positioning brainstorm + decision (2026-07-20)
 - [x] First full draft committed (docs/marketing/readme-rewrite-draft.md)
 - [x] Quickstart corrected to the real npm//mcp/conversational flow
-- [ ] USER REVIEW PASS on draft copy (pending -- solicit explicitly)
+- [x] USER REVIEW PASS -- Slack thread, 2026-07-24 (Kashyap + user), see log
+      entry below. One item still OPEN from that pass (section order).
+- [ ] OPEN DECISION (Kashyap, 2026-07-24): should "Reliable Deterministic
+      Workflows + Memory" be a distinct, more grounded pitch angle vs the
+      current agent-fleet-platform framing? Not yet decided -- needs a
+      user call before it changes positioning (section 2).
+- [ ] OPEN DECISION (Kashyap, 2026-07-24): reorder draft sections -- move
+      "Security model, in one paragraph" up (currently 8th of 9 sections,
+      after Compare-to-alternatives). Proposed, not yet actioned pending
+      user confirmation on the target position.
 - [ ] Refresh dogfood numbers from the FINISHED run: cycles run, total
       tests, integ-suite size, bugs self-filed/fixed count. Sources:
       packages/apra-fleet-se/auto-sprint/docs/stabilization-log.md and
       sprint-logs/*.log. Replace the draft's current numbers.
-- [ ] Produce GFX-1 hero banner (spec: section 8)
+- [x] Produce GFX-1 hero banner (spec: section 8) -- done, see
+      assets/marketing/hero-banner-{dark,light}.svg, wired into the draft
 - [ ] Record GFX-2 dashboard GIF -- BLOCKED until run 16+ runs with the
       eft.27 lean-state viewer (recording today's sluggish viewer would
       undercut the pitch). Tool: claude-in-chrome gif_creator against the
-      live viewer at the 18300-series port.
-- [ ] Produce GFX-3 fleet topology SVG (spec: section 8)
+      live viewer at the 18300-series port. Cannot be hand-authored like
+      GFX-1/GFX-3 -- needs a real capture.
+- [x] Produce GFX-3 fleet topology SVG (spec: section 8) -- done, see
+      assets/marketing/fleet-topology.svg, wired into the draft
 - [ ] Migrate current README deep-dive sections into docs/ pages (see
       ground rule) and add links from the new README
 - [ ] Promote draft -> /README.md at run boundary; delete draft file;
@@ -175,9 +187,9 @@ Page map (v1):
 
 | Asset | Spec | Status |
 |---|---|---|
-| GFX-1 hero banner | 1280x320 SVG/PNG, dark+light variants via GitHub picture element. Wordmark + tagline. Visual: constellation of device silhouettes (laptop, tower, rack, cloud) connected by orbit lines to a central control hexagon; small provider glyphs per device; subtle grid background. | not started |
-| GFX-2 dashboard GIF | REAL recording of the auto-sprint viewer during a live run: phase transitions, doer dispatch landing, verdict appearing. 20-30s loop, 1200px wide, <8MB. Highest-credibility asset -- prioritize. LANDING PREREQUISITE: draft must not promote to /README.md without it. The old YouTube video (SGdHvIkSbY8) was tried as interim media and REJECTED (user, 2026-07-20): it is PM-skill-era material that contradicts the new positioning. | BLOCKED on run 16+ (eft.27 lean viewer) |
-| GFX-3 fleet topology | 900px SVG, static. One control-plane node -> 4-5 heterogeneous member devices, provider logos + OS glyphs, callouts: "reserved by sprint A", "tier: premium", "credential: scoped". Mono-accent. | not started |
+| GFX-1 hero banner | 1280x320 SVG/PNG, dark+light variants via GitHub picture element. Wordmark + tagline. Visual: constellation of device silhouettes (laptop, tower, rack, cloud) connected by orbit lines to a central control hexagon; small provider glyphs per device; subtle grid background. | done -- assets/marketing/hero-banner-{dark,light}.svg |
+| GFX-2 dashboard GIF | REAL recording of the auto-sprint viewer during a live run: phase transitions, doer dispatch landing, verdict appearing. 20-30s loop, 1200px wide, <8MB. Highest-credibility asset -- prioritize. LANDING PREREQUISITE: draft must not promote to /README.md without it. The old YouTube video (SGdHvIkSbY8) was tried as interim media and REJECTED (user, 2026-07-20): it is PM-skill-era material that contradicts the new positioning. | BLOCKED on run 16+ (eft.27 lean viewer) -- the one asset here that requires a real capture, not hand-authored art |
+| GFX-3 fleet topology | 900px SVG, static. One control-plane node -> 4-5 heterogeneous member devices, provider logos + OS glyphs, callouts: "reserved by sprint A", "tier: premium", "credential: scoped". Mono-accent. | done -- assets/marketing/fleet-topology.svg |
 | GFX-4 architecture | mermaid block in README (renders natively on GitHub, diffs in PRs). Already in draft. | in draft |
 | Badges | shields.io: build (GH Actions), latest release, license, "providers: 5+", platform trio (win/mac/linux). No custom infra. | pending README landing |
 
@@ -285,3 +297,37 @@ daily; 13/0 will change -- possibly to 13/1, which is a BETTER story:
   distilled into a SHARE-assessed section above (quality is a role;
   adversarial gate; honest 3-wasted-dispatch cost included). Numbers must
   be re-derived from logs at publish time.
+- 2026-07-24 (graphics pass, user-directed "current ones are placeholders,
+  redo them"): GFX-1 (hero banner) and GFX-3 (fleet topology) produced as
+  real hand-authored SVGs -- assets/marketing/hero-banner-{dark,light}.svg
+  and assets/marketing/fleet-topology.svg -- and wired into the draft
+  (GitHub `<picture>` element for the dark/light hero pair). Palette:
+  near-black/white grounds, single amber accent (#f2a93b dark / #c97a1e
+  light), device silhouettes (laptop/tower/GPU box/cloud/CI rack) on
+  orbit lines around a control-plane hexagon. GFX-2 (dashboard GIF) is
+  unchanged and still the one asset that cannot be hand-authored -- it
+  needs a real recording, still blocked on run 16+.
+- 2026-07-24 (Slack feedback, Kashyap + user): the workflow-engine/
+  auto-sprint feature is landing as a genuinely valuable product on its
+  own, prompting Kashyap to float a more grounded pitch angle -- "Reliable
+  Deterministic Workflows + Memory" -- as possibly stronger than the
+  current agent-fleet-platform framing. NOT DECIDED; recorded as an open
+  positioning question (section 6), separate from the graphic/reorder
+  asks below, which ARE actioned.
+  Kashyap also asked for a real (not random) graphic in "Explore with
+  agents. Operate with programs." showing $ falling as a workflow moves
+  from exploration to operation, used to trim the surrounding prose.
+  DONE: assets/marketing/cost-collapse-{dark,light}.svg, sourced from 5
+  real GitHub Actions runs of this repo's own e2e setup+teardown step --
+  not modeled or invented. Four historical LLM-driven runs (Sonnet-decided
+  register/provision/verify steps): $0.46 (run 28469587797, 2026-06-30),
+  $0.49 (run 28458732457, 2026-06-30), $0.88 (run 28551599212, 2026-07-01),
+  $3.05 (run 28554565041, 2026-07-01, remote 2-member suite -- costliest
+  because of SSH/auth provisioning). After migrating to the deterministic
+  `.github/e2e/fleet-setup.mjs` script (execute_command only, no LLM in
+  the loop): $0.00, confirmed from run 30122124609 (2026-07-24) -- no
+  claude invocation at all in that run's setup/teardown artifacts. Wired
+  into the draft with a one-line real caption, replacing the prior
+  abstract "cost curve" prose per the "reduce the text" ask.
+  Kashyap's third comment -- possible section reorder (security up) --
+  is logged as an open decision above, not yet applied to the draft.

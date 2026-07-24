@@ -1,0 +1,72 @@
+<svg width="1280" height="320" viewBox="0 0 1280 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="apra-fleet: run a fleet of AI agents across your devices, your providers, your workflows.">
+  <rect width="1280" height="320" fill="#ffffff"/>
+
+  <!-- subtle grid -->
+  <g stroke="#eef1f4" stroke-width="1">
+    <line x1="40" y1="0" x2="40" y2="320"/><line x1="120" y1="0" x2="120" y2="320"/>
+    <line x1="200" y1="0" x2="200" y2="320"/><line x1="280" y1="0" x2="280" y2="320"/>
+    <line x1="360" y1="0" x2="360" y2="320"/><line x1="440" y1="0" x2="440" y2="320"/>
+    <line x1="520" y1="0" x2="520" y2="320"/><line x1="600" y1="0" x2="600" y2="320"/>
+    <line x1="680" y1="0" x2="680" y2="320"/><line x1="760" y1="0" x2="760" y2="320"/>
+    <line x1="840" y1="0" x2="840" y2="320"/><line x1="920" y1="0" x2="920" y2="320"/>
+    <line x1="1000" y1="0" x2="1000" y2="320"/><line x1="1080" y1="0" x2="1080" y2="320"/>
+    <line x1="1160" y1="0" x2="1160" y2="320"/><line x1="1240" y1="0" x2="1240" y2="320"/>
+    <line x1="0" y1="40" x2="1280" y2="40"/><line x1="0" y1="120" x2="1280" y2="120"/>
+    <line x1="0" y1="200" x2="1280" y2="200"/><line x1="0" y1="280" x2="1280" y2="280"/>
+  </g>
+
+  <!-- wordmark block -->
+  <text x="60" y="72" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="3" fill="#c97a1e">AGENT FLEET PLATFORM</text>
+  <text x="58" y="150" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="66" font-weight="700" fill="#1c2128">apra-fleet</text>
+  <text x="60" y="192" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="21" fill="#57606a">
+    <tspan x="60" dy="0">Run a fleet of AI agents across your devices,</tspan>
+    <tspan x="60" dy="28">your providers, your workflows.</tspan>
+  </text>
+  <rect x="60" y="222" width="64" height="4" rx="2" fill="#c97a1e"/>
+
+  <!-- constellation: control hexagon + orbits + devices -->
+  <g>
+    <!-- orbit lines -->
+    <g fill="none" stroke="#c97a1e" stroke-width="1.5" stroke-dasharray="2 5" opacity="0.6">
+      <path d="M 908 140 Q 830 105 782 92"/>
+      <path d="M 940 118 Q 1060 85 1178 72"/>
+      <path d="M 985 150 Q 1120 175 1214 192"/>
+      <path d="M 918 185 Q 860 225 830 250"/>
+    </g>
+
+    <!-- control-plane hexagon -->
+    <polygon points="950,116 985,138 985,182 950,204 915,182 915,138"
+             fill="#c97a1e" fill-opacity="0.10" stroke="#c97a1e" stroke-width="3"/>
+    <circle cx="950" cy="160" r="7" fill="#c97a1e"/>
+
+    <!-- laptop -->
+    <rect x="745" y="80" width="30" height="21" rx="2" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <rect x="739" y="103" width="42" height="6" rx="2" fill="#1c2128" fill-opacity="0.85"/>
+    <circle cx="779" cy="78" r="10" fill="#c97a1e"/>
+    <text x="779" y="82" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">C</text>
+
+    <!-- tower -->
+    <rect x="1170" y="52" width="30" height="46" rx="3" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <line x1="1177" y1="64" x2="1193" y2="64" stroke="#1c2128" stroke-width="2"/>
+    <line x1="1177" y1="74" x2="1193" y2="74" stroke="#1c2128" stroke-width="2"/>
+    <circle cx="1170" cy="48" r="10" fill="#c97a1e"/>
+    <text x="1170" y="52" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">G</text>
+
+    <!-- rack -->
+    <rect x="1200" y="176" width="42" height="10" rx="1.5" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <rect x="1200" y="190" width="42" height="10" rx="1.5" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <rect x="1200" y="204" width="42" height="10" rx="1.5" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <circle cx="1249" cy="181" r="10" fill="#c97a1e"/>
+    <text x="1249" y="185" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">X</text>
+
+    <!-- cloud -->
+    <g fill="none" stroke="#1c2128" stroke-width="2">
+      <circle cx="812" cy="252" r="14"/>
+      <circle cx="830" cy="244" r="18"/>
+      <circle cx="850" cy="254" r="13"/>
+      <rect x="805" y="254" width="52" height="14" rx="7" fill="#ffffff" stroke="#1c2128"/>
+    </g>
+    <circle cx="856" cy="234" r="10" fill="#c97a1e"/>
+    <text x="856" y="238" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">A</text>
+  </g>
+</svg>

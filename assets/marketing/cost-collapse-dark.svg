@@ -1,0 +1,77 @@
+<svg width="900" height="420" viewBox="0 0 900 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cost per apra-fleet e2e run, setup and teardown phase: four real LLM-driven GitHub Actions runs ranging from 0.46 to 3.05 dollars, then 0.00 dollars forever after switching to a deterministic script.">
+  <rect width="900" height="420" fill="#0d1117"/>
+
+  <text x="40" y="42" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#e6edf3">Explore once. Operate for free.</text>
+  <text x="40" y="64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#8b949e">apra-fleet e2e setup+teardown cost per run -- real GitHub Actions runs, not modeled</text>
+
+  <!-- gridlines -->
+  <g stroke="#161b22" stroke-width="1">
+    <line x1="100" y1="340" x2="820" y2="340"/>
+    <line x1="100" y1="296.75" x2="820" y2="296.75"/>
+    <line x1="100" y1="253.5" x2="820" y2="253.5"/>
+    <line x1="100" y1="210.25" x2="820" y2="210.25"/>
+    <line x1="100" y1="167" x2="820" y2="167"/>
+    <line x1="100" y1="123.75" x2="820" y2="123.75"/>
+    <line x1="100" y1="80.5" x2="820" y2="80.5"/>
+  </g>
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="end">
+    <text x="92" y="344">$0.00</text>
+    <text x="92" y="300.75">$0.50</text>
+    <text x="92" y="257.5">$1.00</text>
+    <text x="92" y="214.25">$1.50</text>
+    <text x="92" y="171">$2.00</text>
+    <text x="92" y="127.75">$2.50</text>
+    <text x="92" y="84.5">$3.00</text>
+  </g>
+
+  <!-- baseline -->
+  <line x1="100" y1="340" x2="820" y2="340" stroke="#e6edf3" stroke-width="1.5"/>
+
+  <!-- bars: 4 real LLM-driven runs, then the deterministic run at $0.00 -->
+  <g>
+    <rect x="130" y="300" width="90" height="40" fill="#8b949e" fill-opacity="0.30" stroke="#8b949e" stroke-width="1.5"/>
+    <text x="175" y="292" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e6edf3" text-anchor="middle">$0.46</text>
+    <text x="175" y="358" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="middle">2026-06-30</text>
+    <text x="175" y="372" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="middle">run 28469587797</text>
+  </g>
+  <g>
+    <rect x="270" y="297" width="90" height="43" fill="#8b949e" fill-opacity="0.30" stroke="#8b949e" stroke-width="1.5"/>
+    <text x="315" y="289" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e6edf3" text-anchor="middle">$0.49</text>
+    <text x="315" y="358" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="middle">2026-06-30</text>
+    <text x="315" y="372" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="middle">run 28458732457</text>
+  </g>
+  <g>
+    <rect x="410" y="263" width="90" height="77" fill="#8b949e" fill-opacity="0.30" stroke="#8b949e" stroke-width="1.5"/>
+    <text x="455" y="255" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e6edf3" text-anchor="middle">$0.88</text>
+    <text x="455" y="358" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="middle">2026-07-01</text>
+    <text x="455" y="372" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="middle">run 28551599212</text>
+  </g>
+  <g>
+    <rect x="550" y="73" width="90" height="267" fill="#8b949e" fill-opacity="0.30" stroke="#8b949e" stroke-width="1.5"/>
+    <text x="595" y="65" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e6edf3" text-anchor="middle">$3.05</text>
+    <text x="595" y="358" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="middle">2026-07-01</text>
+    <text x="595" y="372" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="middle">run 28554565041</text>
+  </g>
+
+  <!-- the deterministic run: flat to zero, accent -->
+  <g>
+    <rect x="690" y="338" width="90" height="2" fill="#f2a93b"/>
+    <circle cx="735" cy="339" r="5" fill="#f2a93b"/>
+    <text x="735" y="318" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#f2a93b" text-anchor="middle">$0.00</text>
+    <text x="735" y="358" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#f2a93b" text-anchor="middle">2026-07-24</text>
+    <text x="735" y="372" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#f2a93b" text-anchor="middle">every run since</text>
+  </g>
+
+  <!-- annotation callouts -->
+  <line x1="455" y1="230" x2="455" y2="190" stroke="#8b949e" stroke-width="1"/>
+  <rect x="335" y="150" width="240" height="40" rx="4" fill="#161b22" stroke="#8b949e" stroke-width="1"/>
+  <text x="455" y="166" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#e6edf3" text-anchor="middle">before: an LLM (Sonnet) decides each</text>
+  <text x="455" y="182" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#e6edf3" text-anchor="middle">register/provision/verify step, live</text>
+
+  <line x1="735" y1="300" x2="735" y2="260" stroke="#f2a93b" stroke-width="1"/>
+  <rect x="615" y="220" width="240" height="40" rx="4" fill="#2a2210" stroke="#f2a93b" stroke-width="1"/>
+  <text x="735" y="236" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#f2a93b" text-anchor="middle">after: a deterministic script -- same</text>
+  <text x="735" y="252" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#f2a93b" text-anchor="middle">steps, execute_command only, 0 tokens</text>
+
+  <text x="460" y="405" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">Same operation, every time. Explore it once with an agent -- then it costs nothing to run again.</text>
+</svg>

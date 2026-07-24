@@ -6,6 +6,11 @@
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-fleet)
 
+> **Want the bleeding edge or the polished ride?** `main` is where new
+> features land first. For the stable experience, grab a tagged
+> [release](https://github.com/Apra-Labs/apra-fleet/releases) or install
+> from [npm](https://www.npmjs.com/package/@apralabs/apra-fleet).
+
 ### One goal. A team of AI agents that plan, execute, and review each other's work, and run across every machine you own.
 
 Apra Fleet is an open-source **MCP server** that turns AI agents (Claude

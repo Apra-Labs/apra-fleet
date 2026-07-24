@@ -7,7 +7,10 @@
 
 <div align="center">
 
-[GFX-1: hero banner, full width]
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../assets/marketing/hero-banner-dark.svg">
+  <img src="../../assets/marketing/hero-banner-light.svg" alt="apra-fleet: run a fleet of AI agents across your devices, your providers, your workflows." width="100%">
+</picture>
 
 # apra-fleet
 
@@ -72,8 +75,7 @@ One control plane. Any device. Any model. Any workflow. Any domain.
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
 | **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
 
-[GFX-3: fleet topology diagram -- one control plane, spokes to
-heterogeneous devices, each device badged with its provider(s)]
+<img src="../../assets/marketing/fleet-topology.svg" alt="apra-fleet topology: one control plane connected to five heterogeneous member devices across providers and operating systems" width="100%">
 
 ## Watch a fleet work
 
@@ -197,10 +199,14 @@ observation that you need both -- at different stages of a workflow's life:
   the corners that genuinely require judgment (`execute_prompt`): review
   this diff, plan this backlog, decide this exception.
 
-**Development tokens are not operating tokens.** The cost of discovering a
-workflow is paid once, like NRE; a hardened workflow spends tokens only
-where thinking happens, so runtime cost shrinks as the workflow matures --
-instead of scaling with every step forever.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../assets/marketing/cost-collapse-dark.svg">
+  <img src="../../assets/marketing/cost-collapse-light.svg" alt="Cost per apra-fleet e2e run: four real LLM-driven runs ranging $0.46-$3.05, then $0.00 forever after switching to a deterministic script." width="100%">
+</picture>
+
+That is not a projection -- it is this repository's own e2e setup+teardown
+step, before and after we hardened it. Development tokens are not
+operating tokens: pay once to discover the workflow, then run it free.
 
 | | LLM-orchestrated (explore) | Workflow-orchestrated (operate) |
 |---|---|---|
@@ -281,22 +287,24 @@ third-party verticals.
 <!-- GRAPHICS PRODUCTION SPECS                                     -->
 <!-- ============================================================= -->
 <!--
-[GFX-1] Hero banner (SVG or PNG, 1280x320, dark-first):
-  Wordmark "apra-fleet" + tagline. Visual: constellation of device
-  silhouettes (laptop, tower, rack, cloud) connected by orbit lines to a
-  central control hexagon; small provider glyphs on each device. Subtle
-  grid background. Two variants (dark/light) via GitHub picture element.
+[GFX-1] Hero banner -- DONE. assets/marketing/hero-banner-{dark,light}.svg
+  (1280x320). Wordmark + tagline, constellation of device silhouettes
+  (laptop, tower, rack, cloud) on orbit lines around a control hexagon,
+  provider glyphs per device, subtle grid. Wired in above via a GitHub
+  <picture> element (dark/light).
 
-[GFX-2] Dashboard GIF (recorded, not mocked):
-  Record the REAL auto-sprint viewer during a live run: phase transitions,
-  a doer dispatch landing, verdict appearing. 20-30s, 1200px wide, <8MB.
-  Candidate tool: claude-in-chrome gif_creator against the live viewer.
-  This is the highest-credibility asset we own -- prioritize it.
+[GFX-2] Dashboard GIF (recorded, not mocked) -- STILL BLOCKED, still the
+  landing prerequisite. Record the REAL auto-sprint viewer during a live
+  run: phase transitions, a doer dispatch landing, verdict appearing.
+  20-30s, 1200px wide, <8MB. Candidate tool: claude-in-chrome gif_creator
+  against the live viewer. This is the highest-credibility asset we own --
+  it cannot be hand-authored like GFX-1/GFX-3, it has to be a real capture.
 
-[GFX-3] Fleet topology (SVG, 900px):
-  One control plane node -> 4-5 heterogeneous member devices, each badged
-  with provider logos + OS glyphs. Callouts: "reserved by sprint A",
-  "tier: premium", "credential: scoped". Static, clean, mono-accent.
+[GFX-3] Fleet topology -- DONE. assets/marketing/fleet-topology.svg
+  (900px). One control-plane node -> 5 heterogeneous member devices
+  (laptop/tower/GPU box/cloud VM/CI rack), each badged with a provider
+  glyph + OS label. Callouts: "reserved by sprint A", "tier: premium",
+  "credential: scoped". Static, mono-accent (amber). Wired in above.
 
 [GFX-4] Architecture: the mermaid block above renders natively on GitHub;
   keep as code (evolves with the product, diffs in PRs).

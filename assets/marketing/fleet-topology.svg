@@ -1,0 +1,86 @@
+<svg width="900" height="520" viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="apra-fleet topology: one control plane connected to five heterogeneous member devices across providers and operating systems.">
+  <rect width="900" height="520" fill="#ffffff"/>
+
+  <!-- connection lines: control plane -> members -->
+  <g fill="none" stroke="#c97a1e" stroke-width="1.75" opacity="0.65">
+    <path d="M 195 235 Q 300 160 388 108" stroke-dasharray="2 5"/>
+    <path d="M 210 210 Q 400 130 604 78"/>
+    <path d="M 225 250 Q 480 210 748 196" stroke-dasharray="2 5"/>
+    <path d="M 220 290 Q 470 340 700 380"/>
+    <path d="M 205 320 Q 340 400 452 432" stroke-dasharray="2 5"/>
+  </g>
+
+  <!-- control plane -->
+  <polygon points="150,206 194,232 194,284 150,310 106,284 106,232"
+           fill="#c97a1e" fill-opacity="0.10" stroke="#c97a1e" stroke-width="3"/>
+  <circle cx="150" cy="258" r="8" fill="#c97a1e"/>
+  <text x="150" y="345" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1c2128" text-anchor="middle">Control plane</text>
+  <text x="150" y="364" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#57606a" text-anchor="middle">credentials - permissions - dispatch</text>
+
+  <!-- member 1: MacBook, Claude -->
+  <g>
+    <rect x="358" y="88" width="60" height="38" rx="3" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <rect x="350" y="126" width="76" height="7" rx="3" fill="#1c2128"/>
+    <circle cx="424" cy="86" r="11" fill="#c97a1e"/>
+    <text x="424" y="90" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">C</text>
+    <text x="388" y="152" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#57606a" text-anchor="middle">macOS - Claude</text>
+  </g>
+
+  <!-- member 2: Windows tower, Codex -->
+  <g>
+    <rect x="580" y="46" width="46" height="60" rx="3" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <line x1="588" y1="60" x2="618" y2="60" stroke="#1c2128" stroke-width="2"/>
+    <line x1="588" y1="72" x2="618" y2="72" stroke="#1c2128" stroke-width="2"/>
+    <circle cx="626" cy="42" r="11" fill="#c97a1e"/>
+    <text x="626" y="46" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">X</text>
+    <text x="603" y="126" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#57606a" text-anchor="middle">Windows - Codex</text>
+  </g>
+
+  <!-- member 3: GPU box, Antigravity -->
+  <g>
+    <rect x="718" y="168" width="66" height="42" rx="3" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <circle cx="734" cy="189" r="9" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <circle cx="734" cy="189" r="3" fill="#1c2128"/>
+    <circle cx="784" cy="166" r="11" fill="#c97a1e"/>
+    <text x="784" y="170" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">A</text>
+    <text x="751" y="230" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#57606a" text-anchor="middle">Linux GPU - Antigravity</text>
+  </g>
+
+  <!-- member 4: cloud VM, Gemini -->
+  <g fill="none" stroke="#1c2128" stroke-width="2">
+    <circle cx="672" cy="368" r="13"/>
+    <circle cx="692" cy="360" r="17"/>
+    <circle cx="714" cy="370" r="12"/>
+    <rect x="664" y="370" width="58" height="13" rx="6.5" fill="#ffffff" stroke="#1c2128"/>
+  </g>
+  <circle cx="722" cy="352" r="11" fill="#c97a1e"/>
+  <text x="722" y="356" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">G</text>
+  <text x="693" y="404" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#57606a" text-anchor="middle">Cloud VM - Gemini</text>
+
+  <!-- member 5: CI runner, OpenCode -->
+  <g>
+    <rect x="416" y="412" width="64" height="10" rx="1.5" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <rect x="416" y="426" width="64" height="10" rx="1.5" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <rect x="416" y="440" width="64" height="10" rx="1.5" fill="none" stroke="#1c2128" stroke-width="2"/>
+    <circle cx="486" cy="417" r="11" fill="#c97a1e"/>
+    <text x="486" y="421" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">O</text>
+    <text x="448" y="466" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#57606a" text-anchor="middle">CI runner - OpenCode</text>
+  </g>
+
+  <!-- callouts -->
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12">
+    <line x1="450" y1="100" x2="450" y2="70" stroke="#c97a1e" stroke-width="1.25"/>
+    <rect x="386" y="46" width="128" height="24" rx="4" fill="#fff8ec" stroke="#c97a1e" stroke-width="1"/>
+    <text x="450" y="62" fill="#8a5a12" text-anchor="middle">credential: scoped</text>
+
+    <line x1="700" y1="90" x2="700" y2="60" stroke="#c97a1e" stroke-width="1.25"/>
+    <rect x="632" y="34" width="136" height="24" rx="4" fill="#fff8ec" stroke="#c97a1e" stroke-width="1"/>
+    <text x="700" y="50" fill="#8a5a12" text-anchor="middle">reserved by sprint A</text>
+
+    <line x1="800" y1="220" x2="828" y2="245" stroke="#c97a1e" stroke-width="1.25"/>
+    <rect x="800" y="248" width="90" height="24" rx="4" fill="#fff8ec" stroke="#c97a1e" stroke-width="1"/>
+    <text x="845" y="264" fill="#8a5a12" text-anchor="middle">tier: premium</text>
+  </g>
+
+  <text x="450" y="500" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">One control plane. Any device. Any model. Any workflow.</text>
+</svg>
