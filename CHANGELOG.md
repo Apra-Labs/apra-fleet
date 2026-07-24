@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- per-member code-intelligence provider routing
+
+Sprint goal (P1/P2): route `code_graph`/`code_impact`/`code_query`/`code_context`/`code_map`/`code_flow`/`code_tests` calls through a per-member code-intelligence provider instead of a single fleet-wide default. `getProvider(memberId?)` now resolves a member's `codeIntelProvider` override (set via `register_member`/`update_member`) before falling back to the fleet-wide config, and a `none` setting returns a structured disabled response instead of erroring. All seven tool handlers were wired to thread the calling member's ID through from `execute_prompt` dispatch via the MCP `extra._meta.memberId` context (an initial wiring pass left this dead code -- the calling member's ID was never actually forwarded to the handlers -- and was corrected in a follow-up fix). The implementation builds cleanly and the full test suite passes, including targeted coverage of provider resolution, handler forwarding, and the disabled-provider path. The sprint's own goal tracker still lists the top-level goal task as open, so it is carried forward rather than marked complete -- the remaining gap is closing out that tracked item, not outstanding implementation work as far as this harvest could verify.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     38,893 |   n/a |   $0.000 |   $0.938 |
+| reviewer   |          0 |     36,787 |   n/a |   $0.000 |   $0.819 |
+| overhead   |      7,150 |     87,076 | +1118% |   $0.121 |   $0.536 |
+| TOTAL      |      7,150 |    162,756 | +2176% |   $0.121 |   $2.293 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Added
+
+- **Per-member code-intelligence provider override** -- `register_member` and `update_member` accept an optional `code_intel_provider` (`codebase-memory` | `gitnexus` | `none`), stored on the `Agent` as `codeIntelProvider`. `getProvider(memberId?)` checks this override first, then falls back to the fleet-wide `config.json` setting.
+- **`none` provider is a first-class, non-throwing path** -- a member with `codeIntelProvider: 'none'` gets a structured "code intelligence is disabled" response (`isError: false`) from every code-intel tool, rather than an error or a fallback to the fleet default.
+- **Member context threaded into code-intel tool dispatch** -- all seven code-intel MCP tool registrations now forward the MCP `extra` parameter so `extra._meta.memberId` reaches the handler and, in turn, `getProvider()`. See [docs/features/code-intelligence.md](docs/features/code-intelligence.md) for the full design.
+
+### Carried forward
+
+- The sprint's tracked goal task (per-member code-intelligence provider routing) remains open in the issue tracker pending final close-out review.
+
 ## [v0.3.3] -- feat/install-default
 
 ### Breaking change -- MCP server start command changed
