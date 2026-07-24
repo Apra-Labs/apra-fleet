@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Apra Fleet -- Sprint Lifecycle: Planning to Harvesting</title>
+<style>
+  :root {
+    --bg:#0f1117; --panel:#161b26; --border:#232b3b; --text:#e2e8f0;
+    --dim:#94a3b8; --faint:#64748b;
+    --green:#22c55e; --green-bg:#0a1f12;
+    --amber:#fbbf24; --amber-bg:#1f1a0a;
+    --blue:#60a5fa; --blue-bg:#0e1a2e;
+    --purple:#a78bfa; --purple-bg:#171130;
+    --red:#f87171; --red-bg:#1f0f0f;
+    --gold:#f59e0b;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    padding:36px 20px; display:flex; flex-direction:column; align-items:center; }
+  h1 { font-size:21px; margin:0 0 4px; }
+  .sub { color:var(--faint); font-size:13px; margin:0 0 28px; }
+  .wrap { width:100%; max-width:1080px; }
+
+  .stage { display:grid; grid-template-columns:56px 1fr 300px; gap:0; margin-bottom:0; }
+  .num { display:flex; flex-direction:column; align-items:center; }
+  .num .circle { width:38px; height:38px; border-radius:50%; display:flex; align-items:center;
+    justify-content:center; font-size:14px; font-weight:700; border:2px solid; flex-shrink:0; }
+  .num .line { width:2px; flex:1; background:var(--border); margin-top:4px; }
+  .stage:last-of-type .num .line { display:none; }
+
+  .body { background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:14px 16px; margin:0 12px 14px 0; }
+  .body h2 { font-size:14px; margin:0 0 2px; }
+  .body .who { font-size:10px; color:var(--faint); letter-spacing:0.05em; margin-bottom:9px; }
+  .step { display:flex; gap:8px; align-items:baseline; padding:3px 0; font-size:11.5px;
+    color:var(--dim); line-height:1.5; }
+  .step b { color:var(--text); font-weight:600; }
+  .tool { font-family:Consolas,monospace; font-size:10.5px; padding:1px 6px; border-radius:4px;
+    white-space:nowrap; background:var(--purple-bg); color:#c4b5fd; border:1px solid #3b2d6e; }
+  .tool.ci { background:var(--blue-bg); color:#93c5fd; border-color:#1e3a5f; }
+  .tool.git { background:#1a2030; color:#9ca3af; border-color:#2a3346; }
+  .loop { font-size:10px; color:var(--amber); border:1px dashed #713f12; border-radius:6px;
+    padding:5px 9px; margin-top:8px; display:inline-block; line-height:1.5; }
+
+  .real { background:#10151f; border:1px solid var(--border); border-left:3px solid var(--gold);
+    border-radius:8px; padding:11px 13px; margin:0 0 14px 0; font-size:10.5px; color:var(--dim);
+    line-height:1.55; }
+  .real .tag { font-size:9px; font-weight:700; letter-spacing:0.08em; color:var(--gold);
+    display:block; margin-bottom:5px; }
+  .real b { color:var(--text); }
+
+  .side-note { background:var(--purple-bg); border:1px solid #3b2d6e; border-radius:10px;
+    padding:14px 18px; margin:8px 0 22px 56px; font-size:12px; color:#c4b5fd; line-height:1.65; }
+  .side-note b { color:#e2d9ff; }
+</style>
+</head>
+<body>
+<h1>Life of a Sprint -- Planning to Harvesting</h1>
+<p class="sub">The full loop, annotated with real sprint traces (kb-trust-ops + kb-inflight-capture, 2026-07-07). Updated: learnings are now captured AT discovery time in Plan and Execute; the KB Agent curates at harvest.</p>
+
+<div class="wrap">
+
+  <!-- 1 REQUIREMENTS -->
+  <div class="stage">
+    <div class="num"><div class="circle" style="color:#f59e0b;border-color:#f59e0b">1</div><div class="line"></div></div>
+    <div class="body">
+      <h2 style="color:#f59e0b">Requirements + Design</h2>
+      <div class="who">USER -> PM ORCHESTRATOR</div>
+      <div class="step"><span>User states the goal. PM writes <b>requirements.md</b> (features, done criteria) and <b>design.md</b> (binding decisions the reviewers will enforce), creates the beads epic, commits + pushes.</span></div>
+      <div class="step"><span class="tool git">bd create epic</span><span class="tool git">git commit as pm</span></div>
+      <div class="step"><span>Standing user instruction detected ("always X")? PM proposes a <b>user-directive</b> (pending) and surfaces the approve command.</span></div>
+    </div>
+    <div class="real"><span class="tag">KB-TRUST-OPS, FOR REAL</span>
+      11 features (F1-F11) from the trust-gap audit; design D1-D9 with the directive-gate
+      redesign as the riskiest decision. Your "auto-commit at harvest" instruction arrived
+      mid-sprint and was amended into F6a/D5 -- requirements are living documents.</div>
+  </div>
+
+  <!-- 2 PLAN -->
+  <div class="stage">
+    <div class="num"><div class="circle" style="color:#60a5fa;border-color:#60a5fa">2</div><div class="line"></div></div>
+    <div class="body">
+      <h2 style="color:#60a5fa">Plan</h2>
+      <div class="who">PLANNER -- strongest model, fresh session</div>
+      <div class="step"><span class="tool">kb_session_prime</span><span>arrives pre-loaded: staleness check -> OR-join retrieval -> graph-neighbor expansion -> bible cold-seed. Prior sprints' CONFIRMED entries replace exploratory reads.</span></div>
+      <div class="step"><span class="tool">kb_stats</span><span>coverage on the plan's key symbols -> <b>quantitative model assignment</b>: coverage &gt;= 0.8 -&gt; cheap model, &lt; 0.3 -&gt; premium + front-load; the number is cited in PLAN.md.</span></div>
+      <div class="step"><span class="tool ci">code_map / code_query / code_context</span><span>structural orientation from the index, never Glob/Grep.</span></div>
+      <div class="step"><span class="tool">kb_capture</span><span><b>CAPTURE AT DISCOVERY TIME:</b> conventions, structural patterns, gotchas found while exploring are captured IMMEDIATELY (clamped to INFERRED, tagged sprint/phase) -- exploration discoveries no longer evaporate.</span></div>
+      <div class="step"><span>Writes <b>PLAN.md</b>: phased tasks, riskiest first, exact model per task citing KB coverage, VERIFY closing each phase. Commits as pm-planner.</span></div>
+    </div>
+    <div class="real"><span class="tag">KB-TRUST-OPS, FOR REAL</span>
+      20 tasks / 3 phases / 2 opus + 11 sonnet + 4 haiku. 11 KB entries (clamp line numbers,
+      guard locations, attack path) replaced all exploratory reads -- the planner cited
+      each entry per task it informed.</div>
+  </div>
+
+  <!-- 3 PLAN REVIEW -->
+  <div class="stage">
+    <div class="num"><div class="circle" style="color:#93c5fd;border-color:#93c5fd">3</div><div class="line"></div></div>
+    <div class="body">
+      <h2 style="color:#93c5fd">Plan Review (loop to APPROVED)</h2>
+      <div class="who">PLAN-REVIEWER -- strongest model, fresh session</div>
+      <div class="step"><span>Checks coverage, design compliance, risk order, self-containedness -- and <b>attacks the plan</b>: verifies factual anchors against source, war-games the security design.</span></div>
+      <div class="step"><span class="tool">kb_capture</span><span>plan-review discoveries (a design flaw class, an attack path, a corrected factual anchor) are captured at discovery time too -- they no longer evaporate into feedback.md history.</span></div>
+      <div class="step"><span>CHANGES NEEDED -&gt; PM updates design.md if the design itself was wrong -&gt; planner revises -&gt; re-review. APPROVED -&gt; beads tasks + progress.json generated.</span></div>
+      <div class="loop">planner &lt;-&gt; plan-reviewer loop until APPROVED -- the cheapest place to catch a flaw</div>
+    </div>
+    <div class="real"><span class="tag">KB-TRUST-OPS, FOR REAL</span>
+      Round 1: CHANGES NEEDED -- the reviewer found <b>2 HIGH</b> flaws in MY design:
+      kb_promote was a 2-call activation ladder for forged directives, and pending
+      proposals were not actually excluded from retrieval. Design hardened, plan revised,
+      round 2 APPROVED. This loop paid for itself right here.</div>
+  </div>
+
+  <!-- 4 EXECUTE -->
+  <div class="stage">
+    <div class="num"><div class="circle" style="color:#fb923c;border-color:#fb923c">4</div><div class="line"></div></div>
+    <div class="body">
+      <h2 style="color:#fb923c">Execute (per phase)</h2>
+      <div class="who">DOER -- the model the planner assigned, per task streak</div>
+      <div class="step"><span class="tool">kb_session_prime</span><span>+</span><span class="tool">kb_query</span><span><b>retrieve-first:</b> a CONFIRMED hit skips the source read entirely.</span></div>
+      <div class="step"><span class="tool ci">code_context / code_impact / code_tests</span><span>structural navigation; code_context inlines matching KB entries; code_tests finds targeted tests to run.</span></div>
+      <div class="step"><span class="tool">kb_capture</span><span><b>CAPTURE AT DISCOVERY TIME:</b> coding standards, conventions, constraints discovered while working are captured the moment they are found (clamped to INFERRED, tagged sprint/phase). Trust rule: CONFIRMED fully; INFERRED is a strong hint -- verify against source when correctness matters.</span></div>
+      <div class="step"><span class="tool">kb_feedback</span><span>if a retrieved entry proves wrong in practice -&gt; flag + stale (downvote), never silently ignore.</span></div>
+      <div class="step"><span>Implement -&gt; fast tests -&gt; commit as pm-doer -&gt; update progress.json -&gt; next task. <b>Fail-then-pass tests</b> required for behavior changes.</span></div>
+      <div class="step"><span><b>VERIFY checkpoint</b> ends the phase: build + full suite + <span class="tool ci">gitnexus analyze</span> (incremental re-index so later phases see new symbols) + push. Then STOP for review.</span></div>
+    </div>
+    <div class="real"><span class="tag">KB-TRUST-OPS, FOR REAL</span>
+      Phase 1 doer proved the gate with 8 attack tests: 7/8 FAIL on the vulnerable code,
+      8/8 pass on the fix. One doer stalled mid-task in Phase 3 -- a fresh dispatch
+      inspected the uncommitted diff and completed it rather than restarting (recovery
+      is state-driven, not memory-driven).</div>
+  </div>
+
+  <!-- 5 REVIEW -->
+  <div class="stage">
+    <div class="num"><div class="circle" style="color:#93c5fd;border-color:#93c5fd">5</div><div class="line"></div></div>
+    <div class="body">
+      <h2 style="color:#93c5fd">Code Review (per phase)</h2>
+      <div class="who">REVIEWER -- strongest model, fresh session, independent</div>
+      <div class="step"><span>Reads diff + PLAN + requirements + design; <b>runs build and tests itself</b>; uses</span><span class="tool ci">code_impact</span><span>for blast radius;</span><span class="tool">kb_query</span><span>to skip re-derivation.</span></div>
+      <div class="step"><span>Security-critical work gets <b>live attacks</b>, not test-reading: the reviewer executes the exploit against compiled code and confirms it fails.</span></div>
+      <div class="step"><span class="tool">kb_capture</span><span><b>REVIEWERS CAPTURE TOO:</b> flaw classes, attack paths, constraints the diff exposed are captured at discovery (INFERRED, tagged) -- both the code reviewer AND the plan-reviewer (stage 3). Review insights no longer live only in feedback.md history.</span></div>
+      <div class="step"><span>Writes feedback.md verdict as pm-reviewer. CHANGES NEEDED -&gt; doer fixes -&gt; re-review (max 3 cycles). <b>The verdict is also the knowledge quality gate.</b></span></div>
+      <div class="loop">doer &lt;-&gt; reviewer loop until APPROVED, then the phase's knowledge is harvestable</div>
+    </div>
+    <div class="real"><span class="tag">KB-TRUST-OPS, FOR REAL</span>
+      Phase 1's reviewer attacked all 3 doors live against dist/ (forge capture, promote
+      ladder, HTTP route) -- all held. Phase 2's reviewer ran the auto-commit in real temp
+      git repos and verified a staged unrelated file STAYED staged. 0 HIGH findings
+      survived to merge in any phase.</div>
+  </div>
+
+  <!-- 6 HARVEST -->
+  <div class="stage">
+    <div class="num"><div class="circle" style="color:#a78bfa;border-color:#a78bfa">6</div><div class="line"></div></div>
+    <div class="body">
+      <h2 style="color:#a78bfa">Harvest = Curate (after EVERY verdict)</h2>
+      <div class="who">KB AGENT -- cheap model, dispatched by PM automatically; CURATOR, not sole capturer</div>
+      <div class="step"><span class="tool">kb_query tag:phase</span><span><b>gather the phase's in-flight captures</b> (everything the planner/doer/reviewer captured at discovery time, found by sprint/phase tag).</span></div>
+      <div class="step"><span class="tool">kb_promote</span><span><b>curate each against the verdict:</b> validated by APPROVED code -&gt; promoted to CONFIRMED with evidence; wrong -&gt; kb_feedback (flag + stale); fine-but-unvalidated -&gt; left INFERRED. Promotion remains the ONLY path to CONFIRMED.</span></div>
+      <div class="step"><span class="tool">kb_capture</span><span>residual gaps the in-flight captures missed (the curator's fallback job). Corrections link by default (both stay live); pass supersedes to retire one for real. Contradictions get flagged.</span></div>
+      <div class="step"><span class="tool">kb_export</span><span>writes .fleet/kb-canonical.json and <b>AUTO-COMMITS it</b> (pm-kb identity, pathspec-only, non-fatal) -- the learning enters the codebase with zero manual steps. Fleet-mode sessions also get the transcript harvest autowire (UNVERIFIED tier).</span></div>
+    </div>
+    <div class="real"><span class="tag">FOR REAL -- FIRST CURATOR RUN (kb-inflight-capture)</span>
+      The doer dogfooded in-flight capture while building it (2 discoveries that the old
+      post-verdict flow would have lost). The first curator run then found both by tag,
+      validated them against the APPROVED verdict, captured 3 residual gaps, and the
+      bible auto-committed itself: <b>77 entries, commit 5c6ea18, identity pm-kb</b>.</div>
+  </div>
+
+  <!-- 7 COMPLETE -->
+  <div class="stage">
+    <div class="num"><div class="circle" style="color:#4ade80;border-color:#4ade80">7</div><div class="line"></div></div>
+    <div class="body">
+      <h2 style="color:#4ade80">Complete</h2>
+      <div class="who">PM ORCHESTRATOR (+ human decisions)</div>
+      <div class="step"><span>All phases APPROVED -&gt; close beads epic + delivered source issues -&gt; drop sprint scaffolding (requirements/design/PLAN/progress/feedback) so the net diff is product-only -&gt; install/reload the fleet.</span></div>
+      <div class="step"><span><b>Human gates stay human:</b> PR is raised only when the user asks; merge is always the user's call; pending directives await</span><span class="tool git">apra-fleet kb approve-directive</span></div>
+    </div>
+    <div class="real"><span class="tag">KB-TRUST-OPS, FOR REAL</span>
+      Epic yashr-bp2 closed with 20+1 tasks done; 1,975 tests passing; scaffolding kept
+      on-branch for now (multiple sprints share it); no PR per standing instruction.</div>
+  </div>
+
+  <!-- 8 NEXT SPRINT -->
+  <div class="stage">
+    <div class="num"><div class="circle" style="color:#f59e0b;border-color:#f59e0b">8</div><div class="line"></div></div>
+    <div class="body">
+      <h2 style="color:#f59e0b">Next sprint starts smarter</h2>
+      <div class="who">THE COMPOUNDING LOOP</div>
+      <div class="step"><span>The next planner primes and inherits everything: live CONFIRMED entries first, graph-expanded neighbors below, project + global bibles seeding any cold start. Knowledge captured once is retrieved forever; a correction propagates forever; your approved directives apply forever.</span></div>
+    </div>
+    <div class="real"><span class="tag">MEASURED ACROSS THE 4 SPRINTS OF 2026-07-06/07</span>
+      Retrieval hit rate grew to <b>76%</b> (235 reads); planners went from cold-KB
+      guesswork to citing entry IDs per task; each sprint's plan was measurably cheaper
+      to produce than the last because exploration was replaced by retrieval.</div>
+  </div>
+
+  <div class="side-note">
+    <b>The one-sentence version:</b> a sprint is a loop of gated handoffs -- requirements
+    (human intent) -&gt; plan (KB-informed, capturing discoveries as it explores) -&gt; execute
+    (retrieve-first, capturing at discovery time, fail-then-pass) -&gt; review (independent,
+    sometimes literally attacking the code) -&gt; harvest (the curator: verdict-gated
+    promotion of what the phases already captured, self-committing bible) -- learning
+    happens WHERE the discovery happens, trust is assigned where the verdict happens,
+    and every later phase and sprint starts better-informed than the one before it.
+  </div>
+
+</div>
+</body>
+</html>
