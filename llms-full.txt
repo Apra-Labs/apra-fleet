@@ -430,6 +430,21 @@ what is in flight.
 
 See [skills/pm/SKILL.md](skills/pm/SKILL.md) for the full command reference.
 
+**`/auto-sprint` vs `/pm`.** The two commands solve the same problem --
+running a sprint end to end -- with different tradeoffs, not competing
+products. `/auto-sprint` is a local, Claude-only, deterministic JS workflow
+(`auto-sprint.js`) that runs inside Claude Code's workflow runtime: the
+script itself owns all cycle routing across the plan/develop/test/harvest
+phases, beads is the sole exit signal, and no LLM ever decides whether the
+sprint continues. `/pm` is Fleet's cross-provider, role-distributed,
+model-driven skill: the same phases are driven by a human-approved plan and
+doer-reviewer loops, with work dispatched across members running different
+providers and models. In both modes, registered fleet members are
+amplifiers, not decision-makers -- the workflow (the script for
+`/auto-sprint`, the skill plus beads graph for `/pm`) holds the control
+flow, and members only run execution-only agent roles such as planner,
+doer, reviewer, deployer, and harvester.
+
 **Cost accounting.** When PM is installed, the installer also writes `cost.js`
 to the PM skill directory for every provider. `cost.js` exports the seven pure
 cost-computation functions (`computeSprintQuote`, `computeSprintAnalysis`,
