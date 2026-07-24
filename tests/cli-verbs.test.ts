@@ -138,6 +138,29 @@ describe('runStart', () => {
     }
   });
 
+  it('falls back to direct spawn when service manager reports installed but start() throws (e.g. no D-Bus session)', async () => {
+    // isInstalled() can report true from a leftover unit file alone even when
+    // registration never fully completed (daemon-reload failed for lack of a
+    // D-Bus/systemd user session, e.g. a headless CI runner) -- in that case
+    // svcMgr.start() fails the same way `systemctl --user start` would.
+    const savedDataDir = process.env.APRA_FLEET_DATA_DIR;
+    delete process.env.APRA_FLEET_DATA_DIR;
+    try {
+      mockSvcMgr.isInstalled.mockResolvedValue(true);
+      mockSvcMgr.start.mockRejectedValueOnce(new Error('Command failed: systemctl --user start apra-fleet'));
+      mockCheckRunning.mockResolvedValueOnce(STOPPED).mockResolvedValueOnce(RUNNING);
+      vi.useFakeTimers();
+      const p = runStart([]);
+      await vi.advanceTimersByTimeAsync(2001);
+      await p;
+      expect(mockSvcMgr.start).toHaveBeenCalled();
+      expect(vi.mocked(spawn)).toHaveBeenCalled();
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
+    } finally {
+      if (savedDataDir !== undefined) process.env.APRA_FLEET_DATA_DIR = savedDataDir;
+    }
+  });
+
   it('direct-spawns and skips service manager start for a non-default instance (custom port)', async () => {
     const savedPort = process.env.APRA_FLEET_PORT;
     process.env.APRA_FLEET_PORT = '18700';

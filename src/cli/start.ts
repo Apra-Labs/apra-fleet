@@ -29,6 +29,28 @@ function findProjectRoot(): string {
   throw new Error('Cannot find project root (version.json not found)');
 }
 
+function directSpawn(): void {
+  let cmd: string;
+  let spawnArgs: string[];
+  if (isSea()) {
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    cmd = path.join(BIN_DIR, `apra-fleet${ext}`);
+    spawnArgs = ['--transport', 'http'];
+  } else {
+    cmd = process.execPath;
+    spawnArgs = [path.join(findProjectRoot(), 'dist', 'index.js'), '--transport', 'http'];
+  }
+  fs.mkdirSync(FLEET_DIR, { recursive: true });
+  const logFd = fs.openSync(LOG_FILE_PATH, 'a');
+  const child = spawn(cmd, spawnArgs, {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+  });
+  child.unref();
+  fs.closeSync(logFd);
+  console.log('Server starting...');
+}
+
 export async function runStart(_args: string[]): Promise<void> {
   const instance = await checkRunningInstance();
   if (instance.running) {
@@ -44,28 +66,20 @@ export async function runStart(_args: string[]): Promise<void> {
   // calling svcMgr.start(), even when the service manager reports installed.
   // See apra-fleet-eft.51.
   if (installed && !isNonDefaultInstance()) {
-    await svcMgr.start();
-    console.log('Server starting via service manager...');
-  } else {
-    let cmd: string;
-    let spawnArgs: string[];
-    if (isSea()) {
-      const ext = process.platform === 'win32' ? '.exe' : '';
-      cmd = path.join(BIN_DIR, `apra-fleet${ext}`);
-      spawnArgs = ['--transport', 'http'];
-    } else {
-      cmd = process.execPath;
-      spawnArgs = [path.join(findProjectRoot(), 'dist', 'index.js'), '--transport', 'http'];
+    try {
+      await svcMgr.start();
+      console.log('Server starting via service manager...');
+    } catch (err: any) {
+      // isInstalled() can report true from a unit file alone even when
+      // registration never fully completed (e.g. daemon-reload failed for
+      // lack of a D-Bus/systemd user session on a headless runner) -- in
+      // that case svcMgr.start() fails the same way. Fall back to a direct
+      // spawn instead of hard-failing, same as the "not installed" path.
+      console.warn(`Service manager start failed (${err.message}); falling back to direct spawn.`);
+      directSpawn();
     }
-    fs.mkdirSync(FLEET_DIR, { recursive: true });
-    const logFd = fs.openSync(LOG_FILE_PATH, 'a');
-    const child = spawn(cmd, spawnArgs, {
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-    });
-    child.unref();
-    fs.closeSync(logFd);
-    console.log('Server starting...');
+  } else {
+    directSpawn();
   }
 
   await new Promise<void>(resolve => setTimeout(resolve, 2000));
