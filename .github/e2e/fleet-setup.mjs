@@ -61,6 +61,14 @@ export function resolveMemberConfigs(suiteId, { suites, members }) {
       host: memberCfg.host,
       username: memberCfg.username,
       folder: memberCfg.work_folder,
+      // roleCfg.os is either a bare OS name ("linux"/"macos"/"windows", remote
+      // members) or "local_<role>_<os>" (local members) -- either way the OS
+      // name is the last underscore-separated segment. execute_command runs
+      // the literal string we pass through the member's native shell with NO
+      // translation (bash on linux/macos, powershell.exe on windows -- see
+      // src/os/windows.ts's cleanExec()), so callers must pick shell-correct
+      // commands themselves.
+      os: roleCfg.os.split('_').pop(),
     };
   }
   return resolved;
@@ -158,10 +166,15 @@ async function assertMembersOnline(fleetApi, names) {
   }
 }
 
-// Verbatim port of setup-script.md's "Verify tools on each member" block --
-// no behavior change, just moved out of an LLM's hands.
-const BD_CHECK = 'which bd || npm install -g @beads/bd@1.0.4';
-const DOLT_CHECK = [
+// Verbatim port of setup-script.md's "Verify tools on each member" block for
+// linux/macos (bash) -- no behavior change there, just moved out of an LLM's
+// hands. execute_command does NOT translate commands for the target shell
+// (src/os/*.ts's cleanExec() picks the shell, but the command string is run
+// as-is), so a windows member needs its own PowerShell version -- bash's
+// `||`/`$(...)` command substitution do not parse under Windows PowerShell
+// 5.1 (`The token '||' is not a valid statement separator`).
+const BD_CHECK_BASH = 'which bd || npm install -g @beads/bd@1.0.4';
+const DOLT_CHECK_BASH = [
   'which dolt || ~/bin/dolt version || (',
   'OS=$(uname -s | tr \'[:upper:]\' \'[:lower:]\');',
   'ARCH=$(uname -m | sed \'s/x86_64/amd64/\');',
@@ -173,9 +186,30 @@ const DOLT_CHECK = [
   ')',
 ].join(' ');
 
-async function verifyBdDolt(fleetApi, memberName) {
-  await execCommand(fleetApi, memberName, BD_CHECK, 'bd check');
-  await execCommand(fleetApi, memberName, DOLT_CHECK, 'dolt check');
+const BD_CHECK_WINDOWS = 'if (Get-Command bd -ErrorAction SilentlyContinue) { bd version } else { npm install -g @beads/bd@1.0.4 }';
+const DOLT_CHECK_WINDOWS = [
+  'if (Get-Command dolt -ErrorAction SilentlyContinue) { dolt version }',
+  'elseif (Test-Path "$HOME\\bin\\dolt.exe") { & "$HOME\\bin\\dolt.exe" version }',
+  'else {',
+  'New-Item -ItemType Directory -Force -Path "$HOME\\bin" | Out-Null;',
+  'Invoke-WebRequest -Uri "https://github.com/dolthub/dolt/releases/latest/download/dolt-windows-amd64.zip" -OutFile "$env:TEMP\\dolt.zip";',
+  'Expand-Archive -Path "$env:TEMP\\dolt.zip" -DestinationPath "$env:TEMP\\dolt-extract" -Force;',
+  'Move-Item -Path "$env:TEMP\\dolt-extract\\dolt-windows-amd64\\bin\\dolt.exe" -Destination "$HOME\\bin\\dolt.exe" -Force;',
+  '& "$HOME\\bin\\dolt.exe" version',
+  '}',
+].join(' ');
+
+export function bdCheckFor(os) {
+  return os === 'windows' ? BD_CHECK_WINDOWS : BD_CHECK_BASH;
+}
+
+export function doltCheckFor(os) {
+  return os === 'windows' ? DOLT_CHECK_WINDOWS : DOLT_CHECK_BASH;
+}
+
+async function verifyBdDolt(fleetApi, memberName, os) {
+  await execCommand(fleetApi, memberName, bdCheckFor(os), 'bd check');
+  await execCommand(fleetApi, memberName, doltCheckFor(os), 'dolt check');
 }
 
 async function verifyEcho(fleetApi, memberName) {
@@ -233,7 +267,7 @@ async function runSetup(suiteId, runDir) {
     }
     await assertMembersOnline(fleetApi, memberList.map((m) => m.name));
     for (const member of memberList) {
-      await verifyBdDolt(fleetApi, member.name);
+      await verifyBdDolt(fleetApi, member.name, member.os);
     }
     writeCheckpoint('T1', 'PASS', `registered ${memberList.map((m) => m.name).join(', ')}`);
 

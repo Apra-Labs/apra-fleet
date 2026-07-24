@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { loadConfig, resolveMemberConfigs } from '../.github/e2e/fleet-setup.mjs';
+import { loadConfig, resolveMemberConfigs, bdCheckFor, doltCheckFor } from '../.github/e2e/fleet-setup.mjs';
 
 const REPO_ROOT = path.join(process.cwd());
 
@@ -23,6 +23,7 @@ describe('fleet-setup.mjs config resolution', () => {
       host: '192.168.1.102',
       username: 'akhil',
       folder: '/home/akhil/git/apra-fleet-e2e',
+      os: 'linux',
     });
     expect(resolved.reviewer).toMatchObject({
       name: 'bella',
@@ -32,6 +33,7 @@ describe('fleet-setup.mjs config resolution', () => {
       host: '192.168.1.13',
       username: 'akhil',
       folder: '/Users/akhil/git/apra-fleet-e2e',
+      os: 'macos',
     });
   });
 
@@ -43,11 +45,20 @@ describe('fleet-setup.mjs config resolution', () => {
     expect(resolved.doer.host).toBe('local');
     expect(resolved.doer.username).toBeUndefined();
     expect(resolved.doer.folder).toBe('/home/akhil/git/apra-fleet-e2e-doer');
+    expect(resolved.doer.os).toBe('linux');
 
     expect(resolved.reviewer.type).toBe('local');
     expect(resolved.reviewer.folder).toBe('/home/akhil/git/apra-fleet-e2e-rev');
+    expect(resolved.reviewer.os).toBe('linux');
     // doer and reviewer must never collide on the same local folder
     expect(resolved.doer.folder).not.toBe(resolved.reviewer.folder);
+  });
+
+  it('resolves a local windows suite (s1.1) os as "windows", not the "local_doer_windows" raw key', () => {
+    const config = loadConfig(REPO_ROOT);
+    const resolved = resolveMemberConfigs('s1.1', config);
+    expect(resolved.doer.os).toBe('windows');
+    expect(resolved.reviewer.os).toBe('windows');
   });
 
   it('carries each role\'s own llm_provider through, even when it differs from the PM\'s', () => {
@@ -60,5 +71,27 @@ describe('fleet-setup.mjs config resolution', () => {
   it('throws a clear error for an unknown suite id', () => {
     const config = loadConfig(REPO_ROOT);
     expect(() => resolveMemberConfigs('does-not-exist', config)).toThrow(/Unknown suite/);
+  });
+});
+
+describe('fleet-setup.mjs bd/dolt check command selection', () => {
+  // execute_command runs the literal string through the member's native
+  // shell with no translation -- bash's `||`/`$(...)` syntax is rejected by
+  // Windows PowerShell 5.1 ("The token '||' is not a valid statement
+  // separator"), so windows members need their own PowerShell command.
+  it('uses bash-syntax commands for linux and macos', () => {
+    for (const os of ['linux', 'macos']) {
+      expect(bdCheckFor(os)).toMatch(/^which bd \|\|/);
+      expect(doltCheckFor(os)).toMatch(/^which dolt \|\|/);
+      expect(doltCheckFor(os)).not.toContain('Get-Command');
+    }
+  });
+
+  it('uses PowerShell-syntax commands for windows', () => {
+    expect(bdCheckFor('windows')).toMatch(/^if \(Get-Command bd/);
+    expect(bdCheckFor('windows')).not.toContain('||');
+    expect(doltCheckFor('windows')).toMatch(/^if \(Get-Command dolt/);
+    expect(doltCheckFor('windows')).not.toContain('||');
+    expect(doltCheckFor('windows')).not.toContain('$(');
   });
 });
