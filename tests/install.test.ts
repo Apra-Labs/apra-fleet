@@ -101,10 +101,13 @@ describe('dev-mode agent install carries nested agents/schemas and agents/_share
     vi.mocked(os.homedir).mockReturnValue(mockHome);
 
     vi.mocked(fs.existsSync).mockImplementation((p: any) => {
-      const ps = p.toString();
+      const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('apra-pm') && ps.includes('agents')) return true;
+      // Anchor apra-pm to a real path segment, not a bare substring: an
+      // invoking path such as .../vendor-sync-apra-pm/... must NOT be treated
+      // as the apra-pm package directory (see apra-fleet-c96).
+      if (/(^|\/)apra-pm(\/|$)/.test(ps) && ps.includes('agents')) return true;
       return false;
     });
 
@@ -250,7 +253,7 @@ describe('npm dist-fallback: agent install carries nested agents/schemas and age
       const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('apra-pm')) return false; // apra-pm package dir absent -- npm install
+      if (/(^|\/)apra-pm(\/|$)/.test(ps)) return false; // apra-pm package dir absent (see apra-fleet-c96)
       if (ps.includes('dist/agents')) return true; // matches dist/agents and its schemas/_shared subdirs
       return false;
     });
@@ -323,7 +326,7 @@ describe('npm dist-fallback: auto-sprint-args skill install', () => {
       const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('apra-pm')) return false; // apra-pm package dir absent -- npm install
+      if (/(^|\/)apra-pm(\/|$)/.test(ps)) return false; // apra-pm package dir absent (see apra-fleet-c96)
       if (ps.endsWith('dist/skills/auto-sprint-args')) return true;
       return false;
     });
