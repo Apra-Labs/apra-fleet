@@ -1,0 +1,234 @@
+name: pm-e2e
+run-name: pm E2E ${{ inputs.suite }} - ${{ github.ref_name }}
+
+# Drives the pm skill headless against the fleet-e2e-toy repo, one suite per run.
+# Runs on self-hosted runners (or a specified runner label). The runner must have
+# the provider CLI installed and authenticated, plus node, git, and beads (bd).
+# Manual trigger.
+#
+# Secrets: E2E_GH_TOKEN -- write access to the toy, used to push the sprint branch
+# and open a PR (no merge). The runner closes the PR and deletes the branch after.
+# Provider CLI auth lives on the runner itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Suite to run. pm-s1=Claude, pm-s7=Gemini, pm-s8=AGY, pm-s9=OpenCode, pm-s10=Claude-PM-Workflow.'
+        required: true
+        type: choice
+        options: [pm-s1, pm-s7, pm-s8, pm-s9, pm-s10]
+      runner:
+        description: 'Runner label override. Leave blank for default (self-hosted for all suites).'
+        required: false
+        default: ''
+        type: string
+      model:
+        description: 'Model override for the suite (e.g. opencode/nemotron-3-ultra-free). Leave blank to use the suite default.'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  e2e:
+    name: 'pm e2e - ${{ inputs.suite }}'
+    env:
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
+      # Single source of truth for the beads version the e2e requires. bd 1.1.0 = remote-migrate
+      # schema v53; the toy repo's remote Dolt is migrated to match. Referenced by both the
+      # version-gate step and the opencode CLI-install step below.
+      BEADS_REQ: "1.1.0"
+    runs-on: ${{ inputs.runner != '' && inputs.runner || 'self-hosted' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive provider from suite
+        id: prov
+        shell: bash
+        run: |
+          case "${{ inputs.suite }}" in
+            pm-s1) P=claude ;;
+            pm-s7) P=gemini ;;
+            pm-s8) P=agy ;;
+            pm-s9) P=opencode ;;
+            pm-s10) P=claude ;;
+            *) echo "::error::unknown suite ${{ inputs.suite }}"; exit 1 ;;
+          esac
+          echo "provider=$P" >> "$GITHUB_OUTPUT"
+
+      # agy is not on PATH by default in the runner's non-login shell (the user's
+      # interactive PATH from .zshrc etc. is not loaded). Its standard installer drops
+      # the binary in ~/.local/bin; older/other layouts are added as fallbacks.
+      - name: Locate agy CLI
+        if: ${{ steps.prov.outputs.provider == 'agy' }}
+        shell: bash
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if   [ "$RUNNER_OS" = "Linux"   ]; then echo "$HOME/.local/share/agy/bin" >> "$GITHUB_PATH"
+          elif [ "$RUNNER_OS" = "macOS"   ]; then echo "$HOME/Library/Application Support/agy/bin" >> "$GITHUB_PATH"
+          elif [ "$RUNNER_OS" = "Windows" ]; then echo "$(cygpath -w "${LOCALAPPDATA:-$USERPROFILE/AppData/Local}/agy/bin")" >> "$GITHUB_PATH"
+          fi
+
+      # Guarantee a beads version that respects `no-db: true` (JSONL-only) mode. bd 1.0.4
+      # has a regression: even with no-db mode set in .beads/config.yaml it still adopts the
+      # remote's refs/dolt/data on the first command, and if that Dolt history is schema-
+      # incompatible it fails hard ("Error 1105: table has unknown fields"), which aborts the
+      # sprint before it starts. 1.0.5 fixes this. This step runs for EVERY provider (self-
+      # hosted runners can carry a stale global bd that no install step manages, e.g. the
+      # claude-provider suites) and, when the present bd is missing or older than the required
+      # version, installs the pinned version into a job-local dir prepended to PATH -- no sudo,
+      # no clobbering the runner's global bd.
+      # Job-local best-effort net for Linux/macOS runners (mostly the GitHub-hosted opencode
+      # provider). Skipped on Windows on purpose: the only Windows runner is self-hosted
+      # (fleet-win11) and is npm-managed & already pinned to the required version, and the
+      # release tarball below is not published for Windows -- guessing an asset name here
+      # would break the job rather than protect it.
+      - name: Ensure beads >= required version
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          REQ="${BEADS_REQ}"   # single-sourced from the job-level env (see BEADS_REQ above)
+          CUR="$(bd version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+          LOWEST="$(printf '%s\n%s\n' "$REQ" "$CUR" | sort -V | head -1)"
+          if [ -n "$CUR" ] && [ "$LOWEST" = "$REQ" ]; then
+            echo "beads $CUR present (>= $REQ) -- keeping it"
+          else
+            echo "beads '${CUR:-none}' is missing or older than $REQ -- installing $REQ job-locally"
+            if   [ "$RUNNER_OS" = "Linux" ]; then BEADS_ARCH="linux_amd64"
+            elif [ "$RUNNER_OS" = "macOS" ]; then BEADS_ARCH="darwin_arm64"
+            fi
+            BDDIR="$RUNNER_TEMP/bd-bin"
+            mkdir -p "$BDDIR"
+            curl -fsSL "https://github.com/gastownhall/beads/releases/download/v${REQ}/beads_${REQ}_${BEADS_ARCH}.tar.gz" | tar -xz -C "$BDDIR"
+            chmod +x "$BDDIR/bd"
+            echo "$BDDIR" >> "$GITHUB_PATH"
+            "$BDDIR/bd" --version || { echo "::error::beads $REQ install failed"; exit 1; }
+          fi
+
+      - name: Install required CLI tools (opencode suite on GitHub-hosted runner)
+        if: ${{ steps.prov.outputs.provider == 'opencode' }}
+        shell: bash
+        run: |
+          if ! command -v bd &> /dev/null; then
+            echo "beads not found -- installing from GitHub release..."
+            BEADS_VERSION="${BEADS_REQ}"
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              BEADS_ARCH="linux_amd64"
+            elif [ "$RUNNER_OS" = "macOS" ]; then
+              BEADS_ARCH="darwin_arm64"
+            fi
+            curl -fsSL "https://github.com/gastownhall/beads/releases/download/v${BEADS_VERSION}/beads_${BEADS_VERSION}_${BEADS_ARCH}.tar.gz" | tar -xz -C /tmp
+            sudo mv /tmp/bd /usr/local/bin/bd
+            sudo chmod +x /usr/local/bin/bd
+          fi
+          bd --version || { echo "::error::beads (bd) install failed"; exit 1; }
+          if ! command -v opencode &> /dev/null; then
+            echo "OpenCode not found -- installing opencode-ai..."
+            npm install -g opencode-ai
+          fi
+          opencode --version || { echo "::error::opencode CLI install failed"; exit 1; }
+
+      - name: Install pm skill
+        shell: bash
+        run: node packages/apra-fleet-se/apra-pm/install.mjs --llm "${{ steps.prov.outputs.provider }}" --force
+
+      # Pre-flight checks isolate "CLI/auth/skill not ready" from "the sprint failed".
+      - name: Pre-flight - tools present
+        shell: bash
+        run: |
+          node --version
+          git --version
+          bd --version || { echo "::error::beads (bd) not found on PATH"; exit 1; }
+          P='${{ steps.prov.outputs.provider }}'
+          if [ "$P" = "opencode" ]; then
+            opencode --version || { echo "::error::opencode CLI not found or not working"; exit 1; }
+          else
+            "$P" --version 2>&1 | head -1 || { echo "::error::$P CLI not found or not working"; exit 1; }
+          fi
+
+      - name: Pre-flight - skill + agents installed
+        shell: bash
+        run: |
+          case '${{ steps.prov.outputs.provider }}' in
+            claude)   CFG="$HOME/.claude"; AGENTS_DIR="$CFG/agents" ;;
+            gemini)   CFG="$HOME/.gemini"; AGENTS_DIR="$CFG/agents" ;;
+            agy)      CFG="$HOME/.gemini/antigravity-cli"; AGENTS_DIR="$CFG/agents" ;;
+            opencode) CFG="$HOME/.config/opencode"; AGENTS_DIR="$CFG/agents" ;;
+          esac
+          test -f "$CFG/skills/pm/SKILL.md" || { echo "::error::pm skill missing at $CFG/skills/pm"; exit 1; }
+          for a in planner plan-reviewer doer reviewer; do
+            test -f "$AGENTS_DIR/$a.md" || { echo "::error::agent $a missing at $AGENTS_DIR"; exit 1; }
+          done
+          echo "skill + 4 agents present under $CFG"
+          # pm-s10 requires the auto-sprint workflow to be installed
+          if [ '${{ inputs.suite }}' = 'pm-s10' ]; then
+            test -f "$HOME/.claude/workflows/auto-sprint.js" || { echo "::error::auto-sprint workflow missing at $HOME/.claude/workflows/auto-sprint.js"; exit 1; }
+            echo "auto-sprint workflow present"
+          fi
+
+      # The capability pm lives on: dispatching a subagent headlessly. This is
+      # exactly what stalled agy (subagent invoke -> timeout). Catch it here in ~3 min
+      # instead of a full-sprint timeout; a clean return also proves start + auth.
+      - name: Pre-flight - subagent dispatch works
+        shell: bash
+        run: |
+          P='${{ steps.prov.outputs.provider }}'
+          PROMPT="Dispatch ONE subagent (use your agent/subagent/task mechanism) whose only job is to reply with the exact text SUBAGENT-OK. Wait for it to finish, then print its reply and the text PMLITE-READY. Do nothing else."
+          CLAUDE_PROMPT="Dispatch ONE subagent whose only job is to reply SUBAGENT-OK. Wait for it, then print its reply. Also print AUTO-SPRINT-OK if you have a workflow named 'auto-sprint' available. Then print PMLITE-READY."
+          case "$P" in
+            claude)   cmd=(claude -p "$CLAUDE_PROMPT" --dangerously-skip-permissions) ;;
+            gemini)   cmd=(gemini -p "$PROMPT" --model auto --skip-trust) ;;
+            agy)      cmd=(agy -p "$PROMPT" --dangerously-skip-permissions) ;;
+            opencode) cmd=(opencode run "$PROMPT" -m opencode/mimo-v2.5-free --variant minimal --format json --dangerously-skip-permissions) ;;
+          esac
+          # macOS ships no GNU `timeout` (it is `gtimeout` from coreutils); fall back
+          # to running without a wrapper rather than dying with exit 127.
+          TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+          # Disable set -e so we can capture the exit code even on failure and echo it.
+          set +e
+          if [ -n "$TIMEOUT_BIN" ]; then
+            out=$("$TIMEOUT_BIN" 180 "${cmd[@]}" 2>&1)
+          else
+            out=$("${cmd[@]}" 2>&1)
+          fi
+          rc=$?
+          set -e
+          echo "--- provider output (rc=$rc) ---"
+          echo "$out"
+          echo "--- end output ---"
+          if [ $rc -eq 124 ]; then echo "::error::$P hung dispatching a subagent (timeout) -- pm cannot run on this provider/config"; exit 1; fi
+          echo "$out" | grep -q "PMLITE-READY" || { echo "::error::$P produced no response -- start/auth issue"; exit 1; }
+          echo "$out" | grep -q "SUBAGENT-OK"  || { echo "::error::$P responded but the subagent never returned -- subagent dispatch broken"; exit 1; }
+          if [ '${{ inputs.suite }}' = 'pm-s10' ] && [ "$P" = "claude" ]; then
+            echo "$out" | grep -q "AUTO-SPRINT-OK" || { echo "::error::claude does not have the Workflow tool -- auto-sprint cannot run"; exit 1; }
+          fi
+          echo "$P: subagent dispatch OK"
+
+      - name: Run e2e
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
+          # Self-hosted runners are trusted; pass token so the LLM can use gh CLI.
+          E2E_TRUST_LLM: "1"
+          # Model override: workflow input wins, otherwise suites.json default is used.
+          E2E_MODEL: ${{ inputs.model }}
+        run: node e2e/pm/run-e2e.mjs --suite "${{ inputs.suite }}"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pm-e2e-${{ inputs.suite }}
+          path: e2e/pm/e2e-results/
+          if-no-files-found: ignore
+
+      # Safety net: run-e2e.mjs already uninstalls pm after each suite (see
+      # teardownInstall() in e2e/pm/run-e2e.mjs). This step only catches the case
+      # where the script itself crashed or was killed by timeout-minutes before
+      # reaching that teardown, so runners never carry stale pm state (skill,
+      # agents, auto-sprint workflow, permissions) into the next e2e run.
+      - name: Uninstall pm skill (teardown safety net)
+        if: always()
+        shell: bash
+        run: node packages/apra-fleet-se/apra-pm/install.mjs --uninstall --llm "${{ steps.prov.outputs.provider }}" || true
