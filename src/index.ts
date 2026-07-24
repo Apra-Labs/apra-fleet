@@ -301,13 +301,13 @@ async function startServer() {
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
 
   // --- Code Intelligence ---
-  server.tool('code_graph', 'Trace the call graph for a function, class, or method.', codeGraphSchema.shape, wrapTool('code_graph', (input) => handleCodeGraph(input as any)));
-  server.tool('code_impact', 'Analyze upstream callers or downstream callees of a symbol.', codeImpactSchema.shape, wrapTool('code_impact', (input) => handleCodeImpact(input as any)));
-  server.tool('code_query', 'Search for symbols, patterns, or concepts in the codebase.', codeQuerySchema.shape, wrapTool('code_query', (input) => handleCodeQuery(input as any)));
-  server.tool('code_context', 'Retrieve callers, callees, and execution flows for a symbol.', codeContextSchema.shape, wrapTool('code_context', (input) => handleCodeContext(input as any)));
-  server.tool('code_map', 'Get a high-level map of codebase communities and structure.', codeMapSchema.shape, wrapTool('code_map', (input) => handleCodeMap(input as any)));
-  server.tool('code_flow', 'Trace execution flows between entry and exit points.', codeFlowSchema.shape, wrapTool('code_flow', (input) => handleCodeFlow(input as any)));
-  server.tool('code_tests', 'Find transitive test callers for a given symbol.', codeTestsSchema.shape, wrapTool('code_tests', (input) => handleCodeTests(input as any)));
+  server.tool('code_graph', 'Trace the call graph for a function, class, or method.', codeGraphSchema.shape, wrapTool('code_graph', (input, extra) => handleCodeGraph(input as any, extra?._meta?.memberId as string | undefined)));
+  server.tool('code_impact', 'Analyze upstream callers or downstream callees of a symbol.', codeImpactSchema.shape, wrapTool('code_impact', (input, extra) => handleCodeImpact(input as any, extra?._meta?.memberId as string | undefined)));
+  server.tool('code_query', 'Search for symbols, patterns, or concepts in the codebase.', codeQuerySchema.shape, wrapTool('code_query', (input, extra) => handleCodeQuery(input as any, extra?._meta?.memberId as string | undefined)));
+  server.tool('code_context', 'Retrieve callers, callees, and execution flows for a symbol.', codeContextSchema.shape, wrapTool('code_context', (input, extra) => handleCodeContext(input as any, extra?._meta?.memberId as string | undefined)));
+  server.tool('code_map', 'Get a high-level map of codebase communities and structure.', codeMapSchema.shape, wrapTool('code_map', (input, extra) => handleCodeMap(input as any, extra?._meta?.memberId as string | undefined)));
+  server.tool('code_flow', 'Trace execution flows between entry and exit points.', codeFlowSchema.shape, wrapTool('code_flow', (input, extra) => handleCodeFlow(input as any, extra?._meta?.memberId as string | undefined)));
+  server.tool('code_tests', 'Find transitive test callers for a given symbol.', codeTestsSchema.shape, wrapTool('code_tests', (input, extra) => handleCodeTests(input as any, extra?._meta?.memberId as string | undefined)));
 
   // --- Start Server ---
   const transport = new StdioServerTransport();

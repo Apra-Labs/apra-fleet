@@ -234,6 +234,57 @@ describe('tool handler functions', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tool registration wiring -- _meta.memberId extraction (apra-fleet-c6o.2.2)
+//
+// The tool registrations in src/index.ts pass (input, extra) from wrapTool and
+// extract extra?._meta?.memberId to forward to the handler. These tests verify
+// the extraction pattern works correctly by simulating the wrapTool callback
+// shape: (input, extra) where extra carries _meta.memberId.
+// ---------------------------------------------------------------------------
+describe('tool registration wiring -- _meta.memberId extraction', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Each handler is a simple (input, memberId?) function. The wiring in index.ts
+  // passes extra?._meta?.memberId as the second argument. We simulate exactly that
+  // call pattern here to verify the extraction reaches getProvider(memberId).
+  const handlerCases: Array<{ name: string; handler: (input: any, memberId?: string) => Promise<string>; input: any }> = [
+    { name: 'handleCodeGraph', handler: handleCodeGraph, input: { symbol: 'foo' } },
+    { name: 'handleCodeImpact', handler: handleCodeImpact, input: { target: 'bar', direction: 'upstream' } },
+    { name: 'handleCodeQuery', handler: handleCodeQuery, input: { query: 'search' } },
+    { name: 'handleCodeContext', handler: handleCodeContext, input: { name: 'sym' } },
+    { name: 'handleCodeMap', handler: handleCodeMap, input: {} },
+    { name: 'handleCodeFlow', handler: handleCodeFlow, input: {} },
+    { name: 'handleCodeTests', handler: handleCodeTests, input: { symbol: 'myFunc' } },
+  ];
+
+  for (const { name, handler, input } of handlerCases) {
+    it(`${name}: _meta.memberId is correctly extracted and forwarded to getProvider`, async () => {
+      mockGetAgent.mockReturnValue({ id: 'meta-member', codeIntelProvider: 'none' });
+
+      // Simulate the wiring: (input, extra) => handler(input, extra?._meta?.memberId)
+      const extra = { _meta: { memberId: 'meta-member' }, signal: new AbortController().signal };
+      const memberId = (extra as any)?._meta?.memberId as string | undefined;
+      await handler(input, memberId);
+
+      expect(mockGetAgent).toHaveBeenCalledWith('meta-member');
+    });
+
+    it(`${name}: undefined _meta falls back to global provider`, async () => {
+      mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+
+      // Simulate the wiring with no _meta (direct MCP call without member context)
+      const extra = { signal: new AbortController().signal };
+      const memberId = (extra as any)?._meta?.memberId as string | undefined;
+      await handler(input, memberId);
+
+      expect(mockGetAgent).not.toHaveBeenCalled();
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // NullProvider -- structured disabled messages
 // ---------------------------------------------------------------------------
 describe('NullProvider', () => {
