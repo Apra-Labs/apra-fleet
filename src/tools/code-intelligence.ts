@@ -79,6 +79,58 @@ export const codeTestsSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
+// ---------------------------------------------------------------------------
+// Tool handler functions
+//
+// Each handler resolves the correct provider via getProvider(memberId) and
+// delegates to the corresponding provider method. The memberId parameter is
+// internal (not in the zod schemas) -- direct MCP tool calls pass undefined
+// (global fallback), while execute_prompt context threads the calling
+// member's ID through.
+// ---------------------------------------------------------------------------
+
+export async function handleCodeGraph(input: z.infer<typeof codeGraphSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.graph(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeImpact(input: z.infer<typeof codeImpactSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.impact(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeQuery(input: z.infer<typeof codeQuerySchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.query(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeContext(input: z.infer<typeof codeContextSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.context(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeMap(input: z.infer<typeof codeMapSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.map(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeFlow(input: z.infer<typeof codeFlowSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.flow(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeTests(input: z.infer<typeof codeTestsSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.tests(input);
+  return JSON.stringify(result);
+}
+
 export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
   // When a memberId is provided, check the agent's per-member override first.
   if (memberId) {
