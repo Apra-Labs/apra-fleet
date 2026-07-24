@@ -1,0 +1,161 @@
+import { readFile } from 'fs/promises';
+import { homedir } from 'os';
+import { join } from 'path';
+import { z } from 'zod';
+import { GitNexusProvider } from './code-intelligence-gitnexus.js';
+import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
+import { getAgent } from '../services/registry.js';
+
+export interface CodeIntelligenceProvider {
+  graph(params: Record<string, unknown>): Promise<unknown>;
+  impact(params: Record<string, unknown>): Promise<unknown>;
+  query(params: Record<string, unknown>): Promise<unknown>;
+  context(params: Record<string, unknown>): Promise<unknown>;
+  map(params: Record<string, unknown>): Promise<unknown>;
+  flow(params: Record<string, unknown>): Promise<unknown>;
+  tests(params: Record<string, unknown>): Promise<unknown>;
+}
+
+const DISABLED_MESSAGE = 'Code intelligence is disabled for this member.';
+
+function disabledResult(): { isError: false; content: { type: string; text: string }[] } {
+  return { isError: false, content: [{ type: 'text', text: DISABLED_MESSAGE }] };
+}
+
+export class NullProvider implements CodeIntelligenceProvider {
+  async graph(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async impact(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async query(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async context(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async map(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async flow(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+  async tests(_params: Record<string, unknown>): Promise<unknown> { return disabledResult(); }
+}
+
+const CONFIG_PATH = join(homedir(), '.apra-fleet', 'data', 'code-intelligence', 'config.json');
+
+export const PROVIDERS: Record<string, CodeIntelligenceProvider> = {
+  'codebase-memory': new CodebaseMemoryProvider(),
+  gitnexus: new GitNexusProvider(),
+  none: new NullProvider(),
+};
+
+export const codeGraphSchema = z.object({
+  symbol: z.string().describe('Function, class, or method name to trace in the call graph'),
+  repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
+});
+
+export const codeImpactSchema = z.object({
+  target: z.string().describe('Symbol name to analyze, e.g. "handleIPChange"'),
+  direction: z.enum(['upstream', 'downstream']).describe('"upstream" to find callers, "downstream" to find callees'),
+  file_path: z.string().optional().describe('File path hint for disambiguation'),
+  repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
+});
+
+export const codeQuerySchema = z.object({
+  query: z.string().describe('Code search query (symbol, pattern, or concept)'),
+  repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
+});
+
+export const codeContextSchema = z.object({
+  name: z.string().describe('Symbol name to retrieve callers, callees, and execution flows for, e.g. "validateUser"'),
+  repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
+});
+
+export const codeMapSchema = z.object({
+  repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
+  top: z.number().int().positive().optional().describe('Maximum number of communities to return (default 20).'),
+});
+
+export const codeFlowSchema = z.object({
+  from: z.string().optional().describe('Entry-point symbol or label fragment the flow must start from'),
+  to: z.string().optional().describe('Terminal symbol or label fragment the flow must end at'),
+  name: z.string().optional().describe('Process name or label fragment to match, e.g. "RemoveMember"'),
+  repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
+});
+
+export const codeTestsSchema = z.object({
+  symbol: z.string().describe('Function, class, or method name to find transitive test callers for'),
+  repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
+});
+
+// ---------------------------------------------------------------------------
+// Tool handler functions
+//
+// Each handler resolves the correct provider via getProvider(memberId) and
+// delegates to the corresponding provider method. The memberId parameter is
+// internal (not in the zod schemas) -- direct MCP tool calls pass undefined
+// (global fallback), while execute_prompt context threads the calling
+// member's ID through.
+// ---------------------------------------------------------------------------
+
+export async function handleCodeGraph(input: z.infer<typeof codeGraphSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.graph(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeImpact(input: z.infer<typeof codeImpactSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.impact(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeQuery(input: z.infer<typeof codeQuerySchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.query(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeContext(input: z.infer<typeof codeContextSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.context(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeMap(input: z.infer<typeof codeMapSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.map(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeFlow(input: z.infer<typeof codeFlowSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.flow(input);
+  return JSON.stringify(result);
+}
+
+export async function handleCodeTests(input: z.infer<typeof codeTestsSchema>, memberId?: string): Promise<string> {
+  const provider = await getProvider(memberId);
+  const result = await provider.tests(input);
+  return JSON.stringify(result);
+}
+
+export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
+  // When a memberId is provided, check the agent's per-member override first.
+  if (memberId) {
+    const agent = getAgent(memberId);
+    if (agent?.codeIntelProvider) {
+      const memberProvider = PROVIDERS[agent.codeIntelProvider];
+      if (memberProvider) return memberProvider;
+    }
+  }
+
+  // Fall back to the global config file.
+  let providerKey = 'codebase-memory';
+  try {
+    const raw = await readFile(CONFIG_PATH, 'utf8');
+    const config = JSON.parse(raw) as { provider?: string };
+    if (config.provider) providerKey = config.provider;
+  } catch {
+    // Config absent -- default to codebase-memory
+  }
+
+  const provider = PROVIDERS[providerKey];
+  if (!provider) {
+    throw new Error(
+      `Code intelligence provider '${providerKey}' is not configured. Run 'apra-fleet install' to set up.`,
+    );
+  }
+  return provider;
+}
