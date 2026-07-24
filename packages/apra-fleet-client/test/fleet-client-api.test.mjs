@@ -133,4 +133,61 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(calledArgs, options);
         assert.deepStrictEqual(result, { status: 'ok' });
     });
+
+    test('provisionLlmAuth', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_name: 'alice' };
+        const result = await fleet.provisionLlmAuth(options);
+
+        assert.strictEqual(calledName, 'provision_llm_auth');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('composePermissions', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_name: 'alice', tags: ['doer'], project_folder: '/work/alice' };
+        const result = await fleet.composePermissions(options);
+
+        assert.strictEqual(calledName, 'compose_permissions');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('setupSshKey', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_name: 'alice' };
+        const result = await fleet.setupSshKey(options);
+
+        assert.strictEqual(calledName, 'setup_ssh_key');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
 });

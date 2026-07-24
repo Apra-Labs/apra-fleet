@@ -321,7 +321,6 @@ jobs:
             printf '%s\n' "$content" > "$2"
           }
 
-          render .github/e2e/setup-script.md "$RUN_DIR/rendered-setup.md"
           render .github/e2e/sprint-script.md "$RUN_DIR/rendered-sprint.md"
 
       - name: Seed PM permissions
@@ -343,83 +342,19 @@ jobs:
           fi
           echo "Seeded $PROVIDER PM permissions into $RUN_DIR"
 
-      - name: Run fleet e2e - setup phase (${{ steps.suite.outputs.pm_provider }})
+      - name: Setup fleet members (deterministic)
         id: e2e_setup
         timeout-minutes: 120
         shell: bash
         run: |
-          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
-          DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
-          REVIEWER_FOLDER='${{ steps.suite.outputs.reviewer_folder }}'
-          if [ "$PROVIDER" = "agy" ]; then
-            CFG_DIR="$HOME/.gemini"
-          else
-            CFG_DIR="$HOME/.$PROVIDER"
-          fi
-          [ "$RUNNER_OS" = "Windows" ] && CFG_DIR="$(cygpath -w "$CFG_DIR")"
           cd "$RUN_DIR"
-          LLM_EXIT=0
-          if [ "$PROVIDER" = "claude" ]; then
-            claude \
-              -p "$(cat "$RUN_DIR/rendered-setup.md")" \
-              --model sonnet \
-              --output-format stream-json \
-              --verbose \
-              --max-turns 80 \
-              --add-dir "$RUN_DIR" \
-              --add-dir "$HOME/.$PROVIDER" \
-              --add-dir "$(dirname "$DOER_FOLDER")" \
-              --add-dir "$(dirname "$REVIEWER_FOLDER")" \
-              > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
-          elif [ "$PROVIDER" = "gemini" ]; then
-            gemini --skip-trust \
-              --output-format stream-json \
-              --include-directories "$RUN_DIR,$CFG_DIR,$(dirname "$DOER_FOLDER"),$(dirname "$REVIEWER_FOLDER")" \
-              --allowed-mcp-server-names apra-fleet \
-              -p "$(cat "$RUN_DIR/rendered-setup.md")" \
-              > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
-          elif [ "$PROVIDER" = "opencode" ]; then
-            opencode run \
-              "$(cat "$RUN_DIR/rendered-setup.md")" \
-              --format json \
-              --dangerously-skip-permissions \
-              > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
-          else
-            agy --dangerously-skip-permissions \
-              --print-timeout 45m \
-              --add-dir "$RUN_DIR" \
-              --add-dir "$CFG_DIR" \
-              --add-dir "$(dirname "$DOER_FOLDER")" \
-              --add-dir "$(dirname "$REVIEWER_FOLDER")" \
-              -p "$(cat "$RUN_DIR/rendered-setup.md")" \
-              > "$RUN_DIR/raw-setup.txt" 2>&1 || LLM_EXIT=$?
-            # agy writes to CONOUT$ -- read transcript from disk after exit
-            RUN_DIR_WIN="$(cygpath -w "$RUN_DIR" 2>/dev/null || echo "$RUN_DIR")"
-            AGY_TRANSCRIPT_SCRIPT="const fs=require('fs'),path=require('path');const home=process.env.USERPROFILE||process.env.HOME||'';const cache=JSON.parse(fs.readFileSync(path.join(home,'.gemini','antigravity-cli','cache','last_conversations.json'),'utf8'));const norm=p=>path.resolve(p).toLowerCase().split(path.sep).join('/');const target=norm(process.argv[1]);let id='';for(const k of Object.keys(cache)){if(norm(k)===target){id=cache[k];break;}}if(!id){process.stdout.write('FLEET_TRANSCRIPT_MISSING:NO_CONV\n');process.exit(0);}const tp=path.join(home,'.gemini','antigravity-cli','brain',id,'.system_generated','logs','transcript.jsonl');if(fs.existsSync(tp)){process.stdout.write('FLEET_TRANSCRIPT_START\n');process.stdout.write(fs.readFileSync(tp,'utf8'));process.stdout.write('\nFLEET_TRANSCRIPT_END\n');}else{process.stdout.write('FLEET_TRANSCRIPT_MISSING:'+id+'\n');}"
-            node -e "$AGY_TRANSCRIPT_SCRIPT" "$RUN_DIR_WIN" >> "$RUN_DIR/raw-setup.txt" 2>&1 || true
-            # Resume loop: agy -p stops after each text response; loop until T2-done appears
-            for i in 1 2 3 4; do
-              if grep -q 'T2-done' "$RUN_DIR/raw-setup.txt" 2>/dev/null; then break; fi
-              echo "[e2e] setup resume attempt $i -- T2-done not yet found"
-              agy --dangerously-skip-permissions \
-                --print-timeout 45m \
-                --continue \
-                -p "Continue from where you left off. Complete all remaining tasks (T2, T2-done) without stopping. After each CHECKPOINT, call fleet_status then immediately start the next task." \
-                > /dev/null 2>&1 || true
-              node -e "$AGY_TRANSCRIPT_SCRIPT" "$RUN_DIR_WIN" >> "$RUN_DIR/raw-setup.txt" 2>&1 || true
-            done
-          fi
-
-          if [ "$LLM_EXIT" -ne 0 ]; then
-            echo "::error::LLM CLI ($PROVIDER) setup phase exited with code $LLM_EXIT"
-            RAW="$RUN_DIR/raw-setup.txt"
-            R=$(grep '"type":"result"' "$RAW" | tail -1)
-            if [ -n "$R" ]; then
-              echo "$R" | jq -r '"reason : " + (.subtype // "?") + (if .is_error then "  (is_error)" else "" end), "errors : " + ((.errors // []) | join("; ") | if . == "" then "(none)" else . end), "message: " + ((.result // "(no final text)") | gsub("\n";" ") | .[0:300])'
-            else
-              echo "(no result line -- LLM produced no final output)"
-            fi
-            exit "$LLM_EXIT"
+          NODE_EXIT=0
+          node "$GITHUB_WORKSPACE/.github/e2e/fleet-setup.mjs" setup --suite '${{ inputs.suite }}' \
+            > "$RUN_DIR/raw-setup.txt" 2>&1 || NODE_EXIT=$?
+          cat "$RUN_DIR/raw-setup.txt"
+          if [ "$NODE_EXIT" -ne 0 ]; then
+            echo "::error::fleet-setup.mjs setup exited with code $NODE_EXIT"
+            exit "$NODE_EXIT"
           fi
 
       - name: Run fleet e2e - sprint phase (${{ steps.suite.outputs.pm_provider }})
@@ -565,21 +500,14 @@ jobs:
         env:
           SUITE: ${{ inputs.suite }}
 
-      - name: T6 - Teardown
+      - name: T6 - Teardown (deterministic)
         if: always()
         timeout-minutes: 5
         shell: bash
         run: |
-          PROVIDER='${{ steps.suite.outputs.pm_provider }}'
-          if [ "$PROVIDER" = "claude" ]; then
-            claude -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" --model haiku > "$RUN_DIR/t6-output.txt" 2>&1 || true
-          elif [ "$PROVIDER" = "gemini" ]; then
-            gemini --skip-trust -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
-          elif [ "$PROVIDER" = "opencode" ]; then
-            opencode run "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" --format json --dangerously-skip-permissions > "$RUN_DIR/t6-output.txt" 2>&1 || true
-          else
-            agy --dangerously-skip-permissions --print-timeout 45m -p "$(cat "$GITHUB_WORKSPACE/.github/e2e/t6-teardown.md")" > "$RUN_DIR/t6-output.txt" 2>&1 || true
-          fi
+          cd "$RUN_DIR"
+          node "$GITHUB_WORKSPACE/.github/e2e/fleet-setup.mjs" teardown > "$RUN_DIR/t6-output.txt" 2>&1 || true
+          cat "$RUN_DIR/t6-output.txt"
 
       - name: Upload results
         if: always()
