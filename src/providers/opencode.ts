@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -244,5 +244,13 @@ export class OpenCodeProvider implements ProviderAdapter {
       mechanism: 'config-file-merge',
       detail: `merged apra-fleet-member into ${configFile} (mcp.apra-fleet-member, remote+bearer-auth headers)`,
     };
+  }
+
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40 provider trust matrix: OpenCode has a first-run trust/onboarding
+    // gate too (docs/opencode-exploration.md:92-97), but it is ALREADY handled via the
+    // validated --dangerously-skip-permissions flag on `opencode run` (same doc, checklist
+    // item 1). No-op.
+    return { seeded: false, detail: 'opencode: trust gate already bypassed via --dangerously-skip-permissions on opencode run' };
   }
 }

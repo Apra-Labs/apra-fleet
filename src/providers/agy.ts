@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -60,17 +60,17 @@ export class AgyProvider implements ProviderAdapter {
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    // AGY activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
-    if (agentName) {
-      instruction = `@${agentName} ${instruction}`;
-    }
+
 
     // Write per-workspace model override before launching agy.
     const tier = inputTier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
-    const settingsScript = `${SCRIPTS_UNIX}/agy-settings-merge.js`;
 
-    let cmd = `cd "${escapedFolder}" && node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}" && agy -p "${instruction}"`;
+    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}"`;
+    if (agentName) {
+      cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
+    }
+    cmd += ` -p "${instruction}"`;
 
     // Only pass --conversation when resuming an existing session. For fresh sessions,
     // agy ignores the UUID we pass and creates its own -- use folder lookup instead.
@@ -231,9 +231,8 @@ export class AgyProvider implements ProviderAdapter {
     // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
     const resolvedTier = tier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];
-    const settingsScript = `${SCRIPTS_WIN}\\agy-settings-merge.js`;
 
-    let cmd = `${setupCmd}node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}"; Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
+    let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" ${argList}`;
 
     // After agy exits, read its conversation transcript via the installed helper script.
     // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]
@@ -288,5 +287,12 @@ export class AgyProvider implements ProviderAdapter {
       mechanism: 'config-file-merge',
       detail: `merged apra-fleet-member into ${configFile} (mcpServers.apra-fleet-member)`,
     };
+  }
+
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40 provider trust matrix: AGY has NO per-project trust concept -- its
+    // config is machine-global (live-verified, docs/member-onboarding-journey.md section
+    // 3a). No-op.
+    return { seeded: false, detail: 'agy: no per-project trust concept -- machine-global config' };
   }
 }

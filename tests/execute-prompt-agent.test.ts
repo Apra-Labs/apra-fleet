@@ -171,7 +171,7 @@ describe('execute_prompt -- agent parameter', () => {
 
   // --- AGY: @name prepend (same as Gemini) ---
 
-  it('AGY: CLI invocation prepends @<name> to the prompt', async () => {
+  it('AGY: CLI invocation passes --agent flag', async () => {
     const agentDir = path.join(tmpDir, '.gemini', 'antigravity-cli', 'agents');
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
@@ -188,10 +188,10 @@ describe('execute_prompt -- agent parameter', () => {
     await executePrompt({ member_id: member.id, prompt: 'do the task', resume: false, timeout_s: 5, agent: 'doer' });
 
     const cmd = mockExecCommand.mock.calls[0][0];
-    expect(cmd).toContain('@doer ');
+    expect(cmd).toContain('--agent "doer"');
   });
 
-  it('AGY: @name prepend happens on resume=true dispatch', async () => {
+  it('AGY: --agent flag is passed on resume=true dispatch', async () => {
     const agentDir = path.join(tmpDir, '.gemini', 'antigravity-cli', 'agents');
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
@@ -209,7 +209,7 @@ describe('execute_prompt -- agent parameter', () => {
     await executePrompt({ member_id: member.id, prompt: 'continue the task', resume: true, timeout_s: 5, agent: 'doer' });
 
     const cmd = mockExecCommand.mock.calls[0][0];
-    expect(cmd).toContain('@doer ');
+    expect(cmd).toContain('--agent "doer"');
   });
 
   it('AGY: unknown agent name returns clear error with antigravity-cli path, no CLI invoked', async () => {

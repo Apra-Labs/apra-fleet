@@ -1,5 +1,5 @@
 <!-- llm-context: Records a real auto-sprint workflow failure (2026-07-05) for whoever
-     next maintains vendor/apra-pm's auto-sprint.js -- the setup-shell step's
+     next maintains packages/apra-fleet-se/apra-pm's auto-sprint.js -- the setup-shell step's
      permission-auto-detection logic gets blocked by the safety classifier as
      "Self-Modification" even when it would find nothing to grant. -->
 <!-- keywords: auto-sprint, safety classifier, self-modification, permissions.allow, setup-shell -->

@@ -180,6 +180,18 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
         const clientCaps = body?.params?.capabilities ?? {};
         const capKeys = Object.keys(clientCaps).join(',');
 
+        // apra-fleet-eft.74.1: the explicit interactive opt-in handshake. Only a
+        // client that declares the provider-branded `claude/channel` capability
+        // at initialize can receive the `notifications/claude/channel`
+        // server-push that execute_prompt's interactive routing depends on. A
+        // plain subprocess connect-back (a Doer's tool-access MCP session) still
+        // presents a valid member JWT and registers a live `server` below, but
+        // it does NOT declare this capability -- so it must never be flagged
+        // interactive-routable. Mirrors the capability the server itself
+        // advertises (experimental['claude/channel']).
+        const channelCapable = !!(clientCaps as { experimental?: Record<string, unknown> })
+          ?.experimental?.['claude/channel'];
+
         // Identity keying is unified on the member UUID. The URL ?member= param
         // (unauthenticated local fallback) historically carried the friendly
         // name; new URLs carry the UUID, and legacy friendly names are resolved
@@ -209,16 +221,41 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
             sessions.set(sid, { server: sessionServer, transport: sessionTransport, workspaceId: sessionWorkspaceId });
             const hasMember = !!(postClaims || fallbackMemberId);
             logLine('session', `new sid=${sid} client=${clientInfo.name ?? 'unknown'}/${clientInfo.version ?? 'unknown'} caps=${capKeys || 'none'} member=${hasMember}`);
-            // Register interactive member session when JWT claims are present
+            // Register interactive member session when JWT claims are present.
+            //
+            // apra-fleet-eft.28.5: carry forward the launch-time pid captured
+            // by register_member (which registered `server: null, pid: <proc>`
+            // before this connect-back). Without this, the connect-back
+            // registration overwrote that entry with pid=undefined, so the
+            // execute_prompt interactive liveness check (eft.28.1) had no PID to
+            // test and a dead-but-connected session hung the dispatch for the
+            // full timeout_s -- the exact real-fleet repro in eft.28. Preserving
+            // the pid lets the liveness check detect the dead backing process
+            // and re-dispatch fresh instead of blocking.
             if (postClaims) {
+              // apra-fleet-eft.50.1: fall back to the durable launch-pid anchor
+              // when the live SessionState was already unregistered before this
+              // connect-back (so get()?.pid is undefined). Without this last
+              // fallback a reconnect on a dispatch RETRY re-registered with
+              // pid=undefined, blinding the interactive liveness check on
+              // attempt 2+ and reproducing eft.28's silent hang.
+              const priorPid = sessionRegistry.get(postClaims.workspace_id, postClaims.member_id)?.pid
+                ?? sessionRegistry.lastKnownPid(postClaims.workspace_id, postClaims.member_id);
               sessionRegistry.register({
                 ...postClaims,
                 server: sessionServer,
                 sessionId: sid,
                 status: 'online',
+                pid: (postClaims as any).pid ?? priorPid,
+                channelCapable,
               });
-              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid}`);
+              logLine('session', `registered member member_id=${postClaims.member_id} workspace_id=${postClaims.workspace_id} via JWT sid=${sid} channelCapable=${channelCapable}`);
             } else if (fallbackMemberId) {
+              // apra-fleet-eft.50.1: same durable launch-pid fallback as the
+              // JWT branch above, so a URL-param reconnect on a retry keeps a
+              // pid for the interactive liveness check to test.
+              const priorPid = sessionRegistry.get(sessionWorkspaceId, fallbackMemberId)?.pid
+                ?? sessionRegistry.lastKnownPid(sessionWorkspaceId, fallbackMemberId);
               sessionRegistry.register({
                 member_id: fallbackMemberId,
                 workspace_id: sessionWorkspaceId,
@@ -227,8 +264,10 @@ export async function createHttpTransport(options: HttpTransportOptions): Promis
                 server: sessionServer,
                 sessionId: sid,
                 status: 'online',
+                pid: priorPid,
+                channelCapable,
               });
-              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${sid}`);
+              logLine('session', `registered member member_id=${fallbackMemberId} workspace_id=${sessionWorkspaceId} via URL param sid=${sid} channelCapable=${channelCapable}`);
             }
           },
           onsessionclosed: (sid) => {

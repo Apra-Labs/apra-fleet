@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/reviewer-output@1",
+  "version": 1,
+  "title": "reviewer output",
+  "description": "Canonical machine-readable output contract for the reviewer role. See agents/reviewer.md Step 5 for the prose contract this mirrors.",
+  "type": "object",
+  "required": ["verdict", "notes", "reopenIds", "newTasks"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["APPROVED", "CHANGES_NEEDED"]
+    },
+    "notes": {
+      "type": "string"
+    },
+    "reopenIds": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "replanIds": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "newTasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "description", "priority"],
+        "properties": {
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "priority": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -154,7 +154,7 @@ These are called out per requirement #6 -- read before acting on them:
 | Surface | Owner | Mechanism | Urgency driver |
 |---|---|---|---|
 | **A. Live bead data** (this repo's `.beads` DB, right now) | whoever runs the next sprint | `bd dep remove` / `bd update --status` etc. -- no code change | Blocks the next sprint launch; cheap; do first |
-| **B. This repo's prose contracts** (`vendor/apra-pm/agents/*.md` -> `dist/agents/*.md` -> `~/.claude/agents/*.md`) | this project | edit `vendor/apra-pm/agents/*.md` (source of truth), rebuild/reinstall | Root-causes the *next* incident, not just today's |
+| **B. This repo's prose contracts** (`packages/apra-fleet-se/apra-pm/agents/*.md` -> `dist/agents/*.md` -> `~/.claude/agents/*.md`) | this project | edit `packages/apra-fleet-se/apra-pm/agents/*.md` (source of truth), rebuild/reinstall | Root-causes the *next* incident, not just today's |
 | **C. This repo's code** (`runner.js`, `bin/cli.mjs`, `viewer-extensions.mjs`, `contracts.mjs`) | this project | PR against `packages/apra-fleet-se/**` | Fixes systemic bugs the prose can't fix alone |
 | **D. Upstream `beads` tool** (`@beads/bd`) | beads maintainer, not this project | file an issue; do **not** block on a fix landing | Per the user's explicit direction: report it, but design our own workaround now -- do not wait |
 
@@ -235,9 +235,9 @@ specifies exactly what a human or a follow-up authorized action would run.
 
 ### 3.1 Feasibility assessment (requirement #3)
 
-Traced pipeline: `vendor/apra-pm/agents/*.md` (submodule, source of truth) ->
+Traced pipeline: `packages/apra-fleet-se/apra-pm/agents/*.md` (submodule, source of truth) ->
 `scripts/vendor-pm.mjs` copies to `dist/agents/*.md` at `prepublishOnly` ->
-`src/cli/install.ts` installs from `vendor/apra-pm/agents` (fallback `dist/agents`) into
+`src/cli/install.ts` installs from `packages/apra-fleet-se/apra-pm/agents` (fallback `dist/agents`) into
 `~/.claude/agents/*.md` (or the equivalent path for Gemini/AGY per `src/cli/config.ts`).
 
 **Each `*.md` file is a self-contained prompt handed whole to a subagent dispatch** (per
@@ -249,8 +249,8 @@ contract from fragments before install. This means a literal "one canonical sect
 Two feasible approaches, in order of preference:
 
 - **Recommended: build-time concatenation.** Add a `GRAPH-SEMANTICS.md` (or similarly named)
-  canonical fragment under `vendor/apra-pm/agents/_shared/`, and extend
-  `scripts/vendor-pm.mjs` (the same script that already does the `vendor/apra-pm/agents` ->
+  canonical fragment under `packages/apra-fleet-se/apra-pm/agents/_shared/`, and extend
+  `scripts/vendor-pm.mjs` (the same script that already does the `packages/apra-fleet-se/apra-pm/agents` ->
   `dist/agents` copy) to prepend/inject that fragment's content into each of the 8 role
   files during the copy step -- e.g. replace a marker line
   (`<!-- GRAPH-SEMANTICS -->`) in each role file with the shared fragment's content. This
@@ -258,7 +258,7 @@ Two feasible approaches, in order of preference:
   self-contained installed files (required, since there's no runtime include mechanism and
   `execute-prompt.ts` hands the file over whole). This is a moderate change: one new file
   plus a ~15-20 line edit to `vendor-pm.mjs`'s copy loop, verified against the existing
-  `gen-sea-config.mjs` glob pattern (`collectFiles(... 'vendor/apra-pm/agents' ...)`) to
+  `gen-sea-config.mjs` glob pattern (`collectFiles(... 'packages/apra-fleet-se/apra-pm/agents' ...)`) to
   confirm the new `_shared/` subfolder doesn't get accidentally shipped as its own
   "agent" (it should be excluded from whatever list drives agent-name resolution, e.g. if
   `install.ts` enumerates `*.md` in that directory as agent names, `_shared/*.md` must be
@@ -270,9 +270,9 @@ Two feasible approaches, in order of preference:
   single reference copy and fails the build if they've drifted. This is strictly worse
   (manual sync discipline, drift is possible again) but requires zero changes to the
   install/build pipeline. Use this only if the recommended approach is infeasible for
-  reasons not visible from this audit (e.g. `vendor/apra-pm` being a genuinely
+  reasons not visible from this audit (e.g. `packages/apra-fleet-se/apra-pm` being a genuinely
   externally-owned submodule this project cannot modify -- **this needs a human answer**;
-  the audit did not determine whether `vendor/apra-pm` is this org's own submodule or a
+  the audit did not determine whether `packages/apra-fleet-se/apra-pm` is this org's own submodule or a
   third-party one. If third-party, the shared-fragment approach still works exactly the
   same way, just authored by whoever owns that submodule, with this project's contribution
   submitted upstream to it.)
@@ -720,7 +720,7 @@ a concrete, actionable report rather than a black-box repro:
 - **Finding #21 (root-level `agents/*.md` vestigial files):** confirmed dead at runtime;
   the only live risk is the one doc reference in `skills/fleet/SKILL.md:151`'s example
   path. Fixing that one path reference is a 1-line change (swap the example to
-  `dist/agents/doer.md` or `vendor/apra-pm/agents/doer.md`) and can be bundled with
+  `dist/agents/doer.md` or `packages/apra-fleet-se/apra-pm/agents/doer.md`) and can be bundled with
   whichever Phase B PR is already touching doer.md -- but deleting or updating the stale
   root `agents/*.md` files themselves is out of scope for THIS plan (already tracked as its
   own bead, apra-fleet-xbu.3, and is a separate decision -- keep vs. delete vs. update --

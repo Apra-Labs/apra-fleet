@@ -377,7 +377,7 @@ exports, ajv package.json dependencies).
     ajv/                                     (verbatim vendored subtree, dist/ + lib/ + package.json)
     fast-deep-equal/  fast-uri/  json-schema-traverse/  require-from-string/
   schemas/                                   <- NEW canonical installed schema dir
-    <role>-input.json, <role>-output.json    (17 files, ~48 KB; source: vendor/apra-pm/agents/schemas)
+    <role>-input.json, <role>-output.json    (17 files, ~48 KB; source: packages/apra-fleet-se/apra-pm/agents/schemas)
   workflows/                                 <- NEW default workflow host dir
     .installed.json                          <- installer-owned manifest: {"version": "...", "builtin": ["auto-sprint","hello-world"]}
     auto-sprint/                             <- verbatim copy of packages/apra-fleet-se (minus test/, docs/, scripts/)
@@ -413,7 +413,7 @@ tests keep working): `workflowRuntime` (the two @apralabs packages + ajv
 subtree, ~2.4 MB / ~200 files), `agentSchemas` (17 JSON files),
 `builtinWorkflows` (auto-sprint package tree + hello-world, ~250 KB).
 Sources at build time: `packages/apra-fleet-workflow/`, `packages/apra-fleet-client/`,
-`node_modules/ajv` (+4 deps), `vendor/apra-pm/agents/schemas/`,
+`node_modules/ajv` (+4 deps), `packages/apra-fleet-se/apra-pm/agents/schemas/`,
 `packages/apra-fleet-se/`, plus a new `examples/workflows/hello-world/` in-repo
 source dir. Dev-mode `buildDevManifest()` (install.ts:118-158) gains matching
 collection so `node dist/index.js install` behaves identically from a checkout.
@@ -481,7 +481,7 @@ apra-fleet workflow --help               Launcher help (does NOT swallow <name> 
 
 ## 5. Schema installation fix
 
-- Installer writes `vendor/apra-pm/agents/schemas/*.json` (SEA asset section
+- Installer writes `packages/apra-fleet-se/apra-pm/agents/schemas/*.json` (SEA asset section
   `agentSchemas`; dev mode: submodule copy) to **`~/.apra-fleet/schemas/`**.
 - The launcher sets `APRA_FLEET_SE_SCHEMAS_DIR=~/.apra-fleet/schemas` when
   unset -- this is contracts.mjs's existing tier-1 override
@@ -539,7 +539,7 @@ text extended):
 - **`scripts/gen-sea-config.mjs`**: collect the three new sections with the
   existing `collectFiles()` helper; exclude `test/`, `docs/`, `scripts/`,
   `examples/` from package trees and `ajv`'s docs; hard-fail if
-  `node_modules/ajv` or `vendor/apra-pm/agents/schemas` is missing (same
+  `node_modules/ajv` or `packages/apra-fleet-se/apra-pm/agents/schemas` is missing (same
   pattern as the existing submodule guard at line 51-55). Emit new counts in
   the log and a **blob-size delta line** (assets total bytes) for CI eyeballing.
 - **`scripts/build-sea.mjs`**: NO changes. The workflow runtime is
@@ -621,7 +621,7 @@ Add after "Smoke test - help" (ci.yml:239-241), all three matrix legs:
    AC: `dist/sea-manifest.json` gains `workflowRuntime`, `agentSchemas`,
    `builtinWorkflows` sections covering packages/apra-fleet-workflow,
    packages/apra-fleet-client, node_modules/ajv(+4 deps),
-   vendor/apra-pm/agents/schemas, packages/apra-fleet-se (minus test/docs/
+   packages/apra-fleet-se/apra-pm/agents/schemas, packages/apra-fleet-se (minus test/docs/
    scripts), examples/workflows/hello-world; build fails loudly if any source
    is missing; logged asset byte total appears.
 3. **[impl] install.ts: additive workflow-install step (+ dev-manifest

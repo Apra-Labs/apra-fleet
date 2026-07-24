@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 // apra-fleet-unw2.5 -- observability for the "directory exists but a
 // specific expected schema file is missing" case in contracts.mjs's
-// vendored-schema loader.
+// apra-pm schema loader.
 //
 // Two very different absences must be told apart:
 //
@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 //      section 2). MUST stay silent.
 //
 //   2. The directory exists but one role's <role>-output.json is missing
-//      from it -- a submodule bump silently dropped/never-added a schema
+//      from it -- an apra-pm package update silently dropped/never-added a schema
 //      file this module expects. MUST warn loudly (console.warn), unless
 //      the role is allow-listed as legitimately schema-less (planner).
 //
@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 // dynamic import.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vendor-apra-pm-schemas');
+const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
 
 /**
  * Dynamically (re)imports contracts.mjs with
@@ -83,7 +83,7 @@ function makeTmpFixtureCopy(prefix, { omit = [] } = {}) {
 }
 
 describe('whole-directory absence stays quiet (documented fallback state)', () => {
-    test('no console.warn when vendor/apra-pm/agents/schemas/ does not exist at all', async () => {
+    test('no console.warn when packages/apra-fleet-se/apra-pm/agents/schemas/ does not exist at all', async () => {
         const missingDir = path.join(__dirname, 'fixtures', 'does-not-exist-vendor-schemas-dir');
         assert.ok(!fs.existsSync(missingDir), 'test setup: this directory must not exist');
 
@@ -99,7 +99,7 @@ describe('directory exists but a specific expected role output file is missing',
     let tmpDir;
 
     before(() => {
-        // Simulate a submodule bump that added the directory but dropped
+        // Simulate an apra-pm package update that added the directory but dropped
         // doer-output.json specifically.
         tmpDir = makeTmpFixtureCopy('tmp-missing-doer-output-', { omit: ['doer-output.json'] });
     });

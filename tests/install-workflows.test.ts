@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
 import { writeInstallConfig, INSTALL_CONFIG_PATH } from '../src/cli/config.js';
 
@@ -35,7 +36,7 @@ const NEW_MANIFEST = {
     'ajv/package.json': 'ajv/package.json',
   },
   agentSchemas: {
-    'agentSchemas/pm.schema.json': 'vendor/apra-pm/agents/schemas/pm.schema.json',
+    'agentSchemas/pm.schema.json': 'packages/apra-fleet-se/apra-pm/agents/schemas/pm.schema.json',
   },
   builtinWorkflows: {
     'auto-sprint/workflow.json': 'auto-sprint/workflow.json',
@@ -157,8 +158,9 @@ describe('runInstall --workflows none: byte-identical existing-step behavior', (
     await runInstall(['--skill', 'none', '--workflows', 'none']);
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).not.toContain('Installing workflow runtime');
-    // Pre-workflow-subsystem numbering preserved: base=6 steps (no skills, no service in dev mode).
-    expect(logs).toContain('[6/6]');
+    // Pre-workflow-subsystem numbering preserved: base=6 steps (no skills, no service in dev
+    // mode) +1 dolt (apra-fleet-ire.3, unconditional) = 7.
+    expect(logs).toContain('[7/7]');
 
     const writeCalls = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString());
     expect(writeCalls.some(p => p.startsWith(NODE_MODULES_DIR))).toBe(false);
@@ -305,4 +307,47 @@ describe('runInstall EBUSY handling on a locked built-in workflow directory', ()
 
     warnSpy.mockRestore();
   }, 10000);
+});
+
+// apra-fleet-eft.19.2 -- regression coverage for apra-fleet-eft.19 (dev-mode
+// install omits undici, crashing apra-fleet-client's transport.mjs with
+// ERR_MODULE_NOT_FOUND). Every other suite in this file drives buildDevManifest()
+// indirectly through a fully mocked node:fs (via _setManifestOverride), which
+// can't observe what buildDevManifest() itself actually collects from disk.
+// This suite unmocks node:fs for one test and calls the real buildDevManifest()
+// (exposed as _buildDevManifestForTest) against this repo's real project root,
+// so it fails if the undici collectPackageTree() call is ever dropped again.
+describe('buildDevManifest bundles undici (regression for apra-fleet-eft.19)', () => {
+  afterEach(() => {
+    // Restore automocking for node:fs/node:child_process so later test files
+    // (and, if vitest re-orders within this file, later tests here) get the
+    // mocked fs used by every other suite above.
+    vi.doMock('node:fs');
+    vi.doMock('node:child_process');
+  });
+
+  it('includes an undici package-tree entry in the workflowRuntime manifest', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const real = await vi.importActual<typeof import('../src/cli/install.js')>('../src/cli/install.js');
+
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = path.resolve(testDir, '..');
+
+    const manifest = real._buildDevManifestForTest(projectRoot);
+
+    expect(manifest.workflowRuntime).toBeDefined();
+    const keys = Object.keys(manifest.workflowRuntime ?? {});
+
+    // Names undici explicitly: fails if the undici collectPackageTree() call
+    // (apra-fleet-eft.19.1) is ever dropped from buildDevManifest again.
+    expect(keys.some(k => k === 'undici/package.json')).toBe(true);
+    expect(keys.some(k => k.startsWith('undici/'))).toBe(true);
+
+    // undici-types is intentionally excluded (types-only, no runtime require
+    // in undici's lib) -- assert the fix didn't over-bundle it either.
+    expect(keys.some(k => k.startsWith('undici-types/'))).toBe(false);
+  });
 });

@@ -270,6 +270,15 @@ premium) are set per member at registration via `model_tiers` in
 Provider strengths, role recommendations, and gotchas:
 [docs/provider-guide.md](docs/provider-guide.md).
 
+**Registering a member from a shell.** `apra-fleet register-member --name
+<name> --path <folder> [options]` is a shell-drivable equivalent of the
+`register_member` MCP tool, for contexts that can run shell commands but
+cannot make MCP tool calls (scripted setup, CI, an agent role without MCP
+tool access). It shares the exact same validation and registration logic as
+the MCP tool -- both converge on one underlying registration function, so
+the two entry points can never drift apart. Run `apra-fleet register-member
+--help` for the full flag reference.
+
 ## Transport
 
 Fleet runs as a singleton service on your machine. When you start it, the server
@@ -368,6 +377,21 @@ registers and starts the OS service automatically -- no extra step.
 `apra-fleet uninstall` stops and deregisters the service before removing files.
 Service registration failures are non-fatal: a warning is printed and the install
 continues.
+
+## Supported user-facing interfaces
+
+Fleet exposes exactly one supported user-facing interface: the **service HTTP
+API** and its **web dashboard**. Users interact with Fleet exclusively through:
+
+- The **HTTP API** and Server-Sent Events (SSE) transport on port 7523
+- The **web dashboard** in Claude Code via the `/mcp` loader
+- The PM skill commands in Claude Code (`/pm`)
+
+The `bin/cli.mjs` entry point in the auto-sprint package is an **internal
+implementation detail** -- it is used only by the supervisor process to
+orchestrate agent workflows and does NOT bypass the reservation ledger. Direct
+manual invocation of `cli.mjs` circumvents the reservation system and is
+unsupported; use the service API and dashboard instead.
 
 ## The PM skill
 
@@ -694,17 +718,17 @@ See `docs/provider-matrix.md` for the full comparison table.
 
 The `apra-fleet-se` auto-sprint runner (`packages/apra-fleet-se/auto-sprint/runner.js`) dispatches roles across configured members: the orchestrator issues every `bd` command and the git push/PR, doers round-robin across the doer pool, and the reviewer runs from the reviewer pool.
 
-Important, honest limitation: this round the runner has **NO cross-member bd/git sync layer**. Every `bd` command the orchestrator issues runs against the orchestrator member's beads DB, while each doer's own `bd close` runs against **its** member's DB; and the sprint git branch is only meaningful if all members operate on the same working state. That design coheres in exactly two topologies:
+Two topology modes are supported, selected explicitly when a sprint starts:
 
-- **Single-member** -- one member does everything (the DB and the branch are trivially shared).
-- **Verified shared-workspace fleet** -- every configured member resolves to the same checkout / beads DB (e.g. multiple members pointed at one working folder).
+- **`legacy` mode** -- no cross-member sync layer. Every `bd` command the orchestrator issues runs against the orchestrator member's beads DB, while each doer's own `bd close` runs against **its** member's DB; the sprint git branch is only meaningful if all members operate on the same working state. This coheres in exactly two topologies: **single-member** (one member does everything) or a **verified shared-workspace fleet** (every configured member resolves to the same checkout/beads DB). Independent per-member checkouts are **not supported** in this mode -- non-orchestrator members would silently work against a beads DB and git branch the orchestrator never sees.
+- **`synced` mode** -- an orchestrator-bracketed git+Dolt sync layer wraps every dispatch that reads or writes git-tracked or beads state, reconciling each member's state explicitly instead of assuming it is already shared. This is what makes genuinely independent per-member checkouts safe. The sync layer includes a scripted-first escalation ladder for both git and Dolt conflicts (mechanical detection and resolution first, an agent dispatched with an explicit conflict runbook only as a documented last resort), plus supervisor-owned global coordination (a Dolt push mutex and a child-id allocator) so concurrent cross-member Dolt writes never silently corrupt each other's beads clone.
 
-Any other topology (each member with its own independent checkout/DB) is **NOT supported** yet: non-orchestrator members would silently work against a beads DB and git branch the orchestrator never sees, so their `bd close` calls and commits would diverge. A real cross-member reconcile layer is deferred (see `packages/apra-fleet-workflow/docs/plan.md` section 5) because it cannot be validated without a real multi-member fleet.
+Guards enforcing whichever mode is selected:
 
-Two guards enforce the supported contract instead of silently misbehaving:
+1. **Branch-ensure everywhere** (both modes): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
+2. **Topology precondition**: `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. In `legacy` mode it compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained); in `synced` mode HEADs are allowed to differ, but every member must share the same git remote origin and pass a live beads-Dolt-pull probe. Single-member sprints trivially pass either check.
 
-1. **Branch-ensure everywhere** (N4): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
-2. **Topology precondition** (N4): `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. It compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained). Single-member sprints skip the check (nothing to compare). Matching HEADs at start is a best-effort shared-workspace heuristic, not a proof of ongoing shared state -- the latter needs the deferred sync layer.
+See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
 
 ## Workflow Subsystem (SEA-embedded workflow runner)
 
@@ -807,9 +831,22 @@ update-safe end-to-end; remaining gaps for this feature are tracked as
 individual open issues under `apra-fleet-7pm`, not as a phase-level
 placeholder.
 
+**Dev-mode manifest bundling is a transitive-dependency, not a top-level-only,
+contract.** The dev-mode install path bundles `@apralabs/apra-fleet-client`'s
+own package tree so the workflow runtime can load it without a real npm
+install. Because that client package can itself gain a runtime dependency
+(e.g. for a new transport), the manifest builder must walk and bundle the
+client's own `dependencies`, not just the client package's own files -- a
+manifest that copies only the client's top-level directory silently ships a
+client that throws a module-not-found error the moment it needs a dependency
+it never had bundled alongside it. Any future dependency added to
+`apra-fleet-client` must be re-verified against this bundling path, not just
+against the production/packaged-binary install path, since the two paths
+build the manifest differently.
+
 ## PM Skill Submodule
 
-The PM skill and its role agent definitions (planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner, ci-watcher, harvester), plus their shared `agents/schemas/` and `agents/_shared/` assets, are vendored from the [apra-pm](https://github.com/Apra-Labs/apra-pm) repository via a git submodule at `vendor/apra-pm/`. At build time, `scripts/vendor-pm.mjs` copies the skill and agent files into `dist/` (and `scripts/gen-sea-config.mjs` embeds them as SEA assets for the standalone binary), so all three install paths -- dev-mode, npm, and SEA binary -- carry the same set. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`); `uninstall` removes that directory in the same pass. For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation. Claude installs additionally get the `auto-sprint-args` skill (the args contract for the `/auto-sprint` workflow), written to `~/.claude/skills/auto-sprint-args`.
+The PM skill and its role agent definitions (planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner, ci-watcher, harvester), plus their shared `agents/schemas/` and `agents/_shared/` assets, are vendored from the [apra-pm](https://github.com/Apra-Labs/apra-pm) repository via a git submodule at `packages/apra-fleet-se/apra-pm/`. At build time, `scripts/dist-pm.mjs` copies the skill and agent files into `dist/` (and `scripts/gen-sea-config.mjs` embeds them as SEA assets for the standalone binary), so all three install paths -- dev-mode, npm, and SEA binary -- carry the same set. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`); `uninstall` removes that directory in the same pass. For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation. Claude installs additionally get the `auto-sprint-args` skill (the args contract for the `/auto-sprint` workflow), written to `~/.claude/skills/auto-sprint-args`.
 
 Remote fleet members do not share the operator's home directory, so `register_member`, `update_member`, and (starting with the first dispatch after an orchestrator upgrade) `execute_prompt` each independently hash-diff the canonical agent set against the remote box and push anything missing or stale. See [docs/tools-lifecycle.md](tools-lifecycle.md) and [docs/tools-work.md](tools-work.md) for the per-tool behavior.
 
@@ -960,7 +997,7 @@ implementations:
 |---|---|---|
 | Written by | `install` (table above) | The root `@apralabs/apra-fleet` npm package's `bin.auto-sprint`, resolving to `dist/auto-sprint.mjs` |
 | Providers | Claude Code only | Any provider a fleet member is registered with (Claude, Gemini, Codex, Copilot, Antigravity/agy) |
-| Source package | `vendor/apra-pm/.claude/workflows/auto-sprint.js` | `packages/apra-fleet-se` (esbuild-bundled, apra-fleet-3ns.2) |
+| Source package | `packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js` | `packages/apra-fleet-se` (esbuild-bundled, apra-fleet-3ns.2) |
 | Model selection | Literal Claude model names | Fleet's `cheap`/`standard`/`premium` tier keywords, per-member |
 | How you run it | Invoked from within a Claude Code session as a workflow | `npx auto-sprint --issue ... --members ... --branch ... --base ...` (or globally, if `@apralabs/apra-fleet` is installed with `-g`) -- see `packages/apra-fleet-se/docs/cli-reference.md` |
 
@@ -2266,6 +2303,24 @@ bd dep add <sprint-B-epic-id> <sprint-A-epic-id>
 Session crash? Run `bd list --all --pretty`. The PM sees every member's state
 across every active project without reading a single file. Then `bd show <id>`
 for full context on any item.
+
+## Multi-member sync (Dolt-backed clones)
+
+Each member's beads DB is an embedded Dolt clone. `apra-fleet install` also
+provisions a portable Dolt CLI binary alongside `bd` (verified with a version
+check at install time) -- this is a hard prerequisite for any sync path that
+needs to inspect or resolve a Dolt clone directly, not merely an optional
+extra. When more than one member's clone needs to reconcile against a shared
+Dolt remote (for example, an autonomous multi-member sprint whose members are
+genuinely independent checkouts rather than one shared workspace), reads and
+writes are bracketed with a pull before and a push after so no member's clone
+observes stale state for long, and every cross-member push is serialized
+through a single coordinating authority -- a Dolt clone can hard-conflict on a
+concurrent same-row write, and one unresolved conflict wedges that clone's
+sync entirely, so multi-writer coordination is a correctness requirement, not
+a performance nicety. See `packages/apra-fleet-se/docs/architecture.md`'s
+"Dolt sync discipline" section for the full mechanism and its conflict
+recovery ladder.
 
 ---
 

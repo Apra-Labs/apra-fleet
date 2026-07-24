@@ -104,8 +104,8 @@ export class WindowsCommands implements OsCommands {
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    // Gemini and AGY activate a subagent via @<name> prepended to the prompt on EVERY dispatch.
-    if (agentName && (provider.name === 'gemini' || provider.name === 'agy')) {
+    // Gemini activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
+    if (agentName && provider.name === 'gemini') {
       instruction = `@${agentName} ${instruction}`;
     }
 
@@ -117,8 +117,8 @@ export class WindowsCommands implements OsCommands {
 
     // Build argument list (everything that follows the executable)
     let argList = `${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`;
-    // Claude activates a subagent via --agent <name> flag.
-    if (agentName && provider.name === 'claude') {
+    // Claude and AGY activate a subagent via --agent <name> flag.
+    if (agentName && (provider.name === 'claude' || provider.name === 'agy')) {
       argList = `--agent "${escapeWindowsArg(agentName)}" ${argList}`;
     }
     if (provider.supportsMaxTurns()) {
@@ -133,6 +133,13 @@ export class WindowsCommands implements OsCommands {
       if (autoFlag) argList += ` ${autoFlag}`;
     } else if (unattended === 'dangerous') {
       argList += ` ${provider.skipPermissionsFlag()}`;
+    } else {
+      // apra-fleet-eft.65.1: interactive-session parity for the work folder --
+      // grant Edit/Write of a brand-new file in the dispatched agent's own work
+      // folder without the broad --dangerously-skip-permissions bypass. Providers
+      // without such a surgical flag omit the method, leaving behavior unchanged.
+      const editFlag = provider.workspaceEditPermissionFlag?.();
+      if (editFlag) argList += ` ${editFlag}`;
     }
     if (model) {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;

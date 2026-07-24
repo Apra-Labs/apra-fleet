@@ -39,6 +39,7 @@ Usage:
   apra-fleet install --skill pm        Install PM skill (also installs fleet -- PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
+  apra-fleet register-member --name <name> --path <folder> [options]  Register a fleet member from the shell (see 'register-member --help')
   apra-fleet uninstall                 Remove binary, hooks, and MCP registration
   apra-fleet secret --set <name>       Deliver a secret to a waiting request
   apra-fleet secret --list             List secrets
@@ -46,6 +47,7 @@ Usage:
   apra-fleet secret --confirm <credential-name>               Confirm network egress for that credential (interactive)
   apra-fleet auth --oauth [--llm <provider>] <token>          Write OAuth token to provider credential file
   apra-fleet auth --oauth [--llm <provider>] secure.<name>    Resolve token from persistent credential store
+  apra-fleet auth --oauth --member <name> secure.<name>       Provision a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly (no credential file)
   apra-fleet auth --api-key [--llm <provider>] <token>        Set API key in shell profiles / system env
   apra-fleet auth --api-key [--llm <provider>] secure.<name>  Resolve API key from persistent credential store
   apra-fleet join <member-jwt> [--hub-url <url>]  Activate a device using a member JWT obtained out-of-band from fleet-dashboard (apra-fleet-6bf)
@@ -64,6 +66,10 @@ if (arg === 'install') {
   import('./cli/secret.js')
     .then(m => m.runSecret(process.argv.slice(3)))
     .catch(err => { logError('cli', `Secret failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'register-member') {
+  import('./cli/register-member.js')
+    .then(m => m.runRegisterMember(process.argv.slice(3)))
+    .catch(err => { logError('cli', `Register-member failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'uninstall') {
   import('./cli/uninstall.js')
     .then(m => m.runUninstall(process.argv.slice(3)))

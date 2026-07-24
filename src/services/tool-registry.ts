@@ -10,6 +10,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const { getMemberModelPricingSchema, getMemberModelPricing } = await import('../tools/get-member-model-pricing.js');
   const { removeMemberSchema, removeMember } = await import('../tools/remove-member.js');
   const { updateMemberSchema, updateMember } = await import('../tools/update-member.js');
+  const { memberReservationSchema, memberReservation } = await import('../tools/member-reservation.js');
   const { sendFilesSchema, sendFiles } = await import('../tools/send-files.js');
   const { receiveFilesSchema, receiveFiles } = await import('../tools/receive-files.js');
   const { executePromptSchema, executePrompt } = await import('../tools/execute-prompt.js');
@@ -58,9 +59,9 @@ export async function registerAllTools(server: McpServer): Promise<void> {
 
   function getOnboardingPreamble(toolName: string, isJson: boolean): string | null {
     if (!isActiveTool(toolName)) return null;
+    if (isJson) return null;
     const banner = getFirstRunPreamble();
     if (banner) return banner;
-    if (isJson) return null;
     return getWelcomeBackPreamble();
   }
 
@@ -98,6 +99,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   server.tool('get_member_model_pricing', "Returns a member's cheap/standard/premium tier resolved to a concrete model and its per-1M-token price (prompt/completion), for real per-dispatch cost tracking instead of a tier-band estimate. A tier is null when its resolved model has no known price.", getMemberModelPricingSchema.shape, wrapTool('get_member_model_pricing', (input) => getMemberModelPricing(input as any)));
   server.tool('remove_member', 'Remove a member from the fleet.', removeMemberSchema.shape, wrapTool('remove_member', (input) => removeMember(input as any)));
   server.tool('update_member', "Change a member's name, connection details, working directory, AI provider, tags, or other settings.", updateMemberSchema.shape, wrapTool('update_member', (input) => updateMember(input as any)));
+  server.tool('member_reservation', 'Reserve, release, or force-release exclusive ownership of a member for a sprint (server-side reservation; does not yet block dispatch). "reserve" claims the member for sprint_id; "release" clears it if sprint_id matches the current holder; "force_release" clears a wedged reservation regardless of owner.', memberReservationSchema.shape, wrapTool('member_reservation', (input) => memberReservation(input as any)));
 
   // File Operations
   server.tool('send_files', 'Transfer local files to a member. Always batch multiple files into a single call — never invoke repeatedly for individual files.', sendFilesSchema.shape, wrapTool('send_files', (input, extra) => sendFiles(input as any, extra)));

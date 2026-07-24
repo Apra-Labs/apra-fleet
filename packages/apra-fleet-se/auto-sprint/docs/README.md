@@ -4,6 +4,21 @@ This doc exists because it is easy to reach for the wrong launcher. There are
 two different things in this repo/session that are both called "auto-sprint",
 and only one of them is the real thing.
 
+## Supported user-facing interfaces
+
+The service HTTP API and web dashboard are the **single supported user-facing
+interfaces** for Fleet. Users launch sprints via:
+
+- The **service API** (HTTP on port 7523, with SSE server-push)
+- The **web dashboard** in Claude Code (`/mcp` loader)
+- The **PM skill commands** in Claude Code (`/pm start`, `/pm status`, etc.)
+
+The `bin/cli.mjs` CLI below is an **internal implementation detail only** --
+it is used exclusively by the supervisor process to execute workflows. Manual
+direct invocation of `cli.mjs` bypasses the reservation ledger and is
+unsupported for user-facing workflows. Always use the service API or dashboard
+instead.
+
 ## The only correct way to launch a real sprint
 
 Run `packages/apra-fleet-se/bin/cli.mjs` directly with a real Node.js process,
@@ -13,12 +28,12 @@ Workflow invocation.
 
 ```bash
 node packages/apra-fleet-se/bin/cli.mjs \
-  --issue apra-fleet-xbu \
-  --members fleet-reorg \
-  --branch feat/fleet-reorg \
-  --base main \
+  --issue apra-fleet-eft \
+  --members fleet-rev \
+  --branch auto-sprint/eft-service \
+  --base feat/fleet-reorg \
   --viewer-port 18300 \
-  > /path/to/auto-sprint.log 2>&1 &
+  > ./sprint-logs/agy-run25.log 2>&1 &
 disown
 ```
 
@@ -54,6 +69,30 @@ access, and no real Node.js APIs** -- calling
 "auto-sprint" names are unrelated: one is a real Node CLI, the other is a
 Claude-Code-internal sub-agent-fanout script format. Only the CLI form
 above is the real sprint.
+
+## Dispatch-safety invariant: member_name required on every call site
+
+Every `command()` or `agent()` call site in `runner.js` (the sprint engine)
+MUST pass an explicit `member_name` or `member_id` option. This is a hard
+invariant, not a convention.
+
+Why this matters: The workflow engine throws immediately if neither
+`member_name` nor `member_id` is supplied -- there is no fallback to
+local execution or ambient member inference. Once fleet members are
+arbitrary remote/heterogeneous machines (not the developer's local checkout),
+a silent call site that lacks a member identifier would only surface at
+runtime, on a real fleet dispatch, in whatever topology happens to be
+running that day. By the time the error surfaces, the doer is mid-streak
+with no immediate opportunity to fix it.
+
+The guard is enforced automatically: `npm test` runs the
+`dispatch-safety-guard.test.mjs` test, which parses every `command(` and
+`agent(` token in `runner.js`, verifies it carries `member_name` or
+`member_id`, and asserts the exact baseline call-site counts (29 command()
+sites and 11 agent() sites as of 2026-07-19). If a new call site is added
+without the required option, or an existing site is dropped, the test fails
+and blocks the commit. If a new compliant site is intentionally added, the
+baseline count must be bumped (after confirming the site passes the guard).
 
 ## How to make one bead represent a whole set (epics / manifest beads)
 

@@ -16,7 +16,7 @@ see history below).
 
 ## What happened today (in order)
 
-1. Merged `apra-pm` PR #21, bumped the `vendor/apra-pm` submodule pin,
+1. Merged `apra-pm` PR #21, bumped the `packages/apra-fleet-se/apra-pm` submodule pin,
    rebuilt/installed the binary, and got a real (non-mocked) `auto-sprint`
    run going against beads epic `apra-fleet-7pm` on member `fleet-reorg`.
 2. While that sprint ran, acted as a live bug scribe per user instruction:

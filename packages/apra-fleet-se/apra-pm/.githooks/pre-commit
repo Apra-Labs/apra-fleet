@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Reject non-ASCII bytes in staged text files, keeping skill prose portable
+# (replace em-dash with --, smart quotes with ', drop emoji/section signs).
+# Enable with:  git config core.hooksPath .githooks
+set -euo pipefail
+
+fail=0
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  case "$f" in *.png|*.jpg|*.jpeg|*.gif|*.ico|*.pdf|*.html) continue ;; esac
+  case "$f" in .beads/*|.agents/*|.codex/*|AGENTS.md) continue ;; esac
+  match=$(perl -ne 'print "  $.: $_" if /[^\x00-\x7F]/' "$f" | head -5 || true)
+  if [ -n "$match" ]; then
+    echo "pre-commit: non-ASCII characters in $f:"
+    echo "$match"
+    fail=1
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACM)
+
+if [ "$fail" -ne 0 ]; then
+  echo "pre-commit: replace the characters above with ASCII and re-stage."
+  exit 1
+fi

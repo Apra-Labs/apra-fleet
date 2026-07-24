@@ -26,18 +26,18 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * so that single `.toString()` embed captures everything -- no second
  * function needs its own embed.
  *
- * Tree is built from `blocks`-type dependency edges (task.dependencies),
- * not `parent`/containment -- the user-facing goal is "show me what
- * unblocks what", not "show me epic->task nesting" (a task's own epic
- * parent isn't itself in this dataset and carries no ordering information).
- * A task can have multiple blockers (a real DAG, not a strict tree); to
- * keep the rendering a simple, readable nested list, each task is nested
- * under exactly one PRIMARY blocker (deterministic: lexicographically
- * smallest in-scope blocker id) and any additional blockers are listed
- * inline as a "blocked by" badge so no dependency information is lost.
- * Multiple top-level roots (tasks with no in-scope blocker) render as
- * multiple top-level rows -- this is expected, not an error, whenever a
- * sprint targets more than one independent top-level item at once.
+ * Tree is built from each task's `parent` field (bd's real parent-child
+ * containment, e.g. a `[test]` task nested under its owning bug/feature),
+ * not from `blocks`-type dependency edges -- the user-facing goal is "show
+ * me epic->task nesting" (containment), not "show me what unblocks what"
+ * (ordering). A task with no in-dataset parent is a root. `blocks`-type
+ * edges are a real DAG (a task can have multiple blockers) with no bearing
+ * on tree placement; every blocker is instead listed inline as a compact
+ * "blocked by" badge on the row, so no dependency/ordering information is
+ * lost even though it is no longer used for nesting. Multiple top-level
+ * roots (tasks with no in-dataset parent) render as multiple top-level
+ * rows -- this is expected, not an error, whenever a sprint targets more
+ * than one independent top-level item at once.
  *
  * The panel always shows two top-level sections: "Sprint" (the dependency
  * tree above, built from `sprintTasks`) and "Backlog" (`backlogTasks` --
@@ -165,6 +165,38 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         return '<span style="color: #a1a1aa; font-size: 10px;">' + (model ? escapeHtml(model) : 'n/a') + '</span>';
     }
 
+    // apra-fleet-eft.27.2: descriptions are no longer inlined into the
+    // dashboard's recurring poll payload -- apra-fleet-eft.27.1's lean
+    // list-state transform (src/viewer/lean-state.mjs) strips every bead's
+    // full `description` down to a short `summary` before GET /state ever
+    // serves it, so the real running dashboard only ever has `summary`
+    // here. The full text is instead fetched on demand, exactly once per
+    // (bead id, updatedAt) pair, the moment a user expands the row -- see
+    // GET /extensions/beads/detail/:itemId (src/viewer/index.mjs, generic
+    // route delegating to this module's `beadsExtension.detailLookup`,
+    // apra-fleet-eft.37.4) and the fetch + localStorage-cache logic wired up
+    // below in `js`.
+    //
+    // A caller that already has the full `description` inline (this
+    // module's own unit tests, a History-view's frozen/unleaned snapshot,
+    // or any future non-leaned data source) still gets it rendered
+    // immediately with no fetch at all -- `data-loaded="true"` marks that
+    // case so the client-side expand handler never re-fetches something it
+    // was already given. `summary` is only used as the short initial
+    // preview when the full field isn't present.
+    function descriptionDetailsHtml(task, safeId, safeTitle) {
+        const preview = task.description || task.summary;
+        if (!preview) return safeTitle;
+        const safePreview = escapeHtml(preview);
+        const safeUpdatedAt = escapeHtml(task.updated_at || task.updatedAt || '');
+        const hasFull = task.description ? 'true' : 'false';
+        return '<details class="bead-desc" data-bead-id="' + safeId + '" data-updated-at="' + safeUpdatedAt + '">' +
+            '<summary style="cursor: pointer; outline: none; list-style-position: inside;">' + safeTitle + '</summary>' +
+            '<div class="bead-desc-body" data-loaded="' + hasFull + '" style="margin-top: 6px; padding: 8px; background: rgba(0,0,0,0.15); border-left: 2px solid var(--accent); font-size: 11px; border-radius: 0 4px 4px 0; color: #a1a1aa; white-space: pre-wrap; font-family: monospace;">' +
+            safePreview +
+            '</div></details>';
+    }
+
     function sectionHeaderRow(label) {
         return '<tr><td colspan="6" style="padding: 10px 8px 4px; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; color: #a1a1aa; border-bottom: 1px solid rgba(255,255,255,0.1);">' + escapeHtml(label) + '</td></tr>';
     }
@@ -173,29 +205,36 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         return '<tr><td colspan="6" style="padding: 8px; font-size: 12px; color: #71717a; font-style: italic;">' + escapeHtml(message) + '</td></tr>';
     }
 
-    // --- Build a dependency tree from `blocks`-type edges, not `parent` ---
+    // --- Build a containment tree from each task's `parent` field, not
+    // from `blocks`-type dependency edges (see module doc-comment above) ---
     const map = {};
     sprintTasks.forEach((t) => { map[t.id] = { ...t, children: [], blockedBy: [] }; });
 
-    const childrenOf = {}; // blockerId -> [taskId, ...] (this blocker unblocks these)
+    const childrenOf = {}; // parentId -> [taskId, ...] (parent-containment, not blocking)
     sprintTasks.forEach((t) => {
+        // 'blocks'-type dependency edges are still captured here -- they no
+        // longer decide tree placement, but every blocker is preserved and
+        // rendered as an inline annotation below so no dependency
+        // information is lost.
         const deps = Array.isArray(t.dependencies) ? t.dependencies : [];
         const blockerIds = deps
             .filter((d) => d && d.type === 'blocks' && map[d.depends_on_id])
             .map((d) => d.depends_on_id);
         map[t.id].blockedBy = blockerIds;
-        if (blockerIds.length > 0) {
-            // Deterministic primary parent: lexicographically smallest
-            // in-scope blocker id. Any remaining blockers are still listed
-            // via the "blocked by" badge below -- not lost, just not used
-            // for tree placement (a task can only live in one place in a
-            // simple nested list).
-            const primary = blockerIds.slice().sort()[0];
-            (childrenOf[primary] = childrenOf[primary] || []).push(t.id);
+
+        // Only an in-dataset parent contributes to nesting -- a `parent`
+        // value pointing outside sprintTasks (e.g. an epic not itself part
+        // of this sprint run) leaves the task a root, same as having no
+        // parent at all.
+        const parentId = t.parent;
+        if (parentId !== undefined && parentId !== null && map[parentId]) {
+            (childrenOf[parentId] = childrenOf[parentId] || []).push(t.id);
         }
     });
 
-    const roots = sprintTasks.filter((t) => map[t.id].blockedBy.length === 0).map((t) => t.id);
+    const roots = sprintTasks
+        .filter((t) => !(t.parent !== undefined && t.parent !== null && map[t.parent]))
+        .map((t) => t.id);
 
     function renderNode(nodeId, depth, rendered) {
         if (rendered.has(nodeId)) return ''; // cycle-guard: never render twice
@@ -211,23 +250,16 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         const safeId = escapeHtml(node.id);
         const safeTitle = escapeHtml(node.title);
 
-        let titleHtml = safeTitle;
-        if (node.description) {
-            const safeDescription = escapeHtml(node.description);
-            titleHtml = '<details><summary style="cursor: pointer; outline: none; list-style-position: inside;">' +
-                safeTitle +
-                '</summary><div style="margin-top: 6px; padding: 8px; background: rgba(0,0,0,0.15); border-left: 2px solid var(--accent); font-size: 11px; border-radius: 0 4px 4px 0; color: #a1a1aa; white-space: pre-wrap; font-family: monospace;">' +
-                safeDescription +
-                '</div></details>';
-        }
+        const titleHtml = descriptionDetailsHtml(node, safeId, safeTitle);
 
-        // Additional blockers beyond the one used for tree placement --
-        // only shown when there's more than one, so the common (single
-        // blocker or none) case stays uncluttered.
+        // 'blocks'-type dependency edges no longer decide tree placement
+        // (nesting now comes from `parent`), so every blocker -- not just
+        // ones beyond a former "primary" -- must be listed here or the
+        // information would be lost.
         let extraBlockedByHtml = '';
-        if (node.blockedBy.length > 1) {
-            const others = node.blockedBy.slice().sort().slice(1).map((id) => '#' + escapeHtml(id)).join(', ');
-            extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">also blocked by: ' + others + '</div>';
+        if (node.blockedBy.length > 0) {
+            const blockers = node.blockedBy.slice().sort().map((id) => '#' + escapeHtml(id)).join(', ');
+            extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">blocked by: ' + blockers + '</div>';
         }
 
         let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
@@ -255,15 +287,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         const safeId = escapeHtml(task.id);
         const safeTitle = escapeHtml(task.title);
 
-        let titleHtml = safeTitle;
-        if (task.description) {
-            const safeDescription = escapeHtml(task.description);
-            titleHtml = '<details><summary style="cursor: pointer; outline: none; list-style-position: inside;">' +
-                safeTitle +
-                '</summary><div style="margin-top: 6px; padding: 8px; background: rgba(0,0,0,0.15); border-left: 2px solid var(--accent); font-size: 11px; border-radius: 0 4px 4px 0; color: #a1a1aa; white-space: pre-wrap; font-family: monospace;">' +
-                safeDescription +
-                '</div></details>';
-        }
+        const titleHtml = descriptionDetailsHtml(task, safeId, safeTitle);
 
         return '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding: 8px; vertical-align: top; width: 110px; color: ' + titleColor(task.status) + ';">#' + safeId + '</td>' +
@@ -319,18 +343,238 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
     return html;
 }
 
+/**
+ * apra-fleet-eft.37.3: pure HTML-string builder for the auto-sprint verdict
+ * badge + PR link, moved OUT of the generic workflow core (which used to
+ * mint `state.verdict`/`state.prUrl` by name -- see
+ * docs/workflow-core-boundary-refactoring.md M2) and into this se-owned
+ * extension. Core now only stores the workflow script's own return value
+ * WHOLESALE and opaquely as `state.result`, and renders its top-level
+ * SCALAR fields as a generic, unstyled key/value strip (src/viewer/
+ * index.mjs's `#result-strip`). This function reads the SAME
+ * `state.result` object, but knows the two keys that are meaningful for an
+ * auto-sprint run specifically -- `verdict` (colored by outcome) and
+ * `prUrl` (link-ified) -- exactly the se-domain knowledge that has no
+ * business living in the generic engine.
+ *
+ * Returns '' when `result` carries neither key (e.g. a non-auto-sprint
+ * workflow, or a run that hasn't finished yet), so the caller can hide its
+ * container entirely rather than show an empty badge strip.
+ *
+ * @param {{ verdict?: string|null, prUrl?: string|null }|null|undefined} result
+ * @returns {string}
+ */
+export function renderResultExtrasHtml(result) {
+    const verdict = result && typeof result === 'object' ? result.verdict : undefined;
+    const prUrl = result && typeof result === 'object' ? result.prUrl : undefined;
+    // Nothing se-meaningful to show (non-auto-sprint workflow, or a run that
+    // hasn't finished yet) -- let the caller hide its container entirely.
+    if (verdict == null && prUrl == null) return '';
+
+    // Color signals outcome, same register as the beads status badges above:
+    // a clean PASS/MERGED/APPROVED recedes to green, anything that means
+    // "this needs a human's attention" (FAIL/CHANGES_NEEDED/ABORTED) draws
+    // the eye in red; an unrecognized verdict string still renders, just in
+    // a neutral grey, rather than being silently dropped.
+    const VERDICT_COLORS = {
+        PASS: 'var(--success)',
+        MERGED: 'var(--success)',
+        APPROVED: 'var(--success)',
+        FAIL: 'var(--danger)',
+        CHANGES_NEEDED: 'var(--danger)',
+        ABORTED: 'var(--danger)',
+    };
+    let verdictHtml = '';
+    if (verdict != null) {
+        const key = String(verdict).toUpperCase();
+        const color = VERDICT_COLORS[key] || '#a1a1aa';
+        verdictHtml = '<span style="color: ' + color + '; font-weight: 700; font-size: 11px; ' +
+            'border: 1px solid ' + color + '; border-radius: 4px; padding: 2px 6px; white-space: nowrap;">' +
+            escapeHtml(String(verdict)) + '</span>';
+    }
+
+    let prHtml = '';
+    if (typeof prUrl === 'string' && prUrl.length > 0) {
+        prHtml = '<a href="' + escapeHtml(prUrl) + '" target="_blank" rel="noopener noreferrer" ' +
+            'style="color: var(--accent); font-size: 11px; text-decoration: none; white-space: nowrap;">PR -&gt;</a>';
+    }
+
+    return verdictHtml + prHtml;
+}
+
+// apra-fleet-eft.37.4 (M3, docs/workflow-core-boundary-refactoring.md):
+// relocated verbatim from packages/apra-fleet-workflow/src/viewer/index.mjs's
+// former findBeadById() -- that was the one place core reached into
+// `state.extensions.beads.sprintTasks/backlogTasks` by name, a deliberate
+// domain leak the eft.27.2 comment it replaced called out explicitly. Core
+// now only knows the generic `detailLookup(state, id)` hook shape (see
+// `beadsExtension.detailLookup` below); this function is the se-owned
+// knowledge of the beads extension's own data shape.
+//
+// Runs server-side (Node), invoked by core's GET
+// /extensions/beads/detail/:itemId route -- never embedded into the
+// browser-side `js` string below, unlike renderBeadsHtml/renderResultExtrasHtml.
+function findBeadById(state, id) {
+    const beadsExt = state.extensions && state.extensions.beads;
+    if (!beadsExt) return null;
+    const pools = [beadsExt.sprintTasks, beadsExt.backlogTasks];
+    for (const pool of pools) {
+        if (!Array.isArray(pool)) continue;
+        const match = pool.find((t) => t && String(t.id) === String(id));
+        if (match) return match;
+    }
+    return null;
+}
+
 export const beadsExtension = {
     id: 'beads',
     title: 'Tasks',
+    // apra-fleet-eft.37.4 (M3): the beads extension's detailLookup hook,
+    // called by core's generic GET /extensions/beads/detail/:itemId route
+    // (packages/apra-fleet-workflow/src/viewer/index.mjs) against the LIVE,
+    // full-fidelity `state` object. Returns the shape the hook contract
+    // requires -- `{text, updatedAt} | null` -- never the raw bead object,
+    // so core stays ignorant of bd's own field names (`description`,
+    // `updated_at`).
+    detailLookup(state, id) {
+        const bead = findBeadById(state, id);
+        if (!bead) return null;
+        return {
+            text: bead.description || '',
+            updatedAt: bead.updated_at || bead.updatedAt || null
+        };
+    },
     js: `
         ${escapeHtml.toString()}
         ${renderBeadsHtml.toString()}
+        ${renderResultExtrasHtml.toString()}
+
+        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // link into the header, next to core's generic (unstyled)
+        // #result-strip -- see viewer/index.mjs's 'workflow:result'
+        // CustomEvent, dispatched on every renderState() with
+        // state.result (core's opaque, workflow-declared result) as its
+        // detail. The container is created lazily on first non-empty
+        // render and removed again whenever there is nothing se-specific
+        // to show (e.g. before a run has finished).
+        function renderResultExtras(result) {
+            const html = renderResultExtrasHtml(result);
+            let el = document.getElementById('se-result-extras');
+            if (!html) {
+                if (el) el.remove();
+                return;
+            }
+            if (!el) {
+                const headerActions = document.querySelector('.header-actions');
+                if (!headerActions) return;
+                el = document.createElement('div');
+                el.id = 'se-result-extras';
+                el.style.display = 'flex';
+                el.style.gap = '8px';
+                el.style.alignItems = 'center';
+                headerActions.insertBefore(el, headerActions.firstChild);
+            }
+            el.innerHTML = html;
+        }
+
+        // apra-fleet-eft.27.2 / apra-fleet-eft.37.4 (M3): on-demand
+        // bead-description fetch + browser localStorage cache. GET /state
+        // now serves only a short \`summary\` per bead (apra-fleet-eft.27.1)
+        // -- the full text is fetched here, from the GENERIC
+        // GET /extensions/beads/detail/:itemId route (src/viewer/index.mjs,
+        // delegating to this extension's own \`detailLookup\` above -- the
+        // old sprint-named /beads/:id/description route is now core's
+        // one-release BOUNDARY-COMPAT alias, no longer called from here),
+        // the moment a user actually expands a row, and cached under the
+        // bead's id. Each cache entry also carries the \`updatedAt\` it was
+        // fetched against, so a later lean-state poll reporting a NEW
+        // updatedAt for that bead transparently invalidates the cache and
+        // triggers a refetch instead of ever serving stale text.
+        const BEAD_DESC_CACHE_PREFIX = 'apra-fleet-bead-desc:';
+
+        function beadDescCacheKey(id) { return BEAD_DESC_CACHE_PREFIX + id; }
+
+        function readBeadDescCache(id, updatedAt) {
+            try {
+                const raw = localStorage.getItem(beadDescCacheKey(id));
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.updatedAt === updatedAt) return parsed.description;
+            } catch (e) {
+                // Corrupt or unavailable cache entry -- treat as a miss,
+                // never let a caching problem break the expand action.
+            }
+            return null;
+        }
+
+        function writeBeadDescCache(id, updatedAt, description) {
+            try {
+                localStorage.setItem(beadDescCacheKey(id), JSON.stringify({ updatedAt: updatedAt, description: description }));
+            } catch (e) {
+                // localStorage full/unavailable (quota, private browsing) --
+                // non-fatal: the fetch itself already succeeded and rendered.
+            }
+        }
+
+        async function loadBeadDescription(detailsEl) {
+            const bodyEl = detailsEl.querySelector('.bead-desc-body');
+            // Already showing the full text (either a prior fetch/cache hit,
+            // or a caller that inlined the full description up front) --
+            // no network request on a repeat expand.
+            if (!bodyEl || bodyEl.dataset.loaded === 'true') return;
+
+            const id = detailsEl.dataset.beadId;
+            const updatedAt = detailsEl.dataset.updatedAt || '';
+
+            const cached = readBeadDescCache(id, updatedAt);
+            if (cached !== null) {
+                bodyEl.textContent = cached;
+                bodyEl.dataset.loaded = 'true';
+                return;
+            }
+
+            bodyEl.textContent = 'Loading...';
+            try {
+                const res = await fetch('/extensions/beads/detail/' + encodeURIComponent(id));
+                if (!res.ok) { bodyEl.textContent = '(description unavailable)'; return; }
+                const data = await res.json();
+                const description = data.text || '(no description)';
+                bodyEl.textContent = description;
+                bodyEl.dataset.loaded = 'true';
+                writeBeadDescCache(id, updatedAt, description);
+            } catch (e) {
+                bodyEl.textContent = '(failed to load description)';
+            }
+        }
+
+        // The 'toggle' event does not bubble in every browser, but it IS
+        // still observable during the capture phase regardless of bubbling
+        // -- a single document-level capture listener therefore catches
+        // every <details class="bead-desc"> toggle, including rows
+        // recreated by the full innerHTML rebuild below on each poll, with
+        // no per-row listener wiring or cleanup needed.
+        document.addEventListener('toggle', function (e) {
+            const el = e.target;
+            if (el && el.tagName === 'DETAILS' && el.classList && el.classList.contains('bead-desc') && el.open) {
+                loadBeadDescription(el);
+            }
+        }, true);
 
         document.addEventListener('workflow:state:beads', (e) => {
             const data = e.detail;
             const container = document.getElementById('extension-beads');
             if (!container) return;
             container.innerHTML = renderBeadsHtml(data.sprintTasks || [], data.backlogTasks || []);
+        });
+
+        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // link into the header, next to core's generic (unstyled)
+        // #result-strip -- see viewer/index.mjs's 'workflow:result'
+        // CustomEvent, dispatched on every renderState() with
+        // state.result (core's opaque, workflow-declared result) as its
+        // detail.
+        document.addEventListener('workflow:result', (e) => {
+            renderResultExtras(e.detail);
         });
     `
 };

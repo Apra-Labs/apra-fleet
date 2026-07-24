@@ -1,9 +1,28 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { escapeHtml } from './html-utils.mjs';
+import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic } from './debounced-writer.mjs';
+import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-paths.mjs';
+import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
+import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
 
-const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
+// apra-fleet-eft.6.5: the SAME template serves both the live view and the
+// process-free History view -- `opts.history` (true) feeds a FROZEN state
+// object directly into the page instead of the live view's
+// fetch('/state') + EventSource('/events') polling loop, and hides the Save
+// / Stop controls (there is no live workflow left to save/stop, and nothing
+// to stream: a finished run's child process, and therefore those
+// endpoints, no longer exists). `opts.state` is embedded as a JSON literal;
+// any literal `</script>`-like sequence inside it is escaped so it can never
+// terminate the embedding <script> tag early.
+const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
+    const isHistory = !!opts.history;
+    const frozenStateLiteral = isHistory
+        ? JSON.stringify(opts.state ?? null).replace(/</g, '\\u003c')
+        : 'null';
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -16,7 +35,20 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
       --success: #10b981; --warning: #f59e0b; --danger: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: var(--bg); color: var(--text); font-family: sans-serif; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    /* apra-fleet-eft.43 (measured live, Chrome, 799px window): without an
+       explicit height on <html>, and with only overflow: hidden on <body>,
+       the whole page grew to fit every activity (documentElement.scrollHeight
+       ended up EQUAL to clientHeight -- the window itself could never scroll,
+       body's overflow: hidden made sure of that -- while #stream-list's own
+       scrollHeight/clientHeight were also equal, because ITS height was
+       unbounded too: nothing above it in the ancestor chain actually pinned
+       it to the viewport). html,body height: 100% plus body's own 100dvh
+       (falls back to 100vh in browsers that predate dvh) is what makes the
+       flex-column layout below a fixed-size box in the first place -- only
+       then does #stream-list's flex: 1; min-height: 0; overflow-y: auto
+       actually have a bounded parent to scroll inside of. */
+    html, body { height: 100%; }
+    body { background: var(--bg); color: var(--text); font-family: sans-serif; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
     .header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--bg-glass); border-bottom: 1px solid var(--border); }
     .header h1 { font-size: 16px; font-weight: 600; margin: 0; }
     .header-actions { display: flex; gap: 12px; align-items: center; }
@@ -31,16 +63,31 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
     .btn-stop { background: var(--danger); color: #fff; }
     .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
     
-    .main-content { display: flex; flex: 1; overflow: hidden; }
-    
-    .content-area { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; }
-    .panel { background: var(--bg-glass); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+    /* min-height: 0 on every rung of the flex chain: a flex item's default
+       min-height is content-sized, which lets a tall Activity list push the
+       panel past its parent instead of the inner .stream-list scrolling.
+       overflow: hidden alone is not reliable across the nested flex levels
+       here -- without the explicit 0, large runs ended up with a clipped,
+       unscrollable activity widget. */
+    .main-content { display: flex; flex: 1; overflow: hidden; min-height: 0; }
+
+    .content-area { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+    .panel { background: var(--bg-glass); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
     .panel-header { flex-shrink: 0; padding: 10px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); text-transform: uppercase; letter-spacing: 0.5px; }
     
-    .stream-list { flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; background: #000; }
+    .stream-list { flex: 1; min-height: 0; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; background: #000; }
     
     /* Tree Group */
-    .tree-group { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    /* apra-fleet-7lk / apra-fleet-eft.43: .tree-group and .tree-phase are
+       both flex ITEMS of an ancestor display: flex; flex-direction: column
+       container (#stream-list, .group-body) with no explicit height of their
+       own -- a flex item's default flex-shrink: 1 lets the browser squish it
+       below its content's natural size whenever the column tries to fit more
+       rows than its bounded parent has room for, instead of just letting the
+       (already scrollable, overflow-y: auto) ancestor grow past the fold and
+       scroll. flex-shrink: 0 pins each row to its content size so the bounded
+       pane scrolls, rather than crushing its children to fit. */
+    .tree-group { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex-shrink: 0; }
     .group-header { padding: 12px 16px; background: rgba(0,0,0,0.4); cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; outline: none; list-style: none; }
     .group-header h3 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
     .group-header:hover { background: rgba(0,0,0,0.6); }
@@ -48,7 +95,7 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
     .group-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 
     /* Tree Phase */
-    .tree-phase { background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; overflow: hidden; }
+    .tree-phase { background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
     .phase-header { padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; border-bottom: 1px solid rgba(255,255,255,0.02); outline: none; list-style: none; }
     .phase-header h4 { font-size: 13px; font-weight: 600; color: #e4e4e7; margin: 0; }
     .phase-header:hover { background: rgba(255,255,255,0.05); }
@@ -80,7 +127,16 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
     .activity-child { padding: 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; }
     .activity-child.output { color: #a1a1aa; border-left: 2px solid var(--accent); }
     .activity-child.error { background: rgba(239, 68, 68, 0.05); color: var(--danger); border-left: 2px solid var(--danger); }
-    
+
+    /* apra-fleet-eft.38: on-demand full-output button for a capped command
+       activity (GET /activities/:id/output, wired up in eft.27.4 but never
+       surfaced client-side until now). Deliberately its own small element,
+       never the activity's summary/header -- headers/titles stay a plain
+       expand/collapse toggle only. */
+    .more-btn { margin-left: 8px; padding: 1px 8px; font-size: 11px; font-family: sans-serif; border-radius: 4px; border: 1px solid var(--border); background: rgba(255,255,255,0.06); color: var(--accent); cursor: pointer; }
+    .more-btn:hover { background: rgba(255,255,255,0.12); }
+    .more-btn:disabled { cursor: default; opacity: 0.6; }
+
     .status-badge { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
     .status-running { background: var(--accent-glow); color: var(--accent); animation: pulse 2s infinite; }
     .status-success { background: rgba(16, 185, 129, 0.1); color: var(--success); }
@@ -106,17 +162,24 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
        activity instead of the inner list scrolling -- collapsing items was
        the only way to shrink total height. Flex here still wins on
        specificity but no longer conflicts with .panel's own flex layout. */
-    .tab-content.active { display: flex; }
+    .tab-content.active { display: flex; min-height: 0; }
   </style>
 </head>
-<body>
+<body data-view="${isHistory ? 'history' : 'live'}">
   <div class="header">
     <h1><span id="workflow-name">Loading...</span></h1>
     <div class="header-actions">
+      <!-- apra-fleet-eft.37.3: generic, workflow-agnostic display of
+           state.result's top-level SCALAR fields -- populated (or hidden,
+           when empty) by renderState() below. Core never knows what keys
+           live inside 'result'; any richer, workflow-specific rendering
+           (e.g. auto-sprint's verdict badge/PR link) is layered on by a
+           dashboard extension's own js, not here. -->
+      <div class="stats-banner" id="result-strip" style="display: none;"></div>
       <div class="stats-banner" id="stats-banner"></div>
       <div id="status-indicator" style="font-size: 12px; font-weight: 600; min-width: 70px; text-align: center;"></div>
-      <button class="btn btn-save" onclick="saveState()">Save</button>
-      <button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>
+      ${isHistory ? '' : '<button class="btn btn-save" onclick="saveState()">Save</button>'}
+      ${isHistory ? '' : '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>'}
     </div>
   </div>
   <div class="main-content">
@@ -135,7 +198,7 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
       ${dashboardExtensions.map(ext => `
         <div id="tab-${ext.id}" class="tab-content panel">
           <div class="panel-header">${ext.title}</div>
-          <div id="extension-${ext.id}" style="padding: 12px; overflow-y: auto;"></div>
+          <div id="extension-${ext.id}" style="flex: 1; min-height: 0; padding: 12px; overflow-y: auto;"></div>
         </div>
       `).join('\\n')}
     </div>
@@ -174,6 +237,16 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
     // why this is embedded via escapeHtml.toString() instead of duplicated.
     ${escapeHtml.toString()}
 
+    // apra-fleet-eft.27.1: GET /state's lean list-state payload dedupes
+    // repeated strings into a shared \`_strings\` table (see
+    // src/viewer/lean-state.mjs) -- this is that module's resolveStringRefs()
+    // embedded verbatim (same .toString() pattern as escapeHtml above) so the
+    // browser can undo the same transform before rendering. Safe to run on
+    // ANY state object, including a History view's frozen literal that never
+    // went through dedupeStrings(): with no \`{ $ref }\` markers present it's a
+    // no-op pass-through.
+    ${resolveStringRefs.toString()}
+
     function saveState() {
       if (!globalState) return;
       const blob = new Blob([JSON.stringify(globalState, null, 2)], { type: "application/json" });
@@ -210,6 +283,87 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
       isAutoScrolling = (streamEl.scrollTop + streamEl.clientHeight >= streamEl.scrollHeight - 30);
     });
 
+    // apra-fleet-eft.38: on-demand full-output fetch for a capped command
+    // activity's 'more...' button (see fieldBlock() above). Delegated on
+    // streamEl (not one listener per button) since renderTreeIncremental()
+    // keeps appending new activity elements as the run progresses.
+    // Deliberately scoped to .more-btn clicks only -- never the activity's
+    // own <summary> header, which keeps its native <details> expand/collapse
+    // behavior untouched.
+    let expandedMoreBtn = null;
+    function collapseMoreBtn(btn) {
+        if (!btn) return;
+        const span = btn.previousElementSibling;
+        if (span && span.dataset.truncatedText !== undefined) {
+            span.textContent = span.dataset.truncatedText;
+        }
+        btn.dataset.state = '';
+        btn.disabled = false;
+        btn.textContent = btn.dataset.label || 'more...';
+        if (expandedMoreBtn === btn) expandedMoreBtn = null;
+    }
+    streamEl.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.more-btn');
+        if (!btn) return;
+        const span = btn.previousElementSibling;
+        if (!span) return;
+
+        if (btn.dataset.state === 'expanded') {
+            // Toggle back to the capped preview -- no re-fetch needed.
+            collapseMoreBtn(btn);
+            return;
+        }
+        if (btn.dataset.state === 'loading') return;
+
+        // apra-fleet-eft.38: only ONE activity's full output is ever held
+        // expanded in the DOM at a time. Fetched command output can run to
+        // many MB, and keeping several fully expanded simultaneously is
+        // exactly the kind of unbounded-DOM growth apra-fleet-eft.27/27.4
+        // already fixed for the initial render -- a new 'more...' click
+        // collapses whichever block was previously expanded back to its
+        // capped preview first.
+        if (expandedMoreBtn && expandedMoreBtn !== btn) {
+            collapseMoreBtn(expandedMoreBtn);
+        }
+
+        if (span.dataset.truncatedText === undefined) {
+            span.dataset.truncatedText = span.textContent;
+        }
+        const activityId = btn.dataset.activityId;
+        const field = btn.dataset.field;
+        btn.dataset.state = 'loading';
+        btn.disabled = true;
+        btn.textContent = 'loading...';
+        try {
+            const res = await fetch('/activities/' + encodeURIComponent(activityId) + '/output');
+            if (!res.ok) throw new Error('request failed: ' + res.status);
+            const data = await res.json();
+            const full = data[field];
+            if (typeof full !== 'string') throw new Error('missing ' + field + ' in response');
+            span.textContent = full;
+            btn.dataset.state = 'expanded';
+            btn.disabled = false;
+            btn.textContent = 'less';
+            expandedMoreBtn = btn;
+        } catch (err) {
+            btn.dataset.state = '';
+            btn.disabled = false;
+            btn.textContent = 'failed to load (retry?)';
+        }
+    });
+
+    ${isHistory ? '' : `
+    // Coalesce SSE-triggered refreshes: a busy run broadcasts one event
+    // per log line / activity tick, and refetching + re-rendering the full
+    // (potentially multi-MB) /state payload for each of them is what made
+    // large runs sluggish. One trailing refresh per window is enough --
+    // renderState() always paints the latest snapshot, not a delta.
+    const POLL_COALESCE_MS = 400;
+    let pollTimer = null;
+    function schedulePoll() {
+        if (pollTimer) return;
+        pollTimer = setTimeout(() => { pollTimer = null; poll(); }, POLL_COALESCE_MS);
+    }
     const source = new EventSource('/events');
     source.onmessage = (e) => {
         const ev = JSON.parse(e.data);
@@ -217,8 +371,9 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
             const extEvent = new CustomEvent('workflow:state:' + ev.payload.namespace, { detail: ev.payload.data });
             document.dispatchEvent(extEvent);
         }
-        poll();
+        schedulePoll();
     };
+    `}
 
     function renderTreeIncremental(tree) {
         tree.forEach((group, gIdx) => {
@@ -314,7 +469,17 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
                             }
                             phaseBody.appendChild(evEl);
                         }
-                        
+
+                        // A finished activity's data never changes again
+                        // (activity:end merges its meta exactly once), so
+                        // re-render it exactly once. Rewriting every
+                        // activity's innerHTML on every tick -- thousands of
+                        // DOM subtrees, some holding megabyte agent outputs
+                        // -- is the other half of what made large runs
+                        // sluggish, and the constant churn also fought the
+                        // user's own scrolling and text selection.
+                        if (evEl.dataset.rendered === 'done') return;
+
                         // Update contents every tick to catch status changes
                         const dateObj = new Date(act.startTime || Date.now());
                         const t = isNaN(dateObj.getTime()) ? '-' : dateObj.toLocaleTimeString([], { hour12: false });
@@ -326,10 +491,48 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
                         
                         let childrenHtml = '';
                         if (!act.isRunning) {
-                            if (act.error) {
-                                childrenHtml = \`<div class="activity-child error">\${escapeHtml(act.error)}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${act.output ? 'Output:\\n' + escapeHtml(act.output) : ''}</div>\`;
-                            } else if (act.output) {
-                                childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${escapeHtml(act.output)}</div>\`;
+                            // apra-fleet-eft.38 (reopened): a REAL capped
+                            // activity ships NO inline text field at all --
+                            // only the markers (\${field}Truncated + the TRUE
+                            // original \${field}ByteLength) plus a short
+                            // \`summary\` string (see command-output-cap.mjs for
+                            // \`command\` activities, and lean-state.mjs's
+                            // summarizeHeavyFields() for every other activity
+                            // type, e.g. \`agent\`). The previous version of this
+                            // fix keyed the button on act.output/act.error
+                            // being truthy, which a real capped payload never
+                            // is -- 0 buttons ever rendered. hasField()/
+                            // fieldBlock() below key on the MARKERS instead:
+                            // present inline text wins as the preview when
+                            // available (e.g. an uncapped History-view state),
+                            // otherwise the leaned \`summary\` is the preview,
+                            // and the 'more...' button (never on the
+                            // activity's own summary/header, which stays a
+                            // plain expand/collapse toggle only) fetches the
+                            // full text on demand from GET
+                            // /activities/:id/output.
+                            const hasField = (field) =>
+                                typeof act[field] === 'string' ||
+                                act[field + 'Truncated'] ||
+                                act[field + 'ByteLength'] !== undefined;
+                            const fieldBlock = (prefix, field) => {
+                                const truncated = act[field + 'Truncated'];
+                                const bytes = act[field + 'ByteLength'];
+                                const text = typeof act[field] === 'string'
+                                    ? act[field]
+                                    : (typeof act.summary === 'string' ? act.summary : '');
+                                const label = truncated
+                                    ? \`more... (\${(bytes || 0).toLocaleString()} bytes total)\`
+                                    : '';
+                                const btn = truncated
+                                    ? \` <button type="button" class="more-btn" data-activity-id="\${escapeHtml(String(act.id))}" data-field="\${field}" data-label="\${escapeHtml(label)}">\${escapeHtml(label)}</button>\`
+                                    : '';
+                                return \`\${prefix}<span class="output-text" data-field="\${field}">\${escapeHtml(text)}</span>\${btn}\`;
+                            };
+                            if (hasField('error')) {
+                                childrenHtml = \`<div class="activity-child error">\${fieldBlock('', 'error')}\\n\\n\${act.input ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\n' : ''}\${hasField('output') ? fieldBlock('Output:\\n', 'output') : ''}</div>\`;
+                            } else if (hasField('output')) {
+                                childrenHtml = \`<div class="activity-child output">\${act.input && act.type === 'transform' ? 'Input:\\n' + escapeHtml(act.input) + '\\n\\nOutput:\\n' : ''}\${fieldBlock('', 'output')}</div>\`;
                             }
                         }
                         
@@ -359,26 +562,29 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
                           </summary>
                           \${childrenHtml ? \`<div class="activity-body">\${childrenHtml}</div>\` : ''}
                         \`;
+                        if (!act.isRunning) evEl.dataset.rendered = 'done';
                     }
                 });
             });
         });
     }
 
-    async function poll() {
-      try {
-        const res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
-        const state = await res.json();
+    // apra-fleet-eft.6.5: the DOM-update half of what used to be poll()'s try
+    // block, factored out so the History view can feed it a FROZEN state
+    // object directly (see the bottom of this script) without ever calling
+    // fetch('/state') itself -- poll() (live view only) still drives it from
+    // the network.
+    function renderState(state) {
         globalState = state;
-        
+
         document.getElementById('workflow-name').textContent = state.workflowName;
-        
+
         const ind = document.getElementById('status-indicator');
         if (state.status === 'running') { ind.innerHTML = '<div class="status-live-indicator"><div class="led"></div> LIVE</div>'; }
         else if (state.status === 'success') { ind.innerHTML = '<span style="color:var(--success)">DONE</span>'; }
         else if (state.status === 'cancelled') { ind.innerHTML = '<span style="color:var(--warning)">CANCELLED</span>'; }
         else { ind.innerHTML = '<span style="color:var(--danger)">FAILED</span>'; }
-        
+
         const dur = state.status === 'running' ? Date.now() - state.stats.startTime : state.stats.durationMs;
         const unknownCostSuffix = state.stats.unknownCostCount > 0 ? \` <span style="color:var(--warning)">(+\${state.stats.unknownCostCount} unknown)</span>\` : '';
         document.getElementById('stats-banner').innerHTML =
@@ -386,19 +592,56 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
            <span><strong class="spent">$\${state.stats.totalCost.toFixed(3)}</strong> Spent\${unknownCostSuffix}</span>
            <span><strong>\${state.stats.totalTokens.toLocaleString()}</strong> Tokens</span>
            <span><strong>\${formatUptime(dur)}</strong> Uptime</span>\`;
-        
+
+        // apra-fleet-eft.37.3: generic Result strip -- every workflow gets
+        // its terminal result's top-level SCALAR (string/number/boolean/
+        // null) fields rendered as a plain key/value strip, no per-workflow
+        // registration needed. Core does not know or care what these keys
+        // mean; it only knows how to display a scalar. \`workflow:result\`
+        // is also dispatched (below) so a dashboard extension can layer
+        // richer, workflow-specific rendering (e.g. auto-sprint's verdict
+        // badge/PR link) on top of the same \`state.result\` object.
+        const resultStrip = document.getElementById('result-strip');
+        if (resultStrip) {
+            const result = state.result;
+            const scalarEntries = (result && typeof result === 'object' && !Array.isArray(result))
+                ? Object.entries(result).filter(([, v]) => v === null || ['string', 'number', 'boolean'].includes(typeof v))
+                : [];
+            if (scalarEntries.length > 0) {
+                resultStrip.innerHTML = scalarEntries
+                    .map(([k, v]) => \`<span><strong>\${escapeHtml(k)}</strong>: \${escapeHtml(String(v))}</span>\`)
+                    .join('');
+                resultStrip.style.display = 'flex';
+            } else {
+                resultStrip.innerHTML = '';
+                resultStrip.style.display = 'none';
+            }
+            document.dispatchEvent(new CustomEvent('workflow:result', { detail: result ?? null }));
+        }
+
         renderTreeIncremental(state.tree);
-        
+
         if (state.extensions) {
             for (const [ns, data] of Object.entries(state.extensions)) {
                 const extEvent = new CustomEvent('workflow:state:' + ns, { detail: data });
                 document.dispatchEvent(extEvent);
             }
         }
-        
+
         if (isAutoScrolling) {
           streamEl.scrollTop = streamEl.scrollHeight;
         }
+    }
+
+    async function poll() {
+      try {
+        const res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
+        const raw = await res.json();
+        // apra-fleet-eft.27.1: undo the server's string-table dedup before
+        // handing the state to renderState()/renderTreeIncremental(), which
+        // both expect plain, already-resolved strings.
+        const state = resolveStringRefs(raw, raw._strings || []);
+        renderState(state);
       } catch(e) {
           console.error("Poll Error:", e);
           if (globalState && (globalState.status === 'success' || globalState.status === 'failed' || globalState.status === 'cancelled')) {
@@ -408,19 +651,118 @@ const HTML_TEMPLATE = (dashboardExtensions) => `<!DOCTYPE html>
           }
       }
     }
-    
-    poll();
+
+    ${isHistory
+        ? `// History view: render the frozen state ONCE, directly -- no
+    // fetch('/state') and no EventSource('/events') (asserted: zero polling
+    // requests for a finished run with zero running processes).
+    renderState(${frozenStateLiteral});`
+        : 'poll();'}
   </script>
 </body>
 </html>`;
+};
+
+// apra-fleet-eft.37.4 (M3, docs/workflow-core-boundary-refactoring.md): the
+// on-demand FULL-TEXT lookup used to live here as findBeadById(), a
+// core function that reached into `state.extensions.beads.sprintTasks/
+// backlogTasks` by name -- the one deliberate domain leak the eft.27.2
+// comment it replaced used to call out explicitly. Core has no business
+// knowing an extension's internal shape, so that function moved verbatim
+// into the beads extension module itself
+// (packages/apra-fleet-se/auto-sprint/viewer-extensions.mjs, as
+// `beadsExtension.detailLookup`). Core now only knows the GENERIC hook
+// surface: any dashboard extension may register
+// `detailLookup?: (state, id) => {text, updatedAt} | null`, and core serves
+// GET /extensions/:extId/detail/:itemId (route below) by delegating to
+// whichever extension's `id` matches `:extId` -- a template-method default
+// of "no such extension/no hook -> 404", never a crash, for extensions that
+// don't opt in.
+
+// apra-fleet-eft.38 (reopened): fallback lookup for GET /activities/:id/output
+// (see the route below) when command-output-cap.mjs's own store has nothing
+// for the id -- true for every activity type it never caps (most notably
+// `agent`: its full LLM response text is never trimmed at storage time, only
+// at GET /state's wire-shaping stage by lean-state.mjs's summarizeHeavyFields(),
+// which now stamps the same <field>Truncated markers on it -- see that
+// module). Reads from the LIVE, full-fidelity in-memory `state.tree` (never
+// the leaned /state payload), which is where an uncapped activity's complete
+// output/error text still lives.
+function findActivityById(state, id) {
+    for (const g of state.tree || []) {
+        for (const p of g.phases || []) {
+            const ev = (p.events || []).find((e) => e.type === 'activity' && String(e.id) === String(id));
+            if (ev) return ev.data;
+        }
+    }
+    return null;
+}
+
+// apra-fleet-eft.6.5: exported so the supervisor's process-free History view
+// (packages/apra-fleet-se/src/supervisor/history-view.mjs) can render a
+// finished run's persisted terminal state through the SAME template the
+// live viewer serves, fed a frozen state object (opts.history / opts.state)
+// instead of standing up a whole createDashboardViewer() (which owns a live
+// http.createServer + workflow event wiring this read-only view has no use
+// for).
+export { HTML_TEMPLATE };
 
 export function createDashboardViewer(workflow, opts = {}) {
     const port = (typeof opts.port === 'number') ? opts.port : 8080;
     const dashboardExtensions = opts.dashboardExtensions || [];
-    
+
+    // apra-fleet-eft.2.3 (renamed under eft.37.1): stable per-run id, NOT an
+    // HHMMSS-style clock key (see run-state-paths.mjs) -- this is what
+    // running/<id>.json / old_runs/<id>.json are keyed by, so two runs started
+    // in the same second on different days never collide. Callers that already
+    // know a meaningful id (e.g. the auto-sprint runner's own runId) can pass
+    // opts.runId; otherwise one is generated here.
+    const env = opts.env || process.env;
+    // BOUNDARY-COMPAT: opts.sprintId is the pre-rename alias for opts.runId.
+    // Accept it for one release with a deprecation warning so callers migrate
+    // to opts.runId without a flag day; sprintId appears in core code only on
+    // this line. Remove this shim one release after the se consumers pass
+    // opts.runId directly.
+    const legacyRunId = opts.sprintId;
+    if (legacyRunId !== undefined && opts.runId === undefined) {
+        console.warn('[Viewer] opts.sprintId is deprecated; pass opts.runId instead.');
+    }
+    const runId = opts.runId || legacyRunId || randomUUID();
+
+    // apra-fleet-eft.2.3: the debounced writer's target defaults to
+    // <serviceDataDir>/running/<runId>.json (outside the repo checkout --
+    // see getFleetDataDir()/APRA_FLEET_DATA_DIR), NOT the snapshot dir. Only
+    // when a caller passes an explicit opts.debouncedStatePath (tests, or a
+    // future caller with its own layout) do we skip the running/-> old_runs/
+    // move-on-completion below, since we can no longer assume that path lives
+    // under a running/ directory we're allowed to rename out of.
+    const usingDefaultStatePath = !opts.debouncedStatePath;
+    const runningStatePath = opts.debouncedStatePath || getRunningRunStatePath(runId, env);
+
+    const nowIso = () => new Date().toISOString();
+    const startedAtIso = nowIso();
+
     const state = {
         workflowName: opts.name || 'Apra Fleet Workflow',
         status: 'running',
+        // apra-fleet-eft.2.2: fields enriching the persisted state file
+        // beyond the terminal-only crash-net snapshot -- populated (where
+        // known) from construction, and updated as the run progresses so
+        // a mid-run read of the file shows in-progress state, not just
+        // the terminal shape.
+        runId,
+        args: opts.launchArgs ?? null,
+        // apra-fleet-eft.37.3: `result` is the workflow script's own return
+        // value, stored WHOLESALE and OPAQUELY -- core never inspects or
+        // mints individual keys inside it (that used to be `verdict`/`prUrl`,
+        // auto-sprint domain concepts that have no business in the generic
+        // engine). Null until the run ends; see the 'end' handler below and
+        // the generic Result-strip renderer in HTML_TEMPLATE's client script.
+        result: null,
+        terminalReason: null,
+        startedAt: startedAtIso,
+        updatedAt: startedAtIso,
+        endedAt: null,
         stats: {
             activitiesCount: 0,
             totalTokens: 0,
@@ -447,41 +789,109 @@ export function createDashboardViewer(workflow, opts = {}) {
     const broadcast = (data) => {
         const msg = `data: ${JSON.stringify(data)}\n\n`;
         clients.forEach(c => c.write(msg));
+        // apra-fleet-eft.2.2: every event that already drives the SSE
+        // broadcast (group:start, phase, activity:start/end, log, state)
+        // also schedules a debounced state write and bumps updatedAt, so a
+        // mid-run read of the persisted file reflects in-progress state
+        // rather than only the terminal snapshot.
+        state.updatedAt = nowIso();
+        debouncedWriter.schedule();
     };
 
+    // apra-fleet-eft.2.1/2.3: debounced writer, additive to persistState()
+    // above -- that write-once-on-end path (the terminal snapshot dir's
+    // run_<HHMMSS>.json) stays exactly as-is as the child crash-safety net.
+    // This one coalesces bursts of rapid state changes into a single write
+    // per debounce window (default DEFAULT_DEBOUNCE_MS, configurable via
+    // opts.debounceMs, must be within 200-500ms), is flushed synchronously
+    // on every exit path below, and (apra-fleet-eft.2.3) targets
+    // running/<runId>.json under the service data directory by default --
+    // never the repo checkout.
+    const debouncedWriter = new DebouncedStateWriter({
+        getState: () => state,
+        filePath: runningStatePath,
+        debounceMs: opts.debounceMs || DEFAULT_DEBOUNCE_MS
+    });
+
+    // apra-fleet-eft.27.4: configurable head/tail cap applied to a `command`
+    // activity's captured output/error BEFORE it's ever stored into
+    // state.tree (command-output-cap.mjs) -- undefined fields fall back to
+    // that module's own defaults.
+    const commandOutputCapOpts = {
+        headChars: opts.commandOutputHeadChars,
+        tailChars: opts.commandOutputTailChars
+    };
+
+    // apra-fleet-eft.2.3: on terminal completion, move (not copy) the live
+    // running/<runId>.json to old_runs/<runId>.json so "is this run live" is a
+    // directory-membership check, never a stale field on the state object
+    // itself. Only applies to the default path layout -- see
+    // usingDefaultStatePath above.
+    function moveStateToOldRuns() {
+        if (!usingDefaultStatePath) return;
+        try {
+            if (!fs.existsSync(runningStatePath)) return;
+            const oldPath = getTerminalRunStatePath(runId, env);
+            fs.mkdirSync(path.dirname(oldPath), { recursive: true });
+            fs.renameSync(runningStatePath, oldPath);
+        } catch (e) {
+            // Must never crash or block the run's own normal exit behavior --
+            // log and move on, same contract as persistState() and the
+            // debounced writer itself.
+            console.warn(`[Viewer] Warning: failed to move run state to old_runs/: ${e.message}`);
+        }
+    }
+
     // Server-side persistence of the dashboard `state` object to
-    // sprint-logs/sprint_<HHMMSS>.json on every run-ending event (normal
-    // finish, cooperative /stop-triggered cancellation, or the CLI process
-    // itself being interrupted). This is the server-side equivalent of the
-    // client-side saveState() button (HTML_TEMPLATE above) -- that one only
-    // works if a human has the dashboard open in a browser; this one runs
-    // unconditionally so a sprint's final state is never lost just because
-    // nobody was watching. `saved` guards against writing twice for the same
-    // run (e.g. 'end' fires, then a SIGINT arrives moments later during the
-    // bin/cli.mjs failure grace-period wait).
+    // <stateSnapshotDir>/<stateSnapshotPrefix><HHMMSS>.json on every
+    // run-ending event (normal finish, cooperative /stop-triggered
+    // cancellation, or the CLI process itself being interrupted). This is the
+    // server-side equivalent of the client-side saveState() button
+    // (HTML_TEMPLATE above) -- that one only works if a human has the
+    // dashboard open in a browser; this one runs unconditionally so a run's
+    // final state is never lost just because nobody was watching. `saved`
+    // guards against writing twice for the same run (e.g. 'end' fires, then a
+    // SIGINT arrives moments later during the bin/cli.mjs failure grace-period
+    // wait).
+    //
+    // apra-fleet-eft.37.1: the crash-net snapshot location is configurable so
+    // core stays domain-neutral -- opts.stateSnapshotDir (default
+    // `workflow-logs`, resolved under process.cwd() when relative) and
+    // opts.stateSnapshotPrefix (default `run_`, giving `run_<HHMMSS>.json`).
+    // auto-sprint passes `sprint-logs`/`sprint_` explicitly so its user-facing
+    // convention is unchanged.
+    const stateSnapshotDir = opts.stateSnapshotDir || 'workflow-logs';
+    const stateSnapshotPrefix = opts.stateSnapshotPrefix || 'run_';
     let saved = false;
     function persistState() {
         if (saved) return;
         saved = true;
         try {
-            const dir = path.join(process.cwd(), 'sprint-logs');
-            fs.mkdirSync(dir, { recursive: true });
+            const dir = path.isAbsolute(stateSnapshotDir)
+                ? stateSnapshotDir
+                : path.join(process.cwd(), stateSnapshotDir);
             const now = new Date();
             const pad2 = (n) => String(n).padStart(2, '0');
             const hhmmss = `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
-            const filePath = path.join(dir, `sprint_${hhmmss}.json`);
-            fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
-            console.log(`[Viewer] Sprint state saved to ${filePath}`);
+            const filePath = path.join(dir, `${stateSnapshotPrefix}${hhmmss}.json`);
+            // apra-fleet-eft.20.1: route through the same single-pass
+            // JSON.stringify + atomic temp-file-then-rename primitive the
+            // debounced writer uses (writeJsonFileAtomic, debounced-writer.mjs)
+            // instead of a direct writeFileSync, so this terminal snapshot can
+            // never be observed half-written and its bytes always round-trip
+            // through JSON.parse().
+            writeJsonFileAtomic(filePath, state);
+            console.log(`[Viewer] Run state saved to ${filePath}`);
         } catch (e) {
-            // A failed save must never crash or block the sprint's own
-            // normal exit behavior -- log and move on.
-            console.warn(`[Viewer] Warning: failed to save sprint state: ${e.message}`);
+            // A failed save must never crash or block the run's own normal
+            // exit behavior -- log and move on.
+            console.warn(`[Viewer] Warning: failed to save run state: ${e.message}`);
         }
     }
 
     // Covers reason 3 (CLI process interrupted): SIGINT/SIGTERM had NO
     // handler at all today for a still-running or successfully-finished
-    // sprint (bin/cli.mjs only registers a SIGINT handler inside its
+    // run (bin/cli.mjs only registers a SIGINT handler inside its
     // failure-grace-window Promise). Registering a listener here removes
     // Node's default immediate-exit behavior for the signal, so the handler
     // must explicitly call process.exit() itself after the best-effort save
@@ -493,11 +903,27 @@ export function createDashboardViewer(workflow, opts = {}) {
     // can't tell them apart -- hence two small wrappers instead of one
     // handler branching on an argument that would never actually arrive.
     const handleSigint = () => {
+        state.endedAt = nowIso();
+        state.terminalReason = state.terminalReason || 'SIGINT';
         persistState();
+        // apra-fleet-eft.2.1: flush any coalesced-but-not-yet-written
+        // debounced state synchronously before the process actually exits,
+        // so at most one debounce window of progress is ever lost.
+        debouncedWriter.flushSync();
+        // apra-fleet-eft.2.3: SIGINT/SIGTERM are a graceful (not hard-kill)
+        // shutdown path, so the file is still moved to old_runs/ here --
+        // it's only an unhandled SIGKILL/OOM that leaves it behind in
+        // running/ (that gap is what apra-fleet-eft.2.4's hard-kill test
+        // covers).
+        moveStateToOldRuns();
         process.exit(130);
     };
     const handleSigterm = () => {
+        state.endedAt = nowIso();
+        state.terminalReason = state.terminalReason || 'SIGTERM';
         persistState();
+        debouncedWriter.flushSync();
+        moveStateToOldRuns();
         process.exit(143);
     };
     process.on('SIGINT', handleSigint);
@@ -526,11 +952,23 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     workflow.on('activity:end', (meta) => {
+        // apra-fleet-eft.27.4: cap a `command` activity's output/error to a
+        // head+tail excerpt + byte count BEFORE it lands in state.tree --
+        // this is the object persisted (debounced running/<runId>.json,
+        // terminal snapshot) and read by GET /state's
+        // buildListStatePayload() transform, so an uncapped multi-MB command
+        // dump written here bloats all three regardless of that transform.
+        // Returns the SAME `meta` reference unchanged when there's nothing
+        // to cap (non-command activities, or output already under the cap),
+        // and never mutates the original `meta` object -- other
+        // `activity:end` listeners (e.g. journal.mjs's replay cache) still
+        // need the complete, uncapped text.
+        const storedMeta = capCommandActivityMeta(meta, commandOutputCapOpts);
         for (const g of state.tree) {
             for (const p of g.phases) {
                 const ev = p.events.find(e => e.type === 'activity' && e.id === meta.id);
                 if (ev) {
-                    ev.data = { ...ev.data, ...meta, isRunning: false };
+                    ev.data = { ...ev.data, ...storedMeta, isRunning: false };
                 }
             }
         }
@@ -560,8 +998,26 @@ export function createDashboardViewer(workflow, opts = {}) {
     workflow.on('end', (res) => {
         state.status = res.status;
         state.stats.durationMs = Date.now() - state.stats.startTime;
+        // apra-fleet-eft.2.2/eft.37.3: enrich the terminal state with
+        // whatever the workflow script's own return value surfaced --
+        // stored WHOLESALE and opaquely as `state.result` (core never reads
+        // or names individual keys inside it; a non-se workflow may return
+        // anything JSON-shaped here, or nothing at all).
+        state.result = (res.result !== undefined) ? res.result : state.result;
+        state.endedAt = nowIso();
+        state.terminalReason = res.error
+            ? (res.error.message || res.error.name || res.status)
+            : res.status;
         broadcast({ type: 'update' });
         persistState();
+        // apra-fleet-eft.2.1: synchronous flush-on-exit -- a run ending is
+        // one of the process-exit-adjacent paths this writer must never
+        // lose more than one debounce window against.
+        debouncedWriter.flushSync();
+        // apra-fleet-eft.2.3: terminal completion -- move running/<id>.json
+        // to old_runs/<id>.json (directory membership, not a stale field,
+        // is what makes "is this run live" authoritative).
+        moveStateToOldRuns();
     });
 
     const server = http.createServer((req, res) => {
@@ -573,8 +1029,94 @@ export function createDashboardViewer(workflow, opts = {}) {
             clients.add(res);
             req.on('close', () => clients.delete(res));
         } else if (req.url.startsWith('/state')) {
+            // apra-fleet-eft.27.1: GET /state is the RECURRING poll endpoint
+            // (every ~250ms-400ms while a run is live) -- it must never
+            // serve the full in-memory `state` object as-is. That object
+            // accumulates one entry per activity for the run's entire
+            // history, and each entry can embed multi-KB command/agent
+            // output; on a real 449-activity sprint this endpoint measured a
+            // 116 MB payload per poll (apra-fleet-eft.27). buildListStatePayload()
+            // (src/viewer/lean-state.mjs) strips descriptions/transcripts
+            // down to short summaries and dedupes any remaining repeated
+            // strings -- `state` itself (the source of truth persisted to
+            // the configured snapshot dir and running/<runId>.json, and what
+            // the process-free History view embeds) is never mutated by this.
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
-            res.end(JSON.stringify(state));
+            res.end(JSON.stringify(buildListStatePayload(state)));
+        } else if (req.method === 'GET' && /^\/extensions\/[^/]+\/detail\/[^/]+$/.test(req.url)) {
+            // apra-fleet-eft.37.4 (M3): the GENERIC on-demand-detail route.
+            // Any dashboard extension may register a `detailLookup(state, id)`
+            // hook; this is the only route that calls it, and it is
+            // extension-agnostic -- core never names a specific extension or
+            // reaches into its data shape. Fetched only when a user expands
+            // an on-demand row in SOME extension's UI (e.g. the beads
+            // extension's "more..." control, apra-fleet-eft.27) -- never
+            // during normal polling -- against the LIVE, full-fidelity
+            // `state` object (never the leaned /state projection).
+            const match = req.url.match(/^\/extensions\/([^/]+)\/detail\/([^/]+)$/);
+            const extId = decodeURIComponent(match[1]);
+            const itemId = decodeURIComponent(match[2]);
+            const ext = dashboardExtensions.find((e) => e.id === extId);
+            const detail = (ext && typeof ext.detailLookup === 'function')
+                ? ext.detailLookup(state, itemId)
+                : null;
+            if (!detail) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'detail not found', id: itemId }));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({
+                id: itemId,
+                text: detail.text || '',
+                updatedAt: detail.updatedAt ?? null
+            }));
+        } else if (req.method === 'GET' && /^\/beads\/[^/]+\/description$/.test(req.url)) {
+            // BOUNDARY-COMPAT (apra-fleet-eft.37.4, one release only, then
+            // dies per docs/workflow-core-boundary-refactoring.md M3): the
+            // pre-M3 route name. The extension js that used to call it
+            // (packages/apra-fleet-se/auto-sprint/viewer-extensions.mjs) has
+            // already moved to the generic route above; this alias exists
+            // only for anything still pointed at the old URL (e.g. a stale
+            // cached client). A dumb redirect, not a second implementation --
+            // it never touches `state` itself.
+            const id = req.url.slice('/beads/'.length, req.url.length - '/description'.length);
+            res.writeHead(302, { Location: '/extensions/beads/detail/' + id });
+            res.end();
+        } else if (req.method === 'GET' && /^\/activities\/[^/]+\/output$/.test(req.url)) {
+            // apra-fleet-eft.27.4 / apra-fleet-eft.38 (reopened): on-demand
+            // full-output endpoint. First checks command-output-cap.mjs's
+            // dedicated store (a `command` activity whose stdout/error was
+            // capped to a head+tail excerpt before being stored in state.tree
+            // -- see the activity:end handler above). Every OTHER activity
+            // type that GET /state's lean-state.mjs may have marked
+            // <field>Truncated (most notably `agent`: its full LLM response
+            // text is never capped at storage time, so it's never in that
+            // store) falls back to the LIVE, full-fidelity in-memory
+            // state.tree instead, via findActivityById() -- that object still
+            // holds the complete, uncapped text for anything not routed
+            // through command-output-cap.mjs. Fetched only when a user
+            // expands a truncated activity in the dashboard -- never during
+            // normal polling. 404s (not a crash) for an unknown id, or one
+            // with nothing to fetch beyond what's already inline.
+            const id = decodeURIComponent(req.url.slice('/activities/'.length, req.url.length - '/output'.length));
+            let full = getFullOutput(id);
+            if (!full) {
+                const act = findActivityById(state, id);
+                if (act) {
+                    const fromState = {};
+                    if (typeof act.output === 'string') fromState.output = act.output;
+                    if (typeof act.error === 'string') fromState.error = act.error;
+                    if (Object.keys(fromState).length > 0) full = fromState;
+                }
+            }
+            if (!full) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'activity output not found', id }));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ id, ...full }));
         } else if (req.url === '/stop' && req.method === 'POST') {
             // (apra-fleet-unw.10) Cooperative stop -- no process.exit(). The
             // old handler killed the whole Node process immediately, with no
@@ -602,6 +1144,13 @@ export function createDashboardViewer(workflow, opts = {}) {
             if (typeof workflow.requestStop === 'function') {
                 workflow.requestStop('Stop requested via dashboard /stop endpoint');
             }
+            // apra-fleet-eft.2.1: /stop is one of the required flush-on-exit
+            // paths -- the workflow itself unwinds asynchronously afterward
+            // (and its own 'end' handler above will flush again once it
+            // fires), but flush eagerly here too so the debounced state
+            // file reflects the stop request itself without waiting on that
+            // unwind.
+            debouncedWriter.flushSync();
             res.writeHead(200);
             res.end();
         } else if (req.url === '/save_logs' && req.method === 'POST') {
@@ -632,7 +1181,7 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     // Avoid leaking process-level signal listeners: each createDashboardViewer()
-    // call (one per test, one per real sprint run) adds its own SIGINT/SIGTERM
+    // call (one per test, one per real workflow run) adds its own SIGINT/SIGTERM
     // handler above; remove it once this viewer's server is done.
     server.on('close', () => {
         process.removeListener('SIGINT', handleSigint);

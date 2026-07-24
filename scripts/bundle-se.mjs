@@ -54,11 +54,11 @@
 //
 // Schemas: dist/agents/schemas/ (the source contracts.mjs's
 // resolveSchemasDir() resolves in this bundled layout) is NOT produced
-// here -- it is already populated by scripts/vendor-pm.mjs's existing
-// prepublishOnly step (cpSync of vendor/apra-pm/agents -> dist/agents,
+// here -- it is already populated by scripts/dist-pm.mjs's existing
+// prepublishOnly step (cpSync of packages/apra-fleet-se/apra-pm/agents -> dist/agents,
 // which includes its schemas/ subdir). See apra-fleet-3ns.2.1: no new copy
 // step needed for that artifact, only the build-order dependency on
-// vendor-pm.mjs running (before or independently of this script, both
+// dist-pm.mjs running (before or independently of this script, both
 // before pack/publish) documented here.
 //
 // ajv (apra-fleet-se's only third-party runtime dependency used by

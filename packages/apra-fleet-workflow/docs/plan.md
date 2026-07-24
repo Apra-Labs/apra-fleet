@@ -21,7 +21,7 @@ Group D (lows), with a parallel vendor track.
 **Hard constraints (unchanged from round 1):**
 
 - No changes to the apra-fleet MCP server (`apra-fleet.exe`, external repo).
-- **NO push of vendor/apra-pm to `Apra-Labs/apra-pm`.** All vendor work stays on the local
+- **NO push of packages/apra-fleet-se/apra-pm to `Apra-Labs/apra-pm`.** All vendor work stays on the local
   branch `tmp/unw13-vendor-agent-defs` (worktree `C:\akhil\git\wt-unw13\vendor\apra-pm`),
   unpushed, pending the user's explicit sign-off. This plan does not change that gate.
 - Outer-repo work lands on `feat/fleet-reorg` via the ritual below.
@@ -32,7 +32,7 @@ Group D (lows), with a parallel vendor track.
 
 - `feat/fleet-reorg` HEAD `2d621dc`: the `contracts.mjs` consumer-side rename
   (`<role>.json` -> `<role>-output.json`) and the fixture regeneration
-  (`SE/test/fixtures/vendor-apra-pm-schemas/*-{input,output}.json`) HAVE merged since the
+  (`SE/test/fixtures/apra-pm-schemas/*-{input,output}.json`) HAVE merged since the
   reassessment was written. N2's "rename already broke the lookup" clause is therefore
   resolved; N2's remaining scope is fallback observability + fixture/vendor consistency
   (Group B below).
@@ -51,7 +51,7 @@ Group D (lows), with a parallel vendor track.
     `--notes`"); `agents/plan-reviewer.md` criterion 10 hard-fails any task missing the
     `model` METADATA key.
 - Paths as in the reassessment: `WF` = `packages/apra-fleet-workflow`,
-  `SE` = `packages/apra-fleet-se`, `VP` = `wt-unw13/vendor/apra-pm`.
+  `SE` = `packages/apra-fleet-se`, `VP` = `wt-unw13/packages/apra-fleet-se/apra-pm`.
 
 ---
 
@@ -71,26 +71,26 @@ Same core ritual as round 1, with the model tier now carried as concrete metadat
 mid-issue discoveries become `bd create --deps discovered-from:<id>` issues, never inline
 fixes; issue N+1 in a dependency chain does not start until N is closed.
 
-### Vendor-submodule work pattern (read this if your issue touches vendor/apra-pm)
+### Vendor-submodule work pattern (read this if your issue touches packages/apra-fleet-se/apra-pm)
 
 New doer agents do not have this session's history, so the pattern is spelled out:
 
 - The ONLY current source of truth for vendored agent defs is the worktree checkout
   `C:\akhil\git\wt-unw13\vendor\apra-pm`, local branch `tmp/unw13-vendor-agent-defs`
   (unpushed; `Apra-Labs/apra-pm` upstream does NOT have this work).
-- **NEVER run `git submodule update --init` (or `--remote`) for vendor/apra-pm** -- it
+- **NEVER run `git submodule update --init` (or `--remote`) for packages/apra-fleet-se/apra-pm** -- it
   fetches the stale upstream and can clobber/hide the local branch. Do not touch the outer
   repo's submodule pointer in this round at all.
 - To work on a vendor issue, use the established two-level-worktree pattern:
   1. Create your outer-repo worktree for the issue as usual.
   2. Inside it, do NOT init the submodule. Instead create a nested worktree of the wt-unw13
-     checkout: `git -C C:/akhil/git/wt-unw13/vendor/apra-pm worktree add
+     checkout: `git -C C:/akhil/git/wt-unw13/packages/apra-fleet-se/apra-pm worktree add
      <your-vendor-workdir> -b tmp/<issue-id>-vendor tmp/unw13-vendor-agent-defs`
      (i.e. fork from the CURRENT tip of `tmp/unw13-vendor-agent-defs`).
   3. Commit vendor changes on your `tmp/<issue-id>-vendor` branch. The reviewer reviews
      that branch. On APPROVED, the orchestrator fast-forwards/merges it back into
      `tmp/unw13-vendor-agent-defs` inside the wt-unw13 checkout -- still unpushed.
-- Nothing in this plan pushes vendor/apra-pm anywhere. Upstream PR + submodule bump remain
+- Nothing in this plan pushes packages/apra-fleet-se/apra-pm anywhere. Upstream PR + submodule bump remain
   a separate, user-gated step.
 
 ---
@@ -118,7 +118,7 @@ orchestrator merges .1 first, then .2's test must pass against the fixed runner.
 |---|---|---|---|
 | `unw2.3` | sonnet | **N3** shell injection via reviewer `newTasks` -> `bd create` (P1) | Outer repo, `SE/auto-sprint/runner.js:1039-1047` (+ tests): validate before interpolation -- `priority` must match `/^P[0-4]$/` (typed failure otherwise); title/description allowlisted to a safe character class (given Windows/POSIX member-shell divergence, allowlisting over escaping); rejected task -> logged + surfaced, never executed. Regression test hand-constructs `` $(...) ``, backtick, and trailing-`\` payloads and asserts no shell metacharacters reach `command()`. |
 | `unw2.4` | opus | **N4** branch ensured on one member only; unspecified multi-member topology (P1) | Outer repo, `SE/auto-sprint/runner.js` + `SE/bin/cli.mjs` + docs: (a) dispatch the branch-ensure to EVERY member in the union of orchestrator/doer/reviewer pools before the first doer round; (b) add a CLI-precondition topology check (compare `git rev-parse` / beads DB identity across members; refuse to start on mismatch unless single-member); (c) document that single-member (or shared-workspace) is the only SUPPORTED real-fleet mode until cross-member bd/git sync exists (deferred, section 5); (d) extend the mock so git/gh commands and beads state can be per-member, and add a 2-member regression test that fails on the pre-fix behavior. Decision (made here, not re-decided by the doer): ensure-everywhere + validate-shared-state, not a sync layer. |
-| `unw2.5` | sonnet | **N2** residue: silent-fallback observability (rename itself already merged, see section 1) | Outer repo, `SE/auto-sprint/contracts.mjs` + `SE/test/`: (a) when `vendor/apra-pm/agents/schemas/` EXISTS but an expected `<role>-output.json` is absent, warn loudly (console.warn + emitted event) with an explicit allowlist for roles that legitimately have none (planner); full-directory absence (submodule not initialized) stays the quiet documented fallback; (b) a consistency test: when the vendored dir exists, every resolved SCHEMAS entry came from a vendored file AND each fallback literal deep-equals its vendored counterpart (failure = update the literal in the same commit as any bump); (c) a small script to regenerate `SE/test/fixtures/vendor-apra-pm-schemas/` mechanically from a vendored checkout, plus a test that the fixture matches what the script would produce. |
+| `unw2.5` | sonnet | **N2** residue: silent-fallback observability (rename itself already merged, see section 1) | Outer repo, `SE/auto-sprint/contracts.mjs` + `SE/test/`: (a) when `packages/apra-fleet-se/apra-pm/agents/schemas/` EXISTS but an expected `<role>-output.json` is absent, warn loudly (console.warn + emitted event) with an explicit allowlist for roles that legitimately have none (planner); full-directory absence (submodule not initialized) stays the quiet documented fallback; (b) a consistency test: when the vendored dir exists, every resolved SCHEMAS entry came from a vendored file AND each fallback literal deep-equals its vendored counterpart (failure = update the literal in the same commit as any bump); (c) a small script to regenerate `SE/test/fixtures/apra-pm-schemas/` mechanically from a vendored checkout, plus a test that the fixture matches what the script would produce. |
 
 ### Group C -- MEDIUM (P2)
 
@@ -211,11 +211,11 @@ works in its own worktree.
 | **N18: per-error-type doer retry policy** (skip blind re-dispatch after `AgentOutputError`) | A cost optimization that only matters once budgets bite on real runs; sequenced behind `unw2.8` landing and real-fleet usage data. File under a future epic if cost amplification is observed. |
 | **F1 residue: `import()` module caching** (same-path scripts share module state) | Harmless for current stateless scripts; a doc note, not a defect. Fold into any future engine doc pass rather than spending a review cycle now. |
 | **F9/N-residue: viewer single-run group/phase tracking** despite the engine supporting concurrent runs | Accepted single-tenant usage; making the viewer multi-run is a feature, not a fix. Documenting the limitation rides along with `unw2.19`'s viewer touch. |
-| **Vendor push / upstream PR / submodule bump** | Unchanged hard gate: requires the user's explicit sign-off. Nothing in this round pushes vendor/apra-pm or moves the outer repo's submodule pointer. When sign-off comes, the vendor checklist MUST include re-running `unw2.2`'s contract test against the candidate submodule commit (N1 fix direction (e)) -- see the mandatory step below. |
+| **Vendor push / upstream PR / submodule bump** | Unchanged hard gate: requires the user's explicit sign-off. Nothing in this round pushes packages/apra-fleet-se/apra-pm or moves the outer repo's submodule pointer. When sign-off comes, the vendor checklist MUST include re-running `unw2.2`'s contract test against the candidate submodule commit (N1 fix direction (e)) -- see the mandatory step below. |
 
 ### Vendor sign-off checklist -- mandatory contract re-run (N1 fix direction (e))
 
-Before ANY candidate `vendor/apra-pm` submodule commit is pushed / the outer-repo
+Before ANY candidate `packages/apra-fleet-se/apra-pm` submodule commit is pushed / the outer-repo
 submodule pointer is bumped, the sign-off MUST re-run the role-input contract tripwire
 against that candidate's real `agents/schemas/*-input.json` (not the pinned fixture
 snapshot) and confirm it is green:
@@ -251,5 +251,5 @@ snapshot) and confirm it is green:
 5. Both suites green and deterministic on Windows; the 3-bead order-sensitive golden
    variant fails on revert of the unw.19 sort fixes.
 6. A mock sprint accrues real (estimate-labeled) spend and can trip `BudgetExceededError`.
-7. vendor/apra-pm remains unpushed on `tmp/unw13-vendor-agent-defs`; the only vendor delta
+7. packages/apra-fleet-se/apra-pm remains unpushed on `tmp/unw13-vendor-agent-defs`; the only vendor delta
    this round is the `bd remember` correction, merged back into that local branch.

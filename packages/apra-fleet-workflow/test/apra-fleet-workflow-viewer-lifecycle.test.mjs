@@ -145,10 +145,11 @@ async function withTempCwd(fn) {
     }
 }
 
-function readSprintLogFiles(dir) {
-    const sprintLogsDir = path.join(dir, 'sprint-logs');
-    if (!fs.existsSync(sprintLogsDir)) return [];
-    return fs.readdirSync(sprintLogsDir).filter((f) => /^sprint_\d{6}\.json$/.test(f));
+function readSnapshotFiles(dir) {
+    // eft.37.1: the core crash-net snapshot now defaults to workflow-logs/run_<HHMMSS>.json.
+    const snapshotDir = path.join(dir, 'workflow-logs');
+    if (!fs.existsSync(snapshotDir)) return [];
+    return fs.readdirSync(snapshotDir).filter((f) => /^run_\d{6}\.json$/.test(f));
 }
 
 async function withServer(server, fn) {
@@ -351,7 +352,7 @@ describe('apra-fleet-unw.10: no process.exit in the /stop handler (source grep)'
 });
 
 describe('server-side sprint-state persistence (auto-save on finish, stop, or exit)', () => {
-    test('a normal "end" event writes sprint-logs/sprint_HHMMSS.json whose content matches /state', async () => {
+    test('a normal "end" event writes workflow-logs/run_HHMMSS.json with the FULL state, while GET /state serves the lean list-state projection of the same run (apra-fleet-eft.27.1)', async () => {
         await withTempCwd(async (dir) => {
             const wf = new FleetWorkflow(createMockFleetApi());
             const engine = new WorkflowEngine(wf);
@@ -361,16 +362,27 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
                 const result = await engine.executeFile(fixture('test-end-event-success.mjs'), {});
                 assert.deepStrictEqual(result, { result: 'echo: hello' });
 
-                const files = readSprintLogFiles(dir);
-                assert.strictEqual(files.length, 1, `expected exactly one sprint_HHMMSS.json file, found: ${JSON.stringify(files)}`);
-                assert.match(files[0], /^sprint_\d{6}\.json$/);
+                const files = readSnapshotFiles(dir);
+                assert.strictEqual(files.length, 1, `expected exactly one run_HHMMSS.json file, found: ${JSON.stringify(files)}`);
+                assert.match(files[0], /^run_\d{6}\.json$/);
 
-                const savedContent = fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8');
+                const savedContent = fs.readFileSync(path.join(dir, 'workflow-logs', files[0]), 'utf-8');
                 const saved = JSON.parse(savedContent);
 
                 const liveState = JSON.parse(await httpGet(port, '/state'));
-                assert.deepStrictEqual(saved, liveState, 'saved file must match the in-memory state served at /state');
+                // apra-fleet-eft.27.1: GET /state now serves a lean, string-
+                // deduped projection (src/viewer/lean-state.mjs) of the same
+                // in-memory state, not a byte-for-byte copy of it -- the
+                // full-fidelity snapshot persisted here to sprint-logs/ (the
+                // crash-safety/audit record) is unaffected. Assert both
+                // describe the SAME run rather than asserting deep equality.
+                assert.strictEqual(saved.status, liveState.status);
+                assert.strictEqual(saved.workflowName, liveState.workflowName);
+                assert.strictEqual(saved.runId, liveState.runId);
+                assert.strictEqual(saved.stats.durationMs, liveState.stats.durationMs);
                 assert.strictEqual(saved.status, 'success');
+                assert.ok(!('_strings' in saved), 'the full persisted snapshot must not carry the lean-state dedup table');
+                assert.ok(Array.isArray(liveState._strings), 'GET /state must carry the lean-state string-dedup table');
 
                 // Formatting must match the client-side saveState()'s own
                 // JSON.stringify(globalState, null, 2) -- 2-space indent.
@@ -400,11 +412,11 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
 
                 await assert.rejects(runPromise, () => true);
 
-                await waitFor(() => readSprintLogFiles(dir).length > 0);
+                await waitFor(() => readSnapshotFiles(dir).length > 0);
 
-                const files = readSprintLogFiles(dir);
+                const files = readSnapshotFiles(dir);
                 assert.strictEqual(files.length, 1);
-                const saved = JSON.parse(fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8'));
+                const saved = JSON.parse(fs.readFileSync(path.join(dir, 'workflow-logs', files[0]), 'utf-8'));
                 assert.strictEqual(saved.status, 'cancelled');
             });
         });
@@ -435,9 +447,9 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
                     // i.e. before the workflow's own 'end' event would fire.
                     process.emit('SIGINT');
 
-                    const files = readSprintLogFiles(dir);
+                    const files = readSnapshotFiles(dir);
                     assert.strictEqual(files.length, 1, 'SIGINT must trigger a best-effort save even mid-run');
-                    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8'));
+                    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'workflow-logs', files[0]), 'utf-8'));
                     assert.strictEqual(saved.status, 'running', 'state was saved before the workflow had a chance to end');
                     assert.strictEqual(exitCode, 130, 'SIGINT handler must still terminate the process (conventional 128+SIGINT code)');
 
@@ -469,14 +481,14 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
                 // finish/stop/exit).
                 const runPromise = engine.executeFile(fixture('test-end-event-success.mjs'), {});
 
-                assert.strictEqual(readSprintLogFiles(dir).length, 0, 'no file should exist before /save_logs or end');
+                assert.strictEqual(readSnapshotFiles(dir).length, 0, 'no file should exist before /save_logs or end');
 
                 const { statusCode } = await httpPost(port, '/save_logs');
                 assert.strictEqual(statusCode, 200);
 
-                const files = readSprintLogFiles(dir);
+                const files = readSnapshotFiles(dir);
                 assert.strictEqual(files.length, 1, 'expected exactly one file after POST /save_logs');
-                const saved = JSON.parse(fs.readFileSync(path.join(dir, 'sprint-logs', files[0]), 'utf-8'));
+                const saved = JSON.parse(fs.readFileSync(path.join(dir, 'workflow-logs', files[0]), 'utf-8'));
                 assert.strictEqual(typeof saved.workflowName, 'string');
 
                 await runPromise;
@@ -484,7 +496,7 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
                 // The run's own 'end' event fires after /save_logs already
                 // persisted -- shares the idempotency guard, so still exactly
                 // one file (no duplicate write for the same run).
-                assert.deepStrictEqual(readSprintLogFiles(dir), files);
+                assert.deepStrictEqual(readSnapshotFiles(dir), files);
             });
         });
     });
@@ -503,14 +515,14 @@ describe('server-side sprint-state persistence (auto-save on finish, stop, or ex
                 await withServer(server, async (port) => {
                     await engine.executeFile(fixture('test-end-event-success.mjs'), {});
 
-                    const filesAfterEnd = readSprintLogFiles(dir);
+                    const filesAfterEnd = readSnapshotFiles(dir);
                     assert.strictEqual(filesAfterEnd.length, 1);
 
                     // Mimic bin/cli.mjs's failure-grace-window race: a SIGINT
                     // arriving moments after 'end' already fired for this run.
                     process.emit('SIGINT');
 
-                    const filesAfterSignal = readSprintLogFiles(dir);
+                    const filesAfterSignal = readSnapshotFiles(dir);
                     assert.deepStrictEqual(filesAfterSignal, filesAfterEnd, 'must not write a second file for the same run');
                     assert.ok(exitCalled, 'the SIGINT handler must still run (and attempt to exit) even when the save itself was skipped');
                 });

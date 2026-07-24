@@ -1,4 +1,4 @@
-import { TimeoutError, AbortError } from './errors.mjs';
+import { TimeoutError, AbortError, TransportClosedError } from './errors.mjs';
 
 // Conservative fallback when no timeout hint is supplied by the caller and
 // none can be derived from the request payload. Never infinite: a server
@@ -18,7 +18,7 @@ export class McpClient {
 
         this.transport.on('close', () => {
             for (const [id, pending] of this.pendingRequests.entries()) {
-                pending.reject(new Error('Transport closed'));
+                pending.reject(new TransportClosedError('Transport closed', { details: { requestId: id } }));
             }
             this.pendingRequests.clear();
         });

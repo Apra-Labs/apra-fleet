@@ -416,6 +416,61 @@ describe('(i) JWT auth on /mcp initialize', () => {
     expect(registered?.status).toBe('online');
     expect(registered?.sessionId).toBeDefined();
   });
+
+  // apra-fleet-eft.74.1: a plain JWT connect-back that does NOT declare the
+  // `claude/channel` capability must register with channelCapable falsy, so
+  // execute_prompt never interactive-routes to it (the eft.74 wedge).
+  it('registers channelCapable=false for a JWT connect-back that does not declare the claude/channel capability', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+
+    const issuer = getTokenIssuer();
+    const token = issuer.issue({ member_id: memberId, role: 'doer', work_folder: '/tmp/jwt-work' });
+
+    const client = new Client({ name: 'jwt-no-channel-client', version: '1.0.0' }, { capabilities: {} });
+    clients.push(client);
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      {
+        reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      },
+    );
+    await client.connect(transport);
+
+    const registered = sessionRegistry.get(issuer.workspaceId(), memberId);
+    expect(registered).toBeDefined();
+    expect(registered?.channelCapable).toBeFalsy();
+  });
+
+  // apra-fleet-eft.74.1: the explicit opt-in -- a client that declares the
+  // provider-branded `claude/channel` experimental capability completes the
+  // interactive handshake and registers channelCapable=true.
+  it('registers channelCapable=true for a JWT connect-back that declares the claude/channel capability', async () => {
+    const handle = await createHttpTransport({ registerTools: noop, preferredPort: 0 });
+    handles.push(handle);
+
+    const issuer = getTokenIssuer();
+    const token = issuer.issue({ member_id: memberId, role: 'doer', work_folder: '/tmp/jwt-work' });
+
+    const client = new Client(
+      { name: 'jwt-channel-client', version: '1.0.0' },
+      { capabilities: { experimental: { 'claude/channel': {} } } },
+    );
+    clients.push(client);
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${handle.port}/mcp`),
+      {
+        reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      },
+    );
+    await client.connect(transport);
+
+    const registered = sessionRegistry.get(issuer.workspaceId(), memberId);
+    expect(registered).toBeDefined();
+    expect(registered?.channelCapable).toBe(true);
+  });
 });
 
 describe('(j) unauthenticated ?member= URL-param fallback on /mcp initialize', () => {

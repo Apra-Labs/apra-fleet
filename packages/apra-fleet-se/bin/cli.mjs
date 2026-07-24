@@ -3,19 +3,20 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
-import { StdioTransport } from '@apralabs/apra-fleet-client/transport';
+import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import {
     resolveFleetServerCommand as sharedResolveFleetServerCommand,
     resolveFleetServerConnection as sharedResolveFleetServerConnection,
+    getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension } from '../auto-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName, checkMemberTopology } from '../auto-sprint/runner.js';
+import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient } from '../auto-sprint/runner.js';
 import { normalizeRole } from '../auto-sprint/contracts.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -54,12 +55,41 @@ export function resolveFleetServerCommand(deps = {}) {
 
 /**
  * The full ADR resolution order (HTTP-singleton attach first, stdio self-spawn
- * fallback) for callers that want it. auto-sprint's own main() keeps its current
- * stdio behavior; this is exported so the resolution order has exactly one home.
+ * fallback) for callers that want it. This is exported so the resolution
+ * order has exactly one home.
+ *
+ * NOTE (apra-fleet-eft.7.1): auto-sprint's own main() below calls this too,
+ * but treats anything other than `{ mode: 'http' }` as a hard failure -- see
+ * `FleetServerUnreachableError`. Plan Part 2.1 retired the per-invocation
+ * stdio self-spawn for cli.mjs specifically (it is now the supervisor's
+ * internal execution vehicle, launched once per sprint by the spawner), so
+ * the stdio branches this function can still return remain here only for
+ * other consumers (e.g. `apra-fleet workflow`) that intentionally allow them.
  * @param {object} [deps]
  */
 export function resolveFleetServerConnection(deps = {}) {
     return sharedResolveFleetServerConnection({ dirname: __dirname, exists: existsSync, ...deps });
+}
+
+/**
+ * Typed error thrown by main() (apra-fleet-eft.7.1) when no reachable fleet
+ * HTTP singleton is configured. cli.mjs deliberately does NOT fall back to
+ * self-spawning a stdio MCP server here -- under the service, every sprint
+ * child must share the one already-running fleet-server process, so a
+ * missing/unreachable singleton is a hard, explicit failure naming exactly
+ * what is missing rather than a silent private-server fallback.
+ */
+export class FleetServerUnreachableError extends Error {
+    /**
+     * @param {string} message
+     * @param {{ code?: string, details?: object }} [opts]
+     */
+    constructor(message, { code, details } = {}) {
+        super(message);
+        this.name = 'FleetServerUnreachableError';
+        this.code = code || 'FLEET_SERVER_UNREACHABLE';
+        this.details = details;
+    }
 }
 
 /**
@@ -110,6 +140,14 @@ export function buildOptionsSpec() {
         'role-map': { type: 'string' },
         'viewer-port': { type: 'string', default: String(DEFAULT_VIEWER_PORT) },
         budget: { type: 'string' },
+        // Stabilization Issue 32: per-dispatch time budget in seconds
+        // (timeout_s == max_total_s at every dispatch; integ ceiling 2x).
+        'dispatch-timeout-s': { type: 'string' },
+        // apra-fleet-eft.8.5: explicitly opt a multi-member run into synced
+        // topology mode (orchestrator-bracketed git sync -- same-origin +
+        // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
+        // shared-workspace mode (same-HEAD). Mode is never inferred silently.
+        sync: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -132,6 +170,14 @@ Options:
       --viewer-port <port>     Port for the local dashboard viewer. Default: 8080.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
+      --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 3600). Applied as both
+                                the inactivity timeout and the hard ceiling on every agent dispatch
+                                (the integration-test dispatch ceiling is 2x). Lower it for small
+                                sprints so a hung dispatch costs minutes, not an hour. Minimum 60.
+      --sync                   Use synced topology mode (orchestrator-bracketed git sync):
+                                members may sit on differing HEADs but must share the same
+                                origin URL and pass a 'bd dolt pull' probe. Omitted (default)
+                                uses legacy shared-workspace mode (all members on the same HEAD).
   -h, --help                   Show this help message.
 `.trim();
 
@@ -232,7 +278,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -244,6 +290,7 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     if (requirementsFile !== undefined) args.requirementsFile = requirementsFile;
     if (roleMap !== undefined) args.roleMap = roleMap;
     if (budget !== undefined) args.budget = budget;
+    if (dispatchTimeoutS !== undefined) args.dispatch_timeout_s = dispatchTimeoutS;
     return args;
 }
 
@@ -398,6 +445,7 @@ async function main() {
     const requirementsFile = values['requirements-file'];
     const viewerPort = values['viewer-port'] !== undefined ? Number(values['viewer-port']) : DEFAULT_VIEWER_PORT;
     const budget = values.budget !== undefined ? Number(values.budget) : undefined;
+    const dispatchTimeoutS = values['dispatch-timeout-s'] !== undefined ? Number(values['dispatch-timeout-s']) : undefined;
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
@@ -433,6 +481,11 @@ async function main() {
     // --max-cycles/--viewer-port above (apra-fleet-unw2.16, N14 (a)) -- this
     // mirrors, but does not duplicate/conflict with, runner.js validateArgs's
     // own budget check (non-negative finite number; see N10, apra-fleet-unw2.8).
+    if (dispatchTimeoutS !== undefined && (!Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60)) {
+        console.error(`Error: --dispatch-timeout-s must be an integer >= 60 (seconds), got "${values['dispatch-timeout-s']}".`);
+        process.exit(1);
+    }
+
     if (budget !== undefined && (!Number.isFinite(budget) || budget < 0)) {
         console.error(`Error: --budget must be a non-negative finite number (USD ceiling), got "${values.budget}".`);
         process.exit(1);
@@ -440,27 +493,42 @@ async function main() {
 
     // --- Precondition Validations ---
 
-    // 1. Stand up the fleet MCP transport FIRST, so member validation, the
+    // 1. Attach to the fleet MCP transport FIRST, so member validation, the
     // "bd show" issue precondition (below), and the sprint itself all run
     // against the same live client/connection -- and so the issue
     // precondition can target the orchestrator MEMBER rather than the local
     // machine (apra-fleet-unw2.16, N14 (d): the sprint's own `bd` commands
     // run on the member via the fleet transport, which can be a different
     // database than whatever is local to this CLI process).
-    const { command: serverCommand, args: serverArgs } = resolveFleetServerCommand();
-    const transport = new StdioTransport(serverCommand, serverArgs);
+    //
+    // apra-fleet-eft.7.1 (Plan Part 2.1 TRANSPORT decision): no per-sprint
+    // stdio MCP transport. cli.mjs is now the supervisor's internal execution
+    // vehicle -- every child it runs as (one per concurrent sprint) must
+    // attach to the EXISTING fleet singleton over streamable HTTP via
+    // resolveFleetServerConnection() rather than each spawning its own
+    // fleet-server process. If no reachable HTTP singleton is configured,
+    // fail fast with a typed error naming the missing connection config --
+    // silently self-spawning a private stdio server here would defeat the
+    // whole point of sharing one fleet-server connection across N children.
+    const connection = await resolveFleetServerConnection();
+    if (connection.mode !== 'http') {
+        const err = new FleetServerUnreachableError(
+            'No reachable apra-fleet HTTP singleton was found. cli.mjs no longer ' +
+                'self-spawns a per-invocation stdio MCP server (Plan Part 2.1) -- ' +
+                `resolution said: "${connection.reason}". Start the fleet server ` +
+                "('apra-fleet start' or 'apra-fleet install'), or check " +
+                `${getServerInfoPath()} (pid alive + GET /health) and the ` +
+                'APRA_FLEET_TRANSPORT / APRA_FLEET_SERVER_CMD / APRA_FLEET_SERVER_BIN ' +
+                'env vars for a stray override forcing stdio.',
+            { code: 'FLEET_SERVER_UNREACHABLE', details: { reason: connection.reason, mode: connection.mode } },
+        );
+        console.error(`Error: ${err.message}`);
+        process.exit(1);
+        return;
+    }
+    const transport = new StreamableHttpTransport(connection.url);
     await transport.start();
     const mcpClient = new McpClient(transport);
-    await mcpClient.request('initialize', {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'apra-fleet-se', version: '1.0.0' }
-    });
-    await transport.send({
-        jsonrpc: '2.0',
-        method: 'notifications/initialized',
-        params: {}
-    });
 
     const fleetApi = new ApraFleet(mcpClient);
 
@@ -510,26 +578,35 @@ async function main() {
 
     // 4. N4 (apra-fleet-unw2.4) multi-member topology precondition.
     //
-    // The auto-sprint runner has NO cross-member bd/git sync layer this round
-    // (deferred -- see docs/plan.md section 5 and docs/architecture.md
-    // "Multi-member topology (auto-sprint)"). Every orchestrator-side `bd`
+    // LEGACY mode (default): the runner's cross-member coherence relies on
+    // every member sharing one workspace/DB -- every orchestrator-side `bd`
     // command runs against the orchestrator member's beads DB, and the sprint
-    // git branch is only coherent if every member operates on the same
-    // working state -- so a genuine multi-member fleet is supported ONLY when
-    // all members share one workspace/DB. Enforce that here, BEFORE standing
-    // up the sprint: compare `git rev-parse HEAD` across the configured
-    // members and refuse to start on a mismatch. Single-member trivially
-    // passes (checkMemberTopology short-circuits with nothing to compare).
+    // git branch is only coherent if every member operates on the same working
+    // state. Enforce that by comparing `git rev-parse HEAD` across members and
+    // refusing to start on a mismatch.
+    //
+    // SYNCED mode (apra-fleet-eft.8.5, `--sync`): with the orchestrator-
+    // bracketed git sync layer, members are reconciled per-dispatch by
+    // fast-forward pull/push, so differing HEADs are expected and allowed. The
+    // precondition instead requires every member to share the same `git remote
+    // get-url origin` AND pass a `bd dolt pull` probe. Mode is chosen
+    // EXPLICITLY here (never inferred). Single-member trivially passes in
+    // either mode.
+    const syncedMode = Boolean(values.sync);
+    const runCommand = async (cmd, member) => {
+        const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
+        if (res && res.isError) {
+            const errText = res.content && res.content[0] ? res.content[0].text : 'unknown error';
+            throw new Error(errText);
+        }
+        return res && res.content && res.content[0] ? res.content[0].text : '';
+    };
     const topology = await checkMemberTopology({
         members: validMembers,
-        getIdentity: async (member) => {
-            const res = await fleetApi.executeCommand({ command: 'git rev-parse HEAD', member_name: member });
-            if (res && res.isError) {
-                const errText = res.content && res.content[0] ? res.content[0].text : 'unknown error';
-                throw new Error(errText);
-            }
-            return res && res.content && res.content[0] ? res.content[0].text : '';
-        },
+        mode: syncedMode ? 'synced' : 'legacy',
+        getIdentity: (member) => runCommand('git rev-parse HEAD', member),
+        getOriginUrl: (member) => runCommand('git remote get-url origin', member),
+        doltProbe: (member) => runCommand('bd dolt pull', member),
     });
     if (!topology.ok) {
         console.error(`Error: ${topology.message}`);
@@ -553,7 +630,22 @@ async function main() {
     const server = createDashboardViewer(workflow, {
         port: viewerPort,
         name: 'Auto-Sprint',
-        dashboardExtensions: [beadsExtension]
+        dashboardExtensions: [beadsExtension],
+        // apra-fleet-eft.37.1/37.2: the core viewer now speaks opts.runId
+        // (opts.sprintId is a deprecated BOUNDARY-COMPAT alias -- never use
+        // it from here). branchName is the SAME opaque per-sprint identity
+        // already used for member reservation (`sprintId: branchName` below)
+        // and the runner's own dolt-mutex/allocator stamping (sprintMutexId,
+        // auto-sprint/runner.js), so the dashboard's persisted run state gets
+        // a meaningful, stable id instead of a throwaway random UUID.
+        runId: branchName,
+        // BOUNDARY-COMPAT/user-facing convention (apra-fleet-eft.37.1): core's
+        // crash-net snapshot defaults are domain-neutral (workflow-logs/run_)
+        // now that sprintId->runId is renamed; auto-sprint keeps its historical
+        // sprint-logs/sprint_<HHMMSS>.json convention by passing these
+        // explicitly rather than picking up the new core defaults.
+        stateSnapshotDir: 'sprint-logs',
+        stateSnapshotPrefix: 'sprint_',
     });
 
     // apra-fleet-unw2.16, N14 (e): the viewer port was hardcoded with no
@@ -574,24 +666,76 @@ async function main() {
 
     if (viewerFailed) return; // process.exit already called synchronously above
 
+    // apra-fleet-eft.26.1 (Reservation interop gap, Hole 1): a sprint
+    // launched directly through this CLI (never routed through the
+    // supervisor's POST /api/sprints) never reserved its members
+    // server-side, so it was invisible to any interop -- neither the
+    // supervisor's overlap guard (eft.26.2) nor execute_prompt's
+    // dispatch-time reservedBy check (eft.10.3) had anything to consult.
+    // Reserve every member now, on the SAME opaque sprint id runner.js uses
+    // for the dolt-mutex/allocator (the sprint branch name), and release on
+    // EVERY exit path below: normal success, a caught failure/stall-abort,
+    // or SIGINT.
+    const sprintReservation = createMemberReservationClient({
+        callTool: (name, args) => mcpClient.callTool(name, args),
+        members: validMembers,
+        sprintId: branchName,
+        log: (msg) => console.log(msg),
+    });
+    await sprintReservation.reserveAll();
+
+    let reservationReleased = false;
+    const releaseReservationOnce = async () => {
+        if (reservationReleased) return;
+        reservationReleased = true;
+        await sprintReservation.releaseAll();
+    };
+    // Ctrl-C during an in-flight sprint previously had no handler at all (Node's
+    // default: immediate termination, no cleanup). Registering one here is what
+    // makes a released-on-SIGINT reservation possible; it is removed again
+    // (below) the instant the sprint settles so it can never fire during --
+    // or short-circuit -- the unrelated post-failure grace-window SIGINT
+    // listener registered further down in the catch branch.
+    const onSigint = () => {
+        releaseReservationOnce()
+            .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
+            .finally(() => process.exit(130));
+    };
+    process.once('SIGINT', onSigint);
+
     try {
         const scriptPath = resolveRunnerScriptPath();
-        const res = await engine.executeFile(scriptPath, buildRunnerArgs({
-            targetIssues,
-            members: validMembers,
-            branch: branchName,
-            baseBranch,
-            goal,
-            maxCycles,
-            requirementsFile,
-            roleMap,
-            budget,
-        }));
+        const res = await engine.executeFile(scriptPath, {
+            ...buildRunnerArgs({
+                targetIssues,
+                members: validMembers,
+                branch: branchName,
+                baseBranch,
+                goal,
+                maxCycles,
+                requirementsFile,
+                roleMap,
+                budget,
+                dispatchTimeoutS,
+            }),
+            // apra-fleet-eft.75.1: wires this already-connected mcpClient
+            // through to runner.js's createMemberSessionGuard (see its doc
+            // comment), so a resume re-dispatch after a presumed-dead/timed-
+            // out session (max_turns_exhausted) calls the fleet's own
+            // stop_prompt tool for that member FIRST -- verifying/killing a
+            // still-alive prior process before spawning a second one.
+            // Mirrors createMemberReservationClient's callTool wiring above.
+            callTool: (name, toolArgs) => mcpClient.callTool(name, toolArgs),
+        });
+        process.removeListener('SIGINT', onSigint);
+        await releaseReservationOnce();
         console.log('Sprint finished:', res);
         server.close();
         transport.stop();
         process.exit(0);
     } catch (err) {
+        process.removeListener('SIGINT', onSigint);
+        await releaseReservationOnce();
         // apra-fleet-xbu.4: a caught sprint-level failure (Planner retries
         // exhausted, a StalledSprintError, pre-sprint validation, etc.) used
         // to tear the dashboard server down in the same tick as the error --
@@ -627,11 +771,38 @@ async function main() {
 
 function isMainModule() {
     try {
-        return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+        if (process.argv[1] === undefined) return false;
+        const invokedUrl = pathToFileURL(process.argv[1]).href;
+        const moduleUrl = import.meta.url;
+        if (moduleUrl === invokedUrl) return true;
+
+        // On macOS, `mktemp -d` returns a path under /var/folders/... which is
+        // actually a symlink to /private/var/.... Node's ESM loader
+        // canonicalizes import.meta.url to the REAL path, but process.argv[1]
+        // is left un-canonicalized, so the raw URL comparison above can fail
+        // even though both paths point at the same file, silently skipping
+        // the self-executing block below (apra-fleet-eft.41.1). Fall back to
+        // comparing realpath'd paths on both sides; wrap in try/catch and
+        // fall back to "not main" (matching the already-failed raw
+        // comparison) if realpath fails for either side (e.g. ENOENT).
+        try {
+            const realInvokedUrl = pathToFileURL(realpathSync(process.argv[1])).href;
+            const realModuleUrl = pathToFileURL(realpathSync(fileURLToPath(moduleUrl))).href;
+            return realInvokedUrl === realModuleUrl;
+        } catch {
+            return false;
+        }
     } catch {
         return false;
     }
 }
+
+// Declare the launcher contract (apra-fleet workflow imports this file and
+// checks the flag after import): main() runs asynchronously, so without this
+// declaration the launcher's non-executing backstop (apra-fleet-eft.41.2)
+// cannot tell "started async" from "did nothing", fails loud, and its exit(1)
+// kills the just-started sprint.
+export const selfExecuting = true;
 
 if (isMainModule()) {
     main().catch(err => {

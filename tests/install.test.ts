@@ -101,10 +101,14 @@ describe('dev-mode agent install carries nested agents/schemas and agents/_share
     vi.mocked(os.homedir).mockReturnValue(mockHome);
 
     vi.mocked(fs.existsSync).mockImplementation((p: any) => {
-      const ps = p.toString();
+      const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('vendor') && ps.includes('agents')) return true;
+      // Match the apra-pm package by its full package path, not a bare
+      // "apra-pm" substring: an invoking path such as .../vendor-sync-apra-pm/...
+      // or a checkout under a dir literally named apra-pm must NOT be treated
+      // as the package directory (see apra-fleet-c96).
+      if (/apra-fleet-se\/apra-pm(\/|$)/.test(ps) && ps.includes('agents')) return true;
       return false;
     });
 
@@ -122,17 +126,17 @@ describe('dev-mode agent install carries nested agents/schemas and agents/_share
 
     vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
       const ps = p.toString().replace(/\\/g, '/');
-      if (ps.endsWith('vendor/apra-pm/agents')) {
+      if (ps.endsWith('packages/apra-fleet-se/apra-pm/agents')) {
         return [
           { name: 'doer.md', isDirectory: () => false },
           { name: 'schemas', isDirectory: () => true },
           { name: '_shared', isDirectory: () => true },
         ] as any;
       }
-      if (ps.endsWith('vendor/apra-pm/agents/schemas')) {
+      if (ps.endsWith('packages/apra-fleet-se/apra-pm/agents/schemas')) {
         return [{ name: 'doer-output.json', isDirectory: () => false }] as any;
       }
-      if (ps.endsWith('vendor/apra-pm/agents/_shared')) {
+      if (ps.endsWith('packages/apra-fleet-se/apra-pm/agents/_shared')) {
         return [{ name: 'GRAPH-SEMANTICS.md', isDirectory: () => false }] as any;
       }
       return [];
@@ -176,7 +180,7 @@ describe('auto-sprint-args skill install (GAP B)', () => {
       const ps = p.toString();
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.replace(/\\/g, '/').includes('vendor/apra-pm/.claude/skills/auto-sprint-args')) return true;
+      if (ps.replace(/\\/g, '/').includes('packages/apra-fleet-se/apra-pm/.claude/skills/auto-sprint-args')) return true;
       return false;
     });
 
@@ -190,7 +194,7 @@ describe('auto-sprint-args skill install (GAP B)', () => {
 
     vi.mocked(fs.readdirSync).mockImplementation((p: any) => {
       const ps = p.toString().replace(/\\/g, '/');
-      if (ps.endsWith('vendor/apra-pm/.claude/skills/auto-sprint-args')) {
+      if (ps.endsWith('packages/apra-fleet-se/apra-pm/.claude/skills/auto-sprint-args')) {
         return [{ name: 'SKILL.md', isDirectory: () => false }] as any;
       }
       return [];
@@ -231,9 +235,9 @@ describe('auto-sprint-args skill install (GAP B)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// npm dist-fallback coverage: when vendor/apra-pm is absent (npm-published
-// package, no submodule checked out), install falls back to the vendored
-// dist/ copies that scripts/vendor-pm.mjs produces at publish time. Same GAP
+// npm dist-fallback coverage: when packages/apra-fleet-se/apra-pm is absent (npm-published
+// package, apra-pm package dir not present), install falls back to the
+// dist/ copies that scripts/dist-pm.mjs produces at publish time. Same GAP
 // A/B nested-directory bug applies to this branch independently of the
 // vendor/ branch covered above -- both must carry schemas/, _shared/, and the
 // auto-sprint-args skill.
@@ -250,7 +254,7 @@ describe('npm dist-fallback: agent install carries nested agents/schemas and age
       const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('vendor')) return false; // no submodule -- npm install
+      if (/apra-fleet-se\/apra-pm(\/|$)/.test(ps)) return false; // apra-pm package dir absent (see apra-fleet-c96)
       if (ps.includes('dist/agents')) return true; // matches dist/agents and its schemas/_shared subdirs
       return false;
     });
@@ -323,7 +327,7 @@ describe('npm dist-fallback: auto-sprint-args skill install', () => {
       const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('vendor')) return false; // no submodule -- npm install
+      if (/apra-fleet-se\/apra-pm(\/|$)/.test(ps)) return false; // apra-pm package dir absent (see apra-fleet-c96)
       if (ps.endsWith('dist/skills/auto-sprint-args')) return true;
       return false;
     });

@@ -1,0 +1,32 @@
+{
+  "workflowName": "Sprint A",
+  "status": "running",
+  "sprintId": "f6224d95-9518-4b68-9ad9-ceaff0954dbd",
+  "args": null,
+  "verdict": null,
+  "prUrl": null,
+  "terminalReason": "SIGTERM",
+  "startedAt": "2026-07-19T11:30:53.268Z",
+  "updatedAt": "2026-07-19T11:30:53.268Z",
+  "endedAt": "2026-07-19T11:36:38.071Z",
+  "stats": {
+    "activitiesCount": 0,
+    "totalTokens": 0,
+    "totalCost": 0,
+    "unknownCostCount": 0,
+    "startTime": 1784460653268,
+    "durationMs": 0
+  },
+  "tree": [
+    {
+      "title": "Workflow",
+      "phases": [
+        {
+          "title": "Initialization",
+          "events": []
+        }
+      ]
+    }
+  ],
+  "extensions": {}
+}

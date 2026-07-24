@@ -32,7 +32,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -42,9 +41,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Verify vendor/apra-pm submodule pin is intact
-        run: npm run verify:submodule
 
       - name: Build
         run: npm run build
@@ -120,7 +116,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -187,7 +182,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -398,7 +392,7 @@ jobs:
       # warning proves APRA_FLEET_SE_SCHEMAS_DIR (set by the launcher's
       # applyEnvDefaults) pointed contracts.mjs's resolveSchemasDir() at the
       # installed ~/.apra-fleet/schemas/ tree rather than the (nonexistent in
-      # this packaged-binary context) monorepo vendor/apra-pm/ submodule.
+      # this packaged-binary context) monorepo packages/apra-fleet-se/apra-pm/ tree.
       - name: Smoke test - workflow auto-sprint --help (no system Node)
         if: runner.os != 'Windows'
         shell: bash
@@ -417,7 +411,7 @@ jobs:
           echo "$ERR"
           echo "$OUT" | grep -qF 'Usage: fleet-se sprint [options]'
           echo "$OUT" | grep -qF -- '--role-map <json|@file>'
-          ! echo "$ERR" | grep -qF '[contracts] Using the live vendor/apra-pm submodule'
+          ! echo "$ERR" | grep -qF '[contracts] Using the local apra-pm copy'
           ! echo "$ERR" | grep -qi 'cannot find module'
           ! echo "$ERR" | grep -qi 'ERR_MODULE_NOT_FOUND'
           test -f "$FAKEHOME/.apra-fleet/workflows/auto-sprint/bin/cli.mjs"
@@ -441,12 +435,13 @@ jobs:
 
           $bin = Join-Path $PWD "dist\${{ matrix.binary }}"
           $out = & $bin workflow auto-sprint --help 2>"$env:RUNNER_TEMP\as-stderr.log"
+          $code = $LASTEXITCODE
           $errText = Get-Content "$env:RUNNER_TEMP\as-stderr.log" -Raw -ErrorAction SilentlyContinue
           $out | Write-Host
           Write-Host "--- stderr ---"
           Write-Host $errText
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "workflow auto-sprint --help exited $LASTEXITCODE"
+          if ($code -ne 0) {
+            Write-Error "workflow auto-sprint --help exited $code"
             exit 1
           }
           $outText = ($out -join "`n")
@@ -458,7 +453,7 @@ jobs:
             Write-Error "unexpected stdout from workflow auto-sprint --help (missing --role-map)"
             exit 1
           }
-          if ($errText -and $errText.Contains('[contracts] Using the live vendor/apra-pm submodule')) {
+          if ($errText -and $errText.Contains('[contracts] Using the local apra-pm copy')) {
             Write-Error "schema dev-fallback warning present -- APRA_FLEET_SE_SCHEMAS_DIR did not resolve the installed schemas tree"
             exit 1
           }
@@ -533,7 +528,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -596,8 +590,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -637,7 +629,7 @@ jobs:
         # Same sequence as prepublishOnly (which npm only fires automatically
         # on `npm publish`, not `npm pack`) -- run it explicitly here so this
         # job's dry-run pack verification sees the same artifacts a real
-        # publish would produce: dist/agents/schemas (scripts/vendor-pm.mjs),
+        # publish would produce: dist/agents/schemas (scripts/dist-pm.mjs),
         # apra-fleet-se's package-local schema copy (apra-fleet-bun),
         # dist/index.js (tsc), and dist/auto-sprint.mjs + dist/auto-sprint-runner.mjs
         # (scripts/bundle-se.mjs, apra-fleet-3ns.2).
@@ -679,7 +671,7 @@ jobs:
 
       - name: Pack + install into a clean temp prefix (auto-sprint smoke test)
         # apra-fleet-3ns.2(f) / apra-fleet-3ns.2.2: proves a real packed
-        # tarball, extracted with no monorepo/vendor/ ancestor and no
+        # tarball, extracted with no monorepo ancestor and no
         # node_modules present, exposes a working `auto-sprint` bin whose
         # schema resolution finds the co-packaged dist/agents/schemas/ --
         # not the apra-fleet-bun.1 monorepo dev-fallback (which would warn)
@@ -704,8 +696,8 @@ jobs:
             cat "$TMP_INSTALL/se-help-stdout.txt"
             exit 1
           }
-          if grep -q 'Using the live vendor/apra-pm submodule' "$TMP_INSTALL/se-help-stderr.txt"; then
-            echo "::error::dist/auto-sprint.mjs fell back to the monorepo vendor/apra-pm dev path instead of resolving the packaged dist/agents/schemas/ -- the tarball's schema bundling is broken."
+          if grep -q 'Using the local apra-pm copy' "$TMP_INSTALL/se-help-stderr.txt"; then
+            echo "::error::dist/auto-sprint.mjs fell back to the local apra-pm dev path instead of resolving the packaged dist/agents/schemas/ -- the tarball's schema bundling is broken."
             cat "$TMP_INSTALL/se-help-stderr.txt"
             exit 1
           fi

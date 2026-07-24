@@ -16,12 +16,13 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // NOTE: a Reviewer dispatch failure always falls back to a hardcoded
 // CHANGES_NEEDED verdict with empty reopenIds/newTasks (both the
 // AgentDispatchError and AgentOutputError branches share that shape,
-// unrelated to apra-fleet-02s.2's scope). Since a persistent handler keeps
-// returning that same failure every round, runner.js's separate
-// ReviewerContractViolationError guard (empty CHANGES_NEEDED twice in a
-// row) correctly fires and fails the sprint -- that is expected, existing
-// behavior, not a regression. These tests only verify the LOG WORDING is
-// distinct per error type before that guard trips, which is 02s.2's actual
+// unrelated to apra-fleet-02s.2's scope). Stabilization log Issue 9: those
+// synthesized verdicts now carry `dispatchFailed: true` and DEGRADE the
+// round (counting toward the bounded stall budget) instead of tripping the
+// ReviewerContractViolationError guard -- that guard is reserved for a
+// GENUINE schema-valid LLM verdict that self-contradicts twice (see
+// mock-sprint-stall-contract-violation.test.mjs). These tests only verify
+// the LOG WORDING is distinct per error type, which is 02s.2's actual
 // scope.
 test('mock sprint: Reviewer dispatch failure (AgentDispatchError) is logged distinctly from schema-repair exhaustion', async () => {
     await withScenarioMarkers('reviewerdispatcherr', async () => {

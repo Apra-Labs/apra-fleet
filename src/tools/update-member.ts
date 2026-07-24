@@ -12,6 +12,7 @@ import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS }
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.js';
 import { getStrategy } from '../services/strategy.js';
+import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 
 export const updateMemberSchema = z.object({
   ...memberIdentifier,
@@ -224,13 +225,22 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // (codex, copilot) -- no point spending a real SSH round trip just to skip.
   let agentProvisionResult: { pushed: string[]; skippedReason?: string; warning?: string } | undefined;
   if (updated.agentType === 'remote' && remoteAgentsDir(updated.llmProvider ?? 'claude') !== null) {
-    const conn = await getStrategy(updated).testConnection();
+    const strategy = getStrategy(updated);
+    const conn = await strategy.testConnection();
     if (!conn.ok) {
       warnings.push(`Could not reach member -- agent files not re-provisioned: ${conn.error ?? 'connection failed'}`);
     } else {
       agentProvisionResult = await provisionAgents(updated);
       if (agentProvisionResult.warning) warnings.push(agentProvisionResult.warning);
+
+      // apra-fleet-eft.40.2: seed Claude workspace trust now that we know the member
+      // is reachable (reuses the same connectivity check -- no extra round trip
+      // when unreachable). Best-effort/non-fatal; non-Claude providers no-op.
+      await seedWorkspaceTrust(updated, strategy, 'update_member');
     }
+  } else if (updated.agentType !== 'remote') {
+    // Local members have no connectivity concept -- always attempt (best-effort/non-fatal).
+    await seedWorkspaceTrust(updated, undefined, 'update_member');
   }
 
   let result = `✅ Member "${updated.friendlyName}" updated.\n\n`;

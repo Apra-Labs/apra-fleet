@@ -78,6 +78,120 @@ export const execCmd = (cmd, cwd) => new Promise((resolve) => {
 
 const isBdCommand = (cmd) => /^\s*bd(\s|$)/.test(cmd);
 
+// `bd dolt pull` / `bd dolt push` are the Plan 3.3 D-pull/D-push sync brackets
+// (apra-fleet-eft.9.1): the orchestrator issues them around every
+// beads-reading dispatch and after every beads-mutating one. In this
+// single-clone mock harness there is NO shared dolt remote, so these are pure
+// infrastructure no-ops with no meaningful per-scenario output. They are
+// intercepted as synthetic successes in the mocked (replay/record) modes -- so
+// every existing scenario tolerates the brackets WITHOUT needing (or drifting)
+// a recorded response for them, and so they never bloat the committed
+// recordings. Real/integration mode still runs them against the real `bd`
+// CLI. The dolt bracket behavior itself (retry/reconcile/divergence, exact
+// insertion points) is covered directly by the unit tests in
+// dolt-sync-brackets.test.mjs / mock-sprint-git-sync-brackets.test.mjs, which
+// drive the helpers with an injected command() mock rather than through this
+// record/replay layer.
+const isDoltSyncCommand = (cmd) => /^\s*bd\s+dolt\s+(pull|push)\b/.test(cmd);
+
+// apra-fleet-eft.54.5: `bd config get sync.remote --json` is the sync-remote
+// pre-gate every D-pull/D-push bracket consults (isMemberSyncRemoteConfigured
+// in runner.js -- doltPullBefore AND doltPushAfter both call it BEFORE
+// deciding whether to issue their real `bd dolt` command). Under real bd it is
+// a full `bd` CLI spawn (cold-starting the embedded dolt engine, ~0.6-2s+ per
+// spawn, worse on a cold CI host), and it is issued once per sync bracket even
+// though a clone's sync.remote is FIXED for the whole scenario (set at `bd
+// init`, never mutated by any mock-sprint scenario). On the terminal-abort
+// scenarios (mock-sprint-planner-auth-failure-no-retry / -deadpid /
+// -stalledsession) the sync brackets around Sprint Setup + the pre-plan reads
+// + the single Planner attempt issue this identical probe three times back to
+// back, each a redundant real spawn that eats into the test's documented
+// fast-abort budget (elapsedMs < 60000) with zero information gain. Cache it
+// per clone exactly like the D-pull/D-push brackets below (same eft.17.1
+// rationale and safety: keyed by cwd, the value cannot vary for a given clone,
+// distinct scenarios use distinct tempDirs, and caching the Promise also
+// dedupes concurrent probes from parallel doer streaks).
+const isStableConfigProbe = (cmd) => /^\s*bd\s+config\s+get\s+sync\.remote\b/.test(cmd);
+
+// apra-fleet-eft.56.1: commands that pass reviewer-authored free text via a
+// local temp file (`bd create --body-file "<path>"`, `bd note <id> --file
+// "<path>"` -- see writeCommandBodyTempFile()/appendRejectedFindingToParentNotes()
+// in runner.js) embed a fresh randomUUID()-named path on EVERY invocation, so
+// the raw command string can never be byte-identical between the recording
+// run and a later replay run. Record/replay matching below is
+// content-keyed on the exact command string (see the module header comment),
+// so without normalization every such command would look like permanent
+// "recording drift" on replay, even though nothing about the test's actual
+// behavior changed. Normalize the quoted path argument to a stable
+// placeholder for MATCHING purposes only -- record/real mode still executes
+// the real, unmodified `cmd` (with the real path bd must actually read).
+const normalizeCommandForMatching = (cmd) => cmd.replace(/(--body-file|--file)\s+"[^"]*"/g, '$1 "<TMPFILE>"');
+
+// ---------------------------------------------------------------------------
+// real-mode D-pull/D-push bracket caching (apra-fleet-eft.17.1)
+// ---------------------------------------------------------------------------
+// Under real bd (APRA_FLEET_BD_MOCK=off), runner.js wraps EVERY dispatch in the
+// Plan 3.3 sync brackets (doltPullBefore -> `bd dolt pull`, doltPushAfter ->
+// `bd dolt push`). Each such call spawns the real `bd` CLI, which cold-starts
+// the embedded dolt engine (~seconds per spawn). The mock-sprint-*, golden-
+// transcript* and budget-live scenarios each drive DOZENS of dispatches against
+// a SINGLE local beads clone (their per-scenario tempDir) that has NO configured
+// dolt remote, so every one of those pulls/pushes is a deterministic no-remote
+// no-op returning the exact same benign-skip result. Re-spawning it per dispatch
+// is what pushed 28/74 real-bd files over the 5-min single-file budget and the
+// full suite to ~3228s (apra-fleet-eft.17).
+//
+// Fix: hydrate each fixture's dolt working copy at most ONCE per test-file
+// process. The first `bd dolt pull` (and first `bd dolt push`) for a given clone
+// -- keyed by cwd -- runs for real; its result Promise is cached and every
+// subsequent identical dolt-sync command for that SAME clone is served from the
+// cache WITHOUT re-spawning bd. Correctness is unchanged: with no remote the
+// operation cannot vary for a given clone, and every bd read hits the local dolt
+// store directly regardless of whether a redundant push ran. Distinct scenarios
+// use distinct tempDirs (unique cwd), so each fixture still pays exactly one real
+// round-trip per verb. Caching the Promise (not just the resolved value) also
+// dedupes concurrent bracket calls from parallel doer streaks.
+// apra-fleet-eft.54.5: also serves the stable `bd config get sync.remote
+// --json` sync-remote pre-gate probe (isStableConfigProbe above) -- same
+// per-clone caching contract as the D-pull/D-push brackets.
+const realDoltSyncCache = new Map(); // `${cwd} ${normalizedCmd}` -> Promise<{err,stdout,stderr}>
+
+function realDoltSyncCached(cmd, cwd) {
+    const key = `${cwd} ${cmd.trim().replace(/\s+/g, ' ')}`;
+    let pending = realDoltSyncCache.get(key);
+    if (!pending) {
+        pending = execCmd(cmd, cwd);
+        realDoltSyncCache.set(key, pending);
+    }
+    return pending;
+}
+
+// apra-fleet-eft.60.4: test-only introspection for the per-clone real-mode
+// dolt-sync spawn cache above. Answers "how many REAL child-process spawns
+// has the cache actually performed for commands matching `pattern`, under
+// this cwd" -- distinct from a command LOG (e.g. mock-sprint-harness.mjs's
+// `commandLog`), which records every logical request issued to
+// executeCommand however many of those requests were subsequently served
+// from this cache without spawning anything. Each entry in `realDoltSyncCache`
+// represents exactly one real spawn no matter how many times its key was
+// requested, so this is the right tool to pin that the eft.17.1/eft.54.5
+// caching is actually deduping repeat identical D-pull/D-push/sync-remote-
+// probe requests within one scenario -- not once per Planner retry attempt
+// (the eft.60 family regression) -- rather than merely happening to return a
+// correct result slowly. Only meaningful under real bd (`bdMode() ===
+// 'real'`): in the default replay mode dolt-sync commands never populate
+// this cache at all (see runCmd below), so callers should gate on that.
+export function realSyncSpawnCount(cwd, pattern) {
+    let count = 0;
+    const prefix = `${cwd} `;
+    for (const key of realDoltSyncCache.keys()) {
+        if (!key.startsWith(prefix)) continue;
+        const cmd = key.slice(prefix.length);
+        if (!pattern || pattern.test(cmd)) count += 1;
+    }
+    return count;
+}
+
 export function scenarioKeyFromCwd(cwd) {
     return path.basename(cwd).replace(/-\d+-\d+$/, '');
 }
@@ -133,7 +247,14 @@ async function recordBd(cmd, cwd) {
     // for identical command strings land in invocation order (the order
     // FIFO replay will serve them back in) even when two calls' exec()s
     // overlap and complete out of order.
-    const entry = { command: cmd, exitCode: null, stdout: '', stderr: '' };
+    //
+    // apra-fleet-eft.56.1: the recorded `command` field is the NORMALIZED
+    // form (temp-file paths replaced with a stable placeholder) so a later
+    // replay run -- which will generate its own, different random temp path
+    // for the same logical call -- still matches this entry. The real,
+    // unmodified `cmd` (real path and all) is still what actually executes
+    // against bd below.
+    const entry = { command: normalizeCommandForMatching(cmd), exitCode: null, stdout: '', stderr: '' };
     session.entries.push(entry);
 
     const res = await execCmd(cmd, cwd);
@@ -173,8 +294,15 @@ function loadReplaySession(key) {
     const entries = loadRecording(file);
     const byCommand = new Map();
     for (const entry of entries) {
-        if (!byCommand.has(entry.command)) byCommand.set(entry.command, []);
-        byCommand.get(entry.command).push(entry);
+        // apra-fleet-eft.56.1: normalize on load too, so an OLDER recording
+        // captured before this normalization existed (its `command` field
+        // still has a raw, one-off temp path baked in) still matches a fresh
+        // replay run's differently-randomized path for the same logical
+        // call. Normalization is a no-op for every command without a
+        // --body-file/--file argument.
+        const matchKey = normalizeCommandForMatching(entry.command);
+        if (!byCommand.has(matchKey)) byCommand.set(matchKey, []);
+        byCommand.get(matchKey).push(entry);
     }
     return { byCommand, total: entries.length, file };
 }
@@ -187,7 +315,8 @@ function replayBd(cmd, cwd) {
         replaySessions.set(key, session);
     }
 
-    const queue = session.byCommand.get(cmd);
+    const matchKey = normalizeCommandForMatching(cmd);
+    const queue = session.byCommand.get(matchKey);
     if (!queue || queue.length === 0) {
         const remaining = [...session.byCommand.entries()]
             .filter(([, q]) => q.length > 0)
@@ -222,7 +351,16 @@ function replayBd(cmd, cwd) {
 export function runCmd(cmd, cwd) {
     if (!isBdCommand(cmd)) return execCmd(cmd, cwd);
     const mode = bdMode();
-    if (mode === 'real') return execCmd(cmd, cwd);
+    if (mode === 'real') {
+        // Hydrate each fixture's dolt clone once, then serve repeat D-pull/
+        // D-push brackets -- and the stable sync.remote pre-gate probe every
+        // bracket consults -- from cache (see realDoltSyncCached above).
+        if (isDoltSyncCommand(cmd) || isStableConfigProbe(cmd)) return realDoltSyncCached(cmd, cwd);
+        return execCmd(cmd, cwd);
+    }
+    // Dolt sync brackets are mock-mode no-ops (see isDoltSyncCommand above):
+    // synthesize a clean success WITHOUT recording or requiring a recording.
+    if (isDoltSyncCommand(cmd)) return Promise.resolve({ err: null, stdout: '', stderr: '' });
     if (mode === 'record') return recordBd(cmd, cwd);
     return replayBd(cmd, cwd);
 }

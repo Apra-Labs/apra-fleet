@@ -4,7 +4,7 @@ import { join } from 'path';
 import { getProvider } from '../src/providers/index.js';
 import type { LlmProvider } from '../src/types.js';
 
-const VENDOR_PM = join(__dirname, '..', 'vendor', 'apra-pm');
+const VENDOR_PM = join(__dirname, '..', 'packages', 'apra-fleet-se', 'apra-pm');
 const SKILL_DIR = join(VENDOR_PM, 'skills', 'pm');
 const AGENTS_DIR = join(VENDOR_PM, 'agents');
 
@@ -124,7 +124,7 @@ describe('provider instruction filenames are correct', () => {
 
 // -- Agent files exist ----------------------------------------------------------
 
-describe('agent definition files are present in vendor/apra-pm', () => {
+describe('agent definition files are present in packages/apra-fleet-se/apra-pm', () => {
   const agents = ['planner.md', 'doer.md', 'reviewer.md', 'plan-reviewer.md'];
 
   for (const agent of agents) {

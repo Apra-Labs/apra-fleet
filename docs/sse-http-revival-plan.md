@@ -189,7 +189,7 @@ Since the branch diverged, main landed: opencode as a sixth provider (with
 model_tiers validation and its own MCP config shape), the tags/category member
 model + tag-aware compose_permissions, `install` as the default CLI action with
 `run` as the server verb, bare model aliases, e2e rework (GitHub-hosted runners),
-and the pm skill moving out to the vendor/apra-pm submodule. All were reconciled
+and the pm skill moving out to the packages/apra-fleet-se/apra-pm submodule. All were reconciled
 during the rebase; the remaining friction points are exactly the four install
 tests (2.1) and the compose_permissions interplay (2.3.1).
 
@@ -345,7 +345,7 @@ a design decision -- option (b) would flip these tests again.
     undocumented in both (regenerate llms-full.txt via
     scripts/gen-llms-full.mjs after updating docs). The branch's PM-skill
     edits (substitutions doc, dangerously_skip_permissions purge) were
-    dropped with the skills/pm deletion -- verify vendor/apra-pm covers
+    dropped with the skills/pm deletion -- verify packages/apra-fleet-se/apra-pm covers
     them, port if not.
 
 ### A3. Rebase conflict-resolution record (for re-review or redo)

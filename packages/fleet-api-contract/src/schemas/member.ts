@@ -34,6 +34,7 @@ export const MemberSchema = z.object({
   tags: z.array(z.string()),
   jwtExp: z.number().int().nonnegative().describe('Seconds until JWT expiry (0 = expired)'),
   agentVer: z.string().min(1),
+  reservedBy: z.string().nullable().describe('Sprint/session id holding this member\'s reservation, or null if unreserved'),
 });
 export type Member = z.infer<typeof MemberSchema>;
 

@@ -1,6 +1,6 @@
 {
   "name": "@apralabs/apra-fleet",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "description": "MCP server for orchestrating multiple agentic AI instances (Claude, Gemini, Codex, Copilot, AGY) across machines via SSH",
   "author": "Apra Labs",
   "homepage": "https://github.com/Apra-Labs/apra-fleet",
@@ -30,7 +30,6 @@
     "dist/",
     "hooks/",
     "scripts/fleet-statusline.sh",
-    "scripts/agy-settings-merge.js",
     "scripts/agy-transcript-reader.js",
     "skills/",
     "version.json"
@@ -42,7 +41,7 @@
     "build": "npm run build:contract && tsc",
     "build:contract": "npm run build --workspace=@apralabs/fleet-api-contract",
     "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",
-    "vendor-pm": "node scripts/vendor-pm.mjs",
+    "dist-pm": "node scripts/dist-pm.mjs",
     "build:sea": "node scripts/build-sea.mjs",
     "build:sea-config": "node scripts/gen-sea-config.mjs",
     "build:sea-package": "node scripts/package-sea.mjs",
@@ -50,14 +49,13 @@
     "build:se": "node scripts/bundle-se.mjs",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "pretest": "git submodule update --init --recursive && npm run build:contract",
+    "pretest": "npm run build:contract",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
     "integration": "tsc && npx tsx tests/integration.test.ts",
-    "verify:submodule": "node scripts/check-vendor-submodule.mjs",
     "prepare": "node scripts/install-hooks.mjs",
-    "prepublishOnly": "npm run vendor-pm && npm run vendor-schemas --workspace=@apralabs/apra-fleet-se && npm run build && npm run build:se"
+    "prepublishOnly": "npm run dist-pm && npm run build && npm run build:se"
   },
   "keywords": [
     "ai-agent",

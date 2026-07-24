@@ -57,6 +57,7 @@ describe('Member (provider must include "none" per us9.14)', () => {
       tags: ['executor', 'devops'],
       jwtExp: 40 * 86400,
       agentVer: '1.4.2',
+      reservedBy: null,
     };
     expect(MemberSchema.parse(member)).toEqual(member);
   });

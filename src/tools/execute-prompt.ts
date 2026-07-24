@@ -9,7 +9,7 @@ import { getProvider } from '../providers/index.js';
 import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { isRetryable, authErrorAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
+import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
@@ -19,7 +19,7 @@ import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
-import { tryKillPid } from '../utils/pid-helpers.js';
+import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
@@ -34,7 +34,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted';
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
   sessionId?: string;
   [key: string]: unknown;
@@ -70,6 +70,15 @@ export const executePromptSchema = z.object({
     'Gemini: <workFolder>/.gemini/agents/<name>.md or ~/.gemini/agents/<name>.md; ' +
     'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md -- ' +
     'the call is rejected with a clear error if neither is present.'
+  ),
+  sprint_id: z.string().optional().describe(
+    'Opaque identity of the sprint issuing this dispatch (apra-fleet-eft.29.1). ' +
+    'When provided, the server-side member-reservation check (see reservedBy below) ' +
+    'compares this value directly against the reservation instead of falling back to ' +
+    'this server process\'s APRA_FLEET_SPRINT_ID env var -- the same per-call value ' +
+    'the caller passed to member_reservation reserve/release. Callers that never set a ' +
+    'reservation, or that reserved and dispatch in the same process, should omit this; ' +
+    'omitting it preserves the pre-existing env-var-based behavior exactly.'
   ),
 }).strict();
 
@@ -146,6 +155,20 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
 
 const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
 
+/**
+ * The sprint id this server process dispatches on behalf of, or undefined when
+ * run outside a sprint (e.g. a manual cli.mjs invocation). Sourced from
+ * APRA_FLEET_SPRINT_ID, which the auto-sprint spawner stamps into the per-sprint
+ * server's environment (apra-fleet-eft.10.3). Read on every dispatch so a
+ * reservation set/cleared mid-run is observed without a restart.
+ */
+export function currentSprintId(): string | undefined {
+  const raw = process.env.APRA_FLEET_SPRINT_ID;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 export const inFlightAgents = new Set<string>();
 
 // Member ids whose remote agent files (planner.md, doer.md, _shared/, schemas/, ...)
@@ -191,6 +214,72 @@ async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
 // (f) server overload retry -> retried after delay; finally clears on success or failure
 // (g) early returns before inFlightAgents.add: busy state never entered
 
+// apra-fleet-eft.28.1: how often the interactive wait re-checks that the
+// target member's claude process is still alive. This is the dispatch-level
+// liveness/no-progress bound -- the member's process can die AFTER the
+// pre-dispatch liveness check above (e.g. mid-turn, right after send_message
+// lands) with no further signal ever arriving, so the wait for
+// respond_to_message must not be the sole backstop up to the full timeout_s
+// (which can be 3600s). A short, fixed poll interval keeps the surfaced
+// error well under the playbook's <10min budget regardless of how large
+// timeout_s is.
+const INTERACTIVE_LIVENESS_POLL_MS = 5000;
+
+/** Raised by waitForInteractiveResponse when the member's claude process is
+ *  confirmed dead while a response is still pending -- distinguished from a
+ *  plain "nobody answered in time" timeout so the caller can surface a more
+ *  actionable terminal error. */
+class InteractiveSessionDiedError extends Error {}
+
+/**
+ * Waits for the member's respond_to_message reply, racing that wait against
+ * a periodic PID-liveness poll of the same session. Resolves/rejects as soon
+ * as either side settles -- a dead PID short-circuits the wait instead of
+ * letting it run out the full timeoutMs.
+ */
+function waitForInteractiveResponse(
+  agent: Agent,
+  workspaceId: string,
+  msgid: string,
+  timeoutMs: number,
+  scope: LogScope,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const poller = setInterval(() => {
+      if (settled) return;
+      const session = sessionRegistry.get(workspaceId, agent.id);
+      // apra-fleet-eft.50.1: fall back to the durable launch-pid anchor when the
+      // live session lost its pid on a reconnect, so this in-flight poll can
+      // still detect a dead persistent process on a retry that reused the
+      // reconnected session -- not only when the session still carries its pid.
+      const pid = session?.pid ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
+      if (pid !== undefined && !isPidAlive(pid)) {
+        settled = true;
+        clearInterval(poller);
+        scope.info(`[interactive] member process pid=${pid} died while awaiting a response -- aborting wait`);
+        sessionRegistry.unregister(workspaceId, agent.id);
+        reject(new InteractiveSessionDiedError(`member claude process (pid ${pid}) died while waiting for a response`));
+      }
+    }, INTERACTIVE_LIVENESS_POLL_MS);
+
+    registerPending(msgid, timeoutMs).then(
+      (res) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(poller);
+        resolve(res);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(poller);
+        reject(err);
+      },
+    );
+  });
+}
+
 /**
  * Interactive routing (apra-fleet-2xs.8): pushes the prompt to a connected
  * member's live session via send_message and waits for that member to call
@@ -216,13 +305,32 @@ async function executePromptInteractive(
   }
 
   try {
-    const response = await registerPending(parsed.msgid, timeoutS * 1000);
+    const response = await waitForInteractiveResponse(agent, workspaceId, parsed.msgid, timeoutS * 1000, scope);
     scope.ok('interactive response received');
     let output = `📋 Response from ${agent.friendlyName}:\n\n${response}`;
     if (heuristicWarningSuffix) output += heuristicWarningSuffix;
     return output;
   } catch (err: any) {
+    if (err instanceof InteractiveSessionDiedError) {
+      scope.abort(err.message);
+      return `[ERROR] "${agent.friendlyName}"'s interactive claude process died while this dispatch was waiting for a response (${err.message}). The prompt was delivered but nothing will ever answer it -- re-launch the member (re-run register_member) before retrying.`;
+    }
     scope.abort(`interactive timeout: ${err.message}`);
+    // apra-fleet-eft.74.2: self-heal on interactive-route timeout. A session
+    // with no verifiable live pid that just timed out is a phantom channel
+    // (the eft.74 wedge): re-routing the NEXT execute_prompt to it would
+    // silently re-burn the full timeout_s, forever (observed 5x 900s). Evict
+    // it here so the next dispatch finds no interactive session and falls back
+    // to the subprocess path. A session that DOES have a verifiably live pid is
+    // left registered -- the member is alive, merely slow, so a later dispatch
+    // may legitimately reach it interactively again.
+    const timedOutSession = sessionRegistry.get(workspaceId, agent.id);
+    const timedOutPid = timedOutSession?.pid ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
+    const hasVerifiableLivePid = timedOutPid !== undefined && isPidAlive(timedOutPid);
+    if (!hasVerifiableLivePid) {
+      sessionRegistry.unregister(workspaceId, agent.id);
+      scope.info(`[interactive] timed-out session for "${agent.friendlyName}" has no verifiable live pid (pid=${timedOutPid ?? 'none'}) -- evicting so the next dispatch falls back to subprocess`);
+    }
     return `❌ Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`;
   }
 }
@@ -264,6 +372,36 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return `❌ Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
 
+  // Server-side member reservation enforcement (apra-fleet-eft.10.3): a member
+  // reserved by a DIFFERENT sprint may not be dispatched to. Mirrors the
+  // inFlightAgents busy-rejection error path -- the error names the owning
+  // sprint. A dispatch from the owning sprint (matching APRA_FLEET_SPRINT_ID)
+  // or against an unreserved member proceeds unchanged, so behavior with no
+  // reservations is identical to before. Checked before any busy state is
+  // entered, closing the manual-CLI bypass the ledger alone could not.
+  //
+  // apra-fleet-eft.29.1: currentSprintId() alone (APRA_FLEET_SPRINT_ID on
+  // THIS server process) is only correct when the launcher spawns a private
+  // per-sprint server and stamps its env -- it is not for the eft.7.1
+  // CLI/shared-fleet-server path, where cli.mjs attaches to an existing,
+  // long-lived HTTP singleton it never spawns and so can never stamp. There,
+  // APRA_FLEET_SPRINT_ID is unset (or stale from a different run), so a
+  // member reserved by ITS OWN owning sprint was rejected as if from another
+  // sprint. Prefer the per-call `sprint_id` -- the exact same opaque token
+  // the caller already passed to member_reservation reserve/release (see
+  // createMemberReservationClient / sprintMutexId in
+  // packages/apra-fleet-se/auto-sprint/runner.js) -- and fall back to
+  // currentSprintId() only when the caller omits it, so existing
+  // env-var-based callers/tests are unaffected.
+  const owningSprint = agent.reservedBy ?? null;
+  const dispatchSprintId = input.sprint_id ?? currentSprintId();
+  if (owningSprint && owningSprint !== dispatchSprintId) {
+    return {
+      text: `[-] Member "${agent.friendlyName}" is reserved by sprint "${owningSprint}" and cannot accept a dispatch from another sprint. Wait for that sprint to release it, or force-release the reservation to recover.`,
+      structuredContent: { isError: true, reason: 'reserved' },
+    };
+  }
+
   if (inFlightAgents.has(agent.id)) {
     return {
       text: `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`,
@@ -303,7 +441,69 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // spend the full timeout_s waiting for a response that can never arrive.
   const isClaudeMember = (agent.llmProvider ?? 'claude') === 'claude';
   const workspaceId = getTokenIssuer().workspaceId();
-  const interactiveSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
+  const rawSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
+  // apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
+  // opt-in handshake, not mere JWT registration. A plain subprocess
+  // connect-back (a Doer that opened an MCP tool-access session with a member
+  // JWT but never declared the `claude/channel` capability) registers a live
+  // `server` here, yet can never receive the `notifications/claude/channel`
+  // push -- routing to it would enqueue a message nothing reads and burn the
+  // full timeout_s on every later dispatch (the eft.74 wedge). Only a
+  // channel-capable session is an interactive-routing candidate; anything else
+  // (including that Doer's live tool session, which must be left untouched)
+  // falls through to the unchanged subprocess path below.
+  let interactiveSession = rawSession?.channelCapable ? rawSession : undefined;
+  // apra-fleet-eft.50.1: resolve the pid to test FRESH on every dispatch
+  // (never cached from a prior attempt) and fall back to the durable
+  // launch-pid anchor when this reused session lost its own pid on a
+  // reconnect. This is what re-arms the dead-session guard on a retry attempt
+  // 2+ exactly as on attempt 1: the specific eft.50 ordering (attempt 1 fails
+  // clean, attempt 2 targets a now-dead reconnected session) used to slip
+  // through here because the reconnected SessionState had pid=undefined, so the
+  // check below was skipped and the caller hung on the dead channel.
+  const interactivePid = interactiveSession?.pid
+    ?? (isClaudeMember ? sessionRegistry.lastKnownPid(workspaceId, agent.id) : undefined);
+  if (interactiveSession?.server && interactivePid !== undefined && !isPidAlive(interactivePid)) {
+    // apra-fleet-eft.28.1/eft.28.5: never reuse a persistent interactive
+    // session whose underlying member claude process has already died. Before
+    // eft.28.1, a dead launch-time process (e.g. it crashed before ever
+    // producing a plan) left a `server` entry in sessionRegistry that looked
+    // reusable -- send_message would happily enqueue to it, but nothing would
+    // ever call respond_to_message, so the caller silently burned the full
+    // timeout_s (observed up to 3600s in apra-fleet-eft.28) with zero
+    // fleet-server log output and no watchdog coverage.
+    //
+    // eft.28.5 changes what happens once the death is detected: instead of
+    // surfacing a terminal dispatch_failed error that forces a manual
+    // register_member, EVICT the dead session and FALL THROUGH to a fresh
+    // non-interactive (subprocess) dispatch below -- i.e. re-dispatch fresh
+    // instead of blocking on waitForInteractiveResponse. The bug in
+    // apra-fleet-eft.28 was precisely that a dead session was reused "rather
+    // than detecting its death and spawning a fresh dispatch"; this does the
+    // spawning. If the fresh subprocess dispatch itself cannot start it
+    // returns its own terminal error, so nothing ever hangs.
+    //
+    // The liveness check now fires for connect-back interactive sessions too:
+    // http-transport carries the launch-time pid forward across re-registration
+    // (eft.28.5), so `pid` is no longer undefined for a member that registered
+    // via register_member and then connected back -- the exact real-fleet
+    // repro that evaded eft.28.1.
+    //
+    // apra-fleet-eft.50.1: eft.28.5's carry-forward still lost the pid when a
+    // reconnect happened AFTER the prior SessionState was already unregistered
+    // (priorPid lookup found nothing), so a retry attempt 2+ reused a
+    // pid=undefined session and hung. `interactivePid` above now back-stops
+    // that with sessionRegistry.lastKnownPid, the durable per-member launch-pid
+    // anchor, so this guard re-arms on EVERY dispatch attempt that reuses an
+    // interactive session, not just the first. It stays undefined only for
+    // sessions that never had a captured PID at all (e.g. tests, or a provider
+    // that never went through register_member's local spawn path); those are
+    // left to the pre-existing interactive behavior, unchanged.
+    const deadScope = new LogScope('execute_prompt', `[interactive] session liveness check pid=${interactivePid}`, agent);
+    sessionRegistry.unregister(workspaceId, agent.id);
+    deadScope.info(`member claude process (pid ${interactivePid}) for "${agent.friendlyName}" is dead -- evicting the stale interactive session and re-dispatching fresh (non-interactive)`);
+    interactiveSession = undefined;
+  }
   if (interactiveSession?.server) {
     inFlightAgents.add(agent.id);
     writeStatusline(new Map([[agent.id, 'busy']]));
@@ -487,6 +687,21 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
 
+    // apra-fleet-eft.40.3: workspace-not-trusted degrades composed permissions
+    // (project-scoped allow entries silently dropped) without killing the CLI process --
+    // from there, unattended -p cannot auto-approve or prompt, so tools get denied and
+    // the turn eventually fails. Blindly falling through to the stale-session /
+    // server-overloaded retries below just repeats the same degraded dispatch against a
+    // workspace that is still untrusted, and can walk into eft.28's dead-session hang.
+    // Classify and fail fast here, before either retry path, naming
+    // ensureWorkspaceTrusted (apra-fleet-eft.40.1/40.2) as the remediation.
+    if (result.code !== 0 && provider.classifyError(result.stderr || result.stdout) === 'workspace_not_trusted') {
+      return {
+        text: `❌ ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${result.stderr || result.stdout}`,
+        structuredContent: { isError: true, reason: 'workspace_not_trusted' },
+      };
+    }
+
     // Stale session retry -- fresh session ID, no resume
     if (result.code !== 0 && input.resume && agent.sessionId) {
       scope.info(`[${resolvedModel}] retrying -- stale session`);
@@ -515,6 +730,24 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       return {
         text: buildFailureMessage(agent.friendlyName, result, provider, parsed),
         structuredContent: { isError: true, reason: parsed.terminalReason === 'max_turns' ? 'max_turns_exhausted' : 'nonzero_exit' },
+      };
+    }
+
+    // Exit 0 but the provider parser extracted NOTHING (no result text)
+    // -- observed live (apra-fleet-eft.14, 2026-07-19 stabilization loop):
+    // the claude CLI can die silently mid-turn (member-side session
+    // transcript stops at a tool_result with no final assistant message)
+    // and still exit 0 with EMPTY stdout, so parseResponse falls through
+    // to its plain-text fallback with result: ''. Returning that as a
+    // success used to hand callers a display wrapper with nothing inside,
+    // which schema-extraction layers then misreported as "LLM returned
+    // invalid JSON". Classify it at the source as a typed dispatch error
+    // instead, with stderr's tail attached for diagnosis.
+    if (!parsed.result || parsed.result.trim() === '') {
+      const stderrTail = (result.stderr || '').trim().slice(-500);
+      return {
+        text: `❌ execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
+        structuredContent: { isError: true, reason: 'empty_response' },
       };
     }
 

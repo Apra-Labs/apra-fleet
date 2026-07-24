@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import os from 'os';
 import { runCmd as bdRunCmd } from './bd-replay.mjs';
-import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
+import { FleetWorkflow, AgentDispatchError, FleetTransportError } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -17,6 +17,27 @@ const __dirname = path.dirname(__filename);
 //
 // Set MOCK_SPRINT_DELAY_MS to simulate LLM latency locally; defaults to 0 for CI.
 export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
+
+// apra-fleet-eft.75.2: runner.js's main() now acquires a machine-local
+// pidfile mutex keyed on (branch, members) BEFORE any dispatch (see
+// auto-sprint/sprint-lock.mjs) -- a REAL guard against two processes running
+// the exact same sprint branch concurrently. Node's test runner spawns one
+// process PER test FILE, and several helpers below (runOnce,
+// runRejectedPlanScenario) used to pass a fixed, hardcoded literal branch
+// string shared across MULTIPLE different test files -- harmless before this
+// lock existed, but a genuine false-conflict risk now if two of those files'
+// mock sprints happen to be in flight at the same moment under
+// --test-concurrency. `uniqueMockBranch(tag)` appends this process's own pid
+// to the tag-derived branch so every mock-sprint invocation gets a branch
+// identity that can NEVER collide with a DIFFERENT test file's process
+// (different pid), while staying stable and reproducible within a single
+// call (a caller that needs to predict the exact string -- e.g.
+// runner-sprint-id-token-flow.test.mjs asserting on its own dispatched
+// sprint_id -- can compute the identical value with the same `tag` from
+// inside its OWN process).
+export function uniqueMockBranch(tag) {
+    return `auto-sprint/mock-sprint-${tag}-${process.pid}`;
+}
 
 // Helper to run shell commands in JS
 // apra-fleet-7ll: replicate the real execute_command MCP tool's response
@@ -182,6 +203,15 @@ export async function setupMinimal(tempDirSuffix, taskSpecs) {
  * itself returns. When omitted, sensible defaults (close every assigned
  * bead / approve-with-no-reopens) are used -- these defaults are what the
  * original run1/run2 happy-path scenario relies on.
+ *
+ * `plannerHandler(ctx)` (apra-fleet-eft.28.2) is the same override hook for
+ * the fresh (non-streak-assignment) 'planner' dispatch specifically. Receives
+ * `{ opts, tempDir, runCmd, epicBead }` and must return the same
+ * `{ content: [...], structuredContent?: {...} }` shape `executePrompt`
+ * itself returns -- e.g. `{ content: [...], structuredContent: { isError:
+ * true, reason: 'dispatch_failed' } }` to simulate a fleet-level dispatch
+ * failure (what execute_prompt now returns instead of hanging when a
+ * member's interactive session's underlying claude process is dead).
  */
 // apra-fleet-unw2.22 (N12 follow-up): the harvester contract check must
 // genuinely validate that runner.js supplied real, non-trivial CONTENT for
@@ -237,6 +267,29 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         planReviewerMode = 'reject-then-approve',
         doerHandler = null,
         reviewerHandler = null,
+        // apra-fleet-eft.28.2: optional (opts) => result override for the
+        // Planner dispatch (the fresh, non-streak-assignment 'planner' call
+        // only -- mirrors doerHandler/reviewerHandler). Lets a scenario
+        // simulate a fleet-level dispatch failure (structuredContent:
+        // { isError: true, reason: 'dispatch_failed' }, exactly what
+        // execute_prompt now returns for a dead-PID interactive session
+        // instead of hanging) at the Planner call site specifically, to
+        // exercise runner.js's PLANNER_DISPATCH_RETRY_DELAYS_MS retry loop
+        // and the terminal-error propagation through main()'s typed-abort
+        // catch (publishState('terminal', ...)) end to end.
+        plannerHandler = null,
+        // apra-fleet-eft.72.2: optional (opts, tempDir, runCmd, epicBead,
+        // planRound) => result override for the 'plan-reviewer' dispatch,
+        // mirroring plannerHandler above. Lets a scenario script an exact
+        // verdict sequence (e.g. CHANGES_NEEDED every round, with
+        // taskAssignments/notes crafted from the real bead ids created by
+        // this scenario) for the plan-cap-exhaustion deferral scenarios --
+        // something the fixed `planReviewerMode` string switch below can't
+        // express, since it never has access to real created bead ids. When
+        // provided, this takes priority over `planReviewerMode` (but still
+        // runs AFTER the promptHasScope contract check below, so that
+        // regression guard stays in force for every scenario).
+        planReviewerHandler = null,
         addExtraTaskDuringPlan = true,
         // apra-fleet-unw.17 additions:
         deployHandler = null,
@@ -295,6 +348,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // -- which never re-run against the same branch twice -- are
         // unaffected either way).
         prExistsState = new Set(),
+        // apra-fleet-eft.64.1: `git remote get-url origin`'s mocked stdout --
+        // the Publish PR step (runner.js) now resolves and classifies this
+        // URL (isHostedGithubRemote()) BEFORE deciding whether to attempt
+        // `gh pr create` at all, so this mock must answer that specific
+        // command with something the classifier accepts as hosted by
+        // default -- otherwise every existing PR-creation scenario below
+        // would silently divert onto the new non-hosted/direct-close path
+        // instead of exercising `gh pr create` as they did before this
+        // classifier existed. A scenario exercising the non-hosted path
+        // (e.g. a `file://` sandbox mirror) overrides this explicitly.
+        originUrl = 'https://github.com/mock-org/mock-repo.git',
     } = options;
 
     let planRound = 0;
@@ -408,6 +472,18 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     };
                 }
 
+                // apra-fleet-eft.64.1: answer the Publish PR step's remote-
+                // classification probe with `originUrl` (a hosted GitHub URL
+                // by default -- see the option comment above) so this mock's
+                // command() intercept has a real answer for the ONE git/gh
+                // command besides `gh pr create` itself that the runner now
+                // reads the mocked stdout of, rather than falling through to
+                // the generic 'ok (mocked...)' text below (which is not a
+                // real URL and would misclassify as non-hosted).
+                if (/^git remote get-url origin\b/.test(opts.command)) {
+                    return mockCmdResult(0, originUrl, '');
+                }
+
                 // apra-fleet-unw2.9 (N11): idempotent `gh pr create`
                 // simulation -- the first `gh pr create --head "<branch>"`
                 // for a given branch records that branch into
@@ -482,11 +558,21 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // directly -- the root cause of a real dispatch-timeout bug).
             // Detect it by its distinctive prompt content instead.
             const isStreakAssignment = opts.prompt.includes('Ready bead ids:');
-            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name });
+            // apra-fleet-eft.29.2: also record the per-call sprint_id the
+            // FleetWorkflow agent() payload carries through to executePrompt
+            // (see AgentOptions.sprint_id / apra-fleet-eft.29.1) -- this is
+            // what lets a test confirm runSprintCycle's `agent` wrapper (the
+            // sprintMutexId stamp in runner.js) actually reaches every real
+            // dispatch call site, not just the ones exercised directly by an
+            // execute-prompt.ts unit test.
+            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id });
             await sleep(DELAY_MS);
 
             // --- plan phase: planner ---
             if (opts.agent === 'planner' && !isStreakAssignment) {
+                if (plannerHandler) {
+                    return plannerHandler({ opts, tempDir, runCmd, epicBead });
+                }
                 if (addExtraTaskDuringPlan && !extraTaskAdded) {
                     extraTaskAdded = true;
                     // Contract enforcement (vendored planner.md Step 3): the
@@ -538,6 +624,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                             })
                         }]
                     };
+                }
+
+                if (planReviewerHandler) {
+                    return planReviewerHandler({ opts, tempDir, runCmd, epicBead, planRound });
                 }
 
                 // apra-fleet-unw.15: plan-reviewer responses are now
@@ -784,7 +874,7 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
         const result = await engine.executeFile(scriptPath, {
             target_issue: epicBead.id,
             members: ['local'],
-            branch: 'auto-sprint/mock-sprint',
+            branch: uniqueMockBranch(tag),
             base_branch: 'main',
             goal: 'P1/P2',
             max_cycles: 5,
@@ -826,7 +916,7 @@ export async function runRejectedPlanScenario(tag) {
             await engine.executeFile(scriptPath, {
                 target_issue: epicBead.id,
                 members: ['local'],
-                branch: 'auto-sprint/mock-sprint-rejected',
+                branch: uniqueMockBranch(`${tag}-rejected`),
                 base_branch: 'main',
                 goal: 'P1/P2',
                 max_cycles: 5,
@@ -851,7 +941,12 @@ export async function runRejectedPlanScenario(tag) {
  * doer/reviewer handler overrides.
  */
 export async function runDevelopLoopScenario(tag, {
-    members, taskSpecs, doerHandler, reviewerHandler,
+    members, taskSpecs, doerHandler, reviewerHandler, plannerHandler,
+    // apra-fleet-eft.72.2: optional plan-reviewer override -- see
+    // buildMockFleetApi's `planReviewerHandler` option comment above. When
+    // provided, this scenario's plan phase is driven by the handler instead
+    // of the default 'approve-immediately' mode below.
+    planReviewerHandler,
     // apra-fleet-unw.17 additions:
     deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
     goal = 'P1/P2', maxCycles = 1,
@@ -871,6 +966,26 @@ export async function runDevelopLoopScenario(tag, {
     // separate scenario runs against the exact SAME branch to simulate a
     // re-run of finalization.
     gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
+    // apra-fleet-eft.64.1: optional override for the mocked `git remote
+    // get-url origin` stdout -- see buildMockFleetApi's `originUrl` option
+    // comment above. Lets a scenario simulate a non-hosted remote (e.g.
+    // `file:///path/to/bare-mirror.git`) to exercise the Publish PR step's
+    // skip-PR/direct-close path instead of the default hosted-GitHub path.
+    originUrl,
+    // apra-fleet-eft.28.4: optional override for `args.dispatch_timeout_s`
+    // (validateArgs floor: integer >= 60; runner.js defaults to 3600 when
+    // omitted). Lets a scenario exercise the client-side dispatch-timeout
+    // watchdog (withDispatchWatchdog, apra-fleet-eft.28.3) against a short,
+    // deterministic budget instead of waiting on the hour-long production
+    // default.
+    dispatchTimeoutS,
+    // apra-fleet-eft.75.3: optional `args.callTool` passthrough -- the exact
+    // same known arg key bin/cli.mjs wires from its live `mcpClient.callTool`
+    // (apra-fleet-eft.75.1) -- so a scenario can inject a spy and prove the
+    // REAL runner.js call sites (e.g. the doer max-turns resume ladder) drive
+    // createMemberSessionGuard()'s `stop_prompt` call end-to-end, rather than
+    // only unit-testing the guard helper in isolation.
+    callTool,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -885,12 +1000,29 @@ export async function runDevelopLoopScenario(tag, {
     const commandLogDetailed = [];
     const memberGitState = new Map();
     const logs = [];
+    const states = [];
+    // apra-fleet-eft.60.3: opt this hermetic run into the runner's zero-wait
+    // Planner-dispatch retry backoff. The ~110s of real PLANNER_DISPATCH_RETRY_
+    // DELAYS_MS backoff only models a real fleet member's execute_prompt
+    // busy-lock clearing -- there is no such lock in this in-process mock, so
+    // burning it as real wall-clock is dead time that (stacked on the one-time
+    // real-bd setup/read overhead under APRA_FLEET_BD_MOCK=off) pushed the
+    // dead-session/dead-pid retry-ladder regression tests up against their 180s
+    // file timeout on slow CI hosts. The runner still runs the FULL 5-attempt
+    // ladder and logs each "waiting Ns" line with the real configured delay;
+    // production behavior (real timed sleep, unchanged delay values) is
+    // untouched -- only this env-gated test path skips the sleep. Restored in
+    // the finally so it never leaks past this scenario.
+    const priorInstantRetryBackoff = process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF;
+    process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = '1';
     try {
         const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
             planReviewerMode: 'approve-immediately',
             addExtraTaskDuringPlan: false,
             doerHandler,
             reviewerHandler,
+            plannerHandler,
+            planReviewerHandler,
             deployHandler,
             integHandler,
             finalReviewHandler,
@@ -900,9 +1032,17 @@ export async function runDevelopLoopScenario(tag, {
             gitGhFailurePattern,
             gitGhFailureMessage,
             prExistsState,
+            ...(originUrl !== undefined ? { originUrl } : {}),
         });
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('log', (e) => logs.push(e.msg));
+        // apra-fleet-eft.28.2: publishState() (runner.js's sprint-state
+        // persistence, e.g. the main() typed-abort catch's
+        // publishState('terminal', ...)) emits a 'state' event on the
+        // FleetWorkflow instance -- captured here so a scenario can assert
+        // a terminal error was actually PERSISTED to sprint state, not just
+        // logged.
+        workflow.on('state', (e) => states.push(e));
         const engine = new WorkflowEngine(workflow);
         const scriptPath = path.join(__dirname, '../../auto-sprint/runner.js');
 
@@ -917,18 +1057,80 @@ export async function runDevelopLoopScenario(tag, {
                 base_branch: 'main',
                 goal,
                 max_cycles: maxCycles,
+                ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
+                ...(callTool !== undefined ? { callTool } : {}),
             }, true);
         } catch (err) {
             error = err;
         }
 
-        const finalBeadsRaw = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
-        const finalBeadsById = new Map(finalBeadsRaw.map((b) => [b.id, b]));
+        // apra-fleet-eft.54.3: a no-mutation terminal dispatch error (the
+        // agent dispatch itself failed -- AgentDispatchError/FleetTransportError,
+        // not a max_turns_exhausted resume case) means there is provably
+        // nothing new in the beads DB for THIS run to have produced, so this
+        // diagnostic `bd list --all --json` read -- a real bd/dolt spawn under
+        // APRA_FLEET_BD_MOCK=off -- is skipped entirely rather than run
+        // unconditionally in this shared harness's post-run teardown. Every
+        // other outcome (success, or a typed sprint-abort that fired AFTER a
+        // dispatch already ran -- e.g. ReviewerContractViolationError/
+        // StalledSprintError -- which may have mutated real beads) keeps the
+        // exact prior behavior; finalBeadsById is simply an empty Map for the
+        // no-mutation case (no existing scenario asserts on it there).
+        const skipFinalBeadsRead = isNoMutationTerminalDispatchError(error);
+        const finalBeadsById = skipFinalBeadsRead
+            ? new Map()
+            : new Map(JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]').map((b) => [b.id, b]));
 
-        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch };
+        // apra-fleet-eft.60.4: tempDir is returned (in addition to the
+        // per-command commandLog) so a scenario can query the real-mode
+        // per-clone dolt-sync spawn cache (bd-replay.mjs's
+        // realSyncSpawnCount(tempDir, ...)) -- the commandLog alone cannot
+        // distinguish "requested N times, served from cache" from "actually
+        // spawned N times".
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir };
     } finally {
+        // apra-fleet-eft.60.3: restore the caller's prior value (never leak the
+        // instant-backoff flag past this scenario).
+        if (priorInstantRetryBackoff === undefined) {
+            delete process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF;
+        } else {
+            process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = priorInstantRetryBackoff;
+        }
         await teardown(tempDir);
     }
+}
+
+// apra-fleet-eft.54.3 (residual after eft.54.1): true when a thrown error out
+// of engine.executeFile() means the agent dispatch itself never delivered a
+// usable result -- an AgentDispatchError or FleetTransportError -- and
+// therefore provably produced no beads/code mutation for THIS scenario run to
+// verify. runner.js's own withGitSync already skips its per-dispatch real-bd
+// G-push/D-push teardown for exactly this error shape (isNoMutationDispatchFailure,
+// same file); this mirrors that same no-mutation judgment one layer up, at the
+// shared scenario harness's OWN post-run diagnostic read below.
+//
+// Deliberately narrower than runner.js's isNoMutationDispatchFailure (which
+// also folds in isTypedAbortError() -- ANY WorkflowError subclass, including
+// ReviewerContractViolationError/StalledSprintError/SprintPlanRejectedError/
+// BudgetExceededError): those are typed sprint ABORTS that fire only AFTER a
+// dispatch already succeeded and possibly mutated beads (e.g. a doer closed a
+// bead before the reviewer's contract-violation abort fired -- see
+// mock-sprint-stall-contract-violation.test.mjs, which asserts on
+// finalBeadsById for exactly that reason). Only a genuine dispatch-channel
+// failure (the agent never ran / never came back) can be assumed to have
+// mutated nothing.
+//
+// Also excludes an AgentDispatchError whose reason is 'max_turns_exhausted':
+// that is the resumable partial-work case -- the agent DID run and may have
+// committed/closed beads before running out of turns -- so this harness's own
+// post-run bead-state read still needs to reflect real state, same exclusion
+// runner.js's own isNoMutationDispatchFailure makes.
+export function isNoMutationTerminalDispatchError(err) {
+    if (!err) return false;
+    if (err instanceof AgentDispatchError && err.details && err.details.reason === 'max_turns_exhausted') {
+        return false;
+    }
+    return err instanceof AgentDispatchError || err instanceof FleetTransportError;
 }
 
 export const REQUIRED_AGENT_TYPES = ['planner', 'plan-reviewer', 'doer', 'reviewer', 'deployer', 'integ-test-runner', 'harvester'];

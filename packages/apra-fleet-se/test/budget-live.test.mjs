@@ -133,6 +133,15 @@ function buildMockFleetApi(tempDir, epicBead, taskId, dispatched, { pricingByMem
             })
         } : {}),
         executeCommand: async (opts) => {
+            // apra-fleet-eft.64.1: answer `git remote get-url origin` (now
+            // resolved+classified by the Publish PR step before it decides
+            // whether to attempt `gh pr create`) with a hosted GitHub URL,
+            // so this mock keeps exercising the same `gh pr create` path it
+            // did before that classifier existed, rather than silently
+            // diverting onto the new skip-PR/direct-close path.
+            if (/^git remote get-url origin\b/.test(opts.command)) {
+                return mockCmdResult(0, 'https://github.com/mock-org/mock-repo.git', '');
+            }
             if (/^(git|gh)\s/.test(opts.command)) {
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
             }

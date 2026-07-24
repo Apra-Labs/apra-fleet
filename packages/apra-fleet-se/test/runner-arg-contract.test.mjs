@@ -103,6 +103,26 @@ describe('validateArgs', () => {
     });
 
     // -------------------------------------------------------------------
+    // Stabilization Issue 32: dispatch_timeout_s -- the per-dispatch time
+    // budget (timeout_s == max_total_s at every site; integ ceiling 2x).
+    // -------------------------------------------------------------------
+
+    test('dispatch_timeout_s defaults to 3600 and accepts an explicit integer >= 60', () => {
+        assert.strictEqual(validateArgs(VALID_ARGS).dispatchTimeoutS, 3600);
+        assert.strictEqual(validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 600 }).dispatchTimeoutS, 600);
+        assert.strictEqual(validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 60 }).dispatchTimeoutS, 60);
+    });
+
+    test('dispatch_timeout_s rejects non-integers, sub-60 values, and numeric strings', () => {
+        assert.throws(() => validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 59 }), /Invalid dispatch_timeout_s/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 0 }), /Invalid dispatch_timeout_s/);
+        assert.throws(() => validateArgs({ ...VALID_ARGS, dispatch_timeout_s: 1.5 }), /Invalid dispatch_timeout_s/);
+        // The CLI layer coerces '--dispatch-timeout-s 600' to a number; a
+        // string reaching the runner is a caller bug and must fail loudly.
+        assert.throws(() => validateArgs({ ...VALID_ARGS, dispatch_timeout_s: '600' }), /Invalid dispatch_timeout_s/);
+    });
+
+    // -------------------------------------------------------------------
     // N15 (apra-fleet-unw2.11): roleMap key normalization + the
     // 'orchestrator' application-level pseudo-role.
     // -------------------------------------------------------------------
@@ -235,7 +255,19 @@ function mockCmdResult(code, stdout, stderr = '') {
     };
 }
 
-function buildSpyFleetApi() {
+// apra-fleet-eft.6.7: `allBeadsJson`/`readyJson`/`backlogJson` let a caller
+// substitute the canned `bd list --all --limit 0 --json` / `--ready` /
+// backlog-fetch responses (default: the existing single-level bd-1 ->
+// bd-1-child fixture every other test in this suite already relies on),
+// so a test can exercise a deeper hierarchy (e.g. a 3-level
+// epic->feature->task tree) without duplicating the whole spy.
+function buildSpyFleetApi(overrides = {}) {
+    const {
+        allBeadsJson = '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]',
+        readyJson = '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]',
+        backlogJson = null,
+    } = overrides;
+
     const calls = { executeCommand: 0, executePrompt: 0 };
     const commandLog = [];
     const promptLog = [];
@@ -264,7 +296,7 @@ function buildSpyFleetApi() {
             // every test in this suite), not 'bd-1' itself, or it falls
             // outside scope and every downstream call sees nothing.
             if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
-                return mockCmdResult(0, '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]');
+                return mockCmdResult(0, allBeadsJson);
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // The first TWO ready-list calls return one bead so the
@@ -280,7 +312,26 @@ function buildSpyFleetApi() {
                 // real check and hard-fails as if there were no work at all.
                 const readyCallsSoFar = commandLog.filter((c) => /^bd list .*--ready/.test(c)).length;
                 const alreadyReturnedReady = readyCallsSoFar > 2;
-                return mockCmdResult(0, alreadyReturnedReady ? '[]' : '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]');
+                return mockCmdResult(0, alreadyReturnedReady ? '[]' : readyJson);
+            }
+            // bdListScoped(rest)'s plain, non-empty-but-non---ready/--status
+            // filterLabel branch (e.g. updateDashboard()'s
+            // `bdListScoped('--json')` for sprintTasks): rest is truthy
+            // ('--json'), so bdListScoped skips its cheap in-memory-only
+            // path and issues a second project-wide `bd list --json --limit
+            // 0` query, then intersects it with the structurally-discovered
+            // scope. Mirror the same open-bead set as allBeadsJson so that
+            // intersection is non-empty, same as a real `bd` would return.
+            if (/^bd list --json --limit 0$/.test(opts.command)) {
+                return mockCmdResult(0, allBeadsJson);
+            }
+            // updateDashboard()'s backlog panel fetch: project-wide,
+            // status-only, no --parent scoping (see BACKLOG_STATUSES in
+            // runner.js). Only intercepted when a test supplies backlogJson;
+            // otherwise it falls through to the generic '[]' handler below,
+            // same as every other `bd list` call.
+            if (backlogJson !== null && /^bd list --status="open,deferred,blocked" --json$/.test(opts.command)) {
+                return mockCmdResult(0, backlogJson);
             }
             if (/^bd list /.test(opts.command)) {
                 return mockCmdResult(0, '[]');
@@ -288,11 +339,21 @@ function buildSpyFleetApi() {
             if (opts.command.includes("existsSync")) {
                 return mockCmdResult(0, 'not found');
             }
+            // apra-fleet-eft.64.1: the Publish PR step now resolves and
+            // classifies `git remote get-url origin` (isHostedGithubRemote())
+            // BEFORE deciding whether to attempt `gh pr create` -- answer it
+            // with a hosted GitHub URL so this spy's existing generic-fallback
+            // empty stdout (below) doesn't misclassify every scenario in this
+            // suite as a non-hosted remote and silently divert onto the new
+            // skip-PR/direct-close path instead of exercising `gh pr create`.
+            if (/^git remote get-url origin\b/.test(opts.command)) {
+                return mockCmdResult(0, 'https://github.com/mock-org/mock-repo.git');
+            }
             return mockCmdResult(0, '');
         },
         executePrompt: async (opts) => {
             calls.executePrompt++;
-            promptLog.push({ agent: opts.agent, prompt: opts.prompt });
+            promptLog.push({ agent: opts.agent, prompt: opts.prompt, timeout_s: opts.timeout_s, max_total_s: opts.max_total_s });
 
             if (opts.agent === 'plan-reviewer') {
                 // apra-fleet-unw.15: plan-reviewer verdicts are now
@@ -382,12 +443,34 @@ describe('runner.js mock-level execution', () => {
         // interceptor succeeds for any command by default, so the fetch
         // "succeeds" here and the checkout adopts origin/<branch> as its
         // start point, not origin/<baseBranch>.
-        assert.match(spy.commandLog[0], /^git fetch origin develop/);
-        assert.match(spy.commandLog[1], /^git fetch origin auto-sprint\/reach-test\b/);
-        assert.ok(spy.commandLog[2].includes('git checkout -B auto-sprint/reach-test origin/auto-sprint/reach-test'));
-        const last2 = spy.commandLog.slice(-2);
-        assert.match(last2[0], /^git push -u origin auto-sprint\/reach-test/);
-        assert.match(last2[1], /^gh pr create --base "develop" --head "auto-sprint\/reach-test"/);
+        // apra-fleet-eft.58.1: preflightBeadsHealthGate() now runs strictly
+        // BEFORE the branch-ensure loop's first git command, so the log leads
+        // with its bd-level probe commands ('bd config get sync.remote --json'
+        // + 'bd dolt pull'). Pin that ordering contract (only bd commands may
+        // precede the first git command) and anchor the git triplet at the
+        // first git index instead of hardcoding index 0.
+        const firstGitIdx = spy.commandLog.findIndex((c) => /^git /.test(c));
+        assert.ok(firstGitIdx >= 0, 'expected at least one git command in the log');
+        for (const pre of spy.commandLog.slice(0, firstGitIdx)) {
+            assert.match(
+                pre,
+                /^bd /,
+                `only the beads-health gate's bd commands may precede the first git command, saw: ${pre}`,
+            );
+        }
+        assert.match(spy.commandLog[firstGitIdx], /^git fetch origin develop/);
+        assert.match(spy.commandLog[firstGitIdx + 1], /^git fetch origin auto-sprint\/reach-test\b/);
+        assert.ok(spy.commandLog[firstGitIdx + 2].includes('git checkout -B auto-sprint/reach-test origin/auto-sprint/reach-test'));
+        // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
+        // `git remote get-url origin` (isHostedGithubRemote()) between the
+        // push and `gh pr create` -- this spy answers it with a hosted
+        // GitHub URL (see the `git remote get-url origin` branch above), so
+        // the hosted-remote `gh pr create` path is exercised unchanged, just
+        // with one extra command in between.
+        const last3 = spy.commandLog.slice(-3);
+        assert.match(last3[0], /^git push -u origin auto-sprint\/reach-test/);
+        assert.match(last3[1], /^git remote get-url origin\b/);
+        assert.match(last3[2], /^gh pr create --base "develop" --head "auto-sprint\/reach-test"/);
     });
 
     test('a malicious issue id is rejected with a validation error and results in ZERO fleet dispatches', async () => {
@@ -483,17 +566,34 @@ describe('runner.js mock-level execution', () => {
             max_cycles: 1,
             // Mixed casing/whitespace: must resolve identically to the
             // canonical lowercase 'orchestrator' key and route every
-            // orchestrator-side `bd` command to 'member-x'. (git
-            // fetch/checkout commands go to the UNION of orchestrator/doer/
-            // reviewer pools -- see runner.js's branchEnsureMembers/N4 -- so
-            // this asserts on the `bd `-prefixed commands specifically,
-            // which always use `orchestratorMember`.)
+            // orchestrator-side BOOKKEEPING `bd` command (bd list/show/
+            // update -- the orchestrator's own reads/writes, dispatched via
+            // `orchestratorMember`) to 'member-x'. (git fetch/checkout
+            // commands go to the UNION of orchestrator/doer/reviewer pools --
+            // see runner.js's branchEnsureMembers/N4 -- so this asserts on
+            // the `bd `-prefixed commands specifically.)
+            //
+            // `bd dolt pull`/`bd dolt push` are deliberately EXCLUDED here
+            // (apra-fleet-eft.8.x/9.x, withGitSync()): those are per-member
+            // beads-sync brackets around EACH DISPATCHED AGENT's own call
+            // (planner/reviewer/deployer/etc.), not orchestrator bookkeeping
+            // -- they correctly sync THAT agent's own member (here 'local',
+            // since 'planner' etc. have no roleMap entry of their own and
+            // fall back to the first physical member), never
+            // `orchestratorMember`. Verified live: every non-dolt `bd `
+            // command in this scenario dispatches to 'member-x' as expected;
+            // only `bd dolt pull`/`bd dolt push` legitimately go to 'local'.
             roleMap: { '  Orchestrator  ': ['member-x'] },
         }, true);
 
         assert.strictEqual(result.status, 'success');
 
-        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd '));
+        // `bd config get sync.remote` is part of the same per-member D-push
+        // bracket (the Issue 31 pre-gate reads the BRACKET member's own
+        // sync.remote before deciding whether to push), so it is excluded
+        // alongside `bd dolt *` for the same reason.
+        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-x', `expected command "${command}" to dispatch to 'member-x', got '${member_name}'`);
@@ -516,17 +616,117 @@ describe('runner.js mock-level execution', () => {
 
         assert.strictEqual(result.status, 'success');
 
-        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd '));
+        // `bd dolt pull`/`bd dolt push` excluded -- see the detailed comment
+        // in the mixed-case roleMap test above: those are per-member
+        // beads-sync brackets around each dispatched agent's own call, not
+        // orchestrator bookkeeping, and correctly use that agent's own
+        // member rather than `orchestratorMember`.
+        // `bd config get sync.remote` excluded like `bd dolt *` -- part of
+        // the per-member D-push bracket (Issue 31 pre-gate), see above.
+        const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote'));
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-y', `expected command "${command}" to dispatch to 'member-y', got '${member_name}'`);
         }
         // 'orchestrator' must never surface as a dispatched agent role (it
-        // has no vendor/apra-pm/agents/*.md definition/schema): confirm no
+        // has no packages/apra-fleet-se/apra-pm/agents/*.md definition/schema): confirm no
         // executePrompt() call ever used agent === 'orchestrator'.
         assert.ok(
             spy.promptLog.every((p) => p.agent !== 'orchestrator'),
             'orchestrator must never be dispatched as an agent (it is not a member of contracts.ROLES)'
         );
+    });
+
+    test('dispatch_timeout_s: every agent dispatch carries the overridden budget as timeout_s == max_total_s (integ ceiling would be 2x)', async () => {
+        // Stabilization Issue 32 (run 15 integ C5): a live-but-silent hung
+        // dispatch costs a full dispatch budget before any timer fires
+        // (Issue 12: `claude -p` is silent until done, so inactivity ==
+        // total runtime). The budget is now an arg so small runs (sandbox
+        // canary sprints) can bound that cost. This pins the plumbing:
+        // arg -> validateArgs -> every executePrompt's timeout_s/max_total_s.
+        const spy = buildSpyFleetApi();
+        const workflow = new FleetWorkflow(spy);
+        const engine = new WorkflowEngine(workflow);
+
+        const result = await engine.executeFile(RUNNER_SCRIPT_PATH, {
+            target_issue: 'bd-1',
+            members: ['local'],
+            branch: 'auto-sprint/dispatch-timeout-test',
+            base_branch: 'main',
+            max_cycles: 1,
+            dispatch_timeout_s: 600,
+        }, true);
+
+        assert.strictEqual(result.status, 'success');
+        assert.ok(spy.promptLog.length > 0, 'expected at least one executePrompt dispatch');
+        for (const { agent, timeout_s, max_total_s } of spy.promptLog) {
+            assert.strictEqual(timeout_s, 600, `agent '${agent}' dispatched with timeout_s ${timeout_s}, expected 600`);
+            assert.ok(
+                max_total_s === 600 || max_total_s === 1200,
+                `agent '${agent}' dispatched with max_total_s ${max_total_s}, expected 600 (or 1200 for the integ runner)`
+            );
+        }
+    });
+
+    // -------------------------------------------------------------------
+    // apra-fleet-eft.6.7: bdListScoped()'s BFS (auto-sprint-3) must recurse
+    // through every level of the sprint's target tree, not just one -- and
+    // updateDashboard()'s sprintTasks/backlogTasks split (built on top of
+    // bdListScoped) must reflect that: a leaf TASK two levels below the
+    // sprint's epic (epic -> feature -> task) belongs under Sprint, never
+    // Backlog, even though the dashboard's separate backlog fetch is
+    // project-wide and would otherwise see it too.
+    // -------------------------------------------------------------------
+
+    test('a grandchild task two levels below the sprint epic renders under Sprint (sprintTasks), never Backlog', async () => {
+        const spy = buildSpyFleetApi({
+            // bd-1 is the sprint's target epic (never itself returned by
+            // `bd list --all`'s BFS -- see the comment above); feat-1 is its
+            // direct feature child; task-1 is feat-1's own task child, i.e.
+            // a grandchild of bd-1 -- exactly the depth a single-level
+            // `bd list --parent` cannot see.
+            allBeadsJson: JSON.stringify([
+                { id: 'feat-1', parent: 'bd-1', status: 'open', title: 'Feature' },
+                { id: 'task-1', parent: 'feat-1', status: 'open', title: 'Task' },
+            ]),
+            readyJson: JSON.stringify([
+                { id: 'task-1', parent: 'feat-1', status: 'open', title: 'Task' },
+            ]),
+            // The dashboard's backlog fetch has no --parent scoping, so a
+            // real bd would return task-1 here too -- return it alongside a
+            // genuinely unrelated backlog bead so the assertion below
+            // actually exercises updateDashboard()'s sprintIds subtraction,
+            // not just an absence in the canned data.
+            backlogJson: JSON.stringify([
+                { id: 'task-1', parent: 'feat-1', status: 'open', title: 'Task' },
+                { id: 'unrelated-1', status: 'open', title: 'Unrelated backlog item' },
+            ]),
+        });
+        const workflow = new FleetWorkflow(spy);
+        const publishedStates = [];
+        workflow.on('state', (evt) => publishedStates.push(evt));
+        const engine = new WorkflowEngine(workflow);
+
+        const result = await engine.executeFile(RUNNER_SCRIPT_PATH, {
+            target_issue: 'bd-1',
+            members: ['local'],
+            branch: 'auto-sprint/dashboard-grandchild-test',
+            base_branch: 'main',
+            max_cycles: 1,
+        }, true);
+
+        assert.strictEqual(result.status, 'success');
+
+        const beadsStates = publishedStates.filter((e) => e.namespace === 'beads');
+        assert.ok(beadsStates.length > 0, 'expected at least one publishState("beads", ...) call');
+        const lastBeads = beadsStates[beadsStates.length - 1];
+
+        const sprintIds = lastBeads.data.sprintTasks.map((t) => t.id);
+        const backlogIds = lastBeads.data.backlogTasks.map((t) => t.id);
+
+        assert.ok(sprintIds.includes('task-1'), `expected grandchild task-1 in sprintTasks, got: ${JSON.stringify(sprintIds)}`);
+        assert.ok(!backlogIds.includes('task-1'), `expected grandchild task-1 NOT in backlogTasks, got: ${JSON.stringify(backlogIds)}`);
+        assert.ok(backlogIds.includes('unrelated-1'), 'expected an unrelated backlog bead to remain classified as backlog');
     });
 });

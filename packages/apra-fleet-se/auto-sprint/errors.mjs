@@ -124,3 +124,213 @@ export class ReviewerContractViolationError extends WorkflowError {
         this.notes = notes;
     }
 }
+
+/**
+ * apra-fleet-eft.8.1 (Plan Part 3.1/3.3, risk 2) -- thrown when an
+ * orchestrator-bracketed git sync (G-pull / G-push) discovers that a member
+ * has DIVERGED from the shared sprint branch: a `git merge --ff-only` that
+ * could not fast-forward, an unmerged/conflicted `git pull --rebase`, or a
+ * `git push` still rejected as non-fast-forward AFTER the single bounded
+ * pull-rebase retry.
+ *
+ * Divergence is the hard, non-retryable failure class in the single-writer
+ * token-passing model: because the writer pushes and the next reader pulls,
+ * every intra-sprint merge is fast-forward BY CONSTRUCTION, so a non-FF state
+ * means the invariant is already broken. It MUST NEVER be auto-resolved or
+ * retried blindly -- the whole point of a distinct typed error (vs a generic
+ * CommandError) is that the classifier can tell "diverged -> abort" apart from
+ * "transient -> retry" and route the two differently.
+ *
+ * @property {string|null} member - the member whose checkout diverged
+ * @property {string|null} gitOutput - the raw git stderr/stdout that proved divergence
+ * @property {string|null} operation - which bracket step diverged
+ *   ('pull' | 'push' | 'push-rebase')
+ */
+export class GitDivergedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, gitOutput?: string|null, operation?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, gitOutput = null, operation = null, details, cause } = opts;
+        super(message, {
+            code: 'GIT_DIVERGED',
+            details: { member, gitOutput, operation, ...details },
+            cause,
+        });
+        this.member = member;
+        this.gitOutput = gitOutput;
+        this.operation = operation;
+    }
+}
+
+/**
+ * apra-fleet-eft.8.1 -- thrown when an orchestrator-bracketed git sync
+ * (G-pull / G-push) fails for a reason that is NOT divergence and that
+ * SURVIVED the bounded transient-retry budget: a transient class failure
+ * (network unreachable, an index/ref lock) that kept failing after its
+ * allowed retries, or an unclassifiable git failure that must not be retried
+ * blindly.
+ *
+ * This is the counterpart to {@link GitDivergedError}: both extend
+ * WorkflowError and both carry the member and raw git output, but they are
+ * deliberately distinct types so a caller/test can assert the two failure
+ * classifications (transient-retry-exhausted vs diverged-abort) SEPARATELY,
+ * which is the crux of risk 2 in the plan.
+ *
+ * @property {string|null} member - the member whose sync failed
+ * @property {string|null} gitOutput - the raw git stderr/stdout of the failure
+ */
+export class GitSyncError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, gitOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, gitOutput = null, details, cause } = opts;
+        super(message, {
+            code: 'GIT_SYNC_FAILED',
+            details: { member, gitOutput, ...details },
+            cause,
+        });
+        this.member = member;
+        this.gitOutput = gitOutput;
+    }
+}
+
+/**
+ * apra-fleet-eft.9.1 (Plan Part 3.3) -- thrown when an orchestrator-bracketed
+ * DOLT sync (D-pull / D-push of the shared beads database) discovers a
+ * divergence that the fixed, mechanical conflict policy could NOT close: a
+ * `bd dolt pull` that reports a data/merge conflict outside a push-loser's
+ * reconcile, or a `bd dolt push` STILL rejected after the single bounded
+ * pull-then-repush reconcile.
+ *
+ * This is the Dolt counterpart of {@link GitDivergedError}. The beads-sync
+ * conflict policy is deliberately NOT per-conflict judgment: it is
+ * first-successful-pusher-wins, with ours/theirs decided mechanically by which
+ * clone is doing the resolving (the push loser reconciles by pulling the
+ * winner's state, then re-pushes). A divergence that outlives that one bounded
+ * reconcile is a hard, non-retryable failure -- surfacing it as a distinct
+ * typed error lets callers/tests tell "diverged -> abort" apart from
+ * "transient -> retry", exactly as the git brackets do.
+ *
+ * @property {string|null} member - the member whose beads clone diverged
+ * @property {string|null} doltOutput - the raw `bd dolt` stderr/stdout that proved divergence
+ * @property {string|null} operation - which bracket step diverged
+ *   ('pull' | 'push' | 'push-reconcile')
+ */
+export class DoltDivergedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, operation?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, doltOutput = null, operation = null, details, cause } = opts;
+        super(message, {
+            code: 'DOLT_DIVERGED',
+            details: { member, doltOutput, operation, ...details },
+            cause,
+        });
+        this.member = member;
+        this.doltOutput = doltOutput;
+        this.operation = operation;
+    }
+}
+
+/**
+ * apra-fleet-eft.9.1 (Plan Part 3.3) -- thrown when an orchestrator-bracketed
+ * DOLT sync (D-pull / D-push) fails for a reason that is NOT divergence and
+ * that SURVIVED the bounded transient-retry budget: a transient-class failure
+ * (network unreachable, a server/lock hiccup) that kept failing after its
+ * allowed retries, or an unclassifiable `bd dolt` failure that must not be
+ * retried blindly.
+ *
+ * The Dolt counterpart of {@link GitSyncError}: deliberately a distinct type
+ * from {@link DoltDivergedError} so a caller/test can assert the two failure
+ * classifications (transient-retry-exhausted vs diverged-abort) SEPARATELY.
+ *
+ * @property {string|null} member - the member whose beads sync failed
+ * @property {string|null} doltOutput - the raw `bd dolt` stderr/stdout of the failure
+ */
+export class DoltSyncError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, doltOutput = null, details, cause } = opts;
+        super(message, {
+            code: 'DOLT_SYNC_FAILED',
+            details: { member, doltOutput, ...details },
+            cause,
+        });
+        this.member = member;
+        this.doltOutput = doltOutput;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Non-retryable dispatch failures (stabilization Issue 43 / smoke rehearsal)
+// ---------------------------------------------------------------------------
+//
+// An authentication or workspace-trust failure is deterministic: the member's
+// credential/trust state does not change between attempts, so every retry
+// burns a full dispatch budget to reproduce the identical failure (observed
+// live: 5 planner retries x 15-minute interactive timeouts against an
+// unauthenticated member = 75 wasted minutes for an error that was terminal
+// at second zero). The fleet server already classifies these categories as
+// non-retryable (src/utils/prompt-errors.ts isRetryable()); this mirrors
+// that judgment on the engine side, keyed off the server's own error-message
+// signatures since the message string is all that crosses the dispatch
+// boundary today.
+const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace not trusted|has not been trusted/i;
+
+/**
+ * True when a dispatch error can NEVER be fixed by retrying (auth /
+ * workspace-trust failures). Callers must abort their retry loop and surface
+ * the error immediately, with remediation left to the operator.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isNonRetryableDispatchError(err) {
+    return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-eft.75.2 -- sprint-launch machine-local pidfile mutex
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by sprint-lock.mjs's acquireSprintLock() when a duplicate `auto-
+ * sprint` engine start is attempted for the SAME sprint (branch+members)
+ * while a live process already holds that sprint's pidfile lock, OR when a
+ * concurrent process wins a stale-pidfile reclaim race. Root incident
+ * (apra-fleet-eft.75): a duplicate concurrent runner was previously stopped
+ * only by an ACCIDENTAL viewer-port-8080 collision (itself trivially avoided
+ * with a different --viewer-port) -- this is the explicit, always-on mutex
+ * that replaces that accident with a deliberate, named guard. Never caught
+ * inside runner.js -- it unwinds main()'s promise and fails the whole sprint
+ * launch before any fleet dispatch occurs.
+ *
+ * @property {string|null} branch
+ * @property {string[]|null} members
+ * @property {number|null} existingPid - the live pid currently holding the lock (when known)
+ */
+export class SprintLockHeldError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ branch?: string|null, members?: string[]|null, existingPid?: number|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { branch = null, members = null, existingPid = null, details, cause } = opts;
+        super(message, {
+            code: 'SPRINT_LOCK_HELD',
+            details: { branch, members, existingPid, ...details },
+            cause,
+        });
+        this.branch = branch;
+        this.members = members;
+        this.existingPid = existingPid;
+    }
+}

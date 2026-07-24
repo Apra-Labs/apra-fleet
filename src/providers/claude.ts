@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -58,6 +58,17 @@ export class ClaudeProvider implements ProviderAdapter {
       cmd += ' --permission-mode auto';
     } else if (unattended === 'dangerous') {
       cmd += ' --dangerously-skip-permissions';
+    } else {
+      // apra-fleet-eft.65.1: interactive-session parity for the work folder.
+      // A headless `-p` dispatch cannot present a permission prompt, so with no
+      // permission-mode flag the CLI HARD-BLOCKS Edit/Write of a brand-new file
+      // in its own work folder -- even though an interactive session in the same
+      // trusted workspace would simply accept it. `acceptEdits` auto-approves
+      // file-edit tools (Edit/Write/MultiEdit/NotebookEdit) for the working
+      // directory only; it does NOT auto-approve Bash, network, or edits outside
+      // the workspace, so this restores work-folder Edit/Write parity without
+      // broadening the permission model (unlike --dangerously-skip-permissions).
+      cmd += ` ${this.workspaceEditPermissionFlag()}`;
     }
     if (model) {
       cmd += ` --model "${escapeDoubleQuoted(model)}"`;
@@ -73,6 +84,13 @@ export class ClaudeProvider implements ProviderAdapter {
     return '--permission-mode auto';
   }
 
+  workspaceEditPermissionFlag(): string | null {
+    // apra-fleet-eft.65.1: grants Edit/Write parity for the dispatched agent's
+    // own work folder in a headless dispatch (which cannot show a trust/permission
+    // prompt) WITHOUT the broad --dangerously-skip-permissions bypass.
+    return '--permission-mode acceptEdits';
+  }
+
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout.trim();
 
@@ -81,10 +99,41 @@ export class ClaudeProvider implements ProviderAdapter {
         ? { input_tokens: u.input_tokens, output_tokens: u.output_tokens }
         : undefined;
 
-    const fromEvent = (obj: any): ParsedResponse | null => {
+    // apra-fleet-eft.28.6: first non-blank string wins. Used so an EMPTY
+    // (present-but-blank) result field on the `type:result` event falls back to
+    // the assistant text we harvested from the stream, instead of being kept as
+    // '' (a plain `obj.result ?? ...` keeps '' because it is not nullish).
+    const firstNonEmpty = (...candidates: any[]): string | undefined => {
+      for (const c of candidates) {
+        if (typeof c === 'string' && c.trim() !== '') return c;
+      }
+      return undefined;
+    };
+
+    // apra-fleet-eft.28.6: the assistant's reply text carried by a
+    // `type:assistant` stream event (message.content[] text blocks). Real
+    // capture (member 'trust-probe', eft.28 NEW EVIDENCE): the final
+    // `type:result` event's own `result` field came back empty even though the
+    // assistant reply -- including tool output -- was fully present in these
+    // preceding events. Harvesting it here lets the server recover the reply
+    // instead of dropping it and mislabelling the dispatch empty_response.
+    const assistantTextOf = (obj: any): string => {
+      const content = obj?.message?.content;
+      if (obj?.type !== 'assistant' || !Array.isArray(content)) return '';
+      return content
+        .filter((c: any) => c?.type === 'text' && typeof c.text === 'string')
+        .map((c: any) => c.text)
+        .join('');
+    };
+
+    const fromEvent = (obj: any, assistantFallback: string): ParsedResponse | null => {
       if (obj.type !== 'result') return null;
       return {
-        result: obj.result ?? obj.response ?? raw,
+        // Prefer the event's own result text; only when it is missing OR blank
+        // do we substitute the harvested assistant text. The final `?? raw`
+        // preserves the pre-existing behavior for a result event with no result
+        // field at all and no recoverable assistant text.
+        result: firstNonEmpty(obj.result, obj.response, assistantFallback) ?? obj.result ?? obj.response ?? raw,
         sessionId: obj.session_id,
         isError: obj.is_error === true || obj.subtype === 'error' || result.code !== 0,
         raw,
@@ -98,8 +147,10 @@ export class ClaudeProvider implements ProviderAdapter {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         // JSON array of events (some Claude Code versions collect JSONL into an array)
+        let assistantText = '';
         for (const obj of parsed) {
-          const r = fromEvent(obj);
+          assistantText += assistantTextOf(obj);
+          const r = fromEvent(obj, assistantText);
           if (r) return r;
         }
       } else {
@@ -117,11 +168,14 @@ export class ClaudeProvider implements ProviderAdapter {
     } catch { /* not valid JSON - try line-by-line JSONL below */ }
 
     // JSONL format (Claude Code 2.1.113+): one JSON object per line
+    let assistantText = '';
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const r = fromEvent(JSON.parse(trimmed));
+        const obj = JSON.parse(trimmed);
+        assistantText += assistantTextOf(obj);
+        const r = fromEvent(obj, assistantText);
         if (r) return r;
       } catch { /* skip non-JSON lines */ }
     }
@@ -239,6 +293,71 @@ export class ClaudeProvider implements ProviderAdapter {
       mechanism: 'cli-verb',
       detail: `claude mcp add --transport http --scope ${opts.scope} apra-fleet-member <url> (cwd=${opts.workFolder})`,
     };
+  }
+
+  async ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs: 'linux' | 'macos' | 'windows' = 'linux'): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40: Claude gates project-scoped permissions.allow entries on
+    // projects[<key>].hasTrustDialogAccepted in the member-side ~/.claude.json -- an
+    // untrusted workspace silently DROPS them (not merely a cosmetic warning), degrading
+    // unattended dispatches. There is no surgical --skip-trust equivalent for Claude
+    // (only the overbroad --dangerously-skip-permissions), so seeding this flag directly
+    // is the only viable fix.
+    //
+    // Live-verified format ground truth (apra-fleet-eft.40 notes, real ~/.claude.json):
+    // project keys are ABSOLUTE PATHS WITH FORWARD SLASHES even on Windows. Normalize so
+    // a folder passed with backslashes, or with a trailing slash, still hits the SAME
+    // entry -- that is also what makes re-running this idempotent.
+    const key = workFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+
+    const isWindows = agentOs === 'windows';
+    const homeFile = isWindows ? '$env:USERPROFILE\\.claude.json' : '$HOME/.claude.json';
+    const tmpFile = isWindows ? '$env:USERPROFILE\\.claude.json.fleet-trust-tmp' : '$HOME/.claude.json.fleet-trust-tmp';
+
+    const readCmd = isWindows
+      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue`
+      : `cat "${homeFile}" 2>/dev/null || true`;
+    const readResult = await execCommand(readCmd, 10000);
+
+    let existing: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(readResult.stdout.trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
+    } catch {
+      // File missing, empty, or not JSON -- a member that has never run Claude
+      // interactively has no ~/.claude.json at all yet. Start from an empty object.
+    }
+
+    const rawProjects = existing.projects;
+    const projects: Record<string, unknown> = (rawProjects && typeof rawProjects === 'object' && !Array.isArray(rawProjects))
+      ? rawProjects as Record<string, unknown>
+      : {};
+    const rawEntry = projects[key];
+    const existingEntry: Record<string, unknown> = (rawEntry && typeof rawEntry === 'object' && !Array.isArray(rawEntry))
+      ? rawEntry as Record<string, unknown>
+      : {};
+
+    if (existingEntry.hasTrustDialogAccepted === true) {
+      console.error(`[claude] workspace trust: already present for "${key}"`);
+      return { seeded: false, detail: `already trusted: ${key}` };
+    }
+
+    // MERGE: preserve every sibling field already on the project entry (history,
+    // allowedTools, etc.) and every other project's entry in the file -- never replace
+    // the entry, or the file, wholesale.
+    const mergedProjects = { ...projects, [key]: { ...existingEntry, hasTrustDialogAccepted: true } };
+    const merged = { ...existing, projects: mergedProjects };
+    const contentStr = JSON.stringify(merged, null, 2);
+
+    // ATOMIC write: stage the full merged content in a temp file, then rename over the
+    // real file in one filesystem operation -- a crash or concurrent read mid-write can
+    // never observe a partially-written ~/.claude.json.
+    const writeCmd = isWindows
+      ? `[System.IO.File]::WriteAllText("${tmpFile}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false))); Move-Item -Force "${tmpFile}" "${homeFile}"`
+      : `cat > "${tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${tmpFile}" "${homeFile}"`;
+    await execCommand(writeCmd, 10000);
+
+    console.error(`[claude] workspace trust: seeded for "${key}"`);
+    return { seeded: true, detail: `seeded trust: ${key}` };
   }
 }
 

@@ -267,6 +267,15 @@ premium) are set per member at registration via `model_tiers` in
 Provider strengths, role recommendations, and gotchas:
 [docs/provider-guide.md](docs/provider-guide.md).
 
+**Registering a member from a shell.** `apra-fleet register-member --name
+<name> --path <folder> [options]` is a shell-drivable equivalent of the
+`register_member` MCP tool, for contexts that can run shell commands but
+cannot make MCP tool calls (scripted setup, CI, an agent role without MCP
+tool access). It shares the exact same validation and registration logic as
+the MCP tool -- both converge on one underlying registration function, so
+the two entry points can never drift apart. Run `apra-fleet register-member
+--help` for the full flag reference.
+
 ## Transport
 
 Fleet runs as a singleton service on your machine. When you start it, the server
@@ -366,6 +375,21 @@ registers and starts the OS service automatically -- no extra step.
 Service registration failures are non-fatal: a warning is printed and the install
 continues.
 
+## Supported user-facing interfaces
+
+Fleet exposes exactly one supported user-facing interface: the **service HTTP
+API** and its **web dashboard**. Users interact with Fleet exclusively through:
+
+- The **HTTP API** and Server-Sent Events (SSE) transport on port 7523
+- The **web dashboard** in Claude Code via the `/mcp` loader
+- The PM skill commands in Claude Code (`/pm`)
+
+The `bin/cli.mjs` entry point in the auto-sprint package is an **internal
+implementation detail** -- it is used only by the supervisor process to
+orchestrate agent workflows and does NOT bypass the reservation ledger. Direct
+manual invocation of `cli.mjs` circumvents the reservation system and is
+unsupported; use the service API and dashboard instead.
+
 ## The PM skill
 
 The **PM skill** is Fleet's reference workflow for **software development**
@@ -457,7 +481,6 @@ Build from source (also the path for Intel Macs):
 
 ```bash
 git clone https://github.com/Apra-Labs/apra-fleet && cd apra-fleet
-git submodule update --init
 npm install && npm run build && npm test
 ```
 

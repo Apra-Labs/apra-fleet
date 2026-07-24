@@ -79,6 +79,80 @@ test('checkMemberTopology: an unresolvable identity signal refuses to start, nam
 });
 
 // =============================================================================
+// apra-fleet-eft.8.5: SYNCED topology mode. With the orchestrator-bracketed
+// git sync layer, members may sit on DIFFERENT HEADs -- the precondition is
+// instead same-origin-URL + a passing `bd dolt pull` probe. Legacy mode keeps
+// the same-HEAD check unchanged. Mode is selected explicitly, never inferred.
+// =============================================================================
+test('checkMemberTopology (synced): members with DIFFERENT HEADs but same origin + passing dolt probe are accepted', async () => {
+    const topo = await checkMemberTopology({
+        members: ['m1', 'm2'],
+        mode: 'synced',
+        // getIdentity is intentionally NOT consulted in synced mode; differing
+        // HEADs must not matter.
+        getIdentity: async (m) => (m === 'm1' ? 'aaaaaaa' : 'bbbbbbb'),
+        getOriginUrl: async () => 'git@github.com:acme/repo.git',
+        doltProbe: async () => 'Everything up-to-date',
+    });
+    check(topo.ok && topo.mode === 'synced' && !topo.singleMember, `Synced same-origin + dolt-ok must pass, got: ${JSON.stringify(topo)}`);
+});
+
+test('checkMemberTopology (synced): a member with a divergent origin URL is rejected, naming the member and precondition', async () => {
+    const topo = await checkMemberTopology({
+        members: ['m1', 'm2'],
+        mode: 'synced',
+        getOriginUrl: async (m) => (m === 'm1' ? 'git@github.com:acme/repo.git' : 'git@github.com:acme/OTHER.git'),
+        doltProbe: async () => 'ok',
+    });
+    check(!topo.ok, 'Synced mode MUST reject divergent origin URLs');
+    check(
+        /origin/i.test(topo.message) && topo.message.includes('m1') && topo.message.includes('m2') &&
+        topo.message.includes('OTHER'),
+        `Divergent-origin rejection must name members and the origin precondition, got: ${topo.message}`
+    );
+});
+
+test('checkMemberTopology (synced): a member with a failing dolt probe is rejected, naming the member and precondition', async () => {
+    const topo = await checkMemberTopology({
+        members: ['m1', 'm2'],
+        mode: 'synced',
+        getOriginUrl: async () => 'git@github.com:acme/repo.git',
+        doltProbe: async (m) => { if (m === 'm2') throw new Error('dolt: connection refused'); return 'ok'; },
+    });
+    check(!topo.ok, 'Synced mode MUST reject a failing dolt probe');
+    check(
+        topo.message.includes('m2') && /dolt/i.test(topo.message) && /connection refused/.test(topo.message),
+        `Failing-dolt rejection must name the member and the dolt precondition, got: ${topo.message}`
+    );
+});
+
+test('checkMemberTopology (legacy regression): same-HEAD is STILL enforced -- differing HEADs refuse', async () => {
+    const topo = await checkMemberTopology({
+        members: ['m1', 'm2'],
+        mode: 'legacy',
+        getIdentity: async (m) => (m === 'm1' ? 'aaaaaaa' : 'bbbbbbb'),
+        // origin/dolt probes must be irrelevant in legacy mode even if provided.
+        getOriginUrl: async () => 'git@github.com:acme/repo.git',
+        doltProbe: async () => 'ok',
+    });
+    check(!topo.ok && topo.mode === 'legacy', 'Legacy mode MUST still refuse differing HEADs');
+    check(
+        topo.message.includes('m1') && topo.message.includes('m2'),
+        `Legacy same-HEAD refusal must name the divergent members, got: ${topo.message}`
+    );
+});
+
+test('checkMemberTopology (legacy default): omitting mode keeps the same-HEAD contract', async () => {
+    const agree = await checkMemberTopology({ members: ['m1', 'm2'], getIdentity: async () => 'deadbeef' });
+    check(agree.ok && agree.mode === 'legacy', `Default (no mode) must be legacy and pass on matching HEADs, got: ${JSON.stringify(agree)}`);
+});
+
+test('checkMemberTopology: an unknown mode is an explicit hard refusal, not a silent fallback', async () => {
+    const topo = await checkMemberTopology({ members: ['m1', 'm2'], mode: 'wild', getIdentity: async () => 'x' });
+    check(!topo.ok && /unknown topology mode/i.test(topo.message), `Unknown mode must refuse explicitly, got: ${JSON.stringify(topo)}`);
+});
+
+// =============================================================================
 // apra-fleet-unw2.22 (N12 follow-up) regression 1: the harvester
 // contract check must genuinely fail when analysisText/costAnalysis/
 // analysisArtifactFile are blank, not merely check for the STATIC

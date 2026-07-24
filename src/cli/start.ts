@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { checkRunningInstance } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
-import { LOG_FILE_PATH, FLEET_DIR } from '../paths.js';
+import { LOG_FILE_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { BIN_DIR } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -39,7 +39,11 @@ export async function runStart(_args: string[]): Promise<void> {
   const svcMgr = await getServiceManager();
   const installed = await svcMgr.isInstalled();
 
-  if (installed) {
+  // A sandboxed instance (non-default port or data dir) must never touch the
+  // machine-global service registration -- always direct-spawn instead of
+  // calling svcMgr.start(), even when the service manager reports installed.
+  // See apra-fleet-eft.51.
+  if (installed && !isNonDefaultInstance()) {
     await svcMgr.start();
     console.log('Server starting via service manager...');
   } else {

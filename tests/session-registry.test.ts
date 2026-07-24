@@ -118,6 +118,81 @@ describe('sessionRegistry', () => {
     expect(current?.status).toBe('busy');
   });
 
+  // apra-fleet-eft.50.1: the durable launch-pid anchor that outlives the
+  // SessionState churn (register -> unregister -> reconnect/re-register) a
+  // persistent interactive member goes through across dispatch retries. It is
+  // the liveness fallback of last resort for execute_prompt's dead-session
+  // guard, so a dead launch-time process on retry attempt 2+ is still
+  // detectable even after a reconnect re-registered the live session with
+  // pid=undefined. Every case here uses a workspace/member unique to the test
+  // because lastPids is deliberately NEVER cleared on unregister -- that churn
+  // is exactly what it is designed to outlive.
+  describe('lastKnownPid (apra-fleet-eft.50.1)', () => {
+    it('register() with a pid records it as the lastKnownPid', () => {
+      register(makeState({ member_id: 'm-lkp-rec', workspace_id: 'ws-lkp-1', pid: 5150 }));
+      expect(sessionRegistry.lastKnownPid('ws-lkp-1', 'm-lkp-rec')).toBe(5150);
+    });
+
+    it('returns undefined for a member that never had a pid captured (pre-existing behavior unchanged)', () => {
+      register(makeState({ member_id: 'm-lkp-none', workspace_id: 'ws-lkp-2' }));
+      expect(sessionRegistry.lastKnownPid('ws-lkp-2', 'm-lkp-none')).toBeUndefined();
+    });
+
+    it('PERSISTS after unregister() -- the live SessionState is gone but the launch-pid anchor survives', () => {
+      register(makeState({ member_id: 'm-lkp-persist', workspace_id: 'ws-lkp-3', pid: 8080 }));
+      sessionRegistry.unregister('ws-lkp-3', 'm-lkp-persist');
+
+      // The live session is gone ...
+      expect(sessionRegistry.get('ws-lkp-3', 'm-lkp-persist')).toBeUndefined();
+      // ... but the durable anchor still remembers the dead process's pid, so a
+      // later reconnect + retry can still detect that it is dead.
+      expect(sessionRegistry.lastKnownPid('ws-lkp-3', 'm-lkp-persist')).toBe(8080);
+    });
+
+    it('is NOT overwritten when the member re-registers (reconnects) with pid=undefined -- the exact eft.50 reconnect-loses-pid path', () => {
+      // Attempt 1: registered with a real launch-time pid.
+      register(makeState({ member_id: 'm-lkp-reconnect', workspace_id: 'ws-lkp-4', pid: 16031 }));
+      // Disconnect between attempts drops the live SessionState.
+      sessionRegistry.unregister('ws-lkp-4', 'm-lkp-reconnect');
+      // Reconnect on the retry re-registers WITHOUT a pid (the priorPid lookup
+      // found no entry, so pid=undefined) -- this used to blind the liveness
+      // check on attempt 2+.
+      register(makeState({ member_id: 'm-lkp-reconnect', workspace_id: 'ws-lkp-4' }));
+
+      // Live SessionState now has no pid ...
+      expect(sessionRegistry.get('ws-lkp-4', 'm-lkp-reconnect')?.pid).toBeUndefined();
+      // ... but the durable anchor still points at the original (now dead) pid.
+      expect(sessionRegistry.lastKnownPid('ws-lkp-4', 'm-lkp-reconnect')).toBe(16031);
+    });
+
+    it('is overwritten only by a NEWER pid registered for the same member', () => {
+      register(makeState({ member_id: 'm-lkp-new', workspace_id: 'ws-lkp-5', pid: 100 }));
+      expect(sessionRegistry.lastKnownPid('ws-lkp-5', 'm-lkp-new')).toBe(100);
+
+      // A fresh re-dispatch spawns a new process with a new pid -- the anchor
+      // moves forward to it.
+      register(makeState({ member_id: 'm-lkp-new', workspace_id: 'ws-lkp-5', pid: 200 }));
+      expect(sessionRegistry.lastKnownPid('ws-lkp-5', 'm-lkp-new')).toBe(200);
+    });
+
+    it('setPid() keeps the durable anchor in step with the live session pid', () => {
+      register(makeState({ member_id: 'm-lkp-setpid', workspace_id: 'ws-lkp-6' }));
+      expect(sessionRegistry.lastKnownPid('ws-lkp-6', 'm-lkp-setpid')).toBeUndefined();
+
+      sessionRegistry.setPid('ws-lkp-6', 'm-lkp-setpid', 4321);
+      expect(sessionRegistry.get('ws-lkp-6', 'm-lkp-setpid')?.pid).toBe(4321);
+      expect(sessionRegistry.lastKnownPid('ws-lkp-6', 'm-lkp-setpid')).toBe(4321);
+    });
+
+    it('is scoped by workspace -- the same member_id in a different workspace has its own anchor', () => {
+      register(makeState({ member_id: 'shared-lkp', workspace_id: 'ws-lkp-7a', pid: 111 }));
+      register(makeState({ member_id: 'shared-lkp', workspace_id: 'ws-lkp-7b', pid: 222 }));
+
+      expect(sessionRegistry.lastKnownPid('ws-lkp-7a', 'shared-lkp')).toBe(111);
+      expect(sessionRegistry.lastKnownPid('ws-lkp-7b', 'shared-lkp')).toBe(222);
+    });
+  });
+
   describe('findBySessionId (apra-fleet-2xs.7)', () => {
     it('finds the session owning a given MCP transport sessionId', () => {
       register(makeState({ member_id: 'm-find', workspace_id: 'ws-find', sessionId: 'sid-find-1' }));

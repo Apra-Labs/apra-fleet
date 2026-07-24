@@ -63,6 +63,19 @@ describe('ClaudeProvider', () => {
     expect(cmd).toContain('--max-turns 50');
     expect(cmd).not.toContain('--resume');
     expect(cmd).not.toContain('--dangerously-skip-permissions');
+    // apra-fleet-eft.65.1: the default (no explicit unattended mode) headless
+    // dispatch grants Edit/Write parity for the work folder via acceptEdits.
+    expect(cmd).toContain('--permission-mode acceptEdits');
+  });
+
+  it('builds prompt command with unattended=false grants work-folder edit parity, not the broad bypass', () => {
+    const cmd = p.buildPromptCommand({ ...BASE_OPTS, unattended: false });
+    expect(cmd).toContain('--permission-mode acceptEdits');
+    expect(cmd).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('workspaceEditPermissionFlag returns the surgical acceptEdits flag', () => {
+    expect(p.workspaceEditPermissionFlag()).toBe('--permission-mode acceptEdits');
   });
 
   it('builds prompt command with new session using --session-id', () => {
@@ -161,6 +174,55 @@ describe('ClaudeProvider', () => {
     const resp = p.parseResponse(makeResult(JSON.stringify({ result: 'done', session_id: 'sid-1' })));
     expect(resp.subtype).toBeUndefined();
     expect(resp.terminalReason).toBeUndefined();
+  });
+
+  // apra-fleet-eft.28.6: server-side output-extraction loss. The final
+  // `type:result` event can come back with session_id present but an EMPTY
+  // result field, even though the assistant reply (incl. tool output) is fully
+  // present in the preceding `type:assistant` events. The reply text must be
+  // recovered from the stream, not dropped and mislabelled empty_response.
+  it('recovers assistant text from a JSONL stream when the result event text is blank (session_id still parses)', () => {
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-recover' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Here is the full ' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'bash' }, { type: 'text', text: 'answer.' }] } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: '', session_id: 'sid-recover', usage: { input_tokens: 5, output_tokens: 7 } }),
+    ].join('\n');
+    const resp = p.parseResponse(makeResult(stream));
+    expect(resp.result).toBe('Here is the full answer.');
+    expect(resp.sessionId).toBe('sid-recover');
+    expect(resp.isError).toBe(false);
+    expect(resp.usage).toEqual({ input_tokens: 5, output_tokens: 7 });
+  });
+
+  it('recovers assistant text from a JSON-array stream when the result event text is blank', () => {
+    const events = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'array reply' }] } },
+      { type: 'result', subtype: 'success', result: '', session_id: 'sid-arr' },
+    ];
+    const resp = p.parseResponse(makeResult(JSON.stringify(events)));
+    expect(resp.result).toBe('array reply');
+    expect(resp.sessionId).toBe('sid-arr');
+  });
+
+  it('prefers the result event text over harvested assistant text when it is non-empty (happy path unchanged)', () => {
+    const stream = [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'intermediate thinking' }] } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'final answer', session_id: 'sid-happy' }),
+    ].join('\n');
+    const resp = p.parseResponse(makeResult(stream));
+    expect(resp.result).toBe('final answer');
+    expect(resp.sessionId).toBe('sid-happy');
+  });
+
+  it('yields a genuinely empty result (no assistant text, blank result event) so the caller surfaces empty_response, not a silent success', () => {
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-empty' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: '', session_id: 'sid-empty' }),
+    ].join('\n');
+    const resp = p.parseResponse(makeResult(stream));
+    expect(resp.result).toBe('');
+    expect(resp.sessionId).toBe('sid-empty');
   });
 
   it('supports resume and maxTurns', () => {
@@ -916,8 +978,8 @@ describe('AgyProvider', () => {
 
   it('builds prompt command with defaults', () => {
     const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md' });
-    expect(cmd).toContain('agy -p');
-    expect(cmd).not.toContain('--model');
+    expect(cmd).toContain('agy --model');
+    expect(cmd).toContain('-p');
     expect(cmd).not.toContain('--conversation');
     expect(cmd).not.toContain('--dangerously-skip-permissions');
   });

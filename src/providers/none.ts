@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 
@@ -123,5 +123,12 @@ export class NoneProvider implements ProviderAdapter {
 
   headlessInvocation(_promptLiteral: string): string {
     throw new Error(NO_LLM_ERROR);
+  }
+
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+    // No-LLM members have no CLI and no trust concept whatsoever. No-op (unlike other
+    // methods on this class, this one is reachable from call sites that iterate all
+    // members regardless of provider, so it returns a plain no-op rather than throwing).
+    return { seeded: false, detail: 'none: no LLM provider, no trust concept' };
   }
 }

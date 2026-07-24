@@ -22,6 +22,8 @@ dashboard.
 | `src/workflow/vetting.mjs` | `VettingEngine` -- an advisory (non-blocking by default) heuristic scan of a script's source for review purposes. |
 | `src/viewer/index.mjs` | `createDashboardViewer()` -- an HTTP server + Server-Sent-Events dashboard that visualizes a running `FleetWorkflow` in real time. |
 | `src/viewer/html-utils.mjs` | `escapeHtml()` -- the single shared HTML-escaping implementation used by both the core viewer and any dashboard extension. |
+| `src/viewer/debounced-writer.mjs` | Coalesced, atomic, flush-on-exit continuous state persistence -- see "Continuous state persistence" below. |
+| `src/viewer/sprint-state-paths.mjs` | Path resolution for a sprint's continuous state file, keyed by a stable sprint id (`running/<id>.json` while live, moved to `old_sprints/<id>.json` on completion). |
 
 The package's `exports` map (see `package.json`) exposes four import paths:
 
@@ -409,3 +411,30 @@ exactly one escaping implementation to get right rather than a hand-copied one p
 extension. Any extension that writes LLM- or user-authored text (activity output, external
 record titles/descriptions, etc.) into `innerHTML` must route it through this shared
 `escapeHtml()` the same way the core template does.
+
+### Lean polling for large state (many activities/tasks)
+
+`GET /state` is polled on every `/events` message for the lifetime of a run, so its payload
+size directly drives recurring network/render cost -- this becomes a real problem on a
+sprint with hundreds of activities or a large extension-owned task tree, where every item's
+full text (e.g. a bead's complete description) would otherwise be re-sent on every poll
+whether or not the client is currently looking at it. The fix is a lean/full split, not a
+size cap or truncation-by-byte-count:
+
+- The `/state` payload strips extension-owned items down to a short, cheap-to-render
+  `summary` field in place of their full text, keeping the recurring poll payload small
+  regardless of total activity/task count.
+- A separate on-demand endpoint serves one item's full text by id, read from the live,
+  full-fidelity in-memory state object (never from the leaned payload) -- this is the
+  client's only way to recover full text, fetched lazily (e.g. on expand) and cached
+  client-side (e.g. in `localStorage`) so repeatedly expanding the same item costs one fetch,
+  not one per render.
+- This lean/full split is a convention an extension opts into deliberately for whatever
+  field is large and rarely needed in full at a glance -- the core viewer and `lean-state`
+  helper stay extension-agnostic; only the extension that owns the field's shape knows how
+  to summarize it and how to look one back up by id.
+
+Any dashboard extension carrying items with potentially large per-item text (descriptions,
+transcripts, long log bodies) at meaningful scale should follow this same lean-list +
+on-demand-full-fetch + client-side-cache pattern rather than shipping full text in every
+poll response.

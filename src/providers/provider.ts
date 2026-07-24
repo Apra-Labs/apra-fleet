@@ -67,6 +67,22 @@ export interface RegisterMcpEndpointResult {
   detail: string;
 }
 
+/** Delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted} -- the SAME
+ *  channel compose_permissions' deliverConfigFile already uses (AgentStrategy.execCommand:
+ *  SSH for remote members, local shell exec for local members). Kept as a narrow function
+ *  type (rather than importing AgentStrategy) so providers.ts has no dependency on
+ *  services/strategy.ts. */
+export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
+
+export interface EnsureWorkspaceTrustedResult {
+  /** true only when this call just wrote hasTrustDialogAccepted=true because it was
+   *  missing. false when the provider no-ops, or when trust was already present. */
+  seeded: boolean;
+  /** Human-readable detail for logging/audit (apra-fleet-eft.40.1: "log distinctly
+   *  when it SEEDS trust vs finds it already present"). */
+  detail: string;
+}
+
 export interface ProviderAdapter {
   readonly name: LlmProvider;
   readonly processName: string;
@@ -87,6 +103,14 @@ export interface ProviderAdapter {
   skipPermissionsFlag(): string;
   /** Returns the CLI flag for unattended='auto', or null if the provider does not support it. */
   permissionModeAutoFlag(): string | null;
+  /** apra-fleet-eft.65.1: CLI flag that grants the dispatched agent Edit/Write
+   *  parity for its OWN work folder when running headless with no explicit
+   *  unattended mode (a headless `-p` dispatch cannot present a permission prompt,
+   *  so file edits of a brand-new file would otherwise hard-block). Scoped to
+   *  file-edit tools on the working directory -- it must NOT broaden Bash/network
+   *  permissions the way skipPermissionsFlag() does. Optional: providers that have
+   *  no such surgical flag omit it (undefined), leaving current behavior unchanged. */
+  workspaceEditPermissionFlag?(): string | null;
 
   // Response parsing
   parseResponse(result: SSHExecResult): ParsedResponse;
@@ -140,6 +164,17 @@ export interface ProviderAdapter {
    *  implemented -- see docs/member-onboarding-journey.md section 3/3a.
    *  Returns what was done, for logging/audit. */
   registerMcpEndpoint?(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult>;
+
+  /** Idempotently ensures `workFolder` is a TRUSTED workspace so this provider honors
+   *  composed project-scoped permissions on the member (apra-fleet-eft.40 -- an unattended
+   *  member can never click a trust dialog, and its work folder is fleet-managed by
+   *  definition, so trust must be seeded programmatically). Scoped STRICTLY to exactly
+   *  `workFolder` as resolved on the member -- never a parent directory, never blanket.
+   *  `execCommand` is the delivery channel (same one compose_permissions' deliverConfigFile
+   *  uses), so this works uniformly for local and remote (SSH) members. Non-Claude
+   *  providers no-op -- see each implementation's rationale comment (apra-fleet-eft.40
+   *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`. */
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

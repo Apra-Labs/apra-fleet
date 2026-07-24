@@ -1,5 +1,22 @@
 # CLI Reference
 
+## INTERNAL USE ONLY -- Unsupported for Direct Invocation
+
+WARNING: The `cli.mjs` entry point below is an **internal implementation
+detail** used exclusively by the Fleet supervisor process to orchestrate
+agent workflows. It is **NOT** a supported user-facing interface and direct
+manual invocation is unsupported.
+
+**Hazard:** Running `cli.mjs` directly bypasses the reservation ledger, which
+tracks which members are currently executing work and prevents concurrent
+conflicting workflows. Manual CLI invocation can cause race conditions, task
+corruption, and silent failures across the fleet.
+
+**Supported interfaces:** Use the **service HTTP API** and **web dashboard**
+instead (see docs/overview.md and parent README.md). The service API manages
+reservations correctly and is the only supported way for users to launch
+sprints.
+
 Entry point: `packages/apra-fleet-se/bin/cli.mjs` (installed as the
 `fleet-se sprint` command; also runnable directly with `node bin/cli.mjs`).
 
@@ -151,14 +168,15 @@ independent of the server-command resolution above:
    practice: the launcher sets it to `~/.apra-fleet/schemas` whenever it is
    unset (see `docs/authoring-workflows.md` Section 4/7), so `contracts.mjs`
    itself requires no code change for the installed-binary case.
-2. `dist/agents/schemas/` -- populated by the root package's `scripts/vendor-pm.mjs`
+2. `dist/agents/schemas/` -- populated by the root package's `scripts/dist-pm.mjs`
    at `prepublishOnly` (the same artifact `dist/auto-sprint.mjs` ships next to).
 3. `packages/apra-fleet-se/vendor/schemas/` -- a package-local copy inside
-   this package's own directory tree, populated by `scripts/vendor-schemas.mjs`.
-4. `vendor/apra-pm/agents/schemas/`, three levels up -- this monorepo's live
-   submodule checkout. Dev-convenience fallback only; emits a one-time
-   `console.warn` when used, since it does not exist in a packaged/installed
-   layout.
+   this package's own directory tree. Legacy layout: nothing populates it now
+   that apra-pm lives in this monorepo, so it normally does not exist.
+4. `packages/apra-fleet-se/apra-pm/agents/schemas/`, three levels up -- the
+   apra-pm package in this monorepo. Dev-convenience fallback only; emits a
+   one-time `console.warn` when used, since it does not exist in a
+   packaged/installed layout.
 
 If none of the four resolve, every role falls back to a hand-written literal
 schema shipped inside `contracts.mjs` itself (a deliberate, permanent

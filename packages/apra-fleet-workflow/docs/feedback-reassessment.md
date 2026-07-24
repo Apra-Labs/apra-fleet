@@ -10,7 +10,7 @@ branch `tmp/unw13-vendor-agent-defs`, unpushed), not from the outer repo's stale
 submodule pointer.
 
 Paths: `WF` = `packages/apra-fleet-workflow`, `SE` = `packages/apra-fleet-se`,
-`CL` = `packages/apra-fleet-client`, `VP` = `wt-unw13/vendor/apra-pm`.
+`CL` = `packages/apra-fleet-client`, `VP` = `wt-unw13/packages/apra-fleet-se/apra-pm`.
 
 Verification note: both test suites were executed during this review and passed
 (`WF`: 86/86; `SE`: 95/95 plus the standalone mock-runner script, exit 0). Every
@@ -303,7 +303,7 @@ contract test against the candidate submodule commit".
 **Severity: HIGH**
 
 `SE/auto-sprint/contracts.mjs` `loadVendorSchema(role)` looks up
-`vendor/apra-pm/agents/schemas/<role>.json` (contracts.mjs:221-228, 407-413), but the
+`packages/apra-fleet-se/apra-pm/agents/schemas/<role>.json` (contracts.mjs:221-228, 407-413), but the
 vendored files were renamed to `<role>-output.json` (`VP` commits 7d99cdb/352a5c8). The
 consumer-side rename is still in adversarial review (unmerged), so on the CURRENT merged
 tree, even after a submodule bump the output-schema loader would find nothing and fall
@@ -318,7 +318,7 @@ degradation state. Three compounding structural problems:
    (new optional field, tightened enum), the fallback literal diverges and nothing
    catches it -- the version-pin check only fires on a MAJOR bump, and only when the
    file is actually found. The fixture snapshot
-   (`SE/test/fixtures/vendor-apra-pm-schemas/`) still uses the OLD file names
+   (`SE/test/fixtures/apra-pm-schemas/`) still uses the OLD file names
    (`reviewer.json`, not `reviewer-output.json`), i.e. the test net is pinned to the
    pre-rename layout and would keep passing after the bump while production silently
    used fallbacks.
@@ -329,7 +329,7 @@ degradation state. Three compounding structural problems:
 **Fix direction:** after the submodule bump lands, invert the default: a role listed in
 ROLES whose expected output-schema file is absent should throw (or at minimum
 console.warn + emit an event), with an explicit allowlist for roles that legitimately
-have none (planner). Add a test that, when `vendor/apra-pm/agents/schemas/` exists,
+have none (planner). Add a test that, when `packages/apra-fleet-se/apra-pm/agents/schemas/` exists,
 asserts (a) every resolved SCHEMAS entry came from a vendored file, and (b) each
 fallback literal deep-equals its vendored counterpart (fail = update the literal in the
 same commit as the bump). Regenerate the fixture from the vendored dir mechanically, not

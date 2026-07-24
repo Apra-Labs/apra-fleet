@@ -42,6 +42,12 @@ export interface Agent {
   modelTiers?: { cheap?: string; standard?: string; premium?: string };
   category?: string;
   tags?: string[];
+  /** sprintId that currently reserves this member for exclusive dispatch, or
+   *  null/absent when unreserved. Server-side reservation authority
+   *  (apra-fleet-eft.10) -- closes the manual-CLI bypass around the
+   *  service-local supervisor ledger. Set/enforced by later eft.10.x tasks;
+   *  this field only introduces and persists the value. */
+  reservedBy?: string | null;
 }
 
 export interface GitHubAppConfig {

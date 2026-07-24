@@ -9,16 +9,15 @@
     "node": ">=22.0.0"
   },
   "bin": {
-    "auto-sprint": "./bin/cli.mjs"
+    "auto-sprint": "./bin/cli.mjs",
+    "fleet-se-serve": "./bin/serve.mjs"
   },
   "scripts": {
     "test": "node --test --test-reporter=./test/helpers/timestamped-reporter.mjs --test-reporter-destination=stdout --test-concurrency=8 test/*.test.mjs",
     "test:unit": "node scripts/run-tests.mjs mock",
     "test:integration": "node scripts/run-tests.mjs real",
     "test:record": "node scripts/run-tests.mjs record",
-    "update-golden": "node -e \"require('child_process').execFileSync(process.execPath,['--test','test/golden-transcript.test.mjs'],{stdio:'inherit',env:{...process.env,UPDATE_GOLDEN:'1'}})\"",
-    "vendor-schemas": "node scripts/vendor-schemas.mjs",
-    "vendor-schemas:check": "node scripts/vendor-schemas.mjs --check"
+    "update-golden": "node -e \"require('child_process').execFileSync(process.execPath,['--test','test/golden-transcript.test.mjs'],{stdio:'inherit',env:{...process.env,UPDATE_GOLDEN:'1'}})\""
   },
   "dependencies": {
     "@apralabs/apra-fleet-workflow": "*",

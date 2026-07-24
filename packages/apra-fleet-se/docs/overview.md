@@ -16,6 +16,21 @@ viewer, the journal) is generic and documented in
 `packages/apra-fleet-workflow/docs/`; this package's docs describe how
 auto-sprint specifically uses those primitives.
 
+**The per-sprint CLI is not the supported entry point for end users.** An
+always-on supervisor process (`fleet-se serve`) owns a reservation ledger
+(which members and which issue-scope are already claimed by a running
+sprint) and launches each sprint as a detached child running the same CLI
+underneath. Users launch and watch sprints through the supervisor's HTTP API
+and web dashboard (a sprint-stack view of everything running, a backlog tree
+of everything free, and a launch form), never by invoking the CLI directly --
+direct CLI invocation bypasses the reservation ledger entirely and is an
+internal implementation detail, not a supported workflow. See
+`docs/architecture.md`'s "Supervisor" sections for the process model and
+`docs/architecture.md`'s "Multi-member topology" sections for how a sprint
+whose members are genuinely separate checkouts keeps their git and beads
+state reconciled via orchestrator-bracketed sync brackets, as opposed to the
+simpler shared-workspace mode that needs no such reconciliation.
+
 ## Mental model
 
 A sprint is scoped to one or more beads issues (the `--issue` root(s)) and
@@ -100,6 +115,6 @@ explicitly).
 | `ci-watcher` | Not dispatched by this runner today (contract exists in `contracts.mjs`/vendor for future use) | -- | -- |
 
 Each role's full behavioral contract (what it reads, what it does, what it
-must return) lives in the vendored `vendor/apra-pm/agents/<role>.md` files;
+must return) lives in the vendored `packages/apra-fleet-se/apra-pm/agents/<role>.md` files;
 see `docs/role-contracts.md` in this folder for how this package consumes
 those definitions.

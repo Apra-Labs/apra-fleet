@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { pidWrapUnix } from '../../src/os/linux.js';
 import { pidWrapWindows } from '../../src/os/windows.js';
 import { LinuxCommands } from '../../src/os/linux.js';
@@ -103,12 +103,88 @@ describe('pidWrapUnix execution', () => {
 describe('LinuxCommands.killPid', () => {
   const cmds = new LinuxCommands();
 
-  it('returns kill -9 command with the given PID', () => {
-    expect(cmds.killPid(1234)).toBe('kill -9 1234');
+  it('kills the given PID', () => {
+    // The recursive tree-killer indirects through "$1" rather than
+    // interpolating the literal pid into the `kill -9` call; the literal
+    // pid instead appears at the top-level `_fleet_kill_tree <pid>` call site.
+    const out = cmds.killPid(1234);
+    expect(out).toContain('_fleet_kill_tree 1234');
+    expect(out).toContain('kill -9 "$1"');
   });
 
   it('works for PID 1', () => {
-    expect(cmds.killPid(1)).toBe('kill -9 1');
+    const out = cmds.killPid(1);
+    expect(out).toContain('_fleet_kill_tree 1');
+    expect(out).toContain('kill -9 "$1"');
+  });
+
+  it('recurses into descendants via pgrep -P before killing the pid', () => {
+    const out = cmds.killPid(1234);
+    expect(out).toContain('pgrep -P "$1"');
+    const treeIdx = out.indexOf('_fleet_kill_tree "$_fleet_child"');
+    const killIdx = out.lastIndexOf('kill -9 "$1"');
+    expect(treeIdx).toBeGreaterThanOrEqual(0);
+    expect(killIdx).toBeGreaterThan(treeIdx);
+  });
+
+  it('is best-effort -- never throws even if the tree is already gone', () => {
+    const out = cmds.killPid(1234);
+    expect(out).toContain('2>/dev/null');
+    expect(out.trim().endsWith('; true')).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('terminates a backgrounded descendant, not just the top-level pid', async () => {
+    // Mirror the real scenario this fix targets: a CLI invocation whose
+    // shell keeps running (via pidWrapUnix's own `{ cmd; } & ... wait`
+    // shape) while `cmd` itself backgrounds a further child (e.g. a doer's
+    // fixed-port dev/test server started with `&`) and does NOT exit --
+    // `sleep 30 & wait` forces a real subshell (no single-simple-command
+    // exec optimization), so the captured FLEET_PID is the parent of a real
+    // `sleep` grandchild.
+    const wrapped = pidWrapUnix('sleep 30 & wait');
+    const proc = spawn('bash', ['-c', wrapped], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+    try {
+      const pid: number = await new Promise((resolve, reject) => {
+        let buf = '';
+        const onData = (chunk: Buffer) => {
+          buf += chunk.toString();
+          const m = /^FLEET_PID:(\d+)/m.exec(buf);
+          if (m) {
+            proc.stdout?.off('data', onData);
+            resolve(parseInt(m[1], 10));
+          }
+        };
+        proc.stdout?.on('data', onData);
+        proc.on('error', reject);
+        setTimeout(() => reject(new Error('timed out waiting for FLEET_PID')), 5000);
+      });
+      expect(pid).toBeGreaterThan(0);
+
+      // Poll until the `sleep` grandchild actually shows up under `pid`.
+      let grandchildPid = 0;
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && !grandchildPid) {
+        const pgrep = spawnSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' });
+        const found = parseInt((pgrep.stdout || '').trim().split('\n')[0], 10);
+        if (found > 0) grandchildPid = found;
+      }
+      expect(grandchildPid).toBeGreaterThan(0);
+
+      spawnSync('bash', ['-c', cmds.killPid(pid)], { encoding: 'utf8', timeout: 2000 });
+
+      // Both the subshell (`pid`) and the backgrounded `sleep` grandchild
+      // must be gone -- proving the tree-kill recursed past the immediate
+      // pid instead of leaving the backgrounded descendant orphaned to
+      // keep holding whatever port/resource it opened.
+      const pidAlive = spawnSync('kill', ['-0', String(pid)]).status === 0;
+      const grandchildAlive = spawnSync('kill', ['-0', String(grandchildPid)]).status === 0;
+      expect(pidAlive).toBe(false);
+      expect(grandchildAlive).toBe(false);
+    } finally {
+      // Best-effort cleanup in case an assertion threw before the kill.
+      try { process.kill(proc.pid!, 'SIGKILL'); } catch { /* already gone */ }
+    }
   });
 });
 

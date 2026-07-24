@@ -12,6 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
+import { ClaudeProvider } from '../src/providers/claude.js';
+import { GeminiProvider } from '../src/providers/gemini.js';
 import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -787,6 +789,89 @@ describe('composePermissions -- tag-aware: primary mode = first mode tag', () =>
 // ---------------------------------------------------------------------------
 // Fresh/empty permissions.json -- no crash (#88)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// apra-fleet-eft.40.2 -- ensureWorkspaceTrusted invoked on every compose_permissions
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)', () => {
+  it('calls ensureWorkspaceTrusted with the resolved work_folder on proactive compose (Claude)', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux');
+    spy.mockRestore();
+  });
+
+  it('calls ensureWorkspaceTrusted on reactive grant compose too', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(docker:*)'] });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux');
+    spy.mockRestore();
+  });
+
+  it('does NOT call ensureWorkspaceTrusted when a dangerous grant is blocked before any delivery', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(sudo:*)'] });
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('self-heals a previously-registered member: a never-trusted work folder gets trust seeded via compose_permissions', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
+    addAgent(member);
+
+    // No ~/.claude.json on the member yet (fresh/never-trusted), and all other
+    // exec calls (mkdir/detect stacks/deliver config) succeed trivially.
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('.claude.json')) return { stdout: '', stderr: '', code: 0 };
+      return OK;
+    });
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const trustWrite = allCmds.find(cmd => cmd.includes('FLEET_TRUST_EOF'));
+    expect(trustWrite).toBeDefined();
+    const heredocMatch = trustWrite!.match(/<< 'FLEET_TRUST_EOF'\n([\s\S]*?)\nFLEET_TRUST_EOF/);
+    const written = JSON.parse(heredocMatch![1]);
+    expect(written.projects['/home/testuser/project'].hasTrustDialogAccepted).toBe(true);
+  });
+
+  it('is a no-op for non-Claude providers (e.g. Gemini) -- never touches the trust delivery channel', async () => {
+    const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const spy = vi.spyOn(GeminiProvider.prototype, 'ensureWorkspaceTrusted');
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(allCmds.some(cmd => cmd.includes('.claude.json') || cmd.includes('FLEET_TRUST_EOF'))).toBe(false);
+    spy.mockRestore();
+  });
+});
 
 describe('composePermissions -- fresh/empty permissions.json', () => {
   it('does not crash when permissions.json exists but contains only {}', async () => {

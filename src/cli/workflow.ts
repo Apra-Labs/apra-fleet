@@ -403,15 +403,34 @@ export async function runWorkflow(argv: string[], depsOverride?: Partial<Workflo
   }
 
   // --- Fleet-server reachability (docs/adr-workflow-server-resolution.md).
+  // Probe with the caller's REAL env first: the shared resolver reads a set
+  // APRA_FLEET_SERVER_BIN as an *explicit stdio request* and skips the
+  // HTTP-singleton probe entirely, so injecting the launcher's own default
+  // into this probe meant `apra-fleet workflow` could never attach to a
+  // running singleton (apra-fleet-eft.61). Only when the unmodified probe
+  // fails (bare home: no singleton, no dev-monorepo dist/ -- the case behind
+  // the old "could not resolve the fleet server" false positive on green CI
+  // build-binary smoke runs) do we retry with the serverBin default, which is
+  // exactly what applyEnvDefaults() hands the workflow child on that path.
   let mode: string | null = null;
   try {
-    const resolution = await deps.resolveConnection(deps.env);
+    const resolution = await deps.resolveConnection({ ...deps.env });
     mode = resolution.mode;
     deps.log(`[workflow] fleet server: ${resolution.reason}`);
-  } catch (err) {
-    // Not fatal: plenty of workflows never talk to the server (hello-world). The
-    // workflow's own connect will fail with its own message if it does need one.
-    deps.warn(`[warn] could not resolve the fleet server: ${(err as Error).message}`);
+  } catch (firstErr) {
+    const canDefaultServerBin =
+      !deps.env.APRA_FLEET_SERVER_BIN && !deps.env.APRA_FLEET_SERVER_CMD;
+    try {
+      if (!canDefaultServerBin) throw firstErr;
+      const fallbackEnv = { ...deps.env, APRA_FLEET_SERVER_BIN: deps.serverBin };
+      const resolution = await deps.resolveConnection(fallbackEnv);
+      mode = resolution.mode;
+      deps.log(`[workflow] fleet server: ${resolution.reason}`);
+    } catch (err) {
+      // Not fatal: plenty of workflows never talk to the server (hello-world). The
+      // workflow's own connect will fail with its own message if it does need one.
+      deps.warn(`[warn] could not resolve the fleet server: ${(err as Error).message}`);
+    }
   }
 
   applyEnvDefaults(deps, mode);
@@ -428,7 +447,21 @@ export async function runWorkflow(argv: string[], depsOverride?: Partial<Workflo
       const fn = [mod.main, mod.run, mod.default].find((f) => typeof f === 'function') as
         | ((args: string[]) => unknown)
         | undefined;
-      if (fn) await fn(passthrough);
+      if (fn) {
+        await fn(passthrough);
+      } else {
+        // apra-fleet-eft.41.2: a module that neither self-executes nor exports a
+        // callable entry used to fall through here silently, RETURNing 0 having
+        // done nothing -- the worst failure mode (a no-op reported as success).
+        // This is a defense-in-depth backstop even after the cli.mjs
+        // isMainModule() fix (apra-fleet-eft.41.1): fail loud instead.
+        deps.error(
+          `Error: workflow "${name}" entry (${entry}) did not execute: it neither sets ` +
+            `"export const selfExecuting = true" nor exports a callable main/run/default. ` +
+            `Nothing happened.`,
+        );
+        return 1;
+      }
     }
   } catch (err) {
     const e = err as Error;

@@ -286,7 +286,16 @@ function buildRepairPrompt(errorsText) {
  * @property {string} [member_name] - Apra-fleet member to dispatch to
  * @property {string} [member_id] - Specific member UUID
  * @property {Record<string, string>} [substitutions] - Template substitutions for prompt
- * @property {number} [timeout_s] - Execution timeout
+ * @property {number} [timeout_s] - Execution timeout (server-side INACTIVITY timeout:
+ *   resets on every output chunk from the member CLI)
+ * @property {number} [max_total_s] - Server-side HARD wall-clock ceiling for the dispatch,
+ *   independent of activity. Also drives the derived client-side request timeout:
+ *   deriveTimeoutMs (packages/apra-fleet-client/src/client/api.mjs) prefers max_total_s
+ *   over timeout_s, so omitting it here caps the whole dispatch at timeout_s+grace
+ *   client-side even when the caller intended a much larger total budget. Observed live
+ *   (stabilization log Issue 10): this option was silently DROPPED from the payload, so a
+ *   legitimate 15+ minute reviewer dispatch was client-timed-out at 930s while the remote
+ *   session kept running.
  * @property {number} [max_turns] - Max turns for conversational tools
  * @property {'low'|'medium'|'high'|'xhigh'|'max'} [effort] - Effort parameter for fleet routing
  * @property {string} [agentType] - Agent persona to activate on the member
@@ -314,6 +323,24 @@ function buildRepairPrompt(errorsText) {
  *   plus a corrected-JSON instruction, not a re-embedding of the full original prompt/output.
  *   Each attempt emits its own activity:start/activity:end pair and is cost-accounted
  *   individually. (apra-fleet-unw.8)
+ * @property {number} [busyWaitMs] - How long (ms) to keep waiting-and-retrying when the
+ *   fleet server reports the member is busy ("execute_prompt is already running") before
+ *   surfacing the busy AgentDispatchError. Defaults to 10 minutes. A busy member is
+ *   almost always TRANSIENT-but-slow: observed live, a client-side transport drop
+ *   orphans the in-flight remote session, which keeps running (and holding the member's
+ *   one-dispatch-at-a-time lock) for however long its work takes -- minutes, not
+ *   seconds -- then completes and releases the lock. A blind fixed backoff loses that
+ *   race; polling until the lock actually frees wins it. Set 0 to disable (immediate
+ *   throw, the pre-existing behavior). Each poll is a cheap re-dispatch attempt (the
+ *   server rejects busy calls in milliseconds with no side effects).
+ * @property {number} [busyPollMs] - Poll interval (ms) for the busy-wait above. Default 15s.
+ * @property {string} [sprint_id] - Opaque sprint identity to pass straight through to
+ *   execute_prompt's server-side reservation check (apra-fleet-eft.29.1). Callers that
+ *   also reserve members via member_reservation (e.g. auto-sprint's
+ *   createMemberReservationClient) should pass the SAME token here so a dispatch from
+ *   the owning sprint is recognized as such even when the fleet server this call
+ *   dispatches through is a pre-existing shared singleton with no per-sprint
+ *   APRA_FLEET_SPRINT_ID of its own. Omit to preserve prior (env-var-only) behavior.
  */
 
 /**
@@ -749,9 +776,12 @@ export class FleetWorkflow extends EventEmitter {
                 member_id: opts.member_id,
                 substitutions: opts.substitutions,
                 timeout_s: opts.timeout_s,
+                max_total_s: opts.max_total_s,
                 max_turns: opts.max_turns,
                 effort: opts.effort,
                 agent: opts.agentType,
+                // apra-fleet-eft.29.1: pass-through opt-in, see AgentOptions.sprint_id above.
+                sprint_id: opts.sprint_id,
                 // F10: default to a self-contained (non-resumed) session for
                 // the INITIAL dispatch of a workflow-authored prompt. See
                 // AgentOptions.resume above and apra-fleet-unw.3.
@@ -772,7 +802,29 @@ export class FleetWorkflow extends EventEmitter {
             };
 
             try {
-                const result = await this.fleetApi.executePrompt(payload);
+                let result = await this.fleetApi.executePrompt(payload);
+
+                // Busy-wait (see AgentOptions.busyWaitMs): a busy member is
+                // transient-but-slow -- an orphaned prior session can hold
+                // the per-member dispatch lock for minutes before finishing.
+                // Poll (cheap, side-effect-free re-dispatch) until the lock
+                // frees or the budget runs out, instead of failing the whole
+                // step on the first busy rejection.
+                const busyWaitMs = opts.busyWaitMs ?? 600000;
+                const busyPollMs = opts.busyPollMs ?? 15000;
+                if (busyWaitMs > 0) {
+                    const busyDeadline = Date.now() + busyWaitMs;
+                    while (
+                        result && result.structuredContent && result.structuredContent.isError
+                        && result.structuredContent.reason === 'busy'
+                        && Date.now() < busyDeadline
+                        && !(payload.signal && payload.signal.aborted)
+                    ) {
+                        console.error(`[Agent Busy-Wait] member '${opts.member_name || opts.member_id}' is busy (a prior dispatch still holds its lock); retrying in ${Math.round(busyPollMs / 1000)}s (up to ${Math.round((busyDeadline - Date.now()) / 1000)}s left)...`);
+                        await new Promise((resolve) => setTimeout(resolve, busyPollMs));
+                        result = await this.fleetApi.executePrompt(payload);
+                    }
+                }
 
                 // execute_prompt's dispatch-level structuredContent (added
                 // alongside the display text -- see src/tools/execute-prompt.ts)
@@ -835,6 +887,32 @@ export class FleetWorkflow extends EventEmitter {
                         console.error(`[Agent API Error]`, text);
                         this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
                         throw new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } });
+                    }
+
+                    // Empty-response detection (observed live, apra-fleet-eft.14):
+                    // the fleet server can return success (exit 0, isError
+                    // absent) whose text is ONLY the display wrapper -- e.g.
+                    // exactly "\u{1F4CB} Response from <member>:\n\n" with an empty
+                    // parsed result (the member CLI produced no parseable
+                    // output; the server-side log line for such a dispatch
+                    // also lacks its usual in=/out= token counts). Feeding
+                    // that to schema extraction misclassifies it as "LLM
+                    // returned invalid JSON" (and its repair re-ask wastes a
+                    // dispatch); for no-schema calls it silently becomes a
+                    // garbage "successful" result. It is a DISPATCH-level
+                    // failure: surface it typed so callers' existing
+                    // AgentDispatchError handling (retry / degrade the
+                    // round) applies.
+                    const withoutWrapper = text
+                        .replace(/^\u{1F4CB} Response from [^\n:]+:\s*/u, '')
+                        .replace(/^Tokens: input=\d+ output=\d+\s*$/mu, '')
+                        .replace(/^---\s*$/mu, '')
+                        .replace(/^session: \S+\s*$/mu, '');
+                    if (withoutWrapper.trim() === '') {
+                        const emptyMsg = `execute_prompt returned an empty response (display wrapper only, no LLM output) from member '${opts.member_name || opts.member_id}'.`;
+                        console.error(`[Agent API Error]`, emptyMsg);
+                        this.emit('activity:end', { ...activityMeta, error: emptyMsg, output: text, duration, usage: result.usage, cost, success: false });
+                        throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (empty_response): ${emptyMsg}`, { details: { text, reason: 'empty_response', member: opts.member_name || opts.member_id } });
                     }
 
                     if (!opts.schema) {
