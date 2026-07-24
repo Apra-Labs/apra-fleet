@@ -1,165 +1,204 @@
-<svg width="900" height="520" viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="apra-fleet topology: one control plane dispatching to five heterogeneous member devices -- macOS laptop, Windows tower, Linux GPU box, cloud VM, CI runner -- across Claude, Codex, Antigravity, Gemini, and OpenCode.">
-  <rect width="900" height="520" fill="#0d1117"/>
-
-  <!-- subtle grid (same rhythm as hero banner) -->
-  <g stroke="#161b22" stroke-width="1">
-    <line x1="40" y1="0" x2="40" y2="520"/><line x1="120" y1="0" x2="120" y2="520"/>
-    <line x1="200" y1="0" x2="200" y2="520"/><line x1="280" y1="0" x2="280" y2="520"/>
-    <line x1="360" y1="0" x2="360" y2="520"/><line x1="440" y1="0" x2="440" y2="520"/>
-    <line x1="520" y1="0" x2="520" y2="520"/><line x1="600" y1="0" x2="600" y2="520"/>
-    <line x1="680" y1="0" x2="680" y2="520"/><line x1="760" y1="0" x2="760" y2="520"/>
-    <line x1="840" y1="0" x2="840" y2="520"/>
-    <line x1="0" y1="40" x2="900" y2="40"/><line x1="0" y1="120" x2="900" y2="120"/>
-    <line x1="0" y1="200" x2="900" y2="200"/><line x1="0" y1="280" x2="900" y2="280"/>
-    <line x1="0" y1="360" x2="900" y2="360"/><line x1="0" y1="440" x2="900" y2="440"/>
-  </g>
-
+<svg width="1080" height="680" viewBox="0 0 1080 680" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="apra-fleet topology: heterogeneous devices connected to a central control plane.">
   <defs>
-    <radialGradient id="hubGlow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#f2a93b" stop-opacity="0.16"/>
-      <stop offset="60%" stop-color="#f2a93b" stop-opacity="0.05"/>
-      <stop offset="100%" stop-color="#f2a93b" stop-opacity="0"/>
-    </radialGradient>
+    <!-- Background Gradient -->
+    <linearGradient id="topBgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080C14"/>
+      <stop offset="50%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#060911"/>
+    </linearGradient>
+
+    <!-- Glassmorphism Card Gradient -->
+    <linearGradient id="cardBgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <!-- Glowing Filters -->
+    <filter id="glowGoldFilter" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="glowCyanFilter" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <!-- Cyber Grid Pattern -->
+    <pattern id="gridTopDark" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E293B" stroke-width="1" opacity="0.6"/>
+      <circle cx="40" cy="40" r="1.5" fill="#334155" opacity="0.8"/>
+    </pattern>
   </defs>
 
-  <!-- radial vignette behind the control plane -->
-  <circle cx="450" cy="265" r="210" fill="url(#hubGlow)"/>
+  <!-- Base Canvas -->
+  <rect width="1080" height="680" fill="url(#topBgDark)"/>
+  <rect width="1080" height="680" fill="url(#gridTopDark)"/>
 
-  <!-- title block (mirrors hero wordmark treatment) -->
-  <text x="48" y="46" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="3" fill="#f2a93b">FLEET TOPOLOGY</text>
-  <text x="48" y="72" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#8b949e">One control plane. Any device. Any model. Any workflow.</text>
-
-  <!-- spokes: control plane -> members, with direction -->
-  <g fill="none" stroke="#f2a93b" stroke-width="2" stroke-linecap="round" stroke-dasharray="2 6" opacity="0.7">
-    <path d="M 398 238 Q 322 206 274 166"/>
-    <path d="M 480 214 Q 540 160 616 132"/>
-    <path d="M 506 265 Q 630 268 734 289"/>
-    <path d="M 478 313 Q 540 350 598 380"/>
-    <path d="M 418 314 Q 330 330 240 358"/>
-  </g>
-  <!-- arrowheads at member end -->
-  <g fill="#f2a93b" opacity="0.9">
-    <polygon points="261,156 276,161 268,170"/>
-    <polygon points="628,127 618,137 613,126"/>
-    <polygon points="746,291 732,294 734,283"/>
-    <polygon points="610,386 596,385 601,375"/>
-    <polygon points="228,362 239,353 242,364"/>
-  </g>
-  <!-- dispatch ports on the hexagon edge -->
-  <g fill="#f2a93b">
-    <circle cx="398" cy="238" r="3"/>
-    <circle cx="480" cy="214" r="3"/>
-    <circle cx="506" cy="265" r="3"/>
-    <circle cx="478" cy="313" r="3"/>
-    <circle cx="418" cy="314" r="3"/>
-  </g>
-  <!-- packets in flight -->
-  <g fill="#f2a93b" opacity="0.85">
-    <circle cx="329" cy="204" r="2.5"/>
-    <circle cx="544" cy="167" r="2.5"/>
-    <circle cx="625" cy="273" r="2.5"/>
-    <circle cx="539" cy="348" r="2.5"/>
-    <circle cx="330" cy="333" r="2.5"/>
+  <!-- TOP HEADER BLOCK -->
+  <!-- Category Pill Badge moved to TOP LEFT (x=50, y=32) -->
+  <g transform="translate(50, 32)">
+    <rect x="0" y="0" width="160" height="26" rx="13" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="16" cy="13" r="4" fill="#FBBF24" filter="url(#glowGoldFilter)"/>
+    <text x="30" y="13" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" letter-spacing="1.5" fill="#FBBF24">FLEET TOPOLOGY</text>
   </g>
 
-  <!-- control plane -->
-  <polygon points="450,181 523,223 523,307 450,349 377,307 377,223"
-           fill="none" stroke="#f2a93b" stroke-width="1.5" stroke-dasharray="3 6" opacity="0.35"/>
-  <polygon points="450,203 504,234 504,296 450,327 396,296 396,234"
-           fill="#f2a93b" fill-opacity="0.12" stroke="#f2a93b" stroke-width="3"/>
-  <circle cx="450" cy="265" r="17" fill="none" stroke="#f2a93b" stroke-width="1.75" opacity="0.65"/>
-  <circle cx="450" cy="265" r="7.5" fill="#f2a93b"/>
-  <text x="450" y="374" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e6edf3" text-anchor="middle">Control plane</text>
-  <text x="450" y="393" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">credentials - permissions - dispatch</text>
+  <!-- Centered Headline Title at y=84 -->
+  <text x="540" y="84" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="26" font-weight="900" fill="#F8FAFC" text-anchor="middle">Heterogeneous Device &amp; Provider Control Plane</text>
 
-  <!-- member 1: macOS laptop, Claude -->
-  <g>
-    <rect x="152" y="112" width="96" height="58" rx="5" fill="none" stroke="#e6edf3" stroke-width="2.5"/>
-    <rect x="160" y="120" width="80" height="42" fill="#f2a93b" fill-opacity="0.12"/>
-    <rect x="166" y="127" width="22" height="3.5" rx="1.75" fill="#f2a93b"/>
-    <rect x="166" y="135" width="34" height="3.5" rx="1.75" fill="#f2a93b" opacity="0.55"/>
-    <rect x="166" y="143" width="14" height="3.5" rx="1.75" fill="#f2a93b" opacity="0.35"/>
-    <path d="M 140 170 L 260 170 L 272 183 Q 273 187 267 187 L 133 187 Q 127 187 128 183 Z" fill="#e6edf3" fill-opacity="0.9"/>
-    <circle cx="254" cy="108" r="12" fill="#f2a93b"/>
-    <text x="254" y="112.5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#0d1117" text-anchor="middle">C</text>
-    <text x="200" y="214" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="middle">macOS laptop</text>
-    <text x="200" y="232" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">Claude</text>
+  <!-- Centered Subtitle at y=112 -->
+  <text x="540" y="112" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="500" fill="#94A3B8" text-anchor="middle">A unified control plane orchestrating AI agents across your local laptops, cloud VMs, GPUs, and edge nodes.</text>
+
+  <!-- TOPOLOGY CONSTELLATION GRAPH (Center at x=540, y=355) -->
+  <g transform="translate(540, 355)">
+
+    <!-- Orbit Ring & Spoke Lines to 6 Nodes -->
+    <g fill="none" stroke-width="1.5">
+      <circle cx="0" cy="0" r="220" stroke="#334155" stroke-dasharray="4 6" opacity="0.6"/>
+
+      <!-- Spokes -->
+      <path d="M 0 0 L -290 -145" stroke="#F59E0B" stroke-dasharray="4 4"/>
+      <path d="M 0 0 L 290 -145" stroke="#06B6D4" stroke-dasharray="4 4"/>
+      <path d="M 0 0 L 310 30" stroke="#10B981" stroke-dasharray="4 4"/>
+      <path d="M 0 0 L 200 180" stroke="#F59E0B" stroke-dasharray="4 4"/>
+      <path d="M 0 0 L -290 170" stroke="#8B5CF6" stroke-dasharray="4 4"/>
+      <path d="M 0 0 L -310 20" stroke="#64748B" stroke-dasharray="4 4"/>
+    </g>
+
+    <!-- Security Protocol Badges along Spokes -->
+    <g transform="translate(-145, -72)">
+      <rect x="-34" y="-11" width="68" height="22" rx="11" fill="#1E293B" stroke="#F59E0B" stroke-width="1"/>
+      <text x="0" y="0" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="700" fill="#FBBF24" text-anchor="middle">SSE / TLS</text>
+    </g>
+
+    <g transform="translate(145, -72)">
+      <rect x="-40" y="-11" width="80" height="22" rx="11" fill="#1E293B" stroke="#06B6D4" stroke-width="1"/>
+      <text x="0" y="0" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="700" fill="#38BDF8" text-anchor="middle">SSH Tunnel</text>
+    </g>
+
+    <g transform="translate(-145, 85)">
+      <rect x="-44" y="-11" width="88" height="22" rx="11" fill="#1E293B" stroke="#8B5CF6" stroke-width="1"/>
+      <text x="0" y="0" dominant-baseline="central" font-family="monospace" font-size="9" font-weight="700" fill="#A78BFA" text-anchor="middle">{{secure.KEY}}</text>
+    </g>
+
+    <g transform="translate(155, 15)">
+      <rect x="-28" y="-11" width="56" height="22" rx="11" fill="#1E293B" stroke="#10B981" stroke-width="1"/>
+      <text x="0" y="0" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="700" fill="#34D399" text-anchor="middle">mTLS</text>
+    </g>
+
+    <!-- CENTER CONTROL PLANE HUB (Label ABOVE Hexagon) -->
+    <text x="0" y="-62" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="900" letter-spacing="1.5" fill="#FBBF24" text-anchor="middle">CONTROL PLANE</text>
+
+    <g filter="url(#glowGoldFilter)">
+      <polygon points="0,-48 42,-24 42,24 0,48 -42,24 -46,-24" fill="#0F172A" stroke="#F59E0B" stroke-width="3"/>
+      <polygon points="0,-36 32,-18 32,18 0,36 -32,18 -32,-18" fill="#F59E0B" fill-opacity="0.15" stroke="#FBBF24" stroke-width="1.2" stroke-dasharray="4 2"/>
+    </g>
+
+    <!-- Core Play Icon -->
+    <circle cx="0" cy="0" r="15" fill="#F59E0B"/>
+    <polygon points="-5,-6 6,0 -5,6" fill="#080C14"/>
+    <text x="0" y="62" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="600" fill="#94A3B8" text-anchor="middle">Supervisor • Ledger • MCP</text>
+
+
+    <!-- SLEEK COMPACT MEMBER CARDS -->
+
+    <!-- NODE 1: MacBook Pro (Top-Left: -290, -145) -->
+    <g transform="translate(-290, -145)">
+      <rect x="-85" y="-40" width="170" height="80" rx="8" fill="url(#cardBgDark)" stroke="#F59E0B" stroke-width="1.5"/>
+      <rect x="-85" y="-40" width="170" height="24" rx="8" fill="#1E293B"/>
+      <rect x="-85" y="-24" width="170" height="8" fill="#1E293B"/>
+      <circle cx="-73" cy="-28" r="3" fill="#EF4444"/>
+      <circle cx="-64" cy="-28" r="3" fill="#F59E0B"/>
+      <circle cx="-55" cy="-28" r="3" fill="#10B981"/>
+      <text x="-46" y="-28" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#F8FAFC">MacBook Pro (macOS)</text>
+
+      <rect x="-75" y="-10" width="60" height="18" rx="4" fill="#F59E0B" fill-opacity="0.2" stroke="#F59E0B" stroke-width="1"/>
+      <text x="-45" y="-1" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="800" fill="#FBBF24" text-anchor="middle">Claude</text>
+
+      <text x="-75" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="600" fill="#CBD5E1">Role: Lead Developer</text>
+    </g>
+
+    <!-- NODE 2: Cloud VM (Top-Right: 290, -145) -->
+    <g transform="translate(290, -145)">
+      <rect x="-85" y="-40" width="170" height="80" rx="8" fill="url(#cardBgDark)" stroke="#06B6D4" stroke-width="1.5"/>
+      <rect x="-85" y="-40" width="170" height="24" rx="8" fill="#1E293B"/>
+      <rect x="-85" y="-24" width="170" height="8" fill="#1E293B"/>
+      <circle cx="-73" cy="-28" r="3" fill="#EF4444"/>
+      <circle cx="-64" cy="-28" r="3" fill="#F59E0B"/>
+      <circle cx="-55" cy="-28" r="3" fill="#10B981"/>
+      <text x="-46" y="-28" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#F8FAFC">Cloud VM (AWS EC2)</text>
+
+      <rect x="-75" y="-10" width="92" height="18" rx="4" fill="#06B6D4" fill-opacity="0.2" stroke="#06B6D4" stroke-width="1"/>
+      <text x="-29" y="-1" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="800" fill="#38BDF8" text-anchor="middle">Gemini / Codex</text>
+
+      <text x="-75" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="600" fill="#CBD5E1">Role: Parallel Refactor</text>
+    </g>
+
+    <!-- NODE 3: GPU Supercomputer (Middle-Right: 310, 30) -->
+    <g transform="translate(310, 30)">
+      <rect x="-85" y="-40" width="170" height="80" rx="8" fill="url(#cardBgDark)" stroke="#10B981" stroke-width="1.5"/>
+      <rect x="-85" y="-40" width="170" height="24" rx="8" fill="#1E293B"/>
+      <rect x="-85" y="-24" width="170" height="8" fill="#1E293B"/>
+      <circle cx="-73" cy="-28" r="3" fill="#EF4444"/>
+      <circle cx="-64" cy="-28" r="3" fill="#F59E0B"/>
+      <circle cx="-55" cy="-28" r="3" fill="#10B981"/>
+      <text x="-46" y="-28" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#F8FAFC">Linux GPU (Lab Box)</text>
+
+      <rect x="-75" y="-10" width="112" height="18" rx="4" fill="#10B981" fill-opacity="0.2" stroke="#10B981" stroke-width="1"/>
+      <text x="-19" y="-1" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="800" fill="#34D399" text-anchor="middle">Local vLLM / Llama3</text>
+
+      <text x="-75" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="600" fill="#CBD5E1">Role: Private Data Ops</text>
+    </g>
+
+    <!-- NODE 4: CI Test Rack (Bottom-Right: 200, 180) -->
+    <g transform="translate(200, 180)">
+      <rect x="-85" y="-40" width="170" height="80" rx="8" fill="url(#cardBgDark)" stroke="#F59E0B" stroke-width="1.2"/>
+      <rect x="-85" y="-40" width="170" height="24" rx="8" fill="#1E293B"/>
+      <rect x="-85" y="-24" width="170" height="8" fill="#1E293B"/>
+      <circle cx="-73" cy="-28" r="3" fill="#EF4444"/>
+      <circle cx="-64" cy="-28" r="3" fill="#F59E0B"/>
+      <circle cx="-55" cy="-28" r="3" fill="#10B981"/>
+      <text x="-46" y="-28" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#F8FAFC">CI Test Rack (Linux)</text>
+
+      <rect x="-75" y="-10" width="118" height="18" rx="4" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+      <text x="-16" y="-1" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="800" fill="#FBBF24" text-anchor="middle">81 Test Integration Suites</text>
+
+      <text x="-75" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="600" fill="#CBD5E1">Role: Quality Verification</text>
+    </g>
+
+    <!-- NODE 5: Windows Workstation (Bottom-Left: -290, 170) -->
+    <g transform="translate(-290, 170)">
+      <rect x="-85" y="-40" width="170" height="80" rx="8" fill="url(#cardBgDark)" stroke="#8B5CF6" stroke-width="1.5"/>
+      <rect x="-85" y="-40" width="170" height="24" rx="8" fill="#1E293B"/>
+      <rect x="-85" y="-24" width="170" height="8" fill="#1E293B"/>
+      <circle cx="-73" cy="-28" r="3" fill="#EF4444"/>
+      <circle cx="-64" cy="-28" r="3" fill="#F59E0B"/>
+      <circle cx="-55" cy="-28" r="3" fill="#10B981"/>
+      <text x="-46" y="-28" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9.5" font-weight="800" fill="#F8FAFC">Windows Workstation (Win 11)</text>
+
+      <rect x="-75" y="-10" width="72" height="18" rx="4" fill="#8B5CF6" fill-opacity="0.2" stroke="#8B5CF6" stroke-width="1"/>
+      <text x="-39" y="-1" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="800" fill="#A78BFA" text-anchor="middle">Antigravity</text>
+
+      <text x="-75" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="600" fill="#CBD5E1">Role: Cross Reviewer</text>
+    </g>
+
+    <!-- NODE 6: Jetson / Raspi (Middle-Left: -310, 20) -->
+    <g transform="translate(-310, 20)">
+      <rect x="-85" y="-40" width="170" height="80" rx="8" fill="url(#cardBgDark)" stroke="#64748B" stroke-width="1.5"/>
+      <rect x="-85" y="-40" width="170" height="24" rx="8" fill="#1E293B"/>
+      <rect x="-85" y="-24" width="170" height="8" fill="#1E293B"/>
+      <circle cx="-73" cy="-28" r="3" fill="#EF4444"/>
+      <circle cx="-64" cy="-28" r="3" fill="#F59E0B"/>
+      <circle cx="-55" cy="-28" r="3" fill="#10B981"/>
+      <text x="-46" y="-28" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#F8FAFC">Jetson / Raspi (ARM64)</text>
+
+      <rect x="-75" y="-10" width="52" height="18" rx="4" fill="#334155" opacity="0.6" stroke="#64748B" stroke-width="1"/>
+      <text x="-49" y="-1" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="800" fill="#CBD5E1" text-anchor="middle">NoLLM</text>
+
+      <text x="-75" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="600" fill="#CBD5E1">Role: Edge Worker</text>
+    </g>
+
   </g>
 
-  <!-- member 2: Windows tower, Codex -->
-  <g>
-    <rect x="628" y="48" width="54" height="86" rx="6" fill="none" stroke="#e6edf3" stroke-width="2.5"/>
-    <line x1="638" y1="66" x2="672" y2="66" stroke="#e6edf3" stroke-width="2.25"/>
-    <line x1="638" y1="78" x2="672" y2="78" stroke="#e6edf3" stroke-width="2.25"/>
-    <circle cx="655" cy="117" r="4" fill="#f2a93b"/>
-    <circle cx="684" cy="44" r="12" fill="#f2a93b"/>
-    <text x="684" y="48.5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#0d1117" text-anchor="middle">X</text>
-    <text x="655" y="160" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="middle">Windows tower</text>
-    <text x="655" y="178" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">Codex</text>
-  </g>
-
-  <!-- member 3: Linux GPU box, Antigravity -->
-  <g>
-    <rect x="748" y="262" width="104" height="60" rx="6" fill="none" stroke="#e6edf3" stroke-width="2.5"/>
-    <circle cx="780" cy="292" r="13.5" fill="none" stroke="#e6edf3" stroke-width="2.25"/>
-    <line x1="780" y1="287.5" x2="780" y2="281.5" stroke="#e6edf3" stroke-width="2"/>
-    <line x1="776.1" y1="294.3" x2="770.5" y2="297.5" stroke="#e6edf3" stroke-width="2"/>
-    <line x1="783.9" y1="294.3" x2="789.5" y2="297.5" stroke="#e6edf3" stroke-width="2"/>
-    <circle cx="780" cy="292" r="3.5" fill="#f2a93b"/>
-    <line x1="806" y1="278" x2="836" y2="278" stroke="#e6edf3" stroke-width="2" opacity="0.75"/>
-    <line x1="806" y1="292" x2="836" y2="292" stroke="#e6edf3" stroke-width="2" opacity="0.75"/>
-    <line x1="806" y1="306" x2="836" y2="306" stroke="#e6edf3" stroke-width="2" opacity="0.75"/>
-    <circle cx="850" cy="258" r="12" fill="#f2a93b"/>
-    <text x="850" y="262.5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#0d1117" text-anchor="middle">A</text>
-    <text x="800" y="348" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="middle">Linux GPU box</text>
-    <text x="800" y="366" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">Antigravity</text>
-  </g>
-
-  <!-- member 4: cloud VM, Gemini -->
-  <g>
-    <path d="M 591 448 Q 569 448 569 428 Q 569 410 587 407 Q 590 389 610 389 Q 622 389 629 397 Q 636 383 654 383 Q 676 383 681 402 Q 701 403 701 425 Q 701 448 678 448 Z"
-          fill="none" stroke="#e6edf3" stroke-width="2.5"/>
-    <rect x="612" y="414" width="46" height="18" rx="3" fill="none" stroke="#e6edf3" stroke-width="2"/>
-    <circle cx="621" cy="423" r="2" fill="#f2a93b"/>
-    <circle cx="629" cy="423" r="2" fill="#f2a93b" opacity="0.5"/>
-    <circle cx="690" cy="390" r="12" fill="#f2a93b"/>
-    <text x="690" y="394.5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#0d1117" text-anchor="middle">G</text>
-    <text x="635" y="474" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="middle">Cloud VM</text>
-    <text x="635" y="492" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">Gemini</text>
-  </g>
-
-  <!-- member 5: CI runner, OpenCode -->
-  <g>
-    <rect x="145" y="368" width="120" height="20" rx="3" fill="none" stroke="#e6edf3" stroke-width="2.5"/>
-    <rect x="145" y="394" width="120" height="20" rx="3" fill="none" stroke="#e6edf3" stroke-width="2.5"/>
-    <rect x="145" y="420" width="120" height="20" rx="3" fill="none" stroke="#e6edf3" stroke-width="2.5"/>
-    <line x1="155" y1="378" x2="183" y2="378" stroke="#e6edf3" stroke-width="2"/>
-    <line x1="155" y1="404" x2="183" y2="404" stroke="#e6edf3" stroke-width="2"/>
-    <line x1="155" y1="430" x2="183" y2="430" stroke="#e6edf3" stroke-width="2"/>
-    <circle cx="253" cy="378" r="3" fill="#f2a93b"/>
-    <circle cx="253" cy="404" r="3" fill="#f2a93b" opacity="0.6"/>
-    <circle cx="253" cy="430" r="3" fill="#f2a93b" opacity="0.35"/>
-    <circle cx="269" cy="364" r="12" fill="#f2a93b"/>
-    <text x="269" y="368.5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#0d1117" text-anchor="middle">O</text>
-    <text x="205" y="470" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e6edf3" text-anchor="middle">CI runner</text>
-    <text x="205" y="488" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">OpenCode</text>
-  </g>
-
-  <!-- callouts: amber-tinted pills, in-system palette -->
-  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700">
-    <line x1="712" y1="61" x2="700" y2="51" stroke="#f2a93b" stroke-width="1.5"/>
-    <circle cx="700" cy="51" r="2.5" fill="#f2a93b"/>
-    <rect x="712" y="50" width="152" height="26" rx="13" fill="#f2a93b" fill-opacity="0.1" stroke="#f2a93b" stroke-width="1.25"/>
-    <text x="788" y="67" fill="#f2a93b" text-anchor="middle">reserved by sprint A</text>
-
-    <line x1="800" y1="234" x2="800" y2="253" stroke="#f2a93b" stroke-width="1.5"/>
-    <circle cx="800" cy="256" r="2.5" fill="#f2a93b"/>
-    <rect x="740" y="208" width="120" height="26" rx="13" fill="#f2a93b" fill-opacity="0.1" stroke="#f2a93b" stroke-width="1.25"/>
-    <text x="800" y="225" fill="#f2a93b" text-anchor="middle">tier: premium</text>
-
-    <line x1="548" y1="429" x2="562" y2="429" stroke="#f2a93b" stroke-width="1.5"/>
-    <circle cx="565" cy="429" r="2.5" fill="#f2a93b"/>
-    <rect x="402" y="416" width="146" height="26" rx="13" fill="#f2a93b" fill-opacity="0.1" stroke="#f2a93b" stroke-width="1.25"/>
-    <text x="475" y="433" fill="#f2a93b" text-anchor="middle">credential: scoped</text>
-  </g>
+  <!-- BOTTOM FOOTER TAGLINE -->
+  <text x="540" y="650" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="800" letter-spacing="2.5" fill="#64748B" text-anchor="middle">ONE CONTROL PLANE. ANY DEVICE. ANY MODEL. ANY WORKFLOW. ANY DOMAIN.</text>
 </svg>

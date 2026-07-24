@@ -77,7 +77,7 @@ One control plane. Any device. Any model. Any workflow. Any domain.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../../assets/marketing/fleet-topology-dark.svg">
-  <img src="../../assets/marketing/fleet-topology.svg" alt="apra-fleet topology: one control plane dispatching to five heterogeneous member devices across providers and operating systems" width="100%">
+  <img src="../../assets/marketing/fleet-topology-light.svg" alt="apra-fleet topology: one control plane dispatching to six heterogeneous member devices across providers and operating systems" width="100%">
 </picture>
 
 ## Watch a fleet work
@@ -188,6 +188,11 @@ flowchart LR
   member reservation ledger (no two workflows fight over a machine),
   crash watchdog, run history.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../assets/marketing/workflow-memory-dark.svg">
+  <img src="../../assets/marketing/workflow-memory-light.svg" alt="Workflow memory and resumability in apra-fleet: stateless prompt chains vs durable workflows with atomic journal replay." width="100%">
+</picture>
+
 ## Explore with agents. Operate with programs.
 
 There are two ways to orchestrate agents, and apra-fleet is built on the
@@ -204,7 +209,7 @@ observation that you need both -- at different stages of a workflow's life:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../../assets/marketing/cost-collapse-dark.svg">
-  <img src="../../assets/marketing/cost-collapse-light.svg" alt="Cost per apra-fleet e2e run: four real LLM-driven runs ranging $0.46-$3.05, then $0.00 forever after switching to a deterministic script." width="100%">
+  <img src="../../assets/marketing/cost-collapse-light.svg" alt="Cost per apra-fleet e2e run: four real LLM-driven runs ranging $0.46-$3.05, then ~$0.00 / run forever after switching to a deterministic workflow." width="100%">
 </picture>
 
 That is not a projection -- it is this repository's own e2e setup+teardown
@@ -303,19 +308,23 @@ third-party verticals.
   against the live viewer. This is the highest-credibility asset we own --
   it cannot be hand-authored like GFX-1/GFX-3, it has to be a real capture.
 
-[GFX-3] Fleet topology -- DONE (redesigned).
-  assets/marketing/fleet-topology.svg (light) +
-  assets/marketing/fleet-topology-dark.svg (900x520). Centered
-  control-plane hexagon with radial glow -> 5 heterogeneous member
-  devices (laptop/tower/GPU box/cloud VM/CI rack), each badged with a
-  provider glyph + OS label. Directional dashed spokes with arrowheads,
-  amber pill callouts: "reserved by sprint A", "tier: premium",
-  "credential: scoped". Mono-accent (amber), same grid/palette as the
-  hero banner. Wired in above via a GitHub <picture> element
-  (dark/light), matching GFX-1.
+[GFX-3] Fleet topology -- DONE.
+  assets/marketing/fleet-topology-dark.svg + assets/marketing/fleet-topology-light.svg (1080x680).
+  Centered control plane hexagon -> 6 heterogeneous member devices (MacBook Pro, Cloud VM,
+  Linux GPU, CI Test Rack, Windows Workstation, Jetson/Raspi ARM64), top-left pill badge,
+  centered title, directional spokes with security protocol badges (SSE/TLS, SSH Tunnel, mTLS, {{secure.KEY}}).
 
 [GFX-4] Architecture: the mermaid block above renders natively on GitHub;
   keep as code (evolves with the product, diffs in PRs).
+
+[GFX-5] Cost collapse -- DONE.
+  assets/marketing/cost-collapse-dark.svg + assets/marketing/cost-collapse-light.svg (1280x600).
+  Side-by-side comparison: Exploration Phase ($3.05 -> $0.46) vs Operational Phase (~$0.00 / run).
+  Highlights execute_command (0 Tokens), execute_prompt (Judgment), and Commodity Model Swap.
+
+[GFX-6] Workflow memory & resumability -- DONE.
+  assets/marketing/workflow-memory-dark.svg + assets/marketing/workflow-memory-light.svg (1280x660).
+  Side-by-side comparison: Lane A (Stateless prompt chains cold restart) vs Lane B (apra-fleet durable workflow with journal.jsonl instant replay zone and supervisor watchdog).
 
 Badges: build (GH Actions), latest release, license, "providers: 5+",
 platform trio. All shields.io, no custom infra.

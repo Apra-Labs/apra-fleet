@@ -1,72 +1,220 @@
-<svg width="1280" height="320" viewBox="0 0 1280 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="apra-fleet: run a fleet of AI agents across your devices, your providers, your workflows.">
-  <rect width="1280" height="320" fill="#ffffff"/>
+<svg width="1280" height="380" viewBox="0 0 1280 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="apra-fleet: run a fleet of AI agents across your devices, your providers, your workflows.">
+  <defs>
+    <!-- Background Gradient Light -->
+    <linearGradient id="bgHeroLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#F1F5F9"/>
+    </linearGradient>
 
-  <!-- subtle grid -->
-  <g stroke="#eef1f4" stroke-width="1">
-    <line x1="40" y1="0" x2="40" y2="320"/><line x1="120" y1="0" x2="120" y2="320"/>
-    <line x1="200" y1="0" x2="200" y2="320"/><line x1="280" y1="0" x2="280" y2="320"/>
-    <line x1="360" y1="0" x2="360" y2="320"/><line x1="440" y1="0" x2="440" y2="320"/>
-    <line x1="520" y1="0" x2="520" y2="320"/><line x1="600" y1="0" x2="600" y2="320"/>
-    <line x1="680" y1="0" x2="680" y2="320"/><line x1="760" y1="0" x2="760" y2="320"/>
-    <line x1="840" y1="0" x2="840" y2="320"/><line x1="920" y1="0" x2="920" y2="320"/>
-    <line x1="1000" y1="0" x2="1000" y2="320"/><line x1="1080" y1="0" x2="1080" y2="320"/>
-    <line x1="1160" y1="0" x2="1160" y2="320"/><line x1="1240" y1="0" x2="1240" y2="320"/>
-    <line x1="0" y1="40" x2="1280" y2="40"/><line x1="0" y1="120" x2="1280" y2="120"/>
-    <line x1="0" y1="200" x2="1280" y2="200"/><line x1="0" y1="280" x2="1280" y2="280"/>
+    <radialGradient id="amberCoreGlowLight" cx="78%" cy="50%" r="48%">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.18"/>
+      <stop offset="60%" stop-color="#F59E0B" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Soft Drop Shadow Filter -->
+    <filter id="shadowLightCard" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+
+    <linearGradient id="textGradTitleLight" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+
+    <!-- Cyber Grid Pattern Light -->
+    <pattern id="cyberGridLight" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#E2E8F0" stroke-width="1" opacity="0.8"/>
+      <circle cx="40" cy="40" r="1.5" fill="#CBD5E1" opacity="0.8"/>
+    </pattern>
+  </defs>
+
+  <!-- Base Canvas -->
+  <rect width="1280" height="380" fill="url(#bgHeroLight)"/>
+  <rect width="1280" height="380" fill="url(#cyberGridLight)"/>
+  <rect width="1280" height="380" fill="url(#amberCoreGlowLight)"/>
+
+  <!-- Left Side: Typography & Positioning -->
+  <g transform="translate(60, 0)">
+    <!-- Category Pill Badge -->
+    <g transform="translate(0, 42)">
+      <rect x="0" y="0" width="220" height="28" rx="14" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1.2"/>
+      <circle cx="16" cy="14" r="4" fill="#D97706"/>
+      <text x="30" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" letter-spacing="1.8" fill="#B45309">AGENT FLEET PLATFORM</text>
+    </g>
+
+    <!-- Brand Name Title -->
+    <text x="0" y="122" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="56" font-weight="900" letter-spacing="-1.5" fill="url(#textGradTitleLight)">apra-fleet</text>
+
+    <!-- Main Tagline -->
+    <text x="0" y="162" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="19" font-weight="600" fill="#334155">
+      Run a fleet of AI agents across your devices,
+    </text>
+    <text x="0" y="188" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="19" font-weight="600" fill="#334155">
+      your providers, your workflows.
+    </text>
+
+    <!-- Category Placement Analogy -->
+    <text x="0" y="226" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="400" fill="#64748B">
+      What Kubernetes did for containers, apra-fleet does for AI agents.
+    </text>
+
+    <!-- TWO STACKED ROWS OF PILLS (Top: LLMs, Bottom: OS & Compute) -->
+    <g transform="translate(0, 258)">
+      <!-- TOP ROW: LLM Providers -->
+      <g transform="translate(0, 0)">
+        <!-- Claude -->
+        <rect x="0" y="0" width="76" height="24" rx="6" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1.2"/>
+        <text x="38" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="700" fill="#B45309" text-anchor="middle">Claude</text>
+
+        <!-- Gemini -->
+        <rect x="84" y="0" width="76" height="24" rx="6" fill="#E0F2FE" stroke="#0284C7" stroke-width="1.2"/>
+        <text x="122" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="700" fill="#0369A1" text-anchor="middle">Gemini</text>
+
+        <!-- Codex -->
+        <rect x="168" y="0" width="70" height="24" rx="6" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" filter="url(#shadowLightCard)"/>
+        <text x="203" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">Codex</text>
+
+        <!-- Local vLLM -->
+        <rect x="246" y="0" width="94" height="24" rx="6" fill="#D1FAE5" stroke="#059669" stroke-width="1.2"/>
+        <text x="293" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="700" fill="#047857" text-anchor="middle">Local vLLM</text>
+
+        <!-- Antigravity -->
+        <rect x="348" y="0" width="92" height="24" rx="6" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.2"/>
+        <text x="394" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="700" fill="#6D28D9" text-anchor="middle">Antigravity</text>
+      </g>
+
+      <!-- BOTTOM ROW: OS & Infrastructure -->
+      <g transform="translate(0, 32)">
+        <!-- macOS -->
+        <rect x="0" y="0" width="72" height="24" rx="6" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" filter="url(#shadowLightCard)"/>
+        <text x="36" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">macOS</text>
+
+        <!-- Windows -->
+        <rect x="80" y="0" width="80" height="24" rx="6" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" filter="url(#shadowLightCard)"/>
+        <text x="120" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">Windows</text>
+
+        <!-- Linux -->
+        <rect x="168" y="0" width="68" height="24" rx="6" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" filter="url(#shadowLightCard)"/>
+        <text x="202" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">Linux</text>
+
+        <!-- Cloud VM -->
+        <rect x="244" y="0" width="82" height="24" rx="6" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1" filter="url(#shadowLightCard)"/>
+        <text x="285" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">Cloud VM</text>
+
+        <!-- GPU / GB10 -->
+        <rect x="334" y="0" width="88" height="24" rx="6" fill="#D1FAE5" stroke="#059669" stroke-width="1.2"/>
+        <text x="378" y="12" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="700" fill="#047857" text-anchor="middle">GPU / GB10</text>
+      </g>
+    </g>
   </g>
 
-  <!-- wordmark block -->
-  <text x="60" y="72" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="3" fill="#c97a1e">AGENT FLEET PLATFORM</text>
-  <text x="58" y="150" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="66" font-weight="700" fill="#1c2128">apra-fleet</text>
-  <text x="60" y="192" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="21" fill="#57606a">
-    <tspan x="60" dy="0">Run a fleet of AI agents across your devices,</tspan>
-    <tspan x="60" dy="28">your providers, your workflows.</tspan>
-  </text>
-  <rect x="60" y="222" width="64" height="4" rx="2" fill="#c97a1e"/>
+  <!-- Right Side Visual: CONTROL PLANE IN THE CENTER of Radially Arranged Machines -->
+  <g transform="translate(940, 190)">
+    <!-- Radial Orbit Ring & Connecting Data Beams -->
+    <g fill="none" stroke-width="1.5">
+      <circle cx="0" cy="0" r="145" stroke="#CBD5E1" stroke-dasharray="4 6"/>
 
-  <!-- constellation: control hexagon + orbits + devices -->
-  <g>
-    <!-- orbit lines -->
-    <g fill="none" stroke="#c97a1e" stroke-width="1.5" stroke-dasharray="2 5" opacity="0.6">
-      <path d="M 908 140 Q 830 105 782 92"/>
-      <path d="M 940 118 Q 1060 85 1178 72"/>
-      <path d="M 985 150 Q 1120 175 1214 192"/>
-      <path d="M 918 185 Q 860 225 830 250"/>
+      <!-- Beams from Center Control Plane outward to all 6 machines -->
+      <path d="M 0 0 L -175 -95" stroke="#D97706" stroke-dasharray="4 4"/>
+      <circle cx="-87" cy="-47" r="3" fill="#D97706"/>
+
+      <path d="M 0 0 L 165 -90" stroke="#0284C7" stroke-dasharray="4 4"/>
+      <circle cx="82" cy="-45" r="3" fill="#0284C7"/>
+
+      <path d="M 0 0 L 205 30" stroke="#059669" stroke-dasharray="4 4"/>
+      <circle cx="102" cy="15" r="3" fill="#059669"/>
+
+      <path d="M 0 0 L -165 95" stroke="#7C3AED" stroke-dasharray="4 4"/>
+      <circle cx="-82" cy="47" r="3" fill="#7C3AED"/>
+
+      <path d="M 0 0 L 35 125" stroke="#D97706" stroke-dasharray="4 4"/>
+      <circle cx="17" cy="62" r="3" fill="#D97706"/>
+
+      <!-- Beam to 6th Node: Tiny Jetson / Raspi -->
+      <path d="M 0 0 L -205 10" stroke="#64748B" stroke-dasharray="4 4"/>
+      <circle cx="-102" cy="5" r="2.5" fill="#64748B"/>
     </g>
 
-    <!-- control-plane hexagon -->
-    <polygon points="950,116 985,138 985,182 950,204 915,182 915,138"
-             fill="#c97a1e" fill-opacity="0.10" stroke="#c97a1e" stroke-width="3"/>
-    <circle cx="950" cy="160" r="7" fill="#c97a1e"/>
+    <!-- CENTER CONTROL PLANE HUB -->
+    <text x="0" y="-66" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="900" letter-spacing="1.2" fill="#B45309" text-anchor="middle">CONTROL PLANE</text>
 
-    <!-- laptop -->
-    <rect x="745" y="80" width="30" height="21" rx="2" fill="none" stroke="#1c2128" stroke-width="2"/>
-    <rect x="739" y="103" width="42" height="6" rx="2" fill="#1c2128" fill-opacity="0.85"/>
-    <circle cx="779" cy="78" r="10" fill="#c97a1e"/>
-    <text x="779" y="82" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">C</text>
-
-    <!-- tower -->
-    <rect x="1170" y="52" width="30" height="46" rx="3" fill="none" stroke="#1c2128" stroke-width="2"/>
-    <line x1="1177" y1="64" x2="1193" y2="64" stroke="#1c2128" stroke-width="2"/>
-    <line x1="1177" y1="74" x2="1193" y2="74" stroke="#1c2128" stroke-width="2"/>
-    <circle cx="1170" cy="48" r="10" fill="#c97a1e"/>
-    <text x="1170" y="52" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">G</text>
-
-    <!-- rack -->
-    <rect x="1200" y="176" width="42" height="10" rx="1.5" fill="none" stroke="#1c2128" stroke-width="2"/>
-    <rect x="1200" y="190" width="42" height="10" rx="1.5" fill="none" stroke="#1c2128" stroke-width="2"/>
-    <rect x="1200" y="204" width="42" height="10" rx="1.5" fill="none" stroke="#1c2128" stroke-width="2"/>
-    <circle cx="1249" cy="181" r="10" fill="#c97a1e"/>
-    <text x="1249" y="185" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">X</text>
-
-    <!-- cloud -->
-    <g fill="none" stroke="#1c2128" stroke-width="2">
-      <circle cx="812" cy="252" r="14"/>
-      <circle cx="830" cy="244" r="18"/>
-      <circle cx="850" cy="254" r="13"/>
-      <rect x="805" y="254" width="52" height="14" rx="7" fill="#ffffff" stroke="#1c2128"/>
+    <g>
+      <polygon points="0,-50 44,-25 44,25 0,50 -44,25 -44,-25" fill="#FFFFFF" stroke="#F59E0B" stroke-width="3" filter="url(#shadowLightCard)"/>
+      <polygon points="0,-38 34,-19 34,19 0,38 -34,19 -34,-19" fill="#FEF3C7" stroke="#D97706" stroke-width="1.2" stroke-dasharray="4 2"/>
     </g>
-    <circle cx="856" cy="234" r="10" fill="#c97a1e"/>
-    <text x="856" y="238" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">A</text>
+
+    <circle cx="0" cy="0" r="15" fill="#D97706"/>
+    <polygon points="-5,-6 6,0 -5,6" fill="#FFFFFF"/>
+
+    <!-- RADIALLY ARRANGED MACHINE PODS -->
+
+    <!-- POD 1: MacBook Pro (Top-Left: -175, -95) -->
+    <g transform="translate(-175, -95)">
+      <rect x="-68" y="-32" width="136" height="64" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+
+      <rect x="-58" y="-24" width="116" height="22" rx="5" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
+      <text x="0" y="-13" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="800" fill="#B45309" text-anchor="middle">Claude</text>
+
+      <rect x="-58" y="3" width="116" height="22" rx="5" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="0" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="700" fill="#0F172A" text-anchor="middle">MacBook • macOS</text>
+    </g>
+
+    <!-- POD 2: Cloud VM (Top-Right: 165, -90) -->
+    <g transform="translate(165, -90)">
+      <rect x="-68" y="-32" width="136" height="64" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+
+      <rect x="-58" y="-24" width="116" height="22" rx="5" fill="#E0F2FE" stroke="#0284C7" stroke-width="1"/>
+      <text x="0" y="-13" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="800" fill="#0369A1" text-anchor="middle">Gemini / Codex</text>
+
+      <rect x="-58" y="3" width="116" height="22" rx="5" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="0" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="700" fill="#0F172A" text-anchor="middle">Cloud VM • AWS</text>
+    </g>
+
+    <!-- POD 3: GPU / GB10 Supercomputer (Middle-Right: 205, 30) -->
+    <g transform="translate(205, 30)">
+      <rect x="-68" y="-32" width="136" height="64" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+
+      <rect x="-58" y="-24" width="116" height="22" rx="5" fill="#D1FAE5" stroke="#059669" stroke-width="1"/>
+      <text x="0" y="-13" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="800" fill="#047857" text-anchor="middle">Local vLLM</text>
+
+      <rect x="-58" y="3" width="116" height="22" rx="5" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="0" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="700" fill="#0F172A" text-anchor="middle">GPU / GB10 • Linux</text>
+    </g>
+
+    <!-- POD 4: Windows Workstation (Bottom-Left: -165, 95) -->
+    <g transform="translate(-165, 95)">
+      <rect x="-68" y="-32" width="136" height="64" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#shadowLightCard)"/>
+
+      <rect x="-58" y="-24" width="116" height="22" rx="5" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1"/>
+      <text x="0" y="-13" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="800" fill="#6D28D9" text-anchor="middle">Antigravity</text>
+
+      <rect x="-58" y="3" width="116" height="22" rx="5" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="0" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="700" fill="#0F172A" text-anchor="middle">Win Tower • Win 11</text>
+    </g>
+
+    <!-- POD 5: CI/CD Test Rack (Bottom-Center: 35, 125) -->
+    <g transform="translate(35, 125)">
+      <rect x="-68" y="-32" width="136" height="64" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.2" filter="url(#shadowLightCard)"/>
+
+      <rect x="-58" y="-24" width="116" height="22" rx="5" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
+      <text x="0" y="-13" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="800" fill="#B45309" text-anchor="middle">81 Test Suites</text>
+
+      <rect x="-58" y="3" width="116" height="22" rx="5" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="0" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="700" fill="#0F172A" text-anchor="middle">CI Rack • Linux</text>
+    </g>
+
+    <!-- POD 6: Tiny Jetson / Raspi with NoLLM (Middle-Left: -205, 10) -->
+    <g transform="translate(-205, 10)">
+      <rect x="-56" y="-26" width="112" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.2" filter="url(#shadowLightCard)"/>
+
+      <rect x="-48" y="-20" width="96" height="18" rx="4" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+      <text x="0" y="-11" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="800" fill="#475569" text-anchor="middle">NoLLM</text>
+
+      <rect x="-48" y="2" width="96" height="18" rx="4" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="0" y="11" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="700" fill="#0F172A" text-anchor="middle">Jetson / Raspi</text>
+    </g>
+
   </g>
 </svg>

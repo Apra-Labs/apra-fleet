@@ -1,198 +1,204 @@
-<svg width="1280" height="660" viewBox="0 0 1280 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="apra-fleet-workflow resumable runs: every agent and command call is written to an append-only execution journal. When a run crashes, resuming replays every already-completed step directly from the journal with zero re-dispatch -- no LLM call, no cost, no shell re-run -- and runs live only from the real failure point. A stateless session with no journal restarts cold from step one, re-dispatching and re-billing everything.">
-  <rect width="1280" height="660" fill="#0d1117"/>
-
-  <!-- subtle grid (same 80px rhythm as hero banner) -->
-  <g stroke="#161b22" stroke-width="1">
-    <line x1="40" y1="0" x2="40" y2="660"/><line x1="120" y1="0" x2="120" y2="660"/>
-    <line x1="200" y1="0" x2="200" y2="660"/><line x1="280" y1="0" x2="280" y2="660"/>
-    <line x1="360" y1="0" x2="360" y2="660"/><line x1="440" y1="0" x2="440" y2="660"/>
-    <line x1="520" y1="0" x2="520" y2="660"/><line x1="600" y1="0" x2="600" y2="660"/>
-    <line x1="680" y1="0" x2="680" y2="660"/><line x1="760" y1="0" x2="760" y2="660"/>
-    <line x1="840" y1="0" x2="840" y2="660"/><line x1="920" y1="0" x2="920" y2="660"/>
-    <line x1="1000" y1="0" x2="1000" y2="660"/><line x1="1080" y1="0" x2="1080" y2="660"/>
-    <line x1="1160" y1="0" x2="1160" y2="660"/><line x1="1240" y1="0" x2="1240" y2="660"/>
-    <line x1="0" y1="40" x2="1280" y2="40"/><line x1="0" y1="120" x2="1280" y2="120"/>
-    <line x1="0" y1="200" x2="1280" y2="200"/><line x1="0" y1="280" x2="1280" y2="280"/>
-    <line x1="0" y1="360" x2="1280" y2="360"/><line x1="0" y1="440" x2="1280" y2="440"/>
-    <line x1="0" y1="520" x2="1280" y2="520"/><line x1="0" y1="600" x2="1280" y2="600"/>
-  </g>
-
+<svg width="1280" height="660" viewBox="0 0 1280 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Workflow memory &amp; resumability in apra-fleet: stateless prompt chains vs durable workflows.">
   <defs>
-    <radialGradient id="journalGlow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#f2a93b" stop-opacity="0.15"/>
-      <stop offset="55%" stop-color="#f2a93b" stop-opacity="0.05"/>
-      <stop offset="100%" stop-color="#f2a93b" stop-opacity="0"/>
-    </radialGradient>
+    <!-- Background Gradient -->
+    <linearGradient id="memBgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080C14"/>
+      <stop offset="50%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#060911"/>
+    </linearGradient>
+
+    <!-- Glass Panel Gradient -->
+    <linearGradient id="panelDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <!-- Glowing Filters -->
+    <filter id="glowGreen" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="glowRed" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="glowGoldFilter" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <!-- Cyber Grid Pattern -->
+    <pattern id="gridMemDark" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E293B" stroke-width="1" opacity="0.6"/>
+      <circle cx="40" cy="40" r="1.5" fill="#334155" opacity="0.8"/>
+    </pattern>
   </defs>
 
-  <!-- glow spotlighting the journal / replay cluster (the "memory") -->
-  <circle cx="207" cy="290" r="240" fill="url(#journalGlow)"/>
+  <!-- Base Canvas -->
+  <rect width="1280" height="660" fill="url(#memBgDark)"/>
+  <rect width="1280" height="660" fill="url(#gridMemDark)"/>
 
-  <!-- title block (mirrors hero wordmark treatment) -->
-  <text x="48" y="52" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="3" fill="#f2a93b">DETERMINISTIC WORKFLOWS + MEMORY</text>
-  <text x="46" y="92" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="28" font-weight="700" fill="#e6edf3">A crash loses time -- not work or money.</text>
-  <text x="48" y="120" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#8b949e">Every agent() and command() call lands in an append-only journal. Resume replays finished steps free, then runs live from the crash point.</text>
-
-  <!-- ============ ROW A: with journal (resumed run) ============ -->
-  <text x="70" y="170" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e6edf3">Resume from journal<tspan fill="#8b949e" font-weight="400" font-size="13">   -- memory on</tspan></text>
-
-  <!-- replay spine (fast / ghosted) -->
-  <line x1="96" y1="250" x2="338" y2="250" stroke="#f2a93b" stroke-width="2" stroke-linecap="round" stroke-dasharray="2 6" opacity="0.5"/>
-
-  <!-- replay band behind the completed steps -->
-  <rect x="96" y="224" width="222" height="52" rx="12" fill="#f2a93b" fill-opacity="0.07" stroke="#f2a93b" stroke-width="1.25" stroke-dasharray="3 5" opacity="0.7"/>
-
-  <!-- 4 completed+journaled steps: check only, ghosted -->
-  <g>
-    <rect x="113" y="233" width="34" height="34" rx="8" fill="#f2a93b" fill-opacity="0.06" stroke="#8b949e" stroke-width="1.5"/>
-    <path d="M 122 250 l 5 6 l 10 -13" fill="none" stroke="#f2a93b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="163" y="233" width="34" height="34" rx="8" fill="#f2a93b" fill-opacity="0.06" stroke="#8b949e" stroke-width="1.5"/>
-    <path d="M 172 250 l 5 6 l 10 -13" fill="none" stroke="#f2a93b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="213" y="233" width="34" height="34" rx="8" fill="#f2a93b" fill-opacity="0.06" stroke="#8b949e" stroke-width="1.5"/>
-    <path d="M 222 250 l 5 6 l 10 -13" fill="none" stroke="#f2a93b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="263" y="233" width="34" height="34" rx="8" fill="#f2a93b" fill-opacity="0.06" stroke="#8b949e" stroke-width="1.5"/>
-    <path d="M 272 250 l 5 6 l 10 -13" fill="none" stroke="#f2a93b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- TOP HEADER BLOCK -->
+  <!-- Category Pill Badge -->
+  <g transform="translate(50, 30)">
+    <rect x="0" y="0" width="260" height="28" rx="14" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="16" cy="14" r="4" fill="#FBBF24" filter="url(#glowGoldFilter)"/>
+    <text x="30" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" letter-spacing="1.0" fill="#FBBF24">WORKFLOW MEMORY &amp; RESUMABILITY</text>
   </g>
 
-  <!-- replay pill above -->
-  <rect x="104" y="183" width="210" height="25" rx="12.5" fill="#f2a93b" fill-opacity="0.1" stroke="#f2a93b" stroke-width="1.25"/>
-  <text x="209" y="200" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#f2a93b" text-anchor="middle">no re-dispatch - no re-bill - no re-run</text>
-  <line x1="209" y1="208" x2="209" y2="222" stroke="#f2a93b" stroke-width="1.25"/>
-  <circle cx="209" cy="223" r="2.25" fill="#f2a93b"/>
+  <!-- Main Title at y=105 -->
+  <text x="50" y="105" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="28" font-weight="900" fill="#F8FAFC">Durable Workflows: Append-Only Journal &amp; Zero-Token Replay</text>
 
-  <!-- connector label between band and journal card -->
-  <text x="207" y="293" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" fill="#8b949e" text-anchor="middle">replay key match -> returned from journal</text>
+  <!-- Subtitle at y=138 -->
+  <text x="50" y="138" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="500" fill="#94A3B8">Stateful orchestration in apra-fleet: never lose progress, tokens, or time on network drops or process crashes.</text>
 
-  <!-- journal card (the memory) -->
-  <rect x="96" y="300" width="222" height="76" rx="8" fill="#161b22" stroke="#8b949e" stroke-width="1" opacity="0.95"/>
-  <circle cx="108" cy="315" r="3" fill="#f2a93b"/>
-  <text x="118" y="319" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#e6edf3">journal.jsonl</text>
-  <text x="220" y="319" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" fill="#8b949e">append-only</text>
-  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" fill="#8b949e">
-    <path d="M 108 334 l 3 3.5 l 6 -8" fill="none" stroke="#f2a93b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="122" y="337">seq 1 - agent - completed</text>
-    <path d="M 108 348 l 3 3.5 l 6 -8" fill="none" stroke="#f2a93b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="122" y="351">seq 2 - command - completed</text>
-    <path d="M 108 362 l 3 3.5 l 6 -8" fill="none" stroke="#f2a93b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="122" y="365">seq 3 - agent - completed</text>
+  <!-- MAIN COMPARISON LANES (y=170) -->
+
+  <!-- LANE A: STATELESS PROMPT CHAINS (y=170, height=200) -->
+  <g transform="translate(50, 170)">
+    <rect x="0" y="0" width="1180" height="200" rx="14" fill="url(#panelDark)" stroke="#EF4444" stroke-width="1.2" stroke-opacity="0.6"/>
+
+    <!-- Panel Header Bar -->
+    <rect x="0" y="0" width="1180" height="38" rx="14" fill="#1E293B"/>
+    <rect x="0" y="24" width="1180" height="14" fill="#1E293B"/>
+    <line x1="0" y1="38" x2="1180" y2="38" stroke="#334155" stroke-width="1"/>
+    <circle cx="24" cy="19" r="5" fill="#EF4444" filter="url(#glowRed)"/>
+    <text x="38" y="19" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="800" fill="#F8FAFC">LANE A: STATELESS PROMPT CHAINS (Standard Frameworks)</text>
+    <!-- Right Badge Anchored to x=1150 (Zero Bleed!) -->
+    <text x="1150" y="19" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#EF4444" text-anchor="end">[FAIL] Wasted Tokens &amp; Time</text>
+
+    <!-- Lane A Step Flow -->
+    <g transform="translate(40, 52)">
+      <!-- Connecting Line -->
+      <line x1="55" y1="27" x2="800" y2="27" stroke="#334155" stroke-width="2"/>
+
+      <!-- Step 1: Plan -->
+      <g transform="translate(0, 0)">
+        <rect x="0" y="0" width="115" height="54" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1.5"/>
+        <text x="57.5" y="21" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#F8FAFC" text-anchor="middle">1. Plan</text>
+        <text x="57.5" y="38" font-family="monospace" font-size="10" font-weight="600" fill="#94A3B8" text-anchor="middle">35k tokens</text>
+      </g>
+
+      <!-- Step 2: Code -->
+      <g transform="translate(180, 0)">
+        <rect x="0" y="0" width="115" height="54" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1.5"/>
+        <text x="57.5" y="21" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#F8FAFC" text-anchor="middle">2. Code</text>
+        <text x="57.5" y="38" font-family="monospace" font-size="10" font-weight="600" fill="#94A3B8" text-anchor="middle">50k tokens</text>
+      </g>
+
+      <!-- Step 3: Review -->
+      <g transform="translate(360, 0)">
+        <rect x="0" y="0" width="115" height="54" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1.5"/>
+        <text x="57.5" y="21" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#F8FAFC" text-anchor="middle">3. Review</text>
+        <text x="57.5" y="38" font-family="monospace" font-size="10" font-weight="600" fill="#94A3B8" text-anchor="middle">40k tokens</text>
+      </g>
+
+      <!-- Step 4: Test -->
+      <g transform="translate(540, 0)">
+        <rect x="0" y="0" width="115" height="54" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1.5"/>
+        <text x="57.5" y="21" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#F8FAFC" text-anchor="middle">4. Test</text>
+        <text x="57.5" y="38" font-family="monospace" font-size="10" font-weight="600" fill="#94A3B8" text-anchor="middle">25k tokens</text>
+      </g>
+
+      <!-- Step 5: CRASH Node -->
+      <g transform="translate(720, -5)">
+        <rect x="0" y="0" width="140" height="64" rx="8" fill="#7F1D1D" fill-opacity="0.8" stroke="#EF4444" stroke-width="2" filter="url(#glowRed)"/>
+        <text x="70" y="22" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="900" fill="#FCA5A5" text-anchor="middle">CRASH!</text>
+        <text x="70" y="39" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="700" fill="#F8FAFC" text-anchor="middle">API Drop / Timeout</text>
+        <text x="70" y="51" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="9" font-weight="600" fill="#FECACA" text-anchor="middle">No Checkpoint</text>
+      </g>
+
+      <!-- Bold Red Restart Curve Arrow -->
+      <path d="M 790 65 C 600 125, 230 125, 57.5 65" fill="none" stroke="#EF4444" stroke-width="2" stroke-dasharray="4 3"/>
+      <polygon points="57.5,65 67,70 67,60" fill="#EF4444"/>
+
+      <!-- High-Impact Loss Label -->
+      <rect x="270" y="108" width="370" height="22" rx="11" fill="#7F1D1D" fill-opacity="0.9" stroke="#EF4444" stroke-width="1"/>
+      <text x="455" y="119" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="900" fill="#FCA5A5" text-anchor="middle">FORCED COLD RESTART FROM STEP 1 (All 150k Tokens Lost)</text>
+    </g>
   </g>
 
-  <!-- crash break in the spine -->
-  <polyline points="338,250 348,236 358,264 368,236 378,264 388,250" fill="none" stroke="#f2a93b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <!-- warning glyph -->
-  <path d="M 362 202 L 377 229 L 347 229 Z" fill="#f2a93b" fill-opacity="0.14" stroke="#f2a93b" stroke-width="2" stroke-linejoin="round"/>
-  <text x="362" y="226" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#f2a93b" text-anchor="middle">!</text>
-  <text x="362" y="292" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#e6edf3" text-anchor="middle">CRASH</text>
-  <text x="362" y="306" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" fill="#8b949e" text-anchor="middle">step 5 in-flight</text>
+  <!-- LANE B: APRA-FLEET DURABLE WORKFLOW (y=395, height=215) -->
+  <g transform="translate(50, 395)">
+    <rect x="0" y="0" width="1180" height="215" rx="14" fill="url(#panelDark)" stroke="#10B981" stroke-width="1.5"/>
 
-  <!-- live spine (real execution resumes) -->
-  <line x1="392" y1="250" x2="883" y2="250" stroke="#e6edf3" stroke-width="2.5" stroke-linecap="round"/>
-  <g fill="#f2a93b">
-    <circle cx="430" cy="250" r="3"/>
-    <circle cx="545" cy="250" r="3"/>
-    <circle cx="690" cy="250" r="3"/>
-    <circle cx="850" cy="250" r="3"/>
+    <!-- Panel Header Bar -->
+    <rect x="0" y="0" width="1180" height="38" rx="14" fill="#1E293B"/>
+    <rect x="0" y="24" width="1180" height="14" fill="#1E293B"/>
+    <line x1="0" y1="38" x2="1180" y2="38" stroke="#334155" stroke-width="1"/>
+    <circle cx="24" cy="19" r="5" fill="#10B981" filter="url(#glowGreen)"/>
+    <text x="38" y="19" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="800" fill="#F8FAFC">LANE B: APRA-FLEET DURABLE WORKFLOW (Atomic journal.jsonl)</text>
+    <text x="475" y="19" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#34D399">REPLAYED FREE FROM journal.jsonl (0 TOKENS / $0.00 COST)</text>
+    <!-- Right Badge Anchored to x=1150 (Zero Bleed!) -->
+    <text x="1150" y="19" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#34D399" text-anchor="end">[SUCCESS] Zero-Token Replay</text>
+
+    <!-- Lane B Step Flow -->
+    <g transform="translate(30, 48)">
+
+      <!-- Dotted Replay Zone Bounding Box -->
+      <rect x="0" y="-4" width="550" height="88" rx="10" fill="#10B981" fill-opacity="0.04" stroke="#10B981" stroke-width="1.5" stroke-dasharray="4 4"/>
+      <text x="275" y="-12" dominant-baseline="central" font-family="monospace" font-size="10" font-weight="700" fill="#34D399" text-anchor="middle">journal.jsonl Instant Replay Zone (0 Tokens)</text>
+
+      <!-- Connecting Line -->
+      <line x1="50" y1="38" x2="870" y2="38" stroke="#10B981" stroke-width="2"/>
+
+      <!-- Step 1: Plan (Replayed) -->
+      <g transform="translate(15, 10)">
+        <rect x="0" y="0" width="110" height="56" rx="8" fill="#0F172A" stroke="#10B981" stroke-width="1.5"/>
+        <text x="55" y="22" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#F8FAFC" text-anchor="middle">1. Plan</text>
+        <text x="55" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#34D399" text-anchor="middle">[REPLAYED]</text>
+      </g>
+
+      <!-- Step 2: Code (Replayed) -->
+      <g transform="translate(145, 10)">
+        <rect x="0" y="0" width="110" height="56" rx="8" fill="#0F172A" stroke="#10B981" stroke-width="1.5"/>
+        <text x="55" y="22" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#F8FAFC" text-anchor="middle">2. Code</text>
+        <text x="55" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#34D399" text-anchor="middle">[REPLAYED]</text>
+      </g>
+
+      <!-- Step 3: Review (Replayed) -->
+      <g transform="translate(275, 10)">
+        <rect x="0" y="0" width="110" height="56" rx="8" fill="#0F172A" stroke="#10B981" stroke-width="1.5"/>
+        <text x="55" y="22" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#F8FAFC" text-anchor="middle">3. Review</text>
+        <text x="55" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#34D399" text-anchor="middle">[REPLAYED]</text>
+      </g>
+
+      <!-- Step 4: Test (Replayed) -->
+      <g transform="translate(405, 10)">
+        <rect x="0" y="0" width="110" height="56" rx="8" fill="#0F172A" stroke="#10B981" stroke-width="1.5"/>
+        <text x="55" y="22" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#F8FAFC" text-anchor="middle">4. Test</text>
+        <text x="55" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#34D399" text-anchor="middle">[REPLAYED]</text>
+      </g>
+
+      <!-- Step 5: Deploy (Resumed Live!) -->
+      <g transform="translate(580, 10)">
+        <rect x="0" y="0" width="120" height="56" rx="8" fill="#0F172A" stroke="#F59E0B" stroke-width="2" filter="url(#glowGoldFilter)"/>
+        <text x="60" y="22" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="900" fill="#FBBF24" text-anchor="middle">5. Deploy</text>
+        <text x="60" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#FBBF24" text-anchor="middle">Resumed Live!</text>
+      </g>
+
+      <!-- Step 6: Harvest (Passed) -->
+      <g transform="translate(725, 10)">
+        <rect x="0" y="0" width="110" height="56" rx="8" fill="#0F172A" stroke="#10B981" stroke-width="1.5"/>
+        <text x="55" y="22" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#F8FAFC" text-anchor="middle">6. Harvest</text>
+        <text x="55" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" fill="#34D399" text-anchor="middle">[PASSED]</text>
+      </g>
+
+      <!-- Final COMPLETED Badge Box -->
+      <g transform="translate(865, 3)">
+        <rect x="0" y="0" width="155" height="70" rx="10" fill="#064E3B" fill-opacity="0.8" stroke="#10B981" stroke-width="2" filter="url(#glowGreen)"/>
+        <text x="77.5" y="26" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15" font-weight="900" fill="#34D399" text-anchor="middle">COMPLETED</text>
+        <text x="77.5" y="48" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="800" fill="#F8FAFC" text-anchor="middle">100% Work Saved</text>
+      </g>
+
+      <!-- Bottom Watchdog Description Line (Shortened & Spacious) -->
+      <g transform="translate(15, 112)">
+        <circle cx="0" cy="0" r="4.5" fill="#34D399"/>
+        <text x="16" y="0" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14">
+          <tspan font-weight="900" fill="#F8FAFC">apra-fleet Supervisor Watchdog:</tspan>
+          <tspan dx="10" font-weight="500" fill="#CBD5E1">Detects dead processes and replays completed journal steps instantly.</tspan>
+        </text>
+      </g>
+    </g>
   </g>
-
-  <!-- live step 5 (resume point) -->
-  <circle cx="470" cy="250" r="34" fill="none" stroke="#f2a93b" stroke-width="1.25" opacity="0.4"/>
-  <rect x="443" y="223" width="54" height="54" rx="10" fill="#f2a93b" fill-opacity="0.1" stroke="#f2a93b" stroke-width="3"/>
-  <text x="470" y="258" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#e6edf3" text-anchor="middle">5</text>
-  <!-- live step 6 -->
-  <rect x="593" y="223" width="54" height="54" rx="10" fill="none" stroke="#e6edf3" stroke-width="2.5"/>
-  <circle cx="641" cy="229" r="4" fill="#f2a93b"/>
-  <text x="620" y="258" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#e6edf3" text-anchor="middle">6</text>
-  <!-- live step 7 -->
-  <rect x="743" y="223" width="54" height="54" rx="10" fill="none" stroke="#e6edf3" stroke-width="2.5"/>
-  <circle cx="791" cy="229" r="4" fill="#f2a93b"/>
-  <text x="770" y="258" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#e6edf3" text-anchor="middle">7</text>
-
-  <!-- done terminal -->
-  <circle cx="910" cy="250" r="27" fill="#f2a93b"/>
-  <path d="M 898 250 l 8 9 l 16 -19" fill="none" stroke="#0d1117" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="910" y="298" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e6edf3" text-anchor="middle">done</text>
-
-  <!-- step 5 pill -->
-  <rect x="386" y="183" width="168" height="25" rx="12.5" fill="#f2a93b" fill-opacity="0.1" stroke="#f2a93b" stroke-width="1.25"/>
-  <text x="470" y="200" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#f2a93b" text-anchor="middle">resumes live at the crash</text>
-  <line x1="470" y1="208" x2="470" y2="221" stroke="#f2a93b" stroke-width="1.25"/>
-  <circle cx="470" cy="222" r="2.25" fill="#f2a93b"/>
-
-  <!-- lost:nothing pill -->
-  <rect x="628" y="183" width="150" height="25" rx="12.5" fill="#f2a93b" fill-opacity="0.1" stroke="#f2a93b" stroke-width="1.25"/>
-  <text x="703" y="200" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#f2a93b" text-anchor="middle">lost: nothing</text>
-  <line x1="703" y1="208" x2="703" y2="242" stroke="#f2a93b" stroke-width="1.25"/>
-  <circle cx="703" cy="243" r="2.25" fill="#f2a93b"/>
-
-  <!-- budget note by done -->
-  <text x="962" y="243" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#8b949e"><tspan font-weight="700" fill="#e6edf3">budget re-debits journaled cost</tspan></text>
-  <text x="962" y="261" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#8b949e">so the resumed total = the whole logical run,</text>
-  <text x="962" y="277" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#8b949e">not just the live continuation.</text>
-
-  <!-- ============ divider ============ -->
-  <line x1="48" y1="405" x2="1232" y2="405" stroke="#8b949e" stroke-width="1" stroke-dasharray="2 6" opacity="0.4"/>
-
-  <!-- ============ ROW B: no journal (stateless) ============ -->
-  <text x="70" y="440" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e6edf3">Stateless session<tspan fill="#8b949e" font-weight="400" font-size="13">   -- no memory</tspan></text>
-  <text x="70" y="459" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e">a crash restarts cold from step 1</text>
-
-  <!-- band behind the doomed steps -->
-  <rect x="96" y="504" width="222" height="52" rx="12" fill="#8b949e" fill-opacity="0.05" stroke="#8b949e" stroke-width="1.25" stroke-dasharray="3 5" opacity="0.6"/>
-
-  <!-- "all work lost" pill -->
-  <rect x="112" y="478" width="190" height="24" rx="12" fill="#8b949e" fill-opacity="0.06" stroke="#8b949e" stroke-width="1.25"/>
-  <text x="207" y="494" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#8b949e" text-anchor="middle">all work lost on crash</text>
-  <line x1="207" y1="502" x2="207" y2="504" stroke="#8b949e" stroke-width="1.25"/>
-
-  <!-- steps 1-4 that ran + billed, now wasted -->
-  <line x1="96" y1="530" x2="338" y2="530" stroke="#8b949e" stroke-width="2" stroke-linecap="round"/>
-  <g>
-    <rect x="113" y="513" width="34" height="34" rx="8" fill="none" stroke="#8b949e" stroke-width="1.75"/>
-    <text x="130" y="536" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#8b949e" text-anchor="middle">1</text>
-    <rect x="163" y="513" width="34" height="34" rx="8" fill="none" stroke="#8b949e" stroke-width="1.75"/>
-    <text x="180" y="536" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#8b949e" text-anchor="middle">2</text>
-    <rect x="213" y="513" width="34" height="34" rx="8" fill="none" stroke="#8b949e" stroke-width="1.75"/>
-    <text x="230" y="536" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#8b949e" text-anchor="middle">3</text>
-    <rect x="263" y="513" width="34" height="34" rx="8" fill="none" stroke="#8b949e" stroke-width="1.75"/>
-    <text x="280" y="536" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#8b949e" text-anchor="middle">4</text>
-  </g>
-
-  <!-- crash in stateless row -->
-  <polyline points="338,530 348,516 358,544 368,516 378,544 388,530" fill="none" stroke="#8b949e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M 362 484 L 376 509 L 348 509 Z" fill="#8b949e" fill-opacity="0.12" stroke="#8b949e" stroke-width="1.75" stroke-linejoin="round"/>
-  <text x="362" y="507" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#8b949e" text-anchor="middle">!</text>
-
-  <!-- cold-restart loop-back arrow -->
-  <path d="M 372 540 C 386 582 232 584 116 560" fill="none" stroke="#8b949e" stroke-width="1.75" stroke-dasharray="4 4"/>
-  <polygon points="116,560 128,554 127,566" fill="#8b949e"/>
-  <text x="250" y="606" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#8b949e" text-anchor="middle">cold restart -- steps 1-4 re-dispatched and re-billed, run resumes from step 1</text>
-
-  <!-- ============ mini-ledger (right of stateless row) ============ -->
-  <rect x="560" y="470" width="650" height="112" rx="10" fill="#161b22" stroke="#8b949e" stroke-width="1" opacity="0.9"/>
-  <text x="580" y="494" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="2" fill="#f2a93b">ON CRASH -- WHAT IT COSTS YOU</text>
-  <line x1="700" y1="504" x2="700" y2="572" stroke="#8b949e" stroke-width="1" opacity="0.3"/>
-  <line x1="576" y1="536" x2="1194" y2="536" stroke="#8b949e" stroke-width="1" opacity="0.3"/>
-  <!-- column headers -->
-  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#8b949e" text-anchor="middle">
-    <text x="790" y="524">TIME</text>
-    <text x="960" y="524">WORK</text>
-    <text x="1120" y="524">SPEND</text>
-  </g>
-  <!-- row: with journal -->
-  <text x="580" y="558" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#f2a93b">with journal</text>
-  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" text-anchor="middle">
-    <text x="790" y="558" fill="#8b949e">lost</text>
-    <text x="960" y="558" fill="#f2a93b">kept</text>
-    <text x="1120" y="558" fill="#f2a93b">kept</text>
-  </g>
-  <!-- row: no journal -->
-  <text x="580" y="576" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#8b949e">no journal</text>
-  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#8b949e" text-anchor="middle">
-    <text x="790" y="576">lost</text>
-    <text x="960" y="576">lost</text>
-    <text x="1120" y="576">re-paid</text>
-  </g>
-
-  <!-- bottom caption -->
-  <text x="640" y="636" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">On resume, a replay-key match returns each finished step straight from the journal -- zero re-dispatch. A crash costs you time, not work or money.</text>
 </svg>
