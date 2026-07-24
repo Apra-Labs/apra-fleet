@@ -1451,3 +1451,71 @@ describe('workspace-not-trusted classification (apra-fleet-eft.40.3)', () => {
   });
 });
 
+describe('AGY resume scenarios', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    backupAndResetRegistry();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    restoreRegistry();
+  });
+
+  it('resume=false generates fresh ID on AGY side, server persists it', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-fresh', llmProvider: 'agy' });
+    addAgent(member);
+    
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ 
+        stdout: 'FLEET_SESSION_ID:agy-new-123\nFLEET_TRANSCRIPT_START\n{"type":"PLANNER_RESPONSE","status":"DONE","content":"done"}\nFLEET_TRANSCRIPT_END', 
+        stderr: '', 
+        code: 0 
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    await executePrompt({ member_id: member.id, prompt: 'hello', resume: false });
+    
+    const updated = getAgent(member.id);
+    expect(updated?.sessionId).toBe('agy-new-123');
+  });
+
+  it('resume=true with NO existing sessionId falls back to --continue, server persists returned ID', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-continue', llmProvider: 'agy' });
+    addAgent(member);
+    
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockResolvedValueOnce({ 
+        stdout: 'FLEET_SESSION_ID:agy-cont-456\nFLEET_TRANSCRIPT_START\n{"type":"PLANNER_RESPONSE","status":"DONE","content":"done"}\nFLEET_TRANSCRIPT_END', 
+        stderr: '', 
+        code: 0 
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
+
+    await executePrompt({ member_id: member.id, prompt: 'hello', resume: true });
+    
+    const updated = getAgent(member.id);
+    expect(updated?.sessionId).toBe('agy-cont-456');
+  });
+
+  it('resume=true with existing sessionId passes --conversation, server persists returned ID even if different', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-resume', llmProvider: 'agy', sessionId: 'agy-old-789' });
+    addAgent(member);
+    
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockResolvedValueOnce({ 
+        // AGY decided to branch or minted a new ID for whatever reason
+        stdout: 'FLEET_SESSION_ID:agy-branched-000\nFLEET_TRANSCRIPT_START\n{"type":"PLANNER_RESPONSE","status":"DONE","content":"done"}\nFLEET_TRANSCRIPT_END', 
+        stderr: '', 
+        code: 0 
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
+
+    await executePrompt({ member_id: member.id, prompt: 'hello', resume: true });
+    
+    const updated = getAgent(member.id);
+    expect(updated?.sessionId).toBe('agy-branched-000');
+  });
+});

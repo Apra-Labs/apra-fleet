@@ -130,7 +130,7 @@ describe('transformAgentForAgy', () => {
     // Frontmatter checks
     expect(result).toContain('name: doer');
     expect(result).toContain('description: Executes plan tasks in order');
-    expect(result).not.toContain('tools:');
+    expect(result).toContain('tools: [view_file, replace_file_content, multi_replace_file_content, write_to_file, run_command, grep_search, list_dir, invoke_subagent, send_message]');
 
     // Rule checks
     expect(result).toContain('<!-- AGY Sandbox Pre-approvals -->');
