@@ -323,6 +323,11 @@ async function handleSet(args: string[]): Promise<void> {
   }
 
   const sockPath = getSocketPath();
+  // Captured before the socket handler below wipes secretValue, so the
+  // local --persist path (which runs after that wipe, once we know whether
+  // the OOB delivery succeeded) still has a value to store instead of
+  // silently persisting an empty string.
+  let persistValue = secretValue;
   const waitForServer = new Promise<boolean>((resolve) => {
     const client = net.connect(sockPath, () => {
       const msg = JSON.stringify({ type: 'auth', member_name: name, password: secretValue, persist: finalPersist }) + '\n';
@@ -373,7 +378,7 @@ async function handleSet(args: string[]): Promise<void> {
 
     // Persist mode: store the secret
     try {
-      credentialSet(name, secretValue, true, 'allow');
+      credentialSet(name, persistValue, true, 'allow');
       console.error(`✓ Secret stored for ${name}.`);
       console.error(`  ℹ Network policy: allow. Use 'apra-fleet secret --update ${name} --deny' to restrict.`);
     } catch (err: any) {
@@ -383,7 +388,7 @@ async function handleSet(args: string[]): Promise<void> {
   } else if (persist) {
     // OOB delivery + persist: store the secret
     try {
-      credentialSet(name, secretValue, true, 'allow');
+      credentialSet(name, persistValue, true, 'allow');
       console.error(`✓ Secret also stored for future use.`);
       console.error(`  ℹ Network policy: allow. Use 'apra-fleet secret --update ${name} --deny' to restrict.`);
     } catch (err: any) {
@@ -391,4 +396,5 @@ async function handleSet(args: string[]): Promise<void> {
       process.exit(1);
     }
   }
+  persistValue = '';
 }
