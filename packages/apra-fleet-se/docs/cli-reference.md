@@ -171,11 +171,12 @@ independent of the server-command resolution above:
 2. `dist/agents/schemas/` -- populated by the root package's `scripts/dist-pm.mjs`
    at `prepublishOnly` (the same artifact `dist/auto-sprint.mjs` ships next to).
 3. `packages/apra-fleet-se/vendor/schemas/` -- a package-local copy inside
-   this package's own directory tree, populated by `scripts/vendor-schemas.mjs`.
-4. `packages/apra-fleet-se/apra-pm/agents/schemas/`, three levels up -- this monorepo's live
-   submodule checkout. Dev-convenience fallback only; emits a one-time
-   `console.warn` when used, since it does not exist in a packaged/installed
-   layout.
+   this package's own directory tree. Legacy layout: nothing populates it now
+   that apra-pm lives in this monorepo, so it normally does not exist.
+4. `packages/apra-fleet-se/apra-pm/agents/schemas/`, three levels up -- the
+   apra-pm package in this monorepo. Dev-convenience fallback only; emits a
+   one-time `console.warn` when used, since it does not exist in a
+   packaged/installed layout.
 
 If none of the four resolve, every role falls back to a hand-written literal
 schema shipped inside `contracts.mjs` itself (a deliberate, permanent

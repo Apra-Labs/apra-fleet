@@ -392,7 +392,7 @@ jobs:
       # warning proves APRA_FLEET_SE_SCHEMAS_DIR (set by the launcher's
       # applyEnvDefaults) pointed contracts.mjs's resolveSchemasDir() at the
       # installed ~/.apra-fleet/schemas/ tree rather than the (nonexistent in
-      # this packaged-binary context) monorepo vendor/apra-pm/ submodule.
+      # this packaged-binary context) monorepo packages/apra-fleet-se/apra-pm/ tree.
       - name: Smoke test - workflow auto-sprint --help (no system Node)
         if: runner.os != 'Windows'
         shell: bash
@@ -671,7 +671,7 @@ jobs:
 
       - name: Pack + install into a clean temp prefix (auto-sprint smoke test)
         # apra-fleet-3ns.2(f) / apra-fleet-3ns.2.2: proves a real packed
-        # tarball, extracted with no monorepo/vendor/ ancestor and no
+        # tarball, extracted with no monorepo ancestor and no
         # node_modules present, exposes a working `auto-sprint` bin whose
         # schema resolution finds the co-packaged dist/agents/schemas/ --
         # not the apra-fleet-bun.1 monorepo dev-fallback (which would warn)

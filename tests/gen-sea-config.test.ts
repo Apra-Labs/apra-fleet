@@ -3,7 +3,7 @@
  * script that scans hooks/, scripts/, skills/, and packages/apra-fleet-se/apra-pm/ and writes
  * dist/sea-manifest.json (baked into the SEA binary at build time).
  *
- * Runs the real script against the real packages/apra-fleet-se/apra-pm submodule checkout
+ * Runs the real script against the real packages/apra-fleet-se/apra-pm package checkout
  * (no mocking -- this script has no exported functions to unit test, and its
  * only job is to describe what's actually on disk). Guards against
  * regressions like the GAP A bug: a nested-directory walker that silently
@@ -27,7 +27,7 @@ describe('gen-sea-config.mjs -- generated SEA manifest', () => {
 
   beforeAll(() => {
     if (!existsSync(path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents'))) {
-      throw new Error('packages/apra-fleet-se/apra-pm submodule is not initialized -- run: git submodule update --init');
+      throw new Error('packages/apra-fleet-se/apra-pm package directory is missing -- re-clone the repo.');
     }
     execFileSync('node', ['scripts/gen-sea-config.mjs'], { cwd: root, stdio: 'pipe' });
     manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));

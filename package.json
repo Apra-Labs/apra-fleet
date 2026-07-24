@@ -49,13 +49,13 @@
     "build:se": "node scripts/bundle-se.mjs",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "pretest": "git submodule update --init --recursive && npm run build:contract",
+    "pretest": "npm run build:contract",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
     "integration": "tsc && npx tsx tests/integration.test.ts",
     "prepare": "node scripts/install-hooks.mjs",
-    "prepublishOnly": "npm run dist-pm && npm run vendor-schemas --workspace=@apralabs/apra-fleet-se && npm run build && npm run build:se"
+    "prepublishOnly": "npm run dist-pm && npm run build && npm run build:se"
   },
   "keywords": [
     "ai-agent",

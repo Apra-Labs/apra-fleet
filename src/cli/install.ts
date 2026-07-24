@@ -112,7 +112,7 @@ function getSeaAssetBuffer(key: string): Buffer {
   return Buffer.from(sea.getAsset(key));
 }
 
-// Claude-only helper skill vendored alongside apra-pm's auto-sprint workflow --
+// Claude-only helper skill packaged alongside apra-pm's auto-sprint workflow --
 // installed into <configDir>/skills/auto-sprint-args, mirrors apra-pm/install.mjs.
 const AUTO_SPRINT_ARGS_SKILL_NAME = 'auto-sprint-args';
 
@@ -238,7 +238,7 @@ function buildDevManifest(root: string): AssetManifest {
   const agents = collectFilesRec(agentsDir, agentsBase, agentsBase);
   const fleetSkills = collectFilesRec(path.join(root, 'skills', 'fleet'), 'skills/fleet');
 
-  // auto-sprint-args helper skill (vendored alongside apra-pm's auto-sprint workflow;
+  // auto-sprint-args helper skill (packaged alongside apra-pm's auto-sprint workflow;
   // claude-only install target, see the install flow's PM cost/workflow step).
   const vendorArgsSkill = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'skills', 'auto-sprint-args');
   const distArgsSkill = path.join(root, 'dist', 'skills', 'auto-sprint-args');
@@ -264,8 +264,8 @@ function buildDevManifest(root: string): AssetManifest {
 
   // Workflow subsystem parity (mirrors scripts/gen-sea-config.mjs) so `node
   // dist/index.js install` behaves identically to the SEA binary. Each source
-  // tree is optional -- an npm global install (no node_modules/ajv, no vendor
-  // submodule, no packages/) simply omits the section, same as an older SEA
+  // tree is optional -- an npm global install (no node_modules/ajv, no apra-pm
+  // package, no packages/) simply omits the section, same as an older SEA
   // manifest built before this epic; the install step warns and skips.
   const workflowRuntimeDir = path.join(root, 'packages', 'apra-fleet-workflow');
   const clientDir = path.join(root, 'packages', 'apra-fleet-client');
