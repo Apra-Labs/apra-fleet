@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 // self-healing Action -- the heal now rides on every run's teardown instead.
 
 const src = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '../e2e/run-e2e.mjs'),
+  join(dirname(fileURLToPath(import.meta.url)), '../../../../e2e/pm/run-e2e.mjs'),
   'utf-8',
 );
 
@@ -48,5 +48,5 @@ test('healDoltSeed force-pushes the golden seed and is best-effort', () => {
   assert.match(body, /'dolt', 'push', '--force', '--remote', 'origin'/, 'must force-push the seed');
   // Best effort: guarded by try/catch, never throws to fail the suite.
   assert.match(body, /try \{/, 'must wrap the heal in try/catch (best effort)');
-  assert.match(body, /PMLITE_E2E_NO_HEAL/, 'must support an opt-out env var');
+  assert.match(body, /E2E_NO_HEAL/, 'must support an opt-out env var');
 });

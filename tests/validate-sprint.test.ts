@@ -2,11 +2,12 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Inline evaluateGates logic from .github/e2e/validate-sprint.mjs so we can
-// unit-test it without spawning a subprocess.
-
-const SCAFFOLD = ['requirements.md', 'plan.md', 'feedback.md', 'progress.json'];
-const baseName = (p: string) => p.split('/').pop()!.toLowerCase();
+// Exercise the shared gate logic directly from e2e/lib/validate-sprint.mjs. These
+// fixtures use profile 'fleet' -- the 5-gate subset (pr-exists, commits>=N,
+// final-changeset-clean, process-discipline, beads-closed) over the wider scaffold
+// set (requirements/plan/feedback/progress) with no feedback-verdict requirement --
+// which is what the fleet harness runs.
+import { evaluateGates } from '../e2e/lib/validate-sprint.mjs';
 
 interface GateData {
   pr?: { url: string; number: number } | null;
@@ -16,37 +17,12 @@ interface GateData {
   closedP1?: string[];
   minCommits?: number;
   expectedIssues?: number;
-}
-
-function evaluateGates(d: GateData) {
-  const gates: Array<{ name: string; pass: boolean; detail: string }> = [];
-  const add = (name: string, pass: boolean, detail = '') => gates.push({ name, pass, detail });
-
-  add('pr-exists', !!(d.pr && d.pr.url), d.pr ? `#${d.pr.number}` : 'no PR found');
-
-  const minCommits = d.minCommits ?? 10;
-  add(`commits>=${minCommits}`, (d.commitCount || 0) >= minCommits, `${d.commitCount || 0} commits`);
-
-  const finalBases = (d.finalFiles || []).map(baseName);
-  const leaked = SCAFFOLD.filter((f) => finalBases.includes(f));
-  add('final-changeset-clean', leaked.length === 0,
-    leaked.length ? `process files still in net diff: ${leaked.join(', ')}` : 'no process files in net diff');
-
-  const touched = new Set((d.touchedBasenames || []).map((s) => s.toLowerCase()));
-  const missing = SCAFFOLD.filter((f) => !touched.has(f));
-  add('process-discipline', missing.length === 0,
-    missing.length ? `never committed (no discipline proof): ${missing.join(', ')}` : 'all process files appeared in intermediate commits');
-
-  const expected = d.expectedIssues ?? 3;
-  const closed = d.closedP1 || [];
-  add('beads-closed', closed.length >= expected,
-    `${closed.length} of the picked P1 issue(s) closed${closed.length ? ': ' + closed.join(', ') : ''}`);
-
-  return { gates, pass: gates.every((g) => g.pass) };
+  profile?: 'pm' | 'fleet';
 }
 
 describe('evaluateGates', () => {
   const passing: GateData = {
+    profile: 'fleet',
     pr: { url: 'https://github.com/test/repo/pull/42', number: 42 },
     commitCount: 12,
     finalFiles: ['src/index.ts', 'src/utils.ts'],
@@ -97,29 +73,27 @@ describe('evaluateGates', () => {
     const g = r.gates.find((x) => x.name === 'beads-closed');
     expect(g!.pass).toBe(false);
   });
+
+  it('fleet profile runs exactly the 5-gate subset', () => {
+    const r = evaluateGates(passing);
+    const names = r.gates.map((g) => g.name).sort();
+    expect(names).toEqual(
+      ['beads-closed', 'commits>=4', 'final-changeset-clean', 'pr-exists', 'process-discipline'].sort(),
+    );
+  });
 });
 
-describe('suite config files', () => {
-  it('lite-suites.json parses and has required keys', () => {
-    const raw = fs.readFileSync(path.join(process.cwd(), '.github/e2e/lite-suites.json'), 'utf-8');
+describe('suite registry', () => {
+  it('e2e/suites.json parses and carries both namespaces', () => {
+    const raw = fs.readFileSync(path.join(process.cwd(), 'e2e/suites.json'), 'utf-8');
     const cfg = JSON.parse(raw);
-    expect(cfg.toy).toBeTruthy();
-    expect(Array.isArray(cfg.suites)).toBe(true);
-    expect(cfg.suites).toHaveLength(1);
-    expect(cfg.suites[0].id).toBe('s10');
-    expect(cfg.suites[0].provider).toBe('opencode');
-    for (const s of cfg.suites) {
-      expect(s.id).toBeTruthy();
-      expect(s.provider).toBeTruthy();
-      expect(s.cli).toBeTruthy();
-      expect(s).not.toHaveProperty('os');
-    }
-  });
-
-  it('suites.json parses and has required keys', () => {
-    const raw = fs.readFileSync(path.join(process.cwd(), '.github/e2e/suites.json'), 'utf-8');
-    const cfg = JSON.parse(raw);
-    expect(cfg.suites).toBeTruthy();
-    expect(typeof cfg.suites).toBe('object');
+    // Fleet namespace: object keyed by suite id (fleet-s*), read by fleet-e2e.yml.
+    expect(cfg.fleet?.suites).toBeTruthy();
+    expect(typeof cfg.fleet.suites).toBe('object');
+    expect(cfg.fleet.suites['fleet-s1']).toBeTruthy();
+    // pm namespace: array of run configs (pm-s*), read by apra-pm run-e2e.mjs.
+    expect(Array.isArray(cfg.pm?.suites)).toBe(true);
+    expect(cfg.pm.toy).toBeTruthy();
+    expect(cfg.pm.suites.map((s: { id: string }) => s.id)).toContain('pm-s1');
   });
 });

@@ -14,10 +14,10 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: 'Suite to run. s1=Claude, s7=Gemini, s8=AGY, s9=OpenCode, s10=Claude-PM-Workflow.'
+        description: 'Suite to run. pm-s1=Claude, pm-s7=Gemini, pm-s8=AGY, pm-s9=OpenCode, pm-s10=Claude-PM-Workflow.'
         required: true
         type: choice
-        options: [s1, s7, s8, s9, s10]
+        options: [pm-s1, pm-s7, pm-s8, pm-s9, pm-s10]
       runner:
         description: 'Runner label override. Leave blank for default (self-hosted for all suites).'
         required: false
@@ -48,11 +48,11 @@ jobs:
         shell: bash
         run: |
           case "${{ inputs.suite }}" in
-            s1) P=claude ;;
-            s7) P=gemini ;;
-            s8) P=agy ;;
-            s9) P=opencode ;;
-            s10) P=claude ;;
+            pm-s1) P=claude ;;
+            pm-s7) P=gemini ;;
+            pm-s8) P=agy ;;
+            pm-s9) P=opencode ;;
+            pm-s10) P=claude ;;
             *) echo "::error::unknown suite ${{ inputs.suite }}"; exit 1 ;;
           esac
           echo "provider=$P" >> "$GITHUB_OUTPUT"
@@ -161,8 +161,8 @@ jobs:
             test -f "$AGENTS_DIR/$a.md" || { echo "::error::agent $a missing at $AGENTS_DIR"; exit 1; }
           done
           echo "skill + 4 agents present under $CFG"
-          # s10 requires the auto-sprint workflow to be installed
-          if [ '${{ inputs.suite }}' = 's10' ]; then
+          # pm-s10 requires the auto-sprint workflow to be installed
+          if [ '${{ inputs.suite }}' = 'pm-s10' ]; then
             test -f "$HOME/.claude/workflows/auto-sprint.js" || { echo "::error::auto-sprint workflow missing at $HOME/.claude/workflows/auto-sprint.js"; exit 1; }
             echo "auto-sprint workflow present"
           fi
@@ -200,7 +200,7 @@ jobs:
           if [ $rc -eq 124 ]; then echo "::error::$P hung dispatching a subagent (timeout) -- pm cannot run on this provider/config"; exit 1; fi
           echo "$out" | grep -q "PMLITE-READY" || { echo "::error::$P produced no response -- start/auth issue"; exit 1; }
           echo "$out" | grep -q "SUBAGENT-OK"  || { echo "::error::$P responded but the subagent never returned -- subagent dispatch broken"; exit 1; }
-          if [ '${{ inputs.suite }}' = 's10' ] && [ "$P" = "claude" ]; then
+          if [ '${{ inputs.suite }}' = 'pm-s10' ] && [ "$P" = "claude" ]; then
             echo "$out" | grep -q "AUTO-SPRINT-OK" || { echo "::error::claude does not have the Workflow tool -- auto-sprint cannot run"; exit 1; }
           fi
           echo "$P: subagent dispatch OK"
@@ -210,21 +210,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
           # Self-hosted runners are trusted; pass token so the LLM can use gh CLI.
-          PMLITE_E2E_TRUST_LLM: "1"
+          E2E_TRUST_LLM: "1"
           # Model override: workflow input wins, otherwise suites.json default is used.
-          PMLITE_E2E_MODEL: ${{ inputs.model }}
-        run: node packages/apra-fleet-se/apra-pm/e2e/run-e2e.mjs --suite "${{ inputs.suite }}"
+          E2E_MODEL: ${{ inputs.model }}
+        run: node e2e/pm/run-e2e.mjs --suite "${{ inputs.suite }}"
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pm-e2e-${{ inputs.suite }}
-          path: packages/apra-fleet-se/apra-pm/e2e-results/
+          path: e2e/pm/e2e-results/
           if-no-files-found: ignore
 
       # Safety net: run-e2e.mjs already uninstalls pm after each suite (see
-      # teardownInstall() in e2e/run-e2e.mjs). This step only catches the case
+      # teardownInstall() in e2e/pm/run-e2e.mjs). This step only catches the case
       # where the script itself crashed or was killed by timeout-minutes before
       # reaching that teardown, so runners never carry stale pm state (skill,
       # agents, auto-sprint workflow, permissions) into the next e2e run.

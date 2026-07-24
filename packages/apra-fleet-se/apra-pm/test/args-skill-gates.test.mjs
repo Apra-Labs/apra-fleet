@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateGates } from '../e2e/validate-sprint.mjs';
+import { evaluateGates } from '../../../../e2e/lib/validate-sprint.mjs';
 
 const gateNames = (r) => r.gates.map((g) => g.name);
 const gate = (r, name) => r.gates.find((g) => g.name === name);

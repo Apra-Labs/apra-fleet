@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-// Inline the core extraction logic from .github/e2e/extract-results.mjs so we
+// Inline the core extraction logic from e2e/lib/extract-results.mjs so we
 // can unit-test it without spawning a subprocess or touching the filesystem.
 
 function extractTexts(content: string): string[] {
