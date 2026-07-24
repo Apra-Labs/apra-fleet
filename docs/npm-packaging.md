@@ -236,11 +236,11 @@ standalone npm packages. (`packages/fleet-api-contract` is the one exception
 Inside `dist/`, two independent build steps contribute content beyond tsc's
 own TypeScript output:
 
-- `scripts/dist-pm.mjs` (prepublishOnly) copies the `packages/apra-fleet-se/apra-pm`
-  submodule's `skills/pm`, `agents/` (including `agents/schemas/*.json`),
+- `scripts/dist-pm.mjs` (prepublishOnly) copies `packages/apra-fleet-se/apra-pm`'s
+  `skills/pm`, `agents/` (including `agents/schemas/*.json`),
   and `.claude/workflows/` into `dist/skills/pm`, `dist/agents/`, and
-  `dist/workflows/` respectively -- needed because `npm install` never
-  clones submodules.
+  `dist/workflows/` respectively -- needed because `packages/` is not in the
+  published `files` list, so this content ships only if copied into `dist/`.
 - `scripts/bundle-se.mjs` (prepublishOnly, apra-fleet-3ns.2) esbuild-bundles
   `packages/apra-fleet-se/bin/cli.mjs` (the new, provider-agnostic
   `auto-sprint` CLI, plus its `@apralabs/apra-fleet-workflow` and
@@ -290,7 +290,7 @@ Validated tarball size (post apra-fleet-3ns.2): ~2.7 MB unpacked, 744 files.
 | `bin` | `{ "apra-fleet": "dist/index.js", "auto-sprint": "dist/auto-sprint.mjs" }` | npm sets the executable bit; both entries' shebangs are preserved (tsc for the former, esbuild for the latter) |
 | `engines.node` | `>=22.0.0` | Node 22 required for `node:sea` API + native `fetch` |
 | `publishConfig.access` | `public` | Required for scoped packages on public npm |
-| `prepublishOnly` | `node scripts/dist-pm.mjs && npm run vendor-schemas --workspace=@apralabs/apra-fleet-se && npm run build && npm run build:se` | Vendors submodule content, snapshots apra-fleet-se's package-local schema copy, runs tsc, then esbuild-bundles auto-sprint -- see above |
+| `prepublishOnly` | `node scripts/dist-pm.mjs && npm run vendor-schemas --workspace=@apralabs/apra-fleet-se && npm run build && npm run build:se` | Copies the apra-pm package content into `dist/`, snapshots apra-fleet-se's package-local schema copy, runs tsc, then esbuild-bundles auto-sprint -- see above |
 | `type` | `module` | ESM output; tsc emits `.js` (not `.mjs`); the esbuild auto-sprint bundle emits `.mjs` |
 
 ---
@@ -339,7 +339,7 @@ Steps in order:
    in the pack output; fails if unpacked size exceeds 10 MB
 9. **Pack + install into a clean temp prefix (auto-sprint smoke test)**
    (apra-fleet-3ns.2 / apra-fleet-3ns.2.2) -- packs a real tarball, extracts
-   it into a temp directory with no monorepo/vendor/ ancestor and no
+   it into a temp directory with no monorepo ancestor and no
    `node_modules`, runs `node dist/auto-sprint.mjs --help` from there, and
    asserts (a) the expected usage text prints and (b) stderr does NOT
    contain the apra-fleet-bun.1 dev-fallback warning -- proving the packed

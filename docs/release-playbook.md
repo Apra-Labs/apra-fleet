@@ -2,26 +2,6 @@
 
 How to cut a release. That's it.
 
-## 0. Check the packages/apra-fleet-se/apra-pm submodule
-
-apra-fleet vendors the apra-pm skill at `packages/apra-fleet-se/apra-pm`. Before releasing,
-make sure it points at a real, merged commit on apra-pm's `main` -- not a
-feature-branch tip or a leftover detached-HEAD commit from development.
-
-```bash
-cd packages/apra-fleet-se/apra-pm
-git fetch origin
-git checkout main && git pull origin main   # move to latest merged apra-pm
-cd ../..
-git add packages/apra-fleet-se/apra-pm
-git commit -m "chore(vendor): repoint apra-pm submodule to main"
-```
-
-If apra-pm has unreleased fixes sitting on a feature branch, merge that
-branch to apra-pm's own `main` first (PR + merge in the apra-pm repo), then
-repoint the submodule as above. Never release apra-fleet with the submodule
-pinned to an unmerged commit.
-
 ## 1. Bump the version -- in both package.json AND version.json
 
 Both files must be bumped together, in the same commit. This is not

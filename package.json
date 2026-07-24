@@ -49,7 +49,7 @@
     "build:se": "node scripts/bundle-se.mjs",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "pretest": "git submodule update --init --recursive && npm run build:contract",
+    "pretest": "npm run build:contract",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
