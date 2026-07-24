@@ -75,7 +75,10 @@ One control plane. Any device. Any model. Any workflow. Any domain.
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
 | **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
 
-<img src="../../assets/marketing/fleet-topology.svg" alt="apra-fleet topology: one control plane connected to five heterogeneous member devices across providers and operating systems" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../../assets/marketing/fleet-topology-dark.svg">
+  <img src="../../assets/marketing/fleet-topology.svg" alt="apra-fleet topology: one control plane dispatching to five heterogeneous member devices across providers and operating systems" width="100%">
+</picture>
 
 ## Watch a fleet work
 
@@ -300,11 +303,16 @@ third-party verticals.
   against the live viewer. This is the highest-credibility asset we own --
   it cannot be hand-authored like GFX-1/GFX-3, it has to be a real capture.
 
-[GFX-3] Fleet topology -- DONE. assets/marketing/fleet-topology.svg
-  (900px). One control-plane node -> 5 heterogeneous member devices
-  (laptop/tower/GPU box/cloud VM/CI rack), each badged with a provider
-  glyph + OS label. Callouts: "reserved by sprint A", "tier: premium",
-  "credential: scoped". Static, mono-accent (amber). Wired in above.
+[GFX-3] Fleet topology -- DONE (redesigned).
+  assets/marketing/fleet-topology.svg (light) +
+  assets/marketing/fleet-topology-dark.svg (900x520). Centered
+  control-plane hexagon with radial glow -> 5 heterogeneous member
+  devices (laptop/tower/GPU box/cloud VM/CI rack), each badged with a
+  provider glyph + OS label. Directional dashed spokes with arrowheads,
+  amber pill callouts: "reserved by sprint A", "tier: premium",
+  "credential: scoped". Mono-accent (amber), same grid/palette as the
+  hero banner. Wired in above via a GitHub <picture> element
+  (dark/light), matching GFX-1.
 
 [GFX-4] Architecture: the mermaid block above renders natively on GitHub;
   keep as code (evolves with the product, diffs in PRs).

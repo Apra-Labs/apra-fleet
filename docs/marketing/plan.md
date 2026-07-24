@@ -189,7 +189,7 @@ Page map (v1):
 |---|---|---|
 | GFX-1 hero banner | 1280x320 SVG/PNG, dark+light variants via GitHub picture element. Wordmark + tagline. Visual: constellation of device silhouettes (laptop, tower, rack, cloud) connected by orbit lines to a central control hexagon; small provider glyphs per device; subtle grid background. | done -- assets/marketing/hero-banner-{dark,light}.svg |
 | GFX-2 dashboard GIF | REAL recording of the auto-sprint viewer during a live run: phase transitions, doer dispatch landing, verdict appearing. 20-30s loop, 1200px wide, <8MB. Highest-credibility asset -- prioritize. LANDING PREREQUISITE: draft must not promote to /README.md without it. The old YouTube video (SGdHvIkSbY8) was tried as interim media and REJECTED (user, 2026-07-20): it is PM-skill-era material that contradicts the new positioning. | BLOCKED on run 16+ (eft.27 lean viewer) -- the one asset here that requires a real capture, not hand-authored art |
-| GFX-3 fleet topology | 900px SVG, static. One control-plane node -> 4-5 heterogeneous member devices, provider logos + OS glyphs, callouts: "reserved by sprint A", "tier: premium", "credential: scoped". Mono-accent. | done -- assets/marketing/fleet-topology.svg |
+| GFX-3 fleet topology | 900x520 SVG, static, dark+light variants via GitHub picture element (same convention as GFX-1). Centered control-plane hexagon with radial glow -> 5 heterogeneous member devices (laptop/tower/GPU box/cloud VM/CI rack), provider glyph badges + OS labels, directional dashed spokes with arrowheads, amber pill callouts: "reserved by sprint A", "tier: premium", "credential: scoped". Mono-accent, hero-banner palette and grid. | done (redesigned 2026-07-24) -- assets/marketing/fleet-topology{,-dark}.svg |
 | GFX-4 architecture | mermaid block in README (renders natively on GitHub, diffs in PRs). Already in draft. | in draft |
 | Badges | shields.io: build (GH Actions), latest release, license, "providers: 5+", platform trio (win/mac/linux). No custom infra. | pending README landing |
 
@@ -331,3 +331,19 @@ daily; 13/0 will change -- possibly to 13/1, which is a BETTER story:
   abstract "cost curve" prose per the "reduce the text" ask.
   Kashyap's third comment -- possible section reorder (security up) --
   is logged as an open decision above, not yet applied to the draft.
+- 2026-07-24 (GFX-3 redesign, user feedback "does not look as attractive
+  as hero"): fleet topology rebuilt from scratch and a dark variant added
+  (assets/marketing/fleet-topology{,-dark}.svg, 900x520), embedded via a
+  GitHub `<picture>` element like the hero. Diagnosed weaknesses of v1:
+  light-only (flashed white in dark mode next to the dark hero), flat
+  ground with no grid/vignette, small edge-hugging hub with no hierarchy,
+  thin directionless mixed dashed/solid lines, off-palette callout colors
+  (#fff8ec/#8a5a12), and a seam-y three-circle cloud icon. v2: hub
+  centered with a radial amber glow + dashed outer hexagon ring, hero's
+  grid + exact palette reused, five devices arranged radially with
+  heavier-stroke refined icons (terminal-on-screen laptop, turbine-fan
+  GPU box, single-path cloud with VM chip, LED-status CI rack),
+  directional dashed spokes with arrowheads/ports/in-flight packets,
+  callouts restyled as amber-tinted pills, tagline moved into a
+  hero-style eyebrow title block ("FLEET TOPOLOGY"). Both variants
+  verified by headless-Chrome render.
