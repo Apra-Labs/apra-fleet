@@ -190,4 +190,45 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(calledArgs, options);
         assert.deepStrictEqual(result, { status: 'ok' });
     });
+
+    test('shutdownServer', async () => {
+        let calledName, calledArgs, calledOpts;
+        const mockClient = {
+            async callTool(name, args, opts) {
+                calledName = name;
+                calledArgs = args;
+                calledOpts = opts;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const result = await fleet.shutdownServer();
+
+        assert.strictEqual(calledName, 'shutdown_server');
+        // shutdown_server takes no arguments -- unlike every other wrapped
+        // tool, callers never pass options here.
+        assert.deepStrictEqual(calledArgs, {});
+        // Defaults to a short timeout: the server closing its own transport
+        // as part of shutting down can race this request's response, so
+        // callers must not be left hanging up to the SDK's normal 15-minute
+        // default waiting for a response that may never arrive.
+        assert.deepStrictEqual(calledOpts, { timeoutMs: 5000 });
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('shutdownServer honors an explicit timeoutMs override', async () => {
+        let calledOpts;
+        const mockClient = {
+            async callTool(name, args, opts) {
+                calledOpts = opts;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        await fleet.shutdownServer({ timeoutMs: 2000 });
+
+        assert.deepStrictEqual(calledOpts, { timeoutMs: 2000 });
+    });
 });

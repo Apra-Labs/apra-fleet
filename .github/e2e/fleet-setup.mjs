@@ -9,10 +9,17 @@
 // Usage:
 //   node fleet-setup.mjs setup --suite <id>
 //   node fleet-setup.mjs teardown
+//   node fleet-setup.mjs shutdown
 //
 // `setup` must be run with cwd set to the run directory ($RUN_DIR in the
 // workflow) -- checkpoints.json is written relative to cwd, matching the
 // convention sprint-script.md already uses for T3-* checkpoints.
+//
+// `shutdown` stops the whole fleet server process (every member/session on
+// the runner, not just the ones this suite registered) and is deliberately
+// NOT part of `teardown` -- a caller running multiple suites against the
+// same self-hosted runner must opt into it explicitly rather than have any
+// one suite's teardown take the server out from under the others.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -321,6 +328,36 @@ async function runTeardown() {
   }
 }
 
+// shutdown is intentionally its own subcommand, NOT folded into teardown --
+// it stops the whole fleet server (every connected member/session on the
+// runner), not just alice/bella, so a caller running multiple suites against
+// the same self-hosted runner concurrently must opt into it explicitly rather
+// than have every suite's teardown kill it out from under the others.
+async function runShutdown() {
+  const { connectFleet, checkRunningInstance } = await import('../../packages/apra-fleet-client/src/client/server-resolution.mjs');
+  const { fleetApi, transport } = await connectFleet();
+  try {
+    try {
+      const { text } = await call(fleetApi.shutdownServer.bind(fleetApi), undefined, 'shutdown_server');
+      process.stdout.write(`${text}\n`);
+    } catch (err) {
+      // shutdown_server (src/tools/shutdown-server.ts) closes the HTTP
+      // transport -- including the persistent SSE stream this request's own
+      // response may be delivered over -- as part of shutting down. The
+      // connection dying before that response arrives is the EXPECTED
+      // outcome of a successful shutdown racing its own teardown, not a
+      // real failure, and surfaces here as a transport/stream error rather
+      // than a resolved response. Don't trust a response that can
+      // legitimately never arrive -- verify directly instead.
+      const instance = await checkRunningInstance().catch(() => ({ running: false }));
+      if (instance.running) throw err; // still up -- this really did fail
+      process.stdout.write(`Server shutting down (connection closed before the response arrived -- verified stopped: ${err.message}).\n`);
+    }
+  } finally {
+    try { transport.stop(); } catch { /* the server is exiting anyway -- best-effort */ }
+  }
+}
+
 // ---- CLI entry ----------------------------------------------------------------
 
 function parseArgs(argv) {
@@ -349,8 +386,13 @@ if (process.argv[1] && (process.argv[1].endsWith('fleet-setup.mjs') || process.a
       process.stdout.write(`T6: FAIL -- ${err.message}\n`);
       process.exit(1);
     });
+  } else if (subcommand === 'shutdown') {
+    runShutdown().catch((err) => {
+      process.stderr.write(`Shutdown failed: ${err.message}\n`);
+      process.exit(1);
+    });
   } else {
-    process.stderr.write('Usage: fleet-setup.mjs <setup --suite <id>|teardown>\n');
+    process.stderr.write('Usage: fleet-setup.mjs <setup --suite <id>|teardown|shutdown>\n');
     process.exit(1);
   }
 }

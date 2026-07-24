@@ -283,4 +283,23 @@ export class ApraFleet {
     async setupSshKey(options) {
         return this.mcpClient.callTool('setup_ssh_key', options);
     }
+
+    /**
+     * Gracefully shut down the fleet server this client is connected to.
+     * Self-terminates the server process (deletes the singleton pointer,
+     * closes the HTTP transport and all SSH connections) -- does not touch
+     * the OS service-manager layer at all, so it works even when service
+     * registration (systemd/schtasks) never succeeded.
+     *
+     * The server closing its own transport as part of shutting down can race
+     * this very request's response -- callers should treat ANY outcome
+     * (resolve, reject, or timeout) as inconclusive on its own and verify via
+     * a direct status check instead. opts.timeoutMs (default 5000) keeps a
+     * lost response from hanging the caller up to the SDK's normal 15-minute
+     * default.
+     * @param {{ timeoutMs?: number }} [opts]
+     */
+    async shutdownServer(opts = {}) {
+        return this.mcpClient.callTool('shutdown_server', {}, { timeoutMs: opts.timeoutMs ?? 5000 });
+    }
 }
