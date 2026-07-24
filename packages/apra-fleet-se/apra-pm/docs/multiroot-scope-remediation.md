@@ -1,8 +1,10 @@
 # Multi-root scope remediation (auto-sprint plan/exit gates)
 
-Status: in progress
+Status: complete. Merged to apra-pm `main` as `5663c6f`; e2e `s10` re-run green
+(run `30042586018`). apra-pm has since moved into the apra-fleet monorepo at
+`packages/apra-fleet-se/apra-pm/`, which is now the canonical location.
 Branch: `fix/token-maths`
-Scope: `C:\akhil\git\apra-pm` only. Does NOT touch the vendored copy in apra-fleet.
+Scope (as authored): the apra-pm sources only.
 
 ## Why this exists
 
@@ -143,7 +145,7 @@ Fixes land in one shared apra-pm checkout, so agents are partitioned by FILE (no
 2. Manual re-read of the plan/develop/exit call sequence for scope consistency.
 3. Final gate (on request): re-run e2e `s10` via workflow_dispatch and confirm green.
 
-## Out of scope (noted, not done here)
+## Out of scope at authoring time (since done)
 
-- Re-vendoring the fixed apra-pm into apra-fleet's `packages/apra-fleet-se/apra-pm/`.
-  Separate follow-up, only if requested.
+- Propagating the fixed apra-pm into apra-fleet's `packages/apra-fleet-se/apra-pm/`.
+  Done as a separate follow-up; that path is now the canonical home for apra-pm.

@@ -81,8 +81,7 @@ registration is one of the things under test.
 
 Prerequisites (stabilization Issue 43: a fresh checkout fails without
 these; a sprint workspace normally has all three already):
-- `<repo-root>` cloned recursively (`git clone --recursive`, or
-  `git submodule update --init --recursive` after checkout) -- `install`
+- `<repo-root>` cloned normally (`git clone`) -- `install`
   fails at its fleet-skill step if `packages/apra-fleet-se/apra-pm` is empty.
 - `npm install && npm run build` has been run -- every step below invokes
   `node dist/index.js`.

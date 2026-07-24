@@ -126,7 +126,7 @@ if (existsSync(workflowsSrcDir)) {
 // the ajv validator subtree and its 4 runtime deps. Shipped as verbatim files
 // (never bundled into sea-bundle.cjs) so the on-disk workflow packages can
 // `import()` them at runtime with zero source changes. Hard-fail if the ajv
-// dependency tree is missing -- mirrors the vendor submodule guard above.
+// dependency tree is missing -- mirrors the apra-pm package guard above.
 const ajvDir = join(root, 'node_modules', 'ajv');
 if (!existsSync(ajvDir)) {
   console.error('Error: node_modules/ajv is missing (required for the workflow-runtime SEA assets).');

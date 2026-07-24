@@ -59,7 +59,7 @@ function generateSection() {
     '// below are generated from packages/apra-fleet-se/apra-pm\'s own canonical, machine-readable role',
     '// contracts at agents/schemas/<role>-output.json, instead of being hand-copied',
     '// inline literals -- this closes the drift this file used to have from the',
-    '// vendored agents/*.md prose and from packages/apra-fleet-se/auto-sprint/contracts.mjs.',
+    '// agents/*.md prose and from packages/apra-fleet-se/auto-sprint/contracts.mjs.',
     '// The "version" key present in each source file is dropped: it is a non-standard',
     '// JSON-Schema keyword the agent tool\'s strict schema validator rejects.',
     '//',

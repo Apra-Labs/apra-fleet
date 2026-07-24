@@ -91,7 +91,7 @@ export function validateRole(role) {
 // ---------------------------------------------------------------------------
 //
 // Schema resolution is layout-aware and bundled-location-first (apra-fleet-
-// bun), because apra-fleet-se must resolve its vendored role schemas
+// bun), because apra-fleet-se must resolve its apra-pm role schemas
 // correctly regardless of how it ended up on disk: a full monorepo git
 // clone (this repo, today), a standalone `npm install @apralabs/apra-fleet-
 // se`, or bundled into the root @apralabs/apra-fleet package's dist/auto-
@@ -101,7 +101,7 @@ export function validateRole(role) {
 //      override, used as-is with no further fallback. Tests use this to
 //      point at a fixture directory; any deployment may also use it to pin
 //      an exact schemas directory.
-//   2. <root>/dist/agents/schemas -- the sibling directory scripts/vendor-
+//   2. <root>/dist/agents/schemas -- the sibling directory scripts/dist-
 //      pm.mjs ALREADY populates at the root package's `prepublishOnly`
 //      (cpSync of packages/apra-fleet-se/apra-pm/agents -> dist/agents, which includes its
 //      schemas/ subdir). This is what a dist/auto-sprint.mjs bundle
@@ -214,8 +214,8 @@ export function majorVersionFromId(id) {
 }
 
 /**
- * Version-pin check (proposal section 4.3): a submodule bump that changes a
- * contract's major version must fail CI loudly at module-load time, not
+ * Version-pin check (proposal section 4.3): an apra-pm package update that
+ * changes a contract's major version must fail CI loudly at module-load time, not
  * drift silently into a stale validator. Only ever called when a vendored
  * schema file was actually found -- an absent file already takes the
  * fallback path and never reaches this check.
@@ -229,7 +229,7 @@ export function assertVersionPin(role, schema, expectedMajor) {
         throw new Error(
             `[contracts] Version-pin mismatch for role "${role}": this module was written against ` +
                 `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` +
-                `${JSON.stringify(schema && schema.$id)}. A packages/apra-fleet-se/apra-pm submodule bump changed this ` +
+                `${JSON.stringify(schema && schema.$id)}. A packages/apra-fleet-se/apra-pm package update changed this ` +
                 `role's contract -- update contracts.mjs (and re-verify every call site that consumes ` +
                 `this schema) before accepting the new vendored version.`,
         );
@@ -241,15 +241,15 @@ export function assertVersionPin(role, schema, expectedMajor) {
 // ---------------------------------------------------------------------------
 //
 // The section 2 note above documents ONE quiet case: resolveSchemasDir()
-// finding none of its four candidate directories at all (VENDOR_SCHEMAS_DIR
+// finding none of its three candidate directories at all (VENDOR_SCHEMAS_DIR
 // === null). That is an expected state (e.g. a fresh dev checkout where none
 // of the candidate directories happen to exist) and must stay silent --
 // warning on it would just be noise on every such checkout.
 //
 // There is a SECOND, much more dangerous case this module must not stay
-// quiet about: the directory DOES exist (the submodule has been bumped) but
-// one specific role's <role>-output.json is missing from it. That means a
-// submodule bump silently dropped/never-added a schema file this module
+// quiet about: the directory DOES exist (the apra-pm package was updated) but
+// one specific role's <role>-output.json is missing from it. That means an
+// apra-pm package update silently dropped/never-added a schema file this module
 // expects, so `resolveOutputSchema` silently falls back to a
 // possibly-stale, hand-written literal instead of the new vendored contract
 // -- exactly the kind of drift the version-pin check (assertVersionPin)
@@ -306,7 +306,7 @@ export function warnIfVendorFileUnexpectedlyMissing(role, fileBaseName) {
  * agents/schemas/<role>-output.json (with a version-pin check), fall back to
  * the literal shipped in this module when the vendored file is absent. Warns
  * loudly (see `warnIfVendorFileUnexpectedlyMissing`) when that absence looks
- * like a regression rather than the expected not-yet-bumped-submodule state.
+ * like a regression rather than the expected not-yet-updated-apra-pm state.
  * @param {string} role
  * @param {number} expectedMajor
  * @param {object} fallback
@@ -353,8 +353,8 @@ const taskAssignmentSchema = {
     required: ['id', 'bucket', 'model'],
 };
 
-// Fallback for role "plan-reviewer". Canonical source once the submodule
-// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/plan-reviewer-output.json.
+// Fallback for role "plan-reviewer". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/plan-reviewer-output.json.
 const FALLBACK_planReviewerVerdict = {
     $id: 'planReviewerVerdict',
     type: 'object',
@@ -366,8 +366,8 @@ const FALLBACK_planReviewerVerdict = {
     required: ['verdict', 'notes', 'taskAssignments'],
 };
 
-// Fallback for role "reviewer". Canonical source once the submodule
-// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json.
+// Fallback for role "reviewer". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json.
 const FALLBACK_reviewerVerdict = {
     $id: 'reviewerVerdict',
     type: 'object',
@@ -400,8 +400,8 @@ const FALLBACK_reviewerVerdict = {
     required: ['verdict', 'notes', 'reopenIds', 'newTasks'],
 };
 
-// Fallback for role "doer". Canonical source once the submodule pointer is
-// bumped: packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json.
+// Fallback for role "doer". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json.
 const FALLBACK_doerReport = {
     $id: 'doerReport',
     type: 'object',
@@ -437,8 +437,8 @@ export const streakAssignment = {
     required: ['streaks'],
 };
 
-// Fallback for role "deployer". Canonical source once the submodule
-// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/deployer-output.json.
+// Fallback for role "deployer". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/deployer-output.json.
 const FALLBACK_deployerReport = {
     $id: 'deployerReport',
     type: 'object',
@@ -449,8 +449,8 @@ const FALLBACK_deployerReport = {
     required: ['deployed', 'notes'],
 };
 
-// Fallback for role "integ-test-runner". Canonical source once the
-// submodule pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/integ-test-runner-output.json.
+// Fallback for role "integ-test-runner". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/integ-test-runner-output.json.
 // apra-fleet-eft.66.1: `deployedSha` added (optional) alongside the vendor/
 // apra-pm bump to commit 844112e -- validatePart2Evidence (runner.js) reads
 // it as the primary part-2 SHA-freshness evidence source, falling back to
@@ -472,8 +472,8 @@ const FALLBACK_integReport = {
     required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary'],
 };
 
-// Fallback for role "ci-watcher". Canonical source once the submodule
-// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/ci-watcher-output.json.
+// Fallback for role "ci-watcher". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/ci-watcher-output.json.
 const FALLBACK_ciReport = {
     $id: 'ciReport',
     type: 'object',
@@ -484,8 +484,8 @@ const FALLBACK_ciReport = {
     required: ['status', 'notes'],
 };
 
-// Fallback for role "harvester". Canonical source once the submodule
-// pointer is bumped: packages/apra-fleet-se/apra-pm/agents/schemas/harvester-output.json.
+// Fallback for role "harvester". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/harvester-output.json.
 const FALLBACK_harvesterReport = {
     $id: 'harvesterReport',
     type: 'object',
@@ -639,7 +639,7 @@ export function validateVerdict(name, data) {
 // which it originally authored and is now migrating away from). So the
 // "file not found" case for an input schema no-ops/passes rather than
 // falling back to anything: unw.21 only shipped input schemas for the
-// roles it prioritized, and even once the submodule bump lands, a role
+// roles it prioritized, and even once the apra-pm package is updated, a role
 // with no <role>-input.json is a valid state (some roles may never need
 // one), not an error state.
 //

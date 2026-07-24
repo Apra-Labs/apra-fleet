@@ -232,7 +232,7 @@ describe('auto-sprint-args skill install (GAP B)', () => {
 
 // ---------------------------------------------------------------------------
 // npm dist-fallback coverage: when packages/apra-fleet-se/apra-pm is absent (npm-published
-// package, no submodule checked out), install falls back to the vendored
+// package, apra-pm package dir not present), install falls back to the
 // dist/ copies that scripts/dist-pm.mjs produces at publish time. Same GAP
 // A/B nested-directory bug applies to this branch independently of the
 // vendor/ branch covered above -- both must carry schemas/, _shared/, and the
@@ -250,7 +250,7 @@ describe('npm dist-fallback: agent install carries nested agents/schemas and age
       const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('apra-pm')) return false; // no submodule -- npm install
+      if (ps.includes('apra-pm')) return false; // apra-pm package dir absent -- npm install
       if (ps.includes('dist/agents')) return true; // matches dist/agents and its schemas/_shared subdirs
       return false;
     });
@@ -323,7 +323,7 @@ describe('npm dist-fallback: auto-sprint-args skill install', () => {
       const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (ps.includes('apra-pm')) return false; // no submodule -- npm install
+      if (ps.includes('apra-pm')) return false; // apra-pm package dir absent -- npm install
       if (ps.endsWith('dist/skills/auto-sprint-args')) return true;
       return false;
     });
