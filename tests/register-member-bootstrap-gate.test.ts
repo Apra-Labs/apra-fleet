@@ -9,12 +9,14 @@ vi.mock('../src/services/statusline.js', () => ({
   readMemberStatus: vi.fn(() => 'idle'),
 }));
 
-// apra-fleet-2xs.4: the local-Claude interactive bootstrap in register-member.ts does a
-// real HTTP GET (via checkRunningInstance) and, if a fleet server happens to be
-// running, writes settings.local.json and spawns a real `claude` process. These tests
-// verify (a) the block is skipped by default in NODE_ENV=test, and (b) when explicitly
-// enabled via APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP=1, injected fakes are used
-// instead of a real network probe / real process spawn.
+// apra-fleet-2xs.4 / follow-up: the local-Claude interactive bootstrap in
+// register-member.ts does a real HTTP GET (via checkRunningInstance) and, if a
+// fleet server happens to be running, spawns a real detached `claude` process
+// via the member's provider adapter. It is unconditionally disabled
+// (interactiveBootstrapEnabled() always returns false) because remove_member
+// never kills that spawned process and there is no register_member input to
+// opt out per call -- these tests verify it stays off in every environment,
+// including one that previously would have opted it back in.
 
 describe('register-member interactive bootstrap gate', () => {
   let workFolder: string;
@@ -41,7 +43,7 @@ describe('register-member interactive bootstrap gate', () => {
   // this test only mocks the interactive-bootstrap piece being asserted on,
   // not those checks. That real subprocess work is measurably slower on
   // Windows CI runners than the default budget allows.
-  it('does NOT call checkRunningInstance or spawn a process by default under NODE_ENV=test', async () => {
+  it('does NOT call checkRunningInstance or spawn a process under NODE_ENV=test', async () => {
     expect(process.env.NODE_ENV).toBe('test');
     delete process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP;
 
@@ -72,64 +74,31 @@ describe('register-member interactive bootstrap gate', () => {
     }
   }, 20000);
 
-  // Same real-subprocess-work rationale as the test above.
-  it('uses injected fakes (no real network/spawn/CLI call) when explicitly opted in via env', async () => {
+  // Regression guard: interactiveBootstrapEnabled() used to opt back in under
+  // APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP=1 -- it no longer does. This proves
+  // the env var has no effect anymore, i.e. the feature stays off unconditionally.
+  it('stays disabled even with APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP=1 set', async () => {
     process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP = '1';
 
     const { registerMember, __setInteractiveBootstrapDeps, __resetInteractiveBootstrapDeps } =
       await import('../src/tools/register-member.js');
 
-    const checkRunningInstance = vi.fn().mockResolvedValue({
-      running: true,
-      url: 'http://127.0.0.1:19999/mcp',
-      pid: 12345,
-    });
-    const fakeProc = { pid: 424242, unref: vi.fn() };
-    const spawn = vi.fn().mockReturnValue(fakeProc);
-    // apra-fleet-fnz.1: registration now goes through the provider's own
-    // registerMcpEndpoint() (real Claude implementation shells out to
-    // `claude mcp add`) instead of hand-writing settings.local.json -- inject
-    // a fake provider so this test never spawns a real `claude` CLI process.
-    const registerMcpEndpoint = vi.fn().mockResolvedValue({ mechanism: 'cli-verb', detail: 'fake' });
-    const getProvider = vi.fn().mockReturnValue({ name: 'claude', registerMcpEndpoint });
-    __setInteractiveBootstrapDeps({ checkRunningInstance, spawn, getProvider } as any);
+    const checkRunningInstance = vi.fn();
+    const spawn = vi.fn();
+    __setInteractiveBootstrapDeps({ checkRunningInstance, spawn } as any);
 
     try {
       const result = await registerMember({
-        friendly_name: 'gate-enabled-test',
+        friendly_name: 'gate-env-set-still-off-test',
         member_type: 'local',
         work_folder: workFolder,
         llm_provider: 'claude',
       } as any);
 
       expect(result).toContain('registered successfully');
-      expect(checkRunningInstance).toHaveBeenCalledTimes(1);
-      expect(spawn).toHaveBeenCalledTimes(1);
-      expect(spawn.mock.calls[0][0]).toBe('claude');
-      expect(registerMcpEndpoint).toHaveBeenCalledTimes(1);
+      expect(checkRunningInstance).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
 
-      const call = registerMcpEndpoint.mock.calls[0][0];
-      expect(call.url).toContain('19999');
-      expect(call.scope).toBe('project');
-      expect(call.workFolder).toBe(workFolder);
-
-      // apra-fleet-2xs.2: identity is keyed on the member UUID -- the URL
-      // fallback param must be the UUID, not the friendly name, and the JWT
-      // must carry the workspace_id hard boundary minted by the local issuer.
-      const { findAgentByName } = await import('../src/services/registry.js');
-      const agent = findAgentByName('gate-enabled-test');
-      expect(agent).toBeDefined();
-      expect(call.url).toBe(`http://127.0.0.1:19999/mcp?member=${agent!.id}`);
-
-      const { verify } = await import('../src/services/jwt.js');
-      const { localWorkspaceId } = await import('../src/services/token-issuer.js');
-      const claims = verify(call.token);
-      expect(claims).not.toBeNull();
-      expect(claims!.member_id).toBe(agent!.id);
-      expect(claims!.workspace_id).toBe(localWorkspaceId());
-
-      // settings.local.json must NOT be hand-written anymore -- registration
-      // now goes exclusively through the provider adapter.
       const settingsPath = path.join(workFolder, '.claude', 'settings.local.json');
       expect(fs.existsSync(settingsPath)).toBe(false);
     } finally {

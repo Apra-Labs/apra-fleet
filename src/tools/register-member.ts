@@ -105,8 +105,12 @@ export function __resetInteractiveBootstrapDeps(): void {
 }
 
 function interactiveBootstrapEnabled(): boolean {
-  if (process.env.NODE_ENV !== 'test') return true;
-  return process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP === '1';
+  // Disabled until the interactive-bootstrap lifecycle is fixed: the detached
+  // `claude --dangerously-load-development-channels` process this spawns has
+  // no register_member input to opt out per call, and no reliable teardown
+  // (remove_member never kills it -- src/tools/remove-member.ts), leaving a
+  // long-running, unlabeled claude.exe with no obvious owner.
+  return false;
 }
 
 export async function registerMember(input: RegisterMemberInput): Promise<string> {
