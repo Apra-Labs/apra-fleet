@@ -39,11 +39,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
       - name: Create run directory
         shell: bash
         run: |
@@ -57,6 +52,16 @@ jobs:
         run: |
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           jq --version || { echo "::error::jq is not installed on this runner"; exit 1; }
+
+      # Must run AFTER "Check runner prerequisites": GITHUB_PATH entries are
+      # prepended in the order steps add them, so a step run later wins.
+      # $HOME/.local/bin (added above) contains a `node` symlink to an old
+      # nvm install on the self-hosted runners -- putting this step first
+      # let that shadow the version installed here.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Load suite config
         id: suite
