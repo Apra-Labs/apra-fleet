@@ -88,12 +88,15 @@ function textOf(result) {
 }
 
 /** Call a fleet SDK method and throw with the real error text on failure.
- *  Fleet tools report failure as text (a leading FAIL_MARK), not a rejected
- *  promise, so this is the only reliable check. */
-async function call(fn, options, label) {
+ *  Most fleet tools report failure as text (a leading FAIL_MARK) rather than
+ *  a rejected promise, but a handler that throws internally instead resolves
+ *  with the MCP-level result.isError flag set (see McpClient.handleMessage /
+ *  client.mjs -- only a transport-level error rejects the promise) -- check
+ *  both, since a FAIL_MARK-less isError result would otherwise read as PASS. */
+export async function call(fn, options, label) {
   const result = await fn(options);
   const text = textOf(result).trim();
-  if (text.startsWith(FAIL_MARK)) {
+  if (result?.isError || text.startsWith(FAIL_MARK)) {
     throw new Error(`${label} failed: ${text}`);
   }
   return { text, result };

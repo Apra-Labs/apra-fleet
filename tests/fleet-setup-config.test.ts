@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { loadConfig, resolveMemberConfigs, bdCheckFor, doltCheckFor } from '../.github/e2e/fleet-setup.mjs';
+import { loadConfig, resolveMemberConfigs, bdCheckFor, doltCheckFor, call } from '../.github/e2e/fleet-setup.mjs';
 
 const REPO_ROOT = path.join(process.cwd());
 
@@ -93,5 +93,27 @@ describe('fleet-setup.mjs bd/dolt check command selection', () => {
     expect(doltCheckFor('windows')).toMatch(/^if \(Get-Command dolt/);
     expect(doltCheckFor('windows')).not.toContain('||');
     expect(doltCheckFor('windows')).not.toContain('$(');
+  });
+});
+
+describe('fleet-setup.mjs call() failure detection', () => {
+  // The MCP SDK's own tool dispatch wraps a thrown handler exception as
+  // { content, isError: true } (node_modules/@modelcontextprotocol/sdk's
+  // McpServer.createToolError()) -- this resolves the request, it does not
+  // reject it. Text-only FAIL_MARK sniffing misses that case entirely.
+  it('throws when result.isError is true, even with no FAIL_MARK-prefixed text', async () => {
+    const fn = async () => ({ content: [{ text: 'Internal error: something broke' }], isError: true });
+    await expect(call(fn, {}, 'some_tool')).rejects.toThrow(/some_tool failed/);
+  });
+
+  it('throws when the text starts with the FAIL_MARK, even with isError unset', async () => {
+    const fn = async () => ({ content: [{ text: '❌ Member not found' }] });
+    await expect(call(fn, {}, 'some_tool')).rejects.toThrow(/some_tool failed/);
+  });
+
+  it('resolves normally when neither isError nor FAIL_MARK is present', async () => {
+    const fn = async () => ({ content: [{ text: 'Member registered successfully' }] });
+    const { text } = await call(fn, {}, 'some_tool');
+    expect(text).toBe('Member registered successfully');
   });
 });

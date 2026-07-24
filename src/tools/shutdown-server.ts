@@ -14,8 +14,14 @@ export function setHttpHandle(handle: HttpTransportHandle): void {
 
 export async function shutdownServer(): Promise<string> {
   if (httpHandle) {
-    try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
+    // Close the transport BEFORE deleting the singleton pointer, not after --
+    // a caller polling checkRunningInstance() (server.json gone => not
+    // running) must never see "stopped" while the process is still up
+    // because close() failed partway through. Deleting first turned that
+    // exact failure into a false-positive "verified stopped" for any client
+    // race-handling this response (apra-fleet-client's shutdownServer()).
     await httpHandle.close();
+    try { fs.unlinkSync(SERVER_INFO_PATH); } catch {}
   }
   closeAllConnections();
   setTimeout(() => process.exit(0), 100);
