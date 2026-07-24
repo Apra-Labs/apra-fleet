@@ -104,10 +104,11 @@ describe('dev-mode agent install carries nested agents/schemas and agents/_share
       const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      // Anchor apra-pm to a real path segment, not a bare substring: an
-      // invoking path such as .../vendor-sync-apra-pm/... must NOT be treated
-      // as the apra-pm package directory (see apra-fleet-c96).
-      if (/(^|\/)apra-pm(\/|$)/.test(ps) && ps.includes('agents')) return true;
+      // Match the apra-pm package by its full package path, not a bare
+      // "apra-pm" substring: an invoking path such as .../vendor-sync-apra-pm/...
+      // or a checkout under a dir literally named apra-pm must NOT be treated
+      // as the package directory (see apra-fleet-c96).
+      if (/apra-fleet-se\/apra-pm(\/|$)/.test(ps) && ps.includes('agents')) return true;
       return false;
     });
 
@@ -253,7 +254,7 @@ describe('npm dist-fallback: agent install carries nested agents/schemas and age
       const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (/(^|\/)apra-pm(\/|$)/.test(ps)) return false; // apra-pm package dir absent (see apra-fleet-c96)
+      if (/apra-fleet-se\/apra-pm(\/|$)/.test(ps)) return false; // apra-pm package dir absent (see apra-fleet-c96)
       if (ps.includes('dist/agents')) return true; // matches dist/agents and its schemas/_shared subdirs
       return false;
     });
@@ -326,7 +327,7 @@ describe('npm dist-fallback: auto-sprint-args skill install', () => {
       const ps = p.toString().replace(/\\/g, '/');
       if (ps.includes('version.json')) return true;
       if (ps.includes('hooks-config.json')) return true;
-      if (/(^|\/)apra-pm(\/|$)/.test(ps)) return false; // apra-pm package dir absent (see apra-fleet-c96)
+      if (/apra-fleet-se\/apra-pm(\/|$)/.test(ps)) return false; // apra-pm package dir absent (see apra-fleet-c96)
       if (ps.endsWith('dist/skills/auto-sprint-args')) return true;
       return false;
     });
