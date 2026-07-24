@@ -576,10 +576,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
-  const resuming = !!(input.resume && agent.sessionId && provider.supportsResume());
-  const mintedId = (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy')
+  // For AGY, resuming is allowed even without a known sessionId (falls back to --continue).
+  // For other providers, resuming requires a known sessionId.
+  const isAgyContinue = provider.name === 'agy' && input.resume && !agent.sessionId && provider.supportsResume();
+  const resuming = isAgyContinue ? true : !!(input.resume && agent.sessionId && provider.supportsResume());
+
+  const mintedId = (provider.name === 'claude' || provider.name === 'gemini')
     ? (resuming ? agent.sessionId! : uuid())
-    : (resuming ? agent.sessionId : undefined);
+    : (provider.name === 'agy')
+      ? (resuming ? agent.sessionId : undefined)
+      : (resuming ? agent.sessionId : undefined);
 
   const promptOpts = {
     folder: resolvedWorkFolder,
@@ -752,11 +758,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
 
     // Session-id assertion: returned id must match the one we minted/resumed
-    if (mintedId && parsed.sessionId && parsed.sessionId !== mintedId) {
+    // Exception: AGY owns its session generation, so we always accept its returned ID
+    if (provider.name !== 'agy' && mintedId && parsed.sessionId && parsed.sessionId !== mintedId) {
       scope.info(`session-id mismatch: expected=${mintedId} got=${parsed.sessionId} -- not persisting`);
       touchAgent(agent.id, undefined);
     } else {
-      touchAgent(agent.id, mintedId ?? parsed.sessionId);
+      touchAgent(agent.id, parsed.sessionId ?? mintedId);
     }
     if (mintedId) {
       try {

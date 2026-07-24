@@ -17,7 +17,7 @@ import {
   PROVIDER_STANDARD_MODELS,
   ProviderInstallConfig
 } from './config.js';
-import { transformAgentForOpenCode } from './agent-transform.js';
+import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transform.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 
@@ -1100,7 +1100,7 @@ ${killHint}
     // as a fallback), preserving this branch's no-dist/agents rule, and it
     // recurses into _shared/ and schemas/ which the old flat readdir missed.
     for (const { relPath, content: rawContent } of loadAgentAssets()) {
-      const content = llm === 'opencode' ? transformAgentForOpenCode(rawContent, relPath) : rawContent;
+      const content = llm === 'opencode' ? transformAgentForOpenCode(rawContent, relPath) : llm === 'agy' ? transformAgentForAgy(rawContent, relPath) : rawContent;
       writeAssetFile(path.join(agentsDestDir, relPath), content);
     }
   }

@@ -16,7 +16,7 @@ import { getStrategy } from './strategy.js';
 import { uploadContentToHome } from './sftp.js';
 import { loadAgentAssets } from '../cli/install.js';
 import { getAgentsDirRelative } from '../cli/config.js';
-import { transformAgentForOpenCode } from '../cli/agent-transform.js';
+import { transformAgentForOpenCode, transformAgentForAgy } from '../cli/agent-transform.js';
 
 export interface CanonicalAgentFile {
   relPath: string;
@@ -47,6 +47,8 @@ export function loadCanonicalAgentSet(provider: LlmProvider): CanonicalAgentFile
     const normalized = content.replace(/\r\n/g, '\n');
     const transformed = provider === 'opencode'
       ? transformAgentForOpenCode(normalized, relPath)
+      : provider === 'agy'
+      ? transformAgentForAgy(normalized, relPath)
       : normalized;
     return { relPath, content: transformed, sha256: sha256Hex(transformed) };
   });

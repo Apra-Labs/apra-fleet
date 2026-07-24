@@ -72,10 +72,15 @@ export class AgyProvider implements ProviderAdapter {
     }
     cmd += ` -p "${instruction}"`;
 
-    // Only pass --conversation when resuming an existing session. For fresh sessions,
-    // agy ignores the UUID we pass and creates its own -- use folder lookup instead.
-    if (sessionId && resuming) {
-      cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
+    // Only pass --conversation when resuming a SPECIFIC existing session.
+    // If resuming is true but no sessionId is known yet, fallback to --continue
+    // to pick up the workspace's default conversation (generated on the fly).
+    if (resuming) {
+      if (sessionId) {
+        cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
+      } else {
+        cmd += ` --continue`;
+      }
     }
 
     if (unattended === 'dangerous') {
@@ -102,6 +107,11 @@ export class AgyProvider implements ProviderAdapter {
 
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout;
+    let extractedSessionId: string | undefined;
+    const sessionMatch = raw.match(/FLEET_SESSION_ID:([^\r\n]+)/);
+    if (sessionMatch) {
+      extractedSessionId = sessionMatch[1].trim();
+    }
 
     // Primary path: extract response from the transcript JSONL that agy writes after
     // completing its task. This is more reliable than PTY/ANSI capture because agy
@@ -131,7 +141,7 @@ export class AgyProvider implements ProviderAdapter {
       if (lastResponse) {
         return {
           result: lastResponse,
-          sessionId: undefined,
+          sessionId: extractedSessionId,
           isError: result.code !== 0,
           raw,
           usage: undefined,
@@ -143,11 +153,12 @@ export class AgyProvider implements ProviderAdapter {
     console.error('[agy] warning: transcript markers not found -- falling back to raw ANSI-stripped output');
     const stripped = stripAnsi(raw)
       .replace(/^FLEET_PID:\d+\r?\n/m, '')
+      .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
       .replace(/\r/g, '')
       .trim();
     return {
       result: stripped,
-      sessionId: undefined,
+      sessionId: extractedSessionId,
       isError: result.code !== 0,
       raw,
       usage: undefined,

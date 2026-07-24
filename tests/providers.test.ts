@@ -981,17 +981,35 @@ describe('AgyProvider', () => {
     expect(cmd).toContain('agy --model');
     expect(cmd).toContain('-p');
     expect(cmd).not.toContain('--conversation');
+    expect(cmd).not.toContain('--continue');
     expect(cmd).not.toContain('--dangerously-skip-permissions');
   });
 
-  it('builds prompt command with resume flag', () => {
+  it('builds prompt command with resume flag and explicit session ID', () => {
     const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', sessionId: 'sess-abc', resuming: true });
     expect(cmd).toContain('--conversation "sess-abc"');
+    expect(cmd).not.toContain('--continue');
+  });
+
+  it('builds prompt command with resume flag but no session ID (fallback to --continue)', () => {
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', resuming: true });
+    expect(cmd).toContain('--continue');
+    expect(cmd).not.toContain('--conversation');
   });
 
   it('builds prompt command with unattended=dangerous', () => {
     const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'dangerous' });
     expect(cmd).toContain('--dangerously-skip-permissions');
+  });
+
+  it('parseResponse extracts FLEET_SESSION_ID', () => {
+    const stdout = `FLEET_SESSION_ID:real-uuid-456
+FLEET_TRANSCRIPT_START
+{"type":"PLANNER_RESPONSE","status":"DONE","content":"The calculation result is 49"}
+FLEET_TRANSCRIPT_END`;
+    const res = p.parseResponse({ stdout, stderr: '', code: 0 });
+    expect(res.sessionId).toBe('real-uuid-456');
+    expect(res.result).toBe('The calculation result is 49');
   });
 
   it('modelFlag returns empty string', () => {

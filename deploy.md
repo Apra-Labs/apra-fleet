@@ -2,6 +2,8 @@
 
 ## Permissions
 
+### Claude Code
+
 Commands below require these prefixes in `.claude/settings.json` under `permissions.allow`:
 - `Bash(gh run *)`
 - `Bash(gh release *)`
@@ -14,6 +16,17 @@ Commands below require these prefixes in `.claude/settings.json` under `permissi
 - `Bash(npm run build)`
 - `Bash(npm run build:binary)`
 - `Bash(dist/apra-fleet-installer-* install *)`
+
+### Antigravity (AGY)
+
+Commands below require `command` permission grants in Antigravity (or explicit user approval when prompted):
+- `gh`
+- `mkdir`
+- `rm`
+- `chmod`
+- `npm`
+- `*apra-fleet-installer-*`
+- `*apra-fleet*`
 
 ## Prerequisites
 - `gh` CLI authenticated with access to Apra-Labs/apra-fleet
@@ -72,14 +85,14 @@ if [ "$FALLBACK_BUILD" = true ]; then
   esac
   SEA_PLATFORM="$(echo "$OS" | tr '[:upper:]' '[:lower:]')"
   BUILT_INSTALLER="dist/apra-fleet-installer-${SEA_PLATFORM}-${SEA_ARCH}"
-  "$BUILT_INSTALLER" install --force
+  "$BUILT_INSTALLER" install --force --llm <claude|agy>
 else
   rm -rf /tmp/fleet-deploy
   mkdir -p /tmp/fleet-deploy
   RUN_ID=$(gh run list --repo Apra-Labs/apra-fleet --branch main --workflow "CI - Build & Test" --status success --limit 1 --json databaseId -q '.[0].databaseId')
   gh run download "$RUN_ID" --repo Apra-Labs/apra-fleet --name "$ARTIFACT" --dir /tmp/fleet-deploy
   chmod +x "/tmp/fleet-deploy/$ARTIFACT"
-  "/tmp/fleet-deploy/$ARTIFACT" install --force
+  "/tmp/fleet-deploy/$ARTIFACT" install --force --llm <claude|agy>
 fi
 ```
 
@@ -117,7 +130,7 @@ gh release list --repo Apra-Labs/apra-fleet --limit 5
 rm -rf /tmp/fleet-deploy && mkdir -p /tmp/fleet-deploy
 gh release download <tag> --repo Apra-Labs/apra-fleet -p "<artifact-for-this-platform>" -D /tmp/fleet-deploy
 chmod +x /tmp/fleet-deploy/<artifact-for-this-platform>
-/tmp/fleet-deploy/<artifact-for-this-platform> install --force
+/tmp/fleet-deploy/<artifact-for-this-platform> install --force --llm <claude|agy>
 ```
 
 ## Rollback
@@ -131,7 +144,7 @@ release and re-run the installer with `--force`:
 rm -rf /tmp/fleet-rollback
 gh release download <tag> --repo Apra-Labs/apra-fleet -p "<artifact-for-this-platform>" -D /tmp/fleet-rollback
 chmod +x /tmp/fleet-rollback/<artifact-for-this-platform>
-/tmp/fleet-rollback/<artifact-for-this-platform> install --force
+/tmp/fleet-rollback/<artifact-for-this-platform> install --force --llm <claude|agy>
 ```
 
 After rollback, run `/mcp` in Claude Code to reconnect, then `fleet_status`

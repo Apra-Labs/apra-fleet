@@ -75,9 +75,10 @@ function argsSkillDest(cfg) { return path.join(cfg.configDir, 'skills', ARGS_SKI
 // This mirrors the transformAgentForOpenCode in apra-fleet src/cli/agent-transform.ts.
 // external_directory: allow is required because e2e sprints run in /tmp worktrees
 // that are outside the project CWD; without it subagents hang on a permission prompt.
-function transformAgentForOpenCode(content) {
+
+function parseAgentFile(content) {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
-  if (!fmMatch) return content;
+  if (!fmMatch) return null;
 
   const frontmatter = fmMatch[1];
   const body = content.slice(fmMatch[0].length);
@@ -96,14 +97,25 @@ function transformAgentForOpenCode(content) {
     }
   }
 
-  const toolSet = new Set(tools);
-  const perm = hasTools
+  let name;
+  const nameMatch = frontmatter.match(/^name:\s*(.+)/m);
+  if (nameMatch) name = nameMatch[1].trim();
+
+  return { name, description, tools, hasTools, body };
+}
+
+function transformAgentForOpenCode(content) {
+  const parsed = parseAgentFile(content);
+  if (!parsed) return content;
+
+  const toolSet = new Set(parsed.tools);
+  const perm = parsed.hasTools
     ? { edit: toolSet.has('Edit') ? 'allow' : 'deny', write: 'allow', bash: toolSet.has('Bash') ? 'allow' : 'deny' }
     : { edit: 'deny', write: 'allow', bash: 'deny' };
 
   const opencodeFm = [
     '---',
-    `description: ${description}`,
+    `description: ${parsed.description}`,
     'mode: subagent',
     'permission:',
     `  edit: ${perm.edit}`,
@@ -114,7 +126,69 @@ function transformAgentForOpenCode(content) {
     '',
   ].join('\n');
 
-  return opencodeFm + body;
+  return opencodeFm + parsed.body;
+}
+
+// --- agy agent transform ---------------------------------------------------
+// AGY uses XML <rule><auto_approve> blocks to pre-approve sandbox actions without
+// halting execution for interactive prompts. Maps legacy Claude tools to AGY actions.
+function transformAgentForAgy(content) {
+  const parsed = parseAgentFile(content);
+  let agyFm = '---\n';
+  if (parsed.name) agyFm += `name: ${parsed.name}\n`;
+  if (parsed.description) agyFm += `description: ${parsed.description}\n`;
+  
+  if (parsed.hasTools) {
+    const agyToolMap = {
+      'Read': ['view_file'],
+      'Grep': ['grep_search'],
+      'Glob': ['list_dir'],
+      'Bash': ['run_command'],
+      'Write': ['write_to_file', 'replace_file_content', 'multi_replace_file_content'],
+      'Edit': ['replace_file_content', 'multi_replace_file_content'],
+      'Agent': ['invoke_subagent', 'send_message']
+    };
+    
+    const mappedTools = new Set();
+    for (const tool of parsed.tools) {
+      const mapped = agyToolMap[tool] || [tool];
+      for (const m of mapped) mappedTools.add(m);
+    }
+    
+    agyFm += `tools: [${Array.from(mappedTools).join(', ')}]\n`;
+  }
+  
+  agyFm += '---\n\n';
+
+  let agyRules = '';
+  if (parsed.hasTools && parsed.tools.length > 0) {
+    agyRules += '\n<!-- AGY Sandbox Pre-approvals -->\n<rule>\n  <auto_approve>\n';
+    const toolSet = new Set(parsed.tools.map(t => t.toLowerCase()));
+
+    if (toolSet.has('read') || toolSet.has('glob') || toolSet.has('grep')) {
+      agyRules += '    <permission action="read_file" target="*" />\n';
+    }
+    if (toolSet.has('write') || toolSet.has('edit')) {
+      agyRules += '    <permission action="write_file" target="*" />\n';
+    }
+    if (toolSet.has('bash')) {
+      agyRules += '    <permission action="command" target="*" />\n';
+    }
+    if (toolSet.has('agent')) {
+      agyRules += '    <permission action="invoke_subagent" target="*" />\n';
+      agyRules += '    <permission action="send_message" target="*" />\n';
+    }
+    if (toolSet.has('mcp')) {
+      agyRules += '    <permission action="mcp" target="*" />\n';
+    }
+    if (toolSet.has('fetch') || toolSet.has('curl')) {
+      agyRules += '    <permission action="read_url" target="*" />\n';
+    }
+
+    agyRules += '  </auto_approve>\n</rule>\n';
+  }
+
+  return agyFm + parsed.body.trim() + '\n' + agyRules;
 }
 
 // --- fs helpers ------------------------------------------------------------
@@ -359,6 +433,7 @@ function main() {
   for (const a of agents) {
     let content = fs.readFileSync(path.join(agentsSrc, a), 'utf-8');
     if (args.llm === 'opencode') content = transformAgentForOpenCode(content);
+    else if (args.llm === 'agy') content = transformAgentForAgy(content);
     fs.writeFileSync(path.join(agentsDest, a), content);
   }
   console.log(`  [2/4] agents  -> ${agentsDest} (${agents.length}: ${agents.map(a => a.replace('.md', '')).join(', ')})`);
