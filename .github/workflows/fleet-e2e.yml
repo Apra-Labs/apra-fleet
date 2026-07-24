@@ -115,6 +115,35 @@ jobs:
           fi
           "$INSTALLED_BIN" --version
 
+      - name: Start fleet service and wait for it to be available
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            INSTALLED_BIN="$HOME/.apra-fleet/bin/apra-fleet.exe"
+          else
+            INSTALLED_BIN="$HOME/.apra-fleet/bin/apra-fleet"
+          fi
+          # `install` only registers the service; on self-hosted runners without a
+          # D-Bus/systemd user session (e.g. headless service accounts) that
+          # registration is silently skipped, so the MCP server never actually
+          # starts listening. `start` handles both cases: it uses the service
+          # manager when installed, or falls back to a direct detached spawn
+          # when it isn't -- and it already waits and verifies before returning,
+          # exiting non-zero if the server didn't come up in time.
+          "$INSTALLED_BIN" start
+          # Belt-and-suspenders: poll `status` until it reports running, since
+          # `start`'s own 2s wait can be tight on a loaded CI runner.
+          for i in $(seq 1 15); do
+            if "$INSTALLED_BIN" status | grep -q "State:    running"; then
+              echo "apra-fleet service is running."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::apra-fleet service did not report running within 15s"
+          "$INSTALLED_BIN" status || true
+          exit 1
+
       - name: Seed fleet credential store
         shell: bash
         run: |
