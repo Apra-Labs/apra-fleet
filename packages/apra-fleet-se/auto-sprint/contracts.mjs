@@ -242,10 +242,9 @@ export function assertVersionPin(role, schema, expectedMajor) {
 //
 // The section 2 note above documents ONE quiet case: resolveSchemasDir()
 // finding none of its four candidate directories at all (VENDOR_SCHEMAS_DIR
-// === null). That is an expected state (e.g. a fresh dev checkout that
-// hasn't run the vendor-schemas build step and has no submodule checked
-// out) and must stay silent -- warning on it would just be noise on every
-// such checkout.
+// === null). That is an expected state (e.g. a fresh dev checkout where none
+// of the candidate directories happen to exist) and must stay silent --
+// warning on it would just be noise on every such checkout.
 //
 // There is a SECOND, much more dangerous case this module must not stay
 // quiet about: the directory DOES exist (the submodule has been bumped) but

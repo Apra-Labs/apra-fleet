@@ -7,17 +7,13 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 // apra-fleet-bun.5 -- end-to-end proof of apra-fleet-bun's acceptance
-// criterion: a package directory with NO ancestor vendor/ present still
-// resolves correct, non-stale vendored schemas (or degrades cleanly to the
+// criterion: a package directory with NO ancestor schema copy present still
+// resolves correct, non-stale schemas (or degrades cleanly to the
 // hand-written fallback literals without crashing), across every tier of
-// resolveSchemasDir()'s bundled-location-first precedence (apra-fleet-bun.1),
-// plus scripts/vendor-schemas.mjs's --check drift detection (apra-fleet-bun.2).
+// resolveSchemasDir()'s bundled-location-first precedence (apra-fleet-bun.1).
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PACKAGE_ROOT = path.join(__dirname, '..');
 const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
-const VENDOR_SCHEMAS_SCRIPT = path.join(PACKAGE_ROOT, 'scripts', 'vendor-schemas.mjs');
-const REAL_DEST_DIR = path.join(PACKAGE_ROOT, 'vendor', 'schemas');
 
 const { resolveSchemasDir } = await import('../auto-sprint/contracts.mjs');
 

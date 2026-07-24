@@ -95,9 +95,9 @@ resolves its role schemas correctly whether it's a full monorepo checkout, a
 standalone install, or bundled into the root `@apralabs/apra-fleet` package.
 In order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override; a bundled
 `dist/agents/schemas` copy (already populated by the root package's
-`prepublishOnly`); a package-local `vendor/schemas/` copy (populated by
-`scripts/vendor-schemas.mjs`); this monorepo's live `packages/apra-fleet-se/apra-pm`
-submodule checkout as a last-resort dev fallback (warns once when used,
+`prepublishOnly`); a package-local `vendor/schemas/` copy (legacy layout,
+no longer populated); the `packages/apra-fleet-se/apra-pm` package in this
+monorepo as a last-resort dev fallback (warns once when used,
 since it won't exist in an installed package). If none of those resolve,
 `loadVendorSchema()` returns `null` for every role and every schema falls
 back to its hand-written literal -- an expected, silent state, not an error.
@@ -173,9 +173,9 @@ success.
 
 `contracts.mjs` resolves its schema directory via `resolveSchemasDir()`, in
 order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override, a bundled `dist/agents/schemas`
-copy, a package-local `vendor/schemas/` copy (populated by
-`scripts/vendor-schemas.mjs`), then the monorepo's `packages/apra-fleet-se/apra-pm` submodule
-checkout as a last-resort dev fallback. This package's tests point the loader
+copy, a package-local `vendor/schemas/` copy (legacy layout, no longer
+populated), then the `packages/apra-fleet-se/apra-pm` package in this monorepo
+as a last-resort dev fallback. This package's tests point the loader
 at `test/fixtures/apra-pm-schemas/` (a snapshot of the real vendored
 schema files) via the `APRA_FLEET_SE_SCHEMAS_DIR` env override, so
 schema-loading behavior can be exercised deterministically regardless of

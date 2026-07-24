@@ -290,7 +290,7 @@ Validated tarball size (post apra-fleet-3ns.2): ~2.7 MB unpacked, 744 files.
 | `bin` | `{ "apra-fleet": "dist/index.js", "auto-sprint": "dist/auto-sprint.mjs" }` | npm sets the executable bit; both entries' shebangs are preserved (tsc for the former, esbuild for the latter) |
 | `engines.node` | `>=22.0.0` | Node 22 required for `node:sea` API + native `fetch` |
 | `publishConfig.access` | `public` | Required for scoped packages on public npm |
-| `prepublishOnly` | `node scripts/dist-pm.mjs && npm run vendor-schemas --workspace=@apralabs/apra-fleet-se && npm run build && npm run build:se` | Copies the apra-pm package content into `dist/`, snapshots apra-fleet-se's package-local schema copy, runs tsc, then esbuild-bundles auto-sprint -- see above |
+| `prepublishOnly` | `npm run dist-pm && npm run build && npm run build:se` | Copies the apra-pm package content into `dist/`, runs tsc, then esbuild-bundles auto-sprint -- see above |
 | `type` | `module` | ESM output; tsc emits `.js` (not `.mjs`); the esbuild auto-sprint bundle emits `.mjs` |
 
 ---
