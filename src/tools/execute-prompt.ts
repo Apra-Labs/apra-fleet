@@ -35,6 +35,11 @@ import type { ParsedResponse } from '../providers/provider.js';
 export interface ExecutePromptStructured {
   isError?: boolean;
   reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted';
+  // The LLM's actual reply text on success. Callers that dispatch execute_prompt
+  // via an MCP client only ever see structuredContent (the content array is
+  // dropped when structuredContent is also present) -- this field exists so the
+  // reply reaches them at all, rather than being stranded in the display text.
+  response?: string;
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
   sessionId?: string;
   [key: string]: unknown;
@@ -782,8 +787,6 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     let output = `📋 Response from ${agent.friendlyName}:
 
 ${parsed.result}`;
-    if (parsed.usage) output += `
-Tokens: input=${parsed.usage.input_tokens} output=${parsed.usage.output_tokens}`;
     if (parsed.sessionId) output += `
 
 ---
@@ -792,6 +795,7 @@ session: ${parsed.sessionId}`;
     return {
       text: output,
       structuredContent: {
+        response: parsed.result,
         ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
         ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
       },

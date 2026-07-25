@@ -294,7 +294,7 @@ describe('executePrompt', () => {
     expect(mockExecCommand.mock.calls[1][0]).not.toContain('"premium"');
   });
 
-  it('appends token line when usage is present in response', async () => {
+  it('reports usage via structuredContent when present in response', async () => {
     const member = makeTestAgent({ friendlyName: 'token-member' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({
@@ -304,7 +304,13 @@ describe('executePrompt', () => {
     });
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
-    expect(resultText(result)).toContain('Tokens: input=100 output=200');
+    expect(resultText(result)).not.toContain('Tokens:');
+    if (typeof result !== 'string') {
+      expect(result.structuredContent).toMatchObject({
+        response: 'done',
+        usage: { input_tokens: 100, output_tokens: 200, total_tokens: 300 },
+      });
+    }
   });
 
   it('does not append token line when usage is absent', async () => {

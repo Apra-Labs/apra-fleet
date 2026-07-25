@@ -903,12 +903,24 @@ export class FleetWorkflow extends EventEmitter {
                     // failure: surface it typed so callers' existing
                     // AgentDispatchError handling (retry / degrade the
                     // round) applies.
-                    const withoutWrapper = text
-                        .replace(/^\u{1F4CB} Response from [^\n:]+:\s*/u, '')
-                        .replace(/^Tokens: input=\d+ output=\d+\s*$/mu, '')
-                        .replace(/^---\s*$/mu, '')
-                        .replace(/^session: \S+\s*$/mu, '');
-                    if (withoutWrapper.trim() === '') {
+                    //
+                    // structuredContent.response (added alongside this text --
+                    // see src/tools/execute-prompt.ts) carries the exact reply
+                    // the server parsed, with no display wrapper to strip --
+                    // prefer it when present (upgraded server) as a direct,
+                    // reliable emptiness check and as the clean value to hand
+                    // back to callers, instead of text-scraping the wrapper.
+                    // Fall back to the wrapper-stripping regex for an
+                    // older/not-yet-rebuilt server that predates this field.
+                    const hasStructuredResponse = !!structured && typeof structured.response === 'string';
+                    const cleanText = hasStructuredResponse
+                        ? structured.response
+                        : text
+                            .replace(/^\u{1F4CB} Response from [^\n:]+:\s*/u, '')
+                            .replace(/^Tokens: input=\d+ output=\d+\s*$/mu, '')
+                            .replace(/^---\s*$/mu, '')
+                            .replace(/^session: \S+\s*$/mu, '');
+                    if (cleanText.trim() === '') {
                         const emptyMsg = `execute_prompt returned an empty response (display wrapper only, no LLM output) from member '${opts.member_name || opts.member_id}'.`;
                         console.error(`[Agent API Error]`, emptyMsg);
                         this.emit('activity:end', { ...activityMeta, error: emptyMsg, output: text, duration, usage: result.usage, cost, success: false });
@@ -917,10 +929,10 @@ export class FleetWorkflow extends EventEmitter {
 
                     if (!opts.schema) {
                         this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: text });
-                        return text;
+                        return hasStructuredResponse ? structured.response : text;
                     }
 
-                    const extraction = extractStructuredOutput(text, compiledSchema);
+                    const extraction = extractStructuredOutput(hasStructuredResponse ? structured.response : text, compiledSchema);
                     if (extraction.ok) {
                         this.emit('activity:end', { ...activityMeta, duration, success: true, usage: result.usage, cost, output: JSON.stringify(extraction.parsed, null, 2) });
                         return extraction.parsed;
