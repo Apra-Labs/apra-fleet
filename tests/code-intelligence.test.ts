@@ -105,6 +105,54 @@ describe('getProvider()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// getProvider(repoPath) -- per-repo opt-out (apra-fleet-le1.1.1)
+// ---------------------------------------------------------------------------
+describe('getProvider(repoPath) per-repo opt-out', () => {
+  const ENOENT = Object.assign(new Error('no such file'), { code: 'ENOENT' });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns a disabled result without resolving a provider when the repo config says enabled=false', async () => {
+    mockReadFile.mockImplementation((path: string) => {
+      if (path.includes('code-intel.json')) return Promise.resolve('{"enabled":false}');
+      return Promise.reject(ENOENT);
+    });
+
+    const result = await getProvider('/some/repo');
+    expect(result).toEqual({
+      disabled: true,
+      message: expect.stringContaining('/some/repo'),
+    });
+  });
+
+  it('returns the normal provider when the repo config is missing (backward compat)', async () => {
+    mockReadFile.mockRejectedValue(ENOENT);
+
+    const provider = await getProvider('/some/repo');
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+
+  it('returns the normal provider when the repo config says enabled=true', async () => {
+    mockReadFile.mockImplementation((path: string) => {
+      if (path.includes('code-intel.json')) return Promise.resolve('{"enabled":true}');
+      return Promise.reject(ENOENT);
+    });
+
+    const provider = await getProvider('/some/repo');
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+
+  it('skips the per-repo check entirely when no repoPath is given', async () => {
+    mockReadFile.mockRejectedValue(ENOENT);
+
+    const provider = await getProvider();
+    expect(provider).toBe(PROVIDERS['codebase-memory']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GitNexusProvider tests
 //
 // The provider module holds a module-level sharedClient singleton.  Because

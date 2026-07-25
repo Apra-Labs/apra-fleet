@@ -4,6 +4,7 @@ import { join } from 'path';
 import { z } from 'zod';
 import { GitNexusProvider } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
+import { isCodeIntelEnabled } from '../services/knowledge/repo-config.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -61,7 +62,27 @@ export const codeTestsSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
-export async function getProvider(): Promise<CodeIntelligenceProvider> {
+// Structured message returned by getProvider() when the target repo has
+// opted out of code intelligence via .apra-fleet/code-intel.json
+// (enabled=false). This is a disablement, not an error -- callers should
+// serialize it and return it as the tool result rather than throwing.
+export interface CodeIntelDisabledResult {
+  disabled: true;
+  message: string;
+}
+
+export function isCodeIntelDisabledResult(value: unknown): value is CodeIntelDisabledResult {
+  return !!value && typeof value === 'object' && (value as { disabled?: unknown }).disabled === true;
+}
+
+export async function getProvider(repoPath?: string): Promise<CodeIntelligenceProvider | CodeIntelDisabledResult> {
+  if (repoPath && !(await isCodeIntelEnabled(repoPath))) {
+    return {
+      disabled: true,
+      message: `Code intelligence is disabled for ${repoPath} (.apra-fleet/code-intel.json enabled=false).`,
+    };
+  }
+
   let providerKey = 'codebase-memory';
   try {
     const raw = await readFile(CONFIG_PATH, 'utf8');

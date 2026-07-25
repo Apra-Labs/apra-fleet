@@ -145,6 +145,8 @@ vi.mock('../../src/services/knowledge/kb-providers.js', () => ({
 }));
 vi.mock('../../src/tools/code-intelligence.js', () => ({
   getProvider: mockGetProvider,
+  isCodeIntelDisabledResult: (value: unknown) =>
+    !!value && typeof value === 'object' && (value as { disabled?: unknown }).disabled === true,
 }));
 vi.mock('../../src/services/knowledge/path-validation.js', () => ({
   validateFilePaths: mockValidateFilePaths,

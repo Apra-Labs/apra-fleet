@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
-import { getProvider } from './code-intelligence.js';
+import { getProvider, isCodeIntelDisabledResult } from './code-intelligence.js';
 import type { KBEntry } from '../services/knowledge/types.js';
 import { FLEET_DIR } from '../paths.js';
 
@@ -205,6 +205,7 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
   if (input.hint_symbols?.length) {
     try {
       const provider = await getProvider();
+      if (isCodeIntelDisabledResult(provider)) throw new Error('code intelligence disabled');
 
       // Collect distinct neighbor names not already in hint_symbols, capped at
       // NEIGHBOR_CAP. A per-symbol try/catch keeps one bad symbol from aborting
