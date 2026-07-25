@@ -797,3 +797,51 @@ convergence, not an incidental refactor: two independently-maintained copies
 of the same resolution order are guaranteed to drift as the resolution rules
 evolve, silently reintroducing the exact "doubled servers, split state"
 failure mode a single shared helper exists to prevent.
+
+## Real-bd integration suite: stale-status recovery vs fail-loud
+
+The real-bd integration suite runner persists its progress in a gitignored
+status file so a long multi-file pass can be polled and resumed instead of
+re-run from scratch. That status file can go stale between sprints in two
+qualitatively different ways, and the runner is deliberately designed to
+treat them differently rather than collapsing both into one fail-loud path:
+
+- **Stale-but-complete**: the file records a run that finished
+  (`runComplete: true`), but the test-file set on disk has since legitimately
+  changed (files renamed, split, or removed by later work). This is not an
+  error -- it is just an out-of-date index. The runner auto-recovers by
+  treating it as a fresh, startable state, so a sprint that only touched
+  unrelated code doesn't have to manually pass a `--fresh` flag every time
+  someone else's earlier sprint restructured a test file.
+- **Stale-and-incomplete (crashed or still live)**: the file describes a run
+  that was interrupted mid-pass, or that some other process still holds the
+  pid for. This must still fail loud (non-zero exit, explicit message) rather
+  than silently resuming into a run whose partial results can't be trusted --
+  auto-recovering this case would risk reporting a pass/fail verdict that
+  never actually re-ran the files it claims to cover.
+
+The distinguishing signal is the persisted `runComplete` flag, not merely
+"does the file set on disk match the recorded results" -- file-set drift
+alone is not evidence of a bad run; a completed run reporting drift almost
+always just means the test tree moved on since that run, and refusing to be
+useful about it just re-trains operators to reach for `--fresh` (which
+discards a genuinely resumable state) as a reflex whenever the check
+complains.
+
+## Per-scenario log labelling for interleaved test output
+
+The workflow engine's console log lines (dispatch, workflow-log, command)
+are unprefixed by default -- the correct behavior for the real single-sprint
+CLI, where there is only ever one run's output in a given log stream and a
+prefix would just be noise. The engine accepts an optional per-instance
+label (empty string by default, so the default path's output is byte-
+identical to before this existed) that, when set, is prepended to every one
+of those log lines. Test scenarios that construct many engine instances in
+the same process or the same combined log capture (mock-sprint harnesses,
+golden-transcript comparisons) pass their own scenario tag as that label, and
+each scenario also emits an explicit `=== END scenario: <tag> (PASS/FAIL) ===`
+line at completion. Together, these make it possible to attribute any given
+line in an interleaved combined log back to the scenario that produced it --
+essential once scenario execution runs concurrently rather than serially,
+since without a per-line origin marker there is no way to tell which
+scenario's dispatch a given log line belongs to after the fact.

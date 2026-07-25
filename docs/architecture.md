@@ -165,7 +165,7 @@ Two topology modes are supported, selected explicitly when a sprint starts:
 
 Guards enforcing whichever mode is selected:
 
-1. **Branch-ensure everywhere** (both modes): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles (it never resets to base once work is committed).
+1. **Branch-ensure everywhere** (both modes): before the first doer round, the runner git-ensures the sprint branch (`fetch` + `checkout -B`) on **every** member in the union of the orchestrator/doer/reviewer pools -- not just the orchestrator -- and non-destructively re-checks-out the branch on each member at the start of later cycles. **Known gap:** this phase currently conflates "the sprint branch doesn't exist yet, create it from base" with "the remote fetch of an already-existing local branch failed" -- both are treated as a signal to reset to base. That is correct for the first case but destructive for the second: if an earlier, interrupted invocation created the branch locally, committed and closed work against it, and exited before ever pushing it to the remote, a later invocation's fetch of that not-yet-pushed ref fails (there is nothing on the remote to fetch), and the branch is silently reset to base -- discarding the already-committed work even though the corresponding beads tasks remain marked closed. The result is a beads/git-tree disagreement that a subsequent doer or reviewer has to catch and repair by hand (re-creating or cherry-picking the lost commit) before the sprint can complete, costing an avoidable extra round-trip. Until this is fixed, treat "resuming an interrupted auto-sprint invocation against a branch that was never pushed" as an operational hazard: prefer pushing a sprint branch as soon as it has any committed work, or verify the branch's git log against beads' closed-task list before re-invoking against the same branch/base/issue combination.
 2. **Topology precondition**: `bin/cli.mjs` calls `checkMemberTopology()` before starting a multi-member sprint. In `legacy` mode it compares an identity signal (`git rev-parse HEAD`) across the configured members and **refuses to start with a clear error** if they disagree (or if a member's signal can't be obtained); in `synced` mode HEADs are allowed to differ, but every member must share the same git remote origin and pass a live beads-Dolt-pull probe. Single-member sprints trivially pass either check.
 
 See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
@@ -283,6 +283,21 @@ it never had bundled alongside it. Any future dependency added to
 `apra-fleet-client` must be re-verified against this bundling path, not just
 against the production/packaged-binary install path, since the two paths
 build the manifest differently.
+
+**A stale path segment in the manifest builder fails silently, not loudly.**
+When the dev-mode manifest builder computes a source path (agent schemas,
+a built-in workflow file, etc.) that no longer exists on disk -- for example
+after a package is relocated, or a vendored copy is replaced with a
+package-local one -- the affected manifest field simply stays unset. Nothing
+throws. Downstream, the workflow-subsystem-assets check treats "one required
+field missing" as "assets not present" and quietly skips the entire
+workflow-runtime install step, printing only a generic "this build has no
+workflow-subsystem assets" warning with no indication of which path was
+wrong. The practical lesson: after any package/directory relocation, grep the
+manifest builder for every reference to the old location -- a partial rename
+(updating most call sites but missing one or two) produces a silent
+capability gap rather than a build error, and can persist unnoticed for a
+while before anyone traces a "workflow not found" failure back to it.
 
 ## PM Skill
 
