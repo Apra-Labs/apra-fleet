@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- per-member code-intelligence provider routing
+
+Sprint goal (P1/P2): route code-intelligence MCP tool calls through each member's configured provider instead of a single global backend. Implemented per-member resolution in `getProvider()` and wired the active in-flight member into the `code_query` / `code_references` / `code_definition` / `code_graph` / `code_impact` tool handlers. All 1749 tests pass (106 test files); build succeeds; working tree clean.
+
+Completed: `getProvider(memberId?)` now resolves a member's `codeIntelProvider` preference from the registry, falling back to the global default provider whenever the member has no preference, names an unregistered provider, or is not found -- this path never throws. The `code_*` MCP tool handlers resolve the active member from in-flight dispatch state (only when exactly one member is currently in flight, to avoid misattributing a call under concurrent dispatch) and forward that member id into provider resolution. Carried forward: end-to-end verification of per-member provider routing (registration through dispatch) remains open as backlog, and setting `codeIntelProvider` on a member is not yet exposed via the register/update member tool schemas.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     37,603 |   n/a |   $0.000 |   $0.819 |
+| reviewer   |          0 |     53,477 |   n/a |   $0.000 |   $0.991 |
+| overhead   |      7,150 |    101,779 | +1323% |   $0.121 |   $0.608 |
+| TOTAL      |      7,150 |    192,859 | +2597% |   $0.121 |   $2.417 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
 ## [v0.3.3] -- feat/install-default
 
 ### Breaking change -- MCP server start command changed
