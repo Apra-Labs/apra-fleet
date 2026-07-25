@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { getProvider, NullProvider, PROVIDERS } from '../src/tools/code-intelligence.js';
+import {
+  getProvider, NullProvider, PROVIDERS,
+  codeQuery, codeReferences, codeDefinition, codeCallGraph, codeImpact,
+} from '../src/tools/code-intelligence.js';
 import type { CodeIntelProvider, CodeIntelResult } from '../src/tools/code-intelligence.js';
 
 // Mock the registry module
@@ -134,6 +137,120 @@ describe('code-intelligence', () => {
     it('contains "default" mapping', () => {
       expect(PROVIDERS['default']).toBeDefined();
       expect(PROVIDERS['default'].name).toBe('default');
+    });
+  });
+
+  describe('tool handler functions', () => {
+    describe('without memberId (global fallback)', () => {
+      it('codeQuery uses default provider', async () => {
+        const result = JSON.parse(await codeQuery({ symbol: 'foo' }));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('no code intelligence provider configured');
+      });
+
+      it('codeReferences uses default provider', async () => {
+        const result = JSON.parse(await codeReferences({ symbol: 'foo' }));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('no code intelligence provider configured');
+      });
+
+      it('codeDefinition uses default provider', async () => {
+        const result = JSON.parse(await codeDefinition({ symbol: 'foo' }));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('no code intelligence provider configured');
+      });
+
+      it('codeCallGraph uses default provider', async () => {
+        const result = JSON.parse(await codeCallGraph({ symbol: 'foo' }));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('no code intelligence provider configured');
+      });
+
+      it('codeImpact uses default provider', async () => {
+        const result = JSON.parse(await codeImpact({ symbol: 'foo' }));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('no code intelligence provider configured');
+      });
+    });
+
+    describe('with memberId (per-member provider)', () => {
+      it('codeQuery resolves member-specific provider', async () => {
+        mockGetAgent.mockReturnValue({
+          id: 'agent-ci',
+          friendlyName: 'CI Agent',
+          agentType: 'local',
+          workFolder: '/tmp/work',
+          createdAt: '2026-01-01',
+          codeIntelProvider: 'none',
+        });
+
+        const result = JSON.parse(await codeQuery({ symbol: 'bar' }, 'agent-ci'));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('code intelligence disabled');
+        expect(mockGetAgent).toHaveBeenCalledWith('agent-ci');
+      });
+
+      it('codeReferences resolves member-specific provider', async () => {
+        mockGetAgent.mockReturnValue({
+          id: 'agent-ci',
+          friendlyName: 'CI Agent',
+          agentType: 'local',
+          workFolder: '/tmp/work',
+          createdAt: '2026-01-01',
+          codeIntelProvider: 'none',
+        });
+
+        const result = JSON.parse(await codeReferences({ symbol: 'bar' }, 'agent-ci'));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('code intelligence disabled');
+      });
+
+      it('codeCallGraph forwards depth and resolves member provider', async () => {
+        mockGetAgent.mockReturnValue({
+          id: 'agent-ci',
+          friendlyName: 'CI Agent',
+          agentType: 'local',
+          workFolder: '/tmp/work',
+          createdAt: '2026-01-01',
+          codeIntelProvider: 'none',
+        });
+
+        const result = JSON.parse(await codeCallGraph({ symbol: 'baz', depth: 5 }, 'agent-ci'));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('code intelligence disabled');
+        expect(result.error).toContain('getCallGraph');
+      });
+
+      it('codeImpact resolves member-specific provider', async () => {
+        mockGetAgent.mockReturnValue({
+          id: 'agent-ci',
+          friendlyName: 'CI Agent',
+          agentType: 'local',
+          workFolder: '/tmp/work',
+          createdAt: '2026-01-01',
+          codeIntelProvider: 'none',
+        });
+
+        const result = JSON.parse(await codeImpact({ symbol: 'qux' }, 'agent-ci'));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('code intelligence disabled');
+      });
+    });
+
+    describe('with memberId falling back to default', () => {
+      it('falls back when agent has no codeIntelProvider', async () => {
+        mockGetAgent.mockReturnValue({
+          id: 'agent-noconfig',
+          friendlyName: 'No Config Agent',
+          agentType: 'local',
+          workFolder: '/tmp/work',
+          createdAt: '2026-01-01',
+        });
+
+        const result = JSON.parse(await codeQuery({ symbol: 'test' }, 'agent-noconfig'));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('no code intelligence provider configured');
+      });
     });
   });
 });

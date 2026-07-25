@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { getAgent } from '../services/registry.js';
 
 /**
@@ -130,4 +131,80 @@ export function getProvider(memberId?: string): CodeIntelProvider {
   }
 
   return provider;
+}
+
+// ---------------------------------------------------------------------------
+// MCP tool schemas -- memberId is internal (not exposed in zod schemas)
+// ---------------------------------------------------------------------------
+
+export const codeQuerySchema = z.object({
+  symbol: z.string().describe('Symbol name to query'),
+  opts: z.record(z.unknown()).optional().describe('Additional query options'),
+});
+
+export const codeReferencesSchema = z.object({
+  symbol: z.string().describe('Symbol to find all references for'),
+});
+
+export const codeDefinitionSchema = z.object({
+  symbol: z.string().describe('Symbol to find definition for'),
+});
+
+export const codeCallGraphSchema = z.object({
+  symbol: z.string().describe('Symbol to trace call graph for'),
+  depth: z.number().optional().describe('Max depth of call graph traversal'),
+});
+
+export const codeImpactSchema = z.object({
+  symbol: z.string().describe('Symbol to analyze change impact for'),
+});
+
+// ---------------------------------------------------------------------------
+// Tool handler functions -- each accepts optional memberId to forward to
+// getProvider() for per-member provider resolution.
+// ---------------------------------------------------------------------------
+
+export async function codeQuery(
+  input: z.infer<typeof codeQuerySchema>,
+  memberId?: string,
+): Promise<string> {
+  const provider = getProvider(memberId);
+  const result = provider.query(input.symbol, input.opts);
+  return JSON.stringify(result);
+}
+
+export async function codeReferences(
+  input: z.infer<typeof codeReferencesSchema>,
+  memberId?: string,
+): Promise<string> {
+  const provider = getProvider(memberId);
+  const result = provider.getReferences(input.symbol);
+  return JSON.stringify(result);
+}
+
+export async function codeDefinition(
+  input: z.infer<typeof codeDefinitionSchema>,
+  memberId?: string,
+): Promise<string> {
+  const provider = getProvider(memberId);
+  const result = provider.getDefinition(input.symbol);
+  return JSON.stringify(result);
+}
+
+export async function codeCallGraph(
+  input: z.infer<typeof codeCallGraphSchema>,
+  memberId?: string,
+): Promise<string> {
+  const provider = getProvider(memberId);
+  const result = provider.getCallGraph(input.symbol, input.depth);
+  return JSON.stringify(result);
+}
+
+export async function codeImpact(
+  input: z.infer<typeof codeImpactSchema>,
+  memberId?: string,
+): Promise<string> {
+  const provider = getProvider(memberId);
+  const result = provider.getImpact(input.symbol);
+  return JSON.stringify(result);
 }

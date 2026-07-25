@@ -162,6 +162,14 @@ async function startServer() {
   const { credentialStoreListSchema, credentialStoreList } = await import('./tools/credential-store-list.js');
   const { credentialStoreDeleteSchema, credentialStoreDelete } = await import('./tools/credential-store-delete.js');
   const { credentialStoreUpdateSchema, credentialStoreUpdate } = await import('./tools/credential-store-update.js');
+  const {
+    codeQuerySchema, codeQuery,
+    codeReferencesSchema, codeReferences,
+    codeDefinitionSchema, codeDefinition,
+    codeCallGraphSchema, codeCallGraph,
+    codeImpactSchema, codeImpact,
+  } = await import('./tools/code-intelligence.js');
+  const { inFlightAgents } = await import('./tools/execute-prompt.js');
   const { closeAllConnections } = await import('./services/ssh.js');
   const { idleManager } = await import('./services/cloud/idle-manager.js');
   const { cleanupStaleTasks } = await import('./services/task-cleanup.js');
@@ -288,6 +296,23 @@ async function startServer() {
 
   // --- Agent Lifecycle ---
   server.tool('stop_prompt', 'Kill the active LLM process on a member. Always call TaskStop on the dispatching background agent after calling this.', stopPromptSchema.shape, wrapTool('stop_prompt', (input) => stopPrompt(input as any)));
+  // --- Code Intelligence ---
+  // Resolve the active member from inFlightAgents so code-intel tools use the
+  // correct per-member provider. When exactly one member is being prompted, that
+  // member's codeIntelProvider is used; otherwise falls back to global default.
+  function resolveActiveMemberId(): string | undefined {
+    if (inFlightAgents.size === 1) {
+      return inFlightAgents.values().next().value as string;
+    }
+    return undefined;
+  }
+
+  server.tool('code_query', 'Query a code symbol for information. Resolves against the active member\'s code-intelligence provider.', codeQuerySchema.shape, wrapTool('code_query', (input) => codeQuery(input as any, resolveActiveMemberId())));
+  server.tool('code_references', 'Find all references to a symbol in the codebase.', codeReferencesSchema.shape, wrapTool('code_references', (input) => codeReferences(input as any, resolveActiveMemberId())));
+  server.tool('code_definition', 'Find the definition of a symbol.', codeDefinitionSchema.shape, wrapTool('code_definition', (input) => codeDefinition(input as any, resolveActiveMemberId())));
+  server.tool('code_graph', 'Trace the call graph for a symbol.', codeCallGraphSchema.shape, wrapTool('code_graph', (input) => codeCallGraph(input as any, resolveActiveMemberId())));
+  server.tool('code_impact', 'Analyze the change impact of a symbol.', codeImpactSchema.shape, wrapTool('code_impact', (input) => codeImpact(input as any, resolveActiveMemberId())));
+
   // --- Credential Store ---
   server.tool('credential_store_set', 'Collect a secret from the user out-of-band and store it. Returns a handle (sec://NAME) and scope. Use {{secure.NAME}} tokens in execute_command to inject the value.', credentialStoreSetSchema.shape, wrapTool('credential_store_set', (input) => credentialStoreSet(input as any)));
   server.tool('credential_store_list', 'List all stored credentials (names and metadata only — no values).', credentialStoreListSchema.shape, wrapTool('credential_store_list', () => credentialStoreList()));
