@@ -2,6 +2,62 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-repo code-intelligence opt-out
+
+Repositories can now opt out of code intelligence and its associated KB
+setup entirely. A repo carrying `.apra-fleet/code-intel.json` with
+`{ "enabled": false }` is skipped by `apra-fleet install`'s KB/code-intel
+setup step (no GitNexus MCP-entry cleanup, no bible copy, no CI config, no
+CLAUDE.md routing block), and every `code_*` tool short-circuits with a
+structured disabled result instead of resolving a provider. Repos without
+the config file, or with a config file that omits `enabled`, default to
+enabled -- this is opt-out, not opt-in, to preserve backward compatibility
+with existing repos. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)
+for the full design.
+
+The sibling upgrade-path increment (handling repos that were never indexed
+before this control existed, so they are not silently auto-indexed on
+their first call once enabled) was not attempted this sprint and remains
+open as future work.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     44,131 |   n/a |   $0.000 |   $0.573 |
+| reviewer   |          0 |     29,642 |   n/a |   $0.000 |   $0.445 |
+| overhead   |      7,150 |     94,796 | +1226% |   $0.121 |   $0.616 |
+| TOTAL      |      7,150 |    168,569 | +2258% |   $0.121 |   $1.633 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Code review findings
+
+1. `src/services/knowledge/repo-config.ts` (new): a clean config
+   reader/writer. `readRepoCodeIntelConfig` returns `null` on any error
+   (missing file, parse failure). `isCodeIntelEnabled` defaults to `true`
+   when no config exists, preserving backward compatibility.
+2. `src/tools/code-intelligence.ts`: `getProvider()` now accepts an
+   optional repo path, checks the opt-out before resolving a provider, and
+   returns a typed `CodeIntelDisabledResult` when disabled. All `code_*`
+   tool handlers pass the repo input through and short-circuit on the
+   disabled result via the `isCodeIntelDisabledResult()` type guard.
+3. Installer: the KB/code-intelligence setup step is gated behind the
+   opt-out check; both the code-intel provider setup and the downstream KB
+   steps sit inside the enabled gate.
+4. `kb_session_prime` correctly handles the new disabled result by
+   falling into its existing best-effort catch path for symbol
+   enrichment.
+5. Test coverage is thorough: config read/write roundtrip, missing
+   config, and enabled=true/false/absent-key cases; opt-out tests for the
+   code-intelligence tool layer; and install-step skip/proceed tests. Full
+   suite passes with no regressions in adjacent code, no security issues,
+   and no secrets in code.
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the

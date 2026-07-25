@@ -206,6 +206,12 @@ MCP tools that ship with the KB:
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.
 
+A repository can opt out of code intelligence and KB indexing entirely by
+writing `{ "enabled": false }` to `.apra-fleet/code-intel.json` at its root;
+`apra-fleet install` and every `code_*` tool respect this and skip indexing
+and code-intel calls for that repo. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md).
+
 See [docs/knowledge-layer.md](docs/knowledge-layer.md) for the full guide.
 
 ## Use cases
