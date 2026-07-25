@@ -351,3 +351,54 @@ describe('buildDevManifest bundles undici (regression for apra-fleet-eft.19)', (
     expect(keys.some(k => k.startsWith('undici-types/'))).toBe(false);
   });
 });
+
+// apra-fleet-9te.3.2 -- regression coverage for apra-fleet-9te.3/9te.3.1 (stale
+// vendor/apra-pm install paths meant agentSchemasDir never existed, so
+// buildDevManifest() omitted `agentSchemas`, hasWorkflowSubsystemAssets()
+// returned false, and every dev-mode install printed "This build has no
+// workflow-subsystem assets" and skipped installing the workflow runtime --
+// which is why `apra-fleet workflow auto-sprint` failed with "workflow not
+// found ... No workflows installed". apra-fleet-9te.3.1 repointed
+// agentSchemasDir and wfPath at packages/apra-fleet-se/apra-pm; this suite
+// exercises the real (unmocked) buildDevManifest() against this repo's real
+// project root -- same technique as the undici suite above -- so it fails if
+// those paths ever go stale again.
+describe('buildDevManifest populates full workflow-subsystem assets (regression for apra-fleet-9te.3)', () => {
+  afterEach(() => {
+    // Restore automocking for node:fs/node:child_process for later suites/files.
+    vi.doMock('node:fs');
+    vi.doMock('node:child_process');
+  });
+
+  it('hasWorkflowSubsystemAssets(buildDevManifest(realRoot)) is true', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const realInstall = await vi.importActual<typeof import('../src/cli/install.js')>('../src/cli/install.js');
+    const { hasWorkflowSubsystemAssets } = await vi.importActual<typeof import('../src/cli/workflow-assets.js')>('../src/cli/workflow-assets.js');
+
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = path.resolve(testDir, '..');
+
+    const manifest = realInstall._buildDevManifestForTest(projectRoot);
+
+    // agentSchemas: fails if agentSchemasDir ever points back at the removed
+    // vendor/apra-pm path (or any other stale path).
+    expect(manifest.agentSchemas).toBeDefined();
+    expect(Object.keys(manifest.agentSchemas ?? {}).length).toBeGreaterThan(0);
+
+    // builtinWorkflows: sourced from packages/apra-fleet-se (auto-sprint) --
+    // fails if that tree, or its wfPath-adjacent workflow file, goes missing.
+    expect(manifest.builtinWorkflows).toBeDefined();
+    expect(Object.keys(manifest.builtinWorkflows ?? {}).some(k => k.startsWith('auto-sprint/'))).toBe(true);
+
+    // workflowRuntime: sourced from packages/apra-fleet-workflow + apra-fleet-client + ajv.
+    expect(manifest.workflowRuntime).toBeDefined();
+
+    // The exact predicate install.ts's workflow-install step (via
+    // extractWorkflowSubsystemAssets()) uses to decide whether to print "This
+    // build has no workflow-subsystem assets" and skip the install.
+    expect(hasWorkflowSubsystemAssets(manifest)).toBe(true);
+  });
+});
