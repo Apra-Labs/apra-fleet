@@ -17,6 +17,7 @@ import {
 } from './config.js';
 import { transformAgentForOpenCode } from './agent-transform.js';
 import { FLEET_DIR } from '../paths.js';
+import { isCodeIntelEnabled } from '../services/knowledge/repo-config.js';
 
 // Detect SEA mode
 let _seaOverride: boolean | null = null;
@@ -934,7 +935,10 @@ Then re-run:  apra-fleet install`);
   // Only runs when the installer is invoked from inside a git repository.
   console.log(`  [${totalSteps}/${totalSteps}] Setting up Knowledge Bank and code intelligence...`);
   const repoCwd = process.cwd();
-  if (fs.existsSync(path.join(repoCwd, '.git'))) {
+  const codeIntelEnabled = await isCodeIntelEnabled(repoCwd);
+  if (!codeIntelEnabled) {
+    console.log('    Skipped: code intelligence is disabled for this repository (.apra-fleet/code-intel.json enabled=false)');
+  } else if (fs.existsSync(path.join(repoCwd, '.git'))) {
     // Clean up prior installs: remove legacy gitnexus entry from .mcp.json if present
     try {
       const mcpJsonPath = path.join(repoCwd, '.mcp.json');
@@ -953,35 +957,37 @@ Then re-run:  apra-fleet install`);
     console.log('    Skipped: not in a git repository. Run apra-fleet install from your project root to set up KB.');
   }
 
-  // T3.4 (F9b, D8): distribute the committed global bible (if this repo
-  // carries one) to every project on the machine via the shared global KB
-  // data dir. Independent of the .git check above -- the source file's own
-  // presence is the only gate, and the step is fully non-fatal.
-  copyGlobalBible(repoCwd);
+  if (codeIntelEnabled) {
+    // T3.4 (F9b, D8): distribute the committed global bible (if this repo
+    // carries one) to every project on the machine via the shared global KB
+    // data dir. Independent of the .git check above -- the source file's own
+    // presence is the only gate, and the step is fully non-fatal.
+    copyGlobalBible(repoCwd);
 
-  // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
-  try {
-    const ciConfigDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
-    fs.mkdirSync(ciConfigDir, { recursive: true });
-    fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
-    console.log('    [OK] Code intelligence provider config written');
-  } catch (err) {
-    console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
-  }
-
-  // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
-  try {
-    const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-    const sentinel = '<!-- apra-fleet:code-intelligence -->';
-    const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
-    const existing = fs.existsSync(claudeMdPath) ? fs.readFileSync(claudeMdPath, 'utf-8') : '';
-    if (!existing.includes(sentinel)) {
-      fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true });
-      fs.appendFileSync(claudeMdPath, block);
-      console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
+    // Write code intelligence provider config (provider-agnostic; fleet serves code intelligence tools)
+    try {
+      const ciConfigDir = path.join(os.homedir(), '.apra-fleet', 'data', 'code-intelligence');
+      fs.mkdirSync(ciConfigDir, { recursive: true });
+      fs.writeFileSync(path.join(ciConfigDir, 'config.json'), JSON.stringify({ provider: 'gitnexus' }, null, 2));
+      console.log('    [OK] Code intelligence provider config written');
+    } catch (err) {
+      console.warn('    ⚠ Code intelligence config skipped:', err instanceof Error ? err.message : String(err));
     }
-  } catch (err) {
-    console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
+
+    // Write code intelligence routing instruction to ~/.claude/CLAUDE.md
+    try {
+      const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+      const sentinel = '<!-- apra-fleet:code-intelligence -->';
+      const block = `\n${sentinel}\nWhen code_graph, code_impact, code_query, or code_context tools are available,\nuse them for symbol lookups, call chain tracing, and impact analysis.\nNever use grep or file reads for structural questions when these tools are present.\n<!-- /apra-fleet:code-intelligence -->\n`;
+      const existing = fs.existsSync(claudeMdPath) ? fs.readFileSync(claudeMdPath, 'utf-8') : '';
+      if (!existing.includes(sentinel)) {
+        fs.mkdirSync(path.dirname(claudeMdPath), { recursive: true });
+        fs.appendFileSync(claudeMdPath, block);
+        console.log('    [OK] Code intelligence routing instruction written to ~/.claude/CLAUDE.md');
+      }
+    } catch (err) {
+      console.warn('    ⚠ ~/.claude/CLAUDE.md update skipped:', err instanceof Error ? err.message : String(err));
+    }
   }
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;
