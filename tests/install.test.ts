@@ -5,6 +5,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
 
+vi.mock('../src/services/knowledge/repo-config.js');
+
 vi.mock('node:os', () => ({
   default: {
     homedir: vi.fn(() => '/mock/home'),
@@ -540,5 +542,72 @@ describe('install step 9 -- global bible copy (T3.4, F9b, D8)', () => {
 
     const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(warns).toContain('Global knowledge bible copy skipped');
+  });
+});
+
+describe('install step 9 -- code-intelligence opt-out (per-repo config)', () => {
+  const mockHome = '/mock/home';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(false);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+  });
+
+  it('skips code-intelligence setup when code-intel is disabled', async () => {
+    const { isCodeIntelEnabled } = await import('../src/services/knowledge/repo-config.js');
+    vi.mocked(isCodeIntelEnabled).mockResolvedValue(false);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await runInstall([]);
+
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).toContain('Code intelligence is disabled for this repo');
+
+    // Verify code-intelligence provider config was NOT written
+    const ciConfigPath = path.join(mockHome, '.apra-fleet', 'data', 'code-intelligence', 'config.json');
+    const writtenPaths = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString());
+    expect(writtenPaths).not.toContain(ciConfigPath);
+
+    // Verify code-intelligence routing instruction was NOT written
+    const claudeMdPath = path.join(mockHome, '.claude', 'CLAUDE.md');
+    expect(writtenPaths).not.toContain(claudeMdPath);
+
+    logSpy.mockRestore();
+  });
+
+  it('runs code-intelligence setup when code-intel is enabled', async () => {
+    const { isCodeIntelEnabled } = await import('../src/services/knowledge/repo-config.js');
+    vi.mocked(isCodeIntelEnabled).mockResolvedValue(true);
+
+    await runInstall([]);
+
+    // Verify code-intelligence provider config WAS written
+    const ciConfigPath = path.join(mockHome, '.apra-fleet', 'data', 'code-intelligence', 'config.json');
+    const writtenPaths = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString());
+    expect(writtenPaths).toContain(ciConfigPath);
+  });
+
+  it('runs code-intelligence setup when config is missing (backward compat)', async () => {
+    const { isCodeIntelEnabled } = await import('../src/services/knowledge/repo-config.js');
+    vi.mocked(isCodeIntelEnabled).mockResolvedValue(true);
+
+    await runInstall([]);
+
+    // Verify code-intelligence provider config WAS written
+    const ciConfigPath = path.join(mockHome, '.apra-fleet', 'data', 'code-intelligence', 'config.json');
+    const writtenPaths = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString());
+    expect(writtenPaths).toContain(ciConfigPath);
   });
 });
