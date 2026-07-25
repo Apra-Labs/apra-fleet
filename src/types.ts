@@ -36,6 +36,7 @@ export interface Agent {
   modelTiers?: { cheap?: string; standard?: string; premium?: string };
   category?: string;
   tags?: string[];
+  codeIntelProvider?: string;
 }
 
 export interface GitHubAppConfig {
