@@ -2,6 +2,68 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- README routing guidance, workflow log scenario labelling, integ-suite and installer hardening
+
+Sprint goal: land two independent small in-scope items -- a README paragraph
+distinguishing `/auto-sprint` from `/pm` so readers can pick the right entry
+point, and per-run scenario/instance labelling for workflow engine log lines
+so interleaved test output can be attributed back to the scenario that
+produced it -- while keeping the integration pass honest about what it does
+and doesn't verify. **Both in-scope features shipped clean and are verified
+by dedicated automated tests.** The README now carries a paragraph framing
+`/auto-sprint` (a local, Claude-only, deterministic workflow where the script
+owns all cycle routing and no LLM decides whether the sprint continues) against
+`/pm` (Fleet's cross-provider, role-distributed, model-driven skill), noting
+that in both modes registered fleet members are amplifiers, not decision-makers.
+The workflow engine gained an optional per-instance log-line label (default
+empty, byte-identical output when unset) plus an explicit end-of-scenario
+marker, so test scenarios that run many engine instances in the same combined
+log capture can now be told apart -- a prerequisite for eventually running
+those scenarios concurrently rather than serially.
+
+Along the way, running the integration pass surfaced and fixed two
+infrastructure bugs: the real-bd integration-suite runner previously treated
+any status file whose recorded test-file set no longer matched disk as a
+fail-loud condition, even when the recorded run had already completed
+cleanly and the mismatch was just normal drift from unrelated later work; it
+now auto-recovers in that case while still failing loud for a genuinely
+crashed or still-live run. Separately, the installer's dev-mode manifest
+builder still had two leftover path references to a vendored copy of the PM
+package that had already been relocated to a package-local path everywhere
+else in the same file -- because a manifest field silently stays unset
+rather than erroring when its source path is missing, this quietly skipped
+the entire workflow-runtime install step instead of failing loudly, so
+`workflow auto-sprint` reported "workflow not found" with no direct link back
+to the real cause. Both are fixed and regression-tested.
+
+The integration pass also surfaced a third, still-open defect in the
+auto-sprint engine itself, external to this sprint's own scope: when the
+"ensure sprint branch" phase resumes a sprint whose branch already exists
+locally but was never pushed (e.g. an earlier invocation was interrupted
+before push), the failed remote fetch is currently treated the same as "the
+branch doesn't exist yet, reset it to base" -- silently discarding already-
+committed, already-closed work. This is tracked as a known, reproducible gap
+(see `docs/architecture.md`'s auto-sprint topology section for the full
+operational detail and the workaround) and is why this sprint's own final
+verdict is FAIL despite both in-scope features landing clean: the sprint
+contract does not allow passing with an open high-priority defect against
+the sprint's own goal-priority scope, and integration tests failed in both
+cycles run this sprint (the first cycle's two infrastructure bugs, since
+fixed and closed; the second cycle's branch-reset defect, still open).
+
+Carried forward, open: the branch-reset-discards-committed-work defect
+described above, which must be resolved (or explicitly de-scoped) before this
+scope can pass; a pre-existing, out-of-scope planner auth-retry test failure
+re-confirmed still reproducing during this pass; and routine backlog hygiene
+items untouched by this harvest per policy (see the P3/P4 backlog).
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $0.0000.
+Remaining budget: unknown/unbounded.
+Pricing source: all 23 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Auto-sprint as a service: always-on multi-sprint supervisor
 
 - **apra-pm architectural reorg** -- The `vendor/apra-pm` git submodule has been removed and replaced with a package-local deep copy under `packages/apra-fleet-se/apra-pm`. This eliminates silent submodule synchronization drift and significantly streamlines packaging, CI, and E2E processes that previously depended on the submodule being manually initialized.
