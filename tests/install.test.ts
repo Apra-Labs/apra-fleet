@@ -14,6 +14,19 @@ vi.mock('node:os', () => ({
 vi.mock('node:fs');
 vi.mock('node:child_process');
 
+// Wrap isCodeIntelEnabled so individual tests can force the disabled path
+// with mockResolvedValueOnce() (apra-fleet-le1.1.3) while every other test in
+// this file keeps the real (backward-compat) behavior by default.
+vi.mock('../src/services/knowledge/repo-config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/knowledge/repo-config.js')>();
+  return {
+    ...actual,
+    isCodeIntelEnabled: vi.fn(actual.isCodeIntelEnabled),
+  };
+});
+
+import { isCodeIntelEnabled } from '../src/services/knowledge/repo-config.js';
+
 const mockHome = '/mock/home';
 const configPath = path.join(mockHome, '.apra-fleet', 'data', 'install-config.json');
 
@@ -540,5 +553,51 @@ describe('install step 9 -- global bible copy (T3.4, F9b, D8)', () => {
 
     const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(warns).toContain('Global knowledge bible copy skipped');
+  });
+});
+
+// apra-fleet-le1.1.3: install step 9 (KB + code intelligence setup) must be
+// skipped entirely when the repo has opted out via .apra-fleet/code-intel.json.
+describe('install step 9 -- skipped when repo opts out (apra-fleet-le1.1.3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(false);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+  });
+
+  it('logs a skip message and does not run KB/code-intel setup when enabled=false', async () => {
+    vi.mocked(isCodeIntelEnabled).mockResolvedValueOnce(false);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await runInstall([]);
+
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).toContain('Skipped: code intelligence is disabled for this repository');
+
+    // copyGlobalBible() runs only when code intel is enabled -- no copy attempted.
+    expect(fs.copyFileSync).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with step 9 as before when config is missing (backward compat)', async () => {
+    vi.mocked(isCodeIntelEnabled).mockResolvedValueOnce(true);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await runInstall([]);
+
+    const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logs).toContain('Setting up Knowledge Bank and code intelligence');
+    expect(logs).not.toContain('Skipped: code intelligence is disabled');
   });
 });
