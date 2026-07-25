@@ -153,3 +153,45 @@ detection). Neither the init nor the update phase has been built yet, so
 the pre-init helpers are not currently invoked from any call path -- they
 exist ahead of their consumer, with unit test coverage locking in their
 contract so the init-phase implementation can build on a stable interface.
+
+## Per-repo opt-out
+
+A repository can disable code intelligence entirely for itself by writing
+`.apra-fleet/code-intel.json` with `{ "enabled": false }` at its root. This is
+a per-repo control, distinct from the per-member `codeIntelProvider` field
+described above: the per-repo file governs whether code intelligence runs
+against a given repository at all, regardless of which member or provider
+would otherwise be used.
+
+Absence of the file (or a file without an `enabled` key) means code
+intelligence is enabled -- the default is opt-out, not opt-in, to preserve
+backward compatibility with repos that predate this control. Only an
+explicit `enabled: false` disables it; any read failure (missing file,
+malformed JSON) is treated the same as "no config" and defaults to enabled
+rather than surfacing a parse error.
+
+Two call paths consult this config:
+
+- **`getProvider(repoPath)`** in the code-intelligence tool layer now takes
+  an optional repo path. When supplied and the repo has opted out,
+  `getProvider` short-circuits before touching the provider registry and
+  returns a structured `CodeIntelDisabledResult` (`{ disabled: true, message
+  }`) instead of a `CodeIntelligenceProvider`. Every `code_*` tool handler
+  passes its `repo` input through and checks the result with the
+  `isCodeIntelDisabledResult()` type guard, serializing the disabled message
+  as the tool result rather than throwing. Callers that never pass a
+  `repoPath` (the parameter is optional) get the pre-existing behavior
+  unchanged -- the opt-out check is skipped entirely, not evaluated against
+  a default path.
+- **The installer's KB/code-intelligence setup step** checks the opt-out
+  before doing any indexing work. When disabled, it skips both the GitNexus
+  MCP-entry cleanup and the downstream KB steps (copying the shared bible,
+  writing CI config, adding the CLAUDE.md routing block) -- an opted-out
+  repo gets none of the code-intelligence scaffolding, not just a disabled
+  runtime check.
+
+This repo-level opt-out is the first of two increments needed for full
+"repos can skip code-intel entirely" support. The second increment --
+handling the upgrade path so a repo that was never indexed doesn't get
+silently auto-indexed on its first call once code intelligence is enabled
+for it -- is a separate, not-yet-built piece of work.
