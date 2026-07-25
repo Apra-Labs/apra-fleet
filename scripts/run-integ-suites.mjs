@@ -158,15 +158,33 @@ function saveStatus(status) {
   renameSync(tmp, statusFile);
 }
 
+// Returns true when the caller should treat `status` as stale-but-safe and
+// reset/ignore it instead of continuing to use it.
 function checkStale(files, status) {
   const known = new Set(files);
   const stale = Object.keys(status.results).filter((f) => !known.has(f));
-  if (stale.length > 0) {
+  if (stale.length === 0) return false;
+
+  const runComplete = !!(status.run && status.run.runComplete === true);
+  if (!runComplete) {
+    // A live or crashed run pointing at files that no longer exist is a
+    // real fail-loud condition -- do not weaken this path.
     fail(
       `status file records results for files that no longer exist: ${stale.join(', ')}. ` +
       'The test directory changed mid-pass; use --fresh to start a new pass.'
     );
   }
+
+  // apra-fleet-9te.2.1: the recorded pass already finished (runComplete),
+  // so a stale file set here just means the test file set legitimately
+  // changed since that completed pass -- not a live/crashed run stuck
+  // pointing at deleted files. Safe to treat as equivalent to a fresh
+  // start rather than exit 2; callers reset/ignore the stale status.
+  console.log(
+    `[integ-suites] status file is from a COMPLETED pass but references removed test file(s): ${stale.join(', ')}. ` +
+    'Auto-recovering as a fresh start (test file set changed since that pass) instead of failing loud.'
+  );
+  return true;
 }
 
 function pidAlive(pid) {
@@ -245,7 +263,7 @@ function stateFingerprint(files, status) {
 
 async function cmdStatus(files) {
   let status = loadStatus();
-  if (status) checkStale(files, status);
+  if (status && checkStale(files, status)) status = null;
 
   if (waitSeconds > 0) {
     const initial = stateFingerprint(files, status);
@@ -253,9 +271,9 @@ async function cmdStatus(files) {
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 1000));
       status = loadStatus();
+      if (status && checkStale(files, status)) status = null;
       if (stateFingerprint(files, status) !== initial) break;
     }
-    if (status) checkStale(files, status);
   }
 
   if (!status) {
@@ -282,8 +300,10 @@ async function cmdStatus(files) {
 }
 
 function cmdStart(files) {
-  const status = loadStatus() || { startedAt: new Date().toISOString(), testDir: 'packages/apra-fleet-se/test', results: {} };
-  checkStale(files, status);
+  let status = loadStatus() || { startedAt: new Date().toISOString(), testDir: 'packages/apra-fleet-se/test', results: {} };
+  if (checkStale(files, status)) {
+    status = { startedAt: new Date().toISOString(), testDir: 'packages/apra-fleet-se/test', results: {} };
+  }
   if (isLive(status)) {
     console.log(`[integ-suites] a run is already live (supervisor pid=${status.run.pid}) -- poll it with --status --wait=45 instead.`);
     process.exit(3);
