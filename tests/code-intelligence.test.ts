@@ -110,6 +110,38 @@ describe('getProvider()', () => {
     expect(result).toMatchObject({ disabled: true, reason: 'code_intelligence_disabled' });
   });
 
+  it('routes the opt-out check to the queried repo, not the server process cwd (regression: src/index.ts call sites must pass input.repo)', async () => {
+    // Every code_* tool handler in src/index.ts calls
+    // `getProvider(input.repo ?? process.cwd())` -- this test exercises that
+    // exact resolution with a repo distinct from process.cwd() to guard
+    // against a regression where the repo argument is dropped and getProvider()
+    // silently falls back to the server process's own cwd for every call.
+    const disabledRepo = '/repo/opted-out';
+    const enabledRepo = '/repo/still-enabled';
+    mockReadFile.mockImplementation(async (filePath: string) => {
+      if (filePath.includes('/data/code-intelligence/')) {
+        throw Object.assign(new Error('no such file'), { code: 'ENOENT' }); // no provider override
+      }
+      if (filePath.startsWith(process.cwd()) || filePath.startsWith(disabledRepo)) {
+        // Simulate the server process's own cwd AND a distinct repo both
+        // having opted out.
+        return '{"enabled":false}';
+      }
+      throw Object.assign(new Error('no such file'), { code: 'ENOENT' }); // enabledRepo -- no config, defaults to enabled
+    });
+
+    // A query against a repo that has NOT opted out must resolve to a real
+    // provider even though the server's own cwd has opted out.
+    const enabledProvider = await getProvider(enabledRepo);
+    expect(enabledProvider).toBe(PROVIDERS['codebase-memory']);
+
+    // A query against a repo that HAS opted out must be disabled regardless
+    // of the server's own cwd state.
+    const disabledProvider = await getProvider(disabledRepo);
+    const disabledResult = await disabledProvider.graph({ symbol: 'foo', repo: disabledRepo });
+    expect(disabledResult).toMatchObject({ disabled: true, reason: 'code_intelligence_disabled' });
+  });
+
   it('PROVIDERS map contains both gitnexus and codebase-memory entries', () => {
     expect(PROVIDERS.gitnexus).toBeInstanceOf(GitNexusProvider);
     expect(PROVIDERS['codebase-memory']).toBeInstanceOf(CodebaseMemoryProvider);
