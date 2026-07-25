@@ -40,12 +40,19 @@ test('childless leaf target: bdListScoped(\'\') includes the target itself, pre-
         const dispatched = [];
         const commandLog = [];
         const publishedStates = [];
+        let passed = false;
         try {
             const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
                 planReviewerMode: 'approve-immediately',
                 addExtraTaskDuringPlan: false,
             });
-            const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
+            // apra-fleet-20i.1.2: thread this scenario's own tag through as
+            // logPrefix (apra-fleet-20i.1.1's third FleetWorkflow constructor
+            // arg) so every [Workflow Log]/[Dispatch]/[Command] line is
+            // identifiable when scenarios interleave in test output. The
+            // real single-sprint CLI path (bin/cli.mjs) omits this arg and
+            // keeps the default '' prefix -- unaffected by this change.
+            const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir }, '[childless-a] ');
             workflow.on('state', (evt) => publishedStates.push(evt));
             const engine = new WorkflowEngine(workflow);
 
@@ -86,7 +93,11 @@ test('childless leaf target: bdListScoped(\'\') includes the target itself, pre-
                 `expected the childless target ${epicBead.id} to appear in sprintTasks (bdListScoped('') output); ` +
                     `sprintTasks snapshots seen: ${JSON.stringify(beadsStates.map((e) => (e.data.sprintTasks || []).map((t) => t.id)))}`
             );
+            passed = true;
         } finally {
+            // apra-fleet-20i.1.2: explicit per-scenario END marker keyed on
+            // the same tag just threaded through as logPrefix above.
+            console.log(`=== END scenario: childless-a (${passed ? 'PASS' : 'FAIL'}) ===`);
             await teardown(tempDir);
         }
     });
