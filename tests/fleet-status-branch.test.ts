@@ -24,6 +24,13 @@ describe('fleetStatus branch display', () => {
     restoreRegistry();
   });
 
+  it('returns valid JSON with zero members when format=json and no agents are registered', async () => {
+    const result = await fleetStatus({ format: 'json' });
+    const parsed = JSON.parse(result);
+    expect(parsed.summary).toEqual({ total: 0, online: 0, offline: 0 });
+    expect(parsed.members).toEqual([]);
+  });
+
   it('shows cached lastBranch in compact output when set', async () => {
     const member = makeTestAgent({ friendlyName: 'branch-member', lastBranch: 'feature/my-branch' });
     addAgent(member);

@@ -202,6 +202,9 @@ export async function fleetStatus(input?: FleetStatusInput): Promise<string> {
   const agents = getAllAgents();
 
   if (agents.length === 0) {
+    if (format === 'json') {
+      return JSON.stringify({ version: serverVersion, summary: { total: 0, online: 0, offline: 0 }, members: [] });
+    }
     return 'No members registered. Use register_member to add one.';
   }
 

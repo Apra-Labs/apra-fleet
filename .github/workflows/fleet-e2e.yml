@@ -253,19 +253,23 @@ jobs:
             # Informational only below -- a fresh `-p` call can race the MCP
             # handshake and report "not installed" even when the deterministic
             # checks above just confirmed it is. Do not gate on this text.
-            output=$(claude -p "$PROMPT" --model haiku 2>&1)
+            # `|| true` is load-bearing: under `bash -e -o pipefail` (this
+            # step's shell), a nonzero exit from any of these bare commands
+            # kills the whole step despite this comment's intent -- capturing
+            # output into a variable does NOT suppress that.
+            output=$(claude -p "$PROMPT" --model haiku 2>&1) || true
             echo "$output"
             echo "PM claude auth OK"
           elif [ "$PROVIDER" = "gemini" ]; then
-            output=$(gemini -p "$PROMPT" --model auto --skip-trust 2>&1)
+            output=$(gemini -p "$PROMPT" --model auto --skip-trust 2>&1) || true
             echo "$output"
             echo "PM gemini auth OK"
           elif [ "$PROVIDER" = "agy" ]; then
-            output=$(agy -p "$PROMPT" --dangerously-skip-permissions 2>&1)
+            output=$(agy -p "$PROMPT" --dangerously-skip-permissions 2>&1) || true
             echo "$output"
             echo "PM agy auth OK"
           elif [ "$PROVIDER" = "opencode" ]; then
-            output=$(opencode run "$PROMPT" --format json --dangerously-skip-permissions 2>&1)
+            output=$(opencode run "$PROMPT" --format json --dangerously-skip-permissions 2>&1) || true
             echo "$output"
             echo "PM opencode auth OK"
           fi
