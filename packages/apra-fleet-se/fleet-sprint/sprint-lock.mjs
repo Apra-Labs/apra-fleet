@@ -1,5 +1,5 @@
 // apra-fleet-eft.75.2 -- a machine-local pidfile mutex keyed on
-// (branch, members), guarding against a duplicate concurrent `auto-sprint`
+// (branch, members), guarding against a duplicate concurrent `fleet-sprint`
 // engine launch for the SAME sprint.
 //
 // Root incident (apra-fleet-eft.75): a duplicate concurrent runner.js engine

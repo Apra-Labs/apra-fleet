@@ -19,11 +19,11 @@ compilation step and no packaging format beyond plain files:
   hello-world/
     workflow.json
     main.mjs
-  auto-sprint/
+  fleet-sprint/
     workflow.json
     package.json              ("type": "module")
     bin/cli.mjs
-    auto-sprint/{runner.js,contracts.mjs,errors.mjs,viewer-extensions.mjs}
+    fleet-sprint/{runner.js,contracts.mjs,errors.mjs,viewer-extensions.mjs}
     vendor/schemas/*.json
   <your-workflow>/
     workflow.json
@@ -76,7 +76,7 @@ Your entry file must be one of:
    it the array of pass-through args (everything typed after `<name>` on
    the command line).
 
-The launcher never re-parses your args -- `apra-fleet workflow auto-sprint
+The launcher never re-parses your args -- `apra-fleet workflow fleet-sprint
 --issue BD-1 --members m1 --branch f --base main` hands
 `['--issue', 'BD-1', '--members', 'm1', '--branch', 'f', '--base', 'main']`
 to your entry exactly as typed, whether via `process.argv` (self-executing
@@ -123,7 +123,7 @@ resolution order the launcher itself performs before your entry runs
 
 This logic lives in exactly one place -- `@apralabs/apra-fleet-client`'s
 `server-resolution` subpath export -- and both `apra-fleet workflow` and
-the `auto-sprint` CLI call it; do not reimplement it in your workflow.
+the `fleet-sprint` CLI call it; do not reimplement it in your workflow.
 
 ### Recommended: `connectFleet()`
 
@@ -212,7 +212,7 @@ for it), a static import is fine and appropriate.
 ## 7. The schema pattern for workflows needing role schemas
 
 If your workflow dispatches agents/roles that need the verdict/input JSON
-schemas (the same ones `packages/apra-fleet-se/auto-sprint/contracts.mjs`
+schemas (the same ones `packages/apra-fleet-se/fleet-sprint/contracts.mjs`
 loads), follow the same resolution pattern documented in
 `packages/apra-fleet-se/docs/cli-reference.md` ("Role schema resolution"):
 
@@ -225,10 +225,10 @@ loads), follow the same resolution pattern documented in
    entry file) is run directly with `node` (see Section 8) rather than
    through the launcher, so the env var was never set.
 
-This is exactly the belt-and-braces pattern `auto-sprint`'s installed
+This is exactly the belt-and-braces pattern `fleet-sprint`'s installed
 workflow directory uses: `contracts.mjs` is not modified at all --
 `APRA_FLEET_SE_SCHEMAS_DIR` is already its tier-1 override -- and the
-`vendor/schemas/` copy inside `workflows/auto-sprint/` is the tier-3 hit
+`vendor/schemas/` copy inside `workflows/fleet-sprint/` is the tier-3 hit
 for a direct `node bin/cli.mjs` invocation.
 
 ## 8. Escape hatch: running a workflow with a system Node directly
@@ -242,7 +242,7 @@ going through `apra-fleet workflow <name>`:
 node ~/.apra-fleet/workflows/<name>/<entry> [args]
 ```
 
-For example: `node ~/.apra-fleet/workflows/auto-sprint/bin/cli.mjs --help`
+For example: `node ~/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs --help`
 or `node ~/.apra-fleet/workflows/hello-world/main.mjs one two`.
 
 This costs no extra code or install step -- it works purely because the

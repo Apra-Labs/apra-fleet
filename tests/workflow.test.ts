@@ -144,26 +144,26 @@ function harness(
 }
 
 /** A well-formed workflow with an explicit workflow.json entry. */
-function autoSprintFiles(extra: Record<string, string> = {}) {
+function fleetSprintFiles(extra: Record<string, string> = {}) {
   return {
     [path.join(WF_DIR, '.installed.json')]: JSON.stringify({
       version: '1.2.3',
-      builtin: ['auto-sprint', 'hello-world'],
+      builtin: ['fleet-sprint', 'hello-world'],
     }),
-    [path.join(WF_DIR, 'auto-sprint', 'workflow.json')]: JSON.stringify({
+    [path.join(WF_DIR, 'fleet-sprint', 'workflow.json')]: JSON.stringify({
       entry: 'main.mjs',
       description: 'Run an autonomous sprint',
     }),
-    [path.join(WF_DIR, 'auto-sprint', 'main.mjs')]: '// entry',
+    [path.join(WF_DIR, 'fleet-sprint', 'main.mjs')]: '// entry',
     ...extra,
   };
 }
 
 describe('resolveWorkflowEntry', () => {
   it('resolves the entry declared in workflow.json', () => {
-    const { deps } = harness(autoSprintFiles());
-    expect(resolveWorkflowEntry(deps, 'auto-sprint')).toBe(
-      path.join(WF_DIR, 'auto-sprint', 'main.mjs'),
+    const { deps } = harness(fleetSprintFiles());
+    expect(resolveWorkflowEntry(deps, 'fleet-sprint')).toBe(
+      path.join(WF_DIR, 'fleet-sprint', 'main.mjs'),
     );
   });
 
@@ -256,7 +256,7 @@ describe('resolveWorkflowEntry', () => {
   });
 
   it('errors with the not-found text plus the list for an unknown name', () => {
-    const { deps } = harness(autoSprintFiles());
+    const { deps } = harness(fleetSprintFiles());
     let msg = '';
     try {
       resolveWorkflowEntry(deps, 'nope');
@@ -265,7 +265,7 @@ describe('resolveWorkflowEntry', () => {
     }
     expect(msg).toContain(`Error: workflow "nope" not found in ${WF_DIR}.`);
     // ...plus the --list output, so the user sees what IS available.
-    expect(msg).toContain('auto-sprint');
+    expect(msg).toContain('fleet-sprint');
   });
 });
 
@@ -312,7 +312,7 @@ describe('applyEnvDefaults', () => {
 
 describe('listWorkflows / --list', () => {
   it('marks .installed.json names builtin and everything else user', () => {
-    const files = autoSprintFiles({
+    const files = fleetSprintFiles({
       [path.join(WF_DIR, 'my-flow', 'workflow.json')]: JSON.stringify({
         entry: 'main.mjs',
         description: 'mine',
@@ -321,10 +321,10 @@ describe('listWorkflows / --list', () => {
     });
     const { deps } = harness(files);
     const list = listWorkflows(deps);
-    expect(list.map((w) => w.name)).toEqual(['auto-sprint', 'my-flow']); // sorted
-    expect(list.find((w) => w.name === 'auto-sprint')?.builtin).toBe(true);
+    expect(list.map((w) => w.name)).toEqual(['fleet-sprint', 'my-flow']); // sorted
+    expect(list.find((w) => w.name === 'fleet-sprint')?.builtin).toBe(true);
     expect(list.find((w) => w.name === 'my-flow')?.builtin).toBe(false);
-    expect(list.find((w) => w.name === 'auto-sprint')?.description).toBe(
+    expect(list.find((w) => w.name === 'fleet-sprint')?.description).toBe(
       'Run an autonomous sprint',
     );
   });
@@ -342,10 +342,10 @@ describe('listWorkflows / --list', () => {
   });
 
   it('--list prints the list and exits 0 without importing anything', async () => {
-    const h = harness(autoSprintFiles());
+    const h = harness(fleetSprintFiles());
     const code = await runWorkflow(['--list'], h.deps);
     expect(code).toBe(0);
-    expect(h.logs.join('\n')).toContain('auto-sprint');
+    expect(h.logs.join('\n')).toContain('fleet-sprint');
     expect(h.logs.join('\n')).toContain('[builtin]');
     expect(h.imported).toEqual([]);
   });
@@ -353,7 +353,7 @@ describe('listWorkflows / --list', () => {
 
 describe('--help (launcher-owned flags are only recognized before <name>)', () => {
   it('--help with no name prints the launcher help, exit 0', async () => {
-    const h = harness(autoSprintFiles());
+    const h = harness(fleetSprintFiles());
     const code = await runWorkflow(['--help'], h.deps);
     expect(code).toBe(0);
     expect(h.logs.join('\n')).toContain('apra-fleet workflow -- run an installed workflow');
@@ -361,8 +361,8 @@ describe('--help (launcher-owned flags are only recognized before <name>)', () =
   });
 
   it('does NOT swallow "<name> --help" -- it passes --help to the workflow', async () => {
-    const h = harness(autoSprintFiles());
-    const code = await runWorkflow(['auto-sprint', '--help'], h.deps);
+    const h = harness(fleetSprintFiles());
+    const code = await runWorkflow(['fleet-sprint', '--help'], h.deps);
     expect(code).toBe(0);
     // The launcher's own help must NOT have been printed...
     expect(h.logs.join('\n')).not.toContain('apra-fleet workflow -- run an installed workflow');
@@ -372,22 +372,22 @@ describe('--help (launcher-owned flags are only recognized before <name>)', () =
   });
 
   it('does not swallow a --list that comes after <name>', async () => {
-    const h = harness(autoSprintFiles());
-    await runWorkflow(['auto-sprint', '--list'], h.deps);
+    const h = harness(fleetSprintFiles());
+    await runWorkflow(['fleet-sprint', '--list'], h.deps);
     expect(h.seenArgv?.slice(2)).toEqual(['--list']);
     expect(h.imported).toHaveLength(1);
   });
 
   it('rejects an unknown launcher option before <name>, exit 1', async () => {
-    const h = harness(autoSprintFiles());
-    const code = await runWorkflow(['--bogus', 'auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles());
+    const code = await runWorkflow(['--bogus', 'fleet-sprint'], h.deps);
     expect(code).toBe(1);
     expect(h.errors.join('\n')).toContain("unknown launcher option '--bogus'");
     expect(h.imported).toEqual([]);
   });
 
   it('errors with help when no workflow name is given at all', async () => {
-    const h = harness(autoSprintFiles());
+    const h = harness(fleetSprintFiles());
     const code = await runWorkflow([], h.deps);
     expect(code).toBe(1);
     expect(h.errors.join('\n')).toContain('missing workflow name');
@@ -403,23 +403,23 @@ describe('--help (launcher-owned flags are only recognized before <name>)', () =
 
 describe('runWorkflow -- import trampoline', () => {
   it('imports the resolved entry as a file URL and exits 0', async () => {
-    const h = harness(autoSprintFiles());
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles());
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(0);
     expect(h.imported).toEqual([
-      pathToFileURL(path.join(WF_DIR, 'auto-sprint', 'main.mjs')).href,
+      pathToFileURL(path.join(WF_DIR, 'fleet-sprint', 'main.mjs')).href,
     ]);
   });
 
   it('rewrites process.argv to [execPath, entry, ...passthrough] -- args untouched', async () => {
-    const h = harness(autoSprintFiles());
-    // The acceptance-criteria integration shape: auto-sprint's own parseCliArgs()
+    const h = harness(fleetSprintFiles());
+    // The acceptance-criteria integration shape: fleet-sprint's own parseCliArgs()
     // must see these flags byte-for-byte, with no launcher re-parsing.
     const args = ['--issue', 'X', '--members', 'm1', '--dry-run', '--', '--not-a-launcher-flag'];
-    await runWorkflow(['auto-sprint', ...args], h.deps);
+    await runWorkflow(['fleet-sprint', ...args], h.deps);
     expect(h.seenArgv).toEqual([
       '/usr/bin/node',
-      path.join(WF_DIR, 'auto-sprint', 'main.mjs'),
+      path.join(WF_DIR, 'fleet-sprint', 'main.mjs'),
       ...args,
     ]);
     // argv[2..] is exactly what the user typed after <name>.
@@ -427,38 +427,38 @@ describe('runWorkflow -- import trampoline', () => {
   });
 
   it('restores the original process.argv afterwards', async () => {
-    const h = harness(autoSprintFiles());
+    const h = harness(fleetSprintFiles());
     const before = [...process.argv];
-    await runWorkflow(['auto-sprint', '--x'], h.deps);
+    await runWorkflow(['fleet-sprint', '--x'], h.deps);
     expect(process.argv).toEqual(before);
   });
 
   it('restores process.argv even when the workflow throws', async () => {
-    const h = harness(autoSprintFiles(), { importThrows: new Error('boom') });
+    const h = harness(fleetSprintFiles(), { importThrows: new Error('boom') });
     const before = [...process.argv];
-    await runWorkflow(['auto-sprint'], h.deps);
+    await runWorkflow(['fleet-sprint'], h.deps);
     expect(process.argv).toEqual(before);
   });
 
   it('calls an exported main() with the raw args when the module did not self-execute', async () => {
     const main = vi.fn();
-    const h = harness(autoSprintFiles(), { moduleExports: { main } });
-    const code = await runWorkflow(['auto-sprint', '--issue', 'X'], h.deps);
+    const h = harness(fleetSprintFiles(), { moduleExports: { main } });
+    const code = await runWorkflow(['fleet-sprint', '--issue', 'X'], h.deps);
     expect(code).toBe(0);
     expect(main).toHaveBeenCalledWith(['--issue', 'X']);
   });
 
   it.each([['run'], ['default']])('also accepts an exported %s()', async (key) => {
     const fn = vi.fn();
-    const h = harness(autoSprintFiles(), { moduleExports: { [key]: fn } });
-    await runWorkflow(['auto-sprint', '-v'], h.deps);
+    const h = harness(fleetSprintFiles(), { moduleExports: { [key]: fn } });
+    await runWorkflow(['fleet-sprint', '-v'], h.deps);
     expect(fn).toHaveBeenCalledWith(['-v']);
   });
 
   it('does not call main() when the module self-executed', async () => {
     const main = vi.fn();
-    const h = harness(autoSprintFiles(), { moduleExports: { selfExecuting: true, main } });
-    await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles(), { moduleExports: { selfExecuting: true, main } });
+    await runWorkflow(['fleet-sprint'], h.deps);
     expect(main).not.toHaveBeenCalled();
   });
 
@@ -468,41 +468,41 @@ describe('runWorkflow -- import trampoline', () => {
   // failure mode (a no-op reported as success). The launcher must fail loud:
   // nonzero exit + an actionable stderr message naming the module.
   it('fails loud (nonzero exit, actionable stderr) when the module neither self-executes nor exports a callable entry', async () => {
-    const h = harness(autoSprintFiles(), { moduleExports: {} });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles(), { moduleExports: {} });
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).not.toBe(0);
     expect(code).toBe(1);
     const errText = h.errors.join('\n');
     expect(errText).toContain('did not execute');
-    expect(errText).toContain('auto-sprint');
+    expect(errText).toContain('fleet-sprint');
     expect(errText).toContain('selfExecuting');
     expect(errText).toContain('main/run/default');
   });
 
   it('also fails loud when the module exports non-function main/run/default values', async () => {
-    const h = harness(autoSprintFiles(), {
+    const h = harness(fleetSprintFiles(), {
       moduleExports: { main: 'not-a-function', run: 42, default: {} },
     });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(1);
     expect(h.errors.join('\n')).toContain('did not execute');
   });
 
   it('a thrown error from the workflow is exit 1 with the stack on stderr', async () => {
     const err = new Error('workflow blew up');
-    const h = harness(autoSprintFiles(), { importThrows: err });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles(), { importThrows: err });
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(1);
     expect(h.errors.join('\n')).toContain('workflow blew up');
     expect(h.errors.join('\n')).toContain('Error: workflow blew up\n    at'); // the stack
   });
 
   it('unknown <name> exits 1 with the not-found text and the list', async () => {
-    const h = harness(autoSprintFiles());
+    const h = harness(fleetSprintFiles());
     const code = await runWorkflow(['nope'], h.deps);
     expect(code).toBe(1);
     expect(h.errors.join('\n')).toContain(`Error: workflow "nope" not found in ${WF_DIR}.`);
-    expect(h.errors.join('\n')).toContain('auto-sprint');
+    expect(h.errors.join('\n')).toContain('fleet-sprint');
     expect(h.imported).toEqual([]);
   });
 
@@ -520,14 +520,14 @@ describe('runWorkflow -- import trampoline', () => {
 
 describe('runWorkflow -- fleet-server resolution (ADR)', () => {
   it('delegates to the shared resolver and logs which path it took', async () => {
-    const h = harness(autoSprintFiles(), { mode: 'http' });
-    await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles(), { mode: 'http' });
+    await runWorkflow(['fleet-sprint'], h.deps);
     expect(h.logs.join('\n')).toContain('[workflow] fleet server: attached to http');
   });
 
   it('a resolver failure warns but still runs the workflow (not every workflow needs a server)', async () => {
-    const h = harness(autoSprintFiles(), { resolveThrows: new Error('no singleton') });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles(), { resolveThrows: new Error('no singleton') });
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(0);
     expect(h.warns.join('\n')).toContain('could not resolve the fleet server: no singleton');
     expect(h.imported).toHaveLength(1);
@@ -536,14 +536,14 @@ describe('runWorkflow -- fleet-server resolution (ADR)', () => {
 
 describe('R10 -- version skew between the binary and the installed workflows', () => {
   it('warns and suggests apra-fleet install on mismatch, but still runs', async () => {
-    const files = autoSprintFiles({
+    const files = fleetSprintFiles({
       [path.join(WF_DIR, '.installed.json')]: JSON.stringify({
         version: '1.0.0',
-        builtin: ['auto-sprint'],
+        builtin: ['fleet-sprint'],
       }),
     });
     const h = harness(files, { version: '1.2.3' });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(0); // a warning, not a failure
     const warned = h.warns.join('\n');
     expect(warned).toContain('installed by apra-fleet 1.0.0');
@@ -552,17 +552,17 @@ describe('R10 -- version skew between the binary and the installed workflows', (
   });
 
   it('does not warn when the versions match', async () => {
-    const h = harness(autoSprintFiles(), { version: '1.2.3' });
-    await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles(), { version: '1.2.3' });
+    await runWorkflow(['fleet-sprint'], h.deps);
     expect(h.warns.join('\n')).not.toContain('installed by apra-fleet');
   });
 
   it('does not warn when .installed.json records no version', async () => {
-    const files = autoSprintFiles({
-      [path.join(WF_DIR, '.installed.json')]: JSON.stringify({ builtin: ['auto-sprint'] }),
+    const files = fleetSprintFiles({
+      [path.join(WF_DIR, '.installed.json')]: JSON.stringify({ builtin: ['fleet-sprint'] }),
     });
     const h = harness(files, { version: '1.2.3' });
-    await runWorkflow(['auto-sprint'], h.deps);
+    await runWorkflow(['fleet-sprint'], h.deps);
     expect(h.warns.join('\n')).not.toContain('installed by apra-fleet');
   });
 });
@@ -571,7 +571,7 @@ describe('R9 -- binary built without the workflow asset sections', () => {
   it('prints an actionable rebuild/reinstall error instead of a raw resolution failure', async () => {
     // Old binary: no workflows on disk AND no workflow sections in its SEA manifest.
     const h = harness({}, { hasAssets: false });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(1);
     const msg = h.errors.join('\n');
     expect(msg).toContain('built without the workflow subsystem assets');
@@ -583,14 +583,14 @@ describe('R9 -- binary built without the workflow asset sections', () => {
   });
 
   it('does not fire when the workflow is present on disk (assets already extracted)', async () => {
-    const h = harness(autoSprintFiles(), { hasAssets: false });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles(), { hasAssets: false });
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(0);
     expect(h.errors.join('\n')).not.toContain('built without the workflow subsystem assets');
   });
 
   it('a current binary with assets reports the normal not-found error', async () => {
-    const h = harness(autoSprintFiles(), { hasAssets: true });
+    const h = harness(fleetSprintFiles(), { hasAssets: true });
     const code = await runWorkflow(['nope'], h.deps);
     expect(code).toBe(1);
     expect(h.errors.join('\n')).toContain('not found');
@@ -622,8 +622,8 @@ describe('self-heal -- on-demand extraction (apra-fleet-7pm.8)', () => {
   });
 
   it('does not self-heal (or print a notice) when workflows/ and node_modules/ are both present', async () => {
-    const h = harness(autoSprintFiles());
-    await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles());
+    await runWorkflow(['fleet-sprint'], h.deps);
     expect(h.selfHealCalls).toEqual([]);
     expect(h.logs.some((l) => l.startsWith('[workflow] self-heal:'))).toBe(false);
   });
@@ -659,7 +659,7 @@ describe('self-heal -- on-demand extraction (apra-fleet-7pm.8)', () => {
     // Everything is "present" per the default harness marker EXCEPT workflows/,
     // which has no files at all in this virtual FS.
     const h = harness({}, { hasAssets: true, selfHealResult: true });
-    await runWorkflow(['auto-sprint'], h.deps);
+    await runWorkflow(['fleet-sprint'], h.deps);
     expect(h.selfHealCalls).toEqual([true]);
   });
 });
@@ -676,8 +676,8 @@ describe('server resolution probing (apra-fleet-eft.61 + build-binary smoke fals
   //     anyway. So on unmodified-probe failure the launcher retries WITH that
   //     default before warning.
   it('probes with the unmodified ambient env first, so a healthy HTTP singleton attaches (eft.61)', async () => {
-    const h = harness(autoSprintFiles());
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles());
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(0);
     expect(h.resolutionEnvs).toHaveLength(1);
     expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_BIN).toBeUndefined();
@@ -688,8 +688,8 @@ describe('server resolution probing (apra-fleet-eft.61 + build-binary smoke fals
   });
 
   it('bare home: retries with the serverBin default instead of warning (smoke false positive)', async () => {
-    const h = harness(autoSprintFiles(), { resolveBareHome: true });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles(), { resolveBareHome: true });
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(0);
     expect(h.resolutionEnvs).toHaveLength(2);
     expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_BIN).toBeUndefined();
@@ -698,11 +698,11 @@ describe('server resolution probing (apra-fleet-eft.61 + build-binary smoke fals
   });
 
   it('never overrides an ambient APRA_FLEET_SERVER_BIN, and does not retry when the user set one', async () => {
-    const h = harness(autoSprintFiles(), {
+    const h = harness(fleetSprintFiles(), {
       env: { APRA_FLEET_SERVER_BIN: '/custom/bin/apra-fleet' },
       resolveThrows: new Error('custom bin unreachable'),
     });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(0);
     expect(h.resolutionEnvs).toHaveLength(1);
     expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_BIN).toBe('/custom/bin/apra-fleet');
@@ -710,8 +710,8 @@ describe('server resolution probing (apra-fleet-eft.61 + build-binary smoke fals
   });
 
   it('never injects SERVER_BIN into any probe when APRA_FLEET_SERVER_CMD is set', async () => {
-    const h = harness(autoSprintFiles(), { env: { APRA_FLEET_SERVER_CMD: 'node server.js run' } });
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const h = harness(fleetSprintFiles(), { env: { APRA_FLEET_SERVER_CMD: 'node server.js run' } });
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(0);
     expect(h.resolutionEnvs).toHaveLength(1);
     expect(h.resolutionEnvs[0].APRA_FLEET_SERVER_BIN).toBeUndefined();
@@ -719,7 +719,7 @@ describe('server resolution probing (apra-fleet-eft.61 + build-binary smoke fals
   });
 });
 
-describe('auto-sprint workflow-passthrough CHILD attach path against the REAL resolver (apra-fleet-eft.61.1)', () => {
+describe('fleet-sprint workflow-passthrough CHILD attach path against the REAL resolver (apra-fleet-eft.61.1)', () => {
   // The prior describe block ('server resolution probing') pins the launcher's own
   // probe-then-fallback behavior against deps.resolveConnection, which every other
   // test in this file stubs out entirely -- so it never proves the launcher's fix
@@ -731,7 +731,7 @@ describe('auto-sprint workflow-passthrough CHILD attach path against the REAL re
   // injection point) and has the imported "entry" module re-run that same real
   // resolver against deps.env -- exactly like cli.mjs's own bare
   // `resolveFleetServerConnection()` call does against process.env -- to pin the
-  // auto-sprint CHILD path end to end.
+  // fleet-sprint CHILD path end to end.
   //
   // Pre-b77bf3c this failed: the launcher's first probe injected
   // APRA_FLEET_SERVER_BIN into the resolution env, which the real resolver reads as
@@ -754,7 +754,7 @@ describe('auto-sprint workflow-passthrough CHILD attach path against the REAL re
     });
 
     let childResolution: { mode: string } | undefined;
-    const h = harness(autoSprintFiles(), { env: {} }); // clean env: no SERVER_BIN/CMD/TRANSPORT
+    const h = harness(fleetSprintFiles(), { env: {} }); // clean env: no SERVER_BIN/CMD/TRANSPORT
     h.deps.resolveConnection = (env) => resolveFleetServerConnection({ env, checkRunningInstance });
     h.deps.importModule = async (url) => {
       h.imported.push(url);
@@ -769,7 +769,7 @@ describe('auto-sprint workflow-passthrough CHILD attach path against the REAL re
       return { selfExecuting: true };
     };
 
-    const code = await runWorkflow(['auto-sprint'], h.deps);
+    const code = await runWorkflow(['fleet-sprint'], h.deps);
 
     expect(code).toBe(0);
     expect(childResolution?.mode).toBe('http');

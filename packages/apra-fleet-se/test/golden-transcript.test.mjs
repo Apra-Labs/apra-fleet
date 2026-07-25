@@ -22,7 +22,7 @@ const __dirname = path.dirname(__filename);
 // invisible).
 //
 // This test drives ONE deterministic, full-coverage mock sprint cycle
-// against packages/apra-fleet-se/auto-sprint/runner.js (the exact same
+// against packages/apra-fleet-se/fleet-sprint/runner.js (the exact same
 // deterministic mock-fleet approach as test/advanced-mock-runner-test.mjs's
 // "run1" happy-path scenario: reject-then-approve plan review, default
 // doer/reviewer handlers, deploy.md + integ-test-playbook.md both present),
@@ -482,7 +482,7 @@ async function runGoldenScenario(tag) {
         const workflow = new FleetWorkflow(fleetApi, { targetRepo: tempDir });
         workflow.on('group:start', (e) => { currentGroup = e.title; });
         const engine = new WorkflowEngine(workflow);
-        const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+        const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 
         const result = await engine.executeFile(scriptPath, {
             target_issue: epicBead.id,

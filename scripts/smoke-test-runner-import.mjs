@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // smoke-test-runner-import.mjs (apra-fleet-7pm.12)
 //
-// Proves that dist/auto-sprint-runner.mjs's full import graph
+// Proves that dist/fleet-sprint-runner.mjs's full import graph
 // (its own relative './contracts.mjs' / './errors.mjs' siblings,
 // '@apralabs/apra-fleet-workflow' [+ its '/viewer/html-utils' subpath] and
 // '@apralabs/apra-fleet-client', and the bare 'ajv' specifier those pull in)
@@ -10,9 +10,9 @@
 // ancestor, no vendor/ checkout, nothing pre-existing except what npm itself
 // installed for the published package.
 //
-// This is NOT exercised by `auto-sprint --help` (see docs/workflow-
+// This is NOT exercised by `fleet-sprint --help` (see docs/workflow-
 // subsystem-plan.md Section 0.1): --help exits before executeFile() ever
-// runs, and dist/auto-sprint.mjs's own imports were already esbuild-inlined
+// runs, and dist/fleet-sprint.mjs's own imports were already esbuild-inlined
 // at bundle time, so a broken runner.js import graph was invisible to CI
 // until this script.
 //
@@ -32,7 +32,7 @@ if (!pkgDir) {
 const engineUrl = pathToFileURL(
   path.join(pkgDir, 'dist', 'node_modules', '@apralabs', 'apra-fleet-workflow', 'src', 'workflow', 'engine.mjs'),
 ).href;
-const runnerPath = path.join(pkgDir, 'dist', 'auto-sprint-runner.mjs');
+const runnerPath = path.join(pkgDir, 'dist', 'fleet-sprint-runner.mjs');
 
 function isModuleResolutionError(err) {
   return err && (err.code === 'ERR_MODULE_NOT_FOUND' || err.code === 'MODULE_NOT_FOUND');

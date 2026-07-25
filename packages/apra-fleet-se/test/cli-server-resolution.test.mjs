@@ -83,10 +83,10 @@ describe('resolveFleetServerCommand', () => {
             const distDir = path.join(tmpInstall, 'dist');
             fs.mkdirSync(distDir, { recursive: true });
             fs.writeFileSync(path.join(distDir, 'index.js'), '// fleet server entry', 'utf-8');
-            fs.writeFileSync(path.join(distDir, 'auto-sprint.mjs'), '// bundled cli', 'utf-8');
+            fs.writeFileSync(path.join(distDir, 'fleet-sprint.mjs'), '// bundled cli', 'utf-8');
 
             // No packages/ or monorepo root anywhere in this tree -- __dirname
-            // for a real bundled dist/auto-sprint.mjs would be distDir itself.
+            // for a real bundled dist/fleet-sprint.mjs would be distDir itself.
             const result = resolveFleetServerCommand({ env: {}, dirname: distDir });
             assert.strictEqual(result.command, 'node');
             assert.strictEqual(result.args[0], path.join(distDir, 'index.js'));
@@ -97,17 +97,17 @@ describe('resolveFleetServerCommand', () => {
 });
 
 describe('resolveRunnerScriptPath', () => {
-    test('bundled layout: sibling auto-sprint-runner.mjs resolves first when present', () => {
+    test('bundled layout: sibling fleet-sprint-runner.mjs resolves first when present', () => {
         const result = resolveRunnerScriptPath({
             dirname: path.join('some', 'install', 'dist'),
-            exists: (candidate) => candidate === path.join('some', 'install', 'dist', 'auto-sprint-runner.mjs'),
+            exists: (candidate) => candidate === path.join('some', 'install', 'dist', 'fleet-sprint-runner.mjs'),
         });
-        assert.strictEqual(result, path.join('some', 'install', 'dist', 'auto-sprint-runner.mjs'));
+        assert.strictEqual(result, path.join('some', 'install', 'dist', 'fleet-sprint-runner.mjs'));
     });
 
-    test('dev-monorepo layout: falls through to ../auto-sprint/runner.js when the bundled asset is absent', () => {
+    test('dev-monorepo layout: falls through to ../fleet-sprint/runner.js when the bundled asset is absent', () => {
         const dirname = path.join('repo', 'packages', 'apra-fleet-se', 'bin');
-        const expected = path.join(dirname, '../auto-sprint/runner.js');
+        const expected = path.join(dirname, '../fleet-sprint/runner.js');
         const result = resolveRunnerScriptPath({
             dirname,
             exists: (candidate) => candidate === expected,
@@ -129,7 +129,7 @@ describe('resolveRunnerScriptPath', () => {
     test('dev-mode default (no deps) resolves the real runner.js in this checkout', () => {
         const result = resolveRunnerScriptPath();
         assert.ok(fs.existsSync(result), `expected ${result} to exist`);
-        assert.ok(result.replace(/\\/g, '/').endsWith('auto-sprint/runner.js'), result);
+        assert.ok(result.replace(/\\/g, '/').endsWith('fleet-sprint/runner.js'), result);
     });
 });
 

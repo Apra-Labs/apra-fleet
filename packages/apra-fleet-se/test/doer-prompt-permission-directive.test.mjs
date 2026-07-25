@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { buildDoerPrompt } from '../auto-sprint/runner.js';
+import { buildDoerPrompt } from '../fleet-sprint/runner.js';
 
 // apra-fleet-eft.65.3 -- pins apra-fleet-eft.65.2's fix: the composed Doer
 // role prompt must carry an explicit fail-loud-not-route-around directive so

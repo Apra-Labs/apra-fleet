@@ -38,8 +38,8 @@ const NEW_MANIFEST = {
     'agentSchemas/pm.schema.json': 'packages/apra-fleet-se/apra-pm/agents/schemas/pm.schema.json',
   },
   builtinWorkflows: {
-    'auto-sprint/workflow.json': 'auto-sprint/workflow.json',
-    'auto-sprint/main.mjs': 'auto-sprint/main.mjs',
+    'fleet-sprint/workflow.json': 'fleet-sprint/workflow.json',
+    'fleet-sprint/main.mjs': 'fleet-sprint/main.mjs',
     'hello-world/workflow.json': 'hello-world/workflow.json',
     'hello-world/main.mjs': 'hello-world/main.mjs',
   },
@@ -84,9 +84,9 @@ describe('update-triggered re-install: EBUSY handling on a locked built-in workf
   });
 
   it('a re-invoked install --force with a locked built-in dir warns + skips that dir instead of failing the update', async () => {
-    const autoSprintDest = path.join(WORKFLOWS_DIR, 'auto-sprint');
+    const fleetSprintDest = path.join(WORKFLOWS_DIR, 'fleet-sprint');
     vi.mocked(fs.renameSync).mockImplementation(((_src: any, dest: any) => {
-      if (dest === autoSprintDest) {
+      if (dest === fleetSprintDest) {
         const err: NodeJS.ErrnoException = new Error('resource busy or locked');
         err.code = 'EBUSY';
         throw err;
@@ -103,7 +103,7 @@ describe('update-triggered re-install: EBUSY handling on a locked built-in workf
     ).resolves.toBeUndefined();
 
     const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(warns).toContain('workflows/auto-sprint');
+    expect(warns).toContain('workflows/fleet-sprint');
     expect(warns).toContain('locked');
 
     // hello-world (not locked) still got its rename call through -- only the

@@ -13,8 +13,8 @@ import {
     isMemberSyncRemoteConfigured,
     preflightBeadsHealthGate,
     verifyDoerStreakClosed,
-} from '../auto-sprint/runner.js';
-import { DoltDivergedError, DoltSyncError } from '../auto-sprint/errors.mjs';
+} from '../fleet-sprint/runner.js';
+import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -665,7 +665,7 @@ test('verifyDoerStreakClosed: a diverged D-pull propagates the typed error (not 
 // This locks in the integ-test-runner/harvester D-push that this bead's rework
 // added, and fails if a future mutating dispatch omits it.
 // -----------------------------------------------------------------------------
-const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
+const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 
 /** Given the index of an opening '(' returns the index of its matching ')', skipping string/template contents. */
 function balancedClose(src, openParenIdx) {

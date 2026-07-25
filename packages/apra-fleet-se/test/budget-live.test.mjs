@@ -14,7 +14,7 @@ import { runCmd } from './helpers/bd-replay.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 
 // N10 (apra-fleet-unw2.8): regression coverage for "cost/budget is live",
 // i.e. that a real auto-sprint run (a) actually debits budget._spent

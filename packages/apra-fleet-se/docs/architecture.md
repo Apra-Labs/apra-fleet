@@ -1,6 +1,6 @@
 # Architecture / Internals
 
-This document describes how `auto-sprint/runner.js` is put together
+This document describes how `fleet-sprint/runner.js` is put together
 internally: the cycle loop, exit condition, stall detection, budget
 tracking, multi-member topology, the journal/replay mechanism (as exposed by
 the underlying engine), and the dashboard viewer. For the high-level mental
@@ -393,7 +393,7 @@ rare, explicitly-logged escalation, not the common path.
 
 ## Dolt sync discipline (`synced` mode)
 
-Because auto-sprint's beads state lives in a Dolt-backed clone per member,
+Because fleet-sprint's beads state lives in a Dolt-backed clone per member,
 `synced` mode wraps every dispatch that reads or mutates beads state in an
 equivalent bracket: a D-pull (`bd dolt pull`) before the dispatch, and a
 D-push (`bd dolt push`) after any beads-mutating step. Three properties of
@@ -471,7 +471,7 @@ shared remote -- caught only because the runner's own bd-level check treated
 it as configured and the push was separately blocked by missing local
 credentials, not because the neutralization held by design. Treat this as an
 open verification gap: a green end-to-end smoke run (a real sandboxed
-auto-sprint driving a canary to closure with zero pushes reaching the real
+fleet-sprint driving a canary to closure with zero pushes reaching the real
 remote) is the only evidence that actually closes it, not passing mocked/unit
 coverage of the classifier and the bd-level check in isolation.
 
@@ -557,7 +557,7 @@ the pm skill's "never suppress, never auto-merge" rule).
 
 `bin/cli.mjs` starts a dashboard viewer (`createDashboardViewer` from
 `@apralabs/apra-fleet-workflow/viewer`) and extends it with this package's
-`beadsExtension` (`auto-sprint/viewer-extensions.mjs`): a "Beads Tasks" panel
+`beadsExtension` (`fleet-sprint/viewer-extensions.mjs`): a "Beads Tasks" panel
 that renders the live beads task tree (parent/child nesting, status color
 coding, collapsible descriptions) whenever the runner calls
 `publishState('beads', { tasks })` (done after most bead-mutating steps via
@@ -584,11 +584,11 @@ falling back to live execution from the first mismatch onward (partial
 replay, not all-or-nothing). This is generic `apra-fleet-workflow` machinery,
 off by default (zero I/O, zero behavior change, unless a caller opts in).
 
-**`auto-sprint`'s CLI does not currently expose flags for this** --
+**`fleet-sprint`'s CLI does not currently expose flags for this** --
 `bin/cli.mjs`'s call to `engine.executeFile()` passes neither `journal` nor
 `resumeJournal`, so every `fleet-se sprint` run today executes live with no
 journal written. The mechanism is available to any direct caller of
-`engine.executeFile('auto-sprint/runner.js', args, { journal: true })` (e.g.
+`engine.executeFile('fleet-sprint/runner.js', args, { journal: true })` (e.g.
 a test, or a future CLI flag), and this package's own tests exercise it
 (see `packages/apra-fleet-se/test/`), but there is no supported way to
 resume a crashed `fleet-se sprint` invocation from the CLI today.

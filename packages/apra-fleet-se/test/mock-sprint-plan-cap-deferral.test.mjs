@@ -2,13 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SprintPlanRejectedError } from '../auto-sprint/errors.mjs';
-import { checkPath } from '../auto-sprint/dispatch-safety-guard.mjs';
+import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
+import { checkPath } from '../fleet-sprint/dispatch-safety-guard.mjs';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
+const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -26,7 +26,7 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // `notes` name a STRICT SUBSET of the plan's taskAssignments ids
 // (extractContestedBeadIds()), the engine defers just those bead(s)
 // (`bd update <id> --status=deferred` + the finding attached as a note),
-// logs `[auto-sprint] plan-cap deferral: ...` naming them, and proceeds to
+// logs `[fleet-sprint] plan-cap deferral: ...` naming them, and proceeds to
 // Develop with the remaining approved task set. It still aborts exactly as
 // before when the contested set spans the WHOLE plan (or ready set would go
 // empty).
@@ -103,11 +103,11 @@ test('mock sprint: plan-cap exhaustion confined to one bead defers it and develo
             `Expected the plan-cap deferral finding to be attached via 'bd note ${contestedId} --file ...': ${JSON.stringify(scoped.commandLog)}`
         );
 
-        // The '[auto-sprint] plan-cap deferral' log line names the deferred
+        // The '[fleet-sprint] plan-cap deferral' log line names the deferred
         // bead.
         check(
-            scoped.logs.some((l) => l.includes('[auto-sprint] plan-cap deferral') && l.includes(contestedId)),
-            `Expected a '[auto-sprint] plan-cap deferral' log line naming ${contestedId}, logs: ${JSON.stringify(scoped.logs.filter((l) => l.includes('plan-cap')))}`
+            scoped.logs.some((l) => l.includes('[fleet-sprint] plan-cap deferral') && l.includes(contestedId)),
+            `Expected a '[fleet-sprint] plan-cap deferral' log line naming ${contestedId}, logs: ${JSON.stringify(scoped.logs.filter((l) => l.includes('plan-cap')))}`
         );
 
         // Develop proceeded with the remaining approved task set: the clean

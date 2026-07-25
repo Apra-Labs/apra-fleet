@@ -1,11 +1,11 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { withDispatchWatchdog } from '../auto-sprint/runner.js';
+import { withDispatchWatchdog } from '../fleet-sprint/runner.js';
 import { AgentDispatchError } from '@apralabs/apra-fleet-workflow';
 
 // =============================================================================
 // apra-fleet-eft.28.3 -- direct unit coverage for withDispatchWatchdog()
-// (auto-sprint/runner.js), the client-side dispatch-timeout watchdog that
+// (fleet-sprint/runner.js), the client-side dispatch-timeout watchdog that
 // wraps the FIRST/pre-plan [interactive] Planner execute_prompt dispatch.
 //
 // eft.28 RECURRED (integ cycle 6) because a frozen-but-alive persistent

@@ -6,8 +6,8 @@ import {
     isDoltPullConflict,
     DEFAULT_EMBEDDED_DATA_DIR,
     RECOVERY_SQL_SERVER_HOST,
-} from '../auto-sprint/dolt-recovery.mjs';
-import { DoltDivergedError } from '../auto-sprint/errors.mjs';
+} from '../fleet-sprint/dolt-recovery.mjs';
+import { DoltDivergedError } from '../fleet-sprint/errors.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 

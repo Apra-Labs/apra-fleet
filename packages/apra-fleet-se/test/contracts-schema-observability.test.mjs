@@ -43,7 +43,7 @@ async function importWired(overrideDir) {
     const previous = process.env.APRA_FLEET_SE_SCHEMAS_DIR;
     process.env.APRA_FLEET_SE_SCHEMAS_DIR = overrideDir;
     try {
-        return await import(`../auto-sprint/contracts.mjs?observability-test=${Date.now()}-${Math.random()}`);
+        return await import(`../fleet-sprint/contracts.mjs?observability-test=${Date.now()}-${Math.random()}`);
     } finally {
         if (previous === undefined) {
             delete process.env.APRA_FLEET_SE_SCHEMAS_DIR;

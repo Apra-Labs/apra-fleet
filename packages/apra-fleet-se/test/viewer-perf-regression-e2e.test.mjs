@@ -7,7 +7,7 @@ import path from 'path';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
 import { resolveStringRefs } from '@apralabs/apra-fleet-workflow/viewer/lean-state';
-import { beadsExtension, renderBeadsHtml } from '../auto-sprint/viewer-extensions.mjs';
+import { beadsExtension, renderBeadsHtml } from '../fleet-sprint/viewer-extensions.mjs';
 
 // apra-fleet-eft.27.3: end-to-end perf/regression coverage for the eft.27
 // bug ("Viewer unusable on large sprints") against a fixture 500+ activity

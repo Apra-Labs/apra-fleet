@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Deterministic, CI-friendly mock of a full auto-sprint cycle driven against
-// packages/apra-fleet-se/auto-sprint/runner.js. No live MCP server, no
+// packages/apra-fleet-se/fleet-sprint/runner.js. No live MCP server, no
 // Math.random(), no fixed multi-second sleeps -- every branch below matches
 // the EXACT lowercase `agentType` strings runner.js dispatches:
 //   planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner, harvester
@@ -20,7 +20,7 @@ export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 
 // apra-fleet-eft.75.2: runner.js's main() now acquires a machine-local
 // pidfile mutex keyed on (branch, members) BEFORE any dispatch (see
-// auto-sprint/sprint-lock.mjs) -- a REAL guard against two processes running
+// fleet-sprint/sprint-lock.mjs) -- a REAL guard against two processes running
 // the exact same sprint branch concurrently. Node's test runner spawns one
 // process PER test FILE, and several helpers below (runOnce,
 // runRejectedPlanScenario) used to pass a fixed, hardcoded literal branch
@@ -870,7 +870,7 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
         // contract (branch/base_branch/members are required; goal/max_cycles
         // are optional with defaults) before any dispatch, and uses
         // branch/base_branch for the git checkout/push/PR steps below.
-        const scriptPath = path.join(__dirname, '../../auto-sprint/runner.js');
+        const scriptPath = path.join(__dirname, '../../fleet-sprint/runner.js');
         const result = await engine.executeFile(scriptPath, {
             target_issue: epicBead.id,
             members: ['local'],
@@ -909,7 +909,7 @@ export async function runRejectedPlanScenario(tag) {
         const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, { planReviewerMode: 'always-reject-free-text' });
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         const engine = new WorkflowEngine(workflow);
-        const scriptPath = path.join(__dirname, '../../auto-sprint/runner.js');
+        const scriptPath = path.join(__dirname, '../../fleet-sprint/runner.js');
 
         let error = null;
         try {
@@ -1044,7 +1044,7 @@ export async function runDevelopLoopScenario(tag, {
         // logged.
         workflow.on('state', (e) => states.push(e));
         const engine = new WorkflowEngine(workflow);
-        const scriptPath = path.join(__dirname, '../../auto-sprint/runner.js');
+        const scriptPath = path.join(__dirname, '../../fleet-sprint/runner.js');
 
         const branch = branchOverride || `auto-sprint/mock-${tag}`;
         let error = null;

@@ -7,7 +7,7 @@ import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/in
 import { writeInstallConfig, INSTALL_CONFIG_PATH } from '../src/cli/config.js';
 
 // apra-fleet-7pm.5 -- install.ts additive workflow-install step
-// (~/.apra-fleet/node_modules, /schemas, /workflows/{auto-sprint,hello-world}),
+// (~/.apra-fleet/node_modules, /schemas, /workflows/{fleet-sprint,hello-world}),
 // the --workflows <all|none> flag, and install-config workflowsMode persistence.
 // See docs/workflow-subsystem-plan.md Section 6 / Section 2.1.
 
@@ -39,8 +39,8 @@ const NEW_MANIFEST = {
     'agentSchemas/pm.schema.json': 'packages/apra-fleet-se/apra-pm/agents/schemas/pm.schema.json',
   },
   builtinWorkflows: {
-    'auto-sprint/workflow.json': 'auto-sprint/workflow.json',
-    'auto-sprint/main.mjs': 'auto-sprint/main.mjs',
+    'fleet-sprint/workflow.json': 'fleet-sprint/workflow.json',
+    'fleet-sprint/main.mjs': 'fleet-sprint/main.mjs',
     'hello-world/workflow.json': 'hello-world/workflow.json',
     'hello-world/main.mjs': 'hello-world/main.mjs',
   },
@@ -214,9 +214,9 @@ describe('runInstall workflow-runtime extraction (new manifest)', () => {
     await runInstall(['--skill', 'none']);
 
     const renameCalls = vi.mocked(fs.renameSync).mock.calls;
-    const autoSprintDest = path.join(WORKFLOWS_DIR, 'auto-sprint');
+    const fleetSprintDest = path.join(WORKFLOWS_DIR, 'fleet-sprint');
     const helloWorldDest = path.join(WORKFLOWS_DIR, 'hello-world');
-    expect(renameCalls.some(c => c[1] === autoSprintDest)).toBe(true);
+    expect(renameCalls.some(c => c[1] === fleetSprintDest)).toBe(true);
     expect(renameCalls.some(c => c[1] === helloWorldDest)).toBe(true);
 
     // clearDirSync/rmSync must never target the workflows/ root itself.
@@ -230,7 +230,7 @@ describe('runInstall workflow-runtime extraction (new manifest)', () => {
     const installedCall = writeCalls.find(c => c[0] === path.join(WORKFLOWS_DIR, '.installed.json'));
     expect(installedCall).toBeDefined();
     const data = JSON.parse(installedCall![1] as string);
-    expect(data.builtin.sort()).toEqual(['auto-sprint', 'hello-world']);
+    expect(data.builtin.sort()).toEqual(['fleet-sprint', 'hello-world']);
     expect(typeof data.version).toBe('string');
   });
 });
@@ -282,9 +282,9 @@ describe('runInstall EBUSY handling on a locked built-in workflow directory', ()
   });
 
   it('warns and skips only the locked directory, install still exits 0 (resolves)', async () => {
-    const autoSprintDest = path.join(WORKFLOWS_DIR, 'auto-sprint');
+    const fleetSprintDest = path.join(WORKFLOWS_DIR, 'fleet-sprint');
     vi.mocked(fs.renameSync).mockImplementation(((_src: any, dest: any) => {
-      if (dest === autoSprintDest) {
+      if (dest === fleetSprintDest) {
         const err: NodeJS.ErrnoException = new Error('resource busy or locked');
         err.code = 'EBUSY';
         throw err;
@@ -297,7 +297,7 @@ describe('runInstall EBUSY handling on a locked built-in workflow directory', ()
     await expect(runInstall(['--skill', 'none'])).resolves.toBeUndefined();
 
     const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(warns).toContain('workflows/auto-sprint');
+    expect(warns).toContain('workflows/fleet-sprint');
     expect(warns).toContain('locked');
 
     // hello-world (not locked) still got its rename call through.

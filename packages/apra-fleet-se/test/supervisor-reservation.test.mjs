@@ -40,7 +40,7 @@ import { createReconciler } from '../src/supervisor/reconcile.mjs';
 //   (e) the ledger survives a supervisor restart (reload from disk) and PID
 //       reconciliation releases dead-child reservations while retaining live.
 //   (f) force-release tears a wedged reservation down (both axes) with audit.
-//   (g) the intra-sprint memberLocks mechanism (auto-sprint/runner.js role-level
+//   (g) the intra-sprint memberLocks mechanism (fleet-sprint/runner.js role-level
 //       serialization) is a DIFFERENT concern and stays untouched: the ledger
 //       exposes no per-member intra-sprint lock surface and co-reserves a
 //       sprint's whole member union under one key.
@@ -467,7 +467,7 @@ describe('reservation e2e -- (g) intra-sprint memberLocks behavior unchanged', (
         // The reservation ledger is a CROSS-sprint exclusion only: within a single
         // sprint every member coexists freely under ONE sprintId key. The
         // role-level serialization that keeps two roles of the SAME sprint from
-        // dispatching concurrently (auto-sprint/runner.js globalDoerTurn /
+        // dispatching concurrently (fleet-sprint/runner.js globalDoerTurn /
         // inFlightAgents) is an ORTHOGONAL, intra-sprint mechanism this ledger
         // deliberately does not model or touch (see ledger.mjs header).
         const launched = await sys.controller.launch({

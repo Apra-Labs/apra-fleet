@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { StalledSprintError, ReviewerContractViolationError } from '../auto-sprint/errors.mjs';
+import { StalledSprintError, ReviewerContractViolationError } from '../fleet-sprint/errors.mjs';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);

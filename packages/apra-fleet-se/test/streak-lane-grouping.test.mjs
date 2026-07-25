@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { groupStreaksFromLaneMetadata } from '../auto-sprint/runner.js';
+import { groupStreaksFromLaneMetadata } from '../fleet-sprint/runner.js';
 
 // =============================================================================
 // apra-fleet-eft.76.3 -- deterministic develop-round grouping from planner-

@@ -9,7 +9,7 @@ import {
     validateVerdict,
     wrapUntrustedBlock,
     appendSchemaInstruction,
-} from '../auto-sprint/contracts.mjs';
+} from '../fleet-sprint/contracts.mjs';
 
 // Unit tests for apra-fleet-unw.12: the canonical role enum + verdict
 // schema contracts module. These schemas are consumed (later, in

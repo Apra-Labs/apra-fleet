@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { checkPath } from '../auto-sprint/dispatch-safety-guard.mjs';
+import { checkPath } from '../fleet-sprint/dispatch-safety-guard.mjs';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
+const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -22,7 +22,7 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // criteria are themselves flagged as defective and can only be corrected by
 // the next cycle's planner. Assert:
 //   - no further doer dispatch happens this cycle (dev loop stops at 1 round)
-//   - the '[auto-sprint] replan short-circuit' log line appears, naming X
+//   - the '[fleet-sprint] replan short-circuit' log line appears, naming X
 //   - Cycle Eval runs and the NEXT cycle's planner dispatch happens
 //
 // Control: identical reopenIds but WITHOUT replanIds -- today's normal round
@@ -101,10 +101,10 @@ test('mock sprint: replan short-circuit skips remaining develop/review rounds an
             `Expected exactly 1 doer dispatch in cycle 1 (short-circuit skips the remaining rounds), got ${doerDispatchesBeforeCycle2Planner.length}: ${JSON.stringify(sc.dispatched.map((d) => d.agent))}`
         );
 
-        // The '[auto-sprint] replan short-circuit' log line fired, naming X.
+        // The '[fleet-sprint] replan short-circuit' log line fired, naming X.
         check(
-            sc.logs.some((l) => l.includes('[auto-sprint] replan short-circuit') && l.includes(xId)),
-            `Expected a '[auto-sprint] replan short-circuit' log line naming ${xId}, logs: ${JSON.stringify(sc.logs.filter((l) => l.includes('replan short-circuit')))}`
+            sc.logs.some((l) => l.includes('[fleet-sprint] replan short-circuit') && l.includes(xId)),
+            `Expected a '[fleet-sprint] replan short-circuit' log line naming ${xId}, logs: ${JSON.stringify(sc.logs.filter((l) => l.includes('replan short-circuit')))}`
         );
 
         // The next cycle's planner dispatch happened (asserted above via
@@ -189,8 +189,8 @@ test('mock sprint: control -- reopenIds WITHOUT replanIds keeps normal round beh
 
         // No short-circuit log line in the control scenario.
         check(
-            !ctrl.logs.some((l) => l.includes('[auto-sprint] replan short-circuit')),
-            `Did NOT expect a '[auto-sprint] replan short-circuit' log line in the control scenario, logs: ${JSON.stringify(ctrl.logs.filter((l) => l.includes('replan')))}`
+            !ctrl.logs.some((l) => l.includes('[fleet-sprint] replan short-circuit')),
+            `Did NOT expect a '[fleet-sprint] replan short-circuit' log line in the control scenario, logs: ${JSON.stringify(ctrl.logs.filter((l) => l.includes('replan')))}`
         );
 
         const yFinal = ctrl.finalBeadsById.get(yId);

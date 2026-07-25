@@ -13,7 +13,7 @@ import {
 } from './helpers/mock-sprint-harness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 
 // =============================================================================
 // apra-fleet-eft.36: coverage for the RESIDUAL escape path apra-fleet-eft.34

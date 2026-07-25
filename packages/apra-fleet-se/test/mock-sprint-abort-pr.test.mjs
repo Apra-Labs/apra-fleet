@@ -4,8 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
-import { finalizeAbort } from '../auto-sprint/runner.js';
-import { SprintPlanRejectedError } from '../auto-sprint/errors.mjs';
+import { finalizeAbort } from '../fleet-sprint/runner.js';
+import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 import {
     setup,
     teardown,
@@ -195,7 +195,7 @@ async function runAbortTerminalRecordScenario(tag) {
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('state', (evt) => states.push(evt));
         const engine = new WorkflowEngine(workflow);
-        const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+        const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
         const branch = `auto-sprint/mock-${tag}`;
 
         let error = null;

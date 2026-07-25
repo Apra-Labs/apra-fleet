@@ -11,10 +11,10 @@ import {
     teardown,
     withScenarioMarkers,
 } from './helpers/mock-sprint-harness.mjs';
-import { DoltDivergedError } from '../auto-sprint/errors.mjs';
+import { DoltDivergedError } from '../fleet-sprint/errors.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 
 // =============================================================================
 // apra-fleet-eft.58.2: regression pin for eft.58 / impl eft.58.1 -- the

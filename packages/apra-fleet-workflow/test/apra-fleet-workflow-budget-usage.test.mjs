@@ -157,7 +157,7 @@ describe('apra-fleet-unw2.8 (N10): fleet model pricing rows (fable/opus/sonnet/h
     // Guards against the N10 regression: runner.js now passes these exact
     // strings as `opts.model` (from beads `--metadata '{"model": "<tier>"}'`
     // for doer dispatches, or from FIXED_ROLE_MODEL for the fixed roles --
-    // see auto-sprint/runner.js). If any of these rows is ever removed
+    // see fleet-sprint/runner.js). If any of these rows is ever removed
     // (e.g. an over-eager pricing-table cleanup), every dispatch using that
     // model silently goes back to cost:null and budget._spent stops moving
     // for it, exactly the N10 finding this issue fixes.

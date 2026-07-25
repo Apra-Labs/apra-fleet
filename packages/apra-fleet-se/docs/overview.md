@@ -1,6 +1,6 @@
 # Auto-Sprint Overview
 
-`@apralabs/apra-fleet-se` ("sprint engine") implements **auto-sprint**: a
+`@apralabs/apra-fleet-se` ("sprint engine") implements **fleet-sprint**: a
 CLI-driven, autonomous sprint runner. It dispatches a fixed sequence of AI
 agent roles -- planner, plan-reviewer, doer, reviewer, deployer,
 integ-test-runner, harvester -- against a [beads](https://github.com/gastownhall/beads)
@@ -9,12 +9,12 @@ engine, to autonomously plan, implement, review, deploy/integration-test, and
 publish a batch of work with no human in the loop until the final PR review.
 
 Auto-sprint is one entry point built on top of `apra-fleet-workflow`: it is a
-single opinionated workflow script (`auto-sprint/runner.js`) plus a CLI
+single opinionated workflow script (`fleet-sprint/runner.js`) plus a CLI
 wrapper (`bin/cli.mjs`) that wires it to a live fleet. The workflow engine
 itself (agent/command/parallel primitives, budget tracking, the dashboard
 viewer, the journal) is generic and documented in
 `packages/apra-fleet-workflow/docs/`; this package's docs describe how
-auto-sprint specifically uses those primitives.
+fleet-sprint specifically uses those primitives.
 
 **The per-sprint CLI is not the supported entry point for end users.** An
 always-on supervisor process (`fleet-se serve`) owns a reservation ledger

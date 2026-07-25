@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml } from '../auto-sprint/viewer-extensions.mjs';
+import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml } from '../fleet-sprint/viewer-extensions.mjs';
 
 // apra-fleet-eft.37.4 (M3): beadsExtension.detailLookup is the relocated
 // (verbatim) former core findBeadById() -- core now only knows the generic
@@ -113,7 +113,7 @@ describe('renderBeadsHtml: XSS escaping', () => {
 // `blocks` edges preserved as an inline "blocked by" annotation on the row
 // rather than tree placement. The expectations below replace/repurpose the
 // old blocks-based-nesting assertions, which are now inverted -- see the
-// module doc-comment in auto-sprint/viewer-extensions.mjs.
+// module doc-comment in fleet-sprint/viewer-extensions.mjs.
 describe('renderBeadsHtml: containment tree (parent-based nesting, blocks-deps as annotations)', () => {
     // A row's id cell is `prefix + '#' + id` where `prefix` is this two-glyph
     // marker (only present at depth > 0) -- built via fromCharCode, not a

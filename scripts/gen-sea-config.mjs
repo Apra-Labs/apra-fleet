@@ -101,6 +101,13 @@ const autoSprintArgsSkill = collectFiles(
   'packages/apra-fleet-se/apra-pm/.claude/skills/auto-sprint-args',
   'packages/apra-fleet-se/apra-pm/.claude/skills/auto-sprint-args'
 );
+// fleet-sprint-cli helper skill -- ships inside the fleet-sprint package and is
+// installed for EVERY LLM provider (not provider-specific).
+const fleetSprintCliSkill = collectFiles(
+  join(root, 'packages', 'apra-fleet-se', 'fleet-sprint', 'skills', 'fleet-sprint-cli'),
+  'packages/apra-fleet-se/fleet-sprint/skills/fleet-sprint-cli',
+  'packages/apra-fleet-se/fleet-sprint/skills/fleet-sprint-cli'
+);
 
 if (Object.keys(skills).length === 0) {
   console.error('Error: apra-pm directory is missing (skills/pm is empty).');
@@ -178,10 +185,10 @@ if (!existsSync(agentSchemasDir)) {
 }
 const agentSchemas = collectPackageTree(agentSchemasDir, 'agentSchemas');
 
-// Built-in workflows: verbatim copy of the auto-sprint package tree (minus
+// Built-in workflows: verbatim copy of the fleet-sprint package tree (minus
 // test/docs/scripts) plus the hello-world example authored in-repo.
 const builtinWorkflows = {
-  ...collectPackageTree(join(root, 'packages', 'apra-fleet-se'), 'auto-sprint'),
+  ...collectPackageTree(join(root, 'packages', 'apra-fleet-se'), 'fleet-sprint'),
   ...collectPackageTree(join(root, 'examples', 'workflows', 'hello-world'), 'hello-world'),
 };
 
@@ -199,6 +206,7 @@ const manifest = {
   agentSchemas,
   builtinWorkflows,
   autoSprintArgsSkill,
+  fleetSprintCliSkill,
 };
 
 writeFileSync(join(distDir, 'sea-manifest.json'), JSON.stringify(manifest, null, 2));
@@ -213,6 +221,7 @@ console.log(`  Workflow runtime:   ${Object.keys(workflowRuntime).length} files`
 console.log(`  Agent schemas:      ${Object.keys(agentSchemas).length} files`);
 console.log(`  Built-in workflows: ${Object.keys(builtinWorkflows).length} files`);
 console.log(`  Skill (auto-sprint-args): ${Object.keys(autoSprintArgsSkill).length} files`);
+console.log(`  Skill (fleet-sprint-cli): ${Object.keys(fleetSprintCliSkill).length} files`);
 
 // Build SEA config with assets
 const assets = {};
@@ -262,6 +271,10 @@ for (const [, relPath] of Object.entries(builtinWorkflows)) {
 }
 // Add auto-sprint-args skill files
 for (const [, relPath] of Object.entries(autoSprintArgsSkill)) {
+  assets[relPath] = join(root, relPath);
+}
+// Add fleet-sprint-cli skill files
+for (const [, relPath] of Object.entries(fleetSprintCliSkill)) {
   assets[relPath] = join(root, relPath);
 }
 

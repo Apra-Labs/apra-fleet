@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // =============================================================================
-// `fleet-se serve` -- always-on auto-sprint supervisor entry point
+// `fleet-se serve` -- always-on fleet-sprint supervisor entry point
 // =============================================================================
 //
 // Boots the supervisor HTTP API (see ../src/supervisor/server.mjs) and keeps
@@ -32,7 +32,7 @@ import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
 
-Starts the always-on auto-sprint supervisor. Runs until POST /api/shutdown or a
+Starts the always-on fleet-sprint supervisor. Runs until POST /api/shutdown or a
 termination signal (Ctrl-C / SIGTERM).
 
 Options:

@@ -386,6 +386,18 @@ Options:
         anythingRemoved = true;
       }
     }
+    // fleet-sprint-cli helper skill is provider-agnostic and installed outside
+    // both skillsDir and fleetSkillsDir (into <configDir>/skills/fleet-sprint-cli)
+    // by install.ts whenever either skill set is installed -- so remove it for
+    // 'all', 'pm', or 'fleet', for every provider.
+    if (skillMode === 'all' || skillMode === 'pm' || skillMode === 'fleet') {
+      const cliSkillDir = path.join(paths.configDir, 'skills', 'fleet-sprint-cli');
+      if (fs.existsSync(cliSkillDir)) {
+        console.log(`  - Removing fleet-sprint-cli skill: ${cliSkillDir}`);
+        if (!dryRun) fs.rmSync(cliSkillDir, { recursive: true, force: true });
+        anythingRemoved = true;
+      }
+    }
     if (skillMode === 'all' || skillMode === 'fleet') {
       if (fs.existsSync(paths.fleetSkillsDir)) {
         console.log(`  - Removing fleet skills: ${paths.fleetSkillsDir}`);

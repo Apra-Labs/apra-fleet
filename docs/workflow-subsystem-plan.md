@@ -6,8 +6,8 @@ Branch context: feat/fleet-reorg
 
 ## 0. Existing beads overlap (sanity pass, `bd list` run 2026-07-13)
 
-- **`apra-fleet-3ns.6` (P3, open)** -- "SEA binary: embed new auto-sprint
-  (dist/auto-sprint.mjs + runner asset + schemas) as SEA assets". This plan
+- **`apra-fleet-3ns.6` (P3, open)** -- "SEA binary: embed new fleet-sprint
+  (dist/fleet-sprint.mjs + runner asset + schemas) as SEA assets". This plan
   **supersedes and absorbs** that bead: it answers exactly the investigation
   3ns.6 asked for (extraction destination = `~/.apra-fleet/workflows/` +
   `~/.apra-fleet/node_modules/`; server resolution = `APRA_FLEET_SERVER_BIN`
@@ -15,7 +15,7 @@ Branch context: feat/fleet-reorg
   should close/replace 3ns.6 with this plan's Phase 1-2 tasks, or make it the
   parent of them -- do not create a duplicate parallel epic.
 - **`apra-fleet-dv5.*` (P1/P2, open)** -- tier-based model selection touches
-  `packages/apra-fleet-se/auto-sprint/runner.js` and `pricing.mjs`. No scope
+  `packages/apra-fleet-se/fleet-sprint/runner.js` and `pricing.mjs`. No scope
   overlap, but a **file-level collision risk**: this plan installs verbatim
   copies of those same files. Sequencing note for the planner: land dv5's
   runner.js edits either before or after this epic's install-payload tasks;
@@ -27,14 +27,14 @@ Branch context: feat/fleet-reorg
 
 ## 0.1 Latent bug discovered while researching (file as its own bead)
 
-The **published npm package's `auto-sprint` bin is broken at sprint-runtime**
-in a clean global install: `dist/auto-sprint-runner.mjs` (a verbatim copy of
-`packages/apra-fleet-se/auto-sprint/runner.js`, loaded via
+The **published npm package's `fleet-sprint` bin is broken at sprint-runtime**
+in a clean global install: `dist/fleet-sprint-runner.mjs` (a verbatim copy of
+`packages/apra-fleet-se/fleet-sprint/runner.js`, loaded via
 `engine.executeFile()` -> dynamic `import()`) statically imports
 `@apralabs/apra-fleet-workflow` (private, never published -- unresolvable from
 the global npm tree) and `./contracts.mjs` / `./errors.mjs` (not copied into
 `dist/` by `scripts/bundle-se.mjs`). The CI smoke test only runs
-`auto-sprint --help`, which exercises the esbuild-bundled `dist/auto-sprint.mjs`
+`fleet-sprint --help`, which exercises the esbuild-bundled `dist/fleet-sprint.mjs`
 (where esbuild inlined those imports for the CLI's own use) and exits before
 `executeFile()` ever runs, so this was never caught. The mechanism this plan
 builds (a real on-disk import graph under `~/.apra-fleet/`) is the same fix
@@ -154,7 +154,7 @@ section as uniform self-spawn behavior, which is wrong:**
   OWN fresh server child process via the `APRA_FLEET_SERVER_BIN` self-spawn
   (`run --transport stdio`) -- it never attaches to, shares, or reuses an
   already-running `apra-fleet` MCP session. This exactly mirrors how the
-  existing npm-based `auto-sprint` bin (`packages/apra-fleet-se/bin/cli.mjs`,
+  existing npm-based `fleet-sprint` bin (`packages/apra-fleet-se/bin/cli.mjs`,
   `resolveFleetServerCommand()`, lines ~51-84) already behaves today: it is a
   distinct client process connected only via its own private stdio pipe to a
   server instance it spawned itself.
@@ -191,7 +191,7 @@ existing stdio self-spawn path only when no healthy HTTP singleton is found
 (e.g. running before `apra-fleet install`/`start` has ever launched the
 service, or with `APRA_FLEET_TRANSPORT=stdio` forced). See R13 in the risk
 register. This resolution-order decision, and whether it lives in a shared
-helper `apra-fleet workflow` and `auto-sprint`'s `cli.mjs` both call, or is
+helper `apra-fleet workflow` and `fleet-sprint`'s `cli.mjs` both call, or is
 duplicated, is an open design question for Phase 1/2 task authoring, not
 decided here.
 
@@ -246,7 +246,7 @@ question, only whether a dedicated subcommand sits on top of it.
 | "No Node install required" claim | Holds for its intended audience (non-dev machines, ops boxes, CI runners with no Node) -- the embedded runtime runs the workflow with zero system Node. | Does not merely "weaken" the claim for users who already have Node -- it **eliminates the claim** as a product capability. Raw-node is a fine escape hatch for people who already have Node, but as the *only* mechanism it fails exactly the audience this feature exists for. It is not "only undermined for users who already have Node"; it is *unusable* for users who don't, which is the whole point of an SEA binary. |
 | Discoverability/UX | `--list`, `--help`, uniform "workflow not found" error, tab-completion-friendly verb shape. | User must already know the exact installed path and entry filename; a typo'd path gives Node's raw `MODULE_NOT_FOUND` instead of an actionable message; no listing mechanism without inventing one anyway (which is most of the launcher's value). |
 | Maintenance burden | New file (`src/cli/workflow.ts`), argv-rewrite/self-heal logic, CI smoke tests -- real but small (Section 10, Phase 2, ~3 tasks). | Near zero new code -- but only because it silently pushes the "how do I find/run this" problem onto documentation and the user, not because the problem goes away. |
-| Interaction with the schema/dependency install already solved | Launcher sets `APRA_FLEET_SERVER_BIN` / `APRA_FLEET_SE_SCHEMAS_DIR` automatically (Section 5) -- a workflow author never has to know these env vars exist for the built-ins to work. | Still works IF the user (or workflow doc) sets the same two env vars, or the workflow ships its own `vendor/schemas` fallback (tier 3) -- auto-sprint happens to have this, but a bare user workflow that needs role schemas would silently get no schemas at all unless told to. The install-time payload doesn't change; only who is responsible for wiring it at run time does. |
+| Interaction with the schema/dependency install already solved | Launcher sets `APRA_FLEET_SERVER_BIN` / `APRA_FLEET_SE_SCHEMAS_DIR` automatically (Section 5) -- a workflow author never has to know these env vars exist for the built-ins to work. | Still works IF the user (or workflow doc) sets the same two env vars, or the workflow ships its own `vendor/schemas` fallback (tier 3) -- fleet-sprint happens to have this, but a bare user workflow that needs role schemas would silently get no schemas at all unless told to. The install-time payload doesn't change; only who is responsible for wiring it at run time does. |
 | Versioning story | `.installed.json` records the installed runtime/workflow version; the launcher can detect and warn on a binary/runtime mismatch (R10). | No version check exists or is proposed -- a user who runs a stale `node <path>` after `apra-fleet update` refreshed the built-ins gets whatever is on disk with no diagnostic if it's inconsistent. |
 | Command-family coherence | Fits a single `apra-fleet <verb>` mental model already used by `install`/`uninstall`/`update`/`run`. | Introduces a second, ungoverned invocation style (`node <long path>`) alongside the `apra-fleet` command family -- inconsistent with everything else in the CLI. |
 
@@ -257,7 +257,7 @@ manual env wiring) -- it is only lighter-weight as a *replacement claim*
 Where raw-node genuinely wins is that it costs nothing to also support,
 because the install payload (Section 2) already puts real, self-sufficient
 files on disk -- nothing about the launcher design prevents `node
-~/.apra-fleet/workflows/auto-sprint/bin/cli.mjs --help` from working today,
+~/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs --help` from working today,
 and it should keep working.
 
 **Product-surface argument (project owner's point)**
@@ -379,12 +379,12 @@ exports, ajv package.json dependencies).
   schemas/                                   <- NEW canonical installed schema dir
     <role>-input.json, <role>-output.json    (17 files, ~48 KB; source: packages/apra-fleet-se/apra-pm/agents/schemas)
   workflows/                                 <- NEW default workflow host dir
-    .installed.json                          <- installer-owned manifest: {"version": "...", "builtin": ["auto-sprint","hello-world"]}
-    auto-sprint/                             <- verbatim copy of packages/apra-fleet-se (minus test/, docs/, scripts/)
-      workflow.json                          {"name":"auto-sprint","entry":"bin/cli.mjs","description":"Multi-cycle sprint: plan -> develop -> test -> harvest"}
+    .installed.json                          <- installer-owned manifest: {"version": "...", "builtin": ["fleet-sprint","hello-world"]}
+    fleet-sprint/                             <- verbatim copy of packages/apra-fleet-se (minus test/, docs/, scripts/)
+      workflow.json                          {"name":"fleet-sprint","entry":"bin/cli.mjs","description":"Multi-cycle sprint: plan -> develop -> test -> harvest"}
       package.json                           (kept: type:module makes .js files ESM -- REQUIRED for runner.js)
       bin/cli.mjs
-      auto-sprint/{runner.js,contracts.mjs,errors.mjs,viewer-extensions.mjs}
+      fleet-sprint/{runner.js,contracts.mjs,errors.mjs,viewer-extensions.mjs}
       vendor/schemas/*.json                  (belt-and-braces tier-3 hit for direct `node bin/cli.mjs` runs)
     hello-world/
       workflow.json                          {"name":"hello-world","entry":"main.mjs","description":"Minimal example workflow"}
@@ -392,11 +392,11 @@ exports, ajv package.json dependencies).
 ```
 
 Notes:
-- The auto-sprint dir preserves the package's own directory shape so
-  `cli.mjs`'s relative `../auto-sprint/runner.js` and `resolveRunnerScriptPath()`
+- The fleet-sprint dir preserves the package's own directory shape so
+  `cli.mjs`'s relative `../fleet-sprint/runner.js` and `resolveRunnerScriptPath()`
   dev branch work unmodified. `package.json` with `"type": "module"` MUST be
   included -- `runner.js` has a `.js` extension and is ESM.
-- `resolveRunnerScriptPath()` finds `../auto-sprint/runner.js` relative to
+- `resolveRunnerScriptPath()` finds `../fleet-sprint/runner.js` relative to
   `bin/` (its existing dev-monorepo branch), and `engine.executeFile()` then
   imports it; its `./contracts.mjs` sibling exists; its bare
   `@apralabs/apra-fleet-workflow` resolves via the upward walk to
@@ -404,14 +404,14 @@ Notes:
 - Schemas resolve via `APRA_FLEET_SE_SCHEMAS_DIR` (tier 1, set by launcher)
   -> `~/.apra-fleet/schemas`; without the launcher (direct node invocation),
   tier 3 (`<package>/vendor/schemas`) hits because `PACKAGE_ROOT` =
-  `workflows/auto-sprint/`.
+  `workflows/fleet-sprint/`.
 
 ### 2.2 SEA-embedded assets (gen-sea-config.mjs additions)
 
 New manifest sections (AssetManifest gains OPTIONAL keys so old manifests and
 tests keep working): `workflowRuntime` (the two @apralabs packages + ajv
 subtree, ~2.4 MB / ~200 files), `agentSchemas` (17 JSON files),
-`builtinWorkflows` (auto-sprint package tree + hello-world, ~250 KB).
+`builtinWorkflows` (fleet-sprint package tree + hello-world, ~250 KB).
 Sources at build time: `packages/apra-fleet-workflow/`, `packages/apra-fleet-client/`,
 `node_modules/ajv` (+4 deps), `packages/apra-fleet-se/apra-pm/agents/schemas/`,
 `packages/apra-fleet-se/`, plus a new `examples/workflows/hello-world/` in-repo
@@ -428,9 +428,9 @@ apra-fleet workflow --help               Launcher help (does NOT swallow <name> 
 
 - **Pass-through args**: everything after `<name>` is handed to the workflow
   verbatim via the argv rewrite -- the launcher never re-parses them.
-  `apra-fleet workflow auto-sprint --issue BD-1 --members m1 --branch f --base main`
-  reaches cli.mjs's `parseCliArgs()` untouched; `apra-fleet workflow auto-sprint --help`
-  prints auto-sprint's own usage.
+  `apra-fleet workflow fleet-sprint --issue BD-1 --members m1 --branch f --base main`
+  reaches cli.mjs's `parseCliArgs()` untouched; `apra-fleet workflow fleet-sprint --help`
+  prints fleet-sprint's own usage.
 - **Launcher-owned flags** appear only BEFORE `<name>` or when no name is
   given: `--list`, `--help`. No other launcher flags in v1 (keep the surface
   minimal = stable).
@@ -450,7 +450,7 @@ apra-fleet workflow --help               Launcher help (does NOT swallow <name> 
 - **Escape hatch (documented, not a launcher feature)**: every resolved
   workflow is a real file tree at `~/.apra-fleet/workflows/<name>/`; a user
   with a system Node can always run it directly, e.g.
-  `node ~/.apra-fleet/workflows/auto-sprint/bin/cli.mjs --help`. This is not
+  `node ~/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs --help`. This is not
   additional code -- Section 2's install payload is already self-sufficient
   on disk -- but it does NOT get the launcher's env-var auto-wiring
   (`APRA_FLEET_SERVER_BIN`, `APRA_FLEET_SE_SCHEMAS_DIR`), `--list`, or the
@@ -487,7 +487,7 @@ apra-fleet workflow --help               Launcher help (does NOT swallow <name> 
   unset -- this is contracts.mjs's existing tier-1 override
   (contracts.mjs:151-156), so **contracts.mjs is not modified at all** (the
   lowest-instability option among those in the requirement).
-- Belt-and-braces: the auto-sprint workflow dir also carries
+- Belt-and-braces: the fleet-sprint workflow dir also carries
   `vendor/schemas/` (tier 3) so a direct `node bin/cli.mjs` invocation
   without the launcher still resolves; the hardcoded literals (tier 5,
   contracts.mjs section 3) remain the documented last-resort.
@@ -508,7 +508,7 @@ text extended):
      (extract-to-temp-then-rename per package dir, with the EBUSY retry
      pattern from f66e621 on Windows).
   2. Write `~/.apra-fleet/schemas/` from manifest `agentSchemas`.
-  3. For each built-in (`auto-sprint`, `hello-world`): `clearDirSync` ONLY
+  3. For each built-in (`fleet-sprint`, `hello-world`): `clearDirSync` ONLY
      that named subdir, then extract. NEVER `clearDirSync` the `workflows/`
      root. Update `workflows/.installed.json` with the built-in list +
      installed version.
@@ -576,14 +576,14 @@ Add after "Smoke test - help" (ci.yml:239-241), all three matrix legs:
      so no `claude` CLI / service-manager side effects on the runner).
   3. Assert stdout contains `[OK] hello-world: args=one,two engine=resolved`
      and exit code 0.
-  4. Assert `$FAKEHOME/.apra-fleet/workflows/auto-sprint/auto-sprint/runner.js`
+  4. Assert `$FAKEHOME/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js`
      and `$FAKEHOME/.apra-fleet/schemas/reviewer-output.json` exist
      (built-ins + schemas actually extracted).
 - **"Smoke test - workflow arg/error surface"**: `workflow does-not-exist`
   exits 1 and names the workflows dir; `workflow --list` lists both built-ins.
-- Optional (cheap, high value): `workflow auto-sprint --help` asserting
+- Optional (cheap, high value): `workflow fleet-sprint --help` asserting
   cli.mjs's usage text prints and stderr has NO schema dev-fallback warning
-  -- proving the full auto-sprint import graph (engine, client, ajv,
+  -- proving the full fleet-sprint import graph (engine, client, ajv,
   contracts + installed schemas) loads inside the SEA runtime.
 
 ## 9. Risk register (maps to the "no instability" constraint)
@@ -591,7 +591,7 @@ Add after "Smoke test - help" (ci.yml:239-241), all three matrix legs:
 | # | Risk | Mitigation |
 |---|------|------------|
 | R1 | Dynamic `import()` unsupported/broken inside SEA main (possibly interacting with `useCodeCache: true`) | Phase 1 spike is a hard gate before all dependent tasks; fallbacks: disable useCodeCache (measure startup), or worker_threads bootstrap. Decision recorded in this doc. |
-| R2 | Dual-copy `instanceof` breakage between engine and runner error classes | Eliminated by design: sea-bundle.cjs contains ZERO workflow-engine code; the entire graph loads once from disk. Guarded by the auto-sprint --help smoke test. |
+| R2 | Dual-copy `instanceof` breakage between engine and runner error classes | Eliminated by design: sea-bundle.cjs contains ZERO workflow-engine code; the entire graph loads once from disk. Guarded by the fleet-sprint --help smoke test. |
 | R3 | Regressing existing install steps | New install work is one appended step + optional manifest keys; existing steps 1-8 not reordered or edited. Unit tests via `_setManifestOverride` cover both old-manifest (keys absent) and new-manifest shapes. |
 | R4 | `clearDirSync` wiping user-authored workflows on install/update | Only named built-in subdirs are cleared, driven by the static built-in list; `.installed.json` records ownership; uninstall deletes only listed built-ins; explicit unit test: a `workflows/my-custom/` dir survives install+uninstall. |
 | R5 | Windows EBUSY/file-lock during refresh while a workflow is running | Extract-to-temp + rename per directory, retry loop (reuse f66e621 pattern); on persistent lock, warn and skip that built-in rather than failing the whole install. |
@@ -632,10 +632,10 @@ Add after "Smoke test - help" (ci.yml:239-241), all three matrix legs:
    a pre-existing `~/.apra-fleet/workflows/user-x/` dir is untouched; old
    manifests (keys absent) skip with a warning; unit tests via
    `_setManifestOverride` for both shapes.
-4. **[impl] auto-sprint workflow packaging shape.** Files:
+4. **[impl] fleet-sprint workflow packaging shape.** Files:
    `packages/apra-fleet-se/` (add `workflow.json`), installer copy rules in
-   task 3. AC: installed `workflows/auto-sprint/` contains `package.json`
-   (`type: module`), `bin/cli.mjs`, `auto-sprint/*.{js,mjs}`,
+   task 3. AC: installed `workflows/fleet-sprint/` contains `package.json`
+   (`type: module`), `bin/cli.mjs`, `fleet-sprint/*.{js,mjs}`,
    `vendor/schemas/`, `workflow.json`; `node bin/cli.mjs --help` from that
    dir (with system node, as a dev check) prints usage with no schema
    fallback warning.
@@ -683,7 +683,7 @@ Add after "Smoke test - help" (ci.yml:239-241), all three matrix legs:
     directory table lists the three new dirs; authoring-workflows.md includes
     the Section 1.1/3 "raw node escape hatch" subsection with its caveats
     (no env auto-wiring, no `--list`, no version check); ASCII-only.
-11. **[bug] (separate, non-blocking) npm-mode auto-sprint runtime imports
+11. **[bug] (separate, non-blocking) npm-mode fleet-sprint runtime imports
     broken in clean global install** (Section 0.1). Files:
     `scripts/bundle-se.mjs`, npm-publish smoke step.
     AC: a clean-prefix npm install can reach `engine.executeFile` without
@@ -696,7 +696,7 @@ Add after "Smoke test - help" (ci.yml:239-241), all three matrix legs:
     `workflow hello-world` from the packaged artifact with Node stripped
     from PATH and an isolated HOME, asserting output, exit code, and
     extracted-file existence; `workflow does-not-exist` and
-    `workflow --list` assertions; (optional step) `workflow auto-sprint
+    `workflow --list` assertions; (optional step) `workflow fleet-sprint
     --help` asserts usage text and no schema-fallback warning on stderr.
 13. **[test] Regression guard: existing command surface unchanged.** Files:
     existing vitest suites + one new test file.

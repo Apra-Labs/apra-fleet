@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-import { createMemberReservationClient } from '../auto-sprint/runner.js';
+import { createMemberReservationClient } from '../fleet-sprint/runner.js';
 
 // apra-fleet-eft.26.1 (Reservation interop gap, Hole 1): unit coverage for
 // the fleet-server member_reservation bracket runner.js/bin/cli.mjs use to

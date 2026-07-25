@@ -27,7 +27,7 @@ Conventions used below:
 - Sandbox root: `~/temp/.apra-fleet-tests` (`$HOME/temp/.apra-fleet-tests`
   on POSIX, `%USERPROFILE%\temp\.apra-fleet-tests` on Windows).
 - Scratch port: `18700` (`APRA_FLEET_PORT`) -- kept away from the default
-  `7523` and the `18300`-series auto-sprint dashboard ports.
+  `7523` and the `18300`-series fleet-sprint dashboard ports.
 - `<repo-root>`: the root of this apra-fleet checkout -- the directory
   containing this playbook. The executing agent substitutes its actual
   checkout path.
@@ -288,7 +288,7 @@ shell-drivable -- no MCP tool is required to run the scenario.
    silently burns its full timeout. Step 3b (the PRIMARY env-var
    provisioning, apra-fleet-eft.48.8) targets a different, non-interactive
    dispatch path instead (`LocalStrategy`'s clean-env exec, used for every
-   `workflow auto-sprint` Planner dispatch) and needs the member to already
+   `workflow fleet-sprint` Planner dispatch) and needs the member to already
    be registered (it looks the member up by name), so it necessarily runs
    AFTER this step. (Steps stay numbered as written so cross-references
    hold; execute them 3a -> 1 -> 2 -> 3b -> 4...)
@@ -435,7 +435,7 @@ shell-drivable -- no MCP tool is required to run the scenario.
    ```bash
    node "<repo-root>/scripts/check-toy-doer-credentials.mjs" toy-doer "$SANDBOX"
    ```
-4. Run `apra-fleet workflow auto-sprint` against the canary issue with
+4. Run `apra-fleet workflow fleet-sprint` against the canary issue with
    `--max-cycles 1` and `--dispatch-timeout-s 900`. The timeout bound
    means a hung dispatch (member process alive but silent) costs at most
    15 minutes instead of the default hour -- right-sized for the canary's
@@ -454,7 +454,7 @@ shell-drivable -- no MCP tool is required to run the scenario.
    prints a version string and exits 0. If any assertion fails, fail
    loud: file a bug bead. Do not silently reset and move on -- this repo
    treats sprint-run surprises as signal
-   ([[project-goal-auto-sprint-ruggedization]]).
+   ([[project-goal-fleet-sprint-ruggedization]]).
 6. Hand off to Teardown regardless of the assertion's outcome.
 
 One ~10-minute pass exercises fresh install, server boot, member
@@ -464,7 +464,7 @@ production state.
 
 ## Adding new features to this test
 
-When auto-sprint or the installer gains a capability that changes what "a
+When fleet-sprint or the installer gains a capability that changes what "a
 working install" means (a new required member role, a new pre-sprint gate,
 a new CLI subcommand), extend this test rather than writing a separate
 ad-hoc script:

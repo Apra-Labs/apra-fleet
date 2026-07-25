@@ -243,11 +243,11 @@ own TypeScript output:
   published `files` list, so this content ships only if copied into `dist/`.
 - `scripts/bundle-se.mjs` (prepublishOnly, apra-fleet-3ns.2) esbuild-bundles
   `packages/apra-fleet-se/bin/cli.mjs` (the new, provider-agnostic
-  `auto-sprint` CLI, plus its `@apralabs/apra-fleet-workflow` and
+  `fleet-sprint` CLI, plus its `@apralabs/apra-fleet-workflow` and
   `@apralabs/apra-fleet-client` workspace dependencies) into
-  `dist/auto-sprint.mjs`, and copies `packages/apra-fleet-se/auto-sprint/runner.js`
+  `dist/fleet-sprint.mjs`, and copies `packages/apra-fleet-se/fleet-sprint/runner.js`
   (loaded at runtime via `engine.executeFile()`, not importable/bundlable) to
-  `dist/auto-sprint-runner.mjs` as a sibling asset. `dist/auto-sprint.mjs`
+  `dist/fleet-sprint-runner.mjs` as a sibling asset. `dist/fleet-sprint.mjs`
   resolves its role schemas from the `dist/agents/schemas/` directory
   `dist-pm.mjs` already populated -- no separate copy step for that
   (apra-fleet-bun / apra-fleet-3ns.2.1). See
@@ -287,11 +287,11 @@ Validated tarball size (post apra-fleet-3ns.2): ~2.7 MB unpacked, 744 files.
 |-------|-------|-------|
 | `name` | `@apralabs/apra-fleet` | Scoped; requires `@apralabs` npm org |
 | `version` | matches `version.json` | Must match at publish time (CI's version lockstep guard) |
-| `bin` | `{ "apra-fleet": "dist/index.js", "auto-sprint": "dist/auto-sprint.mjs" }` | npm sets the executable bit; both entries' shebangs are preserved (tsc for the former, esbuild for the latter) |
+| `bin` | `{ "apra-fleet": "dist/index.js", "fleet-sprint": "dist/fleet-sprint.mjs" }` | npm sets the executable bit; both entries' shebangs are preserved (tsc for the former, esbuild for the latter) |
 | `engines.node` | `>=22.0.0` | Node 22 required for `node:sea` API + native `fetch` |
 | `publishConfig.access` | `public` | Required for scoped packages on public npm |
-| `prepublishOnly` | `npm run dist-pm && npm run build && npm run build:se` | Copies the apra-pm package content into `dist/`, runs tsc, then esbuild-bundles auto-sprint -- see above |
-| `type` | `module` | ESM output; tsc emits `.js` (not `.mjs`); the esbuild auto-sprint bundle emits `.mjs` |
+| `prepublishOnly` | `npm run dist-pm && npm run build && npm run build:se` | Copies the apra-pm package content into `dist/`, runs tsc, then esbuild-bundles fleet-sprint -- see above |
+| `type` | `module` | ESM output; tsc emits `.js` (not `.mjs`); the esbuild fleet-sprint bundle emits `.mjs` |
 
 ---
 
@@ -328,22 +328,22 @@ Steps in order:
    prepublishOnly sequence explicitly, since npm only fires
    `prepublishOnly` automatically on `npm publish`, not on the `npm pack
    --dry-run` calls this job makes later. Produces `dist/index.js`,
-   `dist/agents/schemas/`, and `dist/auto-sprint.mjs` +
-   `dist/auto-sprint-runner.mjs` (apra-fleet-3ns.2) in one step.
-6. **Verify shebang** -- checks both `dist/index.js` and `dist/auto-sprint.mjs`
+   `dist/agents/schemas/`, and `dist/fleet-sprint.mjs` +
+   `dist/fleet-sprint-runner.mjs` (apra-fleet-3ns.2) in one step.
+6. **Verify shebang** -- checks both `dist/index.js` and `dist/fleet-sprint.mjs`
    start with `#!/usr/bin/env node`
 7. **Dry-run pack verification** -- `npm pack --dry-run`; greps for required
    files (`dist/index.js`, `version.json`, `hooks/hooks-config.json`, `skills/`,
-   `dist/auto-sprint.mjs`, `dist/auto-sprint-runner.mjs`, `dist/agents/schemas/`)
+   `dist/fleet-sprint.mjs`, `dist/fleet-sprint-runner.mjs`, `dist/agents/schemas/`)
 8. **Clean-pack guard** -- rejects `*.exe`, `sea-prep.blob`, `sea-bundle.cjs`
    in the pack output; fails if unpacked size exceeds 10 MB
-9. **Pack + install into a clean temp prefix (auto-sprint smoke test)**
+9. **Pack + install into a clean temp prefix (fleet-sprint smoke test)**
    (apra-fleet-3ns.2 / apra-fleet-3ns.2.2) -- packs a real tarball, extracts
    it into a temp directory with no monorepo ancestor and no
-   `node_modules`, runs `node dist/auto-sprint.mjs --help` from there, and
+   `node_modules`, runs `node dist/fleet-sprint.mjs --help` from there, and
    asserts (a) the expected usage text prints and (b) stderr does NOT
    contain the apra-fleet-bun.1 dev-fallback warning -- proving the packed
-   `auto-sprint` bin resolves its schemas from the co-packaged
+   `fleet-sprint` bin resolves its schemas from the co-packaged
    `dist/agents/schemas/`, not a monorepo path that would not exist in a
    real install.
 10. **Idempotency check** -- `npm view @apralabs/apra-fleet@<tag> version`;

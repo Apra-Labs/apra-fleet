@@ -21,7 +21,7 @@
   "main": "dist/index.js",
   "bin": {
     "apra-fleet": "dist/index.js",
-    "auto-sprint": "dist/auto-sprint.mjs"
+    "fleet-sprint": "dist/fleet-sprint.mjs"
   },
   "engines": {
     "node": ">=22.0.0"

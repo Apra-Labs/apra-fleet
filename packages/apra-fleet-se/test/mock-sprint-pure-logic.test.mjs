@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBdJson, checkMemberTopology, computeBranchSlug, buildHarvesterPrompt } from '../auto-sprint/runner.js';
+import { parseBdJson, checkMemberTopology, computeBranchSlug, buildHarvesterPrompt } from '../fleet-sprint/runner.js';
 import { checkHarvesterContract, buildMockFleetApi, teardown, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);

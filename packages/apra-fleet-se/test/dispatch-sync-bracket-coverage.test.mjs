@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
 // apra-fleet-eft.8.2 -- dispatch sync-bracket coverage guard.
 //
 // Invariant under test: EVERY role-identified `agent(` dispatch call site in
-// packages/apra-fleet-se/auto-sprint/runner.js -- planner, plan-reviewer,
+// packages/apra-fleet-se/fleet-sprint/runner.js -- planner, plan-reviewer,
 // doer, reviewer (both the mid-cycle and final-review dispatches), deployer,
 // integ-test-runner, harvester -- must be wrapped by a `withGitSync(...)`
 // bracket call (apra-fleet-eft.8.1's syncMemberBefore/syncMemberAfter G-pull/
@@ -43,7 +43,7 @@ const __dirname = path.dirname(__filename);
 // literal shell command) is never mis-parsed.
 // =============================================================================
 
-const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
+const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 
 // Kept in sync with dispatch-safety-guard.test.mjs's EXPECTED_AGENT_COUNT --
 // see that file's header comment for the baseline-count rationale. If that

@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 // bundle-se.mjs — bundles packages/apra-fleet-se's CLI into the root
 // @apralabs/apra-fleet package (apra-fleet-3ns.2), so `npm install -g
-// @apralabs/apra-fleet` also gets a working `auto-sprint` binary with zero
+// @apralabs/apra-fleet` also gets a working `fleet-sprint` binary with zero
 // extra packages to publish/version-lock.
 //
 // Produces dist/ artifacts:
-//   - dist/auto-sprint.mjs      esbuild bundle of packages/apra-fleet-se/bin/cli.mjs
+//   - dist/fleet-sprint.mjs      esbuild bundle of packages/apra-fleet-se/bin/cli.mjs
 //                                and its @apralabs/apra-fleet-workflow +
 //                                @apralabs/apra-fleet-client workspace deps.
-//   - dist/auto-sprint-runner.mjs  a COPY (not bundled) of
-//                                packages/apra-fleet-se/auto-sprint/runner.js
+//   - dist/fleet-sprint-runner.mjs  a COPY (not bundled) of
+//                                packages/apra-fleet-se/fleet-sprint/runner.js
 //                                -- loaded at runtime via engine.executeFile()
 //                                (read from disk and fed to the workflow
 //                                engine as text, not imported), so esbuild
@@ -25,7 +25,7 @@
 //                                runner.js itself is never bundled (see
 //                                above) -- it is read from disk as text by
 //                                engine.executeFile(). Without these siblings
-//                                also present next to dist/auto-sprint-
+//                                also present next to dist/fleet-sprint-
 //                                runner.mjs, a clean global npm install could
 //                                never satisfy these relative imports
 //                                (apra-fleet-7pm.12).
@@ -47,7 +47,7 @@
 //                                module resolution to find. Vendoring a
 //                                verbatim copy into dist/node_modules/ here
 //                                gives Node's upward node_modules walk
-//                                (starting from dist/auto-sprint-runner.mjs)
+//                                (starting from dist/fleet-sprint-runner.mjs)
 //                                somewhere to land, with zero runtime
 //                                behavior change from the workspace source
 //                                (apra-fleet-7pm.12).
@@ -62,7 +62,7 @@
 // before pack/publish) documented here.
 //
 // ajv (apra-fleet-se's only third-party runtime dependency used by
-// contracts.mjs) is bundled inline for dist/auto-sprint.mjs -- no dynamic
+// contracts.mjs) is bundled inline for dist/fleet-sprint.mjs -- no dynamic
 // require, safe to inline. The COPY of contracts.mjs at dist/contracts.mjs
 // (loaded unbundled by the runner, see above) still does a real bare-
 // specifier `import Ajv from 'ajv'`. An earlier revision of this fix relied
@@ -109,7 +109,7 @@ function vendorWorkspacePackage(pkgDir, pkgName) {
  * from this repo's root node_modules/ into dist/node_modules/, so bare
  * specifiers like `import Ajv from 'ajv'` in unbundled files (e.g. the
  * copied dist/contracts.mjs) resolve via Node's upward node_modules walk
- * from dist/auto-sprint-runner.mjs with no dependency on a consumer's own
+ * from dist/fleet-sprint-runner.mjs with no dependency on a consumer's own
  * `npm install` step.
  * @param {string} pkgName the bare npm package name (no scope subpaths)
  * @param {Set<string>} seen internal recursion guard against cycles/dupes
@@ -136,7 +136,7 @@ function vendorNpmPackage(pkgName, seen = new Set()) {
   }
 }
 
-console.log('Bundling apra-fleet-se CLI -> dist/auto-sprint.mjs');
+console.log('Bundling apra-fleet-se CLI -> dist/fleet-sprint.mjs');
 
 await build({
   entryPoints: [join(sePackageRoot, 'bin', 'cli.mjs')],
@@ -144,7 +144,7 @@ await build({
   platform: 'node',
   target: 'node22',
   format: 'esm',
-  outfile: join(distDir, 'auto-sprint.mjs'),
+  outfile: join(distDir, 'fleet-sprint.mjs'),
   sourcemap: false,
   minify: false, // keep readable for debugging
   // cli.mjs's own shebang (#!/usr/bin/env node) is preserved by esbuild
@@ -154,18 +154,18 @@ await build({
 
 mkdirSync(distDir, { recursive: true });
 copyFileSync(
-  join(sePackageRoot, 'auto-sprint', 'runner.js'),
-  join(distDir, 'auto-sprint-runner.mjs'),
+  join(sePackageRoot, 'fleet-sprint', 'runner.js'),
+  join(distDir, 'fleet-sprint-runner.mjs'),
 );
-console.log('Copied auto-sprint/runner.js -> dist/auto-sprint-runner.mjs');
+console.log('Copied fleet-sprint/runner.js -> dist/fleet-sprint-runner.mjs');
 
 for (const name of ['contracts.mjs', 'errors.mjs', 'viewer-extensions.mjs']) {
-  copyFileSync(join(sePackageRoot, 'auto-sprint', name), join(distDir, name));
-  console.log(`Copied auto-sprint/${name} -> dist/${name}`);
+  copyFileSync(join(sePackageRoot, 'fleet-sprint', name), join(distDir, name));
+  console.log(`Copied fleet-sprint/${name} -> dist/${name}`);
 }
 
 vendorWorkspacePackage(join(root, 'packages', 'apra-fleet-workflow'), '@apralabs/apra-fleet-workflow');
 vendorWorkspacePackage(join(root, 'packages', 'apra-fleet-client'), '@apralabs/apra-fleet-client');
 vendorNpmPackage('ajv');
 
-console.log('Bundle written to dist/auto-sprint.mjs');
+console.log('Bundle written to dist/fleet-sprint.mjs');

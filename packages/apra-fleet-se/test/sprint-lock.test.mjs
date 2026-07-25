@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { acquireSprintLock, sprintLockKey, SprintLockHeldError } from '../auto-sprint/sprint-lock.mjs';
+import { acquireSprintLock, sprintLockKey, SprintLockHeldError } from '../fleet-sprint/sprint-lock.mjs';
 
 // apra-fleet-eft.75.2: unit coverage for the machine-local pidfile mutex
 // itself (acquire/release/stale-reclaim/live-refuse), isolated from the

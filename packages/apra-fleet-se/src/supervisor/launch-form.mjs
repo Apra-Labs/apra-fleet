@@ -35,13 +35,13 @@
 // =============================================================================
 
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
-import { ROLES } from '../../auto-sprint/contracts.mjs';
+import { ROLES } from '../../fleet-sprint/contracts.mjs';
 
 /** The goal selector offers EXACTLY these three values (acceptance criterion). */
 export const GOAL_OPTIONS = Object.freeze(['P1', 'P1+P2', 'P1+P2+P3']);
 
 /**
- * `roleMap`'s application-level pseudo-role (see auto-sprint/runner.js's
+ * `roleMap`'s application-level pseudo-role (see fleet-sprint/runner.js's
  * ROLE_ORCHESTRATOR doc comment) -- not a vendored contracts.ROLES member, but
  * still a valid --role-map key the operator may want to assign.
  */

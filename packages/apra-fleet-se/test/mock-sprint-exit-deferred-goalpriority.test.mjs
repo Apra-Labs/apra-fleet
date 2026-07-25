@@ -76,7 +76,7 @@ test('mock sprint: a deferred goal-priority bead must not allow exit success', a
     // compliance -- covered by the run1ReviewerDispatches assertions in
     // mock-sprint-happy-path.test.mjs (apra-fleet-fih.2; formerly a
     // dedicated 'reviewerpromptfence' scenario here).
-    const runnerSource = await fs.readFile(path.join(__dirname, '../auto-sprint/runner.js'), 'utf-8');
+    const runnerSource = await fs.readFile(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf-8');
     check(
         !/return\s*\{\s*status:\s*'success'/.test(runnerSource),
         'runner.js source must not contain an unconditional return { status: \'success\', ... } -- the return value must be verdict-driven (A6)'

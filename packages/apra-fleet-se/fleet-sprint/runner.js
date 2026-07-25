@@ -117,7 +117,7 @@ const FIXED_ROLE_TIER = {
     streakAssignment: 'cheap',
 };
 
-export const meta = { name: 'auto-sprint-runner' };
+export const meta = { name: 'fleet-sprint-runner' };
 
 // ---------------------------------------------------------------------------
 // bd JSON-parse helper (apra-fleet-unw.17, A5 work item 3)
@@ -436,7 +436,7 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
                     '[Topology] Refusing to start the synced-mode sprint: one or more members failed a sync precondition -- ' +
                     detail +
                     '. In synced mode every member must report the same origin URL AND pass a `bd dolt pull` probe. ' +
-                    'See docs/architecture.md "Multi-member topology (auto-sprint)".',
+                    'See docs/architecture.md "Multi-member topology (fleet-sprint)".',
             };
         }
 
@@ -453,7 +453,7 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
                     'they do not push/pull the same remote branch and the git sync layer cannot reconcile them. Per-member origins: ' +
                     probes.map((p) => `${p.member}=${p.originUrl}`).join(', ') +
                     '. Every member must report the same `git remote get-url origin`. ' +
-                    'See docs/architecture.md "Multi-member topology (auto-sprint)".',
+                    'See docs/architecture.md "Multi-member topology (fleet-sprint)".',
             };
         }
 
@@ -501,7 +501,7 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
                 'configured member, so a shared-workspace setup cannot be verified. Per-member results: ' +
                 identities.map((i) => `${i.member}=${i.error ? `ERROR(${i.error})` : i.signal}`).join(', ') +
                 '. The only supported multi-member mode is a verified shared workspace (all members resolve to the same ' +
-                'checkout/DB); otherwise run single-member. See docs/architecture.md "Multi-member topology (auto-sprint)".',
+                'checkout/DB); otherwise run single-member. See docs/architecture.md "Multi-member topology (fleet-sprint)".',
         };
     }
 
@@ -519,7 +519,7 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
                 'members (their `bd close`/commits would silently diverge). Per-member signals: ' +
                 identities.map((i) => `${i.member}=${i.signal}`).join(', ') +
                 '. Supported modes: single-member, or a verified shared-workspace fleet (all members resolve to the same ' +
-                'checkout/DB). See docs/architecture.md "Multi-member topology (auto-sprint)".',
+                'checkout/DB). See docs/architecture.md "Multi-member topology (fleet-sprint)".',
         };
     }
 
@@ -1748,7 +1748,7 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
  * apra-fleet-eft.26.1 (Reservation interop gap, Hole 1) -- reserves and
  * releases every sprint member against the fleet server's OWN per-member
  * reservation record (`member_reservation` tool, apra-fleet-eft.10.1/10.2),
- * so a sprint launched directly via `apra-fleet workflow auto-sprint` / this
+ * so a sprint launched directly via `apra-fleet workflow fleet-sprint` / this
  * package's bin/cli.mjs (never routed through the supervisor's
  * POST /api/sprints, and so never seen by src/supervisor/ledger.mjs) still
  * becomes visible to the enforcement every launch path already shares:
@@ -1920,7 +1920,7 @@ async function stageCommandBodyMemberSide({ command, member, content, label }) {
     // fresh member-local temp file, and prints ONLY that path to stdout.
     const stageScript =
         "const os=require('os'),p=require('path'),fs=require('fs');" +
-        "const f=p.join(os.tmpdir(),'auto-sprint-body-'+process.pid+'-'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.txt');" +
+        "const f=p.join(os.tmpdir(),'fleet-sprint-body-'+process.pid+'-'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.txt');" +
         "fs.writeFileSync(f,Buffer.from(process.argv[1],'base64'));process.stdout.write(f)";
     const out = await command(
         `node -e "${stageScript}" "${b64}"`,
@@ -2036,14 +2036,14 @@ export async function persistNewTaskBestEffort({ createFn, command, member, pare
         await createFn();
         return true;
     } catch (err) {
-        log(`[auto-sprint] newTask bd create FAILED (non-fatal, ${stage}): ${err.message} -- falling back to parent-bead notes.`);
+        log(`[fleet-sprint] newTask bd create FAILED (non-fatal, ${stage}): ${err.message} -- falling back to parent-bead notes.`);
         try {
             await appendRejectedFindingToParentNotes({
                 command, member, parentId, newTask,
                 reason: `bd create failed (${stage}): ${err.message}`, cycle, log,
             });
         } catch (err2) {
-            log(`[auto-sprint] newTask persistence FAILED at every level (non-fatal, ${stage}); finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)} -- last error: ${err2.message}`);
+            log(`[fleet-sprint] newTask persistence FAILED at every level (non-fatal, ${stage}); finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)} -- last error: ${err2.message}`);
         }
         return false;
     }
@@ -2924,7 +2924,7 @@ export async function appendRejectedFindingToParentNotes({ command, member, pare
         description: newTask && newTask.description,
         priority: newTask && newTask.priority,
     };
-    const noteBody = `[auto-sprint newTask REJECTED -- residual validation failure, appended verbatim]\n${JSON.stringify(raw, null, 2)}`;
+    const noteBody = `[fleet-sprint newTask REJECTED -- residual validation failure, appended verbatim]\n${JSON.stringify(raw, null, 2)}`;
     try {
         const noteFile = await stageCommandBodyMemberSide({
             command, member, content: noteBody,
@@ -4250,7 +4250,7 @@ async function runSprintCycle(context) {
     // bin/cli.mjs enforces exactly that via checkMemberTopology() BEFORE the
     // sprint starts; the ensure-everywhere below is the git half of the same
     // "every member starts from the same state" guarantee. See
-    // docs/architecture.md "Multi-member topology (auto-sprint)".
+    // docs/architecture.md "Multi-member topology (fleet-sprint)".
     const branchEnsureMembers = [...new Set([
         orchestratorMember,
         ...getMembersForRole(ROLE_DOER),
@@ -4387,7 +4387,7 @@ async function runSprintCycle(context) {
                 `interrupted prior dispatch) blocking checkout -- preserving them in a named stash and retrying.`
             );
             await command(
-                `git stash push -u -m "auto-sprint[${validated.branch}] auto-stash of orphaned WIP blocking branch ensure"`,
+                `git stash push -u -m "fleet-sprint[${validated.branch}] auto-stash of orphaned WIP blocking branch ensure"`,
                 {
                     member_name: member,
                     silent: true,
@@ -5146,7 +5146,7 @@ async function runSprintCycle(context) {
                 );
             }
 
-            log(`[auto-sprint] plan-cap deferral: cycle ${cycle} exhausted ${planningRounds} plan round(s) with ` +
+            log(`[fleet-sprint] plan-cap deferral: cycle ${cycle} exhausted ${planningRounds} plan round(s) with ` +
                 `CHANGES_NEEDED confined to bead(s) [${contestedIds.join(', ')}] -- deferring ${contestedIds.length === 1 ? 'it' : 'them'} ` +
                 `and proceeding to Develop with the remaining approved task set.`);
 
@@ -5162,7 +5162,7 @@ async function runSprintCycle(context) {
                 const noteFile = await stageCommandBodyMemberSide({
                     command, member: orchestratorMember,
                     content:
-                        `[auto-sprint plan-cap deferral] Deferred after ${planningRounds} plan round(s) of CHANGES_NEEDED ` +
+                        `[fleet-sprint plan-cap deferral] Deferred after ${planningRounds} plan round(s) of CHANGES_NEEDED ` +
                         `confined to this bead (cycle ${cycle}). Plan reviewer finding:\n${lastVerdict.notes}`,
                     label: `Stage plan-cap deferral finding for ${id}`,
                 });
@@ -5327,7 +5327,7 @@ async function runSprintCycle(context) {
             const currentReady = currentReadyAll.filter((b) => !replanIds.has(b.id));
             if (currentReady.length === 0) {
                 log(
-                    `[auto-sprint] replan short-circuit: all ${currentReadyAll.length} still-ready bead(s) this cycle ` +
+                    `[fleet-sprint] replan short-circuit: all ${currentReadyAll.length} still-ready bead(s) this cycle ` +
                     `are replan-flagged (${currentReadyAll.map((b) => b.id).join(', ')}) -- their acceptance criteria ` +
                     `need planner correction, not re-development. Skipping remaining develop/review rounds this cycle ` +
                     `and proceeding to Cycle Eval.`
@@ -5337,7 +5337,7 @@ async function runSprintCycle(context) {
             if (currentReady.length < currentReadyAll.length) {
                 const excludedIds = currentReadyAll.filter((b) => replanIds.has(b.id)).map((b) => b.id);
                 log(
-                    `[auto-sprint] replan short-circuit: excluding replan-flagged bead(s) ${excludedIds.join(', ')} from ` +
+                    `[fleet-sprint] replan short-circuit: excluding replan-flagged bead(s) ${excludedIds.join(', ')} from ` +
                     `this round's streak assignment (acceptance criteria defect flagged by reviewer; will be re-scoped ` +
                     `by the next cycle's planner) -- the remaining ${currentReady.length} bead(s) still run this round.`
                 );
@@ -5908,7 +5908,7 @@ async function runSprintCycle(context) {
                             newTask, reason: validation.reason, cycle, log,
                         });
                     } catch (noteErr) {
-                        log(`[auto-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
+                        log(`[fleet-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
                     }
                     continue;
                 }
@@ -6356,7 +6356,7 @@ async function runSprintCycle(context) {
                             newTask, reason: validation.reason, cycle, log,
                         });
                     } catch (noteErr) {
-                        log(`[auto-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
+                        log(`[fleet-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
                     }
                     continue;
                 }
@@ -6558,7 +6558,7 @@ async function runSprintCycle(context) {
                         newTask, reason: validation.reason, cycle: finalCycleLabel, log,
                     });
                 } catch (noteErr) {
-                    log(`[auto-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
+                    log(`[fleet-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
                 }
                 continue;
             }
@@ -6928,7 +6928,7 @@ export async function main(context) {
 
     // apra-fleet-eft.75.2: acquire a machine-local pidfile lock keyed on
     // (branch, members) BEFORE any dispatch (before even the fatal-diagnostics
-    // guard installs) -- a duplicate concurrent `auto-sprint` engine start for
+    // guard installs) -- a duplicate concurrent `fleet-sprint` engine start for
     // the SAME sprint now fails fast with a distinct, named
     // SprintLockHeldError instead of silently running two engines against the
     // same shared git branch/beads DB. Root incident (apra-fleet-eft.75): the

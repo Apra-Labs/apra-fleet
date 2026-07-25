@@ -17,7 +17,7 @@ import {
 } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { resolveStringRefs } from '@apralabs/apra-fleet-workflow/viewer/lean-state';
 
-import { beadsExtension, renderResultExtrasHtml } from '../auto-sprint/viewer-extensions.mjs';
+import { beadsExtension, renderResultExtrasHtml } from '../fleet-sprint/viewer-extensions.mjs';
 import { createHistoryView } from '../src/supervisor/history-view.mjs';
 
 // =============================================================================
@@ -277,7 +277,7 @@ describe('apra-fleet-eft.37.6: core-vs-se boundary e2e', () => {
 
     // -------------------------------------------------------------------------
     // Acceptance 2 + 3 -- POSITIVE: an auto-sprint-shaped run, wired up with
-    // the REAL beadsExtension (packages/apra-fleet-se/auto-sprint/
+    // the REAL beadsExtension (packages/apra-fleet-se/fleet-sprint/
     // viewer-extensions.mjs), exactly as bin/cli.mjs wires a real sprint.
     // -------------------------------------------------------------------------
     describe('(2)+(3) POSITIVE: auto-sprint run renders via extension, resolves both history layouts, generic bead-detail route', () => {
@@ -316,7 +316,7 @@ describe('apra-fleet-eft.37.6: core-vs-se boundary e2e', () => {
 
             const runPromise = sprintEngine.executeFile(fixture('auto-sprint-positive.mjs'), {});
             // Publish beads state mid-run, exactly as the real auto-sprint
-            // runner does (auto-sprint/runner.js), so criterion 3's detail
+            // runner does (fleet-sprint/runner.js), so criterion 3's detail
             // route has real published data to resolve against.
             sprintWorkflow.publishState('beads', {
                 sprintTasks: [{ id: 'bd-1', title: 'Do the thing', description: 'the full description', status: 'open', updated_at: '2026-07-21T00:00:00Z' }],

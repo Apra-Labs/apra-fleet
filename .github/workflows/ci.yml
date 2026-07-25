@@ -239,7 +239,7 @@ jobs:
       # an isolated HOME, so the binary can only use its own embedded
       # runtime (self-heal extraction from apra-fleet-7pm.8) and any
       # accidental spawn('node') fails loudly. Scope: hello-world +
-      # arg/error-surface only -- the auto-sprint launcher path is verified
+      # arg/error-surface only -- the fleet-sprint launcher path is verified
       # separately by apra-fleet-7pm.15, which depends on this task.
       - name: Smoke test - workflow hello-world (no system Node)
         if: runner.os != 'Windows'
@@ -255,7 +255,7 @@ jobs:
           OUT="$("$BIN" workflow hello-world one two)"
           echo "$OUT"
           echo "$OUT" | grep -qF '[OK] hello-world: args=one,two engine=resolved'
-          test -f "$FAKEHOME/.apra-fleet/workflows/auto-sprint/auto-sprint/runner.js"
+          test -f "$FAKEHOME/.apra-fleet/workflows/fleet-sprint/fleet-sprint/runner.js"
           test -f "$FAKEHOME/.apra-fleet/schemas/reviewer-output.json"
           # Persist FAKEHOME so the arg/error-surface step below runs against
           # this SAME already-self-healed HOME instead of a fresh/empty one --
@@ -283,7 +283,7 @@ jobs:
           $bin = Join-Path $PWD "dist\${{ matrix.binary }}"
           $out = & $bin workflow hello-world one two
           $out | Write-Host
-          if (-not ($out -join "`n").Contains('[OK] hello-world: args=one,two engine=resolved')) {
+          if (-not ($out -join [char]10).Contains('[OK] hello-world: args=one,two engine=resolved')) {
             Write-Error "unexpected stdout from workflow hello-world"
             exit 1
           }
@@ -292,7 +292,7 @@ jobs:
             exit 1
           }
 
-          $runnerPath = Join-Path $FAKEHOME ".apra-fleet\workflows\auto-sprint\auto-sprint\runner.js"
+          $runnerPath = Join-Path $FAKEHOME ".apra-fleet\workflows\fleet-sprint\fleet-sprint\runner.js"
           $schemaPath = Join-Path $FAKEHOME ".apra-fleet\schemas\reviewer-output.json"
           if (-not (Test-Path $runnerPath)) {
             Write-Error "missing $runnerPath"
@@ -331,7 +331,7 @@ jobs:
 
           LIST_OUT=$(./dist/${{ matrix.binary }} workflow --list)
           echo "$LIST_OUT"
-          echo "$LIST_OUT" | grep -q 'auto-sprint'
+          echo "$LIST_OUT" | grep -q 'fleet-sprint'
           echo "$LIST_OUT" | grep -q 'hello-world'
 
       - name: Smoke test - workflow arg/error surface (Windows)
@@ -350,7 +350,7 @@ jobs:
             Write-Error "expected exit code 1 from workflow does-not-exist, got $code"
             exit 1
           }
-          $outText = ($out -join "`n")
+          $outText = ($out -join [char]10)
           if ($outText -notmatch '(?i)workflow "does-not-exist" not found in') {
             Write-Error "missing not-found message in output"
             exit 1
@@ -362,9 +362,9 @@ jobs:
 
           $listOut = & $bin workflow --list
           $listOut | Write-Host
-          $listText = ($listOut -join "`n")
-          if ($listText -notmatch 'auto-sprint') {
-            Write-Error "workflow --list output missing auto-sprint"
+          $listText = ($listOut -join [char]10)
+          if ($listText -notmatch 'fleet-sprint') {
+            Write-Error "workflow --list output missing fleet-sprint"
             exit 1
           }
           if ($listText -notmatch 'hello-world') {
@@ -373,27 +373,27 @@ jobs:
           }
 
       # apra-fleet-7pm.15: hello-world (above) only proves the launcher's OWN
-      # import-trampoline mechanics. auto-sprint is the only built-in that
+      # import-trampoline mechanics. fleet-sprint is the only built-in that
       # exercises the full runtime tree the launcher installs: the workflow
       # engine + apra-fleet-client + ajv + the vendored agent-role schemas
-      # (packages/apra-fleet-se/auto-sprint/contracts.mjs). `--help` short-
+      # (packages/apra-fleet-se/fleet-sprint/contracts.mjs). `--help` short-
       # circuits before any fleet-server dial (bin/cli.mjs's main() checks
       # values.help immediately after parseCliArgs()), so this needs no
       # server/network -- but contracts.mjs is a static import of cli.mjs's
-      # own import chain (cli.mjs -> auto-sprint/runner.js -> contracts.mjs),
+      # own import chain (cli.mjs -> fleet-sprint/runner.js -> contracts.mjs),
       # so by the time --help prints, module load has ALREADY (a) resolved
       # every bare-specifier import from ~/.apra-fleet/node_modules/ and (b)
       # ajv-compiled a validator for every role's output schema loaded from
       # ~/.apra-fleet/schemas/ (contracts.mjs's top-level `VALIDATORS =
       # ...ajv.compile(schema)`). A broken module resolution or an invalid
       # vendored schema would throw during that import, before --help ever
-      # gets to print anything -- so a clean exit 0 with auto-sprint's own
+      # gets to print anything -- so a clean exit 0 with fleet-sprint's own
       # usage text on stdout is proof both succeeded. The absent dev-fallback
       # warning proves APRA_FLEET_SE_SCHEMAS_DIR (set by the launcher's
       # applyEnvDefaults) pointed contracts.mjs's resolveSchemasDir() at the
       # installed ~/.apra-fleet/schemas/ tree rather than the (nonexistent in
       # this packaged-binary context) monorepo packages/apra-fleet-se/apra-pm/ tree.
-      - name: Smoke test - workflow auto-sprint --help (no system Node)
+      - name: Smoke test - workflow fleet-sprint --help (no system Node)
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -404,7 +404,7 @@ jobs:
           export APRA_FLEET_DATA_DIR="$FAKEHOME/data"
           export PATH="/usr/bin:/bin"
           ! command -v node
-          OUT="$("$BIN" workflow auto-sprint --help 2>stderr.log)"
+          OUT="$("$BIN" workflow fleet-sprint --help 2>stderr.log)"
           ERR="$(cat stderr.log)"
           echo "$OUT"
           echo "--- stderr ---"
@@ -414,9 +414,9 @@ jobs:
           ! echo "$ERR" | grep -qF '[contracts] Using the local apra-pm copy'
           ! echo "$ERR" | grep -qi 'cannot find module'
           ! echo "$ERR" | grep -qi 'ERR_MODULE_NOT_FOUND'
-          test -f "$FAKEHOME/.apra-fleet/workflows/auto-sprint/bin/cli.mjs"
+          test -f "$FAKEHOME/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs"
 
-      - name: Smoke test - workflow auto-sprint --help (no system Node) (Windows)
+      - name: Smoke test - workflow fleet-sprint --help (no system Node) (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -434,23 +434,23 @@ jobs:
           }
 
           $bin = Join-Path $PWD "dist\${{ matrix.binary }}"
-          $out = & $bin workflow auto-sprint --help 2>"$env:RUNNER_TEMP\as-stderr.log"
+          $out = & $bin workflow fleet-sprint --help 2>"$env:RUNNER_TEMP\as-stderr.log"
           $code = $LASTEXITCODE
           $errText = Get-Content "$env:RUNNER_TEMP\as-stderr.log" -Raw -ErrorAction SilentlyContinue
           $out | Write-Host
           Write-Host "--- stderr ---"
           Write-Host $errText
           if ($code -ne 0) {
-            Write-Error "workflow auto-sprint --help exited $code"
+            Write-Error "workflow fleet-sprint --help exited $code"
             exit 1
           }
-          $outText = ($out -join "`n")
+          $outText = ($out -join [char]10)
           if (-not $outText.Contains('Usage: fleet-se sprint [options]')) {
-            Write-Error "unexpected stdout from workflow auto-sprint --help"
+            Write-Error "unexpected stdout from workflow fleet-sprint --help"
             exit 1
           }
           if (-not $outText.Contains('--role-map <json|@file>')) {
-            Write-Error "unexpected stdout from workflow auto-sprint --help (missing --role-map)"
+            Write-Error "unexpected stdout from workflow fleet-sprint --help (missing --role-map)"
             exit 1
           }
           if ($errText -and $errText.Contains('[contracts] Using the local apra-pm copy')) {
@@ -462,7 +462,7 @@ jobs:
             exit 1
           }
 
-          $cliPath = Join-Path $FAKEHOME ".apra-fleet\workflows\auto-sprint\bin\cli.mjs"
+          $cliPath = Join-Path $FAKEHOME ".apra-fleet\workflows\fleet-sprint\bin\cli.mjs"
           if (-not (Test-Path $cliPath)) {
             Write-Error "missing $cliPath"
             exit 1
@@ -631,14 +631,14 @@ jobs:
         # job's dry-run pack verification sees the same artifacts a real
         # publish would produce: dist/agents/schemas (scripts/dist-pm.mjs),
         # apra-fleet-se's package-local schema copy (apra-fleet-bun),
-        # dist/index.js (tsc), and dist/auto-sprint.mjs + dist/auto-sprint-runner.mjs
+        # dist/index.js (tsc), and dist/fleet-sprint.mjs + dist/fleet-sprint-runner.mjs
         # (scripts/bundle-se.mjs, apra-fleet-3ns.2).
         run: npm run prepublishOnly
 
       - name: Verify shebang
         run: |
           head -1 dist/index.js | grep -q '^#!/usr/bin/env node'
-          head -1 dist/auto-sprint.mjs | grep -q '^#!/usr/bin/env node'
+          head -1 dist/fleet-sprint.mjs | grep -q '^#!/usr/bin/env node'
 
       - name: Dry-run pack verification
         run: |
@@ -647,8 +647,8 @@ jobs:
           grep -q 'version.json' pack-output.txt
           grep -q 'hooks/hooks-config.json' pack-output.txt
           grep -q 'skills/pm/' pack-output.txt || grep -q 'skills/fleet/' pack-output.txt
-          grep -q 'dist/auto-sprint.mjs' pack-output.txt
-          grep -q 'dist/auto-sprint-runner.mjs' pack-output.txt
+          grep -q 'dist/fleet-sprint.mjs' pack-output.txt
+          grep -q 'dist/fleet-sprint-runner.mjs' pack-output.txt
           grep -q 'dist/agents/schemas/' pack-output.txt
           echo "Pack verification passed"
 
@@ -669,10 +669,10 @@ jobs:
           fi
           echo "Clean-pack guard passed"
 
-      - name: Pack + install into a clean temp prefix (auto-sprint smoke test)
+      - name: Pack + install into a clean temp prefix (fleet-sprint smoke test)
         # apra-fleet-3ns.2(f) / apra-fleet-3ns.2.2: proves a real packed
         # tarball, extracted with no monorepo ancestor and no
-        # node_modules present, exposes a working `auto-sprint` bin whose
+        # node_modules present, exposes a working `fleet-sprint` bin whose
         # schema resolution finds the co-packaged dist/agents/schemas/ --
         # not the apra-fleet-bun.1 monorepo dev-fallback (which would warn)
         # or the last-resort hand-written literals.
@@ -690,25 +690,25 @@ jobs:
             exit 1
           fi
 
-          node "$PKG_DIR/dist/auto-sprint.mjs" --help > "$TMP_INSTALL/se-help-stdout.txt" 2> "$TMP_INSTALL/se-help-stderr.txt"
+          node "$PKG_DIR/dist/fleet-sprint.mjs" --help > "$TMP_INSTALL/se-help-stdout.txt" 2> "$TMP_INSTALL/se-help-stderr.txt"
           grep -q 'Usage: fleet-se sprint' "$TMP_INSTALL/se-help-stdout.txt" || {
-            echo "::error::auto-sprint --help did not produce the expected usage text."
+            echo "::error::fleet-sprint --help did not produce the expected usage text."
             cat "$TMP_INSTALL/se-help-stdout.txt"
             exit 1
           }
           if grep -q 'Using the local apra-pm copy' "$TMP_INSTALL/se-help-stderr.txt"; then
-            echo "::error::dist/auto-sprint.mjs fell back to the local apra-pm dev path instead of resolving the packaged dist/agents/schemas/ -- the tarball's schema bundling is broken."
+            echo "::error::dist/fleet-sprint.mjs fell back to the local apra-pm dev path instead of resolving the packaged dist/agents/schemas/ -- the tarball's schema bundling is broken."
             cat "$TMP_INSTALL/se-help-stderr.txt"
             exit 1
           fi
-          echo "Clean install smoke test passed: auto-sprint --help works with no node_modules, schemas resolved from dist/agents/schemas (no dev-fallback warning)"
+          echo "Clean install smoke test passed: fleet-sprint --help works with no node_modules, schemas resolved from dist/agents/schemas (no dev-fallback warning)"
 
           # apra-fleet-7pm.12: the `--help` check above exits before
           # engine.executeFile() ever runs, so it never exercised
-          # dist/auto-sprint-runner.mjs's own import graph ('./contracts.mjs',
+          # dist/fleet-sprint-runner.mjs's own import graph ('./contracts.mjs',
           # './errors.mjs', '@apralabs/apra-fleet-workflow' [+ its '/viewer/
           # html-utils' subpath], '@apralabs/apra-fleet-client', 'ajv') --
-          # only dist/auto-sprint.mjs's esbuild-inlined imports. Reuse this
+          # only dist/fleet-sprint.mjs's esbuild-inlined imports. Reuse this
           # same clean-prefix tarball extraction and drive
           # engine.executeFile() directly against the runner script, so a
           # broken runtime import graph fails CI instead of shipping

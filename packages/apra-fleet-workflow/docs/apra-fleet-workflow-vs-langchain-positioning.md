@@ -21,7 +21,7 @@ A ~1,500-line JS engine (`packages/apra-fleet-workflow/src/workflow/index.mjs`) 
 - **Live dashboard**: SSE + polling HTML viewer with a phase/activity tree and a cooperative `/stop` (`requestStop()` -> per-run `AbortController` -> typed `CancelledError`).
 - **SEA distribution**: the entire engine ships inside a Node SEA binary. Per `docs/workflow-subsystem-plan.md`, `apra-fleet workflow <name>` must run with **zero system Node installed** -- the binary self-extracts a runtime tree to `~/.apra-fleet/node_modules/` (workflow + client packages + a vendored ajv subtree, ~2.5 MB) and `import()`s the workflow from disk. This is a hard, CI-enforced invariant (the smoke test strips Node from PATH). The plan's decisive constraint: *any* design that loads two copies of the workflow package breaks every `instanceof` check across the engine/runner boundary.
 
-The flagship consumer, auto-sprint (`packages/apra-fleet-se/auto-sprint/runner.js`), runs a Plan -> Develop -> Review -> Deploy -> Integ-Test -> Harvest loop across planner/doer/reviewer/deployer/harvester roles, each role mapped to a (potentially different) physical member, with per-bead model-tier resolution done *server-side per member* so a mixed-provider fleet works. Critically, its coordination state is **not in the process at all**: it lives in beads, a git-backed dependency-graph issue tracker, driven via `bd` shell commands on the orchestrator member.
+The flagship consumer, auto-sprint (`packages/apra-fleet-se/fleet-sprint/runner.js`), runs a Plan -> Develop -> Review -> Deploy -> Integ-Test -> Harvest loop across planner/doer/reviewer/deployer/harvester roles, each role mapped to a (potentially different) physical member, with per-bead model-tier resolution done *server-side per member* so a mixed-provider fleet works. Critically, its coordination state is **not in the process at all**: it lives in beads, a git-backed dependency-graph issue tracker, driven via `bd` shell commands on the orchestrator member.
 
 ### LangChain / LangGraph (theirs, as of mid-2026)
 
@@ -110,7 +110,7 @@ Also worth watching, not adopting: LangSmith-style tracing (we could emit OTel s
 
 ### Sources
 
-- Engine source: `packages/apra-fleet-workflow/src/workflow/{index,engine,errors}.mjs`; `packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md`; `docs/workflow-subsystem-plan.md`; `packages/apra-fleet-se/auto-sprint/runner.js` (all in this checkout, read 2026-07-14).
+- Engine source: `packages/apra-fleet-workflow/src/workflow/{index,engine,errors}.mjs`; `packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md`; `docs/workflow-subsystem-plan.md`; `packages/apra-fleet-se/fleet-sprint/runner.js` (all in this checkout, read 2026-07-14).
 - [LangChain & LangGraph 1.0 announcement](https://www.langchain.com/blog/langchain-langgraph-1dot0) (GA Oct 2025; create_agent on LangGraph runtime; middleware; stability pledge)
 - [What's new in LangChain v1 (JS docs)](https://docs.langchain.com/oss/javascript/releases/langchain-v1)
 - [LangGraph durable execution docs](https://docs.langchain.com/oss/python/langgraph/durable-execution) (checkpointers, sync/async persistence, thread resume)

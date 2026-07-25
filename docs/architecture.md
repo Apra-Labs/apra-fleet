@@ -154,9 +154,9 @@ All five members use the same `execute_prompt` tool call. The tool builds provid
 
 See `docs/provider-matrix.md` for the full comparison table.
 
-### Multi-member topology (auto-sprint)
+### Multi-member topology (fleet-sprint)
 
-The `apra-fleet-se` auto-sprint runner (`packages/apra-fleet-se/auto-sprint/runner.js`) dispatches roles across configured members: the orchestrator issues every `bd` command and the git push/PR, doers round-robin across the doer pool, and the reviewer runs from the reviewer pool.
+The `apra-fleet-se` fleet-sprint runner (`packages/apra-fleet-se/fleet-sprint/runner.js`) dispatches roles across configured members: the orchestrator issues every `bd` command and the git push/PR, doers round-robin across the doer pool, and the reviewer runs from the reviewer pool.
 
 Two topology modes are supported, selected explicitly when a sprint starts:
 
@@ -175,12 +175,12 @@ See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both
 `apra-fleet workflow <name>` runs a self-contained script (an ESM entry point
 under `workflows/<name>/`) against a live fleet connection, from inside the
 single-executable-application (SEA) binary -- no separate Node install and no
-unpacking to a temp directory required. `auto-sprint` is itself shipped as one
+unpacking to a temp directory required. `fleet-sprint` is itself shipped as one
 of these built-in workflows rather than as a bespoke subcommand, so the
 launcher, the packaging, and the docs only need to solve this problem once.
 
 **Two always-separate processes.** The workflow launcher (`apra-fleet
-workflow`, `auto-sprint`) and the `apra-fleet` MCP server are never merged
+workflow`, `fleet-sprint`) and the `apra-fleet` MCP server are never merged
 into one process. This is a hard boundary, not an optimization detail --
 see `docs/adr-workflow-server-resolution.md` for the ADR and its explicit
 scope guard against reopening it.
@@ -206,7 +206,7 @@ The rationale for one shared helper over two copies: a launcher that merely
 mirrored the old stdio-only `resolveFleetServerCommand()` would always
 self-spawn a private server even when a healthy HTTP singleton already
 existed, doubling running servers and splitting state. Duplicating the
-resolution order in two languages (TS launcher, MJS auto-sprint) was
+resolution order in two languages (TS launcher, MJS fleet-sprint) was
 rejected because it guarantees drift between the two copies over time; see
 the ADR for the full tradeoff writeup.
 
@@ -226,7 +226,7 @@ rejects any resolution that escapes it (checked via `path.relative` plus
 manifest is not a trusted-by-construction input.
 
 **Packaging:** the workflow runtime, agent schemas, and built-in workflows
-(including auto-sprint) are embedded as SEA assets by
+(including fleet-sprint) are embedded as SEA assets by
 `scripts/gen-sea-config.mjs`, proven viable by an earlier spike that
 dynamic `import()` of on-disk ESM works from inside a SEA main script on
 all three target OSes.
@@ -259,7 +259,7 @@ share the exact same code path instead of re-implementing it:
 
 **CI coverage (Phase 4, closed this sprint):** `build:binary` smoke tests
 exercise the packaged SEA binary's `workflow` subcommand and the
-auto-sprint-as-built-in-workflow path end-to-end (not just the source
+fleet-sprint-as-built-in-workflow path end-to-end (not just the source
 `.ts`/`.mjs` files), and a regression-guard test suite
 (`tests/regression-command-surface.test.ts`) pins the full existing CLI
 command surface (`install --help`, `uninstall --dry-run`, `--version`,

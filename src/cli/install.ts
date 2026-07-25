@@ -116,6 +116,15 @@ function getSeaAssetBuffer(key: string): Buffer {
 // installed into <configDir>/skills/auto-sprint-args, mirrors apra-pm/install.mjs.
 const AUTO_SPRINT_ARGS_SKILL_NAME = 'auto-sprint-args';
 
+// Helper skill for the fleet-sprint workflow (`apra-fleet workflow
+// fleet-sprint`), shipped inside the fleet-sprint package itself. NOT provider-
+// specific: installed into <configDir>/skills/fleet-sprint-cli for every LLM
+// provider (every provider's config layout is <configDir>/skills/<name>, same
+// as the pm and fleet skills).
+const FLEET_SPRINT_CLI_SKILL_NAME = 'fleet-sprint-cli';
+const FLEET_SPRINT_CLI_SKILL_VENDOR_BASE =
+  'packages/apra-fleet-se/fleet-sprint/skills/fleet-sprint-cli';
+
 interface AssetManifest {
   version: string;
   hooks: Record<string, string>;
@@ -133,6 +142,9 @@ interface AssetManifest {
   // Optional for the same additive-only reason (0.3.5's installer shipped it
   // required, but every consumer already guards with `?? {}`).
   autoSprintArgsSkill?: Record<string, string>;
+  // Optional for the same additive-only reason: older manifests (built before
+  // the fleet-sprint rename) simply omit it and the install step skips.
+  fleetSprintCliSkill?: Record<string, string>;
 }
 
 import { fileURLToPath } from 'url';
@@ -248,6 +260,17 @@ function buildDevManifest(root: string): AssetManifest {
     : 'dist/skills/auto-sprint-args';
   const autoSprintArgsSkill = collectFilesRec(argsSkillDir, argsSkillBase, argsSkillBase);
 
+  // fleet-sprint-cli helper skill (ships inside the fleet-sprint package;
+  // documents the `apra-fleet workflow fleet-sprint` CLI flag contract).
+  // Provider-agnostic -- installed for every LLM provider.
+  const vendorCliSkill = path.join(root, ...FLEET_SPRINT_CLI_SKILL_VENDOR_BASE.split('/'));
+  const distCliSkill = path.join(root, 'dist', 'skills', FLEET_SPRINT_CLI_SKILL_NAME);
+  const cliSkillDir = fs.existsSync(vendorCliSkill) ? vendorCliSkill : distCliSkill;
+  const cliSkillBase = fs.existsSync(vendorCliSkill)
+    ? FLEET_SPRINT_CLI_SKILL_VENDOR_BASE
+    : `dist/skills/${FLEET_SPRINT_CLI_SKILL_NAME}`;
+  const fleetSprintCliSkill = collectFilesRec(cliSkillDir, cliSkillBase, cliSkillBase);
+
   // Collect auto-sprint.js from apra-pm/.claude/workflows (or dist/workflows fallback)
   const vendorWorkflows = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'workflows');
   const workflowsSrc = fs.existsSync(vendorWorkflows)
@@ -294,12 +317,12 @@ function buildDevManifest(root: string): AssetManifest {
     agentSchemas = collectPackageTree(root, agentSchemasDir, 'agentSchemas');
   }
 
-  const autoSprintDir = path.join(root, 'packages', 'apra-fleet-se');
+  const fleetSprintDir = path.join(root, 'packages', 'apra-fleet-se');
   const helloWorldDir = path.join(root, 'examples', 'workflows', 'hello-world');
   let builtinWorkflows: Record<string, string> | undefined;
-  if (fs.existsSync(autoSprintDir) || fs.existsSync(helloWorldDir)) {
+  if (fs.existsSync(fleetSprintDir) || fs.existsSync(helloWorldDir)) {
     builtinWorkflows = {
-      ...(fs.existsSync(autoSprintDir) ? collectPackageTree(root, autoSprintDir, 'auto-sprint') : {}),
+      ...(fs.existsSync(fleetSprintDir) ? collectPackageTree(root, fleetSprintDir, 'fleet-sprint') : {}),
       ...(fs.existsSync(helloWorldDir) ? collectPackageTree(root, helloWorldDir, 'hello-world') : {}),
     };
   }
@@ -308,6 +331,7 @@ function buildDevManifest(root: string): AssetManifest {
   return {
     version: vf.version, hooks, scripts, skills, fleetSkills, agents, workflows,
     workflowRuntime, agentSchemas, builtinWorkflows, autoSprintArgsSkill,
+    fleetSprintCliSkill,
   };
 }
 
@@ -679,7 +703,7 @@ Options:
   --no-skill              Alias for --skill none.
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
-                          schemas), and /workflows/{auto-sprint,hello-world} (built-in workflows).
+                          schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
   --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
     process.exit(0);
     return;
@@ -1085,6 +1109,43 @@ ${killHint}
     }
   }
 
+  // --- fleet-sprint-cli helper skill (all providers) ---
+  // Documents the `apra-fleet workflow fleet-sprint` CLI contract for any LLM
+  // driving apra-fleet. Deliberately NOT gated on provider (every provider gets
+  // it) and NOT gated on installPm (fleet-sprint ships independently of the PM
+  // skill) -- only on "skills are being installed at all".
+  if (installFleet || installPm) {
+    const cliSkillDest = path.join(paths.configDir, 'skills', FLEET_SPRINT_CLI_SKILL_NAME);
+    const cliSkillEntries = isSea()
+      ? Object.entries(manifest.fleetSprintCliSkill ?? {}).map(([relPath, assetKey]) => ({
+          relPath,
+          content: extractAsset(assetKey),
+        }))
+      : (() => {
+          const root = findProjectRoot();
+          const vendorCliSkill = path.join(root, ...FLEET_SPRINT_CLI_SKILL_VENDOR_BASE.split('/'));
+          const distCliSkill = path.join(root, 'dist', 'skills', FLEET_SPRINT_CLI_SKILL_NAME);
+          const cliSkillSrc = fs.existsSync(vendorCliSkill) ? vendorCliSkill : distCliSkill;
+          const cliSkillBase = fs.existsSync(vendorCliSkill)
+            ? FLEET_SPRINT_CLI_SKILL_VENDOR_BASE
+            : `dist/skills/${FLEET_SPRINT_CLI_SKILL_NAME}`;
+          const collected = collectFilesRec(cliSkillSrc, cliSkillBase, cliSkillBase);
+          return Object.entries(collected).map(([relPath, rootRelativeLabel]) => ({
+            relPath,
+            content: fs.readFileSync(path.join(root, rootRelativeLabel), 'utf-8'),
+          }));
+        })();
+
+    if (cliSkillEntries.length > 0) {
+      clearDirSync(cliSkillDest);
+      for (const { relPath, content } of cliSkillEntries) {
+        writeAssetFile(path.join(cliSkillDest, relPath), content);
+      }
+    } else {
+      console.warn(`  [!] ${FLEET_SPRINT_CLI_SKILL_NAME} skill source not found -- skill not installed`);
+    }
+  }
+
   if (!installFleet && !installPm) {
     console.log(`  Skipping skills (use --skill all to install, or omit --skill for default)`);
   }
@@ -1106,7 +1167,7 @@ ${killHint}
   }
 
   // --- Workflow-subsystem install step (optional, --workflows all|none) ---
-  // Writes ~/.apra-fleet/{node_modules,schemas,workflows/{auto-sprint,hello-world}}.
+  // Writes ~/.apra-fleet/{node_modules,schemas,workflows/{fleet-sprint,hello-world}}.
   // See docs/workflow-subsystem-plan.md Section 6 / Section 2.1 for the layout.
   if (installWorkflows) {
     // Two steps follow workflows (dolt, then Beads) before the optional service step.

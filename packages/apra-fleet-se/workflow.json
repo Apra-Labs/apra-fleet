@@ -1,1 +1,1 @@
-{"name":"auto-sprint","entry":"bin/cli.mjs","description":"Multi-cycle sprint: plan -> develop -> test -> harvest"}
+{"name":"fleet-sprint","entry":"bin/cli.mjs","description":"Multi-cycle sprint: plan -> develop -> test -> harvest"}

@@ -8,7 +8,7 @@ import {
     validateArgs,
     validateIssueId,
     validateBranchName,
-} from '../auto-sprint/runner.js';
+} from '../fleet-sprint/runner.js';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
 // contract (validateArgs/validateIssueId/validateBranchName), and proof
@@ -18,7 +18,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const RUNNER_SCRIPT_PATH = path.join(__dirname, '../auto-sprint/runner.js');
+const RUNNER_SCRIPT_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 
 const VALID_ARGS = Object.freeze({
     target_issues: ['bd-1', 'bd-2'],

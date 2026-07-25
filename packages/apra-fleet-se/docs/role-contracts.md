@@ -1,11 +1,11 @@
 # How the apra-pm Role Contracts Work
 
-Every AI agent role auto-sprint dispatches (`planner`, `plan-reviewer`,
+Every AI agent role fleet-sprint dispatches (`planner`, `plan-reviewer`,
 `doer`, `reviewer`, `deployer`, `integ-test-runner`, `harvester`, plus
 `ci-watcher` which is defined but not currently dispatched by this runner)
 has a canonical, prose behavioral definition at
 `packages/apra-fleet-se/apra-pm/agents/<role>.md` -- the apra-pm package in this monorepo.
-`auto-sprint/contracts.mjs` is this package's
+`fleet-sprint/contracts.mjs` is this package's
 application-side reader/adapter for those definitions; it does not author
 role behavior, it consumes and structurally validates it.
 

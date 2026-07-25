@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 // the full duration of a long dispatch (observed live: a 675s planner run
 // whose POST response stream was idle-killed at ~300s, losing a 16k-token
 // result and forcing a full duplicate dispatch -- see
-// apra-fleet-se/auto-sprint/docs/stabilization-log.md, Issue 8).
+// apra-fleet-se/fleet-sprint/docs/stabilization-log.md, Issue 8).
 //
 // A behavioral test would need to hold a real SSE stream silent for >300s,
 // which is not practical in a unit suite; instead this asserts the source

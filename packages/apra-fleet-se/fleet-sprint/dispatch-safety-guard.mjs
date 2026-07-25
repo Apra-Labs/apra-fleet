@@ -10,7 +10,7 @@ import path from 'path';
 // (apra-fleet-eft.3.1). It is factored out here so the checker can be
 // pointed at an arbitrary source file -- in particular a test fixture that
 // deliberately violates the invariant -- WITHOUT mutating
-// packages/apra-fleet-se/auto-sprint/runner.js itself to manufacture a
+// packages/apra-fleet-se/fleet-sprint/runner.js itself to manufacture a
 // failure case. dispatch-safety-guard.test.mjs imports this module both for
 // its real runner.js baseline assertion and for fixture-driven tests that
 // prove the checker actually detects a violation rather than passing

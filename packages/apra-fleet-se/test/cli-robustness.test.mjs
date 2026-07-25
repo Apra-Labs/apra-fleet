@@ -14,7 +14,7 @@ import {
     formatViewerListenError,
     attachViewerErrorHandler,
 } from '../bin/cli.mjs';
-import { validateArgs } from '../auto-sprint/runner.js';
+import { validateArgs } from '../fleet-sprint/runner.js';
 
 // Tests for apra-fleet-unw2.16 (N14): CLI robustness fixes (a)-(e).
 //

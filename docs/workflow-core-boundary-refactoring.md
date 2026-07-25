@@ -88,7 +88,7 @@ verdict/prUrl in its result).
   detailLookup?: (state, id) => {text, updatedAt} | null }` and core
   serves GET /extensions/:extId/detail/:itemId by delegating to that
   extension's detailLookup. findBeadById() moves verbatim into the beads
-  extension module (packages/apra-fleet-se/auto-sprint/
+  extension module (packages/apra-fleet-se/fleet-sprint/
   viewer-extensions.mjs) as its detailLookup.
   Client compat: the extension js (which owns the "more..." UI per the
   eft.27 user feedback) calls the new route; the old /beads/:id/

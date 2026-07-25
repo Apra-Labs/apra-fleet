@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-import { createMemberSessionGuard } from '../auto-sprint/runner.js';
+import { createMemberSessionGuard } from '../fleet-sprint/runner.js';
 
 // apra-fleet-eft.75.1: unit coverage for the pre-resume session guard.
 //

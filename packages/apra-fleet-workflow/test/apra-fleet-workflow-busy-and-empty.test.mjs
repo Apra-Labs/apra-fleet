@@ -4,7 +4,7 @@ import { FleetWorkflow, AgentDispatchError } from '../src/workflow/index.mjs';
 
 // Unit tests for two dispatch-resilience behaviors added after live
 // auto-sprint failures (2026-07-19 stabilization loop -- see
-// packages/apra-fleet-se/auto-sprint/docs/stabilization-log.md):
+// packages/apra-fleet-se/fleet-sprint/docs/stabilization-log.md):
 //
 // 1. Busy-wait: a "busy" dispatch rejection ("execute_prompt is already
 //    running for <member>") is transient-but-slow -- an orphaned prior

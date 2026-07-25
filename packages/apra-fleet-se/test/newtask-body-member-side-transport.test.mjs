@@ -8,7 +8,7 @@ import {
     createChildBeadWithAllocatedId,
     appendRejectedFindingToParentNotes,
     persistNewTaskBestEffort,
-} from '../auto-sprint/runner.js';
+} from '../fleet-sprint/runner.js';
 
 // apra-fleet-eft.73.2: verifies the eft.73.1 fix -- newTask/notes body content
 // reaches `bd` via a MEMBER-LOCAL staged file (stageCommandBodyMemberSide in
@@ -84,7 +84,7 @@ describe('apra-fleet-eft.73.2 -- newTask/notes body reaches member-side without 
         // under the OLD (eft.56.1) writeCommandBodyTempFile() scheme -- if the
         // fix regressed, this exact orchestrator-host path would show up
         // verbatim in the `bd create --body-file` command string.
-        const hostLocalPath = path.join(os.tmpdir(), `auto-sprint-body-orchestrator-host-${process.pid}.txt`);
+        const hostLocalPath = path.join(os.tmpdir(), `fleet-sprint-body-orchestrator-host-${process.pid}.txt`);
         // Prove the path is real on THIS (orchestrator-host) process so the
         // assertion below is meaningful, not vacuous.
         await fs.writeFile(hostLocalPath, 'host-local sentinel, must never be referenced by bd', 'utf-8');

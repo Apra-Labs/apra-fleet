@@ -390,7 +390,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // sprint. Prefer the per-call `sprint_id` -- the exact same opaque token
   // the caller already passed to member_reservation reserve/release (see
   // createMemberReservationClient / sprintMutexId in
-  // packages/apra-fleet-se/auto-sprint/runner.js) -- and fall back to
+  // packages/apra-fleet-se/fleet-sprint/runner.js) -- and fall back to
   // currentSprintId() only when the caller omits it, so existing
   // env-var-based callers/tests are unaffected.
   const owningSprint = agent.reservedBy ?? null;

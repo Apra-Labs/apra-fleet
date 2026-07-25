@@ -30,7 +30,7 @@ const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
 // Group 1: loader primitives
 // -----------------------------------------------------------------------
 
-const { loadSchemaFileFrom, assertVersionPin, majorVersionFromId } = await import('../auto-sprint/contracts.mjs');
+const { loadSchemaFileFrom, assertVersionPin, majorVersionFromId } = await import('../fleet-sprint/contracts.mjs');
 
 describe('loadSchemaFileFrom (loader primitive)', () => {
     test('AC2: reads real schema content from a fixture snapshot of packages/apra-fleet-se/apra-pm/agents/schemas/', () => {
@@ -123,7 +123,7 @@ describe('SCHEMAS / validateRoleInput resolved against a fixture packages/apra-f
         // Cache-bust so this import re-runs contracts.mjs's module-level
         // resolution against the override, independent of the (uncached,
         // since this is a distinct URL) import above.
-        wired = await import(`../auto-sprint/contracts.mjs?wired-test=${Date.now()}`);
+        wired = await import(`../fleet-sprint/contracts.mjs?wired-test=${Date.now()}`);
         if (previous === undefined) {
             delete process.env.APRA_FLEET_SE_SCHEMAS_DIR;
         } else {
@@ -217,7 +217,7 @@ describe('fallback shim against contracts.mjs\'s real, unoverridden resolveSchem
         // package, or none of them -- the fallback-literal case), every
         // export below must hold the same shape -- this is exactly what
         // "shim" means.
-        const real = await import('../auto-sprint/contracts.mjs');
+        const real = await import('../fleet-sprint/contracts.mjs');
         for (const name of ['planReviewerVerdict', 'reviewerVerdict', 'doerReport', 'deployerReport', 'integReport', 'ciReport', 'harvesterReport']) {
             assert.ok(real.SCHEMAS[name], `expected SCHEMAS.${name} to be defined`);
             assert.strictEqual(real.SCHEMAS[name].type, 'object');

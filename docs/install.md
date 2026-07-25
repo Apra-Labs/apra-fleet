@@ -75,6 +75,7 @@ chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
 | `~/.claude/skills/pm/cost.js` | Auto-generated CJS module with sprint cost functions (all providers with PM) |
 | `~/.claude/workflows/auto-sprint.js` | Full auto-sprint workflow (Claude only) |
 | `~/.claude/skills/auto-sprint-args/` | Args contract for the `/auto-sprint` workflow (Claude only) |
+| `~/.claude/skills/fleet-sprint-cli/` | How to launch `apra-fleet workflow fleet-sprint` -- flag contract, preconditions, detached launch (all providers) |
 | `~/.claude/agents/` | PM role-agent files (planner, doer, reviewer, etc.), plus `schemas/` and `_shared/` -- written whenever PM is installed and the provider has an agents directory (not codex/copilot) |
 
 For other providers, these are written to that provider's skill/config directories. For example, for Antigravity (`agy`), settings are written to `~/.gemini/antigravity-cli/settings.json`, and hooks / MCP configs are merged into `~/.gemini/config/hooks.json` and `~/.gemini/config/mcp_config.json`.
@@ -84,21 +85,21 @@ This local install only covers the machine you run it on. Remote fleet members g
 The install also registers the MCP server (`claude mcp add apra-fleet`) and
 configures a status bar icon showing fleet member activity.
 
-### Two `auto-sprint` entry points -- do not confuse them
+### Two sprint entry points -- do not confuse them
 
-`apra-fleet` ships **two separate, independently maintained** auto-sprint
+`apra-fleet` ships **two separate, independently maintained** sprint
 implementations:
 
-| | `~/.claude/workflows/auto-sprint.js` | `auto-sprint` bin (npm) |
+| | `auto-sprint` (Claude Code workflow) | `fleet-sprint` (apra-fleet CLI workflow) |
 |---|---|---|
-| Written by | `install` (table above) | The root `@apralabs/apra-fleet` npm package's `bin.auto-sprint`, resolving to `dist/auto-sprint.mjs` |
+| Written by | `install` (table above) | The root `@apralabs/apra-fleet` npm package's `bin.fleet-sprint`, resolving to `dist/fleet-sprint.mjs` |
 | Providers | Claude Code only | Any provider a fleet member is registered with (Claude, Gemini, Codex, Copilot, Antigravity/agy) |
 | Source package | `packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js` | `packages/apra-fleet-se` (esbuild-bundled, apra-fleet-3ns.2) |
 | Model selection | Literal Claude model names | Fleet's `cheap`/`standard`/`premium` tier keywords, per-member |
-| How you run it | Invoked from within a Claude Code session as a workflow | `npx auto-sprint --issue ... --members ... --branch ... --base ...` (or globally, if `@apralabs/apra-fleet` is installed with `-g`) -- see `packages/apra-fleet-se/docs/cli-reference.md` |
+| How you run it | `/auto-sprint <bead-ids>` inside a Claude Code session (the Workflow tool) | `apra-fleet workflow fleet-sprint --issue ... --members ... --branch ... --base ...` -- the normal form. The same bundle is also exposed directly as a `fleet-sprint` bin (`npx fleet-sprint ...`, or bare if `@apralabs/apra-fleet` is installed with `-g`). See `packages/apra-fleet-se/docs/cli-reference.md` |
 
 If you installed `apra-fleet` via `npm install -g @apralabs/apra-fleet`
-(or `npx @apralabs/apra-fleet`), the `auto-sprint` bin is available
+(or `npx @apralabs/apra-fleet`), the `fleet-sprint` bin is available
 immediately alongside `apra-fleet` -- no separate install step. It requires
 the `apra-fleet` MCP server to be reachable (it spawns/connects to it over
 stdio the same way `apra-fleet` itself does); see
@@ -110,7 +111,7 @@ schema-resolution order across dev/bundled/standalone layouts.
 `install` also populates `~/.apra-fleet/node_modules/`, `~/.apra-fleet/schemas/`,
 and `~/.apra-fleet/workflows/` (see the directory table above) so that
 `apra-fleet workflow <name> [args...]` -- the SEA-binary workflow runner --
-can run built-in workflows (`auto-sprint`, `hello-world`) or any
+can run built-in workflows (`fleet-sprint`, `hello-world`) or any
 user-authored workflow with zero system Node required. See
 `docs/authoring-workflows.md` for the full authoring contract.
 
@@ -119,7 +120,7 @@ always separate processes. Set `APRA_FLEET_TRANSPORT=http` (the default) or
 `APRA_FLEET_TRANSPORT=stdio` to control how the launcher reaches that
 server: `http` (default) attaches to the already-running installed-service
 singleton at `http://localhost:${APRA_FLEET_PORT:-7523}/mcp` and spawns
-nothing; `stdio` self-spawns a private server the same way the `auto-sprint`
+nothing; `stdio` self-spawns a private server the same way the `fleet-sprint`
 bin does. See `docs/adr-workflow-server-resolution.md` for the full
 resolution order (this same order also governs where role schemas resolve
 from in the installed-binary case: `APRA_FLEET_SE_SCHEMAS_DIR`, set by the

@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- `auto-sprint` CLI workflow renamed to `fleet-sprint`
+
+**BREAKING (CLI surface).** apra-fleet's own product sprint workflow is now
+called `fleet-sprint` everywhere. Claude Code's separate Workflow-tool script
+(`~/.claude/workflows/auto-sprint.js`, its `/auto-sprint` slash command, and
+the `auto-sprint-args` skill) is a different thing and **keeps** the name
+`auto-sprint` -- the two were repeatedly confused, which is what motivated the
+rename.
+
+What changed:
+
+- `apra-fleet workflow auto-sprint ...` -> `apra-fleet workflow fleet-sprint ...`
+- npm bin `auto-sprint` -> `fleet-sprint`; bundle `dist/auto-sprint.mjs` ->
+  `dist/fleet-sprint.mjs` and `dist/auto-sprint-runner.mjs` ->
+  `dist/fleet-sprint-runner.mjs`
+- Installed workflow dir `~/.apra-fleet/workflows/auto-sprint/` ->
+  `~/.apra-fleet/workflows/fleet-sprint/`
+- Source dir `packages/apra-fleet-se/auto-sprint/` ->
+  `packages/apra-fleet-se/fleet-sprint/`
+- New `fleet-sprint-cli` skill (source:
+  `packages/apra-fleet-se/fleet-sprint/skills/fleet-sprint-cli/`) documenting the
+  CLI flag contract, installed to `<configDir>/skills/fleet-sprint-cli` for
+  **every** LLM provider by `apra-fleet install`, and removed by `uninstall`.
+
+Migration: re-run `apra-fleet install` to lay down the renamed workflow
+directory and the new skill, and update any scripts that invoked
+`apra-fleet workflow auto-sprint` or the `auto-sprint` bin.
+
 ## [Unreleased] -- Auto-sprint as a service: always-on multi-sprint supervisor
 
 - **apra-pm architectural reorg** -- The `vendor/apra-pm` git submodule has been removed and replaced with a package-local deep copy under `packages/apra-fleet-se/apra-pm`. This eliminates silent submodule synchronization drift and significantly streamlines packaging, CI, and E2E processes that previously depended on the submodule being manually initialized.

@@ -14,7 +14,7 @@
 
 This ADR decides only **how the client process reaches the MCP server**. It does
 **not** reopen whether they are separate processes: the launcher (`apra-fleet
-workflow`, `auto-sprint`) and the `apra-fleet` MCP server are **always separate
+workflow`, `fleet-sprint`) and the `apra-fleet` MCP server are **always separate
 processes**. Merging them into one process is explicitly out of scope per
 workflow-subsystem-plan.md Section 1, and no task may propose it.
 
@@ -86,7 +86,7 @@ copy of server state, whereas a failed probe costs milliseconds.
 ## Decision 2 -- ONE shared helper, not duplicated
 
 The resolution-order logic above lives in **one shared helper**, used by both
-`apra-fleet workflow` (`src/cli/workflow.ts`) and auto-sprint's
+`apra-fleet workflow` (`src/cli/workflow.ts`) and fleet-sprint's
 `packages/apra-fleet-se/bin/cli.mjs`. It is **not** duplicated.
 
 **Location:** `packages/apra-fleet-client/src/client/server-resolution.mjs`,
@@ -127,7 +127,7 @@ existing callers/tests.
 
 ### Tradeoff, recorded explicitly
 
-- **Shared helper (chosen).** One place to fix; the launcher and auto-sprint can
+- **Shared helper (chosen).** One place to fix; the launcher and fleet-sprint can
   never disagree about where the server is; the liveness check cannot drift from the
   server's own. Cost: `cli.mjs`'s resolution stops being a self-contained function
   in the file you are reading, the client package grows a dependency on filesystem +

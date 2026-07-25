@@ -404,7 +404,7 @@ async function run3BeadScenario(tag) {
         const fleetApi = build3BeadFleetApi(tempDir, epicBead, dispatchLog);
         const workflow = new FleetWorkflow(fleetApi, { targetRepo: tempDir });
         const engine = new WorkflowEngine(workflow);
-        const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+        const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 
         const result = await engine.executeFile(scriptPath, {
             target_issue: epicBead.id,

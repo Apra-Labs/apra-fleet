@@ -70,7 +70,7 @@ async function runCycleScenario(tag, { members = ['local'], maxCycles = 1, befor
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('log', (e) => logs.push(e.msg));
         const engine = new WorkflowEngine(workflow);
-        const scriptPath = path.join(__dirname, '../auto-sprint/runner.js');
+        const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 
         let error = null;
         let result = null;

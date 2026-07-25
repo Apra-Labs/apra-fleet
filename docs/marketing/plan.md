@@ -109,7 +109,7 @@ Reader sees, in order:
   installer binary from Releases; connect via /mcp in the LLM CLI;
   register members CONVERSATIONALLY in plain language (OOB password for
   remote members); then `apra-fleet workflow hello-world` /
-  `apra-fleet workflow auto-sprint --issue ... --members ... --branch
+  `apra-fleet workflow fleet-sprint --issue ... --members ... --branch
   ... --base ...`. NOTE: the real conversational flow is also the BETTER
   story -- feature it in the hook, not just accuracy.
 - No fabricated numbers, ever. Dogfood stats from real run artifacts.
@@ -142,17 +142,20 @@ Reader sees, in order:
       sprint-logs/*.log. Replace the draft's current numbers.
 - [x] Produce GFX-1 hero banner (spec: section 8) -- done, see
       assets/marketing/hero-banner-{dark,light}.svg, wired into the draft
-- [ ] Record GFX-2 dashboard GIF -- BLOCKED until run 16+ runs with the
-      eft.27 lean-state viewer (recording today's sluggish viewer would
-      undercut the pitch). Tool: claude-in-chrome gif_creator against the
-      live viewer at the 18300-series port. Cannot be hand-authored like
-      GFX-1/GFX-3 -- needs a real capture.
+- [x] Record GFX-2 dashboard GIF -- done 2026-07-24, see log entry below.
+      assets/marketing/dashboard-demo.gif, wired into the draft.
 - [x] Produce GFX-3 fleet topology SVG (spec: section 8) -- done, see
       assets/marketing/fleet-topology.svg, wired into the draft
-- [ ] Migrate current README deep-dive sections into docs/ pages (see
-      ground rule) and add links from the new README
-- [ ] Promote draft -> /README.md at run boundary; delete draft file;
-      update this plan's log
+- [x] Migrate current README deep-dive sections into docs/ pages (see
+      ground rule) and add links from the new README -- done 2026-07-24,
+      see log entry below.
+- [x] Promote draft -> /README.md; delete draft file; update this plan's
+      log -- done 2026-07-24, see log entry below. Note: NOT at a sprint-run
+      boundary via the auto-sprint harvester -- done as a direct user-
+      requested edit on this worktree/branch (auto-sprint/eft-service),
+      per explicit user instruction after the ground-rule tradeoff was
+      surfaced and the user chose "replace, but preserve deep-dive
+      sections" over waiting for the two open positioning decisions below.
 
 ## 7. Workstream 2: github.io site -- plan + next actions
 
@@ -188,7 +191,7 @@ Page map (v1):
 | Asset | Spec | Status |
 |---|---|---|
 | GFX-1 hero banner | 1280x320 SVG/PNG, dark+light variants via GitHub picture element. Wordmark + tagline. Visual: constellation of device silhouettes (laptop, tower, rack, cloud) connected by orbit lines to a central control hexagon; small provider glyphs per device; subtle grid background. | done -- assets/marketing/hero-banner-{dark,light}.svg |
-| GFX-2 dashboard GIF | REAL recording of the auto-sprint viewer during a live run: phase transitions, doer dispatch landing, verdict appearing. 20-30s loop, 1200px wide, <8MB. Highest-credibility asset -- prioritize. LANDING PREREQUISITE: draft must not promote to /README.md without it. The old YouTube video (SGdHvIkSbY8) was tried as interim media and REJECTED (user, 2026-07-20): it is PM-skill-era material that contradicts the new positioning. | BLOCKED on run 16+ (eft.27 lean viewer) -- the one asset here that requires a real capture, not hand-authored art |
+| GFX-2 dashboard GIF | REAL recording of the auto-sprint viewer during a live run: phase transitions, doer dispatch landing, verdict appearing. 20-30s loop, 1200px wide, <8MB. Highest-credibility asset -- prioritize. LANDING PREREQUISITE: draft must not promote to /README.md without it. The old YouTube video (SGdHvIkSbY8) was tried as interim media and REJECTED (user, 2026-07-20): it is PM-skill-era material that contradicts the new positioning. | done -- assets/marketing/dashboard-demo.gif (27 frames, 4.7MB, captions burned in); see docs/marketing/gfx2-story.md for the beat sheet |
 | GFX-3 fleet topology | 900x520 SVG, static, dark+light variants via GitHub picture element (same convention as GFX-1). Centered control-plane hexagon with radial glow -> 5 heterogeneous member devices (laptop/tower/GPU box/cloud VM/CI rack), provider glyph badges + OS labels, directional dashed spokes with arrowheads, amber pill callouts: "reserved by sprint A", "tier: premium", "credential: scoped". Mono-accent, hero-banner palette and grid. | done (redesigned 2026-07-24) -- assets/marketing/fleet-topology{,-dark}.svg |
 | GFX-4 architecture | mermaid block in README (renders natively on GitHub, diffs in PRs). Already in draft. | in draft |
 | Badges | shields.io: build (GH Actions), latest release, license, "providers: 5+", platform trio (win/mac/linux). No custom infra. | pending README landing |
@@ -372,3 +375,53 @@ daily; 13/0 will change -- possibly to 13/1, which is a BETTER story:
   with a collision check. Complements cost-collapse (which covers the
   "deterministic control flow is cheaper" half); this carries the
   "memory / graceful failure" half nothing else covered.
+- 2026-07-24 (GFX-2 dashboard GIF, real capture, no longer blocked): launched
+  a real `apra-fleet workflow auto-sprint` run (branch auto-sprint/gfx2-demo,
+  base auto-sprint/eft-service, member fleet-rev, viewer at localhost:18300)
+  against two intentionally simple beads (apra-fleet-9te, apra-fleet-20i) to
+  get a genuine dashboard to record against, per the delivered-binary launch
+  convention (not the docs/README.md raw-cli.mjs bypass pattern -- see
+  auto-sprint-1, and the new apra-fleet-wkg bead filed this session for the
+  "auto-sprint" naming collision between Claude Code's own Workflow-tool
+  skill and apra-fleet's product CLI workflow that caused early confusion).
+  Recorded via claude-in-chrome gif_creator directly against the live
+  viewer. The run turned out more interesting than planned: Cycle 1's own
+  integration-test gate found two real bugs in apra-fleet itself (a stale
+  vendor/apra-pm install path that broke `workflow auto-sprint` for
+  everyone, P1; a stale-status-file handling bug in run-integ-suites.mjs)
+  and filed them against itself as apra-fleet-9te.2/9te.3; Cycle 2 planned,
+  fixed, reviewer-approved, and closed both. That self-discovered-bug arc
+  became the GIF's actual story instead of the mundane target beads.
+  Captioned with burned-in text (Pillow -- no ffmpeg available locally) per
+  the beat sheet in docs/marketing/gfx2-story.md (frame-range-verified
+  against extracted PNGs, not guessed). Final asset:
+  assets/marketing/dashboard-demo.gif (27 frames, 4.7MB, 1568x717), wired
+  into the draft's GFX-2 slot, replacing the placeholder block.
+- 2026-07-24 (README promotion, user-directed): promoted
+  docs/marketing/readme-rewrite-draft.md to /README.md and deleted the
+  draft file. Before replacing, migrated the deep-dive sections the ground
+  rule (section 5) says not to delete on promotion: Transport + Event Bus +
+  stdio + Service Mode + Supported user-facing interfaces -> new
+  docs/transport-and-service-mode.md; Cost (model tiers, shell-over-
+  prompts, smart sessions, measured token spend) -> new docs/cost-model.md;
+  The PM skill (command table, cost accounting) -> new
+  docs/pm-skill-overview.md; the provider role-matrix/OpenCode/local-model/
+  register-from-shell content -> merged into the existing
+  docs/provider-guide.md (its role table already existed; only the missing
+  content was appended, not duplicated). The old README's Documentation/
+  Community/Development/License sections were preserved as-is (not part of
+  the draft, not marketing copy, would otherwise have been silently
+  dropped) and appended after the draft's "Status and roadmap" section;
+  the Documentation table gained rows for the three new docs pages. Image
+  paths were rewritten from the draft's docs/marketing-relative
+  `../../assets/...` to root-relative `assets/...` since README.md lives
+  at the repo root. The old README's "Watch a real run" YouTube embed
+  (SGdHvIkSbY8) and its `/pm`-first quickstart are gone, superseded by the
+  draft's GFX-2 GIF and conversational-registration quickstart -- this was
+  the intended positioning change, not an oversight.
+  NOTE (deferred, not done here): the two open positioning decisions
+  (section 6) -- the "Reliable Deterministic Workflows + Memory" pitch
+  angle and the Security-section reorder -- were still unresolved when
+  this promotion happened; the user explicitly chose to promote now rather
+  than wait. If either decision lands later, README.md itself is the
+  editable source now (the draft file no longer exists).

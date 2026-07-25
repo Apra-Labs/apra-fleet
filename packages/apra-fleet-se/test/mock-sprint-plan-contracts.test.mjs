@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SprintPlanRejectedError } from '../auto-sprint/errors.mjs';
+import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 import { runRejectedPlanScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);

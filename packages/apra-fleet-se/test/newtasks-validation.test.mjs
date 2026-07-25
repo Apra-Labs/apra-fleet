@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { validateNewTask } from '../auto-sprint/runner.js';
+import { validateNewTask } from '../fleet-sprint/runner.js';
 
 // apra-fleet-unw2.3 (N3): reviewer-authored newTasks (title/description/
 // priority) are LLM output whose own context includes the diff under

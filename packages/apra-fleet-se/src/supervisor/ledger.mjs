@@ -33,7 +33,7 @@
 //     concurrent reader can never observe a torn/partial JSON document.
 //   * The ledger reloads EXACTLY from disk across a process restart.
 //
-// Intra-sprint memberLocks in auto-sprint/runner.js is a DIFFERENT, orthogonal
+// Intra-sprint memberLocks in fleet-sprint/runner.js is a DIFFERENT, orthogonal
 // mechanism (role-level, within one sprint) and is intentionally left untouched.
 // =============================================================================
 

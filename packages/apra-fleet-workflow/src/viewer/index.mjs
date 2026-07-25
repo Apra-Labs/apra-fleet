@@ -670,7 +670,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 // comment it replaced used to call out explicitly. Core has no business
 // knowing an extension's internal shape, so that function moved verbatim
 // into the beads extension module itself
-// (packages/apra-fleet-se/auto-sprint/viewer-extensions.mjs, as
+// (packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs, as
 // `beadsExtension.detailLookup`). Core now only knows the GENERIC hook
 // surface: any dashboard extension may register
 // `detailLookup?: (state, id) => {text, updatedAt} | null`, and core serves
@@ -1075,7 +1075,7 @@ export function createDashboardViewer(workflow, opts = {}) {
             // BOUNDARY-COMPAT (apra-fleet-eft.37.4, one release only, then
             // dies per docs/workflow-core-boundary-refactoring.md M3): the
             // pre-M3 route name. The extension js that used to call it
-            // (packages/apra-fleet-se/auto-sprint/viewer-extensions.mjs) has
+            // (packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs) has
             // already moved to the generic route above; this alias exists
             // only for anything still pointed at the old URL (e.g. a stale
             // cached client). A dumb redirect, not a second implementation --

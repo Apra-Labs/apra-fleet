@@ -6,6 +6,7 @@ Cleaning up Claude...
   - Removing PM skills: {PM_SKILLS_DIR}
   - Removing auto-sprint-args skill: {ARGS_SKILL_DIR}
   - Removing PM agent files: {AGENTS_DIR}
+  - Removing fleet-sprint-cli skill: {CLI_SKILL_DIR}
   - Removing fleet skills: {FLEET_SKILLS_DIR}
 Cleaning up workflow subsystem...
   - Removing workflow runtime: {NODE_MODULES_DIR}

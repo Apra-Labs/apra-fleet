@@ -5,7 +5,7 @@
  * (activity labels/output, bead titles/descriptions, etc.) before it is
  * interpolated into `innerHTML` in the dashboard's client-side JS. Both the
  * core viewer template (`src/viewer/index.mjs`) and dashboard extensions
- * (e.g. `packages/apra-fleet-se/auto-sprint/viewer-extensions.mjs`) embed
+ * (e.g. `packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs`) embed
  * this function's *source text* (via `escapeHtml.toString()`) directly into
  * the HTML page they generate -- the extensions run in the browser as plain
  * `<script>` tags, not as ES modules, so they cannot `import` this file at

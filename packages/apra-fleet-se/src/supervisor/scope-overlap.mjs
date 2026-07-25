@@ -25,7 +25,7 @@
 // deferred. Overlap is all-or-nothing: any conflict fails the whole launch.
 //
 // Subtree expansion reuses the runner.js `bdListScoped` discipline
-// (auto-sprint/runner.js ~1360): `bd list --parent <id>` accepts EXACTLY ONE id
+// (fleet-sprint/runner.js ~1360): `bd list --parent <id>` accepts EXACTLY ONE id
 // per invocation (a comma-joined `--parent a,b` is silently treated as one
 // nonexistent id and returns []), and is ALSO single-level only (it returns
 // direct children, never grandchildren). So we query each root separately and

@@ -9,7 +9,7 @@ import assert from 'node:assert';
 // test/contracts-schema-loader.test.mjs for the separate end-to-end
 // (real-fixture, real env var) wiring tests.
 
-const { resolveSchemasDir } = await import('../auto-sprint/contracts.mjs');
+const { resolveSchemasDir } = await import('../fleet-sprint/contracts.mjs');
 
 describe('resolveSchemasDir', () => {
     test('branch 1: APRA_FLEET_SE_SCHEMAS_DIR env override wins outright, no exists() check needed', () => {

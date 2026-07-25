@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runOnce, uniqueMockBranch } from './helpers/mock-sprint-harness.mjs';
-import { createMemberReservationClient } from '../auto-sprint/runner.js';
+import { createMemberReservationClient } from '../fleet-sprint/runner.js';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 

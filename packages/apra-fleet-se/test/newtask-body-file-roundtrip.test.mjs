@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { validateNewTask, createChildBeadWithAllocatedId, appendRejectedFindingToParentNotes } from '../auto-sprint/runner.js';
+import { validateNewTask, createChildBeadWithAllocatedId, appendRejectedFindingToParentNotes } from '../fleet-sprint/runner.js';
 
 // apra-fleet-eft.56.2, transport hardened for eft.73.1: regression pin for the
 // reviewer-free-text body seam (createChildBeadWithAllocatedId /

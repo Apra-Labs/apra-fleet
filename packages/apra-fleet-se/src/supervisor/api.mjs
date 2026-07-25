@@ -36,7 +36,7 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 
 import { readJsonBody, sendJson } from './server.mjs';
-import { validateIssueId, validateBranchName } from '../../auto-sprint/runner.js';
+import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
 
 /** A controller error carrying an HTTP status and (optionally) the bad field. */

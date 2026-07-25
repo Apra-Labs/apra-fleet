@@ -104,7 +104,7 @@ export function validateRole(role) {
 //   2. <root>/dist/agents/schemas -- the sibling directory scripts/dist-
 //      pm.mjs ALREADY populates at the root package's `prepublishOnly`
 //      (cpSync of packages/apra-fleet-se/apra-pm/agents -> dist/agents, which includes its
-//      schemas/ subdir). This is what a dist/auto-sprint.mjs bundle
+//      schemas/ subdir). This is what a dist/fleet-sprint.mjs bundle
 //      resolves once apra-fleet-3ns.2 ships it as a dist/ sibling -- no new
 //      copy step needed, this artifact already exists today.
 //   3. packages/apra-fleet-se/apra-pm/agents/schemas -- the package-local apra-pm 

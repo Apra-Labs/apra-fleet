@@ -1171,7 +1171,7 @@ export class FleetWorkflow extends EventEmitter {
             const outText = result.content && result.content.length > 0 ? result.content[0].text : '';
             // Servers new enough to send structuredContent give clean stdout
             // directly -- no "Exit code: N\n" prefix to strip, no risk of a
-            // caller (e.g. parseBdJson() in auto-sprint/runner.js) choking on
+            // caller (e.g. parseBdJson() in fleet-sprint/runner.js) choking on
             // display formatting mixed into what should be raw command
             // output. Older servers (no structuredContent) fall back to the
             // legacy text field as-is, preserving prior behavior exactly.

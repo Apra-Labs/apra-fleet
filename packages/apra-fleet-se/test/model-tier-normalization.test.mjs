@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { normalizeTierToken } from '../auto-sprint/runner.js';
+import { normalizeTierToken } from '../fleet-sprint/runner.js';
 
 // Stabilization log Issue 29: bead model metadata written outside the
 // planner pin (out-of-band injections, older sprints) kept using the

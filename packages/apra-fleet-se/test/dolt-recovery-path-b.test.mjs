@@ -7,8 +7,8 @@ import {
     DEFAULT_PATH_B_REMOVE_PATHS,
     DEFAULT_CONFIG_PATH,
     DEFAULT_EMBEDDED_DATA_DIR,
-} from '../auto-sprint/dolt-recovery-path-b.mjs';
-import { DoltSyncError, DoltDivergedError } from '../auto-sprint/errors.mjs';
+} from '../fleet-sprint/dolt-recovery-path-b.mjs';
+import { DoltSyncError, DoltDivergedError } from '../fleet-sprint/errors.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 

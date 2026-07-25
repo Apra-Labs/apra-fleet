@@ -15,7 +15,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 // is the first to drive the REAL documented sequence end-to-end with the
 // REAL `bd` CLI (git clone/init/config wiring, `bd init --from-jsonl`,
 // `bd dolt push`, and the real `doltPushAfter`/`doltPullBefore` sync
-// brackets from auto-sprint/runner.js) against a hermetic, fully local
+// brackets from fleet-sprint/runner.js) against a hermetic, fully local
 // fixture standing in for the real https://github.com/Apra-Labs/fleet-e2e-toy
 // repo -- never the network, never the real repo.
 //
@@ -52,7 +52,7 @@ const BD_AVAILABLE = (() => {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK_SCRIPT_PATH = path.join(REPO_ROOT, 'scripts', 'check-sandbox-sync-remote.mjs');
 const RUNNER_PATH = pathToFileURL(
-  path.join(REPO_ROOT, 'packages', 'apra-fleet-se', 'auto-sprint', 'runner.js'),
+  path.join(REPO_ROOT, 'packages', 'apra-fleet-se', 'fleet-sprint', 'runner.js'),
 ).href;
 
 // The real hazard identity the whole sandbox design exists to keep out of
@@ -68,7 +68,7 @@ function bd(cwd: string, args: string[]): string {
   return execFileSync('bd', args, { cwd, encoding: 'utf-8' });
 }
 
-// Real, non-mocked command() for auto-sprint/runner.js's doltPushAfter /
+// Real, non-mocked command() for fleet-sprint/runner.js's doltPushAfter /
 // doltPullBefore -- shells the given "bd dolt push"/"bd dolt pull" (etc.)
 // string out to the real bd CLI inside `cwd`, matching the shape those
 // functions expect from their injected command() (see runDoltStep in
@@ -184,14 +184,14 @@ describe.skipIf(!BD_AVAILABLE)(
       hazardSnapshots['check-sandbox-sync-remote.mjs stdout'] = guardResult.stdout;
 
       // ---- Test scenario steps 3-5 surrogate: real D-push/D-pull sync brackets ----
-      // Full LLM-driven `apra-fleet workflow auto-sprint` dispatch is out of
+      // Full LLM-driven `apra-fleet workflow fleet-sprint` dispatch is out of
       // scope for a hermetic vitest suite (no network, no LLM credentials --
       // see docs/tools-infrastructure.md and this same constraint already
       // documented in tests/check-toy-doer-credentials.test.ts). What IS
       // exercised here for real is the exact mechanism that would carry the
       // sprint's writes to the sandbox-local remote: the real,
       // non-test-doubled doltPushAfter/doltPullBefore sync brackets from
-      // auto-sprint/runner.js, run against the real bd CLI and the real
+      // fleet-sprint/runner.js, run against the real bd CLI and the real
       // sandbox-local file:// Dolt remote wired above -- driving a real
       // `bd close` (the doer's mutation) through a real D-push then a real
       // D-pull, the same bracket pair every withGitSync() dispatch uses.

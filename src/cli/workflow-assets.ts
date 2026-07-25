@@ -17,7 +17,7 @@ import { NODE_MODULES_DIR, SCHEMAS_DIR, WORKFLOWS_DIR } from './config.js';
 
 /** Recognized built-in workflow names installed by `apra-fleet install` and
  *  eligible for workflow.ts's self-heal extraction. */
-export const BUILTIN_WORKFLOW_NAMES = ['auto-sprint', 'hello-world'];
+export const BUILTIN_WORKFLOW_NAMES = ['fleet-sprint', 'hello-world'];
 
 export interface WorkflowSubsystemManifest {
   workflowRuntime?: Record<string, string>;
@@ -153,7 +153,7 @@ export function extractWorkflowSubsystemAssets(opts: ExtractWorkflowSubsystemAss
 
   if (!includeBuiltins) return;
 
-  // (3) ~/.apra-fleet/workflows/{auto-sprint,hello-world} -- clear+extract ONLY the
+  // (3) ~/.apra-fleet/workflows/{fleet-sprint,hello-world} -- clear+extract ONLY the
   // named built-in subdirectory; the workflows/ root (and any sibling
   // user-authored workflow directories) is never cleared.
   for (const name of builtinNames) {

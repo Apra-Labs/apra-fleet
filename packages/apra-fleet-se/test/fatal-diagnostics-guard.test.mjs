@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-import { installFatalDiagnosticsGuard } from '../auto-sprint/runner.js';
+import { installFatalDiagnosticsGuard } from '../fleet-sprint/runner.js';
 
 // apra-fleet-eft.20.3: the doer-dispatch boundary half of "surface a silent
 // doer/orchestrator death instead of exiting quietly". installFatalDiagnosticsGuard()

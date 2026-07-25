@@ -6,8 +6,8 @@ import {
     syncMemberAfter,
     syncMemberAfterOrdered,
     parseUnmergedPaths,
-} from '../auto-sprint/runner.js';
-import { GitDivergedError, GitSyncError } from '../auto-sprint/errors.mjs';
+} from '../fleet-sprint/runner.js';
+import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 
 const check = (cond, msg) => assert.ok(cond, msg);

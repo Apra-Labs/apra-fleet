@@ -10,7 +10,7 @@ import {
     recoverDoltConflict,
     DEFAULT_TIER2_RUNBOOK_PATH,
     DEFAULT_CLONE_PATH,
-} from '../auto-sprint/dolt-recovery-tier2.mjs';
+} from '../fleet-sprint/dolt-recovery-tier2.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 

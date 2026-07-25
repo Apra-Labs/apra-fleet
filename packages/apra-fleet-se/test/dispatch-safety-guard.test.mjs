@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { checkPath } from '../auto-sprint/dispatch-safety-guard.mjs';
+import { checkPath } from '../fleet-sprint/dispatch-safety-guard.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
 // apra-fleet-eft.3.1 (Plan Part 1.6) -- Dispatch-safety guard test.
 //
 // Invariant under test: EVERY `command(` / `agent(` call site in
-// packages/apra-fleet-se/auto-sprint/runner.js must supply an explicit
+// packages/apra-fleet-se/fleet-sprint/runner.js must supply an explicit
 // `member_name` (or `member_id`) in its options object. The workflow engine
 // throws if neither is supplied, with no local-execution/"ambient member"
 // fallback -- this test locks that invariant in at the source level so a
@@ -31,7 +31,7 @@ const __dirname = path.dirname(__filename);
 // sites.
 //
 // Baseline (verified against current HEAD by manual review of every site
-// this parser finds, packages/apra-fleet-se/auto-sprint/runner.js as of
+// this parser finds, packages/apra-fleet-se/fleet-sprint/runner.js as of
 // apra-fleet-eft.3.1): 20 command() call sites and 9 agent() call sites,
 // all 29 compliant. (The parent feature's description cites an earlier
 // "12 command() / 9 agent()" audit figure; the file has grown call sites
@@ -46,7 +46,7 @@ const __dirname = path.dirname(__filename);
 // count without checking why).
 //
 // apra-fleet-eft.3.3: the checker itself (findCallSites/checkPath) now lives
-// in ../auto-sprint/dispatch-safety-guard.mjs, exported and parameterizable
+// in ../fleet-sprint/dispatch-safety-guard.mjs, exported and parameterizable
 // by file path, so it can be pointed at a fixture that deliberately violates
 // the invariant -- proving the guard actually fails on a non-compliant call
 // site rather than vacuously passing -- WITHOUT mutating runner.js to
@@ -54,7 +54,7 @@ const __dirname = path.dirname(__filename);
 // exercise test/fixtures/dispatch-safety/{non-compliant,member-id-only}.mjs.
 // =============================================================================
 
-const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
+const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // Branch-split convention (established when the three auto-sprint
 // stabilization fixes -- auto-sprint-9's branch-adopt fix, auto-sprint-3's
 // bdListScoped rewrite, and the failSoft-discrimination follow-up -- were
@@ -187,7 +187,7 @@ const EXPECTED_AGENT_COUNT = 18;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
-// ../auto-sprint/dispatch-safety-guard.mjs (apra-fleet-eft.3.3), imported
+// ../fleet-sprint/dispatch-safety-guard.mjs (apra-fleet-eft.3.3), imported
 // above, so they can be reused against fixture files below without
 // duplicating the parser here.
 

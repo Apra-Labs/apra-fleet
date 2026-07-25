@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-import { classifyDoltFailure, extractDoltRemoteUrl } from '../auto-sprint/runner.js';
+import { classifyDoltFailure, extractDoltRemoteUrl } from '../fleet-sprint/runner.js';
 
 // Run-24 abort root cause: a smoke-test run contaminated the host repo's
 // beads sync remote with a sandbox-local file:// path, then deleted the

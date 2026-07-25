@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
 
-const { resolveSchemasDir } = await import('../auto-sprint/contracts.mjs');
+const { resolveSchemasDir } = await import('../fleet-sprint/contracts.mjs');
 
 describe('resolveSchemasDir path-precedence (direct exercise, no real filesystem dependency)', () => {
     test('scenario a: dist/agents/schemas present resolves first, even with lower-precedence candidates also present', () => {
@@ -54,7 +54,7 @@ describe('wired end-to-end resolution against a real OS temp directory', () => {
             const previous = process.env.APRA_FLEET_SE_SCHEMAS_DIR;
             process.env.APRA_FLEET_SE_SCHEMAS_DIR = emptyDir;
             try {
-                const wired = await import(`../auto-sprint/contracts.mjs?packaging-test-empty=${Date.now()}-${Math.random()}`);
+                const wired = await import(`../fleet-sprint/contracts.mjs?packaging-test-empty=${Date.now()}-${Math.random()}`);
                 for (const name of ['planReviewerVerdict', 'reviewerVerdict', 'doerReport', 'deployerReport', 'integReport', 'ciReport', 'harvesterReport']) {
                     assert.strictEqual(wired.SCHEMAS[name], wired.FALLBACK_SCHEMAS[name], `expected ${name} to be the fallback literal`);
                 }
@@ -76,7 +76,7 @@ describe('wired end-to-end resolution against a real OS temp directory', () => {
         const previous = process.env.APRA_FLEET_SE_SCHEMAS_DIR;
         process.env.APRA_FLEET_SE_SCHEMAS_DIR = FIXTURES_DIR;
         try {
-            const wired = await import(`../auto-sprint/contracts.mjs?packaging-test-fixtures=${Date.now()}-${Math.random()}`);
+            const wired = await import(`../fleet-sprint/contracts.mjs?packaging-test-fixtures=${Date.now()}-${Math.random()}`);
             assert.strictEqual(wired.harvesterReport.$id, 'apra-pm/harvester-output@1');
             assert.notStrictEqual(wired.harvesterReport, wired.FALLBACK_SCHEMAS.harvesterReport);
         } finally {

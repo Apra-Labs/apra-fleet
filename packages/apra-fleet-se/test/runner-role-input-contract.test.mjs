@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 //
 // What this file is (and is not):
 //
-//   - It is a READ-ONLY test. It touches nothing in auto-sprint/runner.js;
+//   - It is a READ-ONLY test. It touches nothing in fleet-sprint/runner.js;
 //     runner.js's actual prompt-builder fixes are a PARALLEL issue
 //     (apra-fleet-unw2.1). This file only reads runner.js as text and reads
 //     contracts.mjs's validateRoleInput against the REAL vendored input
@@ -51,7 +51,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
-const RUNNER_PATH = path.join(__dirname, '..', 'auto-sprint', 'runner.js');
+const RUNNER_PATH = path.join(__dirname, '..', 'fleet-sprint', 'runner.js');
 
 // contracts.mjs resolves its vendored-schema dir at MODULE-LOAD time from
 // this env var (its documented test-only override), so it must be set before
@@ -59,7 +59,7 @@ const RUNNER_PATH = path.join(__dirname, '..', 'auto-sprint', 'runner.js');
 // this cannot leak into another file; we restore it anyway for cleanliness.
 const previousOverride = process.env.APRA_FLEET_SE_SCHEMAS_DIR;
 process.env.APRA_FLEET_SE_SCHEMAS_DIR = FIXTURES_DIR;
-const { validateRoleInput } = await import(`../auto-sprint/contracts.mjs?role-input-contract=${Date.now()}`);
+const { validateRoleInput } = await import(`../fleet-sprint/contracts.mjs?role-input-contract=${Date.now()}`);
 if (previousOverride === undefined) {
     delete process.env.APRA_FLEET_SE_SCHEMAS_DIR;
 } else {

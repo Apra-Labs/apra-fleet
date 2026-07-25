@@ -4,7 +4,7 @@
 //
 // As with non-compliant.mjs, this file's `command`/`agent` identifiers are
 // free variables never actually evaluated -- the checker only parses this
-// file's source text (packages/apra-fleet-se/auto-sprint/
+// file's source text (packages/apra-fleet-se/fleet-sprint/
 // dispatch-safety-guard.mjs's checkPath()), it does not import/run it.
 
 function runOne() {

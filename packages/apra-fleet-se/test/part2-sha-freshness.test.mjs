@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { extractPart2Sha, validatePart2Evidence } from '../auto-sprint/runner.js';
+import { extractPart2Sha, validatePart2Evidence } from '../fleet-sprint/runner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -67,7 +67,7 @@ describe('extractPart2Sha', () => {
 // report validation, exercised at the level a live cycle actually sees it --
 // a full mock integ report shaped like the real integ-test-runner output
 // schema (featuresClosed/issuesCreated/passed/bugsFiled/summary/deployedSha;
-// see FALLBACK_integReport in auto-sprint/contracts.mjs and
+// see FALLBACK_integReport in fleet-sprint/contracts.mjs and
 // agents/schemas/integ-test-runner-output.json), not just a bare
 // { summary } stub.
 //
@@ -197,7 +197,7 @@ describe('engine report validation with a full mock integ report (eft.55.3 / eft
 //       somewhere schema-valid to put it.
 describe('dispatch/golden fixture requests the deployedSha field (eft.66.2)', () => {
     const runnerSource = fs.readFileSync(
-        path.join(__dirname, '..', 'auto-sprint', 'runner.js'),
+        path.join(__dirname, '..', 'fleet-sprint', 'runner.js'),
         'utf8'
     );
 

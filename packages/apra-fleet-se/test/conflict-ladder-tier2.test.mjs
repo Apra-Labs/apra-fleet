@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { syncMemberAfter } from '../auto-sprint/runner.js';
+import { syncMemberAfter } from '../fleet-sprint/runner.js';
 import {
     buildConflictResolutionRunbookPrompt,
     dispatchConflictResolutionAgent,
-} from '../auto-sprint/conflict-ladder.mjs';
-import { GitDivergedError, GitSyncError } from '../auto-sprint/errors.mjs';
+} from '../fleet-sprint/conflict-ladder.mjs';
+import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 

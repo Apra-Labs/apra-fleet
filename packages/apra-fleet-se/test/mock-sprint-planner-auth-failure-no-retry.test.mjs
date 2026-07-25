@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { bdMode, realSyncSpawnCount } from './helpers/bd-replay.mjs';
-import { isNonRetryableDispatchError } from '../auto-sprint/errors.mjs';
+import { isNonRetryableDispatchError } from '../fleet-sprint/errors.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 

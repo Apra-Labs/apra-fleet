@@ -6,7 +6,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
-import { acquireSprintLock, SprintLockHeldError } from '../auto-sprint/sprint-lock.mjs';
+import { acquireSprintLock, SprintLockHeldError } from '../fleet-sprint/sprint-lock.mjs';
 
 // apra-fleet-eft.75.2: proves the REAL wiring in runner.js's main() -- not
 // just the standalone pidfile module (see sprint-lock.test.mjs) -- actually
@@ -19,7 +19,7 @@ import { acquireSprintLock, SprintLockHeldError } from '../auto-sprint/sprint-lo
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const RUNNER_SCRIPT_PATH = path.join(__dirname, '../auto-sprint/runner.js');
+const RUNNER_SCRIPT_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 
 function mockCmdResult(code, stdout, stderr = '') {
     const parts = [];

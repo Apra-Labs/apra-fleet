@@ -58,7 +58,7 @@ In order, `main()` in `bin/cli.mjs` performs:
 1. **Required-flag check** -- see above.
 2. **Issue id / branch name shape validation** -- every `--issue` id is
    checked against `validateIssueId` and both `--branch`/`--base` against
-   `validateBranchName` (both imported from `auto-sprint/runner.js`, the same
+   `validateBranchName` (both imported from `fleet-sprint/runner.js`, the same
    validators the runner itself re-applies -- single source of truth, and
    defense-in-depth if the runner is ever invoked directly, bypassing the
    CLI). Issue ids must match `^[A-Za-z0-9._-]+$`; branch names must match
@@ -100,7 +100,7 @@ dispatch) begins.
 `resolveFleetServerCommand()` (apra-fleet-3ns.1) decides how to launch the
 stdio MCP server the CLI talks to, layout-aware so it works whether this CLI
 is running dev-mode from a monorepo checkout or bundled as
-`dist/auto-sprint.mjs` alongside the server's own `dist/index.js`
+`dist/fleet-sprint.mjs` alongside the server's own `dist/index.js`
 (apra-fleet-3ns.2). Resolution order:
 
 1. `APRA_FLEET_SERVER_CMD` env var, if set -- split on spaces into
@@ -109,7 +109,7 @@ is running dev-mode from a monorepo checkout or bundled as
 2. `APRA_FLEET_SERVER_BIN` env var, if set -- run as
    `<value> run --transport stdio`. Resolved via `PATH`, also no existence
    check.
-3. Bundled layout -- `<dirname>/index.js`, i.e. `dist/auto-sprint.mjs`'s
+3. Bundled layout -- `<dirname>/index.js`, i.e. `dist/fleet-sprint.mjs`'s
    sibling `dist/index.js` (the root `@apralabs/apra-fleet` package's own
    entry point, same `dist/` directory). Used if it exists on disk.
 4. Dev-monorepo layout -- `node <repoRoot>/dist/index.js run --transport
@@ -150,12 +150,12 @@ call:
 See `docs/adr-workflow-server-resolution.md` for the full rationale; this
 is binding on any future change to `resolveFleetServerCommand()`.
 
-The auto-sprint runner script (`auto-sprint/runner.js`, loaded at runtime via
+The fleet-sprint runner script (`fleet-sprint/runner.js`, loaded at runtime via
 `engine.executeFile()` -- read from disk and fed to the workflow engine, not
 imported/bundlable) is resolved the same layout-aware way by
-`resolveRunnerScriptPath()`: a bundled `dist/auto-sprint.mjs` ships it as the
-sibling asset `dist/auto-sprint-runner.mjs`; a dev monorepo checkout resolves
-`../auto-sprint/runner.js` relative to `bin/cli.mjs`.
+`resolveRunnerScriptPath()`: a bundled `dist/fleet-sprint.mjs` ships it as the
+sibling asset `dist/fleet-sprint-runner.mjs`; a dev monorepo checkout resolves
+`../fleet-sprint/runner.js` relative to `bin/cli.mjs`.
 
 ### Role schema resolution (contracts.mjs)
 
@@ -169,7 +169,7 @@ independent of the server-command resolution above:
    unset (see `docs/authoring-workflows.md` Section 4/7), so `contracts.mjs`
    itself requires no code change for the installed-binary case.
 2. `dist/agents/schemas/` -- populated by the root package's `scripts/dist-pm.mjs`
-   at `prepublishOnly` (the same artifact `dist/auto-sprint.mjs` ships next to).
+   at `prepublishOnly` (the same artifact `dist/fleet-sprint.mjs` ships next to).
 3. `packages/apra-fleet-se/vendor/schemas/` -- a package-local copy inside
    this package's own directory tree. Legacy layout: nothing populates it now
    that apra-pm lives in this monorepo, so it normally does not exist.
@@ -196,7 +196,7 @@ port>`) instead of an unhandled crash.
 
 After the dashboard starts, the CLI builds the validated runner args
 (`buildRunnerArgs()`) and calls
-`engine.executeFile('../auto-sprint/runner.js', args)`. On completion it
+`engine.executeFile('../fleet-sprint/runner.js', args)`. On completion it
 prints `Sprint finished: <result>`; on failure it prints `Sprint failed:
 <err>` and sets a non-zero exit code. In both cases the dashboard server and
 fleet transport are closed in a `finally` block before the process exits.

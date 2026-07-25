@@ -24,7 +24,7 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // /workflow/index.mjs); runner.js's Planner retry loop
 // (PLANNER_DISPATCH_RETRY_DELAYS_MS) then exhausts its retries and
 // re-throws, which propagates as a typed WorkflowError all the way to
-// main()'s catch (auto-sprint/runner.js `isTypedAbortError` branch), which
+// main()'s catch (fleet-sprint/runner.js `isTypedAbortError` branch), which
 // BOTH logs the failure (context.log(), captured here via the 'log' event)
 // AND persists it to the sprint state file (context.publishState('terminal',
 // ...), captured here via the FleetWorkflow 'state' event) -- matching

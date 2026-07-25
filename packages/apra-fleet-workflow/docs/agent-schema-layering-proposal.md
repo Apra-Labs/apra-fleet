@@ -2,7 +2,7 @@
 
 Design note: this proposes an approach not yet part of the current implementation. It spans
 three components: `packages/apra-fleet-se/apra-pm` (the agent-role definitions consumed by fleet members),
-`packages/apra-fleet-se/auto-sprint/contracts.mjs` (auto-sprint's application-layer schema
+`packages/apra-fleet-se/fleet-sprint/contracts.mjs` (auto-sprint's application-layer schema
 adapter), and `packages/apra-fleet-workflow/src/workflow/index.mjs`'s `agent()` schema
 handling. Only the last of these lives in this package, and per the recommendation below its
 change is documentation-only (see section 4, item 4) -- the `AgentOptions.schema` jsdoc in
@@ -12,7 +12,7 @@ over them) is scoped to those other components and has not been implemented ther
 of this document's writing.
 
 Status: PROPOSED, pending sign-off before implementation begins.
-Affects: `packages/apra-fleet-se/apra-pm` agent-role definitions, `packages/apra-fleet-se/auto-sprint/
+Affects: `packages/apra-fleet-se/apra-pm` agent-role definitions, `packages/apra-fleet-se/fleet-sprint/
 contracts.mjs`, and (documentation-only) `packages/apra-fleet-workflow/src/workflow/
 index.mjs`'s `agent()` schema handling.
 
@@ -21,7 +21,7 @@ index.mjs`'s `agent()` schema handling.
 `packages/apra-fleet-se/apra-pm` is a generic, reusable agent-role package. Its `agents/*.md`
 files are consumed by at least three distinct callers:
 
-1. **auto-sprint** (`packages/apra-fleet-se/auto-sprint/runner.js`) via the
+1. **auto-sprint** (`packages/apra-fleet-se/fleet-sprint/runner.js`) via the
    fleet -- `agent(prompt, { agentType: 'reviewer', ... })`.
 2. **The manual pm skill** (`packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md`) -- a human or
    Claude Code orchestrator session dispatching the same roles as local
@@ -30,7 +30,7 @@ files are consumed by at least three distinct callers:
 
 A recent update to the vendored agent-role definitions added
 "Output schema" sections to each role def, and in `planner.md` referenced
-`packages/apra-fleet-se/auto-sprint/contracts.mjs` -- an application-layer
+`packages/apra-fleet-se/fleet-sprint/contracts.mjs` -- an application-layer
 module -- as the frame of reference for the role's output contract. That is a
 layering inversion: the OS must not know about the application. It also
 crystallized a second, pre-existing tension: the same role can now have its
@@ -57,7 +57,7 @@ This audit covers the `agents/*.md` role-definition files plus `skills/pm/*` in
 
 | File | Location | Text | Why it is a violation |
 | --- | --- | --- | --- |
-| `agents/planner.md` | "Output schema" section | "`planner` has no structured verdict schema in `packages/apra-fleet-se/auto-sprint/contracts.mjs` -- unlike the other seven roles ..." and "... via its `planReviewerVerdict` schema" | References a path that exists only in the `apra-fleet` repo. Once this file is PR'd upstream to `Apra-Labs/apra-pm`, the path is dangling for every non-fleet consumer. `planReviewerVerdict` is a `contracts.mjs` export identifier, i.e. an application symbol name leaked into the generic layer. Also asserts (falsely, from apra-pm's own perspective) that "the other seven roles" have their schema defined in an external application module. |
+| `agents/planner.md` | "Output schema" section | "`planner` has no structured verdict schema in `packages/apra-fleet-se/fleet-sprint/contracts.mjs` -- unlike the other seven roles ..." and "... via its `planReviewerVerdict` schema" | References a path that exists only in the `apra-fleet` repo. Once this file is PR'd upstream to `Apra-Labs/apra-pm`, the path is dangling for every non-fleet consumer. `planReviewerVerdict` is a `contracts.mjs` export identifier, i.e. an application symbol name leaked into the generic layer. Also asserts (falsely, from apra-pm's own perspective) that "the other seven roles" have their schema defined in an external application module. |
 
 This is the **only** cross-repo reference in the eight `agents/*.md` files.
 The other seven roles' "Output schema" sections are self-contained
@@ -73,7 +73,7 @@ Important nuance: apra-pm **ships its own legacy auto-sprint workflow** at
 `skills/pm` mentions of "auto-sprint" refer to that sibling file, not to
 `packages/apra-fleet-se`. Those are same-repo coupling, not cross-repo
 layering violations -- but they are catalogued here because (a) the name
-collision with `apra-fleet-se/auto-sprint` invites exactly this kind of
+collision with `apra-fleet-se/fleet-sprint` invites exactly this kind of
 confusion, and (b) one of them names a workflow-private schema
 constant as the reference for a role contract, which violates role ownership
 even intra-repo:

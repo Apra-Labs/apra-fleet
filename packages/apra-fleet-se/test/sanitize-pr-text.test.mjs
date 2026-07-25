@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { sanitizePrText } from '../auto-sprint/runner.js';
+import { sanitizePrText } from '../fleet-sprint/runner.js';
 
 // apra-fleet-hfs: the final reviewer's verdict `notes` (finalVerdictResult.
 // notes) are LLM-authored free text -- the same injection class as N3's

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CommandError } from '@apralabs/apra-fleet-workflow';
-import { GitSyncError } from '../auto-sprint/errors.mjs';
+import { GitSyncError } from '../fleet-sprint/errors.mjs';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);

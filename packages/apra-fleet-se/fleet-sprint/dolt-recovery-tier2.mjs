@@ -19,7 +19,7 @@
 // is ever silently swallowed or blindly retried. Both are recorded as a
 // "wedged state" snapshot (clone path, conflict shape, last command output)
 // BEFORE any further action, and Tier 2 is the escalation -- a real agent,
-// armed with the runbook at auto-sprint/docs/dolt-tier2-runbook.md, is
+// armed with the runbook at fleet-sprint/docs/dolt-tier2-runbook.md, is
 // dispatched to resolve the clone with actual judgment. Exactly like the git
 // Tier 2 (conflict-ladder.mjs), this module only DISPATCHES: it does not
 // itself decide whether the agent's attempt succeeded -- that is the
@@ -31,7 +31,7 @@
 /** Repo-relative path to the Tier 2 runbook doc this module's escalation
  *  prompt references. Kept as a constant so the reference cannot drift
  *  silently from the actual doc location. */
-export const DEFAULT_TIER2_RUNBOOK_PATH = 'packages/apra-fleet-se/auto-sprint/docs/dolt-tier2-runbook.md';
+export const DEFAULT_TIER2_RUNBOOK_PATH = 'packages/apra-fleet-se/fleet-sprint/docs/dolt-tier2-runbook.md';
 
 /** Default embedded dolt data dir recorded in the wedged state when the
  *  caller does not supply a more specific `clonePath`. Mirrors

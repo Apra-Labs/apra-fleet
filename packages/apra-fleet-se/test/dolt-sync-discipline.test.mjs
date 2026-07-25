@@ -9,17 +9,17 @@ import {
     doltPullBefore,
     doltPushAfter,
     verifyDoerStreakClosed,
-} from '../auto-sprint/runner.js';
+} from '../fleet-sprint/runner.js';
 import {
     assessConflictGates,
     isDoltPullConflict,
-} from '../auto-sprint/dolt-recovery.mjs';
+} from '../fleet-sprint/dolt-recovery.mjs';
 import {
     recoverDoltConflictPathB,
-} from '../auto-sprint/dolt-recovery-path-b.mjs';
+} from '../fleet-sprint/dolt-recovery-path-b.mjs';
 import {
     recoverDoltConflict,
-} from '../auto-sprint/dolt-recovery-tier2.mjs';
+} from '../fleet-sprint/dolt-recovery-tier2.mjs';
 import { createDoltMutex } from '../src/supervisor/dolt-mutex.mjs';
 import { createIdAllocator } from '../src/supervisor/id-allocator.mjs';
 

@@ -185,8 +185,8 @@ Usage:
   apra-fleet workflow <name> [args...]   Run ~/.apra-fleet/workflows/<name>
                                          (everything after <name> is passed to the
                                           workflow verbatim -- e.g.
-                                          'apra-fleet workflow auto-sprint --help'
-                                          prints auto-sprint's own help)
+                                          'apra-fleet workflow fleet-sprint --help'
+                                          prints fleet-sprint's own help)
   apra-fleet workflow --list             List installed workflows
   apra-fleet workflow --help             Show this help
 

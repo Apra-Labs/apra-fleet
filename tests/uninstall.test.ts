@@ -90,6 +90,7 @@ describe('uninstall', () => {
       VERSION: serverVersion,
       PM_SKILLS_DIR: claudePaths.skillsDir,
       ARGS_SKILL_DIR: path.join(claudePaths.configDir, 'skills', 'auto-sprint-args'),
+      CLI_SKILL_DIR: path.join(claudePaths.configDir, 'skills', 'fleet-sprint-cli'),
       AGENTS_DIR: claudePaths.agentsDir!,
       FLEET_SKILLS_DIR: claudePaths.fleetSkillsDir,
       NODE_MODULES_DIR: config.NODE_MODULES_DIR,
@@ -259,7 +260,7 @@ describe('uninstall', () => {
     const schemasDir = config.SCHEMAS_DIR;
 
     function mockWorkflowsLayout(userDirs: string[]) {
-      const builtinDirs = ['auto-sprint', 'hello-world'];
+      const builtinDirs = ['fleet-sprint', 'hello-world'];
       const allDirs = [...builtinDirs, ...userDirs];
       vi.spyOn(fs, 'readFileSync').mockImplementation((p: any) => {
         if (typeof p === 'string' && p.includes('.installed.json')) {
@@ -283,7 +284,7 @@ describe('uninstall', () => {
 
       expect(fs.rmSync).toHaveBeenCalledWith(nodeModulesDir, expect.any(Object));
       expect(fs.rmSync).toHaveBeenCalledWith(schemasDir, expect.any(Object));
-      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'auto-sprint'), expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'fleet-sprint'), expect.any(Object));
       expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'hello-world'), expect.any(Object));
       expect(fs.rmSync).toHaveBeenCalledWith(workflowsDir, expect.any(Object));
       expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringContaining('kept user workflows'));
@@ -295,7 +296,7 @@ describe('uninstall', () => {
 
       await runUninstall(['--skill', 'workflows', '--yes']);
 
-      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'auto-sprint'), expect.any(Object));
+      expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'fleet-sprint'), expect.any(Object));
       expect(fs.rmSync).toHaveBeenCalledWith(path.join(workflowsDir, 'hello-world'), expect.any(Object));
       expect(fs.rmSync).not.toHaveBeenCalledWith(workflowsDir, expect.any(Object));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('kept user workflows: my-custom'));
@@ -310,7 +311,7 @@ describe('uninstall', () => {
       expect(fs.rmSync).not.toHaveBeenCalled();
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing workflow runtime: ${nodeModulesDir}`));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing workflow schemas: ${schemasDir}`));
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing built-in workflow: ${path.join(workflowsDir, 'auto-sprint')}`));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing built-in workflow: ${path.join(workflowsDir, 'fleet-sprint')}`));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining(`Removing built-in workflow: ${path.join(workflowsDir, 'hello-world')}`));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('kept user workflows: my-custom'));
     });

@@ -10,8 +10,8 @@ import {
     syncMemberAfter,
     syncMemberAfterOrdered,
     parseUnmergedPaths,
-} from '../auto-sprint/runner.js';
-import { GitDivergedError, GitSyncError } from '../auto-sprint/errors.mjs';
+} from '../fleet-sprint/runner.js';
+import { GitDivergedError, GitSyncError } from '../fleet-sprint/errors.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
@@ -43,7 +43,7 @@ import { runCmd, sleep, runDevelopLoopScenario, withScenarioMarkers } from './he
 // =============================================================================
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RUNNER_PATH = path.join(__dirname, '../auto-sprint/runner.js');
+const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 const VENDOR_AGENTS_DIR = path.join(__dirname, '../apra-pm/agents');
 
 const check = (cond, msg) => assert.ok(cond, msg);

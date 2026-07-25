@@ -15,9 +15,9 @@ import {
     resolveFleetServerConnection as sharedResolveFleetServerConnection,
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
-import { beadsExtension } from '../auto-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient } from '../auto-sprint/runner.js';
-import { normalizeRole } from '../auto-sprint/contracts.mjs';
+import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
+import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient } from '../fleet-sprint/runner.js';
+import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,7 +28,7 @@ const DEFAULT_VIEWER_PORT = 8080;
  * Resolves the command used to launch the apra-fleet MCP server over
  * stdio, layout-aware (apra-fleet-3ns.1) so it works whether this CLI is
  * running dev-mode from a monorepo checkout or bundled as
- * dist/auto-sprint.mjs alongside the server's own dist/index.js
+ * dist/fleet-sprint.mjs alongside the server's own dist/index.js
  * (apra-fleet-3ns.2). Overridable via env for tests/CI/non-standard installs.
  *
  * THIN RE-EXPORT (docs/adr-workflow-server-resolution.md, Decision 2): the
@@ -58,7 +58,7 @@ export function resolveFleetServerCommand(deps = {}) {
  * fallback) for callers that want it. This is exported so the resolution
  * order has exactly one home.
  *
- * NOTE (apra-fleet-eft.7.1): auto-sprint's own main() below calls this too,
+ * NOTE (apra-fleet-eft.7.1): fleet-sprint's own main() below calls this too,
  * but treats anything other than `{ mode: 'http' }` as a hard failure -- see
  * `FleetServerUnreachableError`. Plan Part 2.1 retired the per-invocation
  * stdio self-spawn for cli.mjs specifically (it is now the supervisor's
@@ -93,7 +93,7 @@ export class FleetServerUnreachableError extends Error {
 }
 
 /**
- * Resolves the path to auto-sprint's runner script, loaded at runtime via
+ * Resolves the path to fleet-sprint's runner script, loaded at runtime via
  * `engine.executeFile()` (NOT importable/bundlable -- it is read from disk
  * and fed to the workflow engine as text). Layout-aware the same way as
  * `resolveFleetServerCommand()` (apra-fleet-3ns.1): a bundled dist/auto-
@@ -106,15 +106,15 @@ export function resolveRunnerScriptPath(deps = {}) {
     const dirname = deps.dirname || __dirname;
     const exists = deps.exists || existsSync;
 
-    const bundledRunnerAsset = path.join(dirname, 'auto-sprint-runner.mjs');
-    const devRunnerPath = path.join(dirname, '../auto-sprint/runner.js');
+    const bundledRunnerAsset = path.join(dirname, 'fleet-sprint-runner.mjs');
+    const devRunnerPath = path.join(dirname, '../fleet-sprint/runner.js');
 
     for (const candidate of [bundledRunnerAsset, devRunnerPath]) {
         if (exists(candidate)) return candidate;
     }
 
     throw new Error(
-        '[apra-fleet-se] Could not locate the auto-sprint runner script. Tried:\n' +
+        '[apra-fleet-se] Could not locate the fleet-sprint runner script. Tried:\n' +
             `  - ${bundledRunnerAsset} (bundled layout)\n` +
             `  - ${devRunnerPath} (dev-monorepo layout)`,
     );
@@ -203,7 +203,7 @@ export function parseCliArgs(argv) {
  * (`--role-map '{"doer":["m1"]}'`) and an `@path/to/file.json` indirection
  * (`--role-map @role-map.json`), matching the read-and-parse pattern already
  * used for `requirementsFile` content elsewhere in this package
- * (auto-sprint/runner.js reads requirementsFile content at sprint-start).
+ * (fleet-sprint/runner.js reads requirementsFile content at sprint-start).
  * @param {string|undefined} rawValue - the raw `--role-map` flag value
  * @param {{ readFile?: (path: string, encoding: string) => Promise<string> }} [deps] - injectable for tests
  * @returns {Promise<object|undefined>}
@@ -267,7 +267,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
 
 /**
  * Builds the exact args object handed to `engine.executeFile()`, i.e. the
- * object `auto-sprint/runner.js`'s `validateArgs()` consumes. Pulled into its
+ * object `fleet-sprint/runner.js`'s `validateArgs()` consumes. Pulled into its
  * own pure function so a test can assert `--requirements-file`/`--role-map`
  * reach the runner's validated args correctly without standing up the fleet
  * transport/workflow engine (apra-fleet-unw2.16, N14 (c)).
@@ -346,7 +346,7 @@ export function resolveMemberValidation({ rawMembers, registeredNames, allowMiss
  * Verifies every target issue exists, run on the ORCHESTRATOR MEMBER via the
  * fleet transport (`runBdShow`) -- NOT on the local machine. The sprint's own
  * `bd` commands run against the orchestrator member's beads DB (see
- * auto-sprint/runner.js's SUPPORTED-TOPOLOGY NOTE), which can be a different
+ * fleet-sprint/runner.js's SUPPORTED-TOPOLOGY NOTE), which can be a different
  * database than whatever is local to wherever this CLI process happens to
  * run. Checking locally could pass (or worse, resolve a same-named-but-
  * different issue) while the actual sprint dispatch on the member fails
@@ -449,7 +449,7 @@ async function main() {
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
-    // independently (see auto-sprint/runner.js validateArgs()) so a
+    // independently (see fleet-sprint/runner.js validateArgs()) so a
     // malformed id can never reach a shell command even if this CLI layer
     // is somehow bypassed -- both layers share the exact same validators
     // (imported from runner.js) so there is a single source of truth.
@@ -556,7 +556,7 @@ async function main() {
     // 3. bd show issue precondition -- run on the orchestrator MEMBER via the
     // fleet transport (apra-fleet-unw2.16, N14 (d)), immediately after the
     // transport/initialize handshake above and before any sprint phase
-    // begins. The orchestrator member mirrors auto-sprint/runner.js's
+    // begins. The orchestrator member mirrors fleet-sprint/runner.js's
     // `getMemberForRole(ROLE_ORCHESTRATOR)` resolution: roleMap.orchestrator[0]
     // if configured, else the first valid member. `roleMap` here is already
     // key-normalized by `resolveRoleMap()` above (N15, apra-fleet-unw2.11),
@@ -636,7 +636,7 @@ async function main() {
         // it from here). branchName is the SAME opaque per-sprint identity
         // already used for member reservation (`sprintId: branchName` below)
         // and the runner's own dolt-mutex/allocator stamping (sprintMutexId,
-        // auto-sprint/runner.js), so the dashboard's persisted run state gets
+        // fleet-sprint/runner.js), so the dashboard's persisted run state gets
         // a meaningful, stable id instead of a throwaway random UUID.
         runId: branchName,
         // BOUNDARY-COMPAT/user-facing convention (apra-fleet-eft.37.1): core's
