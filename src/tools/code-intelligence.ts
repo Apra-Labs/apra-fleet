@@ -4,6 +4,7 @@ import { join } from 'path';
 import { z } from 'zod';
 import { GitNexusProvider } from './code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from './code-intelligence-codebase-memory.js';
+import { isCodeIntelEnabled } from '../services/knowledge/repo-config.js';
 
 export interface CodeIntelligenceProvider {
   graph(params: Record<string, unknown>): Promise<unknown>;
@@ -61,7 +62,28 @@ export const codeTestsSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
-export async function getProvider(): Promise<CodeIntelligenceProvider> {
+function disabledProvider(repoPath: string): CodeIntelligenceProvider {
+  const disabledResult = async () => ({
+    disabled: true,
+    reason: 'code_intelligence_disabled',
+    message: `Code intelligence is disabled for this repository (${repoPath}). Set "enabled": true in .apra-fleet/code-intel.json to re-enable.`,
+  });
+  return {
+    graph: disabledResult,
+    impact: disabledResult,
+    query: disabledResult,
+    context: disabledResult,
+    map: disabledResult,
+    flow: disabledResult,
+    tests: disabledResult,
+  };
+}
+
+export async function getProvider(repoPath: string = process.cwd()): Promise<CodeIntelligenceProvider> {
+  if (!(await isCodeIntelEnabled(repoPath))) {
+    return disabledProvider(repoPath);
+  }
+
   let providerKey = 'codebase-memory';
   try {
     const raw = await readFile(CONFIG_PATH, 'utf8');

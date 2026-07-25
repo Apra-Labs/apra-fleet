@@ -98,6 +98,18 @@ describe('getProvider()', () => {
     await expect(getProvider()).rejects.toThrow('not configured');
   });
 
+  it('returns a structured disabled message (not an error) for a repo with enabled:false', async () => {
+    // Note: fs/promises (and its node:fs/promises alias) is mocked at module
+    // level in this file, so repo-config.ts's readFile shares mockReadFile
+    // with the provider-config readFile below -- fine here since the
+    // disabled check runs before provider-config is ever read.
+    mockReadFile.mockResolvedValue('{"enabled":false}');
+
+    const provider = await getProvider('/some/repo');
+    const result = await provider.graph({ symbol: 'foo' });
+    expect(result).toMatchObject({ disabled: true, reason: 'code_intelligence_disabled' });
+  });
+
   it('PROVIDERS map contains both gitnexus and codebase-memory entries', () => {
     expect(PROVIDERS.gitnexus).toBeInstanceOf(GitNexusProvider);
     expect(PROVIDERS['codebase-memory']).toBeInstanceOf(CodebaseMemoryProvider);
