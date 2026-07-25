@@ -295,9 +295,31 @@ async function runSetup(suiteId, runDir) {
   }
 }
 
-async function runTeardown() {
+// The toy repo is cloned to <work_folder>/fleet-e2e-toy (see verifyRoundtrip's
+// sibling setup steps and toy_projects in members.json) and is where the
+// doer/reviewer's beads/Dolt DB and git state accumulate across runs. Wiping
+// it here -- while the member is still registered and reachable via
+// execute_command -- means each run starts from a pristine clone instead of
+// patching over whatever state (corrupted Dolt DB, stale git identity) the
+// previous run left behind.
+export function toyFolderPath(folder, os) {
+  return os === 'windows' ? `${folder}\\fleet-e2e-toy` : `${folder}/fleet-e2e-toy`;
+}
+
+export function deleteFolderCommand(folderPath, os) {
+  return os === 'windows'
+    ? `Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "${folderPath}"`
+    : `rm -rf "${folderPath}"`;
+}
+
+async function runTeardown(suiteId) {
   const { connectFleet } = await import('../../packages/apra-fleet-client/src/client/server-resolution.mjs');
   const { fleetApi, transport } = await connectFleet();
+
+  // Resolving member configs requires a known suite -- older callers (or a
+  // manual `teardown` invocation) that don't pass one just skip the folder
+  // wipe and fall through to member removal, same as before this existed.
+  const members = suiteId ? resolveMemberConfigs(suiteId, loadConfig()) : null;
 
   // remove_member's text result has no single consistent failure marker
   // across its return paths (e.g. a "not found" member returns unmarked
@@ -306,7 +328,21 @@ async function runTeardown() {
   // the follow-up fleet_status check for whether alice/bella still remain.
   const removalNotes = [];
   try {
-    for (const { name } of ROLES) {
+    for (const { role, name } of ROLES) {
+      const member = members?.[role];
+      if (member) {
+        const toyPath = toyFolderPath(member.folder, member.os);
+        try {
+          await execCommand(fleetApi, name, deleteFolderCommand(toyPath, member.os), 'delete toy folder');
+          removalNotes.push(`${name}: wiped ${toyPath}`);
+        } catch (err) {
+          // Best-effort -- a member that's already unreachable (e.g. a prior
+          // step failed before it came online) shouldn't block teardown from
+          // still removing it from the registry.
+          removalNotes.push(`${name}: toy folder wipe failed: ${err.message}`);
+        }
+      }
+
       try {
         const result = await fleetApi.removeMember({ member_name: name, force: true });
         removalNotes.push(`${name}: ${textOf(result).split('\n')[0]}`);
@@ -385,7 +421,8 @@ if (process.argv[1] && (process.argv[1].endsWith('fleet-setup.mjs') || process.a
       process.exit(1);
     });
   } else if (subcommand === 'teardown') {
-    runTeardown().catch((err) => {
+    const { suite } = parseArgs(rest);
+    runTeardown(suite).catch((err) => {
       process.stdout.write(`T6: FAIL -- ${err.message}\n`);
       process.exit(1);
     });

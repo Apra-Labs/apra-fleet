@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { loadConfig, resolveMemberConfigs, bdCheckFor, doltCheckFor, call } from '../.github/e2e/fleet-setup.mjs';
+import {
+  loadConfig,
+  resolveMemberConfigs,
+  bdCheckFor,
+  doltCheckFor,
+  call,
+  toyFolderPath,
+  deleteFolderCommand,
+} from '../.github/e2e/fleet-setup.mjs';
 
 const REPO_ROOT = path.join(process.cwd());
 
@@ -93,6 +101,29 @@ describe('fleet-setup.mjs bd/dolt check command selection', () => {
     expect(doltCheckFor('windows')).toMatch(/^if \(Get-Command dolt/);
     expect(doltCheckFor('windows')).not.toContain('||');
     expect(doltCheckFor('windows')).not.toContain('$(');
+  });
+});
+
+describe('fleet-setup.mjs teardown toy-folder wipe', () => {
+  it('joins with a backslash for windows, forward slash otherwise', () => {
+    expect(toyFolderPath('C:\\Users\\akhil\\git\\apra-fleet-e2e-doer', 'windows')).toBe(
+      'C:\\Users\\akhil\\git\\apra-fleet-e2e-doer\\fleet-e2e-toy',
+    );
+    expect(toyFolderPath('/home/akhil/git/apra-fleet-e2e-doer', 'linux')).toBe(
+      '/home/akhil/git/apra-fleet-e2e-doer/fleet-e2e-toy',
+    );
+    expect(toyFolderPath('/Users/akhil/git/apra-fleet-e2e-rev', 'macos')).toBe(
+      '/Users/akhil/git/apra-fleet-e2e-rev/fleet-e2e-toy',
+    );
+  });
+
+  it('uses PowerShell Remove-Item for windows, rm -rf otherwise', () => {
+    expect(deleteFolderCommand('C:\\path\\fleet-e2e-toy', 'windows')).toBe(
+      'Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "C:\\path\\fleet-e2e-toy"',
+    );
+    expect(deleteFolderCommand('/home/akhil/fleet-e2e-toy', 'linux')).toBe(
+      'rm -rf "/home/akhil/fleet-e2e-toy"',
+    );
   });
 });
 

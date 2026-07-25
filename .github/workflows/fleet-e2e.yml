@@ -516,7 +516,7 @@ jobs:
         shell: bash
         run: |
           cd "$RUN_DIR"
-          node "$GITHUB_WORKSPACE/.github/e2e/fleet-setup.mjs" teardown > "$RUN_DIR/t6-output.txt" 2>&1 || true
+          node "$GITHUB_WORKSPACE/.github/e2e/fleet-setup.mjs" teardown --suite "${{ inputs.suite }}" > "$RUN_DIR/t6-output.txt" 2>&1 || true
           cat "$RUN_DIR/t6-output.txt"
 
       - name: Upload results
