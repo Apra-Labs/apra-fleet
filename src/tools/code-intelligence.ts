@@ -79,6 +79,47 @@ export const codeTestsSchema = z.object({
   repo: z.string().optional().describe('Absolute path to the repository root. Required when multiple repositories are indexed.'),
 });
 
+// ---------------------------------------------------------------------------
+// Handler functions -- thin wrappers that resolve the per-member provider and
+// delegate to the appropriate method. memberId is optional: when omitted,
+// getProvider() falls back to the global config.
+// ---------------------------------------------------------------------------
+
+export async function handleCodeGraph(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.graph(input);
+}
+
+export async function handleCodeImpact(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.impact(input);
+}
+
+export async function handleCodeQuery(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.query(input);
+}
+
+export async function handleCodeContext(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.context(input);
+}
+
+export async function handleCodeMap(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.map(input);
+}
+
+export async function handleCodeFlow(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.flow(input);
+}
+
+export async function handleCodeTests(input: Record<string, unknown>, memberId?: string): Promise<unknown> {
+  const provider = await getProvider(memberId);
+  return provider.tests(input);
+}
+
 export async function getProvider(memberId?: string): Promise<CodeIntelligenceProvider> {
   // When a memberId is supplied, check the agent's per-member override first.
   if (memberId) {

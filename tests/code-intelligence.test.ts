@@ -63,7 +63,7 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
 // ---------------------------------------------------------------------------
 // Static imports (resolved after mocks are hoisted)
 // ---------------------------------------------------------------------------
-import { getProvider, PROVIDERS, NullProvider, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
+import { getProvider, PROVIDERS, NullProvider, handleCodeGraph, handleCodeImpact, handleCodeQuery, handleCodeContext, handleCodeMap, handleCodeFlow, handleCodeTests, codeMapSchema, codeFlowSchema, codeTestsSchema } from '../src/tools/code-intelligence.js';
 import { GitNexusProvider, parseMarkdownTable, asciiSanitizeLabel } from '../src/tools/code-intelligence-gitnexus.js';
 import { CodebaseMemoryProvider } from '../src/tools/code-intelligence-codebase-memory.js';
 
@@ -154,6 +154,102 @@ describe('getProvider(memberId)', () => {
 
     await expect(getProvider('agent-4')).rejects.toThrow('no-such-provider');
     await expect(getProvider('agent-4')).rejects.toThrow('not configured');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Handler functions -- memberId forwarding
+// ---------------------------------------------------------------------------
+describe('handler functions forward memberId to getProvider()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default: no agent found, falls back to global config (codebase-memory)
+    mockGetAgent.mockReturnValue(undefined);
+    mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+  });
+
+  it('handleCodeGraph forwards memberId and delegates to provider.graph()', async () => {
+    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
+
+    const result = (await handleCodeGraph({ symbol: 'foo' }, 'member-1')) as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
+    expect(result.content[0].text).toContain('disabled for this member');
+    expect(result.content[0].text).toContain('graph');
+  });
+
+  it('handleCodeImpact forwards memberId and delegates to provider.impact()', async () => {
+    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
+
+    const result = (await handleCodeImpact({ target: 'foo', direction: 'upstream' }, 'member-1')) as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
+    expect(result.content[0].text).toContain('disabled for this member');
+    expect(result.content[0].text).toContain('impact');
+  });
+
+  it('handleCodeQuery forwards memberId and delegates to provider.query()', async () => {
+    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
+
+    const result = (await handleCodeQuery({ query: 'exports' }, 'member-1')) as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
+    expect(result.content[0].text).toContain('disabled for this member');
+    expect(result.content[0].text).toContain('query');
+  });
+
+  it('handleCodeContext forwards memberId and delegates to provider.context()', async () => {
+    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
+
+    const result = (await handleCodeContext({ name: 'foo' }, 'member-1')) as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
+    expect(result.content[0].text).toContain('disabled for this member');
+    expect(result.content[0].text).toContain('context');
+  });
+
+  it('handleCodeMap forwards memberId and delegates to provider.map()', async () => {
+    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
+
+    const result = (await handleCodeMap({}, 'member-1')) as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
+    expect(result.content[0].text).toContain('disabled for this member');
+    expect(result.content[0].text).toContain('map');
+  });
+
+  it('handleCodeFlow forwards memberId and delegates to provider.flow()', async () => {
+    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
+
+    const result = (await handleCodeFlow({}, 'member-1')) as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
+    expect(result.content[0].text).toContain('disabled for this member');
+    expect(result.content[0].text).toContain('flow');
+  });
+
+  it('handleCodeTests forwards memberId and delegates to provider.tests()', async () => {
+    mockGetAgent.mockReturnValue({ id: 'member-1', codeIntelProvider: 'none' });
+
+    const result = (await handleCodeTests({ symbol: 'foo' }, 'member-1')) as { content: { type: string; text: string }[] };
+
+    expect(mockGetAgent).toHaveBeenCalledWith('member-1');
+    expect(result.content[0].text).toContain('disabled for this member');
+    expect(result.content[0].text).toContain('tests');
+  });
+
+  it('handlers fall back to global config when memberId is omitted', async () => {
+    mockReadFile.mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+    // No memberId: should NOT call getAgent, should use global config (codebase-memory)
+    // codebase-memory will try to connect, but we just verify getAgent was NOT called
+    mockGetAgent.mockReturnValue(undefined);
+
+    // handleCodeGraph with no memberId should fall through to global provider
+    // (codebase-memory). Since codebase-memory tries a real connection, we
+    // just verify the registry lookup was skipped.
+    await handleCodeGraph({ symbol: 'foo' }).catch(() => { /* expected: codebase-memory connection fails in test */ });
+
+    expect(mockGetAgent).not.toHaveBeenCalled();
   });
 });
 
