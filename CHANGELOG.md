@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- per-member code-intelligence provider resolution
+
+Sprint goal (P1/P2): implement per-member code-intelligence provider resolution in
+`getProvider()`. Goal met.
+
+`getProvider()` now accepts an optional member id and resolves that member's
+code-intelligence provider preference before falling back to the fleet-wide default:
+called with no argument it returns the global default provider (unchanged, backward
+compatible); called for a member whose `codeIntelProvider` is explicitly set to `'none'`
+it returns a `NullProvider` that returns a structured "disabled" result from every method
+instead of throwing or silently succeeding; called for a member with no preference, an
+unrecognized provider name, or an unresolvable member id, it falls back to the default
+provider. The `Agent` type and the register/update member schemas were extended with an
+optional `codeIntelProvider` field so a member's choice can be set at registration or
+changed later.
+
+Build and the full test suite pass. All changes are additive and backward-compatible.
+Wiring real `codebase-memory` and `gitnexus` backends into the provider registry, and
+threading member context through the `execute_prompt` dispatch path so tool calls
+actually resolve per member, remain open backlog items and do not block this increment.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |      9,051 |   n/a |   $0.000 |   $0.226 |
+| reviewer   |          0 |      5,246 |   n/a |   $0.000 |   $0.131 |
+| overhead   |      7,150 |     45,775 | +540% |   $0.121 |   $0.339 |
+| TOTAL      |      7,150 |     60,072 | +740% |   $0.121 |   $0.697 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
 ## [v0.3.3] -- feat/install-default
 
 ### Breaking change -- MCP server start command changed
