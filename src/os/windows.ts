@@ -98,11 +98,15 @@ export class WindowsCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv, agentName } = opts;
     const escapedFolder = escapeWindowsArg(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
+    }
+    // Gemini activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
+    if (agentName && provider.name === 'gemini') {
+      instruction = `@${agentName} ${instruction}`;
     }
 
     // Setup: working directory + PATH so the CLI executable is resolvable
@@ -113,6 +117,10 @@ export class WindowsCommands implements OsCommands {
 
     // Build argument list (everything that follows the executable)
     let argList = `${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`;
+    // Claude and AGY activate a subagent via --agent <name> flag.
+    if (agentName && (provider.name === 'claude' || provider.name === 'agy')) {
+      argList = `--agent "${escapeWindowsArg(agentName)}" ${argList}`;
+    }
     if (provider.supportsMaxTurns()) {
       argList += ` --max-turns ${maxTurns ?? 50}`;
     }
@@ -125,6 +133,13 @@ export class WindowsCommands implements OsCommands {
       if (autoFlag) argList += ` ${autoFlag}`;
     } else if (unattended === 'dangerous') {
       argList += ` ${provider.skipPermissionsFlag()}`;
+    } else {
+      // apra-fleet-eft.65.1: interactive-session parity for the work folder --
+      // grant Edit/Write of a brand-new file in the dispatched agent's own work
+      // folder without the broad --dangerously-skip-permissions bypass. Providers
+      // without such a surgical flag omit the method, leaving behavior unchanged.
+      const editFlag = provider.workspaceEditPermissionFlag?.();
+      if (editFlag) argList += ` ${editFlag}`;
     }
     if (model) {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;

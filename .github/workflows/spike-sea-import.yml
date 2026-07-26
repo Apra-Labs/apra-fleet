@@ -1,0 +1,55 @@
+name: Spike - SEA dynamic import() of on-disk ESM (apra-fleet-7pm.1)
+
+# Risk gate R1 for the workflow subsystem epic (docs/workflow-subsystem-plan.md
+# Section 1). Proves on all 3 OS that a SEA binary's injected main can
+# dynamic-import() an on-disk .mjs whose own bare specifier resolves from a
+# sibling node_modules -- with useCodeCache: true, as gen-sea-config.mjs sets.
+#
+# Run on demand (workflow_dispatch) or by pushing the spike script itself.
+# This is a spike harness, not a required gate on every PR.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/spike-sea-import.mjs'
+      - '.github/workflows/spike-sea-import.yml'
+
+jobs:
+  spike:
+    name: Spike (${{ matrix.os }}, useCodeCache=${{ matrix.code-cache }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        code-cache: [true]
+        include:
+          # Fallback (a) from the plan: if useCodeCache: true fails anywhere, we
+          # need the no-code-cache startup delta measured. Cheap, so always run.
+          - os: ubuntu-latest
+            code-cache: false
+          - os: macos-latest
+            code-cache: false
+          - os: windows-latest
+            code-cache: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Strip node.exe signature before SEA injection (Windows only)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
+          if ($signtool) { echo "$($signtool.Directory)" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
+          else { Write-Host "signtool not found - spike will skip the strip (non-fatal)" }
+
+      - name: Run spike (useCodeCache=${{ matrix.code-cache }})
+        run: node scripts/spike-sea-import.mjs ${{ matrix.code-cache == false && '--no-code-cache' || '' }}

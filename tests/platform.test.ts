@@ -137,6 +137,30 @@ describe('OsCommands via getOsCommands', () => {
         expect(cmd).toContain('--max-turns 50');
       });
 
+      // apra-fleet-eft.65.1: a headless dispatch with no explicit unattended mode
+      // must grant the dispatched agent Edit/Write parity for its own work folder
+      // (--permission-mode acceptEdits) so a brand-new file is not hard-blocked --
+      // WITHOUT the broad --dangerously-skip-permissions bypass.
+      for (const [name, cmds] of all) {
+        it(`${name}: claude default dispatch grants work-folder edit parity, not the broad bypass`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
+          expect(cmd).toContain('--permission-mode acceptEdits');
+          expect(cmd).not.toContain('--dangerously-skip-permissions');
+        });
+
+        it(`${name}: unattended=dangerous keeps the broad bypass, not acceptEdits`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, unattended: 'dangerous' });
+          expect(cmd).toContain('--dangerously-skip-permissions');
+          expect(cmd).not.toContain('acceptEdits');
+        });
+
+        it(`${name}: unattended=auto keeps --permission-mode auto, not acceptEdits`, () => {
+          const cmd = cmds.buildAgentPromptCommand(claudeProvider, { ...opts, unattended: 'auto' });
+          expect(cmd).toContain('--permission-mode auto');
+          expect(cmd).not.toContain('acceptEdits');
+        });
+      }
+
       for (const [name, cmds] of all) {
         it(`${name}: buildAgentPromptCommand wraps command with PID-capture shell wrapper`, () => {
           const cmd = cmds.buildAgentPromptCommand(claudeProvider, opts);
@@ -324,6 +348,29 @@ describe('OsCommands via getOsCommands', () => {
       expect(cmd).toContain('#!/bin/sh');
       expect(cmd).toContain('chmod');
     });
+
+    // Regression: `~` is only tilde-expanded by the shell in an UNQUOTED
+    // leading position. Every use here is inside double quotes (needed for
+    // the other interpolated values), which suppresses that expansion --
+    // the literal string "~/.fleet-git-credential-..." then got stored as
+    // the git config value, and git does not expand `~` itself when reading
+    // config, so it tried to exec a helper literally named
+    // "git-credential-~/.fleet-git-credential-..." ("not a git command").
+    // $HOME expands correctly even inside double quotes. macOS inherits
+    // these methods from LinuxCommands unmodified, so it shares the fix.
+    for (const [name, cmds] of [['linux', linux], ['macos', macos]] as const) {
+      it(`${name}: gitCredentialHelperWrite uses $HOME, not a literal ~, for the credential file path`, () => {
+        const cmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_abc');
+        expect(cmd).toContain('$HOME/.fleet-git-credential');
+        expect(cmd).not.toContain('"~/');
+      });
+
+      it(`${name}: gitCredentialHelperRemove uses $HOME, not a literal ~, for the credential file path`, () => {
+        const cmd = cmds.gitCredentialHelperRemove('github.com');
+        expect(cmd).toContain('$HOME/.fleet-git-credential');
+        expect(cmd).not.toContain('"~/');
+      });
+    }
 
     it('windows: writes a batch script credential helper', () => {
       const cmd = windows.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_abc');

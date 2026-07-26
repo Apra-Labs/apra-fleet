@@ -409,41 +409,50 @@ describe('getOnboardingNudge', () => {
  * banner + nudge composition.
  */
 describe('wrapTool output sequence (integration)', () => {
-  it('banner shows on JSON response from active tool', async () => {
+  it('banner does NOT show on JSON response from active tool (eft.23: deferred, not lost)', async () => {
     const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getWelcomeBackPreamble, getOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
 
-    // New behavior: first-run banner bypasses JSON check — active tool guard is sufficient
+    // Fixed behavior (eft.23): the first-run banner must NOT be prepended ahead of
+    // a JSON-typed tool's content[0] — a machine caller that JSON.parse()s
+    // content[0] (e.g. auto-sprint's cli.mjs listMembers() call) would otherwise
+    // get a corrupted payload on the very first call after a fresh install.
+    // Simulates the fixed getOnboardingPreamble(toolName, isJson) logic: the
+    // isJson guard is checked BEFORE getFirstRunPreamble() is consulted.
     const jsonResult = '{"members":[]}';
     const isJson = isJsonResponse(jsonResult);
-    // Simulate new getOnboardingPreamble(toolName, isJson) logic
-    const banner = isActiveTool('fleet_status') ? getFirstRunPreamble() : null;
+    const banner = (!isJson && isActiveTool('fleet_status')) ? getFirstRunPreamble() : null;
     const preamble = banner ?? (!isJson ? getWelcomeBackPreamble() : null);
 
-    expect(preamble).not.toBeNull(); // banner shown even on JSON response
-    expect(preamble).toContain('One model is a tool');
-    expect(getOnboardingState().bannerShown).toBe(true);
+    expect(preamble).toBeNull(); // suppressed on JSON response
+    expect(getOnboardingState().bannerShown).toBe(false); // not consumed — deferred to next non-JSON call
   });
 
-  it('banner shown on first JSON call; subsequent call gets null', async () => {
+  it('banner suppressed across repeated JSON calls; fires on first subsequent non-JSON call', async () => {
     const { loadOnboardingState, getFirstRunPreamble, isJsonResponse, isActiveTool, getWelcomeBackPreamble, getOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
 
-    // First call: JSON (fleet_status) — banner now shown (bypasses JSON check)
-    const jsonResult = '{"members":[]}';
-    const isJson1 = isJsonResponse(jsonResult);
-    const banner1 = isActiveTool('fleet_status') ? getFirstRunPreamble() : null;
+    // First call: JSON (fleet_status) — banner suppressed, milestone NOT consumed
+    const isJson1 = isJsonResponse('{"members":[]}');
+    const banner1 = (!isJson1 && isActiveTool('fleet_status')) ? getFirstRunPreamble() : null;
     const p1 = banner1 ?? (!isJson1 ? getWelcomeBackPreamble() : null);
-    expect(p1).not.toBeNull();
-    expect(p1).toContain('One model is a tool');
-    expect(getOnboardingState().bannerShown).toBe(true);
+    expect(p1).toBeNull();
+    expect(getOnboardingState().bannerShown).toBe(false);
 
-    // Second call: JSON (fleet_status again) — banner already consumed, welcome-back suppressed for JSON
-    const jsonResult2 = '{"members":[]}';
-    const isJson2 = isJsonResponse(jsonResult2);
-    const banner2 = isActiveTool('fleet_status') ? getFirstRunPreamble() : null;
+    // Second call: JSON again (fleet_status) — still suppressed, still not consumed
+    const isJson2 = isJsonResponse('{"members":[]}');
+    const banner2 = (!isJson2 && isActiveTool('fleet_status')) ? getFirstRunPreamble() : null;
     const p2 = banner2 ?? (!isJson2 ? getWelcomeBackPreamble() : null);
-    expect(p2).toBeNull(); // banner consumed; welcome-back suppressed for JSON responses
+    expect(p2).toBeNull();
+    expect(getOnboardingState().bannerShown).toBe(false);
+
+    // Third call: non-JSON (register_member) — banner finally fires and is consumed
+    const isJson3 = isJsonResponse('✅ Member registered.');
+    const banner3 = (!isJson3 && isActiveTool('register_member')) ? getFirstRunPreamble() : null;
+    const p3 = banner3 ?? (!isJson3 ? getWelcomeBackPreamble() : null);
+    expect(p3).not.toBeNull();
+    expect(p3).toContain('One model is a tool');
+    expect(getOnboardingState().bannerShown).toBe(true);
   });
 
   it('passive tool (version) does NOT consume the banner', async () => {
@@ -625,15 +634,13 @@ describe('wrapTool notification emission', () => {
   ) {
     const { getFirstRunPreamble, isJsonResponse, isActiveTool, getOnboardingNudge, getWelcomeBackPreamble } = await import('../src/services/onboarding.js');
 
+    // eft.23 fix: isJson is checked BEFORE getFirstRunPreamble() so a JSON-typed
+    // tool's content[0] is never prefixed with the banner block.
     const isJson = isJsonResponse(result);
     let preamble: string | null = null;
-    if (isActiveTool(toolName)) {
+    if (isActiveTool(toolName) && !isJson) {
       const banner = getFirstRunPreamble();
-      if (banner) {
-        preamble = banner;
-      } else if (!isJson) {
-        preamble = getWelcomeBackPreamble();
-      }
+      preamble = banner ?? getWelcomeBackPreamble();
     }
     const suffix = isJson ? null : getOnboardingNudge(toolName, {}, result);
 
@@ -661,12 +668,12 @@ describe('wrapTool notification emission', () => {
     return { content };
   }
 
-  it('banner emits via sendLoggingMessage on first active call', async () => {
+  it('banner emits via sendLoggingMessage on first active call (non-JSON)', async () => {
     const { loadOnboardingState } = await import('../src/services/onboarding.js');
     loadOnboardingState();
     const stub = makeStubServer();
 
-    await simulateWrapTool('fleet_status', '{"members":[]}', stub);
+    await simulateWrapTool('fleet_status', 'Fleet: 0 members.', stub);
 
     expect(stub.server.sendLoggingMessage).toHaveBeenCalled();
     const calls = stub.server.sendLoggingMessage.mock.calls;
@@ -674,6 +681,17 @@ describe('wrapTool notification emission', () => {
     expect(data).toContain('One model is a tool');
     expect(calls[0][0].logger).toBe('apra-fleet-onboarding');
     expect(calls[0][0].level).toBe('info');
+  });
+
+  it('eft.23: banner is suppressed (no notification) on first call when the response is JSON', async () => {
+    const { loadOnboardingState, getOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState();
+    const stub = makeStubServer();
+
+    await simulateWrapTool('fleet_status', '{"members":[]}', stub);
+
+    expect(stub.server.sendLoggingMessage).not.toHaveBeenCalled();
+    expect(getOnboardingState().bannerShown).toBe(false); // deferred, not consumed
   });
 
   it('nudge emits via sendLoggingMessage', async () => {
@@ -714,7 +732,7 @@ describe('wrapTool notification emission', () => {
     loadOnboardingState();
     const stub = makeStubServer();
 
-    const { content } = await simulateWrapTool('fleet_status', '{"members":[]}', stub);
+    const { content } = await simulateWrapTool('fleet_status', 'Fleet: 0 members.', stub);
 
     // First block should have markers wrapping banner text
     const preambleBlock = content.find(b => b.text.includes('<apra-fleet-display>'));
@@ -751,6 +769,36 @@ describe('wrapTool notification emission', () => {
     await simulateWrapTool('version', 'apra-fleet v1.0.0', stub);
 
     expect(stub.server.sendLoggingMessage).not.toHaveBeenCalled();
+  });
+
+  it('eft.23 regression: a JSON-typed tool\'s first-ever call on a fresh server returns parseable content[0]', async () => {
+    // Repro from apra-fleet-eft.23: auto-sprint's cli.mjs does
+    // JSON.parse(listRes.content[0].text) assuming content[0] is the raw JSON
+    // payload. Before the fix, list_members'/fleet_status' very first call on a
+    // fresh install (bannerShown=false) got the first-run banner prepended as
+    // content[0], pushing the JSON payload to content[1] and corrupting the
+    // machine-caller's JSON.parse(content[0].text) call. This must never
+    // happen again: content[0] must always be the actual JSON payload for a
+    // JSON-typed tool response, regardless of onboarding state.
+    const { loadOnboardingState, getOnboardingState } = await import('../src/services/onboarding.js');
+    loadOnboardingState(); // fresh install — bannerShown=false, nothing persisted yet
+    const stub = makeStubServer();
+
+    const jsonPayload = '{"members":[{"name":"alpha"}]}';
+    const { content } = await simulateWrapTool('list_members', jsonPayload, stub);
+
+    // content[0] must be present and must parse as the exact JSON payload —
+    // no banner block, no onboarding wrapper ahead of it.
+    expect(content.length).toBe(1);
+    expect(() => JSON.parse(content[0].text)).not.toThrow();
+    expect(JSON.parse(content[0].text)).toEqual({ members: [{ name: 'alpha' }] });
+    expect(content[0].text).toBe(jsonPayload);
+    expect(content[0].text).not.toContain('apra-fleet-display');
+
+    // No onboarding notification was sent for this JSON call either — the
+    // banner is deferred (not lost) until the next non-JSON active-tool call.
+    expect(stub.server.sendLoggingMessage).not.toHaveBeenCalled();
+    expect(getOnboardingState().bannerShown).toBe(false);
   });
 
   it('tool result text is NOT wrapped in <apra-fleet-display> markers', async () => {

@@ -1,0 +1,246 @@
+{
+  "_doc": "Sprint cost calibration. All estimation constants live here -- nothing is hardcoded in agents. Fields named _doc are documentation strings; skip them when reading values. The historical section is written automatically by the harvester after each sprint; do not edit it manually.",
+  "schema_version": 1,
+  "model_prices_per_1m_output_tokens": {
+    "_doc": "USD per 1M output tokens, keyed by tier name (cheap/standard/premium). Source: Anthropic published pricing 2026-06-04. Update when pricing changes. Provider-specific model IDs are resolved from tier names in auto-sprint.js TIER_TO_MODEL -- they never appear in this file.",
+    "cheap": 5,
+    "standard": 15,
+    "premium": 25
+  },
+  "role_models": {
+    "_doc": "Tier name per workflow role. 'doer' and 'reviewer' are NOT here -- the planner sets tier per task in beads metadata; reviewer escalates to max(task_tier, standard). Change an entry here to reroute a role to a different tier.",
+    "setup": "cheap",
+    "planner": "premium",
+    "plan-reviewer": "standard",
+    "deployer": "standard",
+    "integ-test-runner": "standard",
+    "ci-watcher": "cheap",
+    "harvester": "standard",
+    "log-flush": "cheap",
+    "check-blockers": "cheap",
+    "ready-streaks": "cheap"
+  },
+  "doer_model_fallback": {
+    "_doc": "Tier assumed for doer cost estimation when a task has no tier metadata in beads. In practice the planner always sets tier metadata -- this is a safety net only.",
+    "model": "standard"
+  },
+  "reviewer_model_rule": {
+    "_doc": "Reviewer tier is max(doer_task_tier, minimum). If the doer used premium, reviewer uses premium; otherwise reviewer uses standard. This mirrors the reviewerModel selection in auto-sprint.js.",
+    "minimum": "standard"
+  },
+  "complexity_buckets": {
+    "_doc": "Estimated doer output tokens per task by complexity bucket S/M/L. Plan-reviewer assigns a bucket to each task by reading its description. historical.bucket_avg_tokens overrides these defaults once enough sprint data has been collected.",
+    "S": {
+      "_doc": "Small: 1 file, narrow scoped change -- rename, config key, simple wiring, pure boilerplate",
+      "doer_tokens": 600
+    },
+    "M": {
+      "_doc": "Medium: 2-3 files, moderate logic -- new API endpoint, test suite, small focused refactor",
+      "doer_tokens": 1400
+    },
+    "L": {
+      "_doc": "Large: 3+ files or non-trivial design -- new auth flow, data migration, cross-cutting refactor",
+      "doer_tokens": 2800
+    }
+  },
+  "reviewer_ratio": {
+    "_doc": "Reviewer estimated output tokens as a fraction of doer tokens for the same task. 0.4 means reviewer uses ~40% as many output tokens as the doer. Overridden by historical.reviewer_ratio_avg when available.",
+    "value": 0.4
+  },
+  "cycle_assumptions": {
+    "_doc": "Expected number of dev/review cycles. Per-task cost is multiplied by these to produce sprint-level cost scenarios. Update 'expected' if your team consistently lands at a different cycle count.",
+    "optimistic": 1,
+    "expected": 1.5,
+    "pessimistic": 2.5
+  },
+  "fixed_overhead_tokens": {
+    "_doc": "Estimated output tokens for agents that run once per sprint regardless of task count. 'log_flush_per_cycle' is multiplied by the expected cycle count. Keys use underscores; the role lookup strips underscores to match role_models keys.",
+    "setup": 3500,
+    "planner": 20000,
+    "plan_reviewer": 1500,
+    "harvester": 3000,
+    "ci_watcher": 300,
+    "log_flush_per_cycle": 100
+  },
+  "input_cost_multiplier": {
+    "_doc": "Multiply output-only USD estimate by this to approximate true cost (input + output). 4.0 is conservative for long-context agents. Replace with an empirical ratio once the workflow harness exposes input token counts.",
+    "value": 4
+  },
+  "outlier_thresholds": {
+    "_doc": "Percentage deviation bands used to classify estimation accuracy in the sprint analysis report.",
+    "notable_pct": 50,
+    "outlier_pct": 200,
+    "calibration_failure_pct": 500
+  },
+  "doer_token_ceiling": {
+    "_doc": "Maximum output tokens for a single doer streak, keyed by tier name. Streaks that exceed this token budget are split and re-queued.",
+    "cheap": 40000,
+    "standard": 80000,
+    "premium": 150000
+  },
+  "historical": {
+    "_doc": "Written by harvester after each sprint. Contains actual per-role output token averages from sprint-log JSONL files. Used by auto-sprint.js computeSprintQuote() to improve future estimates. Do not edit manually.",
+    "max_sprints_in_sample": 5,
+    "sprints_sampled": 5,
+    "last_updated": "2026-07-01",
+    "cycle_avg": 1.64,
+    "reviewer_ratio_avg": 0.6920293404182241,
+    "bucket_avg_tokens": {
+      "S": 3121.25,
+      "M": 5278.441666666667,
+      "L": 11009
+    },
+    "roles": {
+      "setup": {
+        "avg_output_tokens": 3606.28,
+        "sample_n": 6
+      },
+      "sprint-meta": {
+        "avg_output_tokens": 765.8,
+        "sample_n": 6
+      },
+      "cycle-state": {
+        "avg_output_tokens": 2421.84,
+        "sample_n": 10
+      },
+      "planner": {
+        "avg_output_tokens": 20134.875,
+        "sample_n": 6
+      },
+      "plan-reviewer": {
+        "avg_output_tokens": 4449.875,
+        "sample_n": 5
+      },
+      "write-quote": {
+        "avg_output_tokens": 1558,
+        "sample_n": 1
+      },
+      "plan-commit": {
+        "avg_output_tokens": 6240.875,
+        "sample_n": 5
+      },
+      "ready-streaks": {
+        "avg_output_tokens": 2134.8866666666668,
+        "sample_n": 27
+      },
+      "doer": {
+        "avg_output_tokens": 9857.272,
+        "sample_n": 22
+      },
+      "reviewer": {
+        "avg_output_tokens": 5256.8533333333335,
+        "sample_n": 17
+      },
+      "log-append-iter": {
+        "avg_output_tokens": 2393.2266666666665,
+        "sample_n": 17
+      },
+      "push": {
+        "avg_output_tokens": 312.5,
+        "sample_n": 2
+      },
+      "head-sha": {
+        "avg_output_tokens": 239,
+        "sample_n": 2
+      },
+      "check-blockers": {
+        "avg_output_tokens": 2520.5,
+        "sample_n": 2
+      },
+      "log-append-end": {
+        "avg_output_tokens": 1900.28,
+        "sample_n": 10
+      },
+      "ci-watcher": {
+        "avg_output_tokens": 752,
+        "sample_n": 1
+      },
+      "ci-task-create": {
+        "avg_output_tokens": 571,
+        "sample_n": 1
+      },
+      "final-reviewer": {
+        "avg_output_tokens": 9326,
+        "sample_n": 6
+      },
+      "setup-shell": {
+        "avg_output_tokens": 1170.8,
+        "sample_n": 4
+      },
+      "cycle-meta": {
+        "avg_output_tokens": 1661.7599999999998,
+        "sample_n": 8
+      },
+      "push-sha": {
+        "avg_output_tokens": 719.28,
+        "sample_n": 8
+      },
+      "exit-check": {
+        "avg_output_tokens": 1308.24,
+        "sample_n": 8
+      },
+      "feedback-write-reviewer": {
+        "avg_output_tokens": 1349,
+        "sample_n": 1
+      }
+    },
+    "tuple_averages": {
+      "doer|M|sonnet": {
+        "role": "doer",
+        "size": "M",
+        "model": "sonnet",
+        "avg_output_tokens": 4285,
+        "sample_n": 337
+      },
+      "doer|M|opus": {
+        "role": "doer",
+        "size": "M",
+        "model": "opus",
+        "avg_output_tokens": 9550,
+        "sample_n": 36
+      },
+      "reviewer|N/A|sonnet": {
+        "role": "reviewer",
+        "size": "N/A",
+        "model": "sonnet",
+        "avg_output_tokens": 5140,
+        "sample_n": 47
+      },
+      "doer|M|haiku": {
+        "role": "doer",
+        "size": "M",
+        "model": "haiku",
+        "avg_output_tokens": 930,
+        "sample_n": 5
+      },
+      "reviewer|N/A|opus": {
+        "role": "reviewer",
+        "size": "N/A",
+        "model": "opus",
+        "avg_output_tokens": 3217,
+        "sample_n": 6
+      },
+      "final-reviewer|N/A|sonnet": {
+        "role": "final-reviewer",
+        "size": "N/A",
+        "model": "sonnet",
+        "avg_output_tokens": 2600,
+        "sample_n": 1
+      },
+      "integ-test-runner|N/A|sonnet": {
+        "role": "integ-test-runner",
+        "size": "N/A",
+        "model": "sonnet",
+        "avg_output_tokens": 6000,
+        "sample_n": 2
+      },
+      "final-reviewer|N/A|opus": {
+        "role": "final-reviewer",
+        "size": "N/A",
+        "model": "opus",
+        "avg_output_tokens": 4200,
+        "sample_n": 2
+      }
+    }
+  }
+}

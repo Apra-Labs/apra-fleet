@@ -1,0 +1,2944 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "apra-fleet hub <-> dashboard API",
+    "version": "0.1.0",
+    "description": "Contract for fleet.apralabs.com. JWTClaims (the ws/workspace_id claim) is the anchor schema -- every workspace-scoped route is gated behind it."
+  },
+  "servers": [
+    {
+      "url": "https://fleet.apralabs.com"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Workspace-scoped member JWT; claims validated against JWTClaims."
+      }
+    },
+    "schemas": {
+      "JWTClaims": {
+        "type": "object",
+        "properties": {
+          "iss": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+          },
+          "ws": {
+            "type": "string",
+            "minLength": 1,
+            "description": "workspace_id -- the hard security boundary"
+          },
+          "sub": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Subject -- member id (uuid)"
+          },
+          "exp": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Expiry, unix seconds"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "member",
+              "admin",
+              "superadmin"
+            ]
+          }
+        },
+        "required": [
+          "iss",
+          "ws",
+          "sub",
+          "exp",
+          "role"
+        ]
+      },
+      "Workspace": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "workspace_id -- matches the JWT `ws` claim"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "member",
+              "admin",
+              "superadmin"
+            ],
+            "description": "Requesting user's role within this workspace"
+          },
+          "members": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "projects": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role",
+          "members",
+          "projects"
+        ]
+      },
+      "Project": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "desc": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused"
+            ]
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Member ids"
+          },
+          "lastActivity": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Seconds ago"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "desc",
+          "status",
+          "members",
+          "lastActivity"
+        ]
+      },
+      "Member": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "gemini",
+              "codex",
+              "copilot",
+              "agy",
+              "opencode",
+              "none"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "null when provider === 'none'"
+          },
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Host running apra-fleet.exe"
+          },
+          "folder": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Work folder on the member machine"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "busy",
+              "online",
+              "offline",
+              "awaiting-connect"
+            ],
+            "description": "Last-known, pushed over SSE -- never implies live polling"
+          },
+          "lastSeen": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Seconds ago"
+          },
+          "lastPrompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Real, sourced last prompt -- never fabricated"
+          },
+          "lastPromptAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Seconds ago"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "jwtExp": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Seconds until JWT expiry (0 = expired)"
+          },
+          "agentVer": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "model",
+          "machine",
+          "folder",
+          "status",
+          "lastSeen",
+          "lastPrompt",
+          "lastPromptAt",
+          "tags",
+          "jwtExp",
+          "agentVer"
+        ]
+      },
+      "MemberTokenResponse": {
+        "type": "object",
+        "properties": {
+          "member": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "claude",
+                  "gemini",
+                  "codex",
+                  "copilot",
+                  "agy",
+                  "opencode",
+                  "none"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "null when provider === 'none'"
+              },
+              "machine": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Host running apra-fleet.exe"
+              },
+              "folder": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Work folder on the member machine"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "busy",
+                  "online",
+                  "offline",
+                  "awaiting-connect"
+                ],
+                "description": "Last-known, pushed over SSE -- never implies live polling"
+              },
+              "lastSeen": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "description": "Seconds ago"
+              },
+              "lastPrompt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Real, sourced last prompt -- never fabricated"
+              },
+              "lastPromptAt": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "description": "Seconds ago"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "jwtExp": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Seconds until JWT expiry (0 = expired)"
+              },
+              "agentVer": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "provider",
+              "model",
+              "machine",
+              "folder",
+              "status",
+              "lastSeen",
+              "lastPrompt",
+              "lastPromptAt",
+              "tags",
+              "jwtExp",
+              "agentVer"
+            ]
+          },
+          "jwt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Shown once; store it now"
+          }
+        },
+        "required": [
+          "member",
+          "jwt"
+        ]
+      },
+      "ActivityEvent": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Seconds ago"
+          },
+          "member": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Member id"
+          },
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Project id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "cmd",
+              "prompt",
+              "file",
+              "commit"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "exit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Exit code for kind === \"cmd\""
+          }
+        },
+        "required": [
+          "t",
+          "member",
+          "project",
+          "kind",
+          "text"
+        ]
+      },
+      "UsageRecord": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Project id"
+          },
+          "member": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Member id"
+          },
+          "tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cost": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "project",
+          "member",
+          "tokens",
+          "cost"
+        ]
+      },
+      "CostResponse": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "string",
+            "enum": [
+              "session"
+            ],
+            "description": "7d/30d are disabled until a persisted ledger exists"
+          },
+          "workspaceTotal": {
+            "type": "number",
+            "minimum": 0
+          },
+          "usage": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "project": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Project id"
+                },
+                "member": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Member id"
+                },
+                "tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cost": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "project",
+                "member",
+                "tokens",
+                "cost"
+              ]
+            }
+          }
+        },
+        "required": [
+          "window",
+          "workspaceTotal",
+          "usage"
+        ]
+      },
+      "Installer": {
+        "type": "object",
+        "properties": {
+          "os": {
+            "type": "string",
+            "minLength": 1
+          },
+          "arch": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cmd": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One-line install command"
+          }
+        },
+        "required": [
+          "os",
+          "arch",
+          "file",
+          "cmd"
+        ]
+      },
+      "AdminUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "gemini",
+              "codex",
+              "copilot",
+              "agy",
+              "opencode",
+              "none"
+            ],
+            "description": "OAuth provider (google/microsoft), not the LLM provider"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "member",
+              "admin",
+              "superadmin"
+            ],
+            "description": "Set once approved"
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "workspace_ids this user is assigned to"
+          },
+          "signedUpAt": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Seconds ago"
+          },
+          "lastLoginAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email",
+          "status",
+          "workspaces",
+          "signedUpAt",
+          "lastLoginAt"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/auth/oauth/{provider}": {
+      "post": {
+        "summary": "OAuth sign-in (google|microsoft) -> session (JWT cookie)",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OAuth sign-in (google|microsoft) -> session (JWT cookie)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "jwt": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "jwt"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workspaces": {
+      "get": {
+        "summary": "User's workspaces + role",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "User's workspaces + role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- matches the JWT `ws` claim"
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ],
+                        "description": "Requesting user's role within this workspace"
+                      },
+                      "members": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "projects": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "role",
+                      "members",
+                      "projects"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create workspace (admin+)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  },
+                  "body": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth",
+                  "body"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Create workspace (admin+)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "workspace_id -- matches the JWT `ws` claim"
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "member",
+                        "admin",
+                        "superadmin"
+                      ],
+                      "description": "Requesting user's role within this workspace"
+                    },
+                    "members": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "projects": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "role",
+                    "members",
+                    "projects"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/{id}/projects": {
+      "get": {
+        "summary": "List projects",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List projects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "desc": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "active",
+                          "paused"
+                        ]
+                      },
+                      "members": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Member ids"
+                      },
+                      "lastActivity": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Seconds ago"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "desc",
+                      "status",
+                      "members",
+                      "lastActivity"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create project",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  },
+                  "body": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "desc": {
+                        "type": "string",
+                        "default": ""
+                      },
+                      "members": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth",
+                  "body"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Create project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "desc": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "paused"
+                      ]
+                    },
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Member ids"
+                    },
+                    "lastActivity": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Seconds ago"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "desc",
+                    "status",
+                    "members",
+                    "lastActivity"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/{id}/projects/{pid}": {
+      "patch": {
+        "summary": "Update project",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  },
+                  "body": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "desc": {
+                        "type": "string",
+                        "default": ""
+                      },
+                      "members": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "auth",
+                  "body"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Update project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "desc": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "paused"
+                      ]
+                    },
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Member ids"
+                    },
+                    "lastActivity": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Seconds ago"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "desc",
+                    "status",
+                    "members",
+                    "lastActivity"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete project",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Delete project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/{id}/projects/{pid}/members": {
+      "post": {
+        "summary": "Add/remove member on project",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  },
+                  "body": {
+                    "type": "object",
+                    "properties": {
+                      "memberId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "memberId"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth",
+                  "body"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Add/remove member on project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "desc": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "paused"
+                      ]
+                    },
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Member ids"
+                    },
+                    "lastActivity": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Seconds ago"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "desc",
+                    "status",
+                    "members",
+                    "lastActivity"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/{id}/members": {
+      "get": {
+        "summary": "List members",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List members",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "provider": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "gemini",
+                          "codex",
+                          "copilot",
+                          "agy",
+                          "opencode",
+                          "none"
+                        ]
+                      },
+                      "model": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "null when provider === 'none'"
+                      },
+                      "machine": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Host running apra-fleet.exe"
+                      },
+                      "folder": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Work folder on the member machine"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "busy",
+                          "online",
+                          "offline",
+                          "awaiting-connect"
+                        ],
+                        "description": "Last-known, pushed over SSE -- never implies live polling"
+                      },
+                      "lastSeen": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "description": "Seconds ago"
+                      },
+                      "lastPrompt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Real, sourced last prompt -- never fabricated"
+                      },
+                      "lastPromptAt": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "description": "Seconds ago"
+                      },
+                      "tags": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "jwtExp": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Seconds until JWT expiry (0 = expired)"
+                      },
+                      "agentVer": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "provider",
+                      "model",
+                      "machine",
+                      "folder",
+                      "status",
+                      "lastSeen",
+                      "lastPrompt",
+                      "lastPromptAt",
+                      "tags",
+                      "jwtExp",
+                      "agentVer"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Add member; issues JWT (returned ONCE)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  },
+                  "body": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "provider": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "gemini",
+                          "codex",
+                          "copilot",
+                          "agy",
+                          "opencode",
+                          "none"
+                        ]
+                      },
+                      "machine": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "folder": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "provider",
+                      "machine",
+                      "folder"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth",
+                  "body"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Add member; issues JWT (returned ONCE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "member": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "claude",
+                            "gemini",
+                            "codex",
+                            "copilot",
+                            "agy",
+                            "opencode",
+                            "none"
+                          ]
+                        },
+                        "model": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "null when provider === 'none'"
+                        },
+                        "machine": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Host running apra-fleet.exe"
+                        },
+                        "folder": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Work folder on the member machine"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "busy",
+                            "online",
+                            "offline",
+                            "awaiting-connect"
+                          ],
+                          "description": "Last-known, pushed over SSE -- never implies live polling"
+                        },
+                        "lastSeen": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0,
+                          "description": "Seconds ago"
+                        },
+                        "lastPrompt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Real, sourced last prompt -- never fabricated"
+                        },
+                        "lastPromptAt": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0,
+                          "description": "Seconds ago"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "jwtExp": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "Seconds until JWT expiry (0 = expired)"
+                        },
+                        "agentVer": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "provider",
+                        "model",
+                        "machine",
+                        "folder",
+                        "status",
+                        "lastSeen",
+                        "lastPrompt",
+                        "lastPromptAt",
+                        "tags",
+                        "jwtExp",
+                        "agentVer"
+                      ]
+                    },
+                    "jwt": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Shown once; store it now"
+                    }
+                  },
+                  "required": [
+                    "member",
+                    "jwt"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/{id}/members/{mid}/rotate": {
+      "post": {
+        "summary": "Rotate member JWT (returned once), old revoked",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotate member JWT (returned once), old revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "member": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "claude",
+                            "gemini",
+                            "codex",
+                            "copilot",
+                            "agy",
+                            "opencode",
+                            "none"
+                          ]
+                        },
+                        "model": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "null when provider === 'none'"
+                        },
+                        "machine": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Host running apra-fleet.exe"
+                        },
+                        "folder": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Work folder on the member machine"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "busy",
+                            "online",
+                            "offline",
+                            "awaiting-connect"
+                          ],
+                          "description": "Last-known, pushed over SSE -- never implies live polling"
+                        },
+                        "lastSeen": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0,
+                          "description": "Seconds ago"
+                        },
+                        "lastPrompt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Real, sourced last prompt -- never fabricated"
+                        },
+                        "lastPromptAt": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0,
+                          "description": "Seconds ago"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "jwtExp": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "Seconds until JWT expiry (0 = expired)"
+                        },
+                        "agentVer": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "provider",
+                        "model",
+                        "machine",
+                        "folder",
+                        "status",
+                        "lastSeen",
+                        "lastPrompt",
+                        "lastPromptAt",
+                        "tags",
+                        "jwtExp",
+                        "agentVer"
+                      ]
+                    },
+                    "jwt": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Shown once; store it now"
+                    }
+                  },
+                  "required": [
+                    "member",
+                    "jwt"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/{id}/activity": {
+      "get": {
+        "summary": "Workspace-scoped activity feed (SSE)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Workspace-scoped activity feed (SSE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "t": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Seconds ago"
+                      },
+                      "member": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Member id"
+                      },
+                      "project": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Project id"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "cmd",
+                          "prompt",
+                          "file",
+                          "commit"
+                        ]
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "exit": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "description": "Exit code for kind === \"cmd\""
+                      }
+                    },
+                    "required": [
+                      "t",
+                      "member",
+                      "project",
+                      "kind",
+                      "text"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/{id}/cost": {
+      "get": {
+        "summary": "Per-(project,member) usage, session-cumulative",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Per-(project,member) usage, session-cumulative",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "window": {
+                      "type": "string",
+                      "enum": [
+                        "session"
+                      ],
+                      "description": "7d/30d are disabled until a persisted ledger exists"
+                    },
+                    "workspaceTotal": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "usage": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "project": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Project id"
+                          },
+                          "member": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Member id"
+                          },
+                          "tokens": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "cost": {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "project",
+                          "member",
+                          "tokens",
+                          "cost"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "window",
+                    "workspaceTotal",
+                    "usage"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users": {
+      "get": {
+        "summary": "List users for provisioning (superadmin)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List users for provisioning (superadmin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "email": {
+                        "type": "string",
+                        "format": "email"
+                      },
+                      "provider": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "gemini",
+                          "codex",
+                          "copilot",
+                          "agy",
+                          "opencode",
+                          "none"
+                        ],
+                        "description": "OAuth provider (google/microsoft), not the LLM provider"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "pending",
+                          "approved",
+                          "rejected"
+                        ]
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ],
+                        "description": "Set once approved"
+                      },
+                      "workspaces": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "workspace_ids this user is assigned to"
+                      },
+                      "signedUpAt": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Seconds ago"
+                      },
+                      "lastLoginAt": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "email",
+                      "status",
+                      "workspaces",
+                      "signedUpAt",
+                      "lastLoginAt"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{id}/approve": {
+      "put": {
+        "summary": "Approve a pending user (superadmin)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  },
+                  "body": {
+                    "type": "object",
+                    "properties": {
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      },
+                      "workspaces": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      }
+                    },
+                    "required": [
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth",
+                  "body"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Approve a pending user (superadmin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "enum": [
+                        "claude",
+                        "gemini",
+                        "codex",
+                        "copilot",
+                        "agy",
+                        "opencode",
+                        "none"
+                      ],
+                      "description": "OAuth provider (google/microsoft), not the LLM provider"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "approved",
+                        "rejected"
+                      ]
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "member",
+                        "admin",
+                        "superadmin"
+                      ],
+                      "description": "Set once approved"
+                    },
+                    "workspaces": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "workspace_ids this user is assigned to"
+                    },
+                    "signedUpAt": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Seconds ago"
+                    },
+                    "lastLoginAt": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "email",
+                    "status",
+                    "workspaces",
+                    "signedUpAt",
+                    "lastLoginAt"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{id}/role": {
+      "put": {
+        "summary": "Change a user's role (superadmin)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  },
+                  "body": {
+                    "type": "object",
+                    "properties": {
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth",
+                  "body"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Change a user's role (superadmin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "enum": [
+                        "claude",
+                        "gemini",
+                        "codex",
+                        "copilot",
+                        "agy",
+                        "opencode",
+                        "none"
+                      ],
+                      "description": "OAuth provider (google/microsoft), not the LLM provider"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "approved",
+                        "rejected"
+                      ]
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "member",
+                        "admin",
+                        "superadmin"
+                      ],
+                      "description": "Set once approved"
+                    },
+                    "workspaces": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "workspace_ids this user is assigned to"
+                    },
+                    "signedUpAt": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Seconds ago"
+                    },
+                    "lastLoginAt": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "email",
+                    "status",
+                    "workspaces",
+                    "signedUpAt",
+                    "lastLoginAt"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{id}": {
+      "delete": {
+        "summary": "Delete a user (superadmin)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "properties": {
+                      "iss": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Issuer -- hub URL, or \"local\" in Phase-1 offline mode"
+                      },
+                      "ws": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "workspace_id -- the hard security boundary"
+                      },
+                      "sub": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Subject -- member id (uuid)"
+                      },
+                      "exp": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Expiry, unix seconds"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "member",
+                          "admin",
+                          "superadmin"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "iss",
+                      "ws",
+                      "sub",
+                      "exp",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "auth"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Delete a user (superadmin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/installers": {
+      "get": {
+        "summary": "Latest agent builds per OS",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Latest agent builds per OS",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "os": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "arch": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "file": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "cmd": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "One-line install command"
+                      }
+                    },
+                    "required": [
+                      "os",
+                      "arch",
+                      "file",
+                      "cmd"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}

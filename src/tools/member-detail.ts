@@ -147,7 +147,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   }
   result.llmProvider = agent.llmProvider ?? 'claude';
   result.llm_cli = cli;
-  if (agent.tokenUsage) {
+  if (agent.llmProvider === 'none') {
+    result.tokenUsage = 'compute only';
+  } else if (agent.tokenUsage) {
     result.tokenUsage = agent.tokenUsage;
   }
 
@@ -258,7 +260,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';
   let t = `${icon} ${agent.friendlyName} (${agent.agentType})${userStr} | ${connStatus} | os=${os} | provider=${agent.llmProvider ?? 'claude'} | cli=${cli.version}\n`;
-  const tokenStr = agent.tokenUsage ? ` | tokens=in:${agent.tokenUsage.input} out:${agent.tokenUsage.output}` : '';
+  const tokenStr = agent.llmProvider === 'none'
+    ? ' | compute only'
+    : agent.tokenUsage ? ` | tokens=in:${agent.tokenUsage.input} out:${agent.tokenUsage.output}` : '';
   t += `  auth=${authStr} | session=${sessId} (${sessStatus}) | last=${agent.lastUsed ?? 'never'}${tokenStr}\n`;
   const branchStr = branch ? ` | branch=${branch}` : '';
   t += `  cpu=${resources.cpu} | mem=${resources.memory} | disk=${resources.disk}${branchStr}\n`;

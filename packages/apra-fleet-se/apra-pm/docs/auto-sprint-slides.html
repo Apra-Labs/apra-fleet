@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>auto-sprint</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: linear-gradient(135deg, #eef2ff 0%, #faf5ff 50%, #f0fdfa 100%);
+    color: #0f172a;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  .deck { width: 100%; height: 100vh; position: relative; }
+
+  .slide {
+    position: absolute; inset: 0;
+    display: none; flex-direction: column;
+    justify-content: center; align-items: center;
+    padding: 48px 80px 90px; text-align: center;
+  }
+  .slide.active { display: flex; animation: slideIn 0.35s ease forwards; }
+  @keyframes slideIn { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
+
+  .label { font-size:11px; font-weight:700; letter-spacing:3px; text-transform:uppercase; color:#6366f1; margin-bottom:14px; }
+
+  h1 { font-size:72px; font-weight:800; line-height:1.05; background:linear-gradient(135deg,#2563eb,#7c3aed);
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; margin-bottom:20px; }
+
+  h2 { font-size:38px; font-weight:700; line-height:1.15; background:linear-gradient(135deg,#2563eb,#7c3aed);
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; margin-bottom:14px; }
+
+  .sub { font-size:17px; color:#374151; max-width:680px; line-height:1.65; margin-bottom:28px; }
+
+  code { font-family:'SF Mono','Fira Code',monospace; background:#1e293b; border:1px solid #334155;
+    border-radius:10px; padding:14px 24px; font-size:14px; color:#7dd3fc;
+    display:inline-block; margin-top:4px; word-break:break-all; max-width:820px; text-align:left; }
+
+  .card-row { display:flex; gap:18px; justify-content:center; flex-wrap:wrap; margin-top:12px; max-width:960px; }
+  .card { background:white; border:1px solid #e2e8f0; border-radius:16px;
+    box-shadow:0 2px 12px rgba(0,0,0,.06); padding:24px 20px; text-align:left; width:210px; flex-shrink:0;
+    transition:box-shadow .2s,border-color .2s; }
+  .card:hover { box-shadow:0 6px 20px rgba(99,102,241,.15); border-color:#a5b4fc; }
+  .card .icon { font-size:26px; margin-bottom:10px; }
+  .card .ctitle { font-size:14px; font-weight:700; color:#0f172a; margin-bottom:8px; }
+  .card .cdesc { font-size:13px; color:#374151; line-height:1.55; }
+  .card code { font-size:12px; padding:2px 7px; display:inline; border-radius:5px; }
+
+  .stat-row { display:flex; gap:20px; justify-content:center; flex-wrap:wrap; margin-top:8px; }
+  .stat { background:white; border:1px solid #e2e8f0; border-radius:14px;
+    box-shadow:0 2px 8px rgba(0,0,0,.05); padding:18px 26px; text-align:center; min-width:120px; }
+  .stat .num { font-size:40px; font-weight:800; line-height:1; }
+  .stat .unit { font-size:12px; color:#374151; margin-top:6px; font-weight:500; }
+
+  .phase-flow { display:flex; align-items:center; margin-top:28px; flex-wrap:wrap; justify-content:center; }
+  .phase-box { display:flex; flex-direction:column; align-items:center; gap:8px; }
+  .phase-pill { border-radius:12px; padding:14px 22px; font-size:15px; font-weight:700; white-space:nowrap; }
+  .phase-pill.plan    { background:#dbeafe; border:2px solid #3b82f6; color:#1d4ed8; }
+  .phase-pill.develop { background:#ede9fe; border:2px solid #8b5cf6; color:#6d28d9; }
+  .phase-pill.test    { background:#d1fae5; border:2px solid #10b981; color:#065f46; }
+  .phase-pill.harvest { background:#ffedd5; border:2px solid #f97316; color:#c2410c; }
+  .phase-sub { font-size:12px; color:#374151; font-weight:500; }
+  .arrow-sep { font-size:22px; color:#94a3b8; padding:0 10px; margin-bottom:22px; }
+
+  .blist { list-style:none; text-align:left; max-width:640px; width:100%; margin-top:4px; }
+  .blist li { padding:10px 0; border-bottom:1px solid #f1f5f9; font-size:15px; color:#1e293b;
+    display:flex; align-items:flex-start; gap:12px; line-height:1.55; }
+  .blist li:last-child { border-bottom:none; }
+  .blist li .dot { width:8px; height:8px; background:#3b82f6; border-radius:50%; margin-top:6px; flex-shrink:0; }
+  .blist li .dot.purple { background:#8b5cf6; }
+  .blist li .dot.green  { background:#10b981; }
+  .blist li .dot.orange { background:#f97316; }
+  .hi { color:#2563eb; font-weight:600; }
+
+  .two-col { display:flex; gap:36px; justify-content:center; align-items:flex-start; max-width:860px; text-align:left; margin-top:12px; }
+  .col { flex:1; }
+  .col-title { font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; margin-bottom:12px; }
+  .col-title.blue   { color:#2563eb; }
+  .col-title.purple { color:#7c3aed; }
+  .col-title.green  { color:#059669; }
+
+  .pill-row { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:18px; }
+  .pill { background:white; border:1px solid #e2e8f0; border-radius:999px; padding:7px 16px;
+    font-size:13px; color:#374151; box-shadow:0 1px 4px rgba(0,0,0,.04); }
+  .pill span { color:#4f46e5; font-weight:700; }
+
+  .badge { display:inline-block; border-radius:999px; padding:3px 10px; font-size:11px; font-weight:700;
+    font-family:'SF Mono',monospace; white-space:nowrap; }
+  .badge.opus   { background:#dbeafe; color:#1d4ed8; border:1px solid #93c5fd; }
+  .badge.sonnet { background:#ede9fe; color:#6d28d9; border:1px solid #c4b5fd; }
+
+  .iter-list { width:100%; max-width:720px; display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+  .iter-row { display:flex; align-items:center; gap:14px; border-radius:12px; padding:11px 16px; text-align:left; }
+  .iter-row.opus-row   { background:#eff6ff; border:1.5px solid #bfdbfe; }
+  .iter-row.sonnet-row { background:#f5f3ff; border:1.5px solid #ddd6fe; }
+  .iter-num { font-size:13px; font-weight:700; color:#64748b; min-width:28px; }
+  .iter-tasks { flex:1; font-size:14px; color:#1e293b; }
+  .iter-time { font-size:12px; color:#64748b; font-family:'SF Mono',monospace; white-space:nowrap; font-weight:500; }
+
+  .cost-bar-wrap { width:100%; max-width:700px; margin-top:16px; }
+  .cost-bar { display:flex; height:40px; border-radius:10px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,.1); }
+  .cost-seg { display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; }
+  .cost-seg.plan    { background:#3b82f6; color:white; width:25.6%; }
+  .cost-seg.develop { background:#8b5cf6; color:white; width:52.9%; }
+  .cost-seg.test    { background:#10b981; color:white; width:6.6%;  font-size:10px; }
+  .cost-seg.harvest { background:#f97316; color:white; width:14.9%; font-size:11px; }
+  .cost-legend { display:flex; gap:20px; justify-content:center; margin-top:12px; flex-wrap:wrap; }
+  .legend-item { display:flex; align-items:center; gap:6px; font-size:13px; color:#374151; font-weight:500; }
+  .legend-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+
+  .cost-cards { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:14px; max-width:800px; }
+  .cost-card { border-radius:12px; padding:14px 16px; text-align:left; min-width:130px; background:white; box-shadow:0 1px 6px rgba(0,0,0,.06); }
+  .cost-card.plan    { border-left:4px solid #3b82f6; }
+  .cost-card.develop { border-left:4px solid #8b5cf6; }
+  .cost-card.test    { border-left:4px solid #10b981; }
+  .cost-card.harvest { border-left:4px solid #f97316; }
+  .cost-card.overhead{ border-left:4px solid #94a3b8; }
+  .cost-card .cphase { font-size:10px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; margin-bottom:5px; }
+  .cost-card.plan    .cphase { color:#2563eb; }
+  .cost-card.develop .cphase { color:#7c3aed; }
+  .cost-card.test    .cphase { color:#059669; }
+  .cost-card.harvest .cphase { color:#ea580c; }
+  .cost-card.overhead .cphase { color:#475569; }
+  .cost-card .camount { font-size:24px; font-weight:800; color:#0f172a; line-height:1.1; }
+  .cost-card .cdetail { font-size:12px; color:#374151; margin-top:5px; line-height:1.5; }
+
+  .tag { display:inline-block; background:#f1f5f9; border:1px solid #cbd5e1; border-radius:6px;
+    padding:3px 10px; font-size:12px; color:#1e293b; font-family:'SF Mono',monospace; font-weight:500; }
+
+  .nav { position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    display:flex; align-items:center; gap:18px; background:#1e293b; border-radius:999px;
+    padding:10px 22px; z-index:100; box-shadow:0 4px 20px rgba(0,0,0,.2); }
+  .nav button { background:none; border:none; color:#94a3b8; font-size:17px; cursor:pointer; padding:0 4px; transition:color .2s; }
+  .nav button:hover { color:white; }
+  .nav button:disabled { opacity:.2; cursor:default; }
+  .counter { font-size:12px; color:#94a3b8; min-width:48px; text-align:center; font-family:'SF Mono',monospace; }
+  .dots { display:flex; gap:6px; }
+  .dot-btn { width:6px; height:6px; border-radius:50%; background:rgba(255,255,255,.2); border:none; cursor:pointer; padding:0; transition:background .2s,transform .2s; }
+  .dot-btn.active { background:#60a5fa; transform:scale(1.35); }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+<!-- 1 -->
+<div class="slide active">
+  <div class="label">Apra PM &middot; /pm &rarr; auto-sprint</div>
+  <h1>auto-sprint</h1>
+  <p class="sub" style="margin-bottom:16px">One command. 91 minutes to a finished sprint with 4 features.</p>
+  <div style="display:flex;flex-direction:column;gap:10px;max-width:820px;width:100%;text-align:left">
+    <div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#374151;margin-bottom:6px">Plain English</div>
+      <div style="background:#f0fdf4;border:1.5px solid #6ee7b7;border-radius:10px;padding:13px 20px;font-size:16px;color:#065f46;line-height:1.6;font-style:italic">"Use /auto-sprint to develop all P1 features on branch feat/four-p1-v2 till 0 P1 left"</div>
+    </div>
+    <div style="text-align:center;color:#94a3b8;font-size:16px">&darr; LLM constructs</div>
+    <div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#374151;margin-bottom:6px">LLM invokes this</div>
+      <code style="font-size:14px;display:block">/auto-sprint {"issues":["gh-toy-4ef","gh-toy-7rp","gh-toy-mi2","gh-toy-13t"],"branch":"feat/four-p1-v2","goal":"P1/P2"}</code>
+    </div>
+  </div>
+  <div style="margin-top:12px;font-size:12px;color:#64748b">
+    Example repo: <a href="https://github.com/Apra-Labs/fleet-e2e-toy" target="_blank" style="color:#2563eb;text-decoration:none;font-weight:600">github.com/Apra-Labs/fleet-e2e-toy</a>
+    &nbsp;&middot;&nbsp;
+    Tool: <a href="https://github.com/Apra-Labs/apra-pm" target="_blank" style="color:#7c3aed;text-decoration:none;font-weight:600">github.com/Apra-Labs/apra-pm</a>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="slide">
+  <div class="label">Inputs vs /pm</div>
+  <h2>You provide three things. auto-sprint does the rest.</h2>
+  <p class="sub">With <strong style="color:#1d4ed8">/pm</strong> you use commands like plan, start, cleanup etc. <br> With <strong style="color:#6d28d9">/auto-sprint</strong> you hand over the keys.</p>
+  <div class="card-row">
+    <div class="card">
+      <div class="icon">🎯</div>
+      <div class="ctitle">Epic IDs</div>
+      <div class="cdesc">Your existing beads epics &mdash; e.g. <code>gh-toy-4ef, gh-toy-7rp</code>. Same epics you'd pass to /pm.</div>
+    </div>
+    <div class="card">
+      <div class="icon">🌿</div>
+      <div class="ctitle">Branch</div>
+      <div class="cdesc"><code>feat/four-p1-v2</code> &mdash; created automatically if it doesn't exist yet.</div>
+    </div>
+    <div class="card">
+      <div class="icon">🏁</div>
+      <div class="ctitle">Goal <span style="font-weight:400;color:#64748b">(optional)</span></div>
+      <div class="cdesc">Exit when P1, P1/P2, or P1/P2/P3 beads issues are all closed. Default: P1/P2.</div>
+    </div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="slide">
+  <div class="label">Real run &middot; <a href="https://github.com/Apra-Labs/fleet-e2e-toy" target="_blank" style="color:#6366f1;text-decoration:none">fleet-e2e-toy</a></div>
+  <h2>A CLI toolkit, built autonomously</h2>
+  <p class="sub" style="margin-bottom:20px">Build a CLI that talks to a REST API &mdash; list, read, create, update, delete, --version, --help, and input validation.</p>
+  <div class="stat-row">
+    <div class="stat"><div class="num" style="color:#2563eb">91</div><div class="unit">minutes wall time</div></div>
+    <div class="stat"><div class="num" style="color:#7c3aed">$1.21</div><div class="unit">total cost</div></div>
+    <div class="stat"><div class="num" style="color:#059669">9</div><div class="unit">tasks in DAG</div></div>
+    <div class="stat"><div class="num" style="color:#ea580c">5</div><div class="unit">develop iterations</div></div>
+    <div class="stat"><div class="num" style="color:#0891b2">1</div><div class="unit">cycle to done</div></div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="slide">
+  <div class="label">Architecture</div>
+  <h2>Four phases, fully autonomous</h2>
+  <p class="sub">The same agents you know from /pm &mdash; planner, doer, reviewer &mdash; plus plan-reviewer, deployer, integ-test-runner, and harvester. auto-sprint wires them together and loops until the goal is met.</p>
+  <div class="phase-flow">
+    <div class="phase-box"><div class="phase-pill plan">📋 Plan</div><div class="phase-sub">Opus plans &middot; Sonnet reviews</div></div>
+    <div class="arrow-sep">&rarr;</div>
+    <div class="phase-box"><div class="phase-pill develop">⚙️ Develop</div><div class="phase-sub">Doer streaks &middot; Reviewer gates</div></div>
+    <div class="arrow-sep">&rarr;</div>
+    <div class="phase-box"><div class="phase-pill test">🧪 Test</div><div class="phase-sub">Deploy &middot; Run &middot; Teardown</div></div>
+    <div class="arrow-sep">&rarr;</div>
+    <div class="phase-box"><div class="phase-pill harvest">📦 Harvest</div><div class="phase-sub">Docs &middot; CHANGELOG &middot; PR</div></div>
+  </div>
+  <p style="font-size:14px;color:#64748b;margin-top:28px;font-weight:500">Cycles repeat until your goal is met or the max-cycle ceiling is hit.</p>
+</div>
+
+<!-- 5 -->
+<div class="slide">
+  <div class="label">Phase 1 &mdash; Plan</div>
+  <h2>Planner built a 9-task DAG</h2>
+  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:3px solid #6366f1;border-radius:8px;padding:9px 16px;font-size:13px;color:#374151;font-style:italic;margin-bottom:10px;max-width:700px;text-align:left">
+    💬 "use /auto-sprint with the 4 P1 beads, branch feat/four-p1-v2, base main, goal = no P1 lefts"
+  </div>
+  <p class="sub" style="margin-bottom:8px;font-size:14px">Same planner and plan-reviewer you know &mdash; and a <strong style="color:#6d28d9">cost quote</strong> computed before any code is written.</p>
+  <svg viewBox="0 0 820 320" width="820" height="320" style="max-width:100%;overflow:visible">
+    <defs>
+      <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 Z" fill="#94a3b8"/>
+      </marker>
+    </defs>
+    <!-- qj9 Opus -->
+    <rect x="310" y="14" width="200" height="62" rx="10" fill="#eff6ff" stroke="#3b82f6" stroke-width="2"/>
+    <text x="410" y="36"  text-anchor="middle" font-family="'SF Mono',monospace" font-size="13" fill="#1d4ed8" font-weight="700">qj9</text>
+    <text x="410" y="54"  text-anchor="middle" font-family="Inter,sans-serif"    font-size="12" fill="#374151">Scaffold CLI + HTTP client</text>
+    <rect x="362" y="59" width="96" height="15" rx="7" fill="#dbeafe"/>
+    <text x="410" y="70"  text-anchor="middle" font-family="'SF Mono',monospace" font-size="9"  fill="#1d4ed8" font-weight="700">Opus</text>
+    <!-- 24v -->
+    <rect x="15"  y="126" width="148" height="60" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+    <text x="89"  y="146" text-anchor="middle" font-family="'SF Mono',monospace" font-size="13" fill="#6d28d9" font-weight="700">24v</text>
+    <text x="89"  y="163" text-anchor="middle" font-family="Inter,sans-serif"    font-size="11" fill="#374151">--version flag</text>
+    <rect x="55"  y="171" width="68" height="13" rx="6" fill="#ede9fe"/>
+    <text x="89"  y="181" text-anchor="middle" font-family="'SF Mono',monospace" font-size="9"  fill="#6d28d9" font-weight="700">Sonnet</text>
+    <!-- 6o8 -->
+    <rect x="193" y="126" width="148" height="60" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+    <text x="267" y="146" text-anchor="middle" font-family="'SF Mono',monospace" font-size="13" fill="#6d28d9" font-weight="700">6o8</text>
+    <text x="267" y="163" text-anchor="middle" font-family="Inter,sans-serif"    font-size="11" fill="#374151">list + read</text>
+    <rect x="233" y="171" width="68" height="13" rx="6" fill="#ede9fe"/>
+    <text x="267" y="181" text-anchor="middle" font-family="'SF Mono',monospace" font-size="9"  fill="#6d28d9" font-weight="700">Sonnet</text>
+    <!-- p4n -->
+    <rect x="371" y="126" width="148" height="60" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+    <text x="445" y="146" text-anchor="middle" font-family="'SF Mono',monospace" font-size="13" fill="#6d28d9" font-weight="700">p4n</text>
+    <text x="445" y="163" text-anchor="middle" font-family="Inter,sans-serif"    font-size="11" fill="#374151">--help system</text>
+    <rect x="411" y="171" width="68" height="13" rx="6" fill="#ede9fe"/>
+    <text x="445" y="181" text-anchor="middle" font-family="'SF Mono',monospace" font-size="9"  fill="#6d28d9" font-weight="700">Sonnet</text>
+    <!-- 3g8 -->
+    <rect x="551" y="126" width="156" height="60" rx="10" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+    <text x="629" y="146" text-anchor="middle" font-family="'SF Mono',monospace" font-size="13" fill="#6d28d9" font-weight="700">3g8</text>
+    <text x="629" y="163" text-anchor="middle" font-family="Inter,sans-serif"    font-size="11" fill="#374151">create/update/delete</text>
+    <rect x="595" y="171" width="68" height="13" rx="6" fill="#ede9fe"/>
+    <text x="629" y="181" text-anchor="middle" font-family="'SF Mono',monospace" font-size="9"  fill="#6d28d9" font-weight="700">Sonnet</text>
+    <!-- g6o -->
+    <rect x="15"  y="246" width="148" height="60" rx="10" fill="#f0fdf4" stroke="#10b981" stroke-width="1.5"/>
+    <text x="89"  y="266" text-anchor="middle" font-family="'SF Mono',monospace" font-size="13" fill="#065f46" font-weight="700">g6o</text>
+    <text x="89"  y="283" text-anchor="middle" font-family="Inter,sans-serif"    font-size="11" fill="#374151">test --version</text>
+    <rect x="55"  y="291" width="68" height="13" rx="6" fill="#ede9fe"/>
+    <text x="89"  y="301" text-anchor="middle" font-family="'SF Mono',monospace" font-size="9"  fill="#6d28d9" font-weight="700">Sonnet</text>
+    <!-- fwh -->
+    <rect x="193" y="246" width="148" height="60" rx="10" fill="#f0fdf4" stroke="#10b981" stroke-width="1.5"/>
+    <text x="267" y="266" text-anchor="middle" font-family="'SF Mono',monospace" font-size="13" fill="#065f46" font-weight="700">fwh</text>
+    <text x="267" y="283" text-anchor="middle" font-family="Inter,sans-serif"    font-size="11" fill="#374151">test CRUD e2e</text>
+    <rect x="233" y="291" width="68" height="13" rx="6" fill="#ede9fe"/>
+    <text x="267" y="301" text-anchor="middle" font-family="'SF Mono',monospace" font-size="9"  fill="#6d28d9" font-weight="700">Sonnet</text>
+    <!-- mgk -->
+    <rect x="371" y="246" width="148" height="60" rx="10" fill="#f0fdf4" stroke="#10b981" stroke-width="1.5"/>
+    <text x="445" y="266" text-anchor="middle" font-family="'SF Mono',monospace" font-size="13" fill="#065f46" font-weight="700">mgk</text>
+    <text x="445" y="283" text-anchor="middle" font-family="Inter,sans-serif"    font-size="11" fill="#374151">test help/validation</text>
+    <rect x="411" y="291" width="68" height="13" rx="6" fill="#ede9fe"/>
+    <text x="445" y="301" text-anchor="middle" font-family="'SF Mono',monospace" font-size="9"  fill="#6d28d9" font-weight="700">Sonnet</text>
+    <!-- 13t -->
+    <rect x="551" y="246" width="156" height="60" rx="10" fill="#f0fdf4" stroke="#10b981" stroke-width="1.5"/>
+    <text x="629" y="266" text-anchor="middle" font-family="'SF Mono',monospace" font-size="13" fill="#065f46" font-weight="700">13t</text>
+    <text x="629" y="283" text-anchor="middle" font-family="Inter,sans-serif"    font-size="11" fill="#374151">input validation</text>
+    <rect x="595" y="291" width="68" height="13" rx="6" fill="#ede9fe"/>
+    <text x="629" y="301" text-anchor="middle" font-family="'SF Mono',monospace" font-size="9"  fill="#6d28d9" font-weight="700">Sonnet</text>
+    <!-- qj9 -> impl -->
+    <path d="M410,76 C410,101 89,101 89,126"  fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+    <path d="M410,76 C410,101 267,101 267,126" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+    <path d="M410,76 L445,126"                 fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+    <path d="M410,76 C410,101 629,101 629,126" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+    <!-- impl -> test -->
+    <path d="M89,186 L89,246"                   fill="none" stroke="#c7d2fe" stroke-width="1.2" marker-end="url(#arr)"/>
+    <path d="M267,186 L267,246"                 fill="none" stroke="#c7d2fe" stroke-width="1.2" marker-end="url(#arr)"/>
+    <path d="M629,186 C629,216 267,216 267,246" fill="none" stroke="#c7d2fe" stroke-width="1.2" marker-end="url(#arr)"/>
+    <path d="M445,186 L445,246"                 fill="none" stroke="#c7d2fe" stroke-width="1.2" marker-end="url(#arr)"/>
+    <path d="M629,186 C629,216 445,216 445,246" fill="none" stroke="#c7d2fe" stroke-width="1.2" marker-end="url(#arr)"/>
+    <path d="M445,186 C445,216 629,216 629,246" fill="none" stroke="#c7d2fe" stroke-width="1.2" marker-end="url(#arr)"/>
+  </svg>
+</div>
+
+<!-- 6 -->
+<div class="slide">
+  <div class="label">Phase 2 &mdash; Develop</div>
+  <h2>5 rounds of code + review</h2>
+  <p class="sub" style="margin-bottom:8px;font-size:15px">The doer/reviewer loop you know from /pm &mdash; driven automatically. Tasks batched by model tier; reviewer gates every streak.</p>
+  <div class="iter-list">
+    <div class="iter-row opus-row">
+      <div class="iter-num">i0</div><span class="badge opus">Opus</span>
+      <div class="iter-tasks"><strong>qj9</strong> &mdash; scaffold CLI entry point &amp; HTTP client</div>
+      <div class="iter-time">05:58&rarr;06:11</div>
+    </div>
+    <div class="iter-row sonnet-row">
+      <div class="iter-num">i1</div><span class="badge sonnet">Sonnet</span>
+      <div class="iter-tasks"><strong>24v, 6o8, p4n</strong> &mdash; version flag &middot; list/read &middot; help system</div>
+      <div class="iter-time">06:11&rarr;06:23</div>
+    </div>
+    <div class="iter-row sonnet-row">
+      <div class="iter-num">i2</div><span class="badge sonnet">Sonnet</span>
+      <div class="iter-tasks"><strong>3g8, g6o</strong> &mdash; create/update/delete &middot; test --version</div>
+      <div class="iter-time">06:23&rarr;06:35</div>
+    </div>
+    <div class="iter-row sonnet-row">
+      <div class="iter-num">i3</div><span class="badge sonnet">Sonnet</span>
+      <div class="iter-tasks"><strong>fwh, 13t</strong> &mdash; test CRUD end-to-end &middot; input validation</div>
+      <div class="iter-time">06:35&rarr;06:44</div>
+    </div>
+    <div class="iter-row sonnet-row">
+      <div class="iter-num">i4</div><span class="badge sonnet">Sonnet</span>
+      <div class="iter-tasks"><strong>mgk</strong> &mdash; test help system and validation</div>
+      <div class="iter-time">06:44&rarr;06:54</div>
+    </div>
+  </div>
+</div>
+
+<!-- 7 -->
+<div class="slide">
+  <div class="label">Phase 3 &mdash; Test</div>
+  <h2>Integration tests ran automatically</h2>
+  <p class="sub">Drop two files in your repo and the test phase activates. No workflow changes needed.</p>
+  <div class="two-col">
+    <div class="col">
+      <div class="col-title blue">You provide</div>
+      <ul class="blist">
+        <li><div class="dot"></div><span class="hi">deploy.md</span> &mdash; how to build &amp; deploy the app</li>
+        <li><div class="dot"></div><span class="hi">integ-test-playbook.md</span> &mdash; setup / reset / teardown steps</li>
+      </ul>
+    </div>
+    <div class="col">
+      <div class="col-title green">What ran (fleet-e2e-toy)</div>
+      <ul class="blist">
+        <li><div class="dot green"></div>Deployer launched the test environment</li>
+        <li><div class="dot green"></div>Test runner validated all features</li>
+        <li><div class="dot green"></div>Teardown cleaned up the environment</li>
+        <li><div class="dot green"></div>CI watcher confirmed green before Harvest</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- 8 -->
+<div class="slide">
+  <div class="label">Phase 4 &mdash; Harvest &middot; New in auto-sprint</div>
+  <h2>Sprint closes itself</h2>
+  <p class="sub">/auto-sprint adds a final-reviewer + harvester that close the sprint automatically &mdash; no manual wrap-up.</p>
+  <ul class="blist">
+    <li><div class="dot orange"></div>CHANGELOG entry written &mdash; cost table, final review notes included</li>
+    <li><div class="dot orange"></div><span class="hi">calibration.json</span> updated &mdash; next sprint estimates will be sharper</li>
+    <li><div class="dot orange"></div>GitHub PR raised automatically &mdash; ready for your review</li>
+    <li><div class="dot orange"></div>Beads: <span class="hi">13 tasks and epics closed</span>, 4 P2 items deferred to backlog as expected</li>
+    <li><div class="dot orange"></div>42-entry sprint log committed to <span class="hi">sprint-logs/</span></li>
+  </ul>
+</div>
+
+<!-- 9 -->
+<div class="slide">
+  <div class="label">Cost visibility &middot; New in auto-sprint</div>
+  <h2>$1.21 &mdash; broken down by phase</h2>
+  <p class="sub" style="margin-bottom:4px;font-size:15px">A cost quote is shown after planning &mdash; before any code is written. /pm never did this. Actual landed at $1.21.</p>
+  <div class="cost-bar-wrap">
+    <div class="cost-bar">
+      <div class="cost-seg plan">$0.31</div>
+      <div class="cost-seg develop">$0.64</div>
+      <div class="cost-seg test">$0.08</div>
+      <div class="cost-seg harvest">$0.18</div>
+    </div>
+    <div class="cost-legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div>Plan</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#8b5cf6"></div>Develop</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div>Test</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#f97316"></div>Harvest</div>
+    </div>
+  </div>
+  <div class="cost-cards">
+    <div class="cost-card plan">
+      <div class="cphase">Plan</div><div class="camount">$0.31</div>
+      <div class="cdetail">Opus planner $0.25<br>Sonnet reviewer $0.04<br>Quote + state $0.02</div>
+    </div>
+    <div class="cost-card develop">
+      <div class="cphase">Develop</div><div class="camount">$0.64</div>
+      <div class="cdetail">5&times; doer/reviewer rounds<br>Opus: $0.14 &middot; Sonnet: $0.50</div>
+    </div>
+    <div class="cost-card test">
+      <div class="cphase">Test</div><div class="camount">$0.08</div>
+      <div class="cdetail">Deployer + runner<br>+ teardown</div>
+    </div>
+    <div class="cost-card harvest">
+      <div class="cphase">Harvest</div><div class="camount">$0.18</div>
+      <div class="cdetail">Final-reviewer $0.15<br>Harvester + PR $0.11<br>Calibration $0.02</div>
+    </div>
+    <div class="cost-card overhead">
+      <div class="cphase">Overhead</div><div class="camount">$0.05</div>
+      <div class="cdetail">Log appends (Haiku)</div>
+    </div>
+  </div>
+</div>
+
+<!-- 10 -->
+<div class="slide">
+  <div class="label">Outputs</div>
+  <h2>A complete sprint package</h2>
+  <ul class="blist" style="max-width:680px">
+    <li><div class="dot"></div>A <span class="hi">GitHub PR</span> with summary, cost analysis, and open items carried forward</li>
+    <li><div class="dot"></div><span class="tag">sprint-logs/feat-four-p1-v2-20260623_013802.jsonl</span> &mdash; 42 timestamped log entries</li>
+    <li><div class="dot"></div>Updated <span class="hi">calibration.json</span> &mdash; historical averages blended in for next sprint</li>
+    <li><div class="dot"></div>Beads: <span class="hi">13 tasks and epics closed</span>, 4 deferred to backlog</li>
+    <li><div class="dot"></div>A <span class="hi">CHANGELOG entry</span> with estimate vs actual cost table</li>
+  </ul>
+</div>
+
+<!-- 11 -->
+<div class="slide">
+  <div class="label">Getting started</div>
+  <h2>If you've used /pm, you already know the pieces</h2>
+  <p class="sub" style="margin-bottom:8px">auto-sprint drives them for you. You don't need to know the JSON &mdash; just describe what you want.</p>
+  <div style="display:flex;flex-direction:column;gap:10px;max-width:820px;width:100%;text-align:left;margin-bottom:12px">
+    <div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#374151;margin-bottom:6px">Plain English</div>
+      <div style="background:#f0fdf4;border:1.5px solid #6ee7b7;border-radius:10px;padding:13px 20px;font-size:16px;color:#065f46;line-height:1.6;font-style:italic">"Use /auto-sprint on epics BD-1 and BD-2, branch feat/my-sprint, close when P1 and P2 are done"</div>
+    </div>
+    <div style="text-align:center;color:#94a3b8;font-size:16px">&darr; LLM constructs</div>
+    <div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#374151;margin-bottom:6px">LLM builds this</div>
+      <code style="font-size:14px;display:block">/auto-sprint {"issues":["BD-1","BD-2"],"branch":"feat/my-sprint","goal":"P1/P2"}</code>
+    </div>
+  </div>
+  <div class="pill-row" style="margin-bottom:12px">
+    <div class="pill"><span>goal</span> P1 &middot; P1/P2 &middot; P1/P2/P3</div>
+    <div class="pill"><span>max_cycles</span> default 5</div>
+    <div class="pill"><span>base_branch</span> default main</div>
+    <div class="pill"><span>requirementsFile</span> optional path</div>
+  </div>
+  <div style="text-align:left;max-width:820px;width:100%">
+    <div style="font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#374151;margin-bottom:6px">Install apra-pm</div>
+    <code style="font-size:14px;display:block">git clone https://github.com/Apra-Labs/apra-pm &amp;&amp; node apra-pm/install.mjs</code>
+    <div style="font-size:12px;color:#64748b;margin-top:8px">
+      <a href="https://github.com/Apra-Labs/apra-pm" target="_blank" style="color:#7c3aed;text-decoration:none;font-weight:600">github.com/Apra-Labs/apra-pm</a>
+    </div>
+  </div>
+</div>
+
+<!-- 12 -->
+<div class="slide">
+  <div class="label">Issue tracker</div>
+  <h2>My issues are in Azure DevOps</h2>
+  <p class="sub">Use LLM + az cli to pull PBIs/Features from ADO into beads, then hand beads to auto-sprint.</p>
+  <div class="two-col" style="align-items:flex-start;gap:28px">
+    <div class="col">
+      <div class="col-title blue">Bridge pattern</div>
+      <ul class="blist" style="gap:12px">
+        <li><div class="dot"></div>Run az boards work-item list &rarr; ask LLM to create matching beads epics</li>
+        <li><div class="dot"></div>Pass those beads epics to auto-sprint &mdash; sprint loop polls beads for exit-gate signals</li>
+        <li><div class="dot"></div>ADO stays source of truth; auto-sprint never needs an ADO token</li>
+      </ul>
+    </div>
+    <div class="col">
+      <div class="col-title purple">requirements.md</div>
+      <ul class="blist" style="gap:12px">
+        <li><div class="dot purple"></div>Dump ADO acceptance criteria, design notes, or constraints into requirements.md</li>
+        <li><div class="dot purple"></div>Pass it via requirementsFile &mdash; planner reads it before making any decisions</li>
+        <li><div class="dot purple"></div>No API access needed &mdash; paste, copy, or generate the file however you like</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- 13 -->
+<div class="slide">
+  <div class="label">Preparation</div>
+  <h2>Documents to prepare in advance</h2>
+  <p class="sub" style="margin-bottom:16px">One is required. The rest unlock additional phases.</p>
+  <div class="card-row">
+    <div class="card" style="width:186px;border-top:3px solid #ef4444">
+      <div class="icon">📋</div>
+      <div class="ctitle">beads epics</div>
+      <div class="cdesc">At least one epic in beads describing what to build. One line is enough &mdash; the planner expands it.</div>
+    </div>
+    <div class="card" style="width:186px;border-top:3px solid #8b5cf6">
+      <div class="icon">📄</div>
+      <div class="ctitle">requirements.md <span style="color:#64748b;font-size:11px">optional</span></div>
+      <div class="cdesc">Detailed requirements, constraints, or design decisions. Passed via <code style="font-size:11px;display:inline;padding:1px 6px">requirementsFile</code>.</div>
+    </div>
+    <div class="card" style="width:186px;border-top:3px solid #3b82f6">
+      <div class="icon">🚀</div>
+      <div class="ctitle">deploy.md</div>
+      <div class="cdesc">How to build, deploy, and smoke-test. Activates the integration test phase.</div>
+    </div>
+    <div class="card" style="width:186px;border-top:3px solid #10b981">
+      <div class="icon">🧪</div>
+      <div class="ctitle">integ-test-playbook.md</div>
+      <div class="cdesc">Setup / reset / teardown for the test environment. Paired with deploy.md to activate Phase 3.</div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<nav class="nav">
+  <button id="prev" onclick="go(-1)" disabled>&larr;</button>
+  <div class="dots" id="dots"></div>
+  <span class="counter" id="counter">1 / 13</span>
+  <button id="next" onclick="go(1)">&rarr;</button>
+</nav>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  const dotsEl = document.getElementById('dots');
+  let cur = 0;
+  slides.forEach((_, i) => {
+    const b = document.createElement('button');
+    b.className = 'dot-btn' + (i === 0 ? ' active' : '');
+    b.onclick = () => show(i);
+    dotsEl.appendChild(b);
+  });
+  function show(n) {
+    slides[cur].classList.remove('active');
+    dotsEl.children[cur].classList.remove('active');
+    cur = Math.max(0, Math.min(n, slides.length - 1));
+    slides[cur].classList.add('active');
+    dotsEl.children[cur].classList.add('active');
+    document.getElementById('counter').textContent = (cur + 1) + ' / ' + slides.length;
+    document.getElementById('prev').disabled = cur === 0;
+    document.getElementById('next').disabled = cur === slides.length - 1;
+  }
+  function go(d) { show(cur + d); }
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') go(1);
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   go(-1);
+  });
+</script>
+</body>
+</html>

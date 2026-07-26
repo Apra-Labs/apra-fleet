@@ -1,0 +1,42 @@
+# REFERENCE/DEV-ONLY -- NOT a production deployment target (apra-fleet-yp3,
+# 2026-07-05). src/hub-service/ is not deployed to fleet.apralabs.com;
+# fleet-dashboard is the sole tier-3 persistence layer going forward. See
+# docs/hub-service-deployment.md and docs/api-contract-reconciliation.md
+# section 1.5. This compose file exists only to run the reference
+# implementation's tests/dev loop locally -- never point it at production.
+#
+# Local dev for the hub service (apra-fleet-us9.4).
+# Usage: docker compose -f docker-compose.hub-service.yml up
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hub
+      POSTGRES_PASSWORD: hub-dev-password
+      POSTGRES_DB: apra_fleet_hub
+    ports:
+      - "5432:5432"
+    volumes:
+      - hub-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  hub-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.hub-service
+    ports:
+      - "8080:8080"
+    environment:
+      HUB_DATABASE_URL: postgres://hub:hub-dev-password@db:5432/apra_fleet_hub
+      HUB_JWT_SECRET: local-dev-secret-do-not-use-in-production
+      PORT: "8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  hub-db-data:

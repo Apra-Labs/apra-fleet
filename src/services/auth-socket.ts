@@ -9,6 +9,7 @@ import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 import { launchAuthWeb } from './auth-web.js';
+import { fleetEvents } from './event-bus.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -189,6 +190,7 @@ export function submitPassword(memberName: string, plaintext: string, persist?: 
     clearTimeout(waiter.timer);
     passwordWaiters.delete(memberName);
     waiter.resolve(pending.encryptedPassword);
+    fleetEvents.emit('credential:stored', { name: memberName });
   }
   return { ok: true };
 }

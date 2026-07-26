@@ -1,6 +1,11 @@
 node_modules/
 dist/
 data/
+
+# apra-fleet-se's package-local vendored schema snapshot (apra-fleet-bun):
+# build artifact written by packages/apra-fleet-se/scripts/vendor-schemas.mjs,
+# not a checked-in fixture (contrast with test/fixtures/vendor-apra-pm-schemas/).
+packages/apra-fleet-se/vendor/schemas/
 .fleet-task.md
 *.js.map
 *.tsbuildinfo
@@ -28,11 +33,40 @@ CLAUDE.md
 # Sprint-log transcripts and analyses are per-run artifacts, not deliverables.
 # Files already tracked before this rule stay tracked (gitignore does not
 # untrack existing files) -- this only stops new ones from being committed.
-sprint-logs/*.jsonl
-sprint-logs/*.analysis.md
+**/sprint-logs/*.jsonl
+**/sprint-logs/*.analysis.md
+**/sprint-logs/sprint_*.json
 
 # Provider agent context files are tracked project deliverables (git add -f was used).
 # These entries prevent sprint-injected replacements from being accidentally staged.
 GEMINI.md
 AGENTS.md
 COPILOT-INSTRUCTIONS.md
+
+# local compose_permissions ledger artifact
+/permissions.json
+
+# Beads / Dolt files (added by bd init)
+.beads/proxieddb/
+
+# Local tool scaffolding, not project deliverables
+.agents/
+.codex/
+
+# Auto-sprint scaffold logs left in repo root (not under sprint-logs/)
+/auto-sprint-*.log
+/auto-sprint-*.err.log
+
+# Per-file integration-test progress state (scripts/run-integ-suites.mjs)
+/integ-suite-status.json
+/integ-suite-status.json.tmp
+/integ-suite-heartbeat.json
+/integ-suite-run.log
+
+# Per-run sprint state dumps (bin/cli.mjs writes one automatically on every
+# sprint exit) -- local scratch, not a project deliverable.
+/sprint-logs/
+
+# Per-member installed agent role files -- must stay on disk, never committed
+.claude/agents/
+packages/apra-fleet-se/auto-sprint/logs/

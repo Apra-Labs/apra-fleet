@@ -88,9 +88,12 @@ describe('pidWrapWindows: no $PID regression', () => {
 // ─── 4. All unattended modes ──────────────────────────────────────────────────
 
 describe('buildAgentPromptCommand: unattended modes produce correct ArgumentList', () => {
-  it('unattended=false: no permission flag in ArgumentList', () => {
+  it('unattended=false: work-folder edit parity (acceptEdits), not the broad bypass', () => {
+    // apra-fleet-eft.65.1: a headless dispatch cannot show a permission prompt, so
+    // the default (no explicit unattended mode) grants Edit/Write parity for the
+    // work folder via --permission-mode acceptEdits -- without the broad bypass.
     const out = windows.buildAgentPromptCommand(provider, { ...baseOpts, unattended: false });
-    expect(out).not.toContain('--permission-mode');
+    expect(out).toContain('--permission-mode acceptEdits');
     expect(out).not.toContain('--dangerously-skip-permissions');
   });
 
@@ -106,9 +109,11 @@ describe('buildAgentPromptCommand: unattended modes produce correct ArgumentList
     expect(out).not.toContain('--permission-mode');
   });
 
-  it('unattended=undefined: no permission flag in ArgumentList', () => {
+  it('unattended=undefined: work-folder edit parity (acceptEdits), not the broad bypass', () => {
+    // apra-fleet-eft.65.1: same default-mode work-folder Edit/Write parity as
+    // unattended=false -- undefined is the omitted-field default.
     const out = windows.buildAgentPromptCommand(provider, { ...baseOpts });
-    expect(out).not.toContain('--permission-mode');
+    expect(out).toContain('--permission-mode acceptEdits');
     expect(out).not.toContain('--dangerously-skip-permissions');
   });
 });

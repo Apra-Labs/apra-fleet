@@ -3,7 +3,7 @@
  * and backward compatibility.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { executeCommand } from '../src/tools/execute-command.js';
 import {
@@ -267,11 +267,11 @@ describe('execute_command: credential scoping rejection', () => {
     const member = makeTestAgent({ os: 'linux', friendlyName: 'fleet-rev' });
     addAgent(member);
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `echo {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('❌');
     expect(result).toContain(name);
@@ -288,11 +288,11 @@ describe('execute_command: credential scoping rejection', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
 
-    const result = await executeCommand({
+    const result = resultText(await executeCommand({
       member_id: member.id,
       command: `echo {{secure.${name}}}`,
       timeout_s: 5,
-    });
+    }));
 
     expect(result).toContain('Exit code: 0');
     credentialDelete(name);

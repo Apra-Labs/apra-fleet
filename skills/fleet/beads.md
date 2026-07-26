@@ -9,19 +9,25 @@ Beads (`bd`) is a lightweight, dependency-aware task database installed automati
 ## Quick Reference
 
 ```bash
-bd init                               # init Beads in current dir (once per repo, idempotent)
 bd ready                              # show all unblocked open tasks
-bd create "title" -p <n>              # create task (priority: 0=critical 1=high 2=med 3=low)
+bd create "title" -p <n>              # create task (priority: 0=critical .. 4=trivial, 2=default)
 bd update <id> --assignee <member>    # assign to a member
 bd close <id>                         # mark complete (idempotent)
 bd reopen <id>                        # reopen a closed task
 bd note <id> "text"                   # append a note (e.g. PR URL, blocker reason)
-bd dep add <child-id> <parent-id>     # child is blocked until parent is done
+bd dep add <blocked-id> <blocker-id>  # blocked-id cannot start until blocker-id is done
+                                       # (unrelated to --parent below -- that's epic/task
+                                       # nesting, this is a scheduling dependency)
 bd show <id>                          # full task details
 bd list --all --pretty                # full tree: all tasks, all statuses
 bd list --assignee <member>           # tasks for a specific member
 bd search "text" --status all --json  # find existing issues by title (use for dedup)
 ```
+
+**Never run `bd init` on a repo that already has a `.beads/` directory** — it pulls from
+remote and recreates the database, discarding local issue state. It is NOT idempotent.
+Only run it once, on a repo with no `.beads/` yet. For a fresh clone or recovering a
+missing/corrupt DB, prefer `bd bootstrap` (non-destructive) over `bd init`.
 
 ---
 
@@ -30,9 +36,9 @@ bd search "text" --status all --json  # find existing issues by title (use for d
 | Scenario | What to do |
 |----------|-----------|
 | Tracking work across multiple fleet sessions | `bd create` a task per work item; `bd update --assignee <member> --status in_progress` on dispatch |
-| Expressing dependencies between tasks | `bd dep add <blocked> <blocker>` |
+| Expressing dependencies between tasks | `bd dep add <blocked-id> <blocker-id>` |
 | Session restart — instant orientation | `bd ready` — shows all in-flight tasks without reading files |
-| Linking a PR to a task | `bd update <id> --note "PR: <url>"` |
+| Linking a PR to a task | `bd note <id> "PR: <url>"` |
 
 ---
 
@@ -42,15 +48,16 @@ bd search "text" --status all --json  # find existing issues by title (use for d
 |----------|---------|
 | `0` | Critical — must fix now |
 | `1` | High — next up |
-| `2` | Medium — current sprint |
+| `2` | Medium — current sprint (default if `-p` omitted) |
 | `3` | Low — backlog / deferred |
+| `4` | Trivial |
 
 ---
 
 ## Typical Fleet-User Workflow
 
 ```bash
-# Start: init Beads in the repo
+# Start: init Beads in the repo (ONCE -- skip if .beads/ already exists; see warning above)
 bd init
 
 # Create a top-level epic for your current effort

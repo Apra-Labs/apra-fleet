@@ -13,6 +13,16 @@ export const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
 let backupContent: string | null = null;
 
 /**
+ * executeCommand() can return either a plain string or { text, structuredContent }
+ * (see ExecuteCommandResult in src/tools/execute-command.ts). Tests that only care
+ * about the human-readable display text should normalize through this helper
+ * rather than asserting on the raw return value directly.
+ */
+export function resultText(result: string | { text: string; structuredContent?: unknown }): string {
+  return typeof result === 'string' ? result : result.text;
+}
+
+/**
  * Create a test agent with sensible defaults and optional overrides.
  * Works for both remote and local agent tests.
  */

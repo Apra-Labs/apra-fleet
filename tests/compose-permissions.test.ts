@@ -12,6 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
+import { ClaudeProvider } from '../src/providers/claude.js';
+import { GeminiProvider } from '../src/providers/gemini.js';
 import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -391,6 +393,49 @@ describe('composePermissions -- fleet-mcp disabled in member config (#151)', () 
   });
 });
 
+describe('composePermissions -- preserves register_member mcpServers entry (apra-fleet-2xs.1)', () => {
+  it('does not destroy mcpServers["apra-fleet-member"] (the JWT-bearing entry register_member wrote) on first compose', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // Simulates the file exactly as register_member leaves it: an mcpServers
+    // entry carrying the member's live JWT, and nothing else yet.
+    const registeredByMember = JSON.stringify({
+      mcpServers: {
+        'apra-fleet-member': {
+          type: 'http',
+          url: 'http://localhost:1234/mcp?member=abc-123',
+          headers: { Authorization: 'Bearer super-secret-jwt' },
+        },
+      },
+    });
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('cat .claude/settings.local.json') || cmd.includes('cat .claude\\settings.local.json')) {
+        return { stdout: registeredByMember, stderr: '', code: 0 };
+      }
+      return OK;
+    });
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writeCmd = allCmds.filter(cmd => cmd.includes('cat >')).find(cmd => cmd.includes('.claude/settings.local.json'))!;
+    expect(writeCmd).toBeDefined();
+
+    const heredocBody = writeCmd.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0];
+    const written = JSON.parse(heredocBody);
+
+    // The register_member entry -- including its live JWT -- must survive.
+    expect(written.mcpServers['apra-fleet-member']).toEqual({
+      type: 'http',
+      url: 'http://localhost:1234/mcp?member=abc-123',
+      headers: { Authorization: 'Bearer super-secret-jwt' },
+    });
+    // compose_permissions' own mcpServers.apra-fleet.disabled must also be present.
+    expect(written.mcpServers['apra-fleet']).toEqual({ disabled: true });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Task T4: deliverConfigFile() BOM-free Windows write (#219)
 // ---------------------------------------------------------------------------
@@ -404,7 +449,9 @@ describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
     await composePermissions({ member_id: member.id, role: 'doer' });
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const settingsWrite = allCmds.find(cmd => cmd.includes('.gemini\\settings.json') || cmd.includes('.gemini/settings.json'));
+    const settingsWrite = allCmds.find(cmd =>
+      (cmd.includes('.gemini\\settings.json') || cmd.includes('.gemini/settings.json')) && cmd.includes('WriteAllText')
+    );
     expect(settingsWrite).toBeDefined();
     expect(settingsWrite).toContain('WriteAllText');
     expect(settingsWrite).toContain('UTF8Encoding($false)');
@@ -589,7 +636,7 @@ describe('composePermissions -- tag-aware: role:doer backward compat', () => {
     expect(result).toContain('doer');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    const writeCmd = allCmds.find(cmd => cmd.includes('.claude/settings.local.json'))!;
+    const writeCmd = allCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('cat >'))!;
     expect(writeCmd).toBeDefined();
     expect(writeCmd).toContain('"permissions"');
     expect(writeCmd).toContain('"allow"');
@@ -742,6 +789,89 @@ describe('composePermissions -- tag-aware: primary mode = first mode tag', () =>
 // ---------------------------------------------------------------------------
 // Fresh/empty permissions.json -- no crash (#88)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// apra-fleet-eft.40.2 -- ensureWorkspaceTrusted invoked on every compose_permissions
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)', () => {
+  it('calls ensureWorkspaceTrusted with the resolved work_folder on proactive compose (Claude)', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux');
+    spy.mockRestore();
+  });
+
+  it('calls ensureWorkspaceTrusted on reactive grant compose too', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(docker:*)'] });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), 'linux');
+    spy.mockRestore();
+  });
+
+  it('does NOT call ensureWorkspaceTrusted when a dangerous grant is blocked before any delivery', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
+
+    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(sudo:*)'] });
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('self-heals a previously-registered member: a never-trusted work folder gets trust seeded via compose_permissions', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
+    addAgent(member);
+
+    // No ~/.claude.json on the member yet (fresh/never-trusted), and all other
+    // exec calls (mkdir/detect stacks/deliver config) succeed trivially.
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('.claude.json')) return { stdout: '', stderr: '', code: 0 };
+      return OK;
+    });
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const trustWrite = allCmds.find(cmd => cmd.includes('FLEET_TRUST_EOF'));
+    expect(trustWrite).toBeDefined();
+    const heredocMatch = trustWrite!.match(/<< 'FLEET_TRUST_EOF'\n([\s\S]*?)\nFLEET_TRUST_EOF/);
+    const written = JSON.parse(heredocMatch![1]);
+    expect(written.projects['/home/testuser/project'].hasTrustDialogAccepted).toBe(true);
+  });
+
+  it('is a no-op for non-Claude providers (e.g. Gemini) -- never touches the trust delivery channel', async () => {
+    const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const spy = vi.spyOn(GeminiProvider.prototype, 'ensureWorkspaceTrusted');
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(allCmds.some(cmd => cmd.includes('.claude.json') || cmd.includes('FLEET_TRUST_EOF'))).toBe(false);
+    spy.mockRestore();
+  });
+});
 
 describe('composePermissions -- fresh/empty permissions.json', () => {
   it('does not crash when permissions.json exists but contains only {}', async () => {

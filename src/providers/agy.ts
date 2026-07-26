@@ -1,10 +1,13 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { stripAnsi } from '../utils/ansi.js';
 import { getModelOverride } from '../services/user-config.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 const AGY_MODEL_FOR_TIER: Record<'cheap'|'standard'|'premium', string> = {
   cheap:    'Gemini 3.5 Flash (Medium)',
@@ -51,19 +54,23 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   buildPromptCommand(opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier, agentName } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
 
+
     // Write per-workspace model override before launching agy.
     const tier = inputTier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
-    const settingsScript = `${SCRIPTS_UNIX}/agy-settings-merge.js`;
 
-    let cmd = `cd "${escapedFolder}" && node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}" && agy -p "${instruction}"`;
+    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}"`;
+    if (agentName) {
+      cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
+    }
+    cmd += ` -p "${instruction}"`;
 
     // Only pass --conversation when resuming an existing session. For fresh sessions,
     // agy ignores the UUID we pass and creates its own -- use folder lookup instead.
@@ -224,9 +231,8 @@ export class AgyProvider implements ProviderAdapter {
     // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
     const resolvedTier = tier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];
-    const settingsScript = `${SCRIPTS_WIN}\\agy-settings-merge.js`;
 
-    let cmd = `${setupCmd}node "${settingsScript}" "${escapeDoubleQuoted(displayModel)}"; Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
+    let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" ${argList}`;
 
     // After agy exits, read its conversation transcript via the installed helper script.
     // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]
@@ -244,5 +250,49 @@ export class AgyProvider implements ProviderAdapter {
 
   headlessInvocation(promptLiteral: string): string {
     return `-p "${promptLiteral}"`;
+  }
+
+  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
+    // AGY has no `agy mcp` CLI verb (`agy help` lists: changelog, help, install, models,
+    // plugin(s), update -- no mcp verb) and no project/user scope distinction -- it reads
+    // MCP server config from a single centralized, machine-global file. See
+    // docs/member-onboarding-journey.md section 3a for the live-verified investigation.
+    // Merge under mcpServers.<name>, preserving any sibling entries (mirrors the
+    // uninstall-time precision-cleanup pattern in src/cli/uninstall.ts).
+    const configDir = path.join(os.homedir(), '.gemini', 'config');
+    const configFile = path.join(configDir, 'mcp_config.json');
+    fs.mkdirSync(configDir, { recursive: true });
+
+    let settings: Record<string, unknown> = {};
+    if (fs.existsSync(configFile)) {
+      try {
+        settings = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+      } catch {
+        // malformed file -- start fresh rather than write on top of unparseable state
+        settings = {};
+      }
+    }
+
+    const mcpServers = (settings.mcpServers as Record<string, unknown> | undefined) ?? {};
+    mcpServers['apra-fleet-member'] = {
+      type: 'http',
+      url: opts.url,
+      headers: { Authorization: `Bearer ${opts.token}` },
+    };
+    settings.mcpServers = mcpServers;
+
+    fs.writeFileSync(configFile, JSON.stringify(settings, null, 2) + '\n');
+
+    return {
+      mechanism: 'config-file-merge',
+      detail: `merged apra-fleet-member into ${configFile} (mcpServers.apra-fleet-member)`,
+    };
+  }
+
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+    // apra-fleet-eft.40 provider trust matrix: AGY has NO per-project trust concept -- its
+    // config is machine-global (live-verified, docs/member-onboarding-journey.md section
+    // 3a). No-op.
+    return { seeded: false, detail: 'agy: no per-project trust concept -- machine-global config' };
   }
 }
