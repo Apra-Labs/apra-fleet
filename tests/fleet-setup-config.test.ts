@@ -8,6 +8,8 @@ import {
   call,
   toyFolderPath,
   deleteFolderCommand,
+  cloneAndInitCommand,
+  toyRepoUrlFor,
 } from '../.github/e2e/fleet-setup.mjs';
 
 const REPO_ROOT = path.join(process.cwd());
@@ -124,6 +126,36 @@ describe('fleet-setup.mjs teardown toy-folder wipe', () => {
     expect(deleteFolderCommand('/home/akhil/fleet-e2e-toy', 'linux')).toBe(
       'rm -rf "/home/akhil/fleet-e2e-toy"',
     );
+  });
+});
+
+describe('fleet-setup.mjs toy repo bootstrap (clone + bd init)', () => {
+  it('resolves the toy repo URL for a known vcs', () => {
+    const { members } = loadConfig();
+    expect(toyRepoUrlFor('github', members)).toBe('https://github.com/Apra-Labs/fleet-e2e-toy');
+  });
+
+  it('throws a clear error for an unknown vcs', () => {
+    const { members } = loadConfig();
+    expect(() => toyRepoUrlFor('does-not-exist', members)).toThrow(/toy_projects has no entry/);
+  });
+
+  it('uses PowerShell Test-Path guards for windows', () => {
+    const cmd = cloneAndInitCommand('https://github.com/x/y', 'C:\\work\\fleet-e2e-toy', 'windows');
+    expect(cmd).toContain('Test-Path "C:\\work\\fleet-e2e-toy\\.git"');
+    expect(cmd).toContain('Test-Path ".beads\\embeddeddolt"');
+    expect(cmd).toContain('git clone https://github.com/x/y "C:\\work\\fleet-e2e-toy"');
+    expect(cmd).not.toContain('&&');
+  });
+
+  it('uses bash -d guards for linux/macos', () => {
+    for (const os of ['linux', 'macos']) {
+      const cmd = cloneAndInitCommand('https://github.com/x/y', '/work/fleet-e2e-toy', os);
+      expect(cmd).toContain('[ -d "/work/fleet-e2e-toy/.git" ]');
+      expect(cmd).toContain('[ -d ".beads/embeddeddolt" ]');
+      expect(cmd).toContain('git clone https://github.com/x/y "/work/fleet-e2e-toy"');
+      expect(cmd).not.toContain('Test-Path');
+    }
   });
 });
 

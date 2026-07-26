@@ -229,6 +229,46 @@ async function verifyEcho(fleetApi, memberName) {
   }
 }
 
+// Clones the toy repo and runs `bd init` on a member, deterministically --
+// this used to be the orchestrator LLM's own T3-repo-setup work (real turns
+// spent on `git clone` + waiting out a slow `bd init`, once per member). Now
+// that the toy repo's Dolt history has been flattened (10 commits -> 1;
+// apra-fleet-eft P0 follow-up), `bd init` on a fresh clone takes ~25s instead
+// of downloading thousands of chunks -- cheap enough to just run
+// independently on BOTH members rather than initializing once and
+// replicating via send_files/receive_files, which was the original plan
+// before the flatten made that optimization unnecessary.
+//
+// `bd init` is NOT idempotent -- it errors ("this workspace is already
+// initialized") if a DB already exists, so each branch checks first and
+// skips if the toy folder / Dolt DB is already present (e.g. a re-run
+// against a work folder teardown didn't get to wipe).
+export function cloneAndInitCommand(toyUrl, toyPath, os) {
+  if (os === 'windows') {
+    return [
+      `if (Test-Path "${toyPath}\\.git") { Write-Output "already-cloned" } else { git clone ${toyUrl} "${toyPath}" }`,
+      `Set-Location "${toyPath}"`,
+      `if (Test-Path ".beads\\embeddeddolt") { Write-Output "already-initialized" } else { bd init 2>&1 }`,
+    ].join('; ');
+  }
+  return [
+    `if [ -d "${toyPath}/.git" ]; then echo already-cloned; else git clone ${toyUrl} "${toyPath}"; fi`,
+    `cd "${toyPath}"`,
+    `if [ -d ".beads/embeddeddolt" ]; then echo already-initialized; else bd init 2>&1; fi`,
+  ].join(' && ');
+}
+
+export function toyRepoUrlFor(vcs, members) {
+  const url = members.toy_projects?.[vcs];
+  if (!url) throw new Error(`members.json toy_projects has no entry for vcs "${vcs}"`);
+  return url;
+}
+
+async function bootstrapToyRepo(fleetApi, memberName, folder, os, toyUrl) {
+  const toyPath = toyFolderPath(folder, os);
+  await execCommand(fleetApi, memberName, cloneAndInitCommand(toyUrl, toyPath, os), 'toy repo clone + bd init');
+}
+
 async function verifyRoundtrip(fleetApi, memberName, runDir) {
   const content = 'fleet-e2e-roundtrip';
   const baseName = `roundtrip-${memberName}.txt`;
@@ -268,7 +308,8 @@ async function runSetup(suiteId, runDir) {
   const { fleetApi, transport } = await connectFleet();
 
   try {
-    const members = resolveMemberConfigs(suiteId, loadConfig());
+    const config = loadConfig();
+    const members = resolveMemberConfigs(suiteId, config);
     const memberList = [members.doer, members.reviewer];
 
     // T1: Member Registration
@@ -287,6 +328,16 @@ async function runSetup(suiteId, runDir) {
       await verifyRoundtrip(fleetApi, member.name, runDir);
     }
     writeCheckpoint('T2', 'PASS', 'echo + file roundtrip verified on both members');
+
+    // T2.5: Toy repo + beads bootstrap -- deterministic clone + `bd init` on
+    // BOTH members independently (see bootstrapToyRepo's comment for why this
+    // no longer needs an alice-initializes/bella-replicates approach).
+    const suite = config.suites.suites[suiteId];
+    const toyUrl = toyRepoUrlFor(suite.vcs, config.members);
+    for (const member of memberList) {
+      await bootstrapToyRepo(fleetApi, member.name, member.folder, member.os, toyUrl);
+    }
+    writeCheckpoint('T2-toy-bootstrap', 'PASS', 'toy repo cloned + beads DB initialized on both members');
     writeCheckpoint('T2-done', 'PASS', 'setup phase finished');
 
     process.stdout.write('Setup phase complete: T1, T2, T2-done all PASS.\n');
