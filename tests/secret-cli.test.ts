@@ -279,6 +279,20 @@ describe('runSecret --set', () => {
     expect(msg).toContain('delivered');
   });
 
+  it('regression: persists the real value (not empty string) when OOB delivery AND --persist both succeed', async () => {
+    // Reproduces the bug where secretValue was wiped for the socket send
+    // before the later credentialSet() call read it back, silently
+    // persisting an empty string instead of the real collected value.
+    mockNetConnect.mockImplementation((_path: string, connectCb?: () => void) => {
+      const socket = makeSuccessSocket({ ok: true });
+      if (connectCb) process.nextTick(connectCb);
+      return socket;
+    });
+    await runSecret(['--set', 'my_secret', '--persist']);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(mockCredentialSet).toHaveBeenCalledWith('my_secret', 'my-secret-value', true, 'allow');
+  });
+
   describe('runSecret --set with -y (stdin)', () => {
     let stdinMock: EventEmitter & { setEncoding: any; resume: any; pause: any };
 
