@@ -349,6 +349,29 @@ describe('OsCommands via getOsCommands', () => {
       expect(cmd).toContain('chmod');
     });
 
+    // Regression: `~` is only tilde-expanded by the shell in an UNQUOTED
+    // leading position. Every use here is inside double quotes (needed for
+    // the other interpolated values), which suppresses that expansion --
+    // the literal string "~/.fleet-git-credential-..." then got stored as
+    // the git config value, and git does not expand `~` itself when reading
+    // config, so it tried to exec a helper literally named
+    // "git-credential-~/.fleet-git-credential-..." ("not a git command").
+    // $HOME expands correctly even inside double quotes. macOS inherits
+    // these methods from LinuxCommands unmodified, so it shares the fix.
+    for (const [name, cmds] of [['linux', linux], ['macos', macos]] as const) {
+      it(`${name}: gitCredentialHelperWrite uses $HOME, not a literal ~, for the credential file path`, () => {
+        const cmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_abc');
+        expect(cmd).toContain('$HOME/.fleet-git-credential');
+        expect(cmd).not.toContain('"~/');
+      });
+
+      it(`${name}: gitCredentialHelperRemove uses $HOME, not a literal ~, for the credential file path`, () => {
+        const cmd = cmds.gitCredentialHelperRemove('github.com');
+        expect(cmd).toContain('$HOME/.fleet-git-credential');
+        expect(cmd).not.toContain('"~/');
+      });
+    }
+
     it('windows: writes a batch script credential helper', () => {
       const cmd = windows.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_abc');
       expect(cmd).toContain('@echo off');
