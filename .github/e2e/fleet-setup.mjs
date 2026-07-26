@@ -427,7 +427,11 @@ function toBase64(value) {
 function buildNodeEvalCommand(scriptBody, argValues) {
   // Prepended once: process.argv[2..] are base64-encoded UTF-8 strings,
   // decoded into `A` before scriptBody runs.
-  const fullScript = `const A=process.argv.slice(2).map(x=>Buffer.from(x,'base64').toString('utf8'));${scriptBody}`;
+  // `node -e "<script>"` has no script-FILE slot in argv (unlike `node file.js`) --
+  // trailing positional args start at argv[1], not argv[2]. Verified live against
+  // fleet-win11: `node -e "console.log(process.argv)" "a" "b"` yields
+  // [execPath,"a","b"], not [execPath,undefined,"a","b"].
+  const fullScript = `const A=process.argv.slice(1).map(x=>Buffer.from(x,'base64').toString('utf8'));${scriptBody}`;
   const scriptB64 = toBase64(fullScript);
   const argB64 = argValues.map(toBase64);
   return `node -e "eval(Buffer.from('${scriptB64}','base64').toString('utf8'))" ${argB64.map((a) => `"${a}"`).join(' ')}`;

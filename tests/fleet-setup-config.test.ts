@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import {
   loadConfig,
   resolveMemberConfigs,
@@ -239,6 +242,47 @@ describe('fleet-setup.mjs deterministic session-log collection', () => {
     it('returns null for providers with no known flat-file transcript', () => {
       for (const provider of ['opencode', 'codex', 'copilot']) {
         expect(collectTranscriptScript(provider, '/home/user/x', 'sess-1')).toBeNull();
+      }
+    });
+
+    it('actually executes end-to-end via `node -e` and copies the real file', () => {
+      // Regression test for a real bug found live: `node -e "<script>"` has NO
+      // script-file slot in argv (unlike `node file.js`) -- trailing args start
+      // at argv[1], not argv[2]. Using slice(2) silently dropped the first
+      // argument (the slug) every time, so `A[0]`/`A[1]` were off by one and
+      // fs.existsSync(src) always resolved to a bogus path -- the command ran
+      // cleanly (exit 0) and printed FLEET_LOG_MISSING even when the real
+      // transcript file existed right where expected. A pure string-inspection
+      // test can't catch this class of bug -- it has to actually run the
+      // generated command through a real child `node -e` invocation.
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-collect-home-'));
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-collect-cwd-'));
+      try {
+        const workFolder = 'C:\\Users\\test\\apra-fleet-e2e-doer';
+        const sessionId = 'sess-e2e-abc123';
+        const slug = claudeProjectSlug(workFolder);
+        const projectDir = path.join(fakeHome, '.claude', 'projects', slug);
+        fs.mkdirSync(projectDir, { recursive: true });
+        fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), '{"type":"assistant"}\n');
+
+        const command = collectTranscriptScript('claude', workFolder, sessionId);
+        // command is `node -e "..." "arg1" "arg2"` -- split into execFileSync's
+        // (file, args) form rather than re-parsing shell quoting ourselves.
+        const match = command.match(/^node -e "(.+)" "([^"]+)" "([^"]+)"$/);
+        expect(match).not.toBeNull();
+        const [, evalArg, arg1, arg2] = match as RegExpMatchArray;
+
+        const stdout = execFileSync('node', ['-e', evalArg, arg1, arg2], {
+          cwd,
+          env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
+          encoding: 'utf8',
+        });
+
+        expect(stdout.trim()).toBe('FLEET_LOG_COPIED');
+        expect(fs.existsSync(path.join(cwd, `${sessionId}.jsonl`))).toBe(true);
+      } finally {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+        fs.rmSync(cwd, { recursive: true, force: true });
       }
     });
   });
