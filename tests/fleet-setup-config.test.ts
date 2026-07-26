@@ -182,31 +182,58 @@ describe('fleet-setup.mjs deterministic session-log collection', () => {
   });
 
   describe('collectTranscriptScript', () => {
+    // Dynamic values (slugs, session ids, work folders) are passed as
+    // base64-encoded process.argv words, not interpolated as quoted string
+    // literals into the -e source -- see collectTranscriptScript's own
+    // comment in fleet-setup.mjs for why (nested-quote corruption observed
+    // on Windows local members). Decode both the script body and the argv
+    // args to assert on the real content, matching what the command
+    // actually does rather than raw substrings of the command line.
+    function decodeCommand(command: string) {
+      const scriptMatch = command.match(/eval\(Buffer\.from\('([^']+)','base64'\)/);
+      const decodedScript = scriptMatch ? Buffer.from(scriptMatch[1], 'base64').toString('utf8') : '';
+      const argMatches = [...command.matchAll(/"([A-Za-z0-9+/=]+)"/g)];
+      const decodedArgs = argMatches.map((m) => Buffer.from(m[1], 'base64').toString('utf8'));
+      return { decodedScript, decodedArgs };
+    }
+
     it('claude: locates by exact project slug + session id under ~/.claude/projects', () => {
-      const script = collectTranscriptScript('claude', '/home/user/fleet-work', 'sess-123');
-      expect(script).toContain('.claude');
-      expect(script).toContain('projects');
-      expect(script).toContain('-home-user-fleet-work');
-      expect(script).toContain('sess-123');
-      expect(script).toContain('copyFileSync');
+      const command = collectTranscriptScript('claude', '/home/user/fleet-work', 'sess-123');
+      expect(command).toMatch(/^node -e "eval\(Buffer\.from\(/);
+      const { decodedScript, decodedArgs } = decodeCommand(command);
+      expect(decodedScript).toContain('.claude');
+      expect(decodedScript).toContain('projects');
+      expect(decodedScript).toContain('copyFileSync');
+      expect(decodedArgs).toEqual(['-home-user-fleet-work', 'sess-123']);
     });
 
     it('gemini: locates by project basename + exact session id under ~/.gemini/tmp/<project>/chats', () => {
-      const script = collectTranscriptScript('gemini', '/home/user/my-project', 'session-789-ghi');
-      expect(script).toContain('.gemini');
-      expect(script).toContain('tmp');
-      expect(script).toContain('chats');
-      expect(script).toContain('my-project');
-      expect(script).toContain('session-789-ghi');
+      const command = collectTranscriptScript('gemini', '/home/user/my-project', 'session-789-ghi');
+      const { decodedScript, decodedArgs } = decodeCommand(command);
+      expect(decodedScript).toContain('.gemini');
+      expect(decodedScript).toContain('tmp');
+      expect(decodedScript).toContain('chats');
+      expect(decodedArgs).toEqual(['my-project', 'session-789-ghi']);
     });
 
     it('agy: looks up by work folder via last_conversations.json, not by the fleet-tracked session id', () => {
-      const script = collectTranscriptScript('agy', '/home/user/fleet-work', 'sess-should-not-be-used-for-lookup');
-      expect(script).toContain('last_conversations.json');
-      expect(script).toContain('antigravity-cli');
-      expect(script).toContain('/home/user/fleet-work');
+      const command = collectTranscriptScript('agy', '/home/user/fleet-work', 'sess-should-not-be-used-for-lookup');
+      const { decodedScript, decodedArgs } = decodeCommand(command);
+      expect(decodedScript).toContain('last_conversations.json');
+      expect(decodedScript).toContain('antigravity-cli');
+      expect(decodedArgs).toEqual(['/home/user/fleet-work']);
       // the fleet-tracked session id plays no role in agy's own lookup
-      expect(script).not.toContain('sess-should-not-be-used-for-lookup');
+      expect(decodedArgs).not.toContain('sess-should-not-be-used-for-lookup');
+    });
+
+    it('never interpolates dynamic values as raw literals into the command line', () => {
+      // The whole point of base64-encoding argv values: nothing left for a
+      // shell/CRT re-quoting pass to corrupt. Guard against a regression
+      // back to interpolating raw literals (e.g. via JSON.stringify) into
+      // the -e source itself.
+      const command = collectTranscriptScript('claude', 'C:\\Users\\test\\workspace', 'sess-1');
+      expect(command).not.toContain('workspace');
+      expect(command).not.toContain('sess-1');
     });
 
     it('returns null for providers with no known flat-file transcript', () => {

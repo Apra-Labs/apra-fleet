@@ -393,30 +393,66 @@ export function geminiProjectName(workFolder) {
   return workFolder.split(/[\\/]/).filter(Boolean).pop() || 'project';
 }
 
-// Builds a cross-platform Node script (run via `node -e` through
-// execute_command) that locates a member's own session transcript and
-// copies it into the current directory -- avoids needing separate
-// bash/PowerShell variants per OS, matching the pattern the workflow already
-// uses for agy's own transcript lookup (fleet-e2e.yml's AGY_TRANSCRIPT_SCRIPT).
-// Returns null for providers with no known flat-file transcript (opencode
-// stores sessions in a SQLite db, not a per-session file -- unsupported here).
+// Builds a cross-platform `node -e ...` SHELL COMMAND (not just JS source) that
+// locates a member's own session transcript and copies it into the current
+// directory -- avoids needing separate bash/PowerShell variants per OS,
+// matching the pattern the workflow already uses for agy's own transcript
+// lookup (fleet-e2e.yml's AGY_TRANSCRIPT_SCRIPT).
+//
+// Dynamic values (work-folder-derived slugs, session ids) are passed as
+// base64-encoded `process.argv` words instead of being interpolated as
+// quoted string literals into the -e source. This used to build the JS
+// source with `JSON.stringify(slug)`/`JSON.stringify(sessionId)` (producing
+// embedded double-quoted literals), then wrap the WHOLE script in another
+// `JSON.stringify()` for the `-e` argument (fleet-setup.mjs's execCommand
+// call) -- nesting one double-quoted string inside another, escaped as
+// `\"`. bash preserves that faithfully, but on a Windows local member the
+// PowerShell/CRT argv re-quoting the command passes through does not
+// round-trip nested `\"` correctly, corrupting exactly the interpolated
+// spans (observed live: quotes/commas mangled around the slug and session
+// id, while the surrounding single-quoted literal JS -- 'fs', 'path',
+// '.jsonl', etc -- survived intact every time). Base64 has no quote,
+// backslash, or comma characters at all, so there is nothing left for any
+// layer of re-quoting to corrupt, regardless of how many shells the command
+// string crosses (ssh, cmd.exe, powershell.exe).
+//
+// Returns a full command string (ready to hand straight to execute_command,
+// no further wrapping needed), or null for providers with no known flat-file
+// transcript (opencode stores sessions in a SQLite db, not a per-session
+// file -- unsupported here).
+function toBase64(value) {
+  return Buffer.from(value, 'utf8').toString('base64');
+}
+
+function buildNodeEvalCommand(scriptBody, argValues) {
+  // Prepended once: process.argv[2..] are base64-encoded UTF-8 strings,
+  // decoded into `A` before scriptBody runs.
+  const fullScript = `const A=process.argv.slice(2).map(x=>Buffer.from(x,'base64').toString('utf8'));${scriptBody}`;
+  const scriptB64 = toBase64(fullScript);
+  const argB64 = argValues.map(toBase64);
+  return `node -e "eval(Buffer.from('${scriptB64}','base64').toString('utf8'))" ${argB64.map((a) => `"${a}"`).join(' ')}`;
+}
+
 export function collectTranscriptScript(provider, workFolder, sessionId) {
-  const idLit = JSON.stringify(sessionId);
-  const copyAndReport = (srcExpr) =>
-    `if(fs.existsSync(${srcExpr})){fs.copyFileSync(${srcExpr},path.join(process.cwd(),${idLit}+'.jsonl'));console.log('FLEET_LOG_COPIED');}else{console.log('FLEET_LOG_MISSING');}`;
+  const copyAndReport = (srcExpr, idExpr) =>
+    `if(fs.existsSync(${srcExpr})){fs.copyFileSync(${srcExpr},path.join(process.cwd(),${idExpr}+'.jsonl'));console.log('FLEET_LOG_COPIED');}else{console.log('FLEET_LOG_MISSING');}`;
 
   if (provider === 'claude') {
     const slug = claudeProjectSlug(workFolder);
-    return `const fs=require('fs'),path=require('path'),os=require('os');`
-      + `const src=path.join(os.homedir(),'.claude','projects',${JSON.stringify(slug)},${idLit}+'.jsonl');`
-      + copyAndReport('src');
+    const scriptBody =
+      `const fs=require('fs'),path=require('path'),os=require('os');`
+      + `const src=path.join(os.homedir(),'.claude','projects',A[0],A[1]+'.jsonl');`
+      + copyAndReport('src', 'A[1]');
+    return buildNodeEvalCommand(scriptBody, [slug, sessionId]);
   }
 
   if (provider === 'gemini') {
     const projectName = geminiProjectName(workFolder);
-    return `const fs=require('fs'),path=require('path'),os=require('os');`
-      + `const src=path.join(os.homedir(),'.gemini','tmp',${JSON.stringify(projectName)},'chats',${idLit}+'.jsonl');`
-      + copyAndReport('src');
+    const scriptBody =
+      `const fs=require('fs'),path=require('path'),os=require('os');`
+      + `const src=path.join(os.homedir(),'.gemini','tmp',A[0],'chats',A[1]+'.jsonl');`
+      + copyAndReport('src', 'A[1]');
+    return buildNodeEvalCommand(scriptBody, [projectName, sessionId]);
   }
 
   if (provider === 'agy') {
@@ -424,12 +460,12 @@ export function collectTranscriptScript(provider, workFolder, sessionId) {
     // cache of conversations by the exact cwd they were started in, mapping
     // to an internal conversation id whose transcript lives elsewhere. The
     // fleet-tracked sessionId isn't used for lookup here at all; this only
-    // needs the member's own work folder.
-    const wfLit = JSON.stringify(workFolder);
-    return `const fs=require('fs'),path=require('path'),os=require('os');`
+    // needs the member's own work folder (A[0]).
+    const scriptBody =
+      `const fs=require('fs'),path=require('path'),os=require('os');`
       + `const home=os.homedir();`
       + `const norm=p=>path.resolve(p).toLowerCase().split(path.sep).join('/');`
-      + `const target=norm(${wfLit});`
+      + `const target=norm(A[0]);`
       + `let id='';`
       + `try{const cache=JSON.parse(fs.readFileSync(path.join(home,'.gemini','antigravity-cli','cache','last_conversations.json'),'utf8'));`
       + `for(const k of Object.keys(cache)){if(norm(k)===target){id=cache[k];break;}}}catch{}`
@@ -437,6 +473,7 @@ export function collectTranscriptScript(provider, workFolder, sessionId) {
       + `const src=path.join(home,'.gemini','antigravity-cli','brain',id,'.system_generated','logs','transcript.jsonl');`
       + `if(fs.existsSync(src)){fs.copyFileSync(src,path.join(process.cwd(),id+'.jsonl'));console.log('FLEET_LOG_COPIED');}else{console.log('FLEET_LOG_MISSING');}`
       + `}`;
+    return buildNodeEvalCommand(scriptBody, [workFolder]);
   }
 
   // codex, copilot, opencode: no known flat-file transcript to collect yet.
@@ -459,8 +496,8 @@ async function collectMemberLogs(fleetApi, roleName, runDir) {
   if (!sessionId) return `${roleName}: no session id recorded, nothing to collect`;
   if (!workFolder) return `${roleName}: no work folder recorded, nothing to collect`;
 
-  const script = collectTranscriptScript(provider, workFolder, sessionId);
-  if (!script) return `${roleName}: provider "${provider}" has no known transcript format, skipped`;
+  const command = collectTranscriptScript(provider, workFolder, sessionId);
+  if (!command) return `${roleName}: provider "${provider}" has no known transcript format, skipped`;
 
   const localDestDir = path.join(runDir, 'logs', roleName);
   fs.mkdirSync(localDestDir, { recursive: true });
@@ -468,7 +505,7 @@ async function collectMemberLogs(fleetApi, roleName, runDir) {
 
   let copyOutput;
   try {
-    copyOutput = await execCommand(fleetApi, roleName, `node -e ${JSON.stringify(script)}`, 'locate + copy session transcript');
+    copyOutput = await execCommand(fleetApi, roleName, command, 'locate + copy session transcript');
   } catch (err) {
     return `${roleName}: transcript lookup script failed: ${err.message}`;
   }
