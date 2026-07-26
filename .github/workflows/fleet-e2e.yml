@@ -497,6 +497,14 @@ jobs:
           fi
           cat "$LOG_DIR"/fleet-*.log > "$RUN_DIR/logs/fleet-pm.log" 2>/dev/null || true
 
+      - name: Collect member session logs (deterministic)
+        if: always()
+        shell: bash
+        run: |
+          cd "$RUN_DIR"
+          node "$GITHUB_WORKSPACE/.github/e2e/fleet-setup.mjs" collect-logs > "$RUN_DIR/collect-logs-output.txt" 2>&1 || true
+          cat "$RUN_DIR/collect-logs-output.txt"
+
       - name: Extract telemetry
         if: always()
         shell: bash

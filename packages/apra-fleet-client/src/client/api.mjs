@@ -212,6 +212,14 @@ export class ApraFleet {
     }
 
     /**
+     * Get detailed status for one member: connectivity, session, work folder, provider.
+     * @param {{ member_id?: string, member_name?: string, format?: 'compact'|'json' }} options
+     */
+    async memberDetail(options) {
+        return this.mcpClient.callTool('member_detail', options);
+    }
+
+    /**
      * Get a member's cheap/standard/premium tier resolved to a concrete
      * model and its real per-1M-token price (apra-fleet-dv5.5/dv5.6).
      * @param {{ member_id?: string, member_name?: string }} options

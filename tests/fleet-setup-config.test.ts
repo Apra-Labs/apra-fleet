@@ -10,6 +10,9 @@ import {
   deleteFolderCommand,
   cloneAndInitCommand,
   toyRepoUrlFor,
+  claudeProjectSlug,
+  geminiProjectName,
+  collectTranscriptScript,
 } from '../.github/e2e/fleet-setup.mjs';
 
 const REPO_ROOT = path.join(process.cwd());
@@ -156,6 +159,61 @@ describe('fleet-setup.mjs toy repo bootstrap (clone + bd init)', () => {
       expect(cmd).toContain('git clone https://github.com/x/y "/work/fleet-e2e-toy"');
       expect(cmd).not.toContain('Test-Path');
     }
+  });
+});
+
+describe('fleet-setup.mjs deterministic session-log collection', () => {
+  describe('claudeProjectSlug', () => {
+    it('replaces every non-alphanumeric character, not just path separators', () => {
+      expect(claudeProjectSlug('/home/user/fleet-work')).toBe('-home-user-fleet-work');
+      expect(claudeProjectSlug('C:\\Users\\test\\workspace')).toBe('C--Users-test-workspace');
+    });
+  });
+
+  describe('geminiProjectName', () => {
+    it('takes the final path segment across both separator styles', () => {
+      expect(geminiProjectName('/home/user/my-project')).toBe('my-project');
+      expect(geminiProjectName('C:\\Users\\test\\workspace')).toBe('workspace');
+    });
+
+    it('falls back to "project" for an empty/root path', () => {
+      expect(geminiProjectName('/')).toBe('project');
+    });
+  });
+
+  describe('collectTranscriptScript', () => {
+    it('claude: locates by exact project slug + session id under ~/.claude/projects', () => {
+      const script = collectTranscriptScript('claude', '/home/user/fleet-work', 'sess-123');
+      expect(script).toContain('.claude');
+      expect(script).toContain('projects');
+      expect(script).toContain('-home-user-fleet-work');
+      expect(script).toContain('sess-123');
+      expect(script).toContain('copyFileSync');
+    });
+
+    it('gemini: locates by project basename + exact session id under ~/.gemini/tmp/<project>/chats', () => {
+      const script = collectTranscriptScript('gemini', '/home/user/my-project', 'session-789-ghi');
+      expect(script).toContain('.gemini');
+      expect(script).toContain('tmp');
+      expect(script).toContain('chats');
+      expect(script).toContain('my-project');
+      expect(script).toContain('session-789-ghi');
+    });
+
+    it('agy: looks up by work folder via last_conversations.json, not by the fleet-tracked session id', () => {
+      const script = collectTranscriptScript('agy', '/home/user/fleet-work', 'sess-should-not-be-used-for-lookup');
+      expect(script).toContain('last_conversations.json');
+      expect(script).toContain('antigravity-cli');
+      expect(script).toContain('/home/user/fleet-work');
+      // the fleet-tracked session id plays no role in agy's own lookup
+      expect(script).not.toContain('sess-should-not-be-used-for-lookup');
+    });
+
+    it('returns null for providers with no known flat-file transcript', () => {
+      for (const provider of ['opencode', 'codex', 'copilot']) {
+        expect(collectTranscriptScript(provider, '/home/user/x', 'sess-1')).toBeNull();
+      }
+    });
   });
 });
 

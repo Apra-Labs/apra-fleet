@@ -8,12 +8,16 @@
 //
 // Usage:
 //   node fleet-setup.mjs setup --suite <id>
+//   node fleet-setup.mjs collect-logs
 //   node fleet-setup.mjs teardown
 //   node fleet-setup.mjs shutdown
 //
-// `setup` must be run with cwd set to the run directory ($RUN_DIR in the
-// workflow) -- checkpoints.json is written relative to cwd, matching the
-// convention sprint-script.md already uses for T3-* checkpoints.
+// `setup` and `collect-logs` must be run with cwd set to the run directory
+// ($RUN_DIR in the workflow) -- checkpoints.json / logs/<role>/ are written
+// relative to cwd, matching the convention sprint-script.md already uses for
+// T3-* checkpoints. `collect-logs` must run BEFORE `teardown` -- it needs
+// alice/bella still registered and reachable to pull their session
+// transcripts.
 //
 // `shutdown` stops the whole fleet server process (every member/session on
 // the runner, not just the ones this suite registered) and is deliberately
@@ -363,6 +367,162 @@ export function deleteFolderCommand(folderPath, os) {
     : `rm -rf "${folderPath}"`;
 }
 
+// ---- deterministic session-log collection --------------------------------
+//
+// Replaces sprint-script.md's old "## Collect Session Logs" section, which
+// had the orchestrator LLM itself work out each member's transcript path and
+// copy it over -- real turns spent on pure file-finding with no reasoning
+// involved, and it silently produced nothing if the orchestrator ran out of
+// turns or crashed before reaching that instruction. This runs unconditionally
+// as its own step (see fleet-e2e.yml, `if: always()`, before T6 teardown
+// removes the members) so logs are collected even on a total LLM failure.
+//
+// Path conventions below mirror src/services/stall/log-path-resolver.ts
+// (the stall detector's own, already-tested logic for finding a live
+// session's log file) rather than the old prompt's hand-written description,
+// which turned out to disagree with it in places (e.g. gemini's real
+// filename is the exact session ID, not an 8-char-prefix glob).
+
+export function claudeProjectSlug(workFolder) {
+  // Claude Code replaces EVERY non-alphanumeric character (slashes,
+  // backslashes, colons, dots...) with '-', not just path separators.
+  return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+export function geminiProjectName(workFolder) {
+  return workFolder.split(/[\\/]/).filter(Boolean).pop() || 'project';
+}
+
+// Builds a cross-platform Node script (run via `node -e` through
+// execute_command) that locates a member's own session transcript and
+// copies it into the current directory -- avoids needing separate
+// bash/PowerShell variants per OS, matching the pattern the workflow already
+// uses for agy's own transcript lookup (fleet-e2e.yml's AGY_TRANSCRIPT_SCRIPT).
+// Returns null for providers with no known flat-file transcript (opencode
+// stores sessions in a SQLite db, not a per-session file -- unsupported here).
+export function collectTranscriptScript(provider, workFolder, sessionId) {
+  const idLit = JSON.stringify(sessionId);
+  const copyAndReport = (srcExpr) =>
+    `if(fs.existsSync(${srcExpr})){fs.copyFileSync(${srcExpr},path.join(process.cwd(),${idLit}+'.jsonl'));console.log('FLEET_LOG_COPIED');}else{console.log('FLEET_LOG_MISSING');}`;
+
+  if (provider === 'claude') {
+    const slug = claudeProjectSlug(workFolder);
+    return `const fs=require('fs'),path=require('path'),os=require('os');`
+      + `const src=path.join(os.homedir(),'.claude','projects',${JSON.stringify(slug)},${idLit}+'.jsonl');`
+      + copyAndReport('src');
+  }
+
+  if (provider === 'gemini') {
+    const projectName = geminiProjectName(workFolder);
+    return `const fs=require('fs'),path=require('path'),os=require('os');`
+      + `const src=path.join(os.homedir(),'.gemini','tmp',${JSON.stringify(projectName)},'chats',${idLit}+'.jsonl');`
+      + copyAndReport('src');
+  }
+
+  if (provider === 'agy') {
+    // agy (antigravity-cli) has no session-id-named file at all -- it keys a
+    // cache of conversations by the exact cwd they were started in, mapping
+    // to an internal conversation id whose transcript lives elsewhere. The
+    // fleet-tracked sessionId isn't used for lookup here at all; this only
+    // needs the member's own work folder.
+    const wfLit = JSON.stringify(workFolder);
+    return `const fs=require('fs'),path=require('path'),os=require('os');`
+      + `const home=os.homedir();`
+      + `const norm=p=>path.resolve(p).toLowerCase().split(path.sep).join('/');`
+      + `const target=norm(${wfLit});`
+      + `let id='';`
+      + `try{const cache=JSON.parse(fs.readFileSync(path.join(home,'.gemini','antigravity-cli','cache','last_conversations.json'),'utf8'));`
+      + `for(const k of Object.keys(cache)){if(norm(k)===target){id=cache[k];break;}}}catch{}`
+      + `if(!id){console.log('FLEET_LOG_MISSING');}else{`
+      + `const src=path.join(home,'.gemini','antigravity-cli','brain',id,'.system_generated','logs','transcript.jsonl');`
+      + `if(fs.existsSync(src)){fs.copyFileSync(src,path.join(process.cwd(),id+'.jsonl'));console.log('FLEET_LOG_COPIED');}else{console.log('FLEET_LOG_MISSING');}`
+      + `}`;
+  }
+
+  // codex, copilot, opencode: no known flat-file transcript to collect yet.
+  return null;
+}
+
+async function collectMemberLogs(fleetApi, roleName, runDir) {
+  let detail;
+  try {
+    const { text } = await call(fleetApi.memberDetail.bind(fleetApi), { member_name: roleName, format: 'json' }, `member_detail(${roleName})`);
+    detail = JSON.parse(text);
+  } catch (err) {
+    return `${roleName}: member_detail failed: ${err.message}`;
+  }
+
+  const sessionId = detail?.session?.id;
+  const workFolder = detail?.folder;
+  const provider = detail?.llmProvider ?? 'claude';
+
+  if (!sessionId) return `${roleName}: no session id recorded, nothing to collect`;
+  if (!workFolder) return `${roleName}: no work folder recorded, nothing to collect`;
+
+  const script = collectTranscriptScript(provider, workFolder, sessionId);
+  if (!script) return `${roleName}: provider "${provider}" has no known transcript format, skipped`;
+
+  const localDestDir = path.join(runDir, 'logs', roleName);
+  fs.mkdirSync(localDestDir, { recursive: true });
+  const remoteFileName = `${sessionId}.jsonl`;
+
+  let copyOutput;
+  try {
+    copyOutput = await execCommand(fleetApi, roleName, `node -e ${JSON.stringify(script)}`, 'locate + copy session transcript');
+  } catch (err) {
+    return `${roleName}: transcript lookup script failed: ${err.message}`;
+  }
+
+  if (!copyOutput.includes('FLEET_LOG_COPIED')) {
+    return `${roleName}: transcript not found on member (session ${sessionId}, provider ${provider})`;
+  }
+
+  try {
+    await call(
+      fleetApi.receiveFiles.bind(fleetApi),
+      { member_name: roleName, remote_paths: [remoteFileName], local_dest_dir: localDestDir },
+      `receive_files(${roleName})`,
+    );
+  } catch (err) {
+    return `${roleName}: receive_files failed: ${err.message}`;
+  } finally {
+    // Best-effort cleanup of the copy left in the member's work folder --
+    // receive_files only reaches files inside it, so the copy step above was
+    // just a hop, not something that should persist there afterward.
+    try {
+      await execCommand(
+        fleetApi,
+        roleName,
+        workFolder && workFolder.match(/^[A-Za-z]:\\/) // windows-style absolute path
+          ? `Remove-Item -Force -ErrorAction SilentlyContinue "${remoteFileName}"`
+          : `rm -f "${remoteFileName}"`,
+        'clean up transcript copy',
+      );
+    } catch { /* best-effort */ }
+  }
+
+  const downloadedPath = path.join(localDestDir, remoteFileName);
+  if (!fs.existsSync(downloadedPath)) return `${roleName}: receive_files did not write ${downloadedPath}`;
+  return `${roleName}: collected session ${sessionId} (${provider}) -> ${downloadedPath}`;
+}
+
+async function runCollectLogs(runDir) {
+  const { connectFleet } = await import('../../packages/apra-fleet-client/src/client/server-resolution.mjs');
+  const { fleetApi, transport } = await connectFleet();
+
+  try {
+    const results = [];
+    for (const { name } of ROLES) {
+      const note = await collectMemberLogs(fleetApi, name, runDir);
+      results.push(note);
+      process.stdout.write(`${note}\n`);
+    }
+    process.stdout.write('Log collection complete.\n');
+  } finally {
+    try { transport.stop(); } catch { /* best-effort cleanup */ }
+  }
+}
+
 async function runTeardown(suiteId) {
   const { connectFleet } = await import('../../packages/apra-fleet-client/src/client/server-resolution.mjs');
   const { fleetApi, transport } = await connectFleet();
@@ -471,6 +631,15 @@ if (process.argv[1] && (process.argv[1].endsWith('fleet-setup.mjs') || process.a
       process.stderr.write(`Setup failed: ${err.message}\n`);
       process.exit(1);
     });
+  } else if (subcommand === 'collect-logs') {
+    // Must run with cwd = $RUN_DIR (same convention as `setup`) -- logs are
+    // written to logs/<role>/ relative to cwd. Deliberately best-effort: a
+    // missing session or lookup failure on one member is logged and does not
+    // fail the process, since this is diagnostic collection, not a gate.
+    runCollectLogs(process.cwd()).catch((err) => {
+      process.stderr.write(`Log collection failed: ${err.message}\n`);
+      process.exit(1);
+    });
   } else if (subcommand === 'teardown') {
     const { suite } = parseArgs(rest);
     runTeardown(suite).catch((err) => {
@@ -483,7 +652,7 @@ if (process.argv[1] && (process.argv[1].endsWith('fleet-setup.mjs') || process.a
       process.exit(1);
     });
   } else {
-    process.stderr.write('Usage: fleet-setup.mjs <setup --suite <id>|teardown|shutdown>\n');
+    process.stderr.write('Usage: fleet-setup.mjs <setup --suite <id>|teardown|shutdown|collect-logs>\n');
     process.exit(1);
   }
 }

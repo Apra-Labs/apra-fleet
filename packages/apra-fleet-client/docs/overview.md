@@ -11,10 +11,11 @@ knows how to:
 2. Speak the JSON-RPC 2.0 request/response protocol MCP uses, including
    request IDs, timeouts, and cancellation.
 3. Expose the fleet server's tool surface (`execute_prompt`,
-   `execute_command`, `list_members`, `fleet_status`, `send_files`,
-   `receive_files`, `register_member`, `update_member`, `remove_member`) as
-   a typed, promise-based JavaScript API instead of raw `tools/call`
-   payloads.
+   `execute_command`, `list_members`, `fleet_status`, `member_detail`,
+   `get_member_model_pricing`, `send_files`, `receive_files`,
+   `register_member`, `update_member`, `remove_member`, `provision_llm_auth`,
+   `compose_permissions`, `setup_ssh_key`, `shutdown_server`) as a typed,
+   promise-based JavaScript API instead of raw `tools/call` payloads.
 
 It is a **transport and protocol** layer. It does not implement any
 scheduling, retry, workflow, or orchestration logic of its own -- it hands
@@ -91,6 +92,7 @@ Declared in `package.json#exports`:
 | `@apralabs/apra-fleet-client/client` | `src/client/client.mjs` | `McpClient` class, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | `@apralabs/apra-fleet-client/factory` | `src/client/factory.mjs` | `createWorkflowEngine()` |
 | `@apralabs/apra-fleet-client/transport` | `src/client/transport.mjs` | `StdioTransport`, `StreamableHttpTransport` |
+| `@apralabs/apra-fleet-client/server-resolution` | `src/client/server-resolution.mjs` | `connectFleet()`, `checkRunningInstance()`, `resolveFleetServerConnection()`, `resolveFleetServerCommand()`, `getFleetDataDir()`, `getServerInfoPath()` |
 
 `src/client/errors.mjs` (`ClientError`, `TimeoutError`, `AbortError`) is not
 listed in `exports` but its instances are the error/rejection values
