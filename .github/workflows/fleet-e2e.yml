@@ -371,6 +371,24 @@ jobs:
             exit "$NODE_EXIT"
           fi
 
+      - name: Re-assert PM MCP registration before sprint phase
+        if: steps.suite.outputs.pm_provider == 'claude'
+        shell: bash
+        run: |
+          # Live-verified (fleet-win11, apra-fleet-eft P0 investigation): the PM's own
+          # `claude mcp add --scope user` registration from the earlier install step can
+          # go missing by the time this job reaches the sprint-phase invocation (this
+          # machine also serves as a remote member for other suites, a plausible ~/.claude.json
+          # race) -- confirmed live via `claude mcp list` reporting "No MCP servers
+          # configured" moments before a sprint-phase run that came up with mcp_servers:[].
+          # Re-registering immediately before the sprint-phase step (the same command
+          # install.ts:933-935 already runs) is the reliable idempotent mitigation --
+          # NOT gated on whether it currently looks missing, since a stale/racy write can
+          # land after any check we'd do here too.
+          claude mcp remove apra-fleet --scope user > /dev/null 2>&1 || true
+          claude mcp add --scope user --transport http apra-fleet http://localhost:7523/mcp
+          claude mcp list | grep -qi "apra-fleet.*connected" || echo "::warning::apra-fleet MCP re-registration did not report connected -- sprint phase may still fail"
+
       - name: Run fleet e2e - sprint phase (${{ steps.suite.outputs.pm_provider }})
         id: e2e_sprint
         timeout-minutes: 120
