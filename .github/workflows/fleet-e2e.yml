@@ -53,6 +53,29 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           jq --version || { echo "::error::jq is not installed on this runner"; exit 1; }
 
+      - name: Purge fleet daemon logs
+        shell: bash
+        run: |
+          # Must run BEFORE "Build and install fleet binary on PM" (install
+          # --force + start) -- self-hosted runners are long-lived boxes, and
+          # fleet-<pid>.log files (one per server process, never cleaned up on
+          # their own) accumulate across every job ever run here. Purging here,
+          # before this job's own server exists, guarantees this delete only
+          # ever touches leftovers from a PREVIOUS job (already archived via
+          # its own "Collect fleet daemon logs" step, so nothing of value is
+          # lost) -- never a file THIS job's own daemon has open. Member names
+          # (alice/bella) are reused on every run, so any per-member analysis
+          # keyed on the fleet log's "mem" field (e.g. wall/active time) would
+          # silently blend in a previous run's entries for those same names if
+          # this didn't run first.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            LOG_DIR="$(cygpath "$USERPROFILE")/.apra-fleet/data/logs"
+          else
+            LOG_DIR="$HOME/.apra-fleet/data/logs"
+          fi
+          rm -f "$LOG_DIR"/fleet-*.log
+          echo "Fleet logs purged"
+
       # Must run AFTER "Check runner prerequisites": GITHUB_PATH entries are
       # prepended in the order steps add them, so a step run later wins.
       # $HOME/.local/bin (added above) contains a `node` symlink to an old
@@ -250,36 +273,52 @@ jobs:
             done
             [ "$FAIL" -eq 0 ] || exit 1
 
-            # Informational only below -- a fresh `-p` call can race the MCP
-            # handshake and report "not installed" even when the deterministic
-            # checks above just confirmed it is. Do not gate on this text.
-            output=$(claude -p "$PROMPT" --model haiku 2>&1)
+            # Below, only the "MCP tool not installed" text is informational --
+            # a fresh `-p` call can race the MCP handshake and report that
+            # even when the deterministic checks above just confirmed it's
+            # connected, so we don't gate on that specific text. Auth failure
+            # is NOT subject to that race (a logged-out CLI produces no real
+            # response at all) and DOES gate, via the AUTH_FAIL_RE check below.
+            # `|| true` on the capture is still required: under `bash -e
+            # -o pipefail` (this step's shell), a nonzero exit from the bare
+            # command kills the whole step regardless -- capturing output
+            # into a variable does not by itself suppress that.
+            AUTH_FAIL_RE='not logged in|unauthorized|\b401\b|authentication_error|expired.{0,20}token|permission_error|invalid.{0,20}(api.{0,20}key|token)'
+            output=$(claude -p "$PROMPT" --model haiku 2>&1) || true
             echo "$output"
+            if echo "$output" | grep -qiE "$AUTH_FAIL_RE"; then
+              echo "::error::PM claude CLI is not authenticated (smoke-test prompt got no real response)"
+              exit 1
+            fi
             echo "PM claude auth OK"
           elif [ "$PROVIDER" = "gemini" ]; then
-            output=$(gemini -p "$PROMPT" --model auto --skip-trust 2>&1)
+            AUTH_FAIL_RE='not logged in|unauthorized|\b401\b|authentication_error|expired.{0,20}token|permission_error|invalid.{0,20}(api.{0,20}key|token)'
+            output=$(gemini -p "$PROMPT" --model auto --skip-trust 2>&1) || true
             echo "$output"
+            if echo "$output" | grep -qiE "$AUTH_FAIL_RE"; then
+              echo "::error::PM gemini CLI is not authenticated (smoke-test prompt got no real response)"
+              exit 1
+            fi
             echo "PM gemini auth OK"
           elif [ "$PROVIDER" = "agy" ]; then
-            output=$(agy -p "$PROMPT" --dangerously-skip-permissions 2>&1)
+            AUTH_FAIL_RE='not logged in|unauthorized|\b401\b|authentication_error|expired.{0,20}token|permission_error|invalid.{0,20}(api.{0,20}key|token)'
+            output=$(agy -p "$PROMPT" --dangerously-skip-permissions 2>&1) || true
             echo "$output"
+            if echo "$output" | grep -qiE "$AUTH_FAIL_RE"; then
+              echo "::error::PM agy CLI is not authenticated (smoke-test prompt got no real response)"
+              exit 1
+            fi
             echo "PM agy auth OK"
           elif [ "$PROVIDER" = "opencode" ]; then
-            output=$(opencode run "$PROMPT" --format json --dangerously-skip-permissions 2>&1)
+            AUTH_FAIL_RE='not logged in|unauthorized|\b401\b|authentication_error|expired.{0,20}token|permission_error|invalid.{0,20}(api.{0,20}key|token)'
+            output=$(opencode run "$PROMPT" --format json --dangerously-skip-permissions 2>&1) || true
             echo "$output"
+            if echo "$output" | grep -qiE "$AUTH_FAIL_RE"; then
+              echo "::error::PM opencode CLI is not authenticated (smoke-test prompt got no real response)"
+              exit 1
+            fi
             echo "PM opencode auth OK"
           fi
-
-      - name: Purge fleet daemon logs
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            LOG_DIR="$(cygpath "$USERPROFILE")/.apra-fleet/data/logs"
-          else
-            LOG_DIR="$HOME/.apra-fleet/data/logs"
-          fi
-          rm -f "$LOG_DIR"/fleet-*.log
-          echo "Fleet logs purged"
 
       - name: Pre-create local member work folders
         shell: bash
@@ -366,6 +405,24 @@ jobs:
             echo "::error::fleet-setup.mjs setup exited with code $NODE_EXIT"
             exit "$NODE_EXIT"
           fi
+
+      - name: Re-assert PM MCP registration before sprint phase
+        if: steps.suite.outputs.pm_provider == 'claude'
+        shell: bash
+        run: |
+          # Live-verified (fleet-win11, apra-fleet-eft P0 investigation): the PM's own
+          # `claude mcp add --scope user` registration from the earlier install step can
+          # go missing by the time this job reaches the sprint-phase invocation (this
+          # machine also serves as a remote member for other suites, a plausible ~/.claude.json
+          # race) -- confirmed live via `claude mcp list` reporting "No MCP servers
+          # configured" moments before a sprint-phase run that came up with mcp_servers:[].
+          # Re-registering immediately before the sprint-phase step (the same command
+          # install.ts:933-935 already runs) is the reliable idempotent mitigation --
+          # NOT gated on whether it currently looks missing, since a stale/racy write can
+          # land after any check we'd do here too.
+          claude mcp remove apra-fleet --scope user > /dev/null 2>&1 || true
+          claude mcp add --scope user --transport http apra-fleet http://localhost:7523/mcp
+          claude mcp list | grep -qi "apra-fleet.*connected" || echo "::warning::apra-fleet MCP re-registration did not report connected -- sprint phase may still fail"
 
       - name: Run fleet e2e - sprint phase (${{ steps.suite.outputs.pm_provider }})
         id: e2e_sprint
@@ -468,12 +525,25 @@ jobs:
         if: always()
         shell: bash
         run: |
+          # Safe to just `cat` everything matching fleet-*.log here: the
+          # "Purge fleet daemon logs" step (top of this job, before install
+          # --force/start) already guarantees the only fleet-*.log file(s)
+          # present now are ones this job's own server created.
           if [ "$RUNNER_OS" = "Windows" ]; then
             LOG_DIR="$(cygpath "$USERPROFILE")/.apra-fleet/data/logs"
           else
             LOG_DIR="$HOME/.apra-fleet/data/logs"
           fi
+          mkdir -p "$RUN_DIR/logs"
           cat "$LOG_DIR"/fleet-*.log > "$RUN_DIR/logs/fleet-pm.log" 2>/dev/null || true
+
+      - name: Collect member session logs (deterministic)
+        if: always()
+        shell: bash
+        run: |
+          cd "$RUN_DIR"
+          node "$GITHUB_WORKSPACE/.github/e2e/fleet-setup.mjs" collect-logs > "$RUN_DIR/collect-logs-output.txt" 2>&1 || true
+          cat "$RUN_DIR/collect-logs-output.txt"
 
       - name: Extract telemetry
         if: always()
@@ -516,7 +586,7 @@ jobs:
         shell: bash
         run: |
           cd "$RUN_DIR"
-          node "$GITHUB_WORKSPACE/.github/e2e/fleet-setup.mjs" teardown > "$RUN_DIR/t6-output.txt" 2>&1 || true
+          node "$GITHUB_WORKSPACE/.github/e2e/fleet-setup.mjs" teardown --suite "${{ inputs.suite }}" > "$RUN_DIR/t6-output.txt" 2>&1 || true
           cat "$RUN_DIR/t6-output.txt"
 
       - name: Upload results

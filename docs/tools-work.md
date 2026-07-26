@@ -68,7 +68,7 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 7. **Handles stale sessions** -- if the command fails and a resume was attempted, retries with a fresh minted session ID.
 8. **Updates registry** -- stores the new `sessionId` (Claude and Gemini) and `lastUsed` timestamp.
 
-**Output:** The agent's response text, plus the session ID if one was returned.
+**Output:** `structuredContent.response` carries the agent's reply text; `structuredContent.usage` carries token counts when available; `structuredContent.sessionId` carries the session ID if one was returned. (The same text is also echoed in the tool result's display content, but MCP clients that surface `structuredContent` and drop `content` -- observed with Claude Code -- only see `structuredContent`, so `response` is the reliable field to read.)
 
 **Error handling:**
 - If the prompt fails due to an authentication issue, returns actionable guidance (`provision_llm_auth`) instead of raw error output.

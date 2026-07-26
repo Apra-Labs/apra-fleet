@@ -18,6 +18,37 @@ Inside this monorepo, add it as a workspace dependency:
 }
 ```
 
+## Recommended: `connectFleet()` (auto-picks stdio vs. HTTP)
+
+For most callers, hand-picking a transport (the two sections below) is more
+than you need. `connectFleet()` from `@apralabs/apra-fleet-client/server-resolution`
+does it for you: it probes for a running HTTP singleton
+(`~/.apra-fleet/data/server.json` + a `/health` check), attaches to it if
+found, and otherwise self-spawns a stdio server -- performing whichever
+handshake the chosen transport needs.
+
+```js
+import { connectFleet } from '@apralabs/apra-fleet-client/server-resolution';
+
+const { transport, mcpClient, fleetApi, mode } = await connectFleet();
+console.log(`connected via ${mode}`);
+
+const status = await fleetApi.fleetStatus({ format: 'json' });
+console.log(status);
+
+transport.stop();
+```
+
+Set `APRA_FLEET_TRANSPORT=stdio` / `=http` to force a specific transport, or
+`APRA_FLEET_SERVER_CMD`/`APRA_FLEET_SERVER_BIN` to point at a specific
+server executable. See `api-reference.md`'s `server-resolution.mjs` section
+for the full resolution order.
+
+The manual, transport-specific setup below is what `connectFleet()` does
+internally -- reach for it directly only if you need to force a particular
+transport without using the env-var overrides, or want finer control over
+transport `options` (e.g. custom HTTP headers).
+
 ## Connecting over stdio (spawns the server as a child process)
 
 ```js
@@ -145,6 +176,17 @@ try {
   }
 }
 ```
+
+## Getting one member's detailed status
+
+```js
+const detail = await fleet.memberDetail({ member_name: 'build-server', format: 'json' });
+console.log(detail.session?.id, detail.folder, detail.llmProvider);
+```
+
+Unlike `fleetStatus` (all members) or `listMembers`, `memberDetail` returns
+one member's connectivity, current session ID (or `null`), work folder, and
+LLM provider.
 
 ## Registering, updating, and removing members
 

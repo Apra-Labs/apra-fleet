@@ -231,6 +231,18 @@ Calls `fleet_status` -- status of all fleet members.
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
 
+#### `memberDetail(options)`
+
+Calls `member_detail` -- detailed status for one member: connectivity,
+session (`session.id`, the current session ID or `null`), work folder
+(`folder`), and provider (`llmProvider`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `member_id` | `string?` | UUID of the member. |
+| `member_name` | `string?` | Friendly name of the member. |
+| `format` | `"compact" \| "json"?` | Output format. |
+
 #### `sendFiles(options: SendFilesOptions)`
 
 Calls `send_files` -- uploads local files to a member.
@@ -290,6 +302,92 @@ Calls `remove_member` -- removes a member from the fleet.
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
 | `force` | `boolean?` | Remove even if the member is currently busy. |
+
+## `src/client/server-resolution.mjs`
+
+The single, shared implementation of "how does a client process reach the
+apra-fleet MCP server." Both `src/cli/workflow.ts` (the `apra-fleet
+workflow` launcher) and `packages/apra-fleet-se/bin/cli.mjs` (auto-sprint)
+depend on this module rather than duplicating the resolution logic.
+Binding design doc: `docs/adr-workflow-server-resolution.md`.
+
+Resolution order:
+
+1. **Forced transport / explicit stdio request.** `APRA_FLEET_TRANSPORT`
+   (`'http'` or `'stdio'`) overrides everything. `'stdio'` (or
+   `APRA_FLEET_SERVER_CMD`/`APRA_FLEET_SERVER_BIN` being set while transport
+   isn't forced to `'http'`) resolves a stdio command directly, no probe.
+   `'http'` probes only -- it never silently falls back to stdio.
+2. **HTTP singleton probe** (the product default when unset) --
+   `checkRunningInstance()` reads `~/.apra-fleet/data/server.json`
+   (`{pid, url}`), checks the pid is alive, then `GET`s a `/health`
+   endpoint derived from `url` (2s timeout). A stale/dead entry causes
+   `server.json` to be deleted (self-healing). On success, attaches over
+   `StreamableHttpTransport` and spawns nothing.
+3. **Stdio self-spawn fallback** -- `resolveFleetServerCommand()`'s four
+   tiers: `APRA_FLEET_SERVER_CMD` (a full `"<command> <args...>"` string),
+   `APRA_FLEET_SERVER_BIN` (resolved via `PATH`, run with `run --transport
+   stdio`), a bundled sibling `index.js` next to this module, or (dev
+   monorepo layout) `../../../dist/index.js` relative to it.
+
+The launcher/auto-sprint client and the MCP server are always separate
+processes; this module only decides the transport, it never merges them.
+Every branch takes an injectable `deps` bag (`env`, `readFile`, `unlink`,
+`pidAlive`, `health`, `dirname`, `exists`, `checkRunningInstance`) so each
+step is independently unit-testable without touching the real
+filesystem/network.
+
+#### `getFleetDataDir(env = process.env)`
+
+Returns `~/.apra-fleet/data`, honoring `APRA_FLEET_DATA_DIR` if set (mirrors
+`src/paths.ts`).
+
+#### `getServerInfoPath(env = process.env)`
+
+Returns `path.join(getFleetDataDir(env), 'server.json')`.
+
+#### `async checkRunningInstance(deps = {})`
+
+The HTTP-singleton probe (step 2 above). Reads and parses `server.json` via
+`deps.readFile`; on any parse failure, or a missing `pid`/`url`, returns
+`{ running: false }`. If `deps.pidAlive` (default: a `process.kill(pid, 0)`
+liveness check treating `EPERM` as alive) says the pid is dead, deletes
+`server.json` via `deps.unlink` and returns `{ running: false }`. If
+`deps.health` (default: `GET <url with /mcp replaced by /health>`, 2s
+timeout) fails, does the same. Otherwise returns
+`{ running: true, url, pid }`. Same semantics as
+`src/services/singleton.ts`'s `checkRunningInstance()`, so the client's
+probe and the server's own startup dedup never disagree.
+
+#### `resolveFleetServerCommand(deps = {})`
+
+Step 3's stdio command resolution, as a pure function (nothing is spawned).
+Returns `{ command: string, args: string[] }`. Throws if
+`APRA_FLEET_SERVER_CMD` is set but empty, or if none of the fallback
+entry-point tiers exist on disk (`deps.exists`, default `fs.existsSync`) and
+neither `APRA_FLEET_SERVER_CMD` nor `APRA_FLEET_SERVER_BIN` is set.
+
+#### `async resolveFleetServerConnection(deps = {})`
+
+The full resolution order above, as a pure descriptor -- nothing is spawned
+or connected. Returns either `{ mode: 'http', url, pid, reason }` or
+`{ mode: 'stdio', command, args, reason }`. Throws if `APRA_FLEET_TRANSPORT`
+is set to anything other than `'http'`/`'stdio'`, or if it's set to
+`'http'` and no healthy singleton is found (this case deliberately does not
+fall back to stdio).
+
+#### `async connectFleet(deps = {})`
+
+Resolves + connects in one call. Builds a `StreamableHttpTransport` or
+`StdioTransport` per `resolveFleetServerConnection`'s result, starts it,
+wraps it in `McpClient`, performs the `initialize`/`notifications/initialized`
+handshake for stdio connections (the HTTP transport already does its own
+`initialize` POST inside `start()`), and returns
+`{ transport, mcpClient, fleetApi, mode }` where `fleetApi` is a
+`new ApraFleet(mcpClient)`.
+
+`deps.options`, if given, is forwarded to the transport constructor (e.g.
+HTTP headers or child-process spawn options).
 
 ## `src/client/factory.mjs`
 

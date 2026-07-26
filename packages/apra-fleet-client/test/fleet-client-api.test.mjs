@@ -96,6 +96,25 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    test('memberDetail', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { name: 'alice', folder: '/home/user/work', session: { id: 'sess-1' } };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_name: 'alice', format: 'json' };
+        const result = await fleet.memberDetail(options);
+
+        assert.strictEqual(calledName, 'member_detail');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { name: 'alice', folder: '/home/user/work', session: { id: 'sess-1' } });
+    });
+
     test('sendFiles', async () => {
         let calledName, calledArgs;
         const mockClient = {

@@ -205,7 +205,17 @@ export class LinuxCommands implements OsCommands {
     const escapedHost = escapeDoubleQuoted(host);
     const escapedUser = escapeDoubleQuoted(username);
     const escapedToken = escapeDoubleQuoted(token);
-    const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    // $HOME (not `~`) -- `~` is only tilde-expanded by the shell in an UNQUOTED
+    // leading position; every use below is inside double quotes (needed for
+    // the other interpolated values), which suppresses that expansion. That
+    // silently stored the literal string "~/.fleet-git-credential-..." as the
+    // git config value -- git does not expand `~` itself when reading config,
+    // so it tried to exec a helper literally named
+    // `git-credential-~/.fleet-git-credential-...` ("not a git command").
+    // $HOME expands correctly even inside double quotes, so this actually
+    // resolves to an absolute path both when creating the file and when
+    // storing the git config value.
+    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
     // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
     return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > "${credFile}" && chmod 600 "${credFile}" && chmod +x "${credFile}" && git config --global --replace-all "credential.${credUrl}.helper" "" && git config --global --add "credential.${credUrl}.helper" "${credFile}"`;
@@ -213,7 +223,7 @@ export class LinuxCommands implements OsCommands {
 
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
-    const credFile = label ? `~/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '~/.fleet-git-credential';
+    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
     // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
     return `rm -f "${credFile}" && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
