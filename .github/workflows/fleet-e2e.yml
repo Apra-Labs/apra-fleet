@@ -250,27 +250,50 @@ jobs:
             done
             [ "$FAIL" -eq 0 ] || exit 1
 
-            # Informational only below -- a fresh `-p` call can race the MCP
-            # handshake and report "not installed" even when the deterministic
-            # checks above just confirmed it is. Do not gate on this text.
-            # `|| true` is load-bearing: under `bash -e -o pipefail` (this
-            # step's shell), a nonzero exit from any of these bare commands
-            # kills the whole step despite this comment's intent -- capturing
-            # output into a variable does NOT suppress that.
+            # Below, only the "MCP tool not installed" text is informational --
+            # a fresh `-p` call can race the MCP handshake and report that
+            # even when the deterministic checks above just confirmed it's
+            # connected, so we don't gate on that specific text. Auth failure
+            # is NOT subject to that race (a logged-out CLI produces no real
+            # response at all) and DOES gate, via the AUTH_FAIL_RE check below.
+            # `|| true` on the capture is still required: under `bash -e
+            # -o pipefail` (this step's shell), a nonzero exit from the bare
+            # command kills the whole step regardless -- capturing output
+            # into a variable does not by itself suppress that.
+            AUTH_FAIL_RE='not logged in|unauthorized|\b401\b|authentication_error|expired.{0,20}token|permission_error|invalid.{0,20}(api.{0,20}key|token)'
             output=$(claude -p "$PROMPT" --model haiku 2>&1) || true
             echo "$output"
+            if echo "$output" | grep -qiE "$AUTH_FAIL_RE"; then
+              echo "::error::PM claude CLI is not authenticated (smoke-test prompt got no real response)"
+              exit 1
+            fi
             echo "PM claude auth OK"
           elif [ "$PROVIDER" = "gemini" ]; then
+            AUTH_FAIL_RE='not logged in|unauthorized|\b401\b|authentication_error|expired.{0,20}token|permission_error|invalid.{0,20}(api.{0,20}key|token)'
             output=$(gemini -p "$PROMPT" --model auto --skip-trust 2>&1) || true
             echo "$output"
+            if echo "$output" | grep -qiE "$AUTH_FAIL_RE"; then
+              echo "::error::PM gemini CLI is not authenticated (smoke-test prompt got no real response)"
+              exit 1
+            fi
             echo "PM gemini auth OK"
           elif [ "$PROVIDER" = "agy" ]; then
+            AUTH_FAIL_RE='not logged in|unauthorized|\b401\b|authentication_error|expired.{0,20}token|permission_error|invalid.{0,20}(api.{0,20}key|token)'
             output=$(agy -p "$PROMPT" --dangerously-skip-permissions 2>&1) || true
             echo "$output"
+            if echo "$output" | grep -qiE "$AUTH_FAIL_RE"; then
+              echo "::error::PM agy CLI is not authenticated (smoke-test prompt got no real response)"
+              exit 1
+            fi
             echo "PM agy auth OK"
           elif [ "$PROVIDER" = "opencode" ]; then
+            AUTH_FAIL_RE='not logged in|unauthorized|\b401\b|authentication_error|expired.{0,20}token|permission_error|invalid.{0,20}(api.{0,20}key|token)'
             output=$(opencode run "$PROMPT" --format json --dangerously-skip-permissions 2>&1) || true
             echo "$output"
+            if echo "$output" | grep -qiE "$AUTH_FAIL_RE"; then
+              echo "::error::PM opencode CLI is not authenticated (smoke-test prompt got no real response)"
+              exit 1
+            fi
             echo "PM opencode auth OK"
           fi
 
