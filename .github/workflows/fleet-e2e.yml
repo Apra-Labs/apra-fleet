@@ -545,6 +545,51 @@ jobs:
           node "$GITHUB_WORKSPACE/.github/e2e/fleet-setup.mjs" collect-logs > "$RUN_DIR/collect-logs-output.txt" 2>&1 || true
           cat "$RUN_DIR/collect-logs-output.txt"
 
+      - name: Consolidate checkpoints.json (deterministic)
+        if: always()
+        shell: bash
+        run: |
+          # The PM orchestrator sometimes `cd`s into a member's toy-repo clone to
+          # verify a PR (its own working directory persists across tool calls) and
+          # can end up appending later checkpoints.json entries there instead of
+          # $RUN_DIR -- silently, since the write itself still succeeds. Rather than
+          # relying on the orchestrator's own cwd discipline, search every folder it
+          # could plausibly have wandered into and merge whatever checkpoints.json
+          # files exist there into $RUN_DIR's, oldest-mtime-first. extract-results.mjs
+          # already upserts checkpoints by id, one JSON line at a time, keeping
+          # whichever occurrence comes last in the file -- concatenating in mtime
+          # order reproduces the correct final state without touching that parser.
+          DOER_FOLDER='${{ steps.suite.outputs.doer_folder }}'
+          REVIEWER_FOLDER='${{ steps.suite.outputs.reviewer_folder }}'
+          to_posix() {
+            if [ "$RUNNER_OS" = "Windows" ]; then cygpath -u "$1" 2>/dev/null || echo "$1"; else echo "$1"; fi
+          }
+          mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+          CANDIDATES=(
+            "$RUN_DIR/checkpoints.json"
+            "$(to_posix "$DOER_FOLDER")/fleet-e2e-toy/checkpoints.json"
+            "$(to_posix "$REVIEWER_FOLDER")/fleet-e2e-toy/checkpoints.json"
+          )
+          FOUND=()
+          for f in "${CANDIDATES[@]}"; do
+            [ -f "$f" ] && FOUND+=("$f")
+          done
+          if [ "${#FOUND[@]}" -eq 0 ]; then
+            echo "No checkpoints.json found in any candidate location."
+            exit 0
+          fi
+          echo "checkpoints.json candidates found (oldest first):"
+          SORTED=()
+          while IFS= read -r line; do
+            SORTED+=("$(echo "$line" | cut -f2)")
+          done < <(for f in "${FOUND[@]}"; do printf '%s\t%s\n' "$(mtime_of "$f")" "$f"; done | sort -n)
+          printf '  %s\n' "${SORTED[@]}"
+          : > "$RUN_DIR/checkpoints.json.merged"
+          for f in "${SORTED[@]}"; do
+            cat "$f" >> "$RUN_DIR/checkpoints.json.merged"
+          done
+          mv "$RUN_DIR/checkpoints.json.merged" "$RUN_DIR/checkpoints.json"
+
       - name: Extract telemetry
         if: always()
         shell: bash
