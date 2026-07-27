@@ -549,6 +549,26 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                         const memberDisplay = act.member ? escapeHtml(act.member) : (act.type === 'transform' ? 'js' : '');
                         const memberHtml = memberDisplay ? \`<span class="muted">(\${memberDisplay})</span>\` : '';
 
+                        // apra-fleet-eft.45.1: while an activity is still
+                        // running (isRunning true, no final act.duration
+                        // yet), render elapsed-since-start at the same right-
+                        // edge slot the final duration occupies, using the
+                        // same short-form ('0s'/'5s'/'1m 20s') as
+                        // formatUptime -- not formatTime's '1.5s' decimal
+                        // form, which is reserved for the completed-duration
+                        // label. Recomputed from act.startTime on every
+                        // render call, so each poll/refresh naturally ticks
+                        // it forward without a dedicated timer (out of scope
+                        // per eft.45). On completion this branch stops
+                        // firing (act.isRunning goes false) and the existing
+                        // act.duration branch below takes over unchanged.
+                        let durationHtml = '';
+                        if (act.isRunning) {
+                            if (act.startTime) durationHtml = formatUptime(Date.now() - act.startTime);
+                        } else if (act.duration) {
+                            durationHtml = formatTime(act.duration);
+                        }
+
                         evEl.innerHTML = \`
                           <summary class="activity-header">
                             <span class="log-time">\${t}</span>
@@ -556,7 +576,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                             <div class="activity-meta">
                               \${modelHtml}
                               \${tokensHtml}
-                              \${act.duration ? formatTime(act.duration) : ''} \${badge}
+                              \${durationHtml} \${badge}
                               <span class="toggle-icon"></span>
                             </div>
                           </summary>
