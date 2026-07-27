@@ -100,6 +100,11 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     .phase-header h4 { font-size: 13px; font-weight: 600; color: #e4e4e7; margin: 0; }
     .phase-header:hover { background: rgba(255,255,255,0.05); }
     .phase-header::-webkit-details-marker { display: none; }
+    /* apra-fleet-eft.53.2: mirrors .activity-meta -- the single flex item on
+       the right-hand side of the header's space-between row, so the phase
+       duration always sits flush right next to the toggle icon exactly like
+       an activity row's duration sits next to its status badge. */
+    .phase-meta { display: flex; gap: 12px; align-items: center; font-size: 11px; color: #a1a1aa; flex-shrink: 0; }
     .phase-body { padding: 8px; display: flex; flex-direction: column; gap: 4px; }
     
     .event-log { display: flex; gap: 8px; font-family: monospace; font-size: 12px; color: #d4d4d8; padding: 2px 4px; border-radius: 4px; }
@@ -396,11 +401,35 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                     phaseEl.id = phaseId;
                     phaseEl.className = 'tree-phase';
                     phaseEl.open = true;
-                    phaseEl.innerHTML = \`<summary class="phase-header"><h4>\${escapeHtml(phase.title)}</h4><span class="toggle-icon"></span></summary><div class="phase-body"></div>\`;
+                    phaseEl.innerHTML = \`<summary class="phase-header"><h4>\${escapeHtml(phase.title)}</h4><div class="phase-meta"><span class="phase-duration"></span><span class="toggle-icon"></span></div></summary><div class="phase-body"></div>\`;
                     groupBody.appendChild(phaseEl);
                 }
+
+                // apra-fleet-eft.53.2: phase-header duration, mirroring the
+                // activity-duration convention (eft.45.1) -- while the phase
+                // is LIVE (phaseStartedAt set, no phaseEndedAt yet) show
+                // elapsed-since-start via formatUptime, recomputed from
+                // Date.now() on every renderTreeIncremental() call so it
+                // ticks forward on the normal refresh/SSE cadence with no
+                // dedicated timer. Once the phase EXITS (phaseEndedAt set)
+                // the frozen total is rendered via formatTime exactly like a
+                // completed activity's duration, and dataset.rendered is set
+                // so later re-renders (including of earlier-cycle phases
+                // after a resume/reload) never recompute it again.
+                const phaseDurationEl = phaseEl.querySelector('.phase-duration');
+                if (phaseDurationEl && phaseDurationEl.dataset.rendered !== 'done') {
+                    let phaseDurationHtml = '';
+                    if (phase.phaseEndedAt) {
+                        phaseDurationHtml = formatTime(new Date(phase.phaseEndedAt).getTime() - new Date(phase.phaseStartedAt).getTime());
+                        phaseDurationEl.dataset.rendered = 'done';
+                    } else if (phase.phaseStartedAt) {
+                        phaseDurationHtml = formatUptime(Date.now() - new Date(phase.phaseStartedAt).getTime());
+                    }
+                    phaseDurationEl.textContent = phaseDurationHtml;
+                }
+
                 const phaseBody = phaseEl.querySelector('.phase-body');
-                
+
                 phase.events.forEach((ev, eIdx) => {
                     const evId = \`ev-\${gIdx}-\${pIdx}-\${eIdx}\`;
                     let evEl = document.getElementById(evId);
