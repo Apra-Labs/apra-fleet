@@ -2942,36 +2942,138 @@ export function computeLaneEffort(tasks) {
     return sizeSum * maxWeight;
 }
 
+// apra-fleet-eft.77.1 --------------------------------------------------------
+// Predicted-context-size estimator, wired in behind the SAME splitting seam
+// as the effort-point formula above (splitLaneByEffort). planner-owned-
+// streaks (apra-fleet-eft.76) split lanes by effort points as a PROXY for the
+// real limit: the doer session's context requirement. When a per-task
+// context estimate can actually be computed -- from the byte sizes of the
+// task's named files plus historical tokens-per-bucket telemetry already
+// recorded via `bd remember` (see e.g. the `*-tokens-input=...` memories) --
+// that estimate decides the split instead. The effort-point formula remains
+// the FALLBACK whenever no estimate is available for every task in the lane,
+// so existing callers/tests that never supply file sizes or telemetry keep
+// getting byte-for-byte the same effort-point-based behavior as before.
+
+// Rough bytes-per-token ratio used to convert named-file byte sizes into an
+// estimated token contribution (in the ballpark of common tokenizer
+// averages -- good enough for a splitting heuristic, not billing).
+export const BYTES_PER_TOKEN = 4;
+
+// Default ceiling, in estimated tokens, a sub-lane's predicted context
+// requirement must stay under before splitting. Plays the same role as
+// DEFAULT_EFFORT_THRESHOLD, but in token-estimate units.
+export const DEFAULT_CONTEXT_CEILING = 150000;
+
+/**
+ * Estimates one task's predicted context-size contribution, in tokens, from:
+ * - `task.files` (the task's named files) looked up in `opts.fileSizes` (a
+ *   map of file path -> byte size), converted via BYTES_PER_TOKEN; and
+ * - `opts.telemetry` (a map of `${size}:${model}` bucket key -> average
+ *   observed tokens for that bucket, sourced from historical `bd remember`
+ *   token-usage memories).
+ *
+ * Returns `null` -- "no estimate available" -- when neither source yields
+ * anything for this task (no named files with known sizes, and no telemetry
+ * entry for its size/model bucket). Callers use the `null` sentinel to
+ * detect the no-estimate case and fall back to the effort-point formula
+ * rather than silently treating a missing input as zero cost.
+ *
+ * @param {{id: string, size?: string, model?: string, files?: string[]}} task
+ * @param {{ fileSizes?: Record<string, number>, telemetry?: Record<string, number> }} [opts]
+ * @returns {number|null}
+ */
+export function estimateTaskContextTokens(task, opts = {}) {
+    const fileSizes = opts.fileSizes || {};
+    const telemetry = opts.telemetry || {};
+
+    let fileTokens = 0;
+    let sawFileSize = false;
+    for (const f of task.files || []) {
+        const bytes = fileSizes[f];
+        if (typeof bytes === 'number' && Number.isFinite(bytes)) {
+            fileTokens += bytes / BYTES_PER_TOKEN;
+            sawFileSize = true;
+        }
+    }
+
+    const bucketKey = `${task.size}:${task.model}`;
+    const telemetryTokens = telemetry[bucketKey];
+    const sawTelemetry = typeof telemetryTokens === 'number' && Number.isFinite(telemetryTokens);
+
+    if (!sawFileSize && !sawTelemetry) return null;
+    return fileTokens + (sawTelemetry ? telemetryTokens : 0);
+}
+
+/**
+ * Estimates a lane's (or candidate sub-lane's) total predicted context
+ * requirement, in tokens, by summing each task's estimate (see
+ * estimateTaskContextTokens). Returns `null` if ANY task in `tasks` has no
+ * computable estimate, so a partial estimate is never mistaken for a
+ * whole-lane one.
+ * @param {Array<object>} tasks
+ * @param {{ fileSizes?: Record<string, number>, telemetry?: Record<string, number> }} [opts]
+ * @returns {number|null}
+ */
+export function estimateLaneContextTokens(tasks, opts = {}) {
+    let total = 0;
+    for (const t of tasks) {
+        const est = estimateTaskContextTokens(t, opts);
+        if (est === null) return null;
+        total += est;
+    }
+    return total;
+}
+
 /**
  * Splits a single lane's ORDERED task list (order already consistent with
  * `blocks` edges, i.e. planner.md's `streakOrder`) into one or more
- * contiguous sub-lanes so that, where possible, no sub-lane's effort exceeds
- * `opts.threshold` (default DEFAULT_EFFORT_THRESHOLD) -- UNLESS honoring
- * that would separate two members of the same mutex-resource group (e.g. the
- * same submodule pointer, a shared version/manifest field, or a committed
- * fixture file), in which case the mutex group is kept together in the SAME
- * sub-lane even when that leaves it over threshold (planner.md: "NEVER
- * separate mutex-resource members... even if honoring that leaves a streak
- * over threshold").
+ * contiguous sub-lanes so that, where possible, no sub-lane's predicted cost
+ * exceeds its limit -- UNLESS honoring that would separate two members of
+ * the same mutex-resource group (e.g. the same submodule pointer, a shared
+ * version/manifest field, or a committed fixture file), in which case the
+ * mutex group is kept together in the SAME sub-lane even when that leaves it
+ * over the limit (planner.md: "NEVER separate mutex-resource members... even
+ * if honoring that leaves a streak over threshold").
+ *
+ * Cost model (apra-fleet-eft.77.1): when every task in `tasks` has a
+ * computable predicted-context-size estimate (see estimateTaskContextTokens
+ * -- i.e. `opts.fileSizes`/`opts.telemetry` yield a non-null estimate for
+ * each task), the lane is split against `opts.contextCeiling` (default
+ * DEFAULT_CONTEXT_CEILING) using that context estimate. Otherwise -- the
+ * common case when no file-size/telemetry data is supplied -- it falls back
+ * to the effort-point formula (computeLaneEffort) against `opts.threshold`
+ * (default DEFAULT_EFFORT_THRESHOLD), exactly as before this estimator was
+ * introduced.
  *
  * - Never reorders or drops a task: concatenating the returned sub-lanes,
  *   in order, reproduces `tasks` exactly -- each sub-lane is a contiguous
  *   prefix/suffix slice, never an arbitrary mid-lane cut (planner.md: "each
  *   resulting streak is a contiguous prefix/suffix of the dependency
  *   order").
- * - A lane that already fits under the threshold is returned as a single
+ * - A lane that already fits under the limit is returned as a single
  *   sub-lane (no gratuitous splitting).
  * - `opts.mutexGroups`, if given, is an array of arrays of task ids that
  *   contend for the same mutex resource; every id in the same group is
  *   guaranteed to land in the same returned sub-lane.
  *
- * @param {Array<{id: string, size: 'S'|'M'|'L', model: 'cheap'|'standard'|'premium'}>} tasks
- * @param {{ threshold?: number, mutexGroups?: string[][] }} [opts]
+ * @param {Array<{id: string, size: 'S'|'M'|'L', model: 'cheap'|'standard'|'premium', files?: string[]}>} tasks
+ * @param {{ threshold?: number, mutexGroups?: string[][], fileSizes?: Record<string, number>, telemetry?: Record<string, number>, contextCeiling?: number }} [opts]
  * @returns {Array<Array<object>>} sub-lanes, each a contiguous slice of `tasks`
  */
 export function splitLaneByEffort(tasks, opts = {}) {
     if (!Array.isArray(tasks) || tasks.length === 0) return [];
     const threshold = opts.threshold ?? DEFAULT_EFFORT_THRESHOLD;
+    const contextCeiling = opts.contextCeiling ?? DEFAULT_CONTEXT_CEILING;
+
+    // Only trust the context estimate when EVERY task in the lane has one;
+    // a single un-estimable task disqualifies the whole lane back to the
+    // effort-point fallback, per this function's contract above.
+    const useContextEstimate = tasks.every((t) => estimateTaskContextTokens(t, opts) !== null);
+    const costOf = useContextEstimate
+        ? (subset) => estimateLaneContextTokens(subset, opts)
+        : (subset) => computeLaneEffort(subset);
+    const limit = useContextEstimate ? contextCeiling : threshold;
 
     const mutexGroupOf = new Map();
     (opts.mutexGroups || []).forEach((group, idx) => {
@@ -2990,7 +3092,7 @@ export function splitLaneByEffort(tasks, opts = {}) {
         }
         const prev = current[current.length - 1];
         const candidate = [...current, task];
-        if (computeLaneEffort(candidate) > threshold && !sameMutexGroup(prev, task)) {
+        if (costOf(candidate) > limit && !sameMutexGroup(prev, task)) {
             sublanes.push(current);
             current = [task];
         } else {
