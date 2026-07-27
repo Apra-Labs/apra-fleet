@@ -3943,7 +3943,53 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
 // same binding the old bare-global version referred to; no control-flow or
 // dispatch-order changes.
 async function runSprintCycle(context) {
-    const { agent: agentRaw, command, parallel, log, phase, group, endGroup, publishState, args, budget } = context;
+    const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget } = context;
+
+    // apra-fleet-eft.70.1: shared full-DB beads snapshot, plus the two choke
+    // points (`command` and `phase` themselves) that keep it correct. Wrapping
+    // both HERE -- before any other statement in this function uses either
+    // name -- means every direct `command(...)`/`phase(...)` call below, and
+    // every helper (doltPullBefore, persistNewTaskBestEffort, withGitSync,
+    // etc.) that receives `command` via an options object built from this same
+    // closure variable, transparently goes through the wrapped version; no
+    // other call site in this file needs to change.
+    //
+    // Problem this fixes (see fetchAllBeadsShared()'s own doc comment for the
+    // pre-existing concurrent-caller coalescing, which this extends): TWO
+    // adjacent-but-not-concurrent full fetches used to each pay for their own
+    // 'bd list --all --limit 0 --json' round trip, because the prior in-flight
+    // promise had already resolved and been cleared by the time the next
+    // caller started (e.g. updateDashboard()'s `bdListScoped('')` immediately
+    // followed by `bdListScoped('--ready --json')`, or the pre-sprint
+    // updateDashboard() -> initialBeads -> notDoneBeads sequence). Caching the
+    // last snapshot fixes that, but only if it is invalidated the instant the
+    // underlying data can have changed -- so invalidation fires on BOTH:
+    //   1. every `phase()` call (a new Plan/Develop/Review/Deploy/etc. step
+    //      must never inherit a stale view from the step before it), and
+    //   2. every bd command that is not a known read (list/show/ready/
+    //      config) -- update/create/close/note/dep/dolt pull are all treated
+    //      as mutations, conservatively: an unrecognized bd subcommand is
+    //      assumed to mutate rather than assumed safe, so a stray extra full
+    //      fetch is the failure mode, never silently stale data. Non-bd
+    //      commands (git, node probes) never touch beads state and are left
+    //      alone.
+    let allBeadsSnapshot = null; // { beads } -- cleared by invalidateAllBeadsCache()
+    function invalidateAllBeadsCache() { allBeadsSnapshot = null; }
+    const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
+    const command = async (cmdStr, opts) => {
+        const result = await rawCommand(cmdStr, opts);
+        if (typeof cmdStr === 'string') {
+            const trimmed = cmdStr.trim();
+            if (/^bd\b/i.test(trimmed) && !BD_READ_ONLY_RE.test(trimmed)) {
+                invalidateAllBeadsCache();
+            }
+        }
+        return result;
+    };
+    const phase = (title) => {
+        invalidateAllBeadsCache();
+        return rawPhase(title);
+    };
 
     // A stable per-sprint id for mutex fairness/introspection: the sprint branch
     // is unique per concurrent sprint on the shared remote.
@@ -4270,12 +4316,27 @@ async function runSprintCycle(context) {
     // as replay's queue order. Coalescing means only one command is ever
     // actually issued for a given overlapping window, so there is nothing
     // for the replay queue to misorder.
+    //
+    // apra-fleet-eft.70.1: ALSO check `allBeadsSnapshot` (declared at the top
+    // of this function, alongside the `command`/`phase` wrappers that keep it
+    // fresh) before issuing a new request at all. That snapshot survives
+    // ACROSS separate (non-overlapping) calls too -- not just the in-flight
+    // window below -- so a caller that starts after a previous fetch has
+    // already resolved still gets the cached result instead of paying for
+    // its own full round trip, as long as nothing has mutated beads or
+    // started a new phase step since. See the `command`/`phase` wrapper doc
+    // comment above for exactly what invalidates it.
     let allBeadsInFlight = null;
     async function fetchAllBeadsShared() {
+        if (allBeadsSnapshot) return allBeadsSnapshot.beads;
         if (!allBeadsInFlight) {
             const allLabel = 'bd list --all --limit 0 --json';
             allBeadsInFlight = command(allLabel, { member_name: orchestratorMember, silent: true })
                 .then((raw) => parseBdJson(raw, allLabel))
+                .then((beads) => {
+                    allBeadsSnapshot = { beads };
+                    return beads;
+                })
                 .finally(() => { allBeadsInFlight = null; });
         }
         return allBeadsInFlight;
