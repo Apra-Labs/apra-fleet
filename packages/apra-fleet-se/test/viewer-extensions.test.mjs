@@ -383,6 +383,128 @@ describe('renderBeadsHtml: Backlog dependency tree (apra-fleet-k7s)', () => {
     });
 });
 
+// apra-fleet-4p5: tree nodes (and the two top-level Sprint/Backlog section
+// headers) should be collapsible/expandable, so a user can fold away
+// completed or uninteresting subtrees. renderBeadsHtml() stays a pure,
+// synchronous string builder -- collapse state is threaded in via an
+// optional third `collapsedIds` argument, never read from `document`.
+describe('renderBeadsHtml: collapsible/expandable tree nodes and sections (apra-fleet-4p5)', () => {
+    const childPrefix = String.fromCharCode(0x2514, 0x2500) + ' ';
+
+    test('a node with children renders a [-] (expanded) toggle by default', () => {
+        const tasks = [
+            { id: '41', title: '[bug] parent epic', status: 'open' },
+            { id: '41.1', parent: '41', title: '[impl] child one', status: 'closed' },
+        ];
+        const html = renderBeadsHtml(tasks);
+        assert.ok(html.includes('data-toggle-id="41"'));
+        assert.ok(html.includes('[-]'));
+        // Not collapsed, so the child still renders.
+        assert.ok(html.includes(childPrefix + '#41.1</td>'));
+    });
+
+    test('a childless node renders no toggle control of its own (just an invisible spacer)', () => {
+        const html = renderBeadsHtml([{ id: 'leaf', title: 'no children here', status: 'open' }]);
+        assert.ok(!html.includes('data-toggle-id="leaf"'));
+        // The two section headers (Sprint/Backlog) always carry their own
+        // toggle regardless of content -- exactly 2 `.tree-toggle` controls
+        // exist here, both belonging to the sections, none to the leaf node.
+        assert.strictEqual((html.match(/class="tree-toggle"/g) || []).length, 2);
+    });
+
+    test('a node id present in collapsedIds renders its [+] toggle and hides its children rows entirely', () => {
+        const tasks = [
+            { id: '41', title: '[bug] parent epic', status: 'open' },
+            { id: '41.1', parent: '41', title: '[impl] child one', status: 'closed' },
+            { id: '41.2', parent: '41', title: '[impl] child two', status: 'open' },
+        ];
+        const html = renderBeadsHtml(tasks, [], new Set(['41']));
+        // Parent row itself still renders, now showing the collapsed [+] toggle.
+        assert.ok(html.includes('>#41</td>'), 'the collapsed parent row itself must still render');
+        assert.ok(html.includes('data-toggle-id="41"'));
+        assert.ok(html.includes('[+]'));
+        // Children are hidden -- neither nested nor re-attached as spurious roots.
+        assert.ok(!html.includes('41.1'), 'a collapsed node\'s child must not appear anywhere in the output');
+        assert.ok(!html.includes('41.2'), 'a collapsed node\'s child must not appear anywhere in the output');
+    });
+
+    test('collapsedIds accepts a plain array, not just a Set, without throwing', () => {
+        const tasks = [
+            { id: 'P', title: '[bug] parent', status: 'open' },
+            { id: 'C', parent: 'P', title: '[impl] child', status: 'open' },
+        ];
+        assert.doesNotThrow(() => renderBeadsHtml(tasks, [], ['P']));
+        const html = renderBeadsHtml(tasks, [], ['P']);
+        assert.ok(!html.includes('#C<'));
+    });
+
+    test('a collapsed grandparent hides grandchildren too (transitively), not just direct children', () => {
+        const tasks = [
+            { id: 'A', title: '[bug] a', status: 'open' },
+            { id: 'A.1', parent: 'A', title: '[impl] a1', status: 'open' },
+            { id: 'A.1.1', parent: 'A.1', title: '[impl] a1.1', status: 'open' },
+        ];
+        const html = renderBeadsHtml(tasks, [], new Set(['A']));
+        assert.ok(html.includes('>#A</td>'));
+        assert.ok(!html.includes('A.1'), 'a deeply nested descendant must also be hidden when an ancestor is collapsed');
+    });
+
+    test('a collapsed node with a cycle in its (undiscovered) subtree still does not crash or double-render', () => {
+        const tasks = [
+            { id: 'A', parent: 'B', title: '[impl] a' },
+            { id: 'B', parent: 'A', title: '[impl] b' },
+        ];
+        assert.doesNotThrow(() => renderBeadsHtml(tasks, [], new Set(['A'])));
+    });
+
+    test('backlog dependency-tree nodes are collapsible the same way as Sprint containment nodes', () => {
+        const backlogTasks = [
+            { id: 'BL-1', title: '[impl] the blocker', status: 'open' },
+            { id: 'BL-2', title: '[impl] blocked by BL-1', status: 'open', dependencies: [{ depends_on_id: 'BL-1', type: 'blocks' }] },
+        ];
+        const collapsedHtml = renderBeadsHtml([], backlogTasks, new Set(['BL-1']));
+        assert.ok(collapsedHtml.includes('>#BL-1</td>'));
+        assert.ok(!collapsedHtml.includes('BL-2'), 'BL-2 must be hidden while its blocker BL-1 is collapsed');
+
+        const expandedHtml = renderBeadsHtml([], backlogTasks);
+        assert.ok(expandedHtml.includes(childPrefix + '#BL-2</td>'), 'BL-2 renders normally when nothing is collapsed');
+    });
+
+    test('the Sprint and Backlog section headers each carry their own toggle, collapsible via synthetic ids', () => {
+        const html = renderBeadsHtml([{ id: 'S1', title: 'a sprint task', status: 'open' }], [{ id: 'B1', title: 'a backlog task', status: 'open' }]);
+        assert.ok(html.includes('data-toggle-id="section:sprint"'));
+        assert.ok(html.includes('data-toggle-id="section:backlog"'));
+    });
+
+    test('collapsing the Sprint section hides every sprint row, but leaves Backlog untouched', () => {
+        const sprintTasks = [{ id: 'S1', title: 'a sprint task', status: 'open' }];
+        const backlogTasks = [{ id: 'B1', title: 'a backlog task', status: 'open' }];
+        const html = renderBeadsHtml(sprintTasks, backlogTasks, new Set(['section:sprint']));
+        assert.ok(!html.includes('#S1'), 'a collapsed Sprint section must hide its rows entirely');
+        assert.ok(html.includes('#B1'), 'the Backlog section must be unaffected by collapsing Sprint');
+        // The section header itself (with its [+] toggle) still renders.
+        assert.ok(html.includes('data-toggle-id="section:sprint"'));
+    });
+
+    test('collapsing the Backlog section hides every backlog row, but leaves Sprint untouched', () => {
+        const sprintTasks = [{ id: 'S1', title: 'a sprint task', status: 'open' }];
+        const backlogTasks = [{ id: 'B1', title: 'a backlog task', status: 'open' }];
+        const html = renderBeadsHtml(sprintTasks, backlogTasks, new Set(['section:backlog']));
+        assert.ok(html.includes('#S1'));
+        assert.ok(!html.includes('#B1'));
+    });
+
+    test('renderBeadsHtml() with no third argument behaves exactly as before (nothing collapsed by default)', () => {
+        const tasks = [
+            { id: '41', title: '[bug] parent epic', status: 'open' },
+            { id: '41.1', parent: '41', title: '[impl] child one', status: 'closed' },
+        ];
+        assert.doesNotThrow(() => renderBeadsHtml(tasks));
+        const html = renderBeadsHtml(tasks);
+        assert.ok(html.includes(childPrefix + '#41.1</td>'));
+    });
+});
+
 describe('apra-fleet-eft.27.2: renderBeadsHtml on-demand description markup', () => {
     test('a lean (summary-only) bead renders an expandable row carrying its id/updatedAt for the client-side fetch, marked NOT loaded', () => {
         const html = renderBeadsHtml([{ id: 'bd-1', title: 'A task', status: 'open', summary: 'short preview...', updated_at: '2026-07-20T00:00:00Z', dependencies: [] }]);
@@ -617,6 +739,101 @@ describe('renderResultExtrasHtml: auto-sprint verdict badge + PR link', () => {
         const html = renderResultExtrasHtml({ verdict: 'PASS', prUrl: null });
         assert.ok(!html.includes('<a '));
         assert.ok(html.includes('PASS'));
+    });
+});
+
+// apra-fleet-4p5: exercises the actual browser-side click-delegation wiring
+// (collapsedBeadIds Set + renderBeadsPanel()) embedded in beadsExtension.js,
+// using a minimal mock `document` that records addEventListener callbacks
+// and getElementById containers -- mirrors the existing
+// "browser-side fetch + localStorage cache" describe block's approach of
+// running the real embedded source, not a hand-reimplementation of it.
+describe('beadsExtension.js: embedded browser-side collapse/expand click handling (apra-fleet-4p5)', () => {
+    function createMockDocument() {
+        const listeners = {};
+        const containers = {};
+        const doc = {
+            addEventListener(type, handler) {
+                (listeners[type] = listeners[type] || []).push(handler);
+            },
+            getElementById(id) {
+                if (!containers[id]) containers[id] = { innerHTML: '' };
+                return containers[id];
+            }
+        };
+        return { doc, listeners, containers };
+    }
+
+    function makeToggleClickEvent(toggleId) {
+        const toggleEl = { dataset: { toggleId } };
+        return { target: { closest: (sel) => (sel === '.tree-toggle' ? toggleEl : null) } };
+    }
+
+    test('clicking a node\'s .tree-toggle re-renders the panel with that node collapsed, purely client-side (no new server payload)', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+
+        const stateHandlers = listeners['workflow:state:beads'];
+        assert.ok(stateHandlers && stateHandlers.length === 1);
+        stateHandlers[0]({
+            detail: {
+                sprintTasks: [
+                    { id: '41', title: 'parent', status: 'open' },
+                    { id: '41.1', parent: '41', title: 'child', status: 'open' },
+                ],
+                backlogTasks: []
+            }
+        });
+
+        const container = containers['extension-beads'];
+        assert.ok(container.innerHTML.includes('41.1'), 'child renders before any collapse');
+
+        const clickHandlers = listeners['click'];
+        assert.ok(clickHandlers && clickHandlers.length === 1);
+        clickHandlers[0](makeToggleClickEvent('41'));
+
+        assert.ok(!container.innerHTML.includes('41.1'), 'child must be hidden after collapsing its parent, with no server round-trip');
+        assert.ok(container.innerHTML.includes('[+]'), 'the toggle now shows the collapsed indicator');
+
+        // Clicking the same toggle again expands it back.
+        clickHandlers[0](makeToggleClickEvent('41'));
+        assert.ok(container.innerHTML.includes('41.1'), 'child reappears after expanding again');
+    });
+
+    test('collapse state survives a fresh state-update re-render (a later poll tick), unlike per-row DOM state', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+
+        const stateHandlers = listeners['workflow:state:beads'];
+        const clickHandlers = listeners['click'];
+        const push = (sprintTasks) => stateHandlers[0]({ detail: { sprintTasks, backlogTasks: [] } });
+
+        push([
+            { id: 'P', title: 'parent', status: 'open' },
+            { id: 'C', parent: 'P', title: 'child', status: 'open' },
+        ]);
+        clickHandlers[0](makeToggleClickEvent('P'));
+        assert.ok(!containers['extension-beads'].innerHTML.includes('>#C<'));
+
+        // A later poll delivers a fresh (structurally identical) payload --
+        // the collapse choice must still be honored, since it lives in the
+        // script's own closure, not in any DOM node the rebuild would wipe.
+        push([
+            { id: 'P', title: 'parent', status: 'open' },
+            { id: 'C', parent: 'P', title: 'child', status: 'open' },
+        ]);
+        assert.ok(!containers['extension-beads'].innerHTML.includes('>#C<'), 'collapse must persist across the next poll\'s full innerHTML rebuild');
+    });
+
+    test('a click that does not land on a .tree-toggle is a no-op (no crash, no re-render)', () => {
+        const { doc, listeners, containers } = createMockDocument();
+        new Function('document', beadsExtension.js)(doc);
+
+        listeners['workflow:state:beads'][0]({ detail: { sprintTasks: [{ id: 'X', title: 'x', status: 'open' }], backlogTasks: [] } });
+        const before = containers['extension-beads'].innerHTML;
+
+        assert.doesNotThrow(() => listeners['click'][0]({ target: { closest: () => null } }));
+        assert.strictEqual(containers['extension-beads'].innerHTML, before);
     });
 });
 

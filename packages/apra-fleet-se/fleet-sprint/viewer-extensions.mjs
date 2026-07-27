@@ -68,13 +68,34 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * well-formed bd data, but is not assumed) guarantees every task in the
  * input is rendered exactly once, never silently dropped.
  *
+ * apra-fleet-4p5: every tree node that has children (and the two
+ * top-level "Sprint"/"Backlog" section headers themselves) renders a
+ * `[-]`/`[+]` toggle (a `.tree-toggle` span carrying a `data-toggle-id`,
+ * same round-trip-through-the-DOM pattern the `bead-desc` `data-bead-id`
+ * attribute already uses) so a user can fold away a subtree. A node id in
+ * `collapsedIds` is rendered collapsed: its own row still shows (with the
+ * `[+]` toggle), but none of its descendants' rows are emitted at all --
+ * they are still walked (so the cycle-guard/`rendered` bookkeeping stays
+ * correct and the end-of-pass safety-net sweep does not re-attach a hidden
+ * descendant as a spurious extra root), just not concatenated into the
+ * returned HTML. The two sections use the synthetic ids `'section:sprint'`
+ * / `'section:backlog'` in the same `collapsedIds` set, since neither can
+ * ever collide with a real bd id. This function stays a pure, synchronous
+ * string builder either way -- collapse is a rendering decision driven
+ * entirely by the `collapsedIds` input, not by any DOM/document access.
+ *
  * @param {Array<{id: string|number, title?: string, description?: string, status?: string, issue_type?: string, ready?: boolean, priority?: number, metadata?: {model?: string}, dependencies?: Array<{depends_on_id: string|number, type: string}>}>} sprintTasks
  * @param {Array<{id: string|number, title?: string, description?: string, status?: string, issue_type?: string, priority?: number, metadata?: {model?: string}}>} [backlogTasks]
+ * @param {Set<string>|string[]} [collapsedIds] ids (real bead ids, or the synthetic 'section:sprint'/'section:backlog') currently collapsed
  * @returns {string}
  */
-export function renderBeadsHtml(sprintTasks, backlogTasks) {
+export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     sprintTasks = sprintTasks || [];
     backlogTasks = backlogTasks || [];
+    // Accept a Set (the browser-side embed's long-lived collapse state) or
+    // a plain array (e.g. a future caller reconstructing it from
+    // persisted/serialized state) -- never throws on either shape.
+    collapsedIds = collapsedIds instanceof Set ? collapsedIds : new Set(Array.isArray(collapsedIds) ? collapsedIds : []);
 
     // ASCII-only badges throughout (project convention) -- bracketed text
     // tags with inline color, not unicode glyphs/emoji.
@@ -209,8 +230,28 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
             '</div></details>';
     }
 
-    function sectionHeaderRow(label) {
-        return '<tr><td colspan="6" style="padding: 10px 8px 4px; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; color: #a1a1aa; border-bottom: 1px solid rgba(255,255,255,0.1);">' + escapeHtml(label) + '</td></tr>';
+    // A childless node/section gets an invisible same-width spacer instead
+    // of a toggle, so id/label columns still line up whether or not a
+    // given row happens to have anything to fold away. `id` is the raw
+    // (unescaped) node id or synthetic section key -- escaped here, once,
+    // for the `data-toggle-id` attribute; the browser round-trips it back
+    // to the original string when read via `.dataset.toggleId` (HTML
+    // entity decoding), exactly like the existing `data-bead-id` attribute
+    // on `.bead-desc` already relies on.
+    function treeToggleHtml(id, hasChildren, collapsed) {
+        if (!hasChildren) {
+            return '<span style="display: inline-block; width: 16px;"></span>';
+        }
+        const safeToggleId = escapeHtml(id);
+        const label = collapsed ? '[+]' : '[-]';
+        const title = collapsed ? 'Expand' : 'Collapse';
+        return '<span class="tree-toggle" data-toggle-id="' + safeToggleId + '" title="' + title + '" ' +
+            'style="cursor: pointer; display: inline-block; width: 16px; user-select: none; color: #a1a1aa;">' + label + '</span>';
+    }
+
+    function sectionHeaderRow(label, sectionKey, collapsed) {
+        return '<tr><td colspan="6" style="padding: 10px 8px 4px; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; color: #a1a1aa; border-bottom: 1px solid rgba(255,255,255,0.1);">' +
+            treeToggleHtml(sectionKey, true, collapsed) + ' ' + escapeHtml(label) + '</td></tr>';
     }
 
     function emptySectionRow(message) {
@@ -274,8 +315,12 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
             extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">blocked by: ' + blockers + '</div>';
         }
 
+        const children = (childrenOf[nodeId] || []).slice().sort();
+        const isCollapsed = children.length > 0 && collapsedIds.has(String(nodeId));
+        const toggleHtml = treeToggleHtml(nodeId, children.length > 0, isCollapsed);
+
         let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
-            '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + prefix + '#' + safeId + '</td>' +
+            '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + toggleHtml + prefix + '#' + safeId + '</td>' +
             '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(node.status) + ';">' + titleHtml + extraBlockedByHtml + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(node.issue_type, node.title) + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 100px;">' + statusBadgeForNode(node) + '</td>' +
@@ -283,10 +328,15 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
             '<td style="padding: 8px; vertical-align: top; width: 80px;">' + modelBadge(node.metadata) + '</td>' +
             '</tr>';
 
-        const children = (childrenOf[nodeId] || []).slice().sort();
-        children.forEach((childId) => {
-            html += renderNode(childId, depth + 1, rendered);
-        });
+        // Always recurse (even when collapsed) so every descendant still
+        // gets added to `rendered` -- otherwise the end-of-pass safety-net
+        // sweep below would mistake a hidden-but-known descendant for an
+        // orphan and re-attach it as a spurious extra root. Only the
+        // concatenation into the returned HTML is conditional on collapse.
+        const childrenHtml = children.map((childId) => renderNode(childId, depth + 1, rendered)).join('');
+        if (!isCollapsed) {
+            html += childrenHtml;
+        }
         return html;
     }
 
@@ -356,8 +406,12 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
             extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">blocked by: ' + blockers + '</div>';
         }
 
+        const children = (backlogChildrenOf[nodeId] || []).slice().sort(priorityThenId);
+        const isCollapsed = children.length > 0 && collapsedIds.has(String(nodeId));
+        const toggleHtml = treeToggleHtml(nodeId, children.length > 0, isCollapsed);
+
         let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
-            '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + prefix + '#' + safeId + '</td>' +
+            '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + toggleHtml + prefix + '#' + safeId + '</td>' +
             '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(node.status) + ';">' + titleHtml + extraBlockedByHtml + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(node.issue_type, node.title) + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 100px;">' + statusBadgeForNode(node) + '</td>' +
@@ -365,10 +419,13 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
             '<td style="padding: 8px; vertical-align: top; width: 80px;">' + modelBadge(node.metadata) + '</td>' +
             '</tr>';
 
-        const children = (backlogChildrenOf[nodeId] || []).slice().sort(priorityThenId);
-        children.forEach((childId) => {
-            html += renderBacklogNode(childId, depth + 1, rendered);
-        });
+        // Same "always recurse, conditionally concatenate" rule as
+        // renderNode above -- keeps the safety-net sweep below from
+        // re-attaching a hidden-but-known descendant as a spurious root.
+        const childrenHtml = children.map((childId) => renderBacklogNode(childId, depth + 1, rendered)).join('');
+        if (!isCollapsed) {
+            html += childrenHtml;
+        }
         return html;
     }
 
@@ -377,46 +434,58 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         '<th style="padding: 8px;">ID</th><th style="padding: 8px;">Title</th><th style="padding: 8px;">Type</th>' +
         '<th style="padding: 8px;">Status</th><th style="padding: 8px;">Pri</th><th style="padding: 8px;">Model</th></tr>';
 
-    html += sectionHeaderRow('Sprint');
-    if (sprintTasks.length === 0) {
-        html += emptySectionRow('No sprint tasks.');
-    } else {
-        const rendered = new Set();
-        roots.forEach((rootId) => {
-            html += renderNode(rootId, 0, rendered);
-        });
-        // Safety net: any task that never got attached (should not happen
-        // with well-formed data, but is not assumed) still renders, as its
-        // own root, rather than being silently dropped.
-        sprintTasks.forEach((t) => {
-            if (!rendered.has(t.id)) {
-                html += renderNode(t.id, 0, rendered);
-            }
-        });
+    // The two top-level section headers are themselves collapsible via the
+    // same synthetic-id convention as any other .tree-toggle: folding a
+    // section hides its ENTIRE body (all root rows and their subtrees),
+    // not just direct children -- there is no safety-net concern here
+    // (unlike node-level collapse) since a section's rows have nowhere
+    // else in the output they could spuriously reappear.
+    const sprintCollapsed = collapsedIds.has('section:sprint');
+    html += sectionHeaderRow('Sprint', 'section:sprint', sprintCollapsed);
+    if (!sprintCollapsed) {
+        if (sprintTasks.length === 0) {
+            html += emptySectionRow('No sprint tasks.');
+        } else {
+            const rendered = new Set();
+            roots.forEach((rootId) => {
+                html += renderNode(rootId, 0, rendered);
+            });
+            // Safety net: any task that never got attached (should not
+            // happen with well-formed data, but is not assumed) still
+            // renders, as its own root, rather than being silently dropped.
+            sprintTasks.forEach((t) => {
+                if (!rendered.has(t.id)) {
+                    html += renderNode(t.id, 0, rendered);
+                }
+            });
+        }
     }
 
-    html += sectionHeaderRow('Backlog');
-    if (backlogTasks.length === 0) {
-        html += emptySectionRow('No backlog items.');
-    } else {
-        // Roots (items with no in-set blocker, or whose blocker isn't part
-        // of this backlog dataset) are sorted priority-then-id for stable,
-        // scannable ordering; any item nested under a blocker (see
-        // `backlogChildrenOf` above) renders under that blocker instead,
-        // not flattened into this top-level sort.
-        const renderedBacklog = new Set();
-        backlogRoots.forEach((rootId) => {
-            html += renderBacklogNode(rootId, 0, renderedBacklog);
-        });
-        // Safety net: any backlog task never attached (e.g. a blocks-cycle
-        // among backlog items -- should not happen with well-formed bd
-        // data, but is not assumed) still renders, as its own root, rather
-        // than being silently dropped.
-        backlogTasks.forEach((t) => {
-            if (!renderedBacklog.has(t.id)) {
-                html += renderBacklogNode(t.id, 0, renderedBacklog);
-            }
-        });
+    const backlogCollapsed = collapsedIds.has('section:backlog');
+    html += sectionHeaderRow('Backlog', 'section:backlog', backlogCollapsed);
+    if (!backlogCollapsed) {
+        if (backlogTasks.length === 0) {
+            html += emptySectionRow('No backlog items.');
+        } else {
+            // Roots (items with no in-set blocker, or whose blocker isn't
+            // part of this backlog dataset) are sorted priority-then-id for
+            // stable, scannable ordering; any item nested under a blocker
+            // (see `backlogChildrenOf` above) renders under that blocker
+            // instead, not flattened into this top-level sort.
+            const renderedBacklog = new Set();
+            backlogRoots.forEach((rootId) => {
+                html += renderBacklogNode(rootId, 0, renderedBacklog);
+            });
+            // Safety net: any backlog task never attached (e.g. a
+            // blocks-cycle among backlog items -- should not happen with
+            // well-formed bd data, but is not assumed) still renders, as
+            // its own root, rather than being silently dropped.
+            backlogTasks.forEach((t) => {
+                if (!renderedBacklog.has(t.id)) {
+                    html += renderBacklogNode(t.id, 0, renderedBacklog);
+                }
+            });
+        }
     }
 
     html += '</table>';
@@ -640,11 +709,46 @@ export const beadsExtension = {
             }
         }, true);
 
-        document.addEventListener('workflow:state:beads', (e) => {
-            const data = e.detail;
+        // apra-fleet-4p5: collapse state lives here, in this closure -- not
+        // on any DOM node -- so it survives the full innerHTML rebuild each
+        // 'workflow:state:beads' tick performs (the exact same rebuild that
+        // would otherwise silently reset every DETAILS element's \`open\`
+        // attribute, if bead descriptions relied on that instead of the
+        // cache above). \`lastBeadsData\` caches the most recent poll's
+        // payload so a pure collapse/expand click can re-render immediately
+        // without waiting on (or synthesizing) a new server payload.
+        const collapsedBeadIds = new Set();
+        let lastBeadsData = { sprintTasks: [], backlogTasks: [] };
+
+        function renderBeadsPanel() {
             const container = document.getElementById('extension-beads');
             if (!container) return;
-            container.innerHTML = renderBeadsHtml(data.sprintTasks || [], data.backlogTasks || []);
+            container.innerHTML = renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+        }
+
+        // Single document-level click-delegation listener (same rationale
+        // as the capture-phase 'toggle' listener above) catches every
+        // \`.tree-toggle\` click, including toggles on rows recreated by the
+        // innerHTML rebuild on each poll -- no per-row listener wiring or
+        // cleanup needed. \`data-toggle-id\` round-trips back to the original
+        // (unescaped) bead id or synthetic section key via HTML entity
+        // decoding, the same way \`data-bead-id\` already does above.
+        document.addEventListener('click', function (e) {
+            const toggle = e.target && e.target.closest ? e.target.closest('.tree-toggle') : null;
+            if (!toggle) return;
+            const id = toggle.dataset.toggleId;
+            if (!id) return;
+            if (collapsedBeadIds.has(id)) {
+                collapsedBeadIds.delete(id);
+            } else {
+                collapsedBeadIds.add(id);
+            }
+            renderBeadsPanel();
+        });
+
+        document.addEventListener('workflow:state:beads', (e) => {
+            lastBeadsData = e.detail || {};
+            renderBeadsPanel();
         });
 
         // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
