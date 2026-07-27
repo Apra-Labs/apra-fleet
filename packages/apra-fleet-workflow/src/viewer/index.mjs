@@ -801,7 +801,16 @@ export function createDashboardViewer(workflow, opts = {}) {
 
     // Note: group/phase tracking is single-run by design (single-tenant usage).
     let currentGroup = { title: 'Workflow', phases: [] };
-    let currentPhase = { title: 'Initialization', events: [] };
+    // apra-fleet-eft.53.1: every phase entry is stamped with phaseStartedAt on
+    // entry and phaseEndedAt (initially null) on exit, so the dashboard can
+    // render a live elapsed-time tick for the in-progress phase and a frozen
+    // duration for exited ones (apra-fleet-eft.53.2). Both fields live
+    // directly on the plain phase object pushed into state.tree, so they are
+    // written to disk unchanged by the existing debounced/terminal
+    // persistence paths (debounced-writer.mjs / persistState() below) and
+    // survive a reload/History-view replay for free -- no separate
+    // persistence wiring needed.
+    let currentPhase = { title: 'Initialization', phaseStartedAt: startedAtIso, phaseEndedAt: null, events: [] };
     currentGroup.phases.push(currentPhase);
     state.tree.push(currentGroup);
 
@@ -923,6 +932,12 @@ export function createDashboardViewer(workflow, opts = {}) {
     // can't tell them apart -- hence two small wrappers instead of one
     // handler branching on an argument that would never actually arrive.
     const handleSigint = () => {
+        // apra-fleet-eft.53.1: same close-out as the normal 'end' path -- a
+        // SIGINT-interrupted run must not leave its final phase's
+        // phaseEndedAt dangling null in the persisted snapshot.
+        if (currentPhase && currentPhase.phaseEndedAt == null) {
+            currentPhase.phaseEndedAt = nowIso();
+        }
         state.endedAt = nowIso();
         state.terminalReason = state.terminalReason || 'SIGINT';
         persistState();
@@ -939,6 +954,10 @@ export function createDashboardViewer(workflow, opts = {}) {
         process.exit(130);
     };
     const handleSigterm = () => {
+        // apra-fleet-eft.53.1: see handleSigint's identical stamp above.
+        if (currentPhase && currentPhase.phaseEndedAt == null) {
+            currentPhase.phaseEndedAt = nowIso();
+        }
         state.endedAt = nowIso();
         state.terminalReason = state.terminalReason || 'SIGTERM';
         persistState();
@@ -956,7 +975,13 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     workflow.on('phase', (title) => {
-        currentPhase = { title, events: [] };
+        // apra-fleet-eft.53.1: stamp phaseEndedAt on the phase being exited
+        // (guarded so an already-ended phase -- e.g. one closed by the 'end'
+        // handler below -- is never overwritten) before starting the new one.
+        if (currentPhase && currentPhase.phaseEndedAt == null) {
+            currentPhase.phaseEndedAt = nowIso();
+        }
+        currentPhase = { title, phaseStartedAt: nowIso(), phaseEndedAt: null, events: [] };
         if (!currentGroup) {
             currentGroup = { title: 'Workflow', phases: [] };
             state.tree.push(currentGroup);
@@ -1016,6 +1041,13 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     workflow.on('end', (res) => {
+        // apra-fleet-eft.53.1: the run's final phase never gets a 'phase'
+        // event to close it out -- stamp its phaseEndedAt here so no phase
+        // entry is left with a dangling null once the run has actually
+        // ended.
+        if (currentPhase && currentPhase.phaseEndedAt == null) {
+            currentPhase.phaseEndedAt = nowIso();
+        }
         state.status = res.status;
         state.stats.durationMs = Date.now() - state.stats.startTime;
         // apra-fleet-eft.2.2/eft.37.3: enrich the terminal state with
