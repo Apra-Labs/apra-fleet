@@ -22,6 +22,15 @@ node dist/index.js install     # Dev-mode install
 - ASCII only: never write non-ASCII characters to any file. Use `-` for dashes, `->` for arrows, `[OK]` for checkmarks, etc.
 - Permission blocks must be surfaced, not routed around: if a tool or git invocation is blocked by the permission layer, stop and report the block to the user/orchestrator. Do not author a wrapper script, alternate binary, or other workaround whose purpose is to bypass the block, even if the underlying operation is judged safe. See `scripts/recovery.sh` disposition note in the 2026-07-02 incident writeup (RECOVERY.md) for the precedent this guards against.
 
+## DeepWiki
+
+Always use DeepWiki (MCP server `https://mcp.deepwiki.com/mcp`) while exploring this codebase -- prefer it over cold file reads for architecture/unfamiliar-component questions:
+- `mcp__deepwiki__read_wiki_structure(repo)` -- architecture map; call first when starting on an unfamiliar area
+- `mcp__deepwiki__read_wiki_contents(repo, topic)` -- a specific doc topic
+- `mcp__deepwiki__ask_question(repo, question)` -- faster than local grep for understanding a component
+
+`repo` format: `owner/repo`. Use `Apra-Labs/apra-fleet` for this repo; also useful for related repos this project depends on: `Apra-Labs/apra-pm`, `gastownhall/beads`, `Apra-Labs/fleet-e2e-toy`. To claim what a *specific script does*, read the script -- DeepWiki is for architecture/orientation, not a substitute for reading code you're about to modify.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 
