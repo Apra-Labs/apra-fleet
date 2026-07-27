@@ -26,6 +26,7 @@ import { validateSubstitutionKeys, applySubstitutions } from '../services/substi
 import { sessionRegistry } from '../services/session-registry.js';
 import { getTokenIssuer } from '../services/token-issuer.js';
 import { resolveExpectedDemand, checkContextAdmission, recordSessionUsage } from '../services/context-admission.js';
+import { resolveBudgetScope, evaluateBudget, recordAndEvaluate, type BudgetUsageBlock } from '../services/budget-awareness.js';
 import { sendMessage } from './send-message.js';
 import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
@@ -35,7 +36,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted' | 'insufficient_context_headroom';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted' | 'insufficient_context_headroom' | 'budget_exhausted';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -48,6 +49,13 @@ export interface ExecutePromptStructured {
   /** Present on a successful dispatch that fits but lands inside the session's
    *  safety margin (apra-fleet-eft.81.1) -- a non-fatal heads-up, not an error. */
   contextWarning?: { message: string; detail: { demand: number; headroom: number; window: number } };
+  /** Usage/budget block (apra-fleet-eft.80.2) attached to every result once
+   *  the configured budget crosses its warning band, and to a
+   *  budget_exhausted rejection. Named `budgetUsage` (not `usage`) to avoid
+   *  colliding with the token-count `usage` field above. Carries source:
+   *  'provider' (from a provider-native getUsage()) vs 'estimated' (fleet-side
+   *  token-count fallback). */
+  budgetUsage?: BudgetUsageBlock;
   [key: string]: unknown;
 }
 
@@ -690,6 +698,26 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
+  // Usage/budget admission (apra-fleet-eft.80.2): when a budget is configured
+  // for this member (or its workspace), a hard-threshold crossing rejects the
+  // NEW dispatch BEFORE any LLM is spawned -- never killing an in-flight call.
+  // No configured budget (the common case) means resolveBudgetScope returns
+  // undefined and this block is skipped entirely -- behavior is unchanged.
+  const budgetScope = resolveBudgetScope([agent.id, workspaceId]);
+  if (budgetScope) {
+    const preBudget = await evaluateBudget({ scope: budgetScope, agent, provider });
+    if (preBudget?.exhausted) {
+      scope.abort(`budget exhausted: scope=${budgetScope} spent=${preBudget.block.spent} budget=${preBudget.block.budget} source=${preBudget.block.source}`);
+      inFlightAgents.delete(agent.id);
+      stallDetector.remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `❌ execute_prompt on "${agent.friendlyName}" rejected -- budget exhausted (scope=${budgetScope}, spent=${preBudget.block.spent}, budget=${preBudget.block.budget} ${preBudget.block.unit}, source=${preBudget.block.source}). No LLM call was made; raise or reset the budget to resume.`,
+        structuredContent: { isError: true, reason: 'budget_exhausted', budgetUsage: preBudget.block },
+      };
+    }
+  }
+
   // Kill any leftover session from a previous (possibly zombie) execute_prompt call
   await tryKillPid(agent, strategy, cmds);
 
@@ -847,6 +875,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       recordSessionUsage(parsed.sessionId ?? mintedId, parsed.usage);
     }
 
+    // Usage/budget accounting (apra-fleet-eft.80.2): account this dispatch's
+    // token usage against the scope's budget (self-metered only when the
+    // provider has no native getUsage()), then attach the usage block to the
+    // result when the warning band is crossed. Nothing is attached below the
+    // band, and nothing happens at all when no budget is configured.
+    let budgetUsage: BudgetUsageBlock | undefined;
+    if (budgetScope && parsed.usage) {
+      const postBudget = await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: parsed.usage });
+      if (postBudget?.warned) budgetUsage = postBudget.block;
+    }
+
     let output = `📋 Response from ${agent.friendlyName}:
 
 ${parsed.result}`;
@@ -862,6 +901,7 @@ session: ${parsed.sessionId}`;
         ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
         ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
         ...(contextWarning ? { contextWarning } : {}),
+        ...(budgetUsage ? { budgetUsage } : {}),
       },
     };
   } catch (err: any) {

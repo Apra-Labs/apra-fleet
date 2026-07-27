@@ -165,6 +165,17 @@ export interface ProviderAdapter {
    *  Returns what was done, for logging/audit. */
   registerMcpEndpoint?(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult>;
 
+  /** Optional provider-NATIVE usage/quota read for execute_prompt budget
+   *  awareness (apra-fleet-eft.80.2). When implemented, this is the PRIMARY
+   *  source of "spent so far" for a member/workspace budget, in the requested
+   *  unit ('dollars' or 'tokens'). Providers with no headless-readable
+   *  usage/quota signal (see docs/execute-prompt-usage-api-survey.md) omit it
+   *  entirely -- budget awareness then falls back to the fleet-side estimated
+   *  accumulation (source: 'estimated'). An implementation that exists but
+   *  cannot answer at runtime (missing Admin credential, endpoint unreachable)
+   *  returns null so the same estimated fallback engages. */
+  getUsage?(opts: { agent: import('../types.js').Agent; unit: 'dollars' | 'tokens'; scope: string }): Promise<{ spent: number } | null>;
+
   /** Idempotently ensures `workFolder` is a TRUSTED workspace so this provider honors
    *  composed project-scoped permissions on the member (apra-fleet-eft.40 -- an unattended
    *  member can never click a trust dialog, and its work folder is fleet-managed by
