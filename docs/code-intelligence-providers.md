@@ -115,6 +115,58 @@ calling member's `codeIntelProvider`. The routing half of this feature
 increment. Until that lands, setting `code_intel_provider` on a member has
 no observable effect.
 
+## Per-repo opt-out
+
+A repo can opt out of code-intelligence tooling entirely by writing
+`{ "enabled": false }` to `.apra-fleet/code-intel.json` at its root. This is
+a per-repo, file-based switch -- deliberately separate from the global
+`~/.apra-fleet/data/code-intelligence/config.json` provider-selection file --
+so opting out is a decision that travels with the repo (and can be committed
+to source control) rather than a per-machine fleet setting.
+
+The config is read by `src/services/knowledge/repo-config.ts`, which exposes
+three functions: `readRepoCodeIntelConfig` (returns `null` on a missing or
+unparseable file rather than throwing), `writeRepoCodeIntelConfig`, and
+`isCodeIntelEnabled` (the boolean gate consumers actually call). The default
+is enabled: a missing config file, or a config file without an `enabled`
+key, means code intelligence stays on. Only an explicit `enabled: false`
+turns it off. This asymmetry is intentional -- it keeps the opt-out
+backward-compatible with every repo that predates the feature, and it means
+a corrupted or partially-written config file fails open (enabled) rather
+than silently disabling tooling.
+
+Two places consult this gate:
+
+- **`getProvider(repoPath)`** (`src/tools/code-intelligence.ts`) checks
+  `isCodeIntelEnabled(repoPath)` before resolving a real provider. When
+  disabled, it returns a `disabledProvider` -- an object implementing the
+  full `CodeIntelligenceProvider` interface where every method resolves to
+  `{ disabled: true, reason: 'code_intelligence_disabled', message: ... }`
+  instead of throwing or returning an MCP error. This matters because the
+  seven `code_*` MCP tool handlers all route through `getProvider()` and
+  `JSON.stringify()` whatever it returns; a disabled repo therefore produces
+  a structured, machine-readable "disabled" payload through the exact same
+  response shape a normal call would use, rather than a distinct error path
+  every caller would need to special-case.
+
+  `getProvider()` takes the repo path as a parameter (defaulting to
+  `process.cwd()`) rather than assuming a single global repo, because the
+  fleet server can serve `code_*` tool calls for multiple repos in one
+  process -- the opt-out and the provider selection it gates must both be
+  evaluated against the repo the specific call is for, not the process's
+  own working directory. Every `code_*` tool handler in `src/index.ts`
+  passes `input.repo ?? process.cwd()` into `getProvider()` for this reason.
+
+- **The installer** (`src/cli/install.ts`) checks `isCodeIntelEnabled` for
+  the repo being installed into before writing the global provider config
+  file or appending the code-intelligence tool-routing instruction to
+  `~/.claude/CLAUDE.md`. When the repo has opted out, both of those setup
+  steps are skipped and a message is printed explaining why. This keeps a
+  repo's opt-out honored not just at call time (via `getProvider`) but at
+  setup time too, so an opted-out repo never gets the "use code_graph over
+  grep" instruction pushed into the agent's global instructions in the
+  first place.
+
 ## KB initialization lifecycle: pre-init phase
 
 Before a repo is indexed for code intelligence, a pre-init phase gathers
