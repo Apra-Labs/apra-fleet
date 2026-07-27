@@ -1,5 +1,7 @@
 # Apra Fleet - Agent Context
 
+<!-- Generated from CLAUDE.md by `node scripts/sync-agent-docs.mjs` -- do not hand-edit the shared sections below (the tool-specific appendix at the end of this file is exempt). Edit CLAUDE.md and rerun the script. -->
+
 > Beads: run `bd prime` first. DB name (`.beads/metadata.json`) is local/gitignored and can differ per clone -- not a sync requirement. If `bd bootstrap` errors "database exists" on a clean clone, retry with `--database <other-name>`.
 
 Read `README.md` in this repo for the full tool reference, installation, member registration, multi-provider setup, git authentication, PM skill commands, and troubleshooting.
