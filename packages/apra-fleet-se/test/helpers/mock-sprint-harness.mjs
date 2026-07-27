@@ -947,6 +947,23 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         const engine = new WorkflowEngine(workflow);
 
+        // apra-fleet-eft.70.2: phase-tagged command activity log. FleetWorkflow
+        // (an EventEmitter) emits 'activity:start' for every command()/agent()
+        // call -- INCLUDING journal-replayed cache hits (see
+        // packages/apra-fleet-workflow/src/workflow/index.mjs's command()) --
+        // carrying the exact `command` text and the `phase` title active at
+        // dispatch time (opts.phase || this._currentPhase()). Listening here
+        // (rather than reconstructing phase boundaries from commandLog's flat
+        // string order) gives the full-DB-fetch tripwire test
+        // (test/full-db-fetch-tripwire.test.mjs) a reliable, source-independent
+        // way to group commands by the phase step they ran in.
+        const activityLog = [];
+        workflow.on('activity:start', (meta) => {
+            if (meta && meta.type === 'command') {
+                activityLog.push({ phase: meta.phase, command: meta.command });
+            }
+        });
+
         // apra-fleet-unw.14: runner.js now validates a full CLI->runner arg
         // contract (branch/base_branch/members are required; goal/max_cycles
         // are optional with defaults) before any dispatch, and uses
@@ -968,7 +985,7 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
             .map((b) => ({ title: b.title, status: b.status }))
             .sort((a, b) => a.title.localeCompare(b.title));
 
-        return { dispatched, result, finalBeads, commandLog, epicBeadId: epicBead.id };
+        return { dispatched, result, finalBeads, commandLog, activityLog, epicBeadId: epicBead.id };
     } finally {
         await teardown(tempDir);
     }
