@@ -314,6 +314,75 @@ describe('renderBeadsHtml: Sprint / Backlog two-section layout', () => {
     });
 });
 
+// apra-fleet-k7s: Backlog items that carry `blocks`-type dependency edges
+// BETWEEN EACH OTHER now nest into a tree (same indent/prefix mechanics as
+// Sprint's renderNode), instead of always flattening. Items with no such
+// in-set edge remain flat/top-level, unchanged.
+describe('renderBeadsHtml: Backlog dependency tree (apra-fleet-k7s)', () => {
+    const childPrefix = String.fromCharCode(0x2514, 0x2500) + ' ';
+
+    test('a backlog item blocked by another backlog item nests under its blocker', () => {
+        const backlogTasks = [
+            { id: 'BL-1', title: '[impl] the blocker', status: 'open' },
+            { id: 'BL-2', title: '[impl] blocked by BL-1', status: 'open', dependencies: [{ depends_on_id: 'BL-1', type: 'blocks' }] },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+
+        assert.ok(html.includes('>#BL-1</td>'), 'BL-1 must render as a root row');
+        assert.ok(html.includes(childPrefix + '#BL-2</td>'), 'BL-2 must nest under its blocker BL-1');
+        assert.ok(!html.includes('>#BL-2</td>'), 'BL-2 must not also render as an unnested root-level row');
+        assert.ok(html.indexOf('>#BL-1</td>') < html.indexOf(childPrefix + '#BL-2</td>'), 'the blocker must render before the item it blocks');
+        assert.ok(html.includes('blocked by: #BL-1'), 'the blocking edge is still surfaced as an inline annotation too');
+    });
+
+    test('backlog items with no blocks-edge between them stay flat/top-level, unchanged', () => {
+        const backlogTasks = [
+            { id: 'B-low', title: '[bug] low priority backlog item', status: 'open', priority: 4 },
+            { id: 'B-high', title: '[bug] high priority backlog item', status: 'deferred', priority: 1 },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+
+        assert.ok(!html.includes(childPrefix + '#B-low</td>'), 'B-low has no in-set blocker, so must not be indented');
+        assert.ok(!html.includes(childPrefix + '#B-high</td>'), 'B-high has no in-set blocker, so must not be indented');
+        assert.ok(html.indexOf('#B-high') < html.indexOf('#B-low'), 'unrelated root items still sort P1 before P4');
+    });
+
+    test('a backlog item blocked by a bead outside the backlog set (not in this dataset) stays a root, not dropped', () => {
+        const backlogTasks = [
+            { id: 'B-1', title: '[impl] blocked by something not in backlog', status: 'open', dependencies: [{ depends_on_id: 'sprint-only-id', type: 'blocks' }] },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+        assert.ok(html.includes('>#B-1</td>'), 'an out-of-set blocker must not prevent B-1 from rendering as a root');
+        assert.ok(!html.includes('blocked by:'), 'an out-of-set blocker id is not part of this dataset, so no annotation is drawn for it');
+    });
+
+    test('a backlog item blocked by multiple in-set items nests once (lowest-sorted blocker wins), all blockers still annotated', () => {
+        const backlogTasks = [
+            { id: 'A', title: '[impl] a', status: 'closed' },
+            { id: 'B', title: '[impl] b', status: 'closed' },
+            { id: 'C', title: '[impl] c', status: 'open', dependencies: [{ depends_on_id: 'B', type: 'blocks' }, { depends_on_id: 'A', type: 'blocks' }] },
+        ];
+        const html = renderBeadsHtml([], backlogTasks);
+        assert.strictEqual((html.match(/#C</g) || []).length, 1, 'C must render exactly once, not once per blocker');
+        assert.ok(html.includes(childPrefix + '#C</td>'), 'C must be nested (under A, the lowest-sorted blocker)');
+        assert.ok(html.includes('blocked by: #A, #B'), 'both blockers must be listed in the annotation regardless of which one won nesting');
+    });
+
+    test('a blocks-cycle among backlog items does not crash or infinite-loop (cycle-guard + safety net)', () => {
+        const backlogTasks = [
+            { id: 'X', title: '[impl] x', status: 'open', dependencies: [{ depends_on_id: 'Y', type: 'blocks' }] },
+            { id: 'Y', title: '[impl] y', status: 'open', dependencies: [{ depends_on_id: 'X', type: 'blocks' }] },
+        ];
+        assert.doesNotThrow(() => renderBeadsHtml([], backlogTasks));
+        const html = renderBeadsHtml([], backlogTasks);
+        // Matches only the row's own id cell (</td> right after), not the
+        // "blocked by: #X"/"blocked by: #Y" annotation each row also carries
+        // (X and Y block each other), which would otherwise double-count.
+        assert.strictEqual((html.match(/#X<\/td>/g) || []).length, 1, 'X must not be rendered twice despite the cycle');
+        assert.strictEqual((html.match(/#Y<\/td>/g) || []).length, 1, 'Y must not be rendered twice despite the cycle');
+    });
+});
+
 describe('apra-fleet-eft.27.2: renderBeadsHtml on-demand description markup', () => {
     test('a lean (summary-only) bead renders an expandable row carrying its id/updatedAt for the client-side fetch, marked NOT loaded', () => {
         const html = renderBeadsHtml([{ id: 'bd-1', title: 'A task', status: 'open', summary: 'short preview...', updated_at: '2026-07-20T00:00:00Z', dependencies: [] }]);

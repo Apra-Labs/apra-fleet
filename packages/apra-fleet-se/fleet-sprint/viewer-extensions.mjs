@@ -39,14 +39,26 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * rows -- this is expected, not an error, whenever a sprint targets more
  * than one independent top-level item at once.
  *
- * The panel always shows two top-level sections: "Sprint" (the dependency
+ * The panel always shows two top-level sections: "Sprint" (the containment
  * tree above, built from `sprintTasks`) and "Backlog" (`backlogTasks` --
  * open/deferred beads the sprint is certainly NOT addressing this run,
  * which may belong to an entirely different epic or never have gone
- * through a planning phase at all). Backlog is rendered as a flat, sorted
- * list rather than a tree: it can contain arbitrary, unrelated beads with
- * no assumed relationship to each other or to the sprint's dependency
- * graph, so nesting them would imply a structure that isn't there.
+ * through a planning phase at all).
+ *
+ * apra-fleet-k7s: unlike Sprint (nested by `parent` containment), Backlog
+ * has no shared parent/epic to nest under -- what it DOES sometimes have is
+ * `blocks`-type dependency edges BETWEEN backlog items themselves (e.g. two
+ * unplanned beads under the same stale epic, one blocking the other). When
+ * present, those edges now drive nesting the same way `renderNode` nests
+ * Sprint rows: the blocker renders as the parent row, the blocked item
+ * nests as its child, using the identical indent/prefix/cycle-guard
+ * mechanics. A backlog item with no blocks-edge to another IN-SET backlog
+ * item (the common case -- most backlog beads are unrelated to each other)
+ * remains a flat, top-level row, same as before -- nesting is only ever
+ * drawn when a real edge justifies it, never implied. Root rows (including
+ * every item with no in-set blocker) are still sorted priority-then-id for
+ * scannability; a blocked item's DEPTH in the tree is what shows structure,
+ * not its position in that sort.
  *
  * Every rendering decision here (status/type badges, tree placement) is
  * defensive by construction: unrecognized/missing status, type, model, or
@@ -278,25 +290,86 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
         return html;
     }
 
-    // Backlog rows are flat (no tree/blockedBy tracking) -- these beads
-    // have no assumed relationship to each other or to the sprint's
-    // dependency graph, so nesting them would imply a structure that
-    // isn't there. Reuses the same badges/escaping as sprint rows for
-    // visual consistency.
-    function renderFlatRow(task) {
-        const safeId = escapeHtml(task.id);
-        const safeTitle = escapeHtml(task.title);
+    // apra-fleet-k7s: Backlog is built into a tree from `blocks`-type
+    // dependency edges BETWEEN backlog items (mirrors the doc-comment above
+    // and reuses renderNode's own indent/prefix/cycle-guard mechanics, just
+    // keyed off a separate `backlogMap`/`backlogChildrenOf` built from
+    // blocks-edges instead of Sprint's `map`/`childrenOf` built from
+    // `parent`). A blocker outside the backlog set (e.g. it's actually in
+    // this run's Sprint, or not part of this dataset at all) does not
+    // count -- same "only an in-dataset edge nests" rule Sprint applies to
+    // `parent`.
+    const backlogMap = {};
+    backlogTasks.forEach((t) => { backlogMap[t.id] = { ...t, blockedBy: [] }; });
 
-        const titleHtml = descriptionDetailsHtml(task, safeId, safeTitle);
+    const backlogChildrenOf = {}; // blockerId -> [taskId, ...] (blocks-edge, not containment)
+    const nestedBacklogIds = new Set(); // ids nested under a blocker -- excluded from the root list
 
-        return '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
-            '<td style="padding: 8px; vertical-align: top; width: 110px; color: ' + titleColor(task.status) + ';">#' + safeId + '</td>' +
-            '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(task.status) + ';">' + titleHtml + '</td>' +
-            '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(task.issue_type, task.title) + '</td>' +
-            '<td style="padding: 8px; vertical-align: top; width: 100px;">' + statusBadgeForNode(task) + '</td>' +
-            '<td style="padding: 8px; vertical-align: top; width: 50px;">' + priorityBadge(task.priority) + '</td>' +
-            '<td style="padding: 8px; vertical-align: top; width: 80px;">' + modelBadge(task.metadata) + '</td>' +
+    backlogTasks.forEach((t) => {
+        const deps = Array.isArray(t.dependencies) ? t.dependencies : [];
+        const blockerIds = deps
+            .filter((d) => d && d.type === 'blocks' && backlogMap[d.depends_on_id])
+            .map((d) => d.depends_on_id);
+        backlogMap[t.id].blockedBy = blockerIds;
+        if (blockerIds.length > 0) {
+            // A node renders exactly once (cycle-guard below), so with
+            // multiple in-set blockers only one can be the tree-parent --
+            // the lowest-sorted blocker id wins, for deterministic output.
+            // Every blocker (not just the nesting one) still appears in the
+            // inline "blocked by" annotation, so no edge is silently lost.
+            const primaryBlockerId = blockerIds.slice().sort()[0];
+            (backlogChildrenOf[primaryBlockerId] = backlogChildrenOf[primaryBlockerId] || []).push(t.id);
+            nestedBacklogIds.add(t.id);
+        }
+    });
+
+    function priorityThenId(aId, bId) {
+        const a = backlogMap[aId];
+        const b = backlogMap[bId];
+        const pa = (typeof a.priority === 'number' && Number.isFinite(a.priority)) ? a.priority : 99;
+        const pb = (typeof b.priority === 'number' && Number.isFinite(b.priority)) ? b.priority : 99;
+        if (pa !== pb) return pa - pb;
+        return String(aId).localeCompare(String(bId));
+    }
+
+    const backlogRoots = backlogTasks
+        .map((t) => t.id)
+        .filter((id) => !nestedBacklogIds.has(id))
+        .sort(priorityThenId);
+
+    function renderBacklogNode(nodeId, depth, rendered) {
+        if (rendered.has(nodeId)) return ''; // cycle-guard: never render twice
+        rendered.add(nodeId);
+        const node = backlogMap[nodeId];
+
+        const indent = depth * 20;
+        const prefix = depth > 0 ? String.fromCharCode(0x2514, 0x2500) + ' ' : '';
+
+        const safeId = escapeHtml(node.id);
+        const safeTitle = escapeHtml(node.title);
+
+        const titleHtml = descriptionDetailsHtml(node, safeId, safeTitle);
+
+        let extraBlockedByHtml = '';
+        if (node.blockedBy.length > 0) {
+            const blockers = node.blockedBy.slice().sort().map((id) => '#' + escapeHtml(id)).join(', ');
+            extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">blocked by: ' + blockers + '</div>';
+        }
+
+        let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
+            '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + prefix + '#' + safeId + '</td>' +
+            '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(node.status) + ';">' + titleHtml + extraBlockedByHtml + '</td>' +
+            '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(node.issue_type, node.title) + '</td>' +
+            '<td style="padding: 8px; vertical-align: top; width: 100px;">' + statusBadgeForNode(node) + '</td>' +
+            '<td style="padding: 8px; vertical-align: top; width: 50px;">' + priorityBadge(node.priority) + '</td>' +
+            '<td style="padding: 8px; vertical-align: top; width: 80px;">' + modelBadge(node.metadata) + '</td>' +
             '</tr>';
+
+        const children = (backlogChildrenOf[nodeId] || []).slice().sort(priorityThenId);
+        children.forEach((childId) => {
+            html += renderBacklogNode(childId, depth + 1, rendered);
+        });
+        return html;
     }
 
     let html = '<table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">';
@@ -326,16 +399,23 @@ export function renderBeadsHtml(sprintTasks, backlogTasks) {
     if (backlogTasks.length === 0) {
         html += emptySectionRow('No backlog items.');
     } else {
-        // Sorted for stable, scannable ordering -- priority first (P1
-        // before P4; missing/invalid priority sorts last), then id.
-        const sortedBacklog = backlogTasks.slice().sort((a, b) => {
-            const pa = (typeof a.priority === 'number' && Number.isFinite(a.priority)) ? a.priority : 99;
-            const pb = (typeof b.priority === 'number' && Number.isFinite(b.priority)) ? b.priority : 99;
-            if (pa !== pb) return pa - pb;
-            return String(a.id).localeCompare(String(b.id));
+        // Roots (items with no in-set blocker, or whose blocker isn't part
+        // of this backlog dataset) are sorted priority-then-id for stable,
+        // scannable ordering; any item nested under a blocker (see
+        // `backlogChildrenOf` above) renders under that blocker instead,
+        // not flattened into this top-level sort.
+        const renderedBacklog = new Set();
+        backlogRoots.forEach((rootId) => {
+            html += renderBacklogNode(rootId, 0, renderedBacklog);
         });
-        sortedBacklog.forEach((t) => {
-            html += renderFlatRow(t);
+        // Safety net: any backlog task never attached (e.g. a blocks-cycle
+        // among backlog items -- should not happen with well-formed bd
+        // data, but is not assumed) still renders, as its own root, rather
+        // than being silently dropped.
+        backlogTasks.forEach((t) => {
+            if (!renderedBacklog.has(t.id)) {
+                html += renderBacklogNode(t.id, 0, renderedBacklog);
+            }
         });
     }
 
