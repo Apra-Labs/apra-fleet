@@ -26,6 +26,7 @@ import { validateSubstitutionKeys, applySubstitutions } from '../services/substi
 import { sessionRegistry } from '../services/session-registry.js';
 import { getTokenIssuer } from '../services/token-issuer.js';
 import { resolveExpectedDemand, checkContextAdmission, recordSessionUsage } from '../services/context-admission.js';
+import { recordKnownSession, isKnownSession } from '../services/known-sessions.js';
 import { resolveBudgetScope, evaluateBudget, recordAndEvaluate, type BudgetUsageBlock } from '../services/budget-awareness.js';
 import { sendMessage } from './send-message.js';
 import { registerPending } from '../services/pending-responses.js';
@@ -36,7 +37,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted' | 'insufficient_context_headroom' | 'budget_exhausted';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -67,7 +68,13 @@ export interface ExecutePromptResult {
 export const executePromptSchema = z.object({
   ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
-  resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
+  resume: z.union([z.boolean(), z.string()]).default(true).describe(
+    'Session-resume control (default: true). ' +
+    'true = best-effort resume of the member\'s stored last session (a stale/unknown stored session transparently falls back to a fresh session). ' +
+    'false = always start a fresh session. ' +
+    'A session-id STRING = EXPLICIT resume of exactly that session, preferred over the member\'s stored session -- the caller asserts this prompt depends on that session\'s prior context, so an unknown/expired id is a TERMINAL error ' +
+    '(structured {isError, reason: "session_not_found"}, NO LLM call, and NO fresh-session fallback) rather than a silent wrong-context dispatch.'
+  ),
   timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
   max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
@@ -617,10 +624,48 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
-  const resuming = !!(input.resume && agent.sessionId && provider.supportsResume());
+  // Resume semantics (apra-fleet-eft.78.1). `resume` is boolean | string:
+  //  - true   -> best-effort resume of the member's stored last session; a
+  //              stale/unknown stored session transparently retries fresh.
+  //  - false  -> always a fresh session.
+  //  - string -> EXPLICIT session-id resume: resume exactly this id, preferring
+  //              it over agent.sessionId. The caller asserts the prompt depends
+  //              on that session's context, so an unknown/expired id is a
+  //              TERMINAL session_not_found (handled just below) and NO
+  //              fresh-session fallback is ever applied (see the retry paths).
+  const explicitResumeId = typeof input.resume === 'string' && input.resume.length > 0 ? input.resume : undefined;
+  const resumeRequested = input.resume === true || explicitResumeId !== undefined;
+  const resumeTargetId = explicitResumeId ?? agent.sessionId;
+  // An explicit-id resume must never silently degrade to a fresh session: that
+  // is exactly the wrong-context dispatch this feature forbids. resume=true and
+  // resume=false keep their pre-existing transparent recovery.
+  const allowFreshSessionFallback = explicitResumeId === undefined;
+  const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume());
   const mintedId = (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy')
-    ? (resuming ? agent.sessionId! : uuid())
-    : (resuming ? agent.sessionId : undefined);
+    ? (resuming ? resumeTargetId! : uuid())
+    : (resuming ? resumeTargetId : undefined);
+
+  // Terminal session-not-found gate for explicit-id resumes (apra-fleet-eft.78.1).
+  // Checked BEFORE any spawn (writePromptFile / the LLM invocation): if the
+  // caller named a session the server has never issued for this member -- and it
+  // is not the member's currently-stored session -- there is no context to
+  // resume. Reject with a structured session_not_found and make NO LLM call,
+  // so an orchestrator can rebuild a self-contained prompt and re-dispatch fresh
+  // deliberately, rather than getting a silent blank-session response.
+  if (explicitResumeId !== undefined) {
+    const resumable = provider.supportsResume()
+      && (isKnownSession(agent.id, explicitResumeId) || explicitResumeId === agent.sessionId);
+    if (!resumable) {
+      scope.abort(`explicit resume rejected -- session "${explicitResumeId}" is unknown/expired (no LLM call)`);
+      inFlightAgents.delete(agent.id);
+      stallDetector.remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `❌ execute_prompt on "${agent.friendlyName}" rejected -- session "${explicitResumeId}" cannot be resumed (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (resume=false), or resume=true for best-effort recovery.`,
+        structuredContent: { isError: true, reason: 'session_not_found', sessionId: explicitResumeId },
+      };
+    }
+  }
 
   const promptOpts = {
     folder: resolvedWorkFolder,
@@ -767,6 +812,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // itself cancelled the request -- there is nothing to recover from a
       // deliberate cancellation.
       if (extra?.signal?.aborted) throw dispatchErr;
+      // apra-fleet-eft.78.1: an explicit-id resume must NOT retry in a fresh
+      // session (that would run a context-dependent delta prompt with no
+      // context). Let the exception surface as dispatch_failed instead.
+      if (!allowFreshSessionFallback) throw dispatchErr;
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
@@ -791,8 +840,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       };
     }
 
-    // Stale session retry -- fresh session ID, no resume
-    if (result.code !== 0 && input.resume && agent.sessionId) {
+    // Stale session retry -- fresh session ID, no resume. apra-fleet-eft.78.1:
+    // ONLY the best-effort resume=true mode gets this transparent retry-fresh
+    // recovery. An explicit session-id resume (string) deliberately does NOT --
+    // its caller asserted context dependence, so a not-found id is terminal.
+    if (result.code !== 0 && input.resume === true && agent.sessionId) {
       scope.info(`[${resolvedModel}] retrying -- stale session`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
@@ -802,8 +854,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (parsed.usage) _epUsage = parsed.usage;
     }
 
-    // Server/overloaded error retry -- single attempt after delay
-    if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
+    // Server/overloaded error retry -- single attempt after delay. Skipped for
+    // an explicit-id resume (apra-fleet-eft.78.1): the retry starts a fresh
+    // session, which would discard the exact context the caller asked to resume.
+    if (result.code !== 0 && allowFreshSessionFallback && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
       scope.info(`[${resolvedModel}] retrying -- server overloaded`);
       await tryKillPid(agent, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
@@ -847,6 +901,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     } else {
       touchAgent(agent.id, mintedId ?? parsed.sessionId);
     }
+    // apra-fleet-eft.78.1: mark the session this dispatch actually landed on as
+    // known/resumable for this member, so a later explicit-id resume of it
+    // passes the terminal session_not_found gate above instead of being
+    // rejected as unknown.
+    recordKnownSession(agent.id, parsed.sessionId ?? mintedId);
     if (mintedId) {
       try {
         stallDetector.update(agent.id, {
