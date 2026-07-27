@@ -6,6 +6,7 @@ import {
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, isNonRetryableDispatchError } from './errors.mjs';
+import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 
@@ -572,6 +573,29 @@ const GIT_DIVERGED_PATTERNS = [
     /have diverged/i,
 ];
 
+// apra-fleet-fmu: substrings that mark a git failure as an AUTH (credential)
+// failure -- the member's provisioned VCS token/credential has expired or is
+// otherwise rejected by the remote. Live-observed root cause (2026-07-26/27,
+// apra-fleet-eft sprint, member fleet-mac): both a Dolt push and a later git
+// push failed repeatedly with "fatal: could not read Username for
+// 'https://github.com': Device not configured" after the member's GitHub App
+// token expired -- the orchestrator had to manually call provision_vcs_auth
+// via MCP to unblock. Distinct from 'transient' (network/lock blips a plain
+// retry can resolve): blindly retrying an auth failure without re-provisioning
+// credentials first is pointless and reproduces the exact live incident, so
+// it is checked BEFORE 'transient' in classifyGitFailure() below -- but AFTER
+// 'diverged', which must never be misclassified.
+const GIT_AUTH_PATTERNS = [
+    /could not read Username for/i,
+    /could not read Password for/i,
+    /Authentication failed/i,
+    /Permission denied \(publickey\)/i,
+    /remote: Invalid username or (token|password)/i,
+    /terminal prompts disabled/i,
+    /support for password authentication was removed/i,
+    /Bad credentials/i,
+];
+
 // Substrings that mark a git failure as TRANSIENT (network / lock) -- safe to
 // retry a bounded number of times.
 const GIT_TRANSIENT_PATTERNS = [
@@ -600,18 +624,22 @@ const GIT_TRANSIENT_PATTERNS = [
 ];
 
 /**
- * Classify a failed git command's output into the two failure classes the
- * sync brackets must route differently (plan risk 2). Divergence is checked
- * FIRST: a non-FF/unmerged state must never be misread as transient and
- * retried blindly, even if its message happens to also contain a lock/network
- * word.
+ * Classify a failed git command's output into the failure classes the sync
+ * brackets must route differently (plan risk 2; apra-fleet-fmu adds 'auth').
+ * Divergence is checked FIRST: a non-FF/unmerged state must never be misread
+ * as transient/auth and retried blindly, even if its message happens to also
+ * contain a lock/network/credential word. 'auth' is checked NEXT, before
+ * 'transient': a credential failure is not a network/lock blip and blindly
+ * retrying it without re-provisioning credentials first is pointless (see
+ * GIT_AUTH_PATTERNS' doc comment for the live incident this closes).
  *
  * @param {string} output - the raw git stderr/stdout of the failed command
- * @returns {'diverged'|'transient'|'unknown'}
+ * @returns {'diverged'|'auth'|'transient'|'unknown'}
  */
 export function classifyGitFailure(output) {
     const text = String(output == null ? '' : output);
     for (const re of GIT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
+    for (const re of GIT_AUTH_PATTERNS) if (re.test(text)) return 'auth';
     for (const re of GIT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
     return 'unknown';
 }
@@ -628,10 +656,24 @@ export function classifyGitFailure(output) {
  * ONLY transient failures up to `maxTransientRetries` times. A diverged (or
  * unknown) failure is returned immediately, never retried.
  *
- * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'transient'|'unknown' }>}
+ * apra-fleet-fmu: an optional injected `onAuthFailure` async callback adds a
+ * DISTINCT, bounded one-shot self-heal path -- deliberately NOT folded into
+ * the `maxTransientRetries` loop above, so it stays easy to reason about and
+ * test in isolation. When a command fails with an 'auth' classification (see
+ * classifyGitFailure) and `onAuthFailure` is provided, it is called EXACTLY
+ * ONCE (never in a loop, even if the retry below fails with 'auth' again);
+ * if it resolves without throwing, the SAME command is retried exactly once
+ * more. If `onAuthFailure` throws, or is not provided at all, this falls
+ * through to the exact pre-existing behavior: the failed result is returned
+ * as-is for the caller to turn into its typed GitSyncError/GitDivergedError.
+ * Every existing caller that does not pass `onAuthFailure` sees ZERO
+ * behavior change.
+ *
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'unknown' }>}
  */
-async function runGitStep({ command, member, cmd, label, log, maxTransientRetries }) {
+async function runGitStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure }) {
     let attempt = 0;
+    let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
@@ -641,6 +683,18 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
         if (kind === 'transient' && attempt < maxTransientRetries) {
             attempt += 1;
             log(`[Sync] transient git failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
+            continue;
+        }
+        if (kind === 'auth' && typeof onAuthFailure === 'function' && !authHealAttempted) {
+            authHealAttempted = true;
+            log(`[Sync] auth git failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
+            try {
+                await onAuthFailure({ member, label, cmd, error, kind: 'git' });
+            } catch (healErr) {
+                log(`[Sync] self-heal for member '${member}' (${label}) failed; not retrying further: ${healErr.message}`);
+                return { ok: false, output: res ? res.output : '', error, kind };
+            }
+            log(`[Sync] self-heal for member '${member}' (${label}) completed; retrying the failed git command once.`);
             continue;
         }
         return { ok: false, output: res ? res.output : '', error, kind };
@@ -658,12 +712,18 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
  * Every git command is issued via the injected command() with an explicit
  * member_name (3.2).
  *
+ * apra-fleet-fmu: an optional injected `onAuthFailure` is threaded straight
+ * through to runGitStep's bounded one-shot self-heal (a stale token can just
+ * as easily break a pull as a push) -- omitting it preserves the exact
+ * pre-existing behavior, same convention as the `agent` param on
+ * syncMemberAfter.
+ *
  * @param {string} member
- * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string }} opts
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string, onAuthFailure?: Function }} opts
  * @returns {Promise<{ ok: true, member: string }>}
  */
 export async function syncMemberBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch, onAuthFailure } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberBefore requires an injected command() in opts");
     }
@@ -671,7 +731,7 @@ export async function syncMemberBefore(member, opts = {}) {
     const fetchCmd = branch ? `git fetch ${remote} ${branch}` : `git fetch ${remote}`;
     const fetch = await runGitStep({
         command, member, cmd: fetchCmd,
-        label: `G-pull fetch for '${member}'`, log, maxTransientRetries,
+        label: `G-pull fetch for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!fetch.ok) {
         // A brand-new sprint branch that has not been pushed to the remote
@@ -699,7 +759,7 @@ export async function syncMemberBefore(member, opts = {}) {
     const mergeCmd = branch ? `git merge --ff-only ${remote}/${branch}` : 'git merge --ff-only';
     const merge = await runGitStep({
         command, member, cmd: mergeCmd,
-        label: `G-pull ff-only merge for '${member}'`, log, maxTransientRetries,
+        label: `G-pull ff-only merge for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!merge.ok) {
         if (merge.kind === 'diverged') {
@@ -743,18 +803,25 @@ export async function syncMemberBefore(member, opts = {}) {
  * pre-8.12 Tier-1-only behavior -- every existing caller/test that does not
  * pass `agent` sees the same throws as before.
  *
+ * apra-fleet-fmu: an optional injected `onAuthFailure` (same injection
+ * pattern as `agent` above) is threaded through to every runGitStep call
+ * below for a bounded one-shot self-heal (call it once, retry the same
+ * command once) whenever a step is classified 'auth'. Omitting it preserves
+ * the exact pre-existing behavior -- every existing caller/test that does not
+ * pass `onAuthFailure` sees ZERO behavior change.
+ *
  * @param {string} member
  * @param {{
  *   command: Function, pushCode?: boolean, log?: Function,
  *   maxTransientRetries?: number, remote?: string, branch?: string,
- *   agent?: Function, resolveConflictModel?: string,
+ *   agent?: Function, resolveConflictModel?: string, onAuthFailure?: Function,
  * }} opts
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, rebased: boolean, tier2Resolved?: boolean }>}
  */
 export async function syncMemberAfter(member, opts = {}) {
     const {
         command, pushCode = true, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch,
-        agent, resolveConflictModel,
+        agent, resolveConflictModel, onAuthFailure,
     } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberAfter requires an injected command() in opts");
@@ -768,7 +835,7 @@ export async function syncMemberAfter(member, opts = {}) {
 
     let push = await runGitStep({
         command, member, cmd: pushCmd,
-        label: `G-push for '${member}'`, log, maxTransientRetries,
+        label: `G-push for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, rebased: false };
@@ -788,7 +855,7 @@ export async function syncMemberAfter(member, opts = {}) {
     const rebaseCmd = branch ? `git pull --rebase ${remote} ${branch}` : 'git pull --rebase';
     const rebase = await runGitStep({
         command, member, cmd: rebaseCmd,
-        label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries,
+        label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!rebase.ok) {
         // apra-fleet-eft.8.6 (Tier 1 scripted detection): confirm from git's
@@ -822,7 +889,7 @@ export async function syncMemberAfter(member, opts = {}) {
             if (stillUnmerged.length === 0) {
                 const rePush = await runGitStep({
                     command, member, cmd: pushCmd,
-                    label: `G-push after Tier 2 conflict resolution for '${member}'`, log, maxTransientRetries,
+                    label: `G-push after Tier 2 conflict resolution for '${member}'`, log, maxTransientRetries, onAuthFailure,
                 });
                 if (rePush.ok) {
                     log(`[Sync] Tier 2 conflict resolution for member '${member}' succeeded -- working tree clean and the resolved code was pushed.`);
@@ -849,7 +916,7 @@ export async function syncMemberAfter(member, opts = {}) {
 
     push = await runGitStep({
         command, member, cmd: pushCmd,
-        label: `G-push re-push after rebase for '${member}'`, log, maxTransientRetries,
+        label: `G-push re-push after rebase for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, rebased: true };
@@ -944,6 +1011,25 @@ const DOLT_DIVERGED_PATTERNS = [
     /working set (is )?not clean/i,
 ];
 
+// apra-fleet-fmu: substrings that mark a `bd dolt` failure as an AUTH
+// (credential) failure -- mirrors GIT_AUTH_PATTERNS above. `bd dolt push`
+// shells out to git under the hood, so it can surface the SAME "could not
+// read Username for 'https://github.com'" text a plain git push does (this
+// exact class was live-observed on a D-push, not just a G-push, in the
+// apra-fleet-eft sprint incident this bead closes). Checked after 'diverged'
+// (never misclassified) but before 'transient' (retrying without
+// re-provisioning credentials first is pointless).
+const DOLT_AUTH_PATTERNS = [
+    /could not read Username for/i,
+    /could not read Password for/i,
+    /Authentication failed/i,
+    /Permission denied \(publickey\)/i,
+    /remote: Invalid username or (token|password)/i,
+    /terminal prompts disabled/i,
+    /support for password authentication was removed/i,
+    /Bad credentials/i,
+];
+
 // Substrings that mark a `bd dolt` failure as TRANSIENT (network / server /
 // lock) -- safe to retry a bounded number of times.
 const DOLT_TRANSIENT_PATTERNS = [
@@ -1010,8 +1096,12 @@ export function extractDoltRemoteUrl(output) {
  * for the same reason: its text ("no branches found in remote") must never
  * be misread as a real divergence/conflict.
  *
+ * apra-fleet-fmu: 'auth' is checked after 'diverged' but before 'transient',
+ * same ordering rationale as classifyGitFailure -- a credential failure must
+ * never be misread as a conflict, and blindly retrying it is pointless.
+ *
  * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
- * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'transient'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown'}
  */
 export function classifyDoltFailure(output) {
     const text = String(output == null ? '' : output);
@@ -1019,6 +1109,7 @@ export function classifyDoltFailure(output) {
     for (const re of DOLT_EMPTY_REMOTE_PATTERNS) if (re.test(text)) return 'empty-remote';
     for (const re of DOLT_REMOTE_UNREACHABLE_PATTERNS) if (re.test(text)) return 'remote-unreachable';
     for (const re of DOLT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
+    for (const re of DOLT_AUTH_PATTERNS) if (re.test(text)) return 'auth';
     for (const re of DOLT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
     return 'unknown';
 }
@@ -1032,8 +1123,8 @@ export function classifyDoltFailure(output) {
  * classifyDoltFailure's stderr pattern matching: apra-fleet-eft.30 showed a
  * (mis)wired Dolt-level remote can still make a real `bd dolt push` attempt
  * and fail with a credentials error ('could not read Username for
- * https://github.com') that classifyDoltFailure has no pattern for, so it
- * returns 'unknown' rather than 'no-remote' -- even though the sprint's
+ * https://github.com') that classifyDoltFailure now recognizes as 'auth'
+ * (apra-fleet-fmu) rather than 'no-remote' -- even though the sprint's
  * bd-level sync.remote for this clone IS neutralized and nothing is
  * supposed to be pushed. Consulting the bd-level setting directly closes
  * that gap regardless of what Dolt's own remote list says.
@@ -1093,10 +1184,20 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
  * retrying ONLY transient failures up to `maxTransientRetries` times. A
  * diverged (or unknown) failure is returned immediately, never retried.
  *
- * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'diverged'|'transient'|'unknown' }>}
+ * apra-fleet-fmu: mirrors runGitStep's optional `onAuthFailure` self-heal --
+ * a DISTINCT, bounded one-shot path (never folded into the
+ * `maxTransientRetries` loop). On an 'auth' classification (see
+ * classifyDoltFailure), if `onAuthFailure` is provided it is called EXACTLY
+ * ONCE, and if it resolves without throwing the same `bd dolt` command is
+ * retried exactly once more. If `onAuthFailure` throws, or is not provided,
+ * this falls through to the exact pre-existing behavior. Every existing
+ * caller that does not pass `onAuthFailure` sees ZERO behavior change.
+ *
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown' }>}
  */
-async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries }) {
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure }) {
     let attempt = 0;
+    let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
@@ -1106,6 +1207,18 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         if (kind === 'transient' && attempt < maxTransientRetries) {
             attempt += 1;
             log(`[Dolt] transient failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
+            continue;
+        }
+        if (kind === 'auth' && typeof onAuthFailure === 'function' && !authHealAttempted) {
+            authHealAttempted = true;
+            log(`[Dolt] auth failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
+            try {
+                await onAuthFailure({ member, label, cmd, error, kind: 'dolt' });
+            } catch (healErr) {
+                log(`[Dolt] self-heal for member '${member}' (${label}) failed; not retrying further: ${healErr.message}`);
+                return { ok: false, output: res ? res.output : '', error, kind };
+            }
+            log(`[Dolt] self-heal for member '${member}' (${label}) completed; retrying the failed dolt command once.`);
             continue;
         }
         return { ok: false, output: res ? res.output : '', error, kind };
@@ -1163,12 +1276,17 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  * since there is nothing to reconcile. A real divergence/conflict pull
  * failure still throws DoltDivergedError, unchanged.
  *
+ * apra-fleet-fmu: an optional injected `onAuthFailure` is threaded through to
+ * runDoltStep's bounded one-shot self-heal (a stale token can just as easily
+ * break a pull as a push). Omitting it preserves the exact pre-existing
+ * behavior.
+ *
  * @param {string} member
- * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function }} opts
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function }} opts
  * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote' }>}
  */
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -1205,7 +1323,7 @@ export async function doltPullBefore(member, opts = {}) {
 
     const pull = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-pull for '${member}'`, log, maxTransientRetries,
+        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!pull.ok) {
         if (pull.kind === 'no-remote') {
@@ -1392,12 +1510,17 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * eft.16.1. Override the check with `opts.checkSyncRemoteConfigured` (same
  * `(member, {command, log}) => Promise<boolean>` shape) in tests.
  *
+ * apra-fleet-fmu: an optional injected `onAuthFailure` is threaded through to
+ * every runDoltStep call below (including doltPushGuarded's reconcile/re-push
+ * retries) for a bounded one-shot self-heal on an 'auth' classification.
+ * Omitting it preserves the exact pre-existing behavior.
+ *
  * @param {string} member
- * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function }} opts
+ * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function }} opts
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote' }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -1448,7 +1571,7 @@ export async function doltPushAfter(member, opts = {}) {
     async function doltPushGuarded() {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push for '${member}'`, log, maxTransientRetries,
+        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, reconciled: false };
@@ -1496,7 +1619,7 @@ export async function doltPushAfter(member, opts = {}) {
     log(`[Dolt] D-push for member '${member}' was rejected (another writer pushed first); reconciling with a single D-pull then one re-push (first-successful-pusher-wins).`);
     const reconcile = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries,
+        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!reconcile.ok) {
         if (reconcile.kind === 'diverged') {
@@ -1513,7 +1636,7 @@ export async function doltPushAfter(member, opts = {}) {
 
     push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries,
+        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, reconciled: true };
@@ -1552,12 +1675,18 @@ export async function doltPushAfter(member, opts = {}) {
  * escalation -- see that function's own doc comment. Omitting `agent`
  * preserves the exact pre-8.12 behavior.
  *
+ * apra-fleet-fmu: `onAuthFailure` (optional) is threaded through to BOTH
+ * syncMemberAfter (G-push) and doltPushAfter (D-push) for their respective
+ * bounded one-shot self-heal on an 'auth' classification. Omitting it
+ * preserves the exact pre-fmu behavior.
+ *
  * @param {string} member
  * @param {{
  *   command: Function, pushCode?: boolean, pushBeads?: boolean,
  *   log?: Function, mutex?: { acquire: Function, release: Function },
  *   sprintId?: string, branch?: string, maxTransientRetries?: number,
  *   remote?: string, agent?: Function, resolveConflictModel?: string,
+ *   onAuthFailure?: Function,
  * }} opts
  * @returns {Promise<{ ok: true, member: string, gPush: object, dPush: object }>}
  */
@@ -1565,18 +1694,18 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     const {
         command, pushCode = true, pushBeads = true, log = () => {},
         mutex, sprintId, branch, maxTransientRetries = 1, remote = 'origin',
-        agent, resolveConflictModel,
+        agent, resolveConflictModel, onAuthFailure,
     } = opts;
 
     let gPush;
     try {
-        gPush = await syncMemberAfter(member, { command, pushCode, log, branch, maxTransientRetries, remote, agent, resolveConflictModel });
+        gPush = await syncMemberAfter(member, { command, pushCode, log, branch, maxTransientRetries, remote, agent, resolveConflictModel, onAuthFailure });
     } catch (gPushErr) {
         log(`[Sync] G-push failed for member '${member}' -- skipping D-push and failing this streak rather than advertising an unreachable close (a beads close whose justifying code never reached the shared branch): ${gPushErr.message}`);
         throw gPushErr;
     }
 
-    const dPush = await doltPushAfter(member, { command, pushBeads, log, mutex, sprintId });
+    const dPush = await doltPushAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure });
     return { ok: true, member, gPush, dPush };
 }
 
@@ -1881,6 +2010,88 @@ export function createMemberSessionGuard(opts = {}) {
                 log(`[member-session-guard] pre-resume stop_prompt for '${member}' failed (non-fatal; resume proceeds): ${err.message}`);
             }
         },
+    };
+}
+
+/**
+ * apra-fleet-fmu -- best-effort, GENERIC extraction of an "owner/repo" string
+ * from a git remote URL (https, scp-like git@host:owner/repo(.git), or
+ * ssh://). Deliberately target-agnostic (auto-sprint-product-vs-dogfood
+ * convention): fleet-sprint is a general-purpose product used to develop many
+ * different repos, so the `repos` argument passed to provision_vcs_auth must
+ * be DERIVED at runtime from the member's own git remote, never hardcoded to
+ * a literal repo name. Returns null on anything unrecognized so the caller
+ * can fall back to omitting `repos` (the field is optional server-side)
+ * rather than guessing.
+ *
+ * @param {string|null|undefined} url
+ * @returns {string|null}
+ */
+export function parseOwnerRepoFromRemoteUrl(url) {
+    const text = String(url == null ? '' : url).trim();
+    if (!text) return null;
+    let m = text.match(/^https?:\/\/[^/]+\/([^/]+)\/([^/]+?)(\.git)?\/?$/i);
+    if (m) return `${m[1]}/${m[2]}`;
+    m = text.match(/^ssh:\/\/[^@/]+@[^/]+\/([^/]+)\/([^/]+?)(\.git)?\/?$/i);
+    if (m) return `${m[1]}/${m[2]}`;
+    // scp-like syntax, e.g. git@github.com:owner/repo.git
+    m = text.match(/^[\w.-]+@[^:]+:([^/]+)\/([^/]+?)(\.git)?\/?$/i);
+    if (m) return `${m[1]}/${m[2]}`;
+    return null;
+}
+
+/**
+ * apra-fleet-fmu -- builds the real end-to-end `onAuthFailure` self-heal
+ * callback runGitStep/runDoltStep call on an 'auth' classification: resolves
+ * the failing member's `owner/repo` generically from its own `git remote
+ * get-url origin` (see parseOwnerRepoFromRemoteUrl -- never hardcoded), then
+ * calls the new ApraFleet.provisionVcsAuth() client method
+ * (packages/apra-fleet-client) to re-provision GitHub App credentials for
+ * that member. Uses `git_access: 'push'` and the default `github_mode:
+ * 'github-app'` -- the same credential shape the live incident this bead
+ * closes needed re-provisioned. Logs both the attempt and its outcome so the
+ * self-heal is visible in sprint logs, never silent. Any failure (resolving
+ * the remote, or the provision_vcs_auth call itself) propagates as a thrown
+ * error so runGitStep/runDoltStep's bounded one-shot self-heal correctly
+ * treats it as "self-heal failed" and does not retry further.
+ *
+ * `callTool` is injected exactly like createMemberSessionGuard's (the
+ * caller's MCP client, e.g. `mcpClient.callTool`), so this stays
+ * transport-agnostic and unit-testable without a live fleet server.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
+ * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
+ */
+export function createVcsAuthSelfHealCallback(opts = {}) {
+    const { callTool, command, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+
+    return async function onAuthFailure({ member, label, error }) {
+        log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
+
+        let repos;
+        try {
+            const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+            const url = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
+            const repo = parseOwnerRepoFromRemoteUrl(url);
+            if (repo) {
+                repos = [repo];
+            } else {
+                log(`[Sync] self-heal: could not derive an owner/repo from member '${member}' git remote (raw: '${url}'); calling provision_vcs_auth without an explicit repos scope.`);
+            }
+        } catch (remoteErr) {
+            log(`[Sync] self-heal: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
+        }
+
+        await fleetApi.provisionVcsAuth({
+            member_name: member,
+            provider: 'github',
+            github_mode: 'github-app',
+            git_access: 'push',
+            ...(repos ? { repos } : {}),
+        });
+
+        log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
     };
 }
 
@@ -3818,6 +4029,28 @@ async function runSprintCycle(context) {
         log,
     });
 
+    // apra-fleet-fmu: the git/dolt credential-auth self-heal callback every
+    // withGitSync bracket's syncMemberBefore/doltPullBefore (G-pull/D-pull)
+    // and syncMemberAfterOrdered (G-push/D-push) pass through as
+    // `onAuthFailure`. Same three-source precedence as memberSessionGuard
+    // immediately above:
+    //   1. `context.onAuthFailure` -- an explicitly-injected callback (tests
+    //      wire an in-process one here to prove the self-heal fires without a
+    //      live fleet server).
+    //   2. `args.callTool` -- the REAL end-to-end path: build the real
+    //      provision_vcs_auth self-heal via the ApraFleet client
+    //      (createVcsAuthSelfHealCallback, packages/apra-fleet-client).
+    //   3. neither -- undefined: every existing caller/test that does not
+    //      wire `callTool` (and does not explicitly inject `onAuthFailure`)
+    //      sees ZERO behavior change -- an 'auth'-classified git/dolt failure
+    //      falls straight through to today's exact existing
+    //      GitSyncError/DoltSyncError throw, exactly as before this bead.
+    const onAuthFailure = context.onAuthFailure ?? (
+        (args && typeof args.callTool === 'function')
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
+            : undefined
+    );
+
     // Validate BEFORE any agent()/command() dispatch (apra-fleet-unw.14,
     // A7 defense in depth): a rejected/malformed arg must result in zero
     // fleet dispatches.
@@ -3940,7 +4173,7 @@ async function runSprintCycle(context) {
         if (skipPreDispatchSync) {
             log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
         } else {
-            await syncMemberBefore(member, { command, log, branch: validated.branch });
+            await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure });
             // apra-fleet-eft.54.6: skipPreDispatchDoltPull skips ONLY the real
             // `bd dolt pull` SPAWN (the residual real-bd Dolt sync bracket the
             // terminal auth-abort path hung on) while STILL running
@@ -3955,7 +4188,7 @@ async function runSprintCycle(context) {
             // orchestrator's own pre-sprint-validation doltPullBefore
             // (eft.34/eft.58.1 call site) already freshened with nothing
             // mutated since. Defaults false, so every other dispatch pulls.
-            await doltPullBefore(member, { command, log, skipPull: skipPreDispatchDoltPull });
+            await doltPullBefore(member, { command, log, skipPull: skipPreDispatchDoltPull, onAuthFailure });
         }
         // apra-fleet-eft.54.1: track a terminal dispatch failure so the
         // post-dispatch sync teardown can be skipped for it (see the finally).
@@ -3992,7 +4225,7 @@ async function runSprintCycle(context) {
                 // coverage of this ordering.
                 await syncMemberAfterOrdered(member, {
                     command, pushCode, pushBeads, log, branch: validated.branch,
-                    mutex: doltPushMutex, sprintId: sprintMutexId, agent,
+                    mutex: doltPushMutex, sprintId: sprintMutexId, agent, onAuthFailure,
                 });
             }
         }

@@ -173,7 +173,7 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // when the origin fetch reports the remote ref is missing, to detect a
 // pre-existing local-only branch before deciding whether to reuse it as-is
 // or reset it to base -- member_name: member confirmed present.
-const EXPECTED_COMMAND_COUNT = 38;
+const EXPECTED_COMMAND_COUNT = 39;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
