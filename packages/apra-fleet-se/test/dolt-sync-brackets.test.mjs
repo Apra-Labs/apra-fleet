@@ -808,7 +808,11 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // pushBeads), so the pushBeads count below is unchanged.
     // 10 -> 11 (stabilization log iteration 5): Final Review resume bracket
     // (read-side, no pushBeads -- pushBeads count below unchanged).
-    assert.equal(sites.length, 16, `expected 16 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 16 -> 18 (apra-fleet-eft.68.1): the in-cycle SCOPED replan added two new
+    // withGitSync(...) brackets in the develop loop -- the scoped planner
+    // dispatch (mutating: pushBeads:true) and the scoped plan-review dispatch
+    // (read-side: no pushBeads).
+    assert.equal(sites.length, 18, `expected 18 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
@@ -820,11 +824,14 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // Four roles mutate beads: planner (new tasks), doer (closes),
     // integ-test-runner (feature-close + bug-file), harvester (issue-defer).
     // Doer and integ-test-runner each have TWO pushBeads:true sites
-    // (dispatch + same-session turn-exhaustion resume), so 8 sites total.
+    // (dispatch + same-session turn-exhaustion resume), so 8 base sites.
+    // apra-fleet-eft.68.1: the in-cycle SCOPED replan's planner dispatch is a
+    // ninth pushBeads:true bracket (it mutates beads by re-scoping the flagged
+    // subtree); the paired scoped plan-review is read-side (no pushBeads).
     assert.equal(
         pushBeadsSites.length,
-        8,
-        `expected exactly 8 withGitSync(...) brackets with pushBeads:true (planner+resume, doer+resume, integ+resume, harvester+resume), found ${pushBeadsSites.length}`,
+        9,
+        `expected exactly 9 withGitSync(...) brackets with pushBeads:true (planner+resume, doer+resume, integ+resume, harvester+resume, scoped-replan planner), found ${pushBeadsSites.length}`,
     );
 
     const roleMarkers = [

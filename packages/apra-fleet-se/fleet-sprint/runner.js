@@ -2506,11 +2506,38 @@ export function validateArgs(args) {
  *   requirementsFile: string|undefined,
  *   requirementsContent: string|null,
  *   feedback: string|null,
+ *   replanScope?: string[]|null,
  * }} opts
  * @returns {string}
  */
-function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback }) {
+function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null }) {
     const lines = [];
+
+    // apra-fleet-eft.68.1: SCOPED in-cycle replan clause. When a reviewer flags
+    // a bead via `replanIds` (its acceptance criteria are themselves defective
+    // and cannot be satisfied by re-development), the orchestrator now dispatches
+    // a SCOPED planner pass for exactly those beads' subtree WITHIN the same
+    // cycle -- instead of ending the cycle and deferring to the next cycle's
+    // full planner (the old eft.67.2 short-circuit). This clause is present ONLY
+    // on that scoped dispatch (absent -- byte-identical to before -- on every
+    // ordinary full-plan/re-plan dispatch, so the happy-path golden transcript
+    // is unchanged), and narrows the planner to amend only the flagged beads'
+    // acceptance criteria/decomposition without touching anything else in scope.
+    const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
+    if (hasReplanScope) {
+        lines.push(
+            'SCOPED IN-CYCLE REPLAN -- this is a NARROW, targeted re-planning pass, not a full ' +
+            'sprint plan. A reviewer flagged the following already-created bead(s) as having ' +
+            'DEFECTIVE ACCEPTANCE CRITERIA that cannot be satisfied by re-development as written: ' +
+            `${replanScope.join(', ')}. Re-scope ONLY these bead(s): read each one\'s current ` +
+            'description and the reviewer feedback below, then correct its acceptance criteria in ' +
+            'place (via `bd update`), or -- if it is genuinely too large -- decompose it into ' +
+            'task-type children with clear acceptance criteria and model metadata. Do NOT touch, ' +
+            'reword, re-decompose, close, or create any bead OUTSIDE this flagged set, and do NOT ' +
+            'add scope beyond the original sprint goal. Keep the goalposts fixed: you are fixing a ' +
+            'defect in these specific beads, not re-planning the sprint.'
+        );
+    }
 
     if (isDeltaCycle) {
         lines.push(
@@ -2611,15 +2638,37 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
  *   targetIssues: string[],
  *   goal: string,
  *   priorRoundVerdicts?: Array<{ round: number, verdict: string, notes: string|null }>,
+ *   replanScope?: string[]|null,
  * }} opts
  * @returns {string}
  */
-function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [] }) {
+function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null }) {
+    const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
     const lines = [
         'Review the beads DAG created by the planner for this sprint, per your agent contract.',
         `Sprint root / scope to review (the open beads subtree this review pass covers): ` +
         `sprint root issue id(s) ${targetIssues.join(', ')}, goal priority ${goal}. ` +
         'Review only the features and tasks under this scope.',
+    ];
+
+    // apra-fleet-eft.68.1: on a SCOPED in-cycle replan review, tell the
+    // plan-reviewer to focus its verdict on whether the planner's amendment
+    // actually FIXED the flagged bead(s)' acceptance criteria -- not to
+    // re-litigate the whole DAG. Present ONLY on the scoped dispatch (absent,
+    // byte-identical to before, on every ordinary plan-review dispatch).
+    if (hasReplanScope) {
+        lines.push(
+            'SCOPED IN-CYCLE REPLAN REVIEW -- this pass follows a NARROW, targeted re-plan of ' +
+            `specifically flagged bead(s) ${replanScope.join(', ')} whose acceptance criteria a ` +
+            'reviewer judged defective. Focus your verdict on whether the planner has now given ' +
+            'those bead(s) clear, satisfiable acceptance criteria (and decomposed them into ' +
+            'task-type children if they were too large). Approve if the flagged bead(s) are now ' +
+            'well-formed; do not withhold approval over unrelated, previously-accepted parts of ' +
+            'the DAG, and do not demand new scope beyond fixing the flagged defect.'
+        );
+    }
+
+    lines.push(
         // Stabilization log Issue 14: mid-sprint, a feature whose children
         // are ALL closed is in the pending-feature-closure state -- feature
         // closure is the integ-test phase's job, not the planner's. Two runs
@@ -2667,7 +2716,7 @@ function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [] }
         '(targeting the residual mechanism the latest evidence names, never ' +
         'duplicating the closed fix) plus a [test] task. A bug whose notes show no ' +
         'post-closure recurrence stays under the pending-closure rule as before.',
-    ];
+    );
 
     // apra-fleet-eft.71.2: round N>1 of this cycle's planner<->plan-reviewer
     // loop carries every earlier round's verdict for THIS SAME scope/cycle so
@@ -5882,6 +5931,16 @@ async function runSprintCycle(context) {
         // at the top of the next iteration's currentReady computation.
         const replanIds = new Set();
 
+        // apra-fleet-eft.68.1: loop guard for the in-cycle scoped replan --
+        // the set of bead ids that have ALREADY been through one scoped
+        // planner+plan-review pass THIS cycle. Enforces "max one scoped replan
+        // per bead per cycle": a bead flagged for replan a SECOND time in the
+        // same cycle is refused at the reviewer fold-in below (logged guard
+        // line) rather than re-planned again, so a defective bead can never
+        // ping-pong replan<->develop endlessly within a single cycle. Reset per
+        // cycle (same rationale as replanIds above).
+        const replannedThisCycle = new Set();
+
         const doerPool = getMembersForRole(ROLE_DOER);
 
         while (devRounds < 3) {
@@ -5903,6 +5962,122 @@ async function runSprintCycle(context) {
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
             if (currentReadyAll.length === 0) break;
+
+            // apra-fleet-eft.68.1: in-cycle SCOPED replan. Supersedes the old
+            // eft.67.2 "defer to the next cycle" short-circuit for the FIRST
+            // replan of a bead: when a reviewer flagged a still-ready bead via
+            // `replanIds` (its acceptance criteria are themselves defective and
+            // cannot be satisfied by re-development), dispatch a SCOPED planner
+            // pass for exactly those beads' subtree PLUS a scoped plan-review of
+            // the result WITHIN this same cycle, then resume develop rounds so
+            // the amended bead is re-dispatched to a doer this cycle -- rather
+            // than burning the rest of the cycle and waiting on the next cycle's
+            // full planner. `replannedThisCycle` (the loop guard) makes this fire
+            // at most ONCE per bead per cycle: a bead flagged for replan a second
+            // time is refused at the reviewer fold-in below and falls through to
+            // the eft.67.2 exclude/break short-circuit (deferred to the next
+            // cycle) instead of re-planning again. Round accounting: a scoped
+            // replan pass consumes one develop round (same 3-round budget), so a
+            // replan<->develop ping-pong can never outrun the cap.
+            const eligibleReplan = currentReadyAll.filter((b) => replanIds.has(b.id) && !replannedThisCycle.has(b.id));
+            if (eligibleReplan.length > 0) {
+                const replanScopeIds = eligibleReplan.map((b) => b.id);
+                devRounds++;
+                phase(`Replan C${cycle} R${devRounds}`);
+                log(
+                    `[fleet-sprint] in-cycle scoped replan: reviewer flagged bead(s) ${replanScopeIds.join(', ')} as ` +
+                    `having defective acceptance criteria -- dispatching a SCOPED planner + plan-review pass for their ` +
+                    `subtree THIS cycle (replan round R${devRounds}) instead of deferring to the next cycle, then ` +
+                    `resuming develop rounds.`
+                );
+                // Guard: mark up front so a SECOND replan flag for the same bead
+                // this cycle is refused (see the reviewer fold-in below), whatever
+                // the outcome of this pass.
+                for (const id of replanScopeIds) replannedThisCycle.add(id);
+
+                // --- Scoped planner pass ---
+                const SCOPED_REPLAN_PLANNER_MAX_TURNS = 100;
+                let scopedPlannerOk = true;
+                try {
+                    const scopedPlannerRes = await withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
+                        agent(
+                            buildPlannerPrompt({
+                                isDeltaCycle: true,
+                                targetIssues,
+                                goal: validated.goal,
+                                requirementsFile: validated.requirementsFile,
+                                requirementsContent,
+                                feedback: null,
+                                replanScope: replanScopeIds,
+                            }),
+                            {
+                                member_name: getMemberForRole('planner'),
+                                agentType: 'planner',
+                                model: FIXED_ROLE_TIER.planner,
+                                timeout_s: DISPATCH_TIMEOUT_S,
+                                max_total_s: DISPATCH_TIMEOUT_S,
+                                max_turns: SCOPED_REPLAN_PLANNER_MAX_TURNS,
+                                label: 'Scoped Replan Plan (interactive)',
+                            }
+                        ),
+                        { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Scoped Replan Plan (interactive)', log }
+                    ), { pushBeads: true });
+                    log(`Scoped Replan Planner: ${scopedPlannerRes}`);
+                } catch (err) {
+                    scopedPlannerOk = false;
+                    log(`[fleet-sprint] in-cycle scoped replan: planner dispatch failed (${err.message}) -- leaving bead(s) ${replanScopeIds.join(', ')} flagged for the next cycle's planner.`);
+                }
+
+                // --- Scoped plan-review pass ---
+                let scopedReplanApproved = false;
+                if (scopedPlannerOk) {
+                    const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 60;
+                    try {
+                        const scopedVerdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
+                            buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds }),
+                            {
+                                member_name: getMemberForRole('plan-reviewer'),
+                                agentType: 'plan-reviewer',
+                                schema: planReviewerVerdict,
+                                model: FIXED_ROLE_TIER['plan-reviewer'],
+                                timeout_s: DISPATCH_TIMEOUT_S,
+                                max_total_s: DISPATCH_TIMEOUT_S,
+                                max_turns: SCOPED_REPLAN_REVIEWER_MAX_TURNS,
+                                label: 'Scoped Replan Review',
+                            }
+                        ));
+                        log(`Scoped Replan Reviewer: ${JSON.stringify(scopedVerdict)}`);
+                        scopedReplanApproved = scopedVerdict.verdict === 'APPROVED';
+                    } catch (err) {
+                        // A schema-repair-exhausted or dispatch failure is a
+                        // FAILED scoped review (never an approval), same
+                        // discipline as the main plan loop above.
+                        log(`[fleet-sprint] in-cycle scoped replan: plan-review dispatch failed (${err.message}) -- treating the scoped replan as NOT approved; bead(s) ${replanScopeIds.join(', ')} handed to the next cycle's planner.`);
+                    }
+                }
+
+                if (scopedReplanApproved) {
+                    // The planner re-scoped the flagged bead(s) and the
+                    // plan-reviewer approved the amendment -- clear them from
+                    // replanIds so the NEXT loop iteration re-dispatches them to a
+                    // doer IN THIS SAME cycle.
+                    for (const id of replanScopeIds) replanIds.delete(id);
+                    log(`[fleet-sprint] in-cycle scoped replan: plan-review APPROVED the amendment for ${replanScopeIds.join(', ')} -- resuming develop rounds; the re-scoped bead(s) are re-dispatchable to a doer this cycle.`);
+                } else {
+                    // Not approved (or the planner/reviewer dispatch failed): the
+                    // bead(s) stay in replanIds AND are now marked
+                    // replannedThisCycle, so the next iteration's exclude/break
+                    // short-circuit defers them to the next cycle's planner.
+                    log(`[fleet-sprint] in-cycle scoped replan: the scoped replan of ${replanScopeIds.join(', ')} was not approved -- they stay excluded from this cycle's develop rounds (deferred to the next cycle's planner).`);
+                }
+
+                // The scoped planner just MUTATED beads in this clone -- D-push +
+                // refresh the dashboard, exactly like the develop-review reopen/
+                // newTask site below, then re-evaluate the loop top.
+                await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+                await updateDashboard();
+                continue;
+            }
 
             // apra-fleet-eft.67.2: replan short-circuit. `replanIds` is the
             // union of every bead id flagged by a reviewer's optional
@@ -6493,10 +6668,26 @@ async function runSprintCycle(context) {
             // running union, consulted at the top of the next iteration's
             // currentReady computation above. Only ids that were ACTUALLY
             // reopened this round are tracked.
+            // apra-fleet-eft.68.1: the loop guard's single enforcement point.
+            // A bead that has ALREADY been through one in-cycle scoped replan
+            // this cycle (replannedThisCycle) is refused a SECOND scoped replan:
+            // it stays reopened (real dev feedback still applies) but is NOT
+            // re-added to replanIds, so the develop loop above never dispatches
+            // a second scoped planner pass for it -- it is handed to the next
+            // cycle's planner instead. This is what makes "max one scoped replan
+            // per bead per cycle" hold regardless of the round budget.
             for (const id of (verdict.replanIds || [])) {
-                if (reopenedIds.has(id)) {
-                    replanIds.add(id);
+                if (!reopenedIds.has(id)) continue;
+                if (replannedThisCycle.has(id)) {
+                    log(
+                        `[fleet-sprint] replan loop guard: bead ${id} was already scoped-replanned once this cycle ` +
+                        `(C${cycle}) and a reviewer has flagged it for replan AGAIN -- refusing a second in-cycle scoped ` +
+                        `replan (max one per bead per cycle). It stays reopened and is handed off to the next cycle's ` +
+                        `planner rather than re-planned again now.`
+                    );
+                    continue;
                 }
+                replanIds.add(id);
             }
             for (const newTask of verdict.newTasks) {
                 // N3: validate BEFORE interpolation -- see validateNewTask()

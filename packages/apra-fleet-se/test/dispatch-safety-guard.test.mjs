@@ -196,7 +196,14 @@ const EXPECTED_COMMAND_COUNT = 41;
 // site (one corrective re-dispatch when the candidate is schema-valid but
 // semantically rejected, e.g. run 8's suffix-stripped bead ids);
 // member_name literal confirmed.
-const EXPECTED_AGENT_COUNT = 18;
+// 18 -> 20 (apra-fleet-eft.68.1): the in-cycle SCOPED replan (route replanIds
+// to a scoped planner + plan-review pass WITHIN the develop loop, rather than
+// deferring to the next cycle) added exactly two new agent() call sites in the
+// develop loop -- (1) the scoped planner dispatch (member_name:
+// getMemberForRole('planner')) and (2) the scoped plan-review dispatch
+// (member_name: getMemberForRole('plan-reviewer')), both literal member_name
+// present, verified compliant.
+const EXPECTED_AGENT_COUNT = 20;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
