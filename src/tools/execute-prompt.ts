@@ -25,6 +25,7 @@ import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import { sessionRegistry } from '../services/session-registry.js';
 import { getTokenIssuer } from '../services/token-issuer.js';
+import { resolveExpectedDemand, checkContextAdmission, recordSessionUsage } from '../services/context-admission.js';
 import { sendMessage } from './send-message.js';
 import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
@@ -34,7 +35,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted' | 'insufficient_context_headroom';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -42,6 +43,11 @@ export interface ExecutePromptStructured {
   response?: string;
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
   sessionId?: string;
+  /** Present on an 'insufficient_context_headroom' rejection (apra-fleet-eft.81.1). */
+  detail?: { demand: number; headroom: number; window: number };
+  /** Present on a successful dispatch that fits but lands inside the session's
+   *  safety margin (apra-fleet-eft.81.1) -- a non-fatal heads-up, not an error. */
+  contextWarning?: { message: string; detail: { demand: number; headroom: number; window: number } };
   [key: string]: unknown;
 }
 
@@ -84,6 +90,23 @@ export const executePromptSchema = z.object({
     'the caller passed to member_reservation reserve/release. Callers that never set a ' +
     'reservation, or that reserved and dispatch in the same process, should omit this; ' +
     'omitting it preserves the pre-existing env-var-based behavior exactly.'
+  ),
+  expected_context_tokens: z.number().positive().optional().describe(
+    'Optional estimate (apra-fleet-eft.81.1) of how many tokens this dispatch will add ' +
+    'to the target session\'s context. When set (or context_size is set), the server ' +
+    'compares it against the session\'s remaining context-window headroom BEFORE ' +
+    'invoking the LLM: too little headroom rejects the call with ' +
+    '{reason: "insufficient_context_headroom", detail: {demand, headroom, window}} and no ' +
+    'spawn; a fit that lands inside the safety margin still proceeds but attaches a ' +
+    'structured contextWarning. Wins over context_size when both are set. Omitting both ' +
+    'fields disables the check entirely -- pre-existing behavior is unchanged.'
+  ),
+  context_size: z.enum(['S', 'M', 'L']).optional().describe(
+    'Optional size-bucket shorthand for expected_context_tokens (apra-fleet-eft.81.1): ' +
+    'S/M/L map to configured token estimates (fleet defaults, overridable via ' +
+    'config.json\'s contextAdmission.sizeBucketTokens). Ignored when expected_context_tokens ' +
+    'is also set. The auto-sprint engine supplies this from the dispatched task\'s size ' +
+    'metadata.'
   ),
 }).strict();
 
@@ -639,6 +662,34 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
+  // Context-headroom admission control (apra-fleet-eft.81.1): a declared
+  // demand is checked against this session's remaining headroom BEFORE any
+  // CLI is spawned. No declared demand (both fields omitted) means this
+  // block is skipped entirely -- pre-existing behavior is unchanged.
+  const contextDemand = resolveExpectedDemand(input.expected_context_tokens, input.context_size);
+  let contextWarning: ExecutePromptStructured['contextWarning'];
+  if (contextDemand !== undefined) {
+    const admission = checkContextAdmission({
+      provider: provider.name,
+      resolvedModel,
+      sessionId: mintedId,
+      demand: contextDemand,
+    });
+    if (!admission.allowed) {
+      scope.abort(`insufficient context headroom: demand=${admission.detail.demand} headroom=${admission.detail.headroom} window=${admission.detail.window}`);
+      inFlightAgents.delete(agent.id);
+      stallDetector.remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `❌ execute_prompt on "${agent.friendlyName}" rejected -- insufficient context headroom (demand=${admission.detail.demand}, headroom=${admission.detail.headroom}, window=${admission.detail.window}). Start a fresh session, shrink the task, or split it.`,
+        structuredContent: { isError: true, reason: 'insufficient_context_headroom', detail: admission.detail },
+      };
+    }
+    if (admission.warning) {
+      contextWarning = { message: admission.warning, detail: admission.detail };
+    }
+  }
+
   // Kill any leftover session from a previous (possibly zombie) execute_prompt call
   await tryKillPid(agent, strategy, cmds);
 
@@ -787,6 +838,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           output: prev.output + parsed.usage.output_tokens,
         },
       });
+      // Per-session cumulative tracking for context-headroom admission
+      // (apra-fleet-eft.81.1) -- separate from the per-member lifetime total
+      // just above. Keyed by whichever session id this dispatch actually
+      // landed on (the returned id, falling back to the minted/resumed one),
+      // so the NEXT admission check on this same session sees this dispatch's
+      // usage already accounted for.
+      recordSessionUsage(parsed.sessionId ?? mintedId, parsed.usage);
     }
 
     let output = `📋 Response from ${agent.friendlyName}:
@@ -803,6 +861,7 @@ session: ${parsed.sessionId}`;
         response: parsed.result,
         ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
         ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+        ...(contextWarning ? { contextWarning } : {}),
       },
     };
   } catch (err: any) {
