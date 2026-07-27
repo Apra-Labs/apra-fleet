@@ -434,19 +434,24 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // without a live session (the common case today, and always for members
   // that never opt into an interactive session).
   //
-  // Gated to Claude only (apra-fleet-us9.9's survey,
-  // docs/interactive-injection-provider-survey.md): mode (b) -- server-push
-  // mid-session prompt injection -- is POC-proven on Claude alone via the
-  // provider-branded `notifications/claude/channel` capability.
-  // Gemini/Codex are confirmed [FAIL] (no equivalent push mechanism);
-  // Copilot/AGY/OpenCode are [TBD], not confirmed. A non-Claude member CAN
-  // still have a live sessionRegistry entry (registerMcpEndpoint gives it
-  // basic MCP tool access, apra-fleet-fnz.1-3) without that meaning it can
-  // receive or act on this push -- routing to it anyway would silently
+  // Gated by capability, not provider name (apra-fleet-cqa, eft.74 follow-up):
+  // mode (b) -- server-push mid-session prompt injection -- was POC-proven on
+  // Claude via the provider-branded `notifications/claude/channel` capability
+  // (apra-fleet-us9.9's survey, docs/interactive-injection-provider-survey.md),
+  // but the routing decision itself must be provider-agnostic: whatever the
+  // provider, a session is only an interactive-routing candidate if it
+  // actually declared that capability at MCP initialize time (recorded as
+  // SessionState.channelCapable below). Gemini/Codex are confirmed [FAIL]
+  // today (no equivalent push mechanism) and so never end up channelCapable in
+  // practice, but that is a fact about what each provider adapter currently
+  // advertises, not a name-based pre-filter here -- any provider that
+  // implements the same MCP channel capability is picked up automatically. A
+  // member CAN still have a live sessionRegistry entry (registerMcpEndpoint
+  // gives it basic MCP tool access, apra-fleet-fnz.1-3) without that meaning
+  // it can receive or act on this push -- routing to it anyway would silently
   // spend the full timeout_s waiting for a response that can never arrive.
-  const isClaudeMember = (agent.llmProvider ?? 'claude') === 'claude';
   const workspaceId = getTokenIssuer().workspaceId();
-  const rawSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
+  const rawSession = sessionRegistry.get(workspaceId, agent.id);
   // apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
   // opt-in handshake, not mere JWT registration. A plain subprocess
   // connect-back (a Doer that opened an MCP tool-access session with a member
@@ -467,7 +472,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // through here because the reconnected SessionState had pid=undefined, so the
   // check below was skipped and the caller hung on the dead channel.
   const interactivePid = interactiveSession?.pid
-    ?? (isClaudeMember ? sessionRegistry.lastKnownPid(workspaceId, agent.id) : undefined);
+    ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
   if (interactiveSession?.server && interactivePid !== undefined && !isPidAlive(interactivePid)) {
     // apra-fleet-eft.28.1/eft.28.5: never reuse a persistent interactive
     // session whose underlying member claude process has already died. Before
