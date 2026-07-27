@@ -50,6 +50,16 @@ function mockCmdResult(code, stdout, stderr) {
     };
 }
 
+// apra-fleet-1cb.1: classifies a runCmd() `err` (Node's child_process exec()
+// callback error) as a genuine spawn/transport failure (the process never
+// ran) as opposed to the process running and exiting nonzero, which is
+// normal data -- see the matching comment in
+// test/helpers/mock-sprint-harness.mjs and src/tools/execute-command.ts,
+// which never sets isError for a nonzero shell exit code.
+function isSpawnFailure(err) {
+    return err.code === undefined || err.code === 'ENOENT';
+}
+
 // A fixed usage shape dispatched on every mock LLM call, so every priced
 // activity contributes a known, nonzero cost regardless of which model it
 // was priced against.
@@ -146,7 +156,16 @@ function buildMockFleetApi(tempDir, epicBead, taskId, dispatched, { pricingByMem
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
             }
             const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
-            if (err) return { isError: true, content: [{ text: stderr || err.message }] };
+            if (err) {
+                // apra-fleet-1cb.1: only a genuine spawn failure is an MCP-level
+                // isError -- a nonzero-exit bd/node invocation is normal data
+                // with the real exit code, matching execute-command.ts.
+                if (isSpawnFailure(err)) {
+                    return { isError: true, content: [{ text: stderr || err.message }] };
+                }
+                const exitCode = typeof err.code === 'number' ? err.code : 1;
+                return mockCmdResult(exitCode, stdout, stderr);
+            }
             return mockCmdResult(0, stdout, stderr);
         },
         executePrompt: async (opts) => {
