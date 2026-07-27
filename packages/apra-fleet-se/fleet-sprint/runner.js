@@ -4448,22 +4448,62 @@ async function runSprintCycle(context) {
             ? `origin/${validated.branch}`
             : `origin/${validated.baseBranch}`;
 
+        // apra-fleet-9te.4.1: when the remote ref for <branch> is missing,
+        // the naive fallback (`checkout -B <branch> origin/<baseBranch>`)
+        // silently force-resets ANY pre-existing local <branch> to base's
+        // tip -- discarding commits from a prior --max-cycles-limited cycle
+        // that closed beads but never got pushed, leaving beads and the git
+        // tree disagreeing. Probe for a pre-existing local branch first (only
+        // relevant in the missing-remote-ref case -- if the fetch succeeded,
+        // origin/<branch> is authoritative and the normal reset-to-origin
+        // path below is correct and safe). If a local branch already exists,
+        // adopt it as-is (plain `checkout <branch>`, no reset) instead of
+        // resetting it to base.
+        let localBranchExists = false;
+        if (!branchFetch.ok) {
+            const localProbe = await command(
+                `git rev-parse --verify --quiet refs/heads/${validated.branch}`,
+                {
+                    member_name: member,
+                    silent: true,
+                    failSoft: true,
+                    label: `Probe for pre-existing local branch '${validated.branch}' on member '${member}'`,
+                }
+            );
+            localBranchExists = localProbe.ok;
+            if (localBranchExists) {
+                log(
+                    `Ensure Sprint Branch: remote ref for '${validated.branch}' is missing on member '${member}' ` +
+                    `but a local branch of that name already exists -- reusing it as-is instead of resetting to ` +
+                    `'${startPoint}', to avoid discarding local-only commits.`
+                );
+            }
+        }
+        const reuseLocalBranch = !branchFetch.ok && localBranchExists;
+        const checkoutCommand = reuseLocalBranch
+            ? `git checkout ${validated.branch}`
+            : `git checkout -B ${validated.branch} ${startPoint}`;
+        const checkoutLabel = reuseLocalBranch
+            ? `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (remote ref missing)`
+            : `Ensure sprint branch '${validated.branch}' from '${startPoint}' on member '${member}'`;
+
         // Stabilization log Issue 11: any infrastructure-killed dispatch
         // (transport drop, timeout, stop_prompt) predictably leaves the
         // member's working tree DIRTY with whatever the agent had in flight,
-        // and `checkout -B` then fails with "Your local changes ... would be
-        // overwritten" -- observed live killing run 7 at Setup. That orphaned
-        // WIP belongs to a bead that is still open (a future streak redoes it
-        // properly), so the right move is to PRESERVE it in a named stash and
-        // proceed -- not to abort the sprint, and never to discard it. The
-        // happy path (clean tree) is unchanged: no extra commands issued.
+        // and the checkout above then fails with "Your local changes ...
+        // would be overwritten" -- observed live killing run 7 at Setup. That
+        // orphaned WIP belongs to a bead that is still open (a future streak
+        // redoes it properly), so the right move is to PRESERVE it in a
+        // named stash and proceed -- not to abort the sprint, and never to
+        // discard it. The happy path (clean tree) is unchanged: no extra
+        // commands issued.
         const checkoutResult = await command(
-            `git checkout -B ${validated.branch} ${startPoint}`,
+            checkoutCommand,
             {
                 member_name: member,
                 silent: true,
                 failSoft: true,
-                label: `Ensure sprint branch '${validated.branch}' from '${startPoint}' on member '${member}'`,
+                label: checkoutLabel,
             }
         );
         if (!checkoutResult.ok) {
@@ -4486,11 +4526,11 @@ async function runSprintCycle(context) {
                 }
             );
             await command(
-                `git checkout -B ${validated.branch} ${startPoint}`,
+                checkoutCommand,
                 {
                     member_name: member,
                     silent: true,
-                    label: `Ensure sprint branch '${validated.branch}' from '${startPoint}' on member '${member}' (post-stash retry)`,
+                    label: `${checkoutLabel} (post-stash retry)`,
                 }
             );
         }

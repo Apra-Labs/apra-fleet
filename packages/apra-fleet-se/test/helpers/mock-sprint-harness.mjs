@@ -453,6 +453,25 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 }
             }
 
+            // apra-fleet-9te.4.1: Ensure Sprint Branch probes for a
+            // pre-existing local branch via this exact rev-parse before
+            // deciding whether to reuse it as-is or reset it to base.
+            // Answer deterministically from this mock's per-member
+            // checkout-state model (see memberGitState doc above) instead of
+            // falling through to the generic git/gh "ok (mocked)" success
+            // below, which would make every scenario look like the local
+            // branch already exists and silently short-circuit the
+            // reset-to-base fallback path this mock exists to exercise.
+            const revParseMatch = /^git rev-parse --verify --quiet refs\/heads\/(\S+)/.exec(opts.command);
+            if (revParseMatch) {
+                const m = opts.member_name || '(none)';
+                const st = memberGitState ? memberGitState.get(m) : null;
+                if (st && st.ensuredBranches.has(revParseMatch[1])) {
+                    return mockCmdResult(0, revParseMatch[1], '');
+                }
+                return { isError: true, content: [{ text: '' }] };
+            }
+
             // git/gh commands (apra-fleet-unw.14's branch-ensure/push/PR
             // steps) are intercepted rather than run for real: tempDir is a
             // bare `bd init` scratch directory, not a git repo with an

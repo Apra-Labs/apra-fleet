@@ -168,7 +168,12 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // --file`, and the plan-cap deferral `bd note --file`) each keep their SAME
 // single bd command() site -- only the file's provenance moved host -> member
 // -- so the net change is +1, not +3.
-const EXPECTED_COMMAND_COUNT = 37;
+// 37 -> 38 (apra-fleet-9te.4.1): Ensure Sprint Branch gained a new
+// `git rev-parse --verify --quiet refs/heads/<branch>` probe, dispatched only
+// when the origin fetch reports the remote ref is missing, to detect a
+// pre-existing local-only branch before deciding whether to reuse it as-is
+// or reset it to base -- member_name: member confirmed present.
+const EXPECTED_COMMAND_COUNT = 38;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
