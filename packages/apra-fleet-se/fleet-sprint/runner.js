@@ -2651,6 +2651,97 @@ export function groupStreaksFromLaneMetadata(currentReady) {
 }
 
 /**
+ * apra-fleet-eft.76.7 -- pure reference implementation of the planner.md
+ * "effort-point splitting math" (apra-fleet-eft.76.1): planner.md documents
+ * this formula as design-time math the LLM planner applies when authoring a
+ * lane's `streak`/`streakOrder` metadata at bead-creation time, BEFORE any
+ * bead is ever ready/dispatched -- it is not itself wired into the runtime
+ * develop-round dispatch, which only ever CONSUMES already-split lane
+ * metadata (see groupStreaksFromLaneMetadata above). Exported here as a
+ * pure, deterministic function so the formula itself is unit-testable in
+ * isolation, independent of any one LLM's arithmetic.
+ *
+ * Effort formula (planner.md): `effort = (sum of per-task size points) x
+ * (max model weight across the lane)`. Size points: S=1, M=2, L=4. Model
+ * weight: cheap=1, standard=10, premium=20.
+ */
+export const SIZE_POINTS = Object.freeze({ S: 1, M: 2, L: 4 });
+export const MODEL_WEIGHT = Object.freeze({ cheap: 1, standard: 10, premium: 20 });
+// planner.md: "the effort threshold constant (default 200)".
+export const DEFAULT_EFFORT_THRESHOLD = 200;
+
+/**
+ * Computes the effort-point total for a lane (or candidate sub-lane) of
+ * tasks, per the planner.md formula above.
+ * @param {Array<{size: 'S'|'M'|'L', model: 'cheap'|'standard'|'premium'}>} tasks
+ * @returns {number}
+ */
+export function computeLaneEffort(tasks) {
+    const sizeSum = tasks.reduce((acc, t) => acc + (SIZE_POINTS[t.size] || 0), 0);
+    const maxWeight = tasks.reduce((acc, t) => Math.max(acc, MODEL_WEIGHT[t.model] || 0), 0);
+    return sizeSum * maxWeight;
+}
+
+/**
+ * Splits a single lane's ORDERED task list (order already consistent with
+ * `blocks` edges, i.e. planner.md's `streakOrder`) into one or more
+ * contiguous sub-lanes so that, where possible, no sub-lane's effort exceeds
+ * `opts.threshold` (default DEFAULT_EFFORT_THRESHOLD) -- UNLESS honoring
+ * that would separate two members of the same mutex-resource group (e.g. the
+ * same submodule pointer, a shared version/manifest field, or a committed
+ * fixture file), in which case the mutex group is kept together in the SAME
+ * sub-lane even when that leaves it over threshold (planner.md: "NEVER
+ * separate mutex-resource members... even if honoring that leaves a streak
+ * over threshold").
+ *
+ * - Never reorders or drops a task: concatenating the returned sub-lanes,
+ *   in order, reproduces `tasks` exactly -- each sub-lane is a contiguous
+ *   prefix/suffix slice, never an arbitrary mid-lane cut (planner.md: "each
+ *   resulting streak is a contiguous prefix/suffix of the dependency
+ *   order").
+ * - A lane that already fits under the threshold is returned as a single
+ *   sub-lane (no gratuitous splitting).
+ * - `opts.mutexGroups`, if given, is an array of arrays of task ids that
+ *   contend for the same mutex resource; every id in the same group is
+ *   guaranteed to land in the same returned sub-lane.
+ *
+ * @param {Array<{id: string, size: 'S'|'M'|'L', model: 'cheap'|'standard'|'premium'}>} tasks
+ * @param {{ threshold?: number, mutexGroups?: string[][] }} [opts]
+ * @returns {Array<Array<object>>} sub-lanes, each a contiguous slice of `tasks`
+ */
+export function splitLaneByEffort(tasks, opts = {}) {
+    if (!Array.isArray(tasks) || tasks.length === 0) return [];
+    const threshold = opts.threshold ?? DEFAULT_EFFORT_THRESHOLD;
+
+    const mutexGroupOf = new Map();
+    (opts.mutexGroups || []).forEach((group, idx) => {
+        group.forEach((id) => mutexGroupOf.set(id, idx));
+    });
+    const sameMutexGroup = (a, b) =>
+        mutexGroupOf.has(a.id) && mutexGroupOf.get(a.id) === mutexGroupOf.get(b.id);
+
+    const sublanes = [];
+    let current = [];
+
+    for (const task of tasks) {
+        if (current.length === 0) {
+            current.push(task);
+            continue;
+        }
+        const prev = current[current.length - 1];
+        const candidate = [...current, task];
+        if (computeLaneEffort(candidate) > threshold && !sameMutexGroup(prev, task)) {
+            sublanes.push(current);
+            current = [task];
+        } else {
+            current = candidate;
+        }
+    }
+    sublanes.push(current);
+    return sublanes;
+}
+
+/**
  * Builds the self-contained doer dispatch prompt for one streak. Per-bead
  * feedback (apra-fleet-unw.16 Work item 5) is routed here ONLY for the
  * bead(s) this streak actually owns -- never a blanket broadcast of the
