@@ -351,3 +351,44 @@ describe('buildDevManifest bundles undici (regression for apra-fleet-eft.19)', (
     expect(keys.some(k => k.startsWith('undici-types/'))).toBe(false);
   });
 });
+
+// apra-fleet-eft.84 -- regression coverage for a live install crash: adding
+// scripts/agent-doc-partials/ (a subdirectory under scripts/, holding
+// non-.mjs partial template files) made buildDevManifest()'s scripts loop --
+// which used a bare fs.readdirSync() with no withFileTypes/isFile() check --
+// emit the directory itself as a manifest.scripts entry. Whatever later reads
+// that path as a file (dev-mode install's asset extraction) then crashed with
+// EISDIR. Uses the same real-filesystem pattern as the undici suite above,
+// since every other suite in this file drives buildDevManifest() through a
+// fully mocked node:fs that can't observe a real subdirectory under scripts/.
+describe('buildDevManifest scripts manifest excludes directories (regression for apra-fleet-eft.84)', () => {
+  afterEach(() => {
+    vi.doMock('node:fs');
+    vi.doMock('node:child_process');
+  });
+
+  it('only emits real files under scripts/, never a subdirectory path', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const real = await vi.importActual<typeof import('../src/cli/install.js')>('../src/cli/install.js');
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = path.resolve(testDir, '..');
+
+    const manifest = real._buildDevManifestForTest(projectRoot);
+
+    // Sanity: scripts/agent-doc-partials/ actually exists on disk in this
+    // repo, so this test is exercising the real regression, not a no-op.
+    expect(fsReal.existsSync(pathReal.join(projectRoot, 'scripts', 'agent-doc-partials'))).toBe(true);
+
+    expect('agent-doc-partials' in manifest.scripts).toBe(false);
+    for (const [key, relPath] of Object.entries(manifest.scripts)) {
+      const stat = fsReal.statSync(pathReal.join(projectRoot, relPath));
+      expect(stat.isFile(), `manifest.scripts['${key}'] (${relPath}) must be a file, not a directory`).toBe(true);
+    }
+  });
+});

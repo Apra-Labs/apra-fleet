@@ -230,9 +230,10 @@ function buildDevManifest(root: string): AssetManifest {
     hooks[entry] = `hooks/${entry}`;
   }
   const scripts: Record<string, string> = {};
-  for (const entry of fs.readdirSync(path.join(root, 'scripts'))) {
-    if (entry.endsWith('.mjs')) continue; // skip build scripts
-    scripts[entry] = `scripts/${entry}`;
+  for (const entry of fs.readdirSync(path.join(root, 'scripts'), { withFileTypes: true })) {
+    if (!entry.isFile()) continue; // skip subdirectories (e.g. agent-doc-partials/)
+    if (entry.name.endsWith('.mjs')) continue; // skip build scripts
+    scripts[entry.name] = `scripts/${entry.name}`;
   }
 
   // Source PM skills from apra-pm local package copy (dev mode), fall back to
