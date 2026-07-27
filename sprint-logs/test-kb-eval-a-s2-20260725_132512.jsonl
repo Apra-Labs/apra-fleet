@@ -26,3 +26,4 @@
 {"ts":"2026-07-25T13:47:00+0400","cycle":1,"phase":"Develop","label":"ready-streaks","model":"cheap","context":"","outTokens":4107,"costUsd":0.0205}
 {"ts":"2026-07-25T13:47:00+0400","cycle":1,"phase":"Develop","label":"doer-c1-i1: apra-fleet-le1.1.1","model":"standard","context":"tasks apra-fleet-le1.1.1","outTokens":23052,"costUsd":0.3458}
 {"ts":"2026-07-25T13:47:00+0400","cycle":1,"phase":"Develop","label":"reviewer-c1-i2: apra-fleet-le1.1.1","model":"standard","context":"reviewing tasks apra-fleet-le1.1.1","outTokens":9006,"costUsd":0.1351}
+{"ts":"2026-07-25T13:25:12Z","type":"meta","branch":"test/kb-eval-a-s2","startedAt":"20260725_132512","roots":["apra-fleet-le1.1"],"goal":"P1/P2","transcriptDir":"/home/kashyap/.claude/projects/-tmp-sprint-test-sandbox-a"}
