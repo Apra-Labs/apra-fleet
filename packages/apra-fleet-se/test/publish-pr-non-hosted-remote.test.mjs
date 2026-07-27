@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { isHostedGithubRemote } from '../fleet-sprint/runner.js';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
@@ -108,4 +109,84 @@ test('mock sprint: hosted GitHub origin remote still routes through PR creation 
             `Did not expect the target issue to be closed directly on the hosted-remote path, commandLog: ${JSON.stringify(run.commandLog)}`
         );
     });
+});
+
+// apra-fleet-eft.64.4: closure on the non-hosted path must stay gated on the
+// sprint's OWN final verdict, exactly like the hosted (`gh pr create`) path
+// already is -- a FAIL verdict must never be silently masked into a closed
+// canary just because the remote happened to be non-hosted. This pins the
+// `else` branch of the `if (finalVerdictResult.verdict === 'PASS')` gate
+// (runner.js's Publish PR step, ~line 7207): no `bd close` is dispatched and
+// the target/epic bead is left OPEN.
+test('mock sprint: non-hosted (file://) origin remote with a FAIL verdict leaves the target issue OPEN (closure not masked)', async () => {
+    await withScenarioMarkers('filehostedfail', async () => {
+        console.log('Running mock sprint scenario (non-hosted file:// origin remote, FAIL verdict)...');
+        const fileRemoteUrl = 'file:///tmp/apra-fleet-eft64-bare-mirror-fail.git';
+        const run = await runDevelopLoopScenario('filehostedfail', {
+            members: ['local'],
+            taskSpecs: [{ title: 'Task: eft.64.4 file:// remote + FAIL verdict fixture' }],
+            maxCycles: 1,
+            originUrl: fileRemoteUrl,
+            finalReviewHandler: async () => ({
+                content: [{ text: JSON.stringify({ verdict: 'FAIL', notes: 'Explicit test-injected FAIL for the eft.64.4 non-hosted-remote regression check.' }) }]
+            }),
+        });
+
+        check(!run.error, `Scenario against a non-hosted file:// remote with a FAIL verdict should not throw: ${run.error ? `${run.error.constructor.name}: ${run.error.message}` : ''}`);
+        check(
+            run.result && run.result.status === 'failed',
+            `Sprint should reach a 'failed' terminal state on a FAIL verdict, got: ${JSON.stringify(run.result)}`
+        );
+
+        // Still no `gh` dependency on this path at all, PASS or FAIL.
+        check(
+            !run.commandLog.some((c) => /^gh\s/.test(c)),
+            `Expected NO 'gh' command to be dispatched against a non-hosted remote, commandLog: ${JSON.stringify(run.commandLog)}`
+        );
+
+        // The key regression guard: no direct `bd close` on a FAIL verdict.
+        check(
+            !run.commandLog.includes(`bd close ${run.epicBeadId}`),
+            `Did not expect the target issue to be closed directly on a FAIL verdict, commandLog: ${JSON.stringify(run.commandLog)}`
+        );
+        const epicBead = run.finalBeadsById.get(run.epicBeadId);
+        check(
+            !!epicBead && epicBead.status !== 'closed',
+            `Expected the target/epic bead to remain OPEN (not closed) on a FAIL verdict, got: ${JSON.stringify(epicBead)}`
+        );
+
+        check(
+            run.logs.some((m) => m.includes('final verdict is FAIL') && m.includes('leaving target issue(s) open')),
+            `Expected a logged message noting closure was skipped for the FAIL verdict, logs: ${JSON.stringify(run.logs)}`
+        );
+    });
+});
+
+// -----------------------------------------------------------------------
+// isHostedGithubRemote() unit cases (apra-fleet-eft.64.4): pin the pure
+// classifier's four documented input classes directly, independent of the
+// full mock-sprint scenario harness above.
+// -----------------------------------------------------------------------
+test('isHostedGithubRemote: classifies a plain file:// bare mirror as non-hosted', () => {
+    assert.equal(isHostedGithubRemote('file:///tmp/some-bare-mirror.git'), false);
+});
+
+test('isHostedGithubRemote: classifies an https://github.com/... URL as hosted', () => {
+    assert.equal(isHostedGithubRemote('https://github.com/mock-org/mock-repo.git'), true);
+    // With an embedded username (https://user@github.com/...) too.
+    assert.equal(isHostedGithubRemote('https://x-access-token@github.com/mock-org/mock-repo.git'), true);
+});
+
+test('isHostedGithubRemote: classifies a git@github.com:... SSH-shorthand URL as hosted', () => {
+    assert.equal(isHostedGithubRemote('git@github.com:mock-org/mock-repo.git'), true);
+    assert.equal(isHostedGithubRemote('ssh://git@github.com/mock-org/mock-repo.git'), true);
+});
+
+test('isHostedGithubRemote: fails closed to non-hosted for an empty/unresolvable remote', () => {
+    assert.equal(isHostedGithubRemote(''), false);
+    assert.equal(isHostedGithubRemote(undefined), false);
+    assert.equal(isHostedGithubRemote(null), false);
+    // A resolvable-but-non-GitHub host (e.g. a self-hosted GitLab) is also
+    // non-hosted per this classifier's contract (gh has no hosting API for it).
+    assert.equal(isHostedGithubRemote('https://gitlab.example.com/mock-org/mock-repo.git'), false);
 });
