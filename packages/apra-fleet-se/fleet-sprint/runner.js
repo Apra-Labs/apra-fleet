@@ -3935,6 +3935,70 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
     return Promise.race([dispatchPromise, watchdogPromise]).finally(() => clearTimeout(timer));
 }
 
+// apra-fleet-9te.4.3: extracted, pure branch-selection decision for the
+// Ensure Sprint Branch phase (see the phase's own inline comments near
+// `phase('Ensure Sprint Branch')` below for the full auto-sprint-9 /
+// apra-fleet-9te.4.1 history) so this logic can be unit-tested directly
+// without spinning up a full mock sprint. Given the outcomes of the two
+// probes the phase already issues -- a `git fetch origin/<branch>` (soft-
+// failed) and, only when that fetch reports the ref is missing, a
+// `git rev-parse --verify --quiet refs/heads/<branch>` local-branch probe --
+// this decides what checkout command to run, or that the phase must abort
+// loudly instead of ever touching git. No I/O of its own; the caller still
+// owns issuing/awaiting the actual command() calls and logging.
+//
+// Returns one of:
+//   { action: 'abort', message } -- the branch fetch failed for a reason
+//     OTHER than "branch doesn't exist yet"; caller must throw and never
+//     attempt a checkout (a transient failure here must never be
+//     misdiagnosed as "new branch" and silently reset to base).
+//   { action: 'checkout', reused: true, command } -- reuse a pre-existing
+//     local-only branch as-is (plain `git checkout <branch>`, no reset),
+//     preserving any commits that only exist locally.
+//   { action: 'checkout', reused: false, command, startPoint } -- normal
+//     `git checkout -B <branch> <startPoint>`, where startPoint is
+//     `origin/<branch>` when the fetch succeeded (real pushed work exists)
+//     or `origin/<baseBranch>` when the branch is genuinely new.
+export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, branchFetchError, localBranchExists }) {
+    // A failed fetch is only safe to treat as "branch doesn't exist yet"
+    // when git says exactly that (`fatal: couldn't find remote ref
+    // <branch>`, exit 128) -- any other failure (network blip, auth token
+    // expiry, DNS hiccup) must NOT silently fall back to origin/<baseBranch>,
+    // or a transient error would trigger the exact destructive reset this
+    // fix exists to prevent, with nothing logged to explain why.
+    if (!branchFetchOk && !/couldn't find remote ref/i.test(branchFetchError || '')) {
+        return {
+            action: 'abort',
+            message:
+                `Ensure Sprint Branch: fetch of existing branch 'origin/${branch}' ` +
+                `failed for a reason other than "branch doesn't exist" (${branchFetchError || 'unknown error'}) -- ` +
+                `refusing to silently fall back to resetting to base, since the branch may actually exist with real ` +
+                `pushed work and this fetch failure could be transient. Investigate and retry.`,
+        };
+    }
+
+    const startPoint = branchFetchOk ? `origin/${branch}` : `origin/${baseBranch}`;
+    // Only relevant in the missing-remote-ref case -- if the fetch
+    // succeeded, origin/<branch> is authoritative and the normal
+    // reset-to-origin path below is correct and safe.
+    const reuseLocalBranch = !branchFetchOk && !!localBranchExists;
+
+    if (reuseLocalBranch) {
+        return {
+            action: 'checkout',
+            reused: true,
+            command: `git checkout ${branch}`,
+        };
+    }
+
+    return {
+        action: 'checkout',
+        reused: false,
+        command: `git checkout -B ${branch} ${startPoint}`,
+        startPoint,
+    };
+}
+
 // Mechanical migration to the WorkflowEngine's ES-module entry-point contract
 // (apra-fleet-unw.7): the engine now calls `main(context)` instead of
 // injecting bare globals into an AsyncFunction scope. This destructure is the
@@ -4739,25 +4803,6 @@ async function runSprintCycle(context) {
                 label: `Fetch existing '${validated.branch}' (if any) on member '${member}'`,
             }
         );
-        // A failed fetch is only safe to treat as "branch doesn't exist yet"
-        // when git says exactly that (`fatal: couldn't find remote ref
-        // <branch>`, exit 128) -- any other failure (network blip, auth
-        // token expiry, DNS hiccup) must NOT silently fall back to
-        // origin/<baseBranch>, or a transient error would trigger the exact
-        // destructive reset this fix exists to prevent, with nothing logged
-        // to explain why. Abort loudly instead so the operator can retry.
-        if (!branchFetch.ok && !/couldn't find remote ref/i.test(branchFetch.error || '')) {
-            throw new Error(
-                `Ensure Sprint Branch: fetch of existing branch 'origin/${validated.branch}' on member '${member}' ` +
-                `failed for a reason other than "branch doesn't exist" (${branchFetch.error || 'unknown error'}) -- ` +
-                `refusing to silently fall back to resetting to base, since the branch may actually exist with real ` +
-                `pushed work and this fetch failure could be transient. Investigate and retry.`
-            );
-        }
-        const startPoint = branchFetch.ok
-            ? `origin/${validated.branch}`
-            : `origin/${validated.baseBranch}`;
-
         // apra-fleet-9te.4.1: when the remote ref for <branch> is missing,
         // the naive fallback (`checkout -B <branch> origin/<baseBranch>`)
         // silently force-resets ANY pre-existing local <branch> to base's
@@ -4766,9 +4811,7 @@ async function runSprintCycle(context) {
         // tree disagreeing. Probe for a pre-existing local branch first (only
         // relevant in the missing-remote-ref case -- if the fetch succeeded,
         // origin/<branch> is authoritative and the normal reset-to-origin
-        // path below is correct and safe). If a local branch already exists,
-        // adopt it as-is (plain `checkout <branch>`, no reset) instead of
-        // resetting it to base.
+        // path below is correct and safe).
         let localBranchExists = false;
         if (!branchFetch.ok) {
             const localProbe = await command(
@@ -4781,21 +4824,35 @@ async function runSprintCycle(context) {
                 }
             );
             localBranchExists = localProbe.ok;
-            if (localBranchExists) {
-                log(
-                    `Ensure Sprint Branch: remote ref for '${validated.branch}' is missing on member '${member}' ` +
-                    `but a local branch of that name already exists -- reusing it as-is instead of resetting to ` +
-                    `'${startPoint}', to avoid discarding local-only commits.`
-                );
-            }
         }
-        const reuseLocalBranch = !branchFetch.ok && localBranchExists;
-        const checkoutCommand = reuseLocalBranch
-            ? `git checkout ${validated.branch}`
-            : `git checkout -B ${validated.branch} ${startPoint}`;
-        const checkoutLabel = reuseLocalBranch
+
+        // apra-fleet-9te.4.3: the fetch-outcome/local-probe-outcome ->
+        // checkout-command decision itself is now the pure, independently
+        // unit-tested decideEnsureBranchAction() helper defined above (see
+        // its own doc comment for the full case breakdown) -- this call
+        // site's only remaining job is turning that decision into the
+        // actual command()/log() dispatch.
+        const decision = decideEnsureBranchAction({
+            branch: validated.branch,
+            baseBranch: validated.baseBranch,
+            branchFetchOk: branchFetch.ok,
+            branchFetchError: branchFetch.error,
+            localBranchExists,
+        });
+        if (decision.action === 'abort') {
+            throw new Error(`${decision.message} (member '${member}')`);
+        }
+        if (decision.reused) {
+            log(
+                `Ensure Sprint Branch: remote ref for '${validated.branch}' is missing on member '${member}' ` +
+                `but a local branch of that name already exists -- reusing it as-is instead of resetting to base, ` +
+                `to avoid discarding local-only commits.`
+            );
+        }
+        const checkoutCommand = decision.command;
+        const checkoutLabel = decision.reused
             ? `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (remote ref missing)`
-            : `Ensure sprint branch '${validated.branch}' from '${startPoint}' on member '${member}'`;
+            : `Ensure sprint branch '${validated.branch}' from '${decision.startPoint}' on member '${member}'`;
 
         // Stabilization log Issue 11: any infrastructure-killed dispatch
         // (transport drop, timeout, stop_prompt) predictably leaves the
