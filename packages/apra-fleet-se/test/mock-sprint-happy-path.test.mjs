@@ -92,8 +92,21 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             run1.commandLog.slice(0, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
             `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(0, firstGitIdx))}`
         );
+        // apra-fleet-co4: the branch-fetch succeeded (this mock's git/gh
+        // interceptor succeeds by default), so Ensure Sprint Branch now also
+        // unconditionally probes for a pre-existing local branch (needed to
+        // decide whether a successful fetch is actually safe to reset over).
+        // This hermetic mock's rev-parse intercept (see
+        // helpers/mock-sprint-harness.mjs) answers deterministically from its
+        // per-member checkout-state model, which starts empty -- no local
+        // branch has been checked out yet at this point in the run -- so the
+        // probe reports "no local branch" and the tip-comparison merge-base
+        // probes are correctly skipped (only relevant once a local branch
+        // exists), falling straight through to the checkout. This adds
+        // exactly ONE new commandLog entry (the rev-parse) before the
+        // checkout that did not exist before this fix.
         check(
-            run1.commandLog.length >= firstGitIdx + 5 && /^git fetch /.test(run1.commandLog[firstGitIdx]),
+            run1.commandLog.length >= firstGitIdx + 4 && /^git fetch /.test(run1.commandLog[firstGitIdx]),
             `Expected first git commandLog entry to be the base-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx])}`
         );
         check(
@@ -101,8 +114,12 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             `Expected second git commandLog entry to be the sprint-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 1])}`
         );
         check(
-            run1.commandLog[firstGitIdx + 2] && run1.commandLog[firstGitIdx + 2].includes(`git checkout -B ${RUN1_BRANCH}`),
-            `Expected third git commandLog entry to be the sprint-branch checkout, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 2])}`
+            run1.commandLog[firstGitIdx + 2] && run1.commandLog[firstGitIdx + 2].includes(`git rev-parse --verify --quiet refs/heads/${RUN1_BRANCH}`),
+            `Expected third git commandLog entry to be the local-branch probe, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 2])}`
+        );
+        check(
+            run1.commandLog[firstGitIdx + 3] && run1.commandLog[firstGitIdx + 3].includes(`git checkout -B ${RUN1_BRANCH}`),
+            `Expected fourth git commandLog entry to be the sprint-branch checkout (no local branch existed yet, so no tip-comparison probes), got: ${JSON.stringify(run1.commandLog[firstGitIdx + 3])}`
         );
         // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
         // `git remote get-url origin` (isHostedGithubRemote()) BEFORE

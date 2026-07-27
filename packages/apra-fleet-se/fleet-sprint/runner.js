@@ -3959,7 +3959,29 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
 //     `git checkout -B <branch> <startPoint>`, where startPoint is
 //     `origin/<branch>` when the fetch succeeded (real pushed work exists)
 //     or `origin/<baseBranch>` when the branch is genuinely new.
-export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, branchFetchError, localBranchExists }) {
+//
+// apra-fleet-co4: when the fetch of origin/<branch> SUCCEEDS and a local
+// branch of that name already exists, the two tips can still disagree --
+// the local branch may hold commits origin doesn't (a doer committed but
+// its own push failed, or a sprint was killed/restarted before the
+// orchestrator's own push bracket ran for that commit). The prior version
+// of this function treated a successful fetch as unconditionally
+// authoritative and always reset to origin/<branch>, silently discarding
+// those local-only commits with no stash, no warning -- a confirmed live
+// data-loss incident (commit a919b53a / apra-fleet-eft.68.1). The caller
+// now also passes `localTipStatus`, the result of comparing the two tips
+// via `git merge-base --is-ancestor` in both directions, whenever the
+// fetch succeeded and a local branch exists:
+//   'behind-or-equal' -- local has nothing origin doesn't; safe to reset.
+//   'ahead'            -- local has commits origin doesn't, and origin has
+//                          nothing local doesn't (a clean fast-forward);
+//                          reuse the local branch as-is, exactly like the
+//                          missing-remote-ref case, so those commits
+//                          survive.
+//   'diverged'          -- neither tip is an ancestor of the other; abort
+//                          loudly rather than ever attempt an automatic
+//                          merge/rebase -- a human must decide.
+export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, branchFetchError, localBranchExists, localTipStatus }) {
     // A failed fetch is only safe to treat as "branch doesn't exist yet"
     // when git says exactly that (`fatal: couldn't find remote ref
     // <branch>`, exit 128) -- any other failure (network blip, auth token
@@ -3977,11 +3999,31 @@ export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, br
         };
     }
 
+    // apra-fleet-co4: the fetch succeeded (origin/<branch> exists) AND a
+    // local branch exists AND its tip has diverged from origin's in a way
+    // that is not a clean fast-forward -- never attempt an automatic
+    // merge/rebase, abort loudly and let a human investigate.
+    if (branchFetchOk && localBranchExists && localTipStatus === 'diverged') {
+        return {
+            action: 'abort',
+            message:
+                `Ensure Sprint Branch: local branch '${branch}' has diverged from 'origin/${branch}' ` +
+                `(neither is an ancestor of the other) -- refusing to reset or auto-merge, since either direction ` +
+                `could silently discard real commits. A human needs to investigate and reconcile the two branches ` +
+                `manually before this sprint can safely proceed.`,
+        };
+    }
+
     const startPoint = branchFetchOk ? `origin/${branch}` : `origin/${baseBranch}`;
-    // Only relevant in the missing-remote-ref case -- if the fetch
-    // succeeded, origin/<branch> is authoritative and the normal
-    // reset-to-origin path below is correct and safe.
-    const reuseLocalBranch = !branchFetchOk && !!localBranchExists;
+    // Reuse the local branch as-is (no reset) whenever:
+    //  - the remote ref is missing entirely (the pre-existing
+    //    apra-fleet-9te.4.1 case), or
+    //  - the fetch succeeded but the local branch is strictly ahead of
+    //    origin/<branch> (apra-fleet-co4) -- resetting would discard
+    //    committed-but-unpushed local work.
+    const reuseLocalBranch =
+        (!branchFetchOk && !!localBranchExists) ||
+        (branchFetchOk && !!localBranchExists && localTipStatus === 'ahead');
 
     if (reuseLocalBranch) {
         return {
@@ -4808,50 +4850,97 @@ async function runSprintCycle(context) {
         // silently force-resets ANY pre-existing local <branch> to base's
         // tip -- discarding commits from a prior --max-cycles-limited cycle
         // that closed beads but never got pushed, leaving beads and the git
-        // tree disagreeing. Probe for a pre-existing local branch first (only
-        // relevant in the missing-remote-ref case -- if the fetch succeeded,
-        // origin/<branch> is authoritative and the normal reset-to-origin
-        // path below is correct and safe).
-        let localBranchExists = false;
-        if (!branchFetch.ok) {
-            const localProbe = await command(
-                `git rev-parse --verify --quiet refs/heads/${validated.branch}`,
+        // tree disagreeing. Probe for a pre-existing local branch, both when
+        // the remote ref is missing (needed to decide whether to reuse it as
+        // the missing-remote-ref case) and, since apra-fleet-co4, also when
+        // the fetch succeeded -- a successful fetch alone does NOT make
+        // origin/<branch> authoritative if the local branch has committed
+        // work origin does not (see the tip-comparison probe just below).
+        const localProbe = await command(
+            `git rev-parse --verify --quiet refs/heads/${validated.branch}`,
+            {
+                member_name: member,
+                silent: true,
+                failSoft: true,
+                label: `Probe for pre-existing local branch '${validated.branch}' on member '${member}'`,
+            }
+        );
+        const localBranchExists = localProbe.ok;
+
+        // apra-fleet-co4: when both origin/<branch> and a local <branch>
+        // exist, compare their tips via two `git merge-base --is-ancestor`
+        // checks (one each direction) so decideEnsureBranchAction() never
+        // has to blindly trust that a successful fetch means "safe to
+        // reset" -- see that function's own doc comment for the full
+        // ahead/behind/diverged case breakdown this feeds.
+        let localTipStatus;
+        if (branchFetch.ok && localBranchExists) {
+            const localIsAncestorOfRemote = await command(
+                `git merge-base --is-ancestor ${validated.branch} origin/${validated.branch}`,
                 {
                     member_name: member,
                     silent: true,
                     failSoft: true,
-                    label: `Probe for pre-existing local branch '${validated.branch}' on member '${member}'`,
+                    label: `Check whether local '${validated.branch}' is an ancestor of 'origin/${validated.branch}' on member '${member}'`,
                 }
             );
-            localBranchExists = localProbe.ok;
+            const remoteIsAncestorOfLocal = await command(
+                `git merge-base --is-ancestor origin/${validated.branch} ${validated.branch}`,
+                {
+                    member_name: member,
+                    silent: true,
+                    failSoft: true,
+                    label: `Check whether 'origin/${validated.branch}' is an ancestor of local '${validated.branch}' on member '${member}'`,
+                }
+            );
+            if (localIsAncestorOfRemote.ok && remoteIsAncestorOfLocal.ok) {
+                localTipStatus = 'behind-or-equal'; // tips are equal
+            } else if (localIsAncestorOfRemote.ok) {
+                localTipStatus = 'behind-or-equal'; // local is a strict ancestor of origin
+            } else if (remoteIsAncestorOfLocal.ok) {
+                localTipStatus = 'ahead';
+            } else {
+                localTipStatus = 'diverged';
+            }
         }
 
-        // apra-fleet-9te.4.3: the fetch-outcome/local-probe-outcome ->
-        // checkout-command decision itself is now the pure, independently
-        // unit-tested decideEnsureBranchAction() helper defined above (see
-        // its own doc comment for the full case breakdown) -- this call
-        // site's only remaining job is turning that decision into the
-        // actual command()/log() dispatch.
+        // apra-fleet-9te.4.3 / apra-fleet-co4: the fetch-outcome/local-probe-
+        // outcome/tip-comparison -> checkout-command decision itself is now
+        // the pure, independently unit-tested decideEnsureBranchAction()
+        // helper defined above (see its own doc comment for the full case
+        // breakdown) -- this call site's only remaining job is turning that
+        // decision into the actual command()/log() dispatch.
         const decision = decideEnsureBranchAction({
             branch: validated.branch,
             baseBranch: validated.baseBranch,
             branchFetchOk: branchFetch.ok,
             branchFetchError: branchFetch.error,
             localBranchExists,
+            localTipStatus,
         });
         if (decision.action === 'abort') {
             throw new Error(`${decision.message} (member '${member}')`);
         }
         if (decision.reused) {
-            log(
-                `Ensure Sprint Branch: remote ref for '${validated.branch}' is missing on member '${member}' ` +
-                `but a local branch of that name already exists -- reusing it as-is instead of resetting to base, ` +
-                `to avoid discarding local-only commits.`
-            );
+            if (branchFetch.ok) {
+                log(
+                    `Ensure Sprint Branch: local branch '${validated.branch}' on member '${member}' is AHEAD of ` +
+                    `'origin/${validated.branch}' (has committed, unpushed work) -- reusing it as-is instead of ` +
+                    `resetting to origin, to avoid discarding local-only commits.`
+                );
+            } else {
+                log(
+                    `Ensure Sprint Branch: remote ref for '${validated.branch}' is missing on member '${member}' ` +
+                    `but a local branch of that name already exists -- reusing it as-is instead of resetting to base, ` +
+                    `to avoid discarding local-only commits.`
+                );
+            }
         }
         const checkoutCommand = decision.command;
         const checkoutLabel = decision.reused
-            ? `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (remote ref missing)`
+            ? (branchFetch.ok
+                ? `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (local ahead of origin)`
+                : `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (remote ref missing)`)
             : `Ensure sprint branch '${validated.branch}' from '${decision.startPoint}' on member '${member}'`;
 
         // Stabilization log Issue 11: any infrastructure-killed dispatch

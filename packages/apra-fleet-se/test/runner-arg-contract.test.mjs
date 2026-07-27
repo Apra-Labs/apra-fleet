@@ -461,7 +461,20 @@ describe('runner.js mock-level execution', () => {
         }
         assert.match(spy.commandLog[firstGitIdx], /^git fetch origin develop/);
         assert.match(spy.commandLog[firstGitIdx + 1], /^git fetch origin auto-sprint\/reach-test\b/);
-        assert.ok(spy.commandLog[firstGitIdx + 2].includes('git checkout -B auto-sprint/reach-test origin/auto-sprint/reach-test'));
+        // apra-fleet-co4: the branch-fetch succeeded (this spy's git/gh
+        // fallback succeeds for any command by default, including the
+        // rev-parse local-branch probe), so Ensure Sprint Branch now also
+        // compares the local branch's tip against origin/<branch> via two
+        // `git merge-base --is-ancestor` checks before ever resetting it --
+        // three extra commandLog entries (the rev-parse probe + both
+        // merge-base checks) land between the branch fetch and the checkout.
+        // Both merge-base checks succeed here too (mocked), so the tip
+        // status resolves to 'behind-or-equal' and the normal checkout -B
+        // path is unchanged.
+        assert.ok(spy.commandLog[firstGitIdx + 2].includes('git rev-parse --verify --quiet refs/heads/auto-sprint/reach-test'));
+        assert.ok(spy.commandLog[firstGitIdx + 3].includes('git merge-base --is-ancestor'));
+        assert.ok(spy.commandLog[firstGitIdx + 4].includes('git merge-base --is-ancestor'));
+        assert.ok(spy.commandLog[firstGitIdx + 5].includes('git checkout -B auto-sprint/reach-test origin/auto-sprint/reach-test'));
         // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
         // `git remote get-url origin` (isHostedGithubRemote()) between the
         // push and `gh pr create` -- this spy answers it with a hosted

@@ -103,22 +103,93 @@ test('decideEnsureBranchAction: fetch fails for a non-missing-ref reason -> abor
     check(decision.command === undefined, `Expected no checkout command to be proposed on abort, got: ${JSON.stringify(decision)}`);
 });
 
-test('decideEnsureBranchAction: successful branch fetch resets to origin/<branch> regardless of a stale local probe value (sanity)', () => {
-    // When the fetch succeeds, origin/<branch> is authoritative -- the local
-    // probe is never even consulted (runner.js only runs it when the fetch
-    // failed), so a truthy localBranchExists here must be ignored.
+test('decideEnsureBranchAction: successful branch fetch + local behind-or-equal origin -> resets to origin/<branch> (normal/expected case)', () => {
     const decision = decideEnsureBranchAction({
         branch: 'auto-sprint/mock-existing-remote',
         baseBranch: 'main',
         branchFetchOk: true,
         branchFetchError: null,
         localBranchExists: true,
+        localTipStatus: 'behind-or-equal',
     });
 
     check(decision.action === 'checkout', `Expected a checkout decision, got: ${JSON.stringify(decision)}`);
-    check(decision.reused === false, `Expected the authoritative-origin path (not local reuse) when the fetch succeeded, got: ${JSON.stringify(decision)}`);
+    check(decision.reused === false, `Expected the authoritative-origin path (not local reuse) when local is behind-or-equal, got: ${JSON.stringify(decision)}`);
     check(
         decision.command === 'git checkout -B auto-sprint/mock-existing-remote origin/auto-sprint/mock-existing-remote',
         `Expected checkout -B from origin/<branch>, got: ${decision.command}`
     );
+});
+
+test('decideEnsureBranchAction: successful branch fetch + no local branch -> resets to origin/<branch> (sanity, unchanged behavior)', () => {
+    // When there is no local branch at all, tip comparison is never run by
+    // the caller (localTipStatus stays undefined) -- must still take the
+    // normal reset path, not be misread as "diverged" or "ahead".
+    const decision = decideEnsureBranchAction({
+        branch: 'auto-sprint/mock-existing-remote',
+        baseBranch: 'main',
+        branchFetchOk: true,
+        branchFetchError: null,
+        localBranchExists: false,
+        localTipStatus: undefined,
+    });
+
+    check(decision.action === 'checkout', `Expected a checkout decision, got: ${JSON.stringify(decision)}`);
+    check(decision.reused === false, `Expected the authoritative-origin path (no local branch to preserve), got: ${JSON.stringify(decision)}`);
+    check(
+        decision.command === 'git checkout -B auto-sprint/mock-existing-remote origin/auto-sprint/mock-existing-remote',
+        `Expected checkout -B from origin/<branch>, got: ${decision.command}`
+    );
+});
+
+// =============================================================================
+// apra-fleet-co4 (CONFIRMED LIVE DATA LOSS, 2026-07-27): apra-fleet-9te.4.1's
+// fix only covered "origin ref for <branch> is entirely missing" -- it did
+// NOT cover "origin ref exists, but the local checkout has additional
+// commits ahead of it that were never pushed" (a doer commit whose own push
+// failed, or a sprint killed/restarted before the orchestrator's push
+// bracket ran for that commit). The prior version of this function treated
+// any successful fetch as unconditionally authoritative and always issued
+// `git checkout -B <branch> origin/<branch>`, silently discarding those
+// local-only commits -- exactly what destroyed commit a919b53a
+// (apra-fleet-eft.68.1) on member fleet-mac. These are the regression cases
+// for that fix.
+// =============================================================================
+
+test('decideEnsureBranchAction: successful branch fetch + local branch AHEAD of origin -> reuse local as-is (commit-preserving, the eft.68.1 incident scenario)', () => {
+    const decision = decideEnsureBranchAction({
+        branch: 'feat/sprint-service-1',
+        baseBranch: 'main',
+        branchFetchOk: true,
+        branchFetchError: null,
+        localBranchExists: true,
+        localTipStatus: 'ahead',
+    });
+
+    check(decision.action === 'checkout', `Expected a checkout decision, got: ${JSON.stringify(decision)}`);
+    check(decision.reused === true, `Expected the local branch to be marked as reused, got: ${JSON.stringify(decision)}`);
+    check(
+        decision.command === 'git checkout feat/sprint-service-1',
+        `Expected a plain, non-destructive checkout (no -B, no reset start-point) so the unpushed local commits survive, got: ${decision.command}`
+    );
+    check(!/-B\b/.test(decision.command), `Expected no -B reset flag in the reuse-local checkout command, got: ${decision.command}`);
+    check(!decision.command.includes('origin/'), `Expected the reuse-local checkout to never reference an origin start-point, got: ${decision.command}`);
+});
+
+test('decideEnsureBranchAction: successful branch fetch + local branch DIVERGED from origin -> aborts loudly, never attempts an automatic merge', () => {
+    const decision = decideEnsureBranchAction({
+        branch: 'feat/sprint-service-1',
+        baseBranch: 'main',
+        branchFetchOk: true,
+        branchFetchError: null,
+        localBranchExists: true,
+        localTipStatus: 'diverged',
+    });
+
+    check(decision.action === 'abort', `Expected an abort decision for a diverged local branch, got: ${JSON.stringify(decision)}`);
+    check(
+        decision.message.includes('diverged'),
+        `Expected the diverged-branch discrimination message, got: ${decision.message}`
+    );
+    check(decision.command === undefined, `Expected no checkout command to be proposed on abort, got: ${JSON.stringify(decision)}`);
 });
