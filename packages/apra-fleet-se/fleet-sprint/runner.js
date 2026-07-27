@@ -4520,7 +4520,23 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            log(`Reviewer: ${JSON.stringify(verdict)}`);
+            // apra-fleet-eft.69.1: deliberately NO separate log() dump of
+            // `verdict` here. Every path above that reaches this line
+            // already produced an activity row that shows the identical
+            // content: the schema-validated success path emits it verbatim
+            // as agent()'s own `output` (JSON.stringify'd) on the standard
+            // AGENT row (the same generic row every other dispatch renders
+            // through -- see src/viewer/index.mjs), and the dispatch-failure
+            // fallback above is likewise already visible on that same
+            // dispatch's (failed) activity row plus the `log()` call right
+            // next to where `verdict` was constructed. A second log() line
+            // re-printing the exact same JSON produced a duplicate row with
+            // no distinct purpose (apra-fleet-eft.69 bug item 1) -- removed
+            // here and at every other post-dispatch site in this file
+            // (Plan Reviewer, Streak Assignment, Doer, Deployer, Integ Test
+            // Runner, Final Verdict, Harvester) for the identical reason,
+            // so every agent dispatch renders uniformly through its one
+            // AGENT row (bug item 2).
 
             if (verdict.dispatchFailed) {
                 if (reviewAttempt < 2) {
@@ -5392,7 +5408,17 @@ async function runSprintCycle(context) {
             if (plannerErr) {
                 throw plannerErr;
             }
-            log(`Planner: ${plannerRes}`);
+            // apra-fleet-eft.69.1: deliberately NO separate log() dump of
+            // `plannerRes` here -- this is the exact duplicate-row bug the
+            // user reported (apra-fleet-eft.69 bug item 1, "a second row
+            // like 'Planner: response from ...' which is basically a repeat
+            // print of the AGENT row's content"). dispatchPlanner()'s own
+            // agent() call already emits this same text as that dispatch's
+            // `output`, rendered via the standard AGENT activity row (with
+            // its own collapsible body / 'more...' control) -- see
+            // src/viewer/index.mjs. See the Reviewer dispatch site's
+            // comment (~line 4523) for the same reasoning applied uniformly
+            // across every other role's dispatch in this file.
 
             let verdict;
             // Stabilization log Issue 25: same-session turn-exhaustion resume
@@ -5462,7 +5488,8 @@ async function runSprintCycle(context) {
                 }
             }
             lastVerdict = verdict;
-            log(`Plan Reviewer: ${JSON.stringify(verdict)}`);
+            // apra-fleet-eft.69.1: no duplicate log() dump -- see the
+            // Reviewer dispatch site above for why.
             // apra-fleet-eft.71.2: record this round's verdict for THIS cycle
             // AFTER using (not before) the accumulated prior rounds above, so
             // round N's dispatch never sees its own not-yet-returned verdict.
@@ -5763,7 +5790,14 @@ async function runSprintCycle(context) {
                         model: FIXED_ROLE_TIER.streakAssignment,
                     }
                 );
-                log(`Streak Assignment: ${JSON.stringify(streakCandidate)}`);
+                // apra-fleet-eft.69.1: no duplicate log() dump -- see the
+                // Reviewer dispatch site's comment (~line 4523) for why.
+                // This is also what previously made Streak Assignment LOOK
+                // like it rendered differently from every other agent
+                // dispatch (bug item 2): the standard AGENT row (label
+                // 'Streak Assignment', above) already renders through the
+                // exact same generic path as Planner/Reviewer/Doer/etc; the
+                // extra raw-JSON log() line just made it visually noisier.
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
@@ -5796,7 +5830,8 @@ async function runSprintCycle(context) {
                             model: FIXED_ROLE_TIER.streakAssignment,
                         }
                     );
-                    log(`Streak Assignment (semantic repair): ${JSON.stringify(streakCandidate)}`);
+                    // apra-fleet-eft.69.1: no duplicate log() dump -- see
+                    // the Reviewer dispatch site's comment (~line 4523).
                     ({ streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady));
                 } catch (repairErr) {
                     if (repairErr instanceof AgentOutputError || repairErr instanceof AgentDispatchError || repairErr instanceof FleetTransportError) {
@@ -6116,7 +6151,11 @@ async function runSprintCycle(context) {
                     throw dispatchError;
                 }
 
-                log(`Doer [${actualBeadIds.join(', ')}] on [${doerMember}]: ${JSON.stringify(report)}`);
+                // apra-fleet-eft.69.1: no duplicate log() dump of `report`
+                // here -- see the Reviewer dispatch site's comment
+                // (~line 4523). The doer streak's own AGENT row already
+                // carries this verbatim as its `output` (its title already
+                // includes the bead ids: label `Streak [${actualBeadIds}]`).
 
                 // CRITICAL (Work item 3): never trust the doer's own
                 // success claim -- verify via `bd show` that the assigned
@@ -6397,7 +6436,8 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            log(`Deployer: ${JSON.stringify(deployResult)}`);
+            // apra-fleet-eft.69.1: no duplicate log() dump -- see the
+            // Reviewer dispatch site's comment (~line 4523).
             deployedThisCycle = deployResult.deployed === true;
             if (!deployedThisCycle) {
                 deployFailures.push({ cycle, notes: deployResult.notes });
@@ -6583,7 +6623,8 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            log(`Integ Test Runner: ${JSON.stringify(integResult)}`);
+            // apra-fleet-eft.69.1: no duplicate log() dump -- see the
+            // Reviewer dispatch site's comment (~line 4523).
             // apra-fleet-eft.55.2: before trusting `passed` at all, verify
             // part-2 (smoke test) evidence actually came from THIS cycle's
             // deploy-verified SHA -- see validatePart2Evidence's doc
@@ -6895,7 +6936,11 @@ async function runSprintCycle(context) {
             }
         }
     }
-    log(`Final Verdict: ${JSON.stringify(finalVerdictResult)}`);
+    // apra-fleet-eft.69.1: no duplicate log() dump -- see the Reviewer
+    // dispatch site's comment (~line 4523). `finalVerdictResult.verdict`
+    // also surfaces via the generic, workflow-agnostic Result strip in the
+    // dashboard header (state.result -- see src/viewer/index.mjs), a second
+    // independent reason a raw JSON re-print here would be redundant.
 
     // Stabilization log iteration 5: persist a FAIL's actionable findings
     // to BEADS -- the only artifact the next sprint's planner reads (notes
@@ -7030,7 +7075,8 @@ async function runSprintCycle(context) {
                 throw err;
             }
         }
-        log(`Harvester: ${JSON.stringify(harvesterResult)}`);
+        // apra-fleet-eft.69.1: no duplicate log() dump -- see the Reviewer
+        // dispatch site's comment (~line 4523).
         if (harvesterResult.status !== 'OK') {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
         }

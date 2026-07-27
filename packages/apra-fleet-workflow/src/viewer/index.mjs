@@ -491,6 +491,45 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                         
                         let childrenHtml = '';
                         if (!act.isRunning) {
+                            // apra-fleet-eft.69.1: THE UNIFORM COMMAND/AGENT
+                            // ROW-BODY RULE (bug item 3 -- "some command rows
+                            // carry details in the body while many others
+                            // show only a title; make the rule uniform and
+                            // documented"). There is exactly ONE rule, and it
+                            // is keyed ONLY on the two generic fields every
+                            // completed activity may carry -- never on
+                            // act.type, act.label, act.member, or any
+                            // role/phase name (the HARD CONSTRAINT from
+                            // apra-fleet-eft.69: no auto-sprint-specific
+                            // special-casing in viewer code):
+                            //   1. hasField('error') true -> render the error
+                            //      block (plus Output: underneath, if any).
+                            //   2. else hasField('output') true -> render the
+                            //      output block.
+                            //   3. else -> no body at all; the row is title
+                            //      only.
+                            // hasField() below is true when the field is
+                            // either a non-empty inline string OR carries the
+                            // <field>Truncated/<field>ByteLength markers
+                            // (lean-state.mjs / command-output-cap.mjs). This
+                            // applies IDENTICALLY to every activity type --
+                            // 'agent', 'command', 'transform', or any future
+                            // generic type -- so a command that legitimately
+                            // produced no output and no error (e.g. a plain
+                            // 'git add', a successful 'bd update --claim')
+                            // showing only its title is the CORRECT,
+                            // consistent result of this one rule applied to
+                            // different data, not a special case or a bug --
+                            // the same command with real output/error would
+                            // render a body exactly the same way an agent
+                            // dispatch does. (The full invoked command text
+                            // itself is NOT part of this rule -- it lives in
+                            // the row's title/label, capped to 60 chars at
+                            // dispatch time; the runner.js command() caller
+                            // is responsible for choosing a diagnostic label
+                            // when the command text alone would not be, same
+                            // as agent()'s label.)
+                            //
                             // apra-fleet-eft.38 (reopened): a REAL capped
                             // activity ships NO inline text field at all --
                             // only the markers (\${field}Truncated + the TRUE
