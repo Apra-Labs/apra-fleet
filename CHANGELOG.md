@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-repo code-intelligence opt-out
+
+Repos can now opt out of code-intelligence tooling entirely by writing
+`{ "enabled": false }` to `.apra-fleet/code-intel.json` at the repo root.
+When disabled, all seven `code_*` MCP tools (`code_graph`, `code_impact`,
+`code_query`, `code_context`, `code_map`, `code_flow`, `code_tests`) return
+a structured `{ disabled: true, reason: 'code_intelligence_disabled' }`
+response instead of attempting to resolve a provider, and the installer
+skips both writing the global provider config and appending the
+code-intelligence routing instruction to `~/.claude/CLAUDE.md` for that
+repo. Repos without the config file, or with a config file that omits
+`enabled`, continue to default to enabled -- the opt-out is strictly
+additive and backward-compatible. `getProvider()` now takes the repo path
+explicitly (falling back to the process working directory) so the opt-out
+check and provider resolution are both evaluated against the repo a given
+tool call is actually for, which matters now that a single fleet server
+process can serve `code_*` calls for more than one repo. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md#per-repo-opt-out)
+for the full design.
+
+All acceptance criteria for this feature and its three sub-tasks are
+satisfied and reviewer-approved. Key implementation points verified:
+
+1. `src/services/knowledge/repo-config.ts`: clean new module with
+   `readRepoCodeIntelConfig()`, `writeRepoCodeIntelConfig()`, and
+   `isCodeIntelEnabled()`. Missing config correctly defaults to
+   `enabled=true` (backward compat). Only explicit `enabled:false` disables.
+2. `src/tools/code-intelligence.ts`: `getProvider()` signature extended to
+   accept a repo path (default `process.cwd()` for backward compat).
+   `disabledProvider()` returns a structured disabled result for all seven
+   tool methods -- not an error throw.
+3. `src/index.ts`: all seven `code_*` tool handlers correctly pass
+   `input.repo ?? process.cwd()` into `getProvider()`.
+4. `src/cli/install.ts`: the provider-config-and-routing-instruction setup
+   step checks `isCodeIntelEnabled(repoCwd)` and skips both the provider
+   config write and the `CLAUDE.md` routing instruction when disabled.
+5. Tests: real-filesystem config-reader tests, disabled-message and
+   repo-routing regression tests, and install skip/run/backward-compat
+   tests. Full suite (2327 tests across 158 files) passes; build is clean.
+
+No security issues, no regressions, no hygiene concerns identified in
+review.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 1
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |      3,146 |   n/a |   $0.000 |   $0.047 |
+| reviewer   |          0 |     10,800 |   n/a |   $0.000 |   $0.162 |
+| overhead   |      7,150 |     47,294 | +561% |   $0.121 |   $0.326 |
+| TOTAL      |      7,150 |     61,240 | +757% |   $0.121 |   $0.535 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the
