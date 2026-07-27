@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkHarvesterContract, runOnce, runDevelopLoopScenario, withScenarioMarkers, REQUIRED_AGENT_TYPES, uniqueMockBranch } from './helpers/mock-sprint-harness.mjs';
+import { checkHarvesterContract, runOnce, runDevelopLoopScenario, withScenarioMarkers, REQUIRED_AGENT_TYPES, uniqueMockBranch, mockCmdResult, isSpawnFailure } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -12,6 +12,31 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // whatever runOnce('run1') actually used.
 const RUN1_BRANCH = uniqueMockBranch('run1');
 const RUN1_BRANCH_RE_SAFE = RUN1_BRANCH.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+// apra-fleet-1cb.2: direct regression assertion for the isError/nonzero-exit
+// contract used by helpers/mock-sprint-harness.mjs's command() dispatch
+// (formerly test/advanced-mock-runner-test.mjs, split into this file --
+// apra-fleet-fih.1) -- protects against mockCmdResult()/isSpawnFailure()
+// silently drifting back to conflating "shell exited nonzero" with "MCP
+// dispatch failed" (the bug apra-fleet-1cb.1 fixed). Exercises the two
+// functions directly rather than a full mock sprint, so it stays fast and
+// pinpoints the exact function at fault on a regression.
+test('mockCmdResult/isSpawnFailure: nonzero exit is non-error data, spawn failure is isError:true', () => {
+    // A nonzero shell exit (e.g. a `bd` command failing on bad input) is
+    // normal data, matching src/tools/execute-command.ts -- never isError.
+    const nonzeroExit = mockCmdResult(1, '', 'bead already closed');
+    assert.strictEqual(nonzeroExit.isError, undefined);
+    assert.strictEqual(nonzeroExit.structuredContent.exitCode, 1);
+    assert.match(nonzeroExit.content[0].text, /^Exit code: 1/);
+
+    // A genuine spawn/transport failure (process never ran) IS isError:true
+    // in the command() dispatch logic -- isSpawnFailure() is what
+    // distinguishes that case from an ordinary nonzero exit code.
+    assert.strictEqual(isSpawnFailure({ code: undefined }), true);
+    assert.strictEqual(isSpawnFailure({ code: 'ENOENT' }), true);
+    assert.strictEqual(isSpawnFailure({ code: 1 }), false);
+    assert.strictEqual(isSpawnFailure({ code: 127 }), false);
+});
 
 // apra-fleet-fih.1: happy-path + determinism scenarios (run1, run2), split
 // out of the former monolithic advanced-mock-runner-test.mjs. run1/run2 are

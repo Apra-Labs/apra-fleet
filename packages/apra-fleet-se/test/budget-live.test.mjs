@@ -60,6 +60,29 @@ function isSpawnFailure(err) {
     return err.code === undefined || err.code === 'ENOENT';
 }
 
+// apra-fleet-1cb.2: direct regression assertion for the isError/nonzero-exit
+// contract above -- protects against mockCmdResult()/isSpawnFailure()
+// silently drifting back to conflating "shell exited nonzero" with "MCP
+// dispatch failed" (the bug apra-fleet-1cb.1 fixed here). Exercises the two
+// functions directly rather than a full mock sprint, so it stays fast and
+// pinpoints the exact function at fault on a regression.
+test('mockCmdResult/isSpawnFailure: nonzero exit is non-error data, spawn failure is isError:true', () => {
+    // A nonzero shell exit (e.g. a `bd` command failing on bad input) is
+    // normal data, matching src/tools/execute-command.ts -- never isError.
+    const nonzeroExit = mockCmdResult(1, '', 'bead already closed');
+    assert.strictEqual(nonzeroExit.isError, undefined);
+    assert.strictEqual(nonzeroExit.structuredContent.exitCode, 1);
+    assert.match(nonzeroExit.content[0].text, /^Exit code: 1/);
+
+    // A genuine spawn/transport failure (process never ran) IS isError:true
+    // in the command() dispatch logic below -- isSpawnFailure() is what
+    // distinguishes that case from an ordinary nonzero exit code.
+    assert.strictEqual(isSpawnFailure({ code: undefined }), true);
+    assert.strictEqual(isSpawnFailure({ code: 'ENOENT' }), true);
+    assert.strictEqual(isSpawnFailure({ code: 1 }), false);
+    assert.strictEqual(isSpawnFailure({ code: 127 }), false);
+});
+
 // A fixed usage shape dispatched on every mock LLM call, so every priced
 // activity contributes a known, nonzero cost regardless of which model it
 // was priced against.
