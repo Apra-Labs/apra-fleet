@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- kb_harvest auto-harvest is now repo-scoped, not server-cwd-scoped
+
+`kb_harvest` -- the only fully automatic KB writer, fired after every
+`execute_prompt` completion -- previously reached the database through a
+second, parallel provider accessor that memoised a single global instance
+keyed off the fleet server's own working directory. In practice this meant
+every member's harvested learnings, from every repo, landed in whichever
+repo the fleet server process happened to be started in, regardless of which
+repo the member was actually working in. `execute_prompt` now passes the
+dispatched member's own working folder through to the harvest call, and the
+harvest tool routes through the same single accessor every other KB tool
+uses, which caches providers per resolved repo slug instead of one global
+slot. The parallel accessor was deleted outright rather than patched, so
+there is now exactly one route from a KB tool to a provider. A related
+slug-resolution bug that collapsed plain-HTTPS git remotes (those with no
+userinfo prefix) to the wrong fallback slug was fixed in the same pass, so
+HTTPS and SSH remotes for the same repo now resolve to the same KB.
+
+This closes local-member cross-repo KB contamination for the automatic
+harvest path. Two related items remain open as follow-on work: remote
+members do not yet resolve their own repo (their harvest currently lands in
+a shared `default` KB rather than colliding with another repo's KB), and the
+regression guard that protects the single-accessor invariant is a textual
+source check rather than a structural one, so it does not catch a future
+provider constructed directly with no explicit repo path. Deploying this
+change requires the CLI permission allowlist to grant the deploy-phase
+command prefixes (`gh`, `npm`, the installer binary, etc.) that the
+repository's checked-in permission settings do not currently include; until
+that is granted, this work is verified by its test suite but has not been
+smoke-verified through an actual deploy.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $0.0000.
+Remaining budget: unknown/unbounded.
+Pricing source: all 17 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the
