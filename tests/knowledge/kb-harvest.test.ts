@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { execFileSync } from 'child_process';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbHarvest } from '../../src/tools/kb-harvest.js';
+import { kbList } from '../../src/tools/kb-list.js';
+import { resolveProjectSlug } from '../../src/services/knowledge/project-slug.js';
+import { FLEET_DIR } from '../../src/paths.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import { vi } from 'vitest';
 
@@ -83,5 +90,71 @@ Bug: The cleanup handler in src/services/registry.ts does not close the database
 
     const result = JSON.parse(await kbHarvest({ session_transcript: transcript }));
     expect(result.entries_skipped + result.entries_updated).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// apra-fleet-tm7.7: the suite above mocks getKbProviders entirely, so the
+// per-slug routing kb_harvest actually relies on (apra-fleet-tm7) is never
+// exercised there. This suite runs kbHarvest against the REAL getKbProviders
+// with two temp git repos in one process, proving a harvest for repo B lands
+// in repo B's own kb.sqlite and is invisible from repo A.
+describe('kb_harvest routes per repo_path (two repos, one process)', () => {
+  function makeRepo(root: string, name: string, remote: string): string {
+    const dir = path.join(root, name);
+    fs.mkdirSync(dir, { recursive: true });
+    execFileSync('git', ['init', '-q', '.'], { cwd: dir });
+    execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: dir });
+    return dir;
+  }
+
+  let tmp: string;
+  let repoA: string;
+  let repoB: string;
+  let tok: string;
+
+  beforeEach(() => {
+    // The file-level beforeEach above mocks getKbProviders for every test in
+    // this file; this suite exists specifically to exercise the real routing,
+    // so undo that mock before each test here.
+    vi.restoreAllMocks();
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-harvest-iso-'));
+    tok = path.basename(tmp).replace(/[^a-z0-9]/gi, '').toLowerCase();
+    repoA = makeRepo(tmp, 'alpha', `git@github.com:acme/alpha-${tok}.git`);
+    repoB = makeRepo(tmp, 'beta', `git@github.com:acme/beta-${tok}.git`);
+    kbProvidersModule.resetKbProviders();
+  });
+
+  afterEach(() => {
+    kbProvidersModule.resetKbProviders();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('a harvest for repo A and a harvest for repo B land in two distinct kb.sqlite files, with no cross-contamination', async () => {
+    const transcriptA = `Note: Repo alpha's registry module uses a lazy singleton via getOrCreate.`;
+    const transcriptB = `Bug: Repo beta's cleanup handler leaks a database connection on double-close.`;
+
+    const resultA = JSON.parse(await kbHarvest({ repo_path: repoA, session_transcript: transcriptA }));
+    expect(resultA.entries_captured).toBeGreaterThanOrEqual(1);
+
+    const resultB = JSON.parse(await kbHarvest({ repo_path: repoB, session_transcript: transcriptB }));
+    expect(resultB.entries_captured).toBeGreaterThanOrEqual(1);
+
+    const slugA = resolveProjectSlug(repoA);
+    const slugB = resolveProjectSlug(repoB);
+    expect(slugA).not.toBe(slugB);
+
+    const dbA = path.join(FLEET_DIR, 'knowledge', slugA, 'kb.sqlite');
+    const dbB = path.join(FLEET_DIR, 'knowledge', slugB, 'kb.sqlite');
+    expect(fs.existsSync(dbA)).toBe(true);
+    expect(fs.existsSync(dbB)).toBe(true);
+    expect(dbA).not.toBe(dbB);
+
+    const fromA = JSON.parse(await kbList({ repo_path: repoA, limit: 50 }));
+    const fromB = JSON.parse(await kbList({ repo_path: repoB, limit: 50 }));
+
+    expect(fromA.results.some((e: any) => e.summary.includes('alpha'))).toBe(true);
+    expect(fromA.results.some((e: any) => e.summary.includes('beta'))).toBe(false);
+    expect(fromB.results.some((e: any) => e.summary.includes('beta'))).toBe(true);
+    expect(fromB.results.some((e: any) => e.summary.includes('alpha'))).toBe(false);
   });
 });
