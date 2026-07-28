@@ -135,12 +135,10 @@ Usage:
       console.error('Usage: apra-fleet kb invalidate <file1> [file2 ...]');
       process.exit(1);
     }
-    import('./services/knowledge/kb-service.js')
+    import('./services/knowledge/kb-providers.js')
       .then(async m => {
-        const service = m.getKBService();
-        const provider = service.getProvider();
-        await provider.init();
-        const result = await provider.invalidate(files);
+        const providers = await m.getKbProviders();
+        const result = await providers.project.invalidate(files);
         console.log(`Invalidated ${result.invalidated} entries.`);
         process.exit(0);
       })
