@@ -593,6 +593,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // a new execute_prompt that may have already claimed the member.
       inFlightAgents.delete(agent.id);
       clearedByStall = true;
+      // apra-fleet-6z8.2: a CONFIRMED stall means the remote turn made no
+      // progress of any kind for the whole threshold. Clearing bookkeeping
+      // alone left that wedged process running indefinitely on the member --
+      // burning its LLM session, holding its work folder, and colliding with
+      // whatever dispatch takes the member next. Kill the tracked pid too.
+      // Best-effort and never awaited: onStall is a fire-and-forget callback
+      // from the poll loop, and tryKillPid already swallows its own errors.
+      void tryKillPid(agent, strategy, cmds).catch(() => {});
     },
   });
 
