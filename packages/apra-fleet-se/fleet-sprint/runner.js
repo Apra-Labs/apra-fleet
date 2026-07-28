@@ -5,7 +5,18 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, isNonRetryableDispatchError } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isPostDispatchSyncFailure } from './errors.mjs';
+
+// apra-fleet-6z8.3: backoff for retrying ONLY the post-dispatch sync step of a
+// bracket whose dispatch already completed. Short and bounded -- this is a
+// git/dolt push round trip, not an LLM turn, and the alternative (letting the
+// failure escape the bracket) is what used to redispatch the whole turn.
+const POST_DISPATCH_SYNC_RETRY_DELAYS_MS = [0, 5000, 15000];
+
+/** True when the hermetic mock harness has opted into zero-wait backoffs
+ *  (APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF=1, set by mock-sprint-harness.mjs).
+ *  Production behavior -- real timed sleeps, unchanged delays -- is untouched. */
+const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
@@ -4596,14 +4607,25 @@ async function runSprintCycle(context) {
             await doltPullBefore(member, { command, log, skipPull: skipPreDispatchDoltPull, onAuthFailure });
         }
         // apra-fleet-eft.54.1: track a terminal dispatch failure so the
-        // post-dispatch sync teardown can be skipped for it (see the finally).
+        // post-dispatch sync teardown can be skipped for it (see below).
+        //
+        // apra-fleet-6z8.3: the teardown is deliberately NOT a `finally` any
+        // more. A throw out of a `finally` replaces the (successful) dispatch
+        // result and is indistinguishable, to the caller's retry ladder, from
+        // "the dispatch itself failed" -- which is exactly how a pure D-push
+        // failure (e.g. missing VCS credentials) caused a brand-new Planner LLM
+        // turn to be redispatched over work that was already committed in the
+        // member's local beads clone. Splitting the two lets the sync step be
+        // retried ON ITS OWN and, if it still fails, surfaced as a typed
+        // PostDispatchSyncError that no retry caller may answer by redispatching.
         let dispatchThrew = null;
+        let dispatchResult;
         try {
-            return await dispatchFn();
+            dispatchResult = await dispatchFn();
         } catch (err) {
             dispatchThrew = err;
-            throw err;
-        } finally {
+        }
+        {
             // apra-fleet-eft.54.1: on a TERMINAL dispatch failure the agent
             // never delivered a usable result, so there is provably nothing
             // new to publish -- skip the real-bd G-push/D-push teardown
@@ -4628,12 +4650,49 @@ async function runSprintCycle(context) {
                 // rationale (unreachable-close prevention) and unit tests in
                 // mock-sprint-git-sync-brackets.test.mjs for the scripted-mock
                 // coverage of this ordering.
-                await syncMemberAfterOrdered(member, {
-                    command, pushCode, pushBeads, log, branch: validated.branch,
-                    mutex: doltPushMutex, sprintId: sprintMutexId, agent, onAuthFailure,
-                });
+                //
+                // apra-fleet-6z8.3: when the dispatch COMPLETED, the sync step
+                // is retried on its own -- a push failure is frequently
+                // transient (a racing writer, a momentarily unreachable remote,
+                // a credential refresh in flight) and re-running the sync costs
+                // nothing, whereas re-running the LLM turn costs a full dispatch
+                // AND risks duplicate beads/commit mutations. When the dispatch
+                // already threw, the teardown keeps its single-attempt shape:
+                // the dispatch error is what surfaces either way.
+                const syncAttemptDelaysMs = dispatchThrew ? [0] : POST_DISPATCH_SYNC_RETRY_DELAYS_MS;
+                let syncErr = null;
+                for (let attempt = 0; attempt < syncAttemptDelaysMs.length; attempt++) {
+                    if (syncAttemptDelaysMs[attempt] > 0) {
+                        log(`[Sync] Post-dispatch sync for member '${member}' failed; retrying ONLY the sync step in ${syncAttemptDelaysMs[attempt] / 1000}s (attempt ${attempt + 1}/${syncAttemptDelaysMs.length}) -- the dispatch already completed and must NOT be re-run.`);
+                        if (!mockInstantRetryBackoff()) {
+                            await new Promise((resolve) => setTimeout(resolve, syncAttemptDelaysMs[attempt]));
+                        }
+                    }
+                    try {
+                        await syncMemberAfterOrdered(member, {
+                            command, pushCode, pushBeads, log, branch: validated.branch,
+                            mutex: doltPushMutex, sprintId: sprintMutexId, agent, onAuthFailure,
+                        });
+                        syncErr = null;
+                        break;
+                    } catch (err) {
+                        syncErr = err;
+                    }
+                }
+                if (syncErr) {
+                    // A dispatch error always wins: it is the more fundamental
+                    // failure, and the pre-6z8.3 code's `finally` masking it
+                    // with the teardown error was never intentional.
+                    if (dispatchThrew) throw dispatchThrew;
+                    throw new PostDispatchSyncError(
+                        `Post-dispatch sync (G-push/D-push) failed for member '${member}' AFTER the dispatch completed successfully: ${syncErr.message}. The dispatch's work is already committed locally -- it must NOT be re-dispatched; fix the sync (credentials/remote) and re-run.`,
+                        { member, dispatchResult, syncAttempts: syncAttemptDelaysMs.length, cause: syncErr },
+                    );
+                }
             }
         }
+        if (dispatchThrew) throw dispatchThrew;
+        return dispatchResult;
     }
 
     // apra-fleet-xbu.C1: `bd list --parent` accepts exactly one id per
@@ -5878,6 +5937,18 @@ async function runSprintCycle(context) {
                     break;
                 } catch (err) {
                     plannerErr = err;
+                    // apra-fleet-6z8.3: the Planner LLM turn ALREADY RAN and
+                    // its output is already committed in the member's local
+                    // beads clone -- only the post-dispatch git/dolt sync
+                    // failed, and withGitSync has already retried that step on
+                    // its own. Redispatching here would spawn a second Planner
+                    // session for the same phase on top of completed work (the
+                    // duplicate-dispatch class this whole bug is about), so
+                    // abort the ladder immediately and surface the sync failure.
+                    if (isPostDispatchSyncFailure(err)) {
+                        log(`Planner dispatch COMPLETED but its post-dispatch sync failed: ${err.message} Aborting retries WITHOUT re-dispatching -- the planning turn already ran and its beads writes are local; fix the sync and re-run.`);
+                        break;
+                    }
                     // apra-fleet-eft.54.1: only a no-mutation dispatch failure
                     // leaves the workspace provably unchanged, so only then may
                     // the next attempt skip its pre-dispatch sync. Any other
@@ -6725,6 +6796,16 @@ async function runSprintCycle(context) {
                         if (dispatchError) {
                             log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
                         }
+                    } else if (isPostDispatchSyncFailure(err)) {
+                        // apra-fleet-6z8.3: the doer turn itself COMPLETED --
+                        // only its post-dispatch G-push/D-push failed, and
+                        // withGitSync already retried that step on its own.
+                        // Re-running the streak would redo an LLM turn whose
+                        // commits/bead closes already exist locally. The
+                        // per-bead attribution pass below still runs, so any
+                        // bead this streak really did close is credited.
+                        log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' COMPLETED but its post-dispatch sync failed: ${err.message} Not re-dispatching -- the work is already committed locally.`);
+                        dispatchError = err;
                     } else if (isNonRetryableDispatchError(err)) {
                         // Stabilization Issue 43: auth/trust failures cannot be
                         // fixed by retrying the identical dispatch.

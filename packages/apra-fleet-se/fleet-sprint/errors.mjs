@@ -334,3 +334,58 @@ export class SprintLockHeldError extends WorkflowError {
         this.existingPid = existingPid;
     }
 }
+
+// ---------------------------------------------------------------------------
+// apra-fleet-6z8.3 -- post-dispatch sync failure (NOT a dispatch failure)
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by withGitSync when the agent dispatch COMPLETED successfully but the
+ * bracket's post-dispatch sync teardown (G-push / D-push) failed, and retrying
+ * just that sync step did not recover it.
+ *
+ * Why it needs its own type (apra-fleet-6z8, Symptom 2): withGitSync wraps the
+ * pre-dispatch pull, the LLM turn, and the post-dispatch sync in ONE bracket,
+ * so a DoltSyncError thrown by doltPushGuarded propagated out of the whole
+ * bracket. The Planner's PLANNER_DISPATCH_RETRY_DELAYS_MS ladder only saw "the
+ * bracket threw" and called dispatchPlannerOnce() again -- redispatching a
+ * brand-new Planner LLM turn even though the previous turn's output was already
+ * safely committed in the member's local beads clone, purely because an
+ * unrelated push step (e.g. missing VCS credentials) failed. Retry callers MUST
+ * treat this error as "do not redispatch": the turn already happened.
+ *
+ * @property {string|null} member - the member whose post-dispatch sync failed
+ * @property {unknown} dispatchResult - the COMPLETED dispatch's result, preserved
+ *   so a caller that can proceed without the sync still has the turn's output
+ * @property {number} syncAttempts - how many times the sync step was attempted
+ */
+export class PostDispatchSyncError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, dispatchResult?: unknown, syncAttempts?: number, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, dispatchResult = undefined, syncAttempts = 1, details, cause } = opts;
+        super(message, {
+            code: 'POST_DISPATCH_SYNC_FAILED',
+            details: { member, syncAttempts, ...details },
+            cause,
+        });
+        this.member = member;
+        this.dispatchResult = dispatchResult;
+        this.syncAttempts = syncAttempts;
+    }
+}
+
+/**
+ * True when an error means "a COMPLETED dispatch's post-step sync failed" --
+ * i.e. the LLM turn itself already succeeded and re-running it would duplicate
+ * real work (duplicate beads writes, duplicate commits). A retry caller must
+ * NOT redispatch on this; the sync step has already been retried on its own
+ * inside withGitSync (apra-fleet-6z8.3).
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isPostDispatchSyncFailure(err) {
+    return err instanceof PostDispatchSyncError;
+}
