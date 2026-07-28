@@ -646,7 +646,16 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // sprintMutexId stamp in runner.js) actually reaches every real
             // dispatch call site, not just the ones exercised directly by an
             // execute-prompt.ts unit test.
-            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id });
+            // apra-fleet-eft.78.4: also record the resolved `resume` value
+            // (boolean|string, see AgentOptions.resume in
+            // packages/apra-fleet-workflow/src/workflow/index.mjs) each
+            // dispatch actually carried -- lets a test assert on runner.js's
+            // per-role round-resume wiring (createRoundSessionRegistry) end
+            // to end: a warm within-cycle resume carries the PRIOR round's
+            // explicit session id string, a cross-cycle dispatch carries
+            // `false`. Purely additive (a new object key); no existing
+            // assertion reads/compares the whole `dispatched` entry shape.
+            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id, resume: opts.resume });
             await sleep(DELAY_MS);
 
             // --- plan phase: planner ---
