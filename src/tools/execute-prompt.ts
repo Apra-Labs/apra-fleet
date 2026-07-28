@@ -793,17 +793,20 @@ ${parsed.result}`;
 session: ${parsed.sessionId}`;
     // Auto-harvest learnings from session output (fire-and-forget)
     if (parsed.result) {
-      // apra-fleet-tm7.2: only pass repo_path for local members. For a REMOTE
-      // member, agent.workFolder is a path on the remote host and will almost
-      // never exist on this (fleet server) machine, so resolveProjectSlug's
-      // git calls on it would fail and fall through to 'default' anyway --
-      // passing it here would be pointless. Omitting it lets kbHarvest fall
-      // back to its own default (also 'default'), which is at least not the
-      // server's own repo, so no cross-repo contamination happens.
-      const harvestRepoPath = agent.agentType === 'local' ? resolvedWorkFolder : undefined;
+      // apra-fleet-tm7.2: always pass resolvedWorkFolder, local or remote.
+      // getKbProviders(undefined) falls back to slugFor(process.cwd()) --
+      // the FLEET SERVER's own cwd, not any generic 'default' -- so omitting
+      // repo_path for remote members would silently route their harvested
+      // learnings into the server's own repo KB (the exact defect apra-fleet-tm7
+      // describes). For a REMOTE member, resolvedWorkFolder is a path on the
+      // remote host that will almost never exist on this (fleet server)
+      // machine, so resolveProjectSlug's git calls on it fail with ENOENT and
+      // it falls through to the literal 'default' slug -- not the server's
+      // own repo, so no cross-repo contamination happens. That is a deliberate,
+      // acceptable outcome for remote members until they get their own routing.
       void import('./kb-harvest.js')
         .then(({ kbHarvest }) =>
-          kbHarvest({ repo_path: harvestRepoPath, session_transcript: parsed.result, session_id: parsed.sessionId })
+          kbHarvest({ repo_path: resolvedWorkFolder, session_transcript: parsed.result, session_id: parsed.sessionId })
         )
         .catch((err: Error) => logWarn('kb_harvest', `auto-harvest failed: ${err.message}`));
     }
