@@ -312,7 +312,7 @@ function buildDevManifest(root: string): AssetManifest {
     };
   }
 
-  const agentSchemasDir = path.join(root, 'vendor', 'apra-pm', 'agents', 'schemas');
+  const agentSchemasDir = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents', 'schemas');
   let agentSchemas: Record<string, string> | undefined;
   if (fs.existsSync(agentSchemasDir)) {
     agentSchemas = collectPackageTree(root, agentSchemasDir, 'agentSchemas');
@@ -1027,7 +1027,7 @@ ${killHint}
       try { workflowContent = extractAsset('auto-sprint.js'); } catch { /* absent in older SEA build */ }
     } else {
       const root = findProjectRoot();
-      const wfPath = path.join(root, 'vendor', 'apra-pm', '.claude', 'workflows', 'auto-sprint.js');
+      const wfPath = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'workflows', 'auto-sprint.js');
       const wfFallback = path.join(root, 'dist', 'workflows', 'auto-sprint.js');
       const wfSrc = fs.existsSync(wfPath) ? wfPath : fs.existsSync(wfFallback) ? wfFallback : null;
       if (wfSrc) workflowContent = fs.readFileSync(wfSrc, 'utf-8');
