@@ -74,9 +74,63 @@ Two concrete implementations exist:
 | `SqliteProvider` | `src/services/knowledge/sqlite-provider.ts` | Default. Local SQLite, zero config. |
 | `HttpKbProvider` | `src/services/knowledge/http-provider.ts` | Shared central server for a team. |
 
-`KBService` (`src/services/knowledge/kb-service.ts`) is the singleton factory.
-It reads `~/.apra-fleet/data/knowledge/config.json` and instantiates the right
-provider. Run `kb_setup` to write the config.
+`getKbProviders(repoPath)` (`src/services/knowledge/kb-providers.ts`) is the
+single accessor every KB tool goes through to reach a provider. It is the only
+place in the codebase that resolves a repo to its database -- there is no
+second entry point. Run `kb_setup` to write the local config.
+
+---
+
+## Per-repo KB isolation
+
+The fleet server is one long-lived process that serves many members working
+in many different repos, so nothing about the server's own working directory
+can be trusted to identify which repo a given tool call is about. Every KB
+tool therefore takes an explicit `repo_path`, and `getKbProviders` resolves
+providers keyed by that path -- never by `process.cwd()` inside server-handled
+code. A caller that omits `repo_path` gets whatever repo the calling process
+happens to be in, which is only correct for a single-repo CLI invocation.
+
+**Provider caching is per resolved slug, not global.** `getKbProviders` maps
+a repo path to a project slug (via `resolveProjectSlug`, which reads the git
+remote URL, falls back to the repo directory name, and falls back again to a
+literal `default` for non-git directories) and caches one provider instance
+per slug. Concurrent calls for the same slug share one provider instead of
+racing to open two connections to the same SQLite file. The one exception is
+the global KB: there is exactly one of it, shared across every project, so it
+gets its own single-slot cache rather than living in the per-slug map.
+
+**Slug resolution must not confuse "no auth" with "no host".** The slugifier
+strips a userinfo prefix from HTTPS remotes (`user@` in `https://user@host/...`)
+but must bound that strip to the authority section of the URL -- a greedy,
+unbounded strip on a plain HTTPS remote with no `@` at all consumes the entire
+remainder of the string, silently collapsing the slug to empty and falling
+through to the directory-basename fallback instead of the intended host-based
+one. Plain-HTTPS and SSH remotes for the same repository must slugify to the
+same value.
+
+**Known gap: remote members are not yet repo-routed.** A local member's
+`workFolder` is a real path on the machine running the fleet server, so
+passing it as `repo_path` resolves to that member's actual repo. A remote
+member's `workFolder` is a path on the *remote* host -- it does not exist on
+the fleet server's filesystem, so the git-based slug resolution fails and
+falls through to the literal `default` slug. Every remote member, across
+every repo it works in, currently harvests into that one shared `default` KB.
+This is strictly better than the pre-fix behavior (silently colliding with
+whichever repo the server process happened to be started in), and is
+considered acceptable until remote members get their own per-repo routing,
+but it means per-repo isolation is proven only for local members today.
+
+**The single-accessor invariant is enforced textually, not structurally.** A
+source-level guard checks that no code path calls the deleted service-style
+accessor or `getKbProviders()` with no argument. That catches accidental
+regressions to the old pattern, but it cannot catch a *different* route to a
+provider, such as constructing a provider class directly with no explicit
+path -- any such construction still falls back to resolving its repo from
+`process.cwd()`, the exact hazard `getKbProviders` exists to close off. Any
+new provider-construction site must take an explicit repo path from its
+caller; do not rely on the guard test alone to catch a fallback provider that
+bypasses `getKbProviders`.
 
 ---
 
@@ -436,8 +490,9 @@ Run `kb_setup` with `remote` and `token` to write this. Do not write
 ### Future: Postgres
 
 To add a Postgres backend, implement `MemoryProvider` in a new class and update
-`KBService.getProvider()` to instantiate it when `config.provider === 'postgres'`.
-No KB tool changes are required.
+`createKbProvidersForSlug` (`src/services/knowledge/kb-providers.ts`) to
+instantiate it when `config.provider === 'postgres'`. No KB tool changes are
+required.
 
 ---
 
@@ -480,6 +535,13 @@ execute_prompt to <member>: "You are the KB Agent. Run kb_harvest on the last se
 
 `kb_harvest` fires automatically (fire-and-forget) when `execute_prompt`
 completes successfully. The PM does not need to dispatch it manually.
+`execute_prompt` passes the dispatched member's own working folder as
+`repo_path`, so the harvested learnings land in the KB for the repo the work
+actually happened in rather than whichever repo the fleet server process
+happens to be running from -- see [Per-repo KB isolation](#per-repo-kb-isolation)
+for the routing rule and its current remote-member limitation. This is the
+only fully automatic KB writer; every other write path is a deliberate tool
+call from an agent that already supplies its own `repo_path`.
 
 ---
 
