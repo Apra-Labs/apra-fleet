@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { bdMode, realSyncSpawnCount } from './helpers/bd-replay.mjs';
 import { isNonRetryableDispatchError } from '../fleet-sprint/errors.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -79,7 +80,21 @@ test('unit: isNonRetryableDispatchError matches auth/trust signatures and nothin
 // pull'/'bd dolt push' spawn occurs on this abort path at all, so a
 // reintroduction of the residual sync bracket fails this test even on a
 // host fast enough to still slip under 60s.
-test('mock sprint: Planner auth failure aborts the retry loop after ONE attempt instead of exhausting the backoff', { timeout: 120000 }, async () => {
+//
+// apra-fleet-eft.54.8: standalone live real-bd retest (2026-07-28, branch
+// feat/sprint-service-1 @ 308ac91e), run exactly per this bead's own repro
+// command (`APRA_FLEET_BD_MOCK=off node --test packages/apra-fleet-se/test/
+// mock-sprint-planner-auth-failure-no-retry.test.mjs`). Both tests passed:
+// the unit test in ~1ms, this scenario test in elapsedMs ~22.8s (well under
+// the 60000ms fast-abort bound and the harness's own 120000ms limit), with
+// plannerCalls===1, the non-retryable log line present, and terminal-state
+// persistence holding -- no real 'bd dolt pull'/'bd dolt push' spawns on the
+// abort path (.54.7's pin held). This corroborates .54.1-.54.7 remain green
+// now that eft.74's phantom-session fix has landed, standalone (i.e. outside
+// the concurrent full real-bd suite run, where the parent bug's notes
+// separately track an unrelated eft.85 concurrency-contention false-negative
+// on this same file).
+test('mock sprint: Planner auth failure aborts the retry loop after ONE attempt instead of exhausting the backoff', { timeout: scaledTimeout(120000) }, async () => {
     await withScenarioMarkers('plannerauthnoretry', async () => {
         console.log('Running mock sprint scenario (Planner dispatch always fails with an Authentication failed response)...');
         const startedAt = Date.now();
@@ -108,8 +123,11 @@ test('mock sprint: Planner auth failure aborts the retry loop after ONE attempt 
 
         // Fast: well under even the FIRST backoff delay tier's cumulative
         // wait (5s + 15s = 20s to reach attempt 3). Generous 60s bound for
-        // slow CI hosts.
-        check(elapsedMs < 60000, `Expected an immediate abort (single attempt), took ${elapsedMs}ms`);
+        // slow CI hosts, scaled up further for --test-concurrency contention
+        // headroom (apra-fleet-eft.85) -- this only grants CPU/IO
+        // starvation slack, not retry tolerance: plannerCalls===1 above
+        // stays a strict, unscaled single-attempt assertion.
+        check(elapsedMs < scaledTimeout(60000), `Expected an immediate abort (single attempt), took ${elapsedMs}ms`);
 
         // The abort is logged with the non-retryable classification and its
         // remediation hint, so an operator reading the run log knows this is

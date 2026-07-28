@@ -121,6 +121,30 @@
  */
 
 /**
+ * @typedef {Object} ProvisionVcsAuthOptions
+ * @property {string} [member_id] - UUID of the member
+ * @property {string} [member_name] - Friendly name of the member
+ * @property {"github" | "bitbucket" | "azure-devops"} provider - VCS provider to configure
+ * @property {string} [label] - Credential label (slug, e.g. "work-github"). Defaults to provider name.
+ * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
+ *   Defaults to "https://<host>".
+ * @property {"github-app" | "pat"} [github_mode] - GitHub auth mode: github-app (mint via
+ *   configured app) or pat (personal access token)
+ * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
+ *   Supports {{secure.NAME}} token -- resolved from the credential store server-side before use.
+ * @property {"read" | "push" | "admin" | "issues" | "full"} [git_access] - GitHub App access
+ *   level override
+ * @property {string[]} [repos] - GitHub App repository list override
+ * @property {string} [email] - Bitbucket account email
+ * @property {string} [api_token] - Bitbucket API token. Supports {{secure.NAME}} token --
+ *   resolved from the credential store server-side before use.
+ * @property {string} [workspace] - Bitbucket workspace slug
+ * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)
+ * @property {string} [pat] - Azure DevOps personal access token. Supports {{secure.NAME}}
+ *   token -- resolved from the credential store server-side before use.
+ */
+
+/**
  * @typedef {Object} ComposePermissionsOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -274,6 +298,15 @@ export class ApraFleet {
      */
     async provisionLlmAuth(options) {
         return this.mcpClient.callTool('provision_llm_auth', options);
+    }
+
+    /**
+     * Provision VCS (git host) auth -- GitHub App token / PAT, Bitbucket API
+     * token, or Azure DevOps PAT -- onto a member.
+     * @param {ProvisionVcsAuthOptions} options
+     */
+    async provisionVcsAuth(options) {
+        return this.mcpClient.callTool('provision_vcs_auth', options);
     }
 
     /**

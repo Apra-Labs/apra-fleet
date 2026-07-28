@@ -230,9 +230,10 @@ function buildDevManifest(root: string): AssetManifest {
     hooks[entry] = `hooks/${entry}`;
   }
   const scripts: Record<string, string> = {};
-  for (const entry of fs.readdirSync(path.join(root, 'scripts'))) {
-    if (entry.endsWith('.mjs')) continue; // skip build scripts
-    scripts[entry] = `scripts/${entry}`;
+  for (const entry of fs.readdirSync(path.join(root, 'scripts'), { withFileTypes: true })) {
+    if (!entry.isFile()) continue; // skip subdirectories (e.g. agent-doc-partials/)
+    if (entry.name.endsWith('.mjs')) continue; // skip build scripts
+    scripts[entry.name] = `scripts/${entry.name}`;
   }
 
   // Source PM skills from apra-pm local package copy (dev mode), fall back to
@@ -311,7 +312,7 @@ function buildDevManifest(root: string): AssetManifest {
     };
   }
 
-  const agentSchemasDir = path.join(root, 'vendor', 'apra-pm', 'agents', 'schemas');
+  const agentSchemasDir = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents', 'schemas');
   let agentSchemas: Record<string, string> | undefined;
   if (fs.existsSync(agentSchemasDir)) {
     agentSchemas = collectPackageTree(root, agentSchemasDir, 'agentSchemas');
@@ -1026,7 +1027,7 @@ ${killHint}
       try { workflowContent = extractAsset('auto-sprint.js'); } catch { /* absent in older SEA build */ }
     } else {
       const root = findProjectRoot();
-      const wfPath = path.join(root, 'vendor', 'apra-pm', '.claude', 'workflows', 'auto-sprint.js');
+      const wfPath = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', '.claude', 'workflows', 'auto-sprint.js');
       const wfFallback = path.join(root, 'dist', 'workflows', 'auto-sprint.js');
       const wfSrc = fs.existsSync(wfPath) ? wfPath : fs.existsSync(wfFallback) ? wfFallback : null;
       if (wfSrc) workflowContent = fs.readFileSync(wfSrc, 'utf-8');

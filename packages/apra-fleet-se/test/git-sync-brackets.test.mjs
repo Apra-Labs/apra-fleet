@@ -427,6 +427,110 @@ test('(g) a transient failure that exhausts its retries raises GitSyncError, NOT
 });
 
 // =============================================================================
+// apra-fleet-fmu -- git/dolt credential-auth self-heal via provision_vcs_auth.
+//
+// classifyGitFailure() gains a THIRD kind, 'auth', checked after 'diverged'
+// (never misclassified) but before 'transient' (blindly retrying a
+// credential failure is pointless). An optional injected `onAuthFailure` on
+// runGitStep (threaded through syncMemberBefore/syncMemberAfter) fires
+// EXACTLY ONCE on an 'auth'-classified failure and, if it resolves without
+// throwing, retries the SAME failed command exactly once more -- a distinct,
+// bounded one-shot path, not folded into maxTransientRetries.
+// =============================================================================
+test('(fmu) classifyGitFailure recognizes the live-observed credential failure (and siblings) as a new "auth" kind, checked after diverged but before transient', () => {
+    check(
+        classifyGitFailure("fatal: could not read Username for 'https://github.com': Device not configured") === 'auth',
+        'the exact live-observed message must classify as auth',
+    );
+    check(classifyGitFailure("fatal: could not read Password for 'https://github.com'") === 'auth', 'missing password is auth');
+    check(classifyGitFailure('remote: Authentication failed for repo') === 'auth', 'authentication failed is auth');
+    check(classifyGitFailure('Permission denied (publickey).') === 'auth', 'publickey denial is auth');
+    check(classifyGitFailure('remote: Invalid username or token.') === 'auth', 'invalid token is auth');
+    check(classifyGitFailure('remote: Invalid username or password.') === 'auth', 'invalid password is auth');
+    check(classifyGitFailure('fatal: could not read Username for ...: terminal prompts disabled') === 'auth', 'terminal prompts disabled is auth');
+    check(classifyGitFailure('remote: Support for password authentication was removed') === 'auth', 'password-auth-removed is auth');
+    check(classifyGitFailure('remote: Bad credentials') === 'auth', 'bad credentials is auth');
+
+    // Divergence must NEVER be misclassified as auth, even if it happened to
+    // also carry an auth-sounding word.
+    check(classifyGitFailure('fatal: Not possible to fast-forward, aborting.') === 'diverged', 'divergence stays diverged, never auth');
+    check(classifyGitFailure(' ! [rejected] main -> main (non-fast-forward)') === 'diverged', 'rejected push stays diverged, never auth');
+
+    // Transient stays transient, unaffected by the new auth kind.
+    check(classifyGitFailure('Could not resolve host: github.com') === 'transient', 'transient patterns unaffected');
+});
+
+test('(fmu) self-heal success: an auth-classified G-push failure heals once via onAuthFailure and the single bounded retry succeeds', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail("fatal: could not read Username for 'https://github.com': Device not configured"), OK],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async (info) => {
+        healCalls += 1;
+        check(info.member === 'm1', 'onAuthFailure receives the member');
+        check(/could not read Username/.test(info.error), 'onAuthFailure receives the raw error text');
+    };
+    const res = await syncMemberAfter('m1', { command, onAuthFailure });
+    check(res.ok === true && res.pushed === true, `expected the push to ultimately succeed after self-heal, got: ${JSON.stringify(res)}`);
+    check(healCalls === 1, `expected exactly one self-heal call, got ${healCalls}`);
+    check(calls.filter((c) => /git push/.test(c.cmd)).length === 2, 'push retried exactly once after self-heal (bounded, not a loop)');
+});
+
+test('(fmu) self-heal called but the retry STILL fails: the existing typed GitSyncError still surfaces, no hang / infinite loop, self-heal called exactly once', async () => {
+    const { command, calls } = makeCommandMock({
+        // Single-entry queue -> makeCommandMock returns the same failure on
+        // every call (see its own doc comment), so both the first attempt
+        // and the post-heal retry fail identically.
+        'git push': [fail("fatal: could not read Username for 'https://github.com': Device not configured")],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+    let err = null;
+    try {
+        await syncMemberAfter('m1', { command, onAuthFailure });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitSyncError, `expected GitSyncError (non-diverged failure), got ${err && err.constructor.name}`);
+    check(healCalls === 1, `self-heal must be invoked EXACTLY ONCE (bounded, never a loop), got ${healCalls}`);
+    check(calls.filter((c) => /git push/.test(c.cmd)).length === 2, `expected exactly one bounded retry after self-heal (2 total push attempts), saw ${calls.filter((c) => /git push/.test(c.cmd)).length}`);
+});
+
+test('(fmu) omitting onAuthFailure preserves BYTE-IDENTICAL pre-existing behavior on an auth-classified failure (zero behavior change for non-opted-in callers)', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail("fatal: could not read Username for 'https://github.com': Device not configured")],
+    });
+    let err = null;
+    try {
+        await syncMemberAfter('m1', { command }); // no onAuthFailure injected
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitSyncError, `expected the exact pre-existing GitSyncError, got ${err && err.constructor.name}`);
+    check(
+        calls.filter((c) => /git push/.test(c.cmd)).length === 1,
+        `no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt, saw ${calls.filter((c) => /git push/.test(c.cmd)).length}`,
+    );
+});
+
+test('(fmu) an onAuthFailure that itself throws is treated as a failed self-heal -- falls through to the typed error, never retried further', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail("fatal: could not read Username for 'https://github.com': Device not configured")],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; throw new Error('provision_vcs_auth failed: fleet server unreachable'); };
+    let err = null;
+    try {
+        await syncMemberAfter('m1', { command, onAuthFailure });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitSyncError, `expected GitSyncError even though self-heal was attempted, got ${err && err.constructor.name}`);
+    check(healCalls === 1, `self-heal must still be invoked exactly once, got ${healCalls}`);
+    check(calls.filter((c) => /git push/.test(c.cmd)).length === 1, 'no retry is attempted when onAuthFailure itself throws');
+});
+
+// =============================================================================
 // (h) NO vendored agent .md file gains orchestrator-side sync commands. The
 // sync brackets live in runner.js; agents never run git/dolt sync themselves
 // (Plan 3.2). This is a REAL assertion over the vendored markdown, not a note:

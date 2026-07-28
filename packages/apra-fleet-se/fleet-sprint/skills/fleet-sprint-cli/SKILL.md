@@ -64,6 +64,9 @@ on this list -- flags evolve and this skill can drift.
 
 ## Launching it
 
+Run this on your own orchestrating machine, not on a `--members` target --
+members are dispatch destinations, not where this command runs.
+
 Use the delivered `apra-fleet` binary (on PATH after `npm run build:binary`),
 and start it as a genuinely detached OS process. A harness-owned background
 task can be silently killed when its owning tool call's process group ends,

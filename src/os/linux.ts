@@ -15,6 +15,21 @@ export function pidWrapUnix(cmd: string): string {
   return `{ ${cmd}; } & _fleet_pid=$!; printf 'FLEET_PID:%s\\n' "$_fleet_pid"; wait "$_fleet_pid"; exit $?`;
 }
 
+/**
+ * Durable per-invocation stdout mirror for a unix dispatch (apra-fleet-6z8.1).
+ *
+ * The SSH exec channel is NOT a reliable carrier for the CLI's output: when the
+ * channel tears down without ever delivering an 'exit' event, ssh2's 'close'
+ * still fires and src/services/ssh.ts substitutes code 0, so the dispatcher sees
+ * "exit 0, empty stdout" while the remote CLI is in fact still running (live
+ * evidence: pid 89858 alive 2+ minutes after the channel resolved). Teeing the
+ * CLI's stdout to this file means the real result envelope survives the channel,
+ * and can be read back with a fresh exec once the pid actually exits.
+ */
+export function durableOutputPath(inv: string): string {
+  return `/tmp/.fleet-out-${inv.replace(/[^A-Za-z0-9._-]/g, '')}.json`;
+}
+
 /** Replace leading ~ with $HOME so paths expand correctly inside double-quoted shell strings. */
 function expandHome(p: string): string {
   return p.startsWith('~/') ? `$HOME/${p.slice(2)}` : p === '~' ? '$HOME' : p;
@@ -120,6 +135,14 @@ export class LinuxCommands implements OsCommands {
       innerCmd = `${cdPrefix}${CLI_PATH}${providerCmd.slice(cdPrefix.length)}`;
     } else {
       innerCmd = `${CLI_PATH}${providerCmd}`;
+    }
+    // apra-fleet-6z8.1: mirror the CLI's stdout to a durable per-invocation file
+    // so a torn-down SSH channel cannot destroy an otherwise-complete result.
+    // `set -o pipefail` (bash and zsh both honour it) keeps the CLI's own exit
+    // code authoritative instead of tee's. Only applied when an invocation id is
+    // present -- callers without one (unit tests, ad-hoc builds) are unchanged.
+    if (opts.inv) {
+      innerCmd = `set -o pipefail; ${innerCmd} | tee "${durableOutputPath(opts.inv)}"`;
     }
     return pidWrapUnix(innerCmd);
   }

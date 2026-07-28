@@ -629,7 +629,7 @@ async function main() {
 
     const server = createDashboardViewer(workflow, {
         port: viewerPort,
-        name: 'Auto-Sprint',
+        name: 'Fleet-Sprint',
         dashboardExtensions: [beadsExtension],
         // apra-fleet-eft.37.1/37.2: the core viewer now speaks opts.runId
         // (opts.sprintId is a deprecated BOUNDARY-COMPAT alias -- never use

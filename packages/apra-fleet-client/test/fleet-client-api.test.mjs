@@ -172,6 +172,25 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    test('provisionVcsAuth', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_name: 'alice', provider: 'github', git_access: 'push', repos: ['owner/repo'] };
+        const result = await fleet.provisionVcsAuth(options);
+
+        assert.strictEqual(calledName, 'provision_vcs_auth');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
     test('composePermissions', async () => {
         let calledName, calledArgs;
         const mockClient = {

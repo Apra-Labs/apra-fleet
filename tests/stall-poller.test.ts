@@ -79,7 +79,11 @@ describe('pollLogFile', () => {
       expect(result.error).toBeUndefined();
     });
 
-    it('ignores non-assistant entries and picks the last assistant entry', async () => {
+    // apra-fleet-6z8.2: activity is tracked from the most recent entry of ANY
+    // type. A newly appended user/tool_result line is real progress; the old
+    // assistant-only scan reported "no activity" for it, which is what made the
+    // 120s stall threshold unreachable on a bd/git-tool-heavy turn.
+    it('picks the most recent entry of ANY type, not just the last assistant entry', async () => {
       const stdout = jsonLines(
         { type: 'assistant', timestamp: '2026-05-05T10:00:00.000Z' },
         { type: 'user', timestamp: '2026-05-05T10:02:00.000Z' },
@@ -87,22 +91,33 @@ describe('pollLogFile', () => {
       mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
 
       const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBe('2026-05-05T10:00:00.000Z');
+      expect(result.lastTimestamp).toBe('2026-05-05T10:02:00.000Z');
     });
 
-    it('returns null without format error when no assistant entries exist', async () => {
+    it('returns a timestamp when the tail contains only tool_result/user entries', async () => {
       const stdout = jsonLines(
-        { type: 'user', timestamp: '2026-05-05T10:00:00.000Z' },
+        { type: 'user', timestamp: '2026-05-05T10:00:00.000Z', message: { content: [{ type: 'tool_result', content: 'bd list output' }] } },
       );
       mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
 
       const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBeNull();
+      expect(result.lastTimestamp).toBe('2026-05-05T10:00:00.000Z');
       expect(result.error).toBeUndefined();
       expect(mockLogLine).not.toHaveBeenCalledWith('stall_poll_format_error', expect.any(String));
     });
 
-    it('logs stall_poll_format_error when assistant entry is missing timestamp', async () => {
+    it('keeps scanning backwards past an entry with no timestamp', async () => {
+      const stdout = jsonLines(
+        { type: 'user', timestamp: '2026-05-05T10:00:00.000Z' },
+        { type: 'summary', summary: 'compacted' },
+      );
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBe('2026-05-05T10:00:00.000Z');
+    });
+
+    it('logs stall_poll_format_error when no entry in the tail carries a timestamp', async () => {
       const stdout = jsonLines({ type: 'assistant', content: 'hello' });
       mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
 
@@ -110,8 +125,18 @@ describe('pollLogFile', () => {
       expect(result.lastTimestamp).toBeNull();
       expect(mockLogLine).toHaveBeenCalledWith(
         'stall_poll_format_error',
-        expect.stringContaining('assistant entry missing timestamp')
+        expect.stringContaining('no entry with a timestamp in tail')
       );
+    });
+
+    it('falls back to the raw tail when a single huge entry leaves no complete line', async () => {
+      // The sampled window lands INSIDE one oversized tool_result: the leading
+      // fragment is unparseable JSON, but the timestamp text is still there.
+      const stdout = '{"type":"user","timestamp":"2026-05-05T10:07:00.000Z","message":{"content":[{"type":"tool_result","content":"' + 'x'.repeat(200);
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBe('2026-05-05T10:07:00.000Z');
     });
 
     it('skips partial/unparseable lines at start of tail', async () => {
@@ -124,11 +149,17 @@ describe('pollLogFile', () => {
       expect(result.lastTimestamp).toBe('2026-05-05T10:05:00.000Z');
     });
 
-    it('uses tail -c 500 on Unix', async () => {
+    // apra-fleet-6z8.2: the window is line-based and much wider than the old
+    // 500-byte slice, which was thinner than a single tool_result payload.
+    it('samples a wide, line-based tail on Unix', async () => {
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
       await pollLogFile('member-1', '/home/user/log.jsonl');
       expect(mockExecCommand).toHaveBeenCalledWith(
-        expect.stringContaining('tail -c 500'),
+        expect.stringContaining('tail -n 20'),
+        5000
+      );
+      expect(mockExecCommand).not.toHaveBeenCalledWith(
+        expect.stringContaining('tail -c 500 '),
         5000
       );
     });

@@ -100,6 +100,11 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     .phase-header h4 { font-size: 13px; font-weight: 600; color: #e4e4e7; margin: 0; }
     .phase-header:hover { background: rgba(255,255,255,0.05); }
     .phase-header::-webkit-details-marker { display: none; }
+    /* apra-fleet-eft.53.2: mirrors .activity-meta -- the single flex item on
+       the right-hand side of the header's space-between row, so the phase
+       duration always sits flush right next to the toggle icon exactly like
+       an activity row's duration sits next to its status badge. */
+    .phase-meta { display: flex; gap: 12px; align-items: center; font-size: 11px; color: #a1a1aa; flex-shrink: 0; }
     .phase-body { padding: 8px; display: flex; flex-direction: column; gap: 4px; }
     
     .event-log { display: flex; gap: 8px; font-family: monospace; font-size: 12px; color: #d4d4d8; padding: 2px 4px; border-radius: 4px; }
@@ -396,11 +401,35 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                     phaseEl.id = phaseId;
                     phaseEl.className = 'tree-phase';
                     phaseEl.open = true;
-                    phaseEl.innerHTML = \`<summary class="phase-header"><h4>\${escapeHtml(phase.title)}</h4><span class="toggle-icon"></span></summary><div class="phase-body"></div>\`;
+                    phaseEl.innerHTML = \`<summary class="phase-header"><h4>\${escapeHtml(phase.title)}</h4><div class="phase-meta"><span class="phase-duration"></span><span class="toggle-icon"></span></div></summary><div class="phase-body"></div>\`;
                     groupBody.appendChild(phaseEl);
                 }
+
+                // apra-fleet-eft.53.2: phase-header duration, mirroring the
+                // activity-duration convention (eft.45.1) -- while the phase
+                // is LIVE (phaseStartedAt set, no phaseEndedAt yet) show
+                // elapsed-since-start via formatUptime, recomputed from
+                // Date.now() on every renderTreeIncremental() call so it
+                // ticks forward on the normal refresh/SSE cadence with no
+                // dedicated timer. Once the phase EXITS (phaseEndedAt set)
+                // the frozen total is rendered via formatTime exactly like a
+                // completed activity's duration, and dataset.rendered is set
+                // so later re-renders (including of earlier-cycle phases
+                // after a resume/reload) never recompute it again.
+                const phaseDurationEl = phaseEl.querySelector('.phase-duration');
+                if (phaseDurationEl && phaseDurationEl.dataset.rendered !== 'done') {
+                    let phaseDurationHtml = '';
+                    if (phase.phaseEndedAt) {
+                        phaseDurationHtml = formatTime(new Date(phase.phaseEndedAt).getTime() - new Date(phase.phaseStartedAt).getTime());
+                        phaseDurationEl.dataset.rendered = 'done';
+                    } else if (phase.phaseStartedAt) {
+                        phaseDurationHtml = formatUptime(Date.now() - new Date(phase.phaseStartedAt).getTime());
+                    }
+                    phaseDurationEl.textContent = phaseDurationHtml;
+                }
+
                 const phaseBody = phaseEl.querySelector('.phase-body');
-                
+
                 phase.events.forEach((ev, eIdx) => {
                     const evId = \`ev-\${gIdx}-\${pIdx}-\${eIdx}\`;
                     let evEl = document.getElementById(evId);
@@ -491,6 +520,45 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                         
                         let childrenHtml = '';
                         if (!act.isRunning) {
+                            // apra-fleet-eft.69.1: THE UNIFORM COMMAND/AGENT
+                            // ROW-BODY RULE (bug item 3 -- "some command rows
+                            // carry details in the body while many others
+                            // show only a title; make the rule uniform and
+                            // documented"). There is exactly ONE rule, and it
+                            // is keyed ONLY on the two generic fields every
+                            // completed activity may carry -- never on
+                            // act.type, act.label, act.member, or any
+                            // role/phase name (the HARD CONSTRAINT from
+                            // apra-fleet-eft.69: no auto-sprint-specific
+                            // special-casing in viewer code):
+                            //   1. hasField('error') true -> render the error
+                            //      block (plus Output: underneath, if any).
+                            //   2. else hasField('output') true -> render the
+                            //      output block.
+                            //   3. else -> no body at all; the row is title
+                            //      only.
+                            // hasField() below is true when the field is
+                            // either a non-empty inline string OR carries the
+                            // <field>Truncated/<field>ByteLength markers
+                            // (lean-state.mjs / command-output-cap.mjs). This
+                            // applies IDENTICALLY to every activity type --
+                            // 'agent', 'command', 'transform', or any future
+                            // generic type -- so a command that legitimately
+                            // produced no output and no error (e.g. a plain
+                            // 'git add', a successful 'bd update --claim')
+                            // showing only its title is the CORRECT,
+                            // consistent result of this one rule applied to
+                            // different data, not a special case or a bug --
+                            // the same command with real output/error would
+                            // render a body exactly the same way an agent
+                            // dispatch does. (The full invoked command text
+                            // itself is NOT part of this rule -- it lives in
+                            // the row's title/label, capped to 60 chars at
+                            // dispatch time; the runner.js command() caller
+                            // is responsible for choosing a diagnostic label
+                            // when the command text alone would not be, same
+                            // as agent()'s label.)
+                            //
                             // apra-fleet-eft.38 (reopened): a REAL capped
                             // activity ships NO inline text field at all --
                             // only the markers (\${field}Truncated + the TRUE
@@ -549,6 +617,26 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                         const memberDisplay = act.member ? escapeHtml(act.member) : (act.type === 'transform' ? 'js' : '');
                         const memberHtml = memberDisplay ? \`<span class="muted">(\${memberDisplay})</span>\` : '';
 
+                        // apra-fleet-eft.45.1: while an activity is still
+                        // running (isRunning true, no final act.duration
+                        // yet), render elapsed-since-start at the same right-
+                        // edge slot the final duration occupies, using the
+                        // same short-form ('0s'/'5s'/'1m 20s') as
+                        // formatUptime -- not formatTime's '1.5s' decimal
+                        // form, which is reserved for the completed-duration
+                        // label. Recomputed from act.startTime on every
+                        // render call, so each poll/refresh naturally ticks
+                        // it forward without a dedicated timer (out of scope
+                        // per eft.45). On completion this branch stops
+                        // firing (act.isRunning goes false) and the existing
+                        // act.duration branch below takes over unchanged.
+                        let durationHtml = '';
+                        if (act.isRunning) {
+                            if (act.startTime) durationHtml = formatUptime(Date.now() - act.startTime);
+                        } else if (act.duration) {
+                            durationHtml = formatTime(act.duration);
+                        }
+
                         evEl.innerHTML = \`
                           <summary class="activity-header">
                             <span class="log-time">\${t}</span>
@@ -556,7 +644,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                             <div class="activity-meta">
                               \${modelHtml}
                               \${tokensHtml}
-                              \${act.duration ? formatTime(act.duration) : ''} \${badge}
+                              \${durationHtml} \${badge}
                               <span class="toggle-icon"></span>
                             </div>
                           </summary>
@@ -781,7 +869,16 @@ export function createDashboardViewer(workflow, opts = {}) {
 
     // Note: group/phase tracking is single-run by design (single-tenant usage).
     let currentGroup = { title: 'Workflow', phases: [] };
-    let currentPhase = { title: 'Initialization', events: [] };
+    // apra-fleet-eft.53.1: every phase entry is stamped with phaseStartedAt on
+    // entry and phaseEndedAt (initially null) on exit, so the dashboard can
+    // render a live elapsed-time tick for the in-progress phase and a frozen
+    // duration for exited ones (apra-fleet-eft.53.2). Both fields live
+    // directly on the plain phase object pushed into state.tree, so they are
+    // written to disk unchanged by the existing debounced/terminal
+    // persistence paths (debounced-writer.mjs / persistState() below) and
+    // survive a reload/History-view replay for free -- no separate
+    // persistence wiring needed.
+    let currentPhase = { title: 'Initialization', phaseStartedAt: startedAtIso, phaseEndedAt: null, events: [] };
     currentGroup.phases.push(currentPhase);
     state.tree.push(currentGroup);
 
@@ -903,6 +1000,12 @@ export function createDashboardViewer(workflow, opts = {}) {
     // can't tell them apart -- hence two small wrappers instead of one
     // handler branching on an argument that would never actually arrive.
     const handleSigint = () => {
+        // apra-fleet-eft.53.1: same close-out as the normal 'end' path -- a
+        // SIGINT-interrupted run must not leave its final phase's
+        // phaseEndedAt dangling null in the persisted snapshot.
+        if (currentPhase && currentPhase.phaseEndedAt == null) {
+            currentPhase.phaseEndedAt = nowIso();
+        }
         state.endedAt = nowIso();
         state.terminalReason = state.terminalReason || 'SIGINT';
         persistState();
@@ -919,6 +1022,10 @@ export function createDashboardViewer(workflow, opts = {}) {
         process.exit(130);
     };
     const handleSigterm = () => {
+        // apra-fleet-eft.53.1: see handleSigint's identical stamp above.
+        if (currentPhase && currentPhase.phaseEndedAt == null) {
+            currentPhase.phaseEndedAt = nowIso();
+        }
         state.endedAt = nowIso();
         state.terminalReason = state.terminalReason || 'SIGTERM';
         persistState();
@@ -936,7 +1043,13 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     workflow.on('phase', (title) => {
-        currentPhase = { title, events: [] };
+        // apra-fleet-eft.53.1: stamp phaseEndedAt on the phase being exited
+        // (guarded so an already-ended phase -- e.g. one closed by the 'end'
+        // handler below -- is never overwritten) before starting the new one.
+        if (currentPhase && currentPhase.phaseEndedAt == null) {
+            currentPhase.phaseEndedAt = nowIso();
+        }
+        currentPhase = { title, phaseStartedAt: nowIso(), phaseEndedAt: null, events: [] };
         if (!currentGroup) {
             currentGroup = { title: 'Workflow', phases: [] };
             state.tree.push(currentGroup);
@@ -996,6 +1109,13 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     workflow.on('end', (res) => {
+        // apra-fleet-eft.53.1: the run's final phase never gets a 'phase'
+        // event to close it out -- stamp its phaseEndedAt here so no phase
+        // entry is left with a dangling null once the run has actually
+        // ended.
+        if (currentPhase && currentPhase.phaseEndedAt == null) {
+            currentPhase.phaseEndedAt = nowIso();
+        }
         state.status = res.status;
         state.stats.durationMs = Date.now() - state.stats.startTime;
         // apra-fleet-eft.2.2/eft.37.3: enrich the terminal state with

@@ -1,4 +1,8 @@
-# Apra Fleet — Agent Context
+# Apra Fleet - Agent Context
+
+<!-- Generated from CLAUDE.md by `node scripts/sync-agent-docs.mjs` -- do not hand-edit the shared sections below (the tool-specific appendix at the end of this file is exempt). Edit CLAUDE.md and rerun the script. -->
+
+> Beads: run `bd prime` first. DB name (`.beads/metadata.json`) is local/gitignored and can differ per clone -- not a sync requirement. If `bd bootstrap` errors "database exists" on a clean clone, retry with `--database <other-name>`.
 
 Read `README.md` in this repo for the full tool reference, installation, member registration, multi-provider setup, git authentication, PM skill commands, and troubleshooting.
 
@@ -19,6 +23,16 @@ node dist/index.js install     # Dev-mode install
 - See [Architecture](docs/architecture.md) for internal structure
 - ASCII only: never write non-ASCII characters to any file. Use `-` for dashes, `->` for arrows, `[OK]` for checkmarks, etc.
 - Permission blocks must be surfaced, not routed around: if a tool or git invocation is blocked by the permission layer, stop and report the block to the user/orchestrator. Do not author a wrapper script, alternate binary, or other workaround whose purpose is to bypass the block, even if the underlying operation is judged safe. See `scripts/recovery.sh` disposition note in the 2026-07-02 incident writeup (RECOVERY.md) for the precedent this guards against.
+- `packages/apra-fleet-client` must always be updated to catch up with any changes to the fleet MCP tools (`src/tools/*` schemas/behavior) in the same change -- it is the thin client wrapper other packages (fleet-sprint, apra-pm, workflows) use to call those tools, and a drifted client silently gives callers a stale or inconsistent view of what the server actually accepts/does. This is not optional cleanup; treat it as part of the tool change itself.
+
+## DeepWiki
+
+Always use DeepWiki (MCP server `https://mcp.deepwiki.com/mcp`) while exploring this codebase -- prefer it over cold file reads for architecture/unfamiliar-component questions:
+- `mcp__deepwiki__read_wiki_structure(repo)` -- architecture map; call first when starting on an unfamiliar area
+- `mcp__deepwiki__read_wiki_contents(repo, topic)` -- a specific doc topic
+- `mcp__deepwiki__ask_question(repo, question)` -- faster than local grep for understanding a component
+
+`repo` format: `owner/repo`. Use `Apra-Labs/apra-fleet` for this repo; also useful for related repos this project depends on: `Apra-Labs/apra-pm`, `gastownhall/beads`, `Apra-Labs/fleet-e2e-toy`. To claim what a *specific script does*, read the script -- DeepWiki is for architecture/orientation, not a substitute for reading code you're about to modify.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
@@ -36,9 +50,9 @@ bd close <id>         # Complete work
 
 ### Rules
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Use `bd` for ALL task tracking - do NOT use TodoWrite, TaskCreate, or markdown TODO lists
 - Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+- Use `bd remember` for persistent knowledge - do NOT use MEMORY.md files
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkHarvesterContract, runOnce, runDevelopLoopScenario, withScenarioMarkers, REQUIRED_AGENT_TYPES, uniqueMockBranch } from './helpers/mock-sprint-harness.mjs';
+import { checkHarvesterContract, runOnce, runDevelopLoopScenario, withScenarioMarkers, REQUIRED_AGENT_TYPES, uniqueMockBranch, mockCmdResult, isSpawnFailure } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -12,6 +12,31 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // whatever runOnce('run1') actually used.
 const RUN1_BRANCH = uniqueMockBranch('run1');
 const RUN1_BRANCH_RE_SAFE = RUN1_BRANCH.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+// apra-fleet-1cb.2: direct regression assertion for the isError/nonzero-exit
+// contract used by helpers/mock-sprint-harness.mjs's command() dispatch
+// (formerly test/advanced-mock-runner-test.mjs, split into this file --
+// apra-fleet-fih.1) -- protects against mockCmdResult()/isSpawnFailure()
+// silently drifting back to conflating "shell exited nonzero" with "MCP
+// dispatch failed" (the bug apra-fleet-1cb.1 fixed). Exercises the two
+// functions directly rather than a full mock sprint, so it stays fast and
+// pinpoints the exact function at fault on a regression.
+test('mockCmdResult/isSpawnFailure: nonzero exit is non-error data, spawn failure is isError:true', () => {
+    // A nonzero shell exit (e.g. a `bd` command failing on bad input) is
+    // normal data, matching src/tools/execute-command.ts -- never isError.
+    const nonzeroExit = mockCmdResult(1, '', 'bead already closed');
+    assert.strictEqual(nonzeroExit.isError, undefined);
+    assert.strictEqual(nonzeroExit.structuredContent.exitCode, 1);
+    assert.match(nonzeroExit.content[0].text, /^Exit code: 1/);
+
+    // A genuine spawn/transport failure (process never ran) IS isError:true
+    // in the command() dispatch logic -- isSpawnFailure() is what
+    // distinguishes that case from an ordinary nonzero exit code.
+    assert.strictEqual(isSpawnFailure({ code: undefined }), true);
+    assert.strictEqual(isSpawnFailure({ code: 'ENOENT' }), true);
+    assert.strictEqual(isSpawnFailure({ code: 1 }), false);
+    assert.strictEqual(isSpawnFailure({ code: 127 }), false);
+});
 
 // apra-fleet-fih.1: happy-path + determinism scenarios (run1, run2), split
 // out of the former monolithic advanced-mock-runner-test.mjs. run1/run2 are
@@ -67,8 +92,21 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             run1.commandLog.slice(0, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
             `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(0, firstGitIdx))}`
         );
+        // apra-fleet-co4: the branch-fetch succeeded (this mock's git/gh
+        // interceptor succeeds by default), so Ensure Sprint Branch now also
+        // unconditionally probes for a pre-existing local branch (needed to
+        // decide whether a successful fetch is actually safe to reset over).
+        // This hermetic mock's rev-parse intercept (see
+        // helpers/mock-sprint-harness.mjs) answers deterministically from its
+        // per-member checkout-state model, which starts empty -- no local
+        // branch has been checked out yet at this point in the run -- so the
+        // probe reports "no local branch" and the tip-comparison merge-base
+        // probes are correctly skipped (only relevant once a local branch
+        // exists), falling straight through to the checkout. This adds
+        // exactly ONE new commandLog entry (the rev-parse) before the
+        // checkout that did not exist before this fix.
         check(
-            run1.commandLog.length >= firstGitIdx + 5 && /^git fetch /.test(run1.commandLog[firstGitIdx]),
+            run1.commandLog.length >= firstGitIdx + 4 && /^git fetch /.test(run1.commandLog[firstGitIdx]),
             `Expected first git commandLog entry to be the base-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx])}`
         );
         check(
@@ -76,8 +114,12 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             `Expected second git commandLog entry to be the sprint-branch fetch, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 1])}`
         );
         check(
-            run1.commandLog[firstGitIdx + 2] && run1.commandLog[firstGitIdx + 2].includes(`git checkout -B ${RUN1_BRANCH}`),
-            `Expected third git commandLog entry to be the sprint-branch checkout, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 2])}`
+            run1.commandLog[firstGitIdx + 2] && run1.commandLog[firstGitIdx + 2].includes(`git rev-parse --verify --quiet refs/heads/${RUN1_BRANCH}`),
+            `Expected third git commandLog entry to be the local-branch probe, got: ${JSON.stringify(run1.commandLog[firstGitIdx + 2])}`
+        );
+        check(
+            run1.commandLog[firstGitIdx + 3] && run1.commandLog[firstGitIdx + 3].includes(`git checkout -B ${RUN1_BRANCH}`),
+            `Expected fourth git commandLog entry to be the sprint-branch checkout (no local branch existed yet, so no tip-comparison probes), got: ${JSON.stringify(run1.commandLog[firstGitIdx + 3])}`
         );
         // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
         // `git remote get-url origin` (isHostedGithubRemote()) BEFORE
