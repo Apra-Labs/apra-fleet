@@ -24,6 +24,12 @@ if (!Object.prototype.hasOwnProperty.call(MODES, mode)) {
     process.exit(2);
 }
 
+// Keep in sync with the --test-concurrency value passed below. Exported into
+// the test workers' env so test/helpers/scaled-timeout.mjs can derive
+// contention-aware timeout budgets instead of hardcoding fixed wall-clock
+// bounds that blow up under concurrent load but pass standalone.
+const TEST_CONCURRENCY = 8;
+
 const extraArgs = process.argv.slice(3);
 const result = spawnSync(
     process.execPath,
@@ -31,13 +37,17 @@ const result = spawnSync(
         '--test',
         '--test-reporter=./test/helpers/timestamped-reporter.mjs',
         '--test-reporter-destination=stdout',
-        '--test-concurrency=8',
+        `--test-concurrency=${TEST_CONCURRENCY}`,
         ...(extraArgs.length > 0 ? extraArgs : ['test/*.test.mjs']),
     ],
     {
         cwd: pkgRoot,
         stdio: 'inherit',
-        env: { ...process.env, APRA_FLEET_BD_MOCK: MODES[mode] },
+        env: {
+            ...process.env,
+            APRA_FLEET_BD_MOCK: MODES[mode],
+            APRA_FLEET_TEST_CONCURRENCY: String(TEST_CONCURRENCY),
+        },
     },
 );
 process.exit(result.status ?? 1);
