@@ -31,12 +31,16 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
 
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
-1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+1. Run ToolSearch with query
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_list,mcp__apra-fleet__kb_promote"`
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under review,
    and `hint_symbols`/`hint_modules` relevant to the files changed in this review round.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
 3. When you find a gotcha, a missed invariant, or a non-obvious constraint during review,
-   call `mcp__apra-fleet__kb_capture` with type "knowledge" and confidence "CONFIRMED".
+   call `mcp__apra-fleet__kb_capture` with type "knowledge". Leave confidence at its
+   default. `kb_capture` clamps every incoming CONFIRMED down to INFERRED by design --
+   passing CONFIRMED here does not mint it, it just returns `confidence_clamped: true`.
+   CONFIRMED is minted only in Step 5, and only for claims you actually verified.
 
 If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
@@ -111,7 +115,40 @@ short sleeps. Do not end your turn or return a verdict while the test suite is s
 running -- a backgrounded run with no reported final outcome is not a completed step,
 no matter how many times you've already narrated "still running."
 
-## Step 5 -- Verdict
+## Step 5 -- Promote knowledge you verified
+
+You are the only role permitted to mint CONFIRMED. `kb_capture` clamps to INFERRED, so
+without this step nothing an agent learns ever reaches the team bible -- it stays local to
+the machine that learned it, and `kb_export` (CONFIRMED-only) never sees it.
+
+1. Call `mcp__apra-fleet__kb_list` with `confidence: "INFERRED"` and `repo_path` set to the
+   repo under review, to see the candidate entries.
+2. Promote **only** entries whose claim you independently verified during THIS review --
+   by reading the diff, running the tests, or checking the referenced code yourself.
+   Call `mcp__apra-fleet__kb_promote` with the entry `id` and a `reason` that states the
+   evidence, e.g. `"verified against src/auth/token.ts:88 and the expired-token test"`.
+3. Promote nothing else.
+
+Hard limits:
+
+- **Evidence, not plausibility.** If an entry merely looks correct, or you would have to
+  take the doer's word for it, leave it INFERRED. INFERRED is a perfectly good resting
+  state; a wrong CONFIRMED entry is worse than no entry, because later sessions trust
+  CONFIRMED fully and will not re-check it.
+- **Never blanket-promote.** Do not promote every entry the doer captured, and do not
+  promote by module, tag, or timestamp. One deliberate call per verified claim.
+- **Not tied to the verdict.** A fact can be verified even when the code needs rework, and
+  an APPROVED verdict does not make unverified entries true. Judge each entry on its own
+  evidence.
+- **User-directives are off limits.** `kb_promote` refuses to activate a pending
+  user-directive (activation is human-only, via `apra-fleet kb approve-directive`). Do not
+  attempt it; a refusal is expected behaviour, not an error to work around.
+- If the KB tools are unavailable, skip this step and proceed to the verdict.
+
+Promotion is a KB write, not a beads mutation -- it does not conflict with the "never
+mutate beads" rule below. Report what you promoted in `notes`.
+
+## Step 6 -- Verdict
 
 Return your structured output ONLY. You never call `bd update`, `bd close`, `bd create`,
 or any other beads mutation yourself -- the orchestrator reads your structured output and
