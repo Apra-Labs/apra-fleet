@@ -124,3 +124,66 @@ evidence confirms no lingering pid-less interactive session was reused across th
 two dispatches. Existing eft.28/eft.50 regression tests remain green. This
 corroborates apra-fleet-eft.74.1 and apra-fleet-eft.74.2 on `feat/sprint-service-1`,
 with apra-fleet-eft.84's install fix confirmed in place to reach this point.
+
+## 2026-07-28 retest (apra-fleet-eft.74.11)
+
+Branch `feat/sprint-service-1`, HEAD `54091825e41acd87aeca5fc42c1f0f35c454b830`.
+Re-ran this bead's live-smoke procedure as a fresh streak-order-3 retest after
+apra-fleet-eft.74.9 (impl re-verification) and apra-fleet-eft.74.10 (unit-test
+re-verification) both closed with "already implemented -- no code changes
+needed" against the fix already recorded above (apra-fleet-eft.74.1/eft.74.2).
+
+Setup this time used a self-contained sandbox HOME
+(`~/temp/.apra-fleet-tests-eft74-11`, scratch port `18701`, distinct from the
+`.8` retest's sandbox/port to avoid collision) with a minimal local `git init`
+toy repo (no network clone needed, since this retest -- like `.8` -- drives
+`execute_prompt` directly over the sandbox's HTTP MCP endpoint rather than the
+full `workflow fleet-sprint` toy-sprint scenario) and the same credential
+workaround documented above for apra-fleet-vak (persistent secret
+`INTEG-TOY-DOER-TOKEN-RAW` seeded from the runner's bare
+`$CLAUDE_CODE_OAUTH_TOKEN`, then `auth --oauth --member toy-doer
+secure.INTEG-TOY-DOER-TOKEN-RAW`).
+
+Two sequential `execute_prompt` calls to `toy-doer` (`resume=false`,
+`timeout_s=120`, `max_total_s=180`, distinct trivial prompts) via a small
+one-off MCP client script (`@modelcontextprotocol/sdk` `Client` +
+`StreamableHTTPClientTransport`, deleted after the run):
+
+```
+[first]  elapsed=10.8s -> "eft74-11-smoke-first-ack",  session=a21a505d-d6eb-4714-b8de-2df948f43d78
+[second] elapsed=5.9s  -> "eft74-11-smoke-second-ack", session=79fc8b91-03e8-4dc2-8bab-495ccf1e4beb
+```
+
+Fleet server log (`~/.apra-fleet/data/logs/fleet-<pid>.log` in the retest
+sandbox HOME), annotated:
+
+```
+{"tag":"execute_prompt","inv":"zcaw7","mem":"toy-doer","msg":"[sonnet] resume=false timeout=120s ... second-ack ..."}
+{"tag":"execute_prompt","inv":"zcaw7","mem":"toy-doer","msg":"pid=4047"}
+{"tag":"session","msg":"new sid=b9f9fe01-... client=claude-code/2.1.212 caps=roots,elicitation member=false"}  <- dispatch 2's own post-spawn connect-back, member=false (not interactive-routable)
+{"tag":"execute_prompt","inv":"zcaw7","mem":"toy-doer","msg":"exit=0 in=4 out=117 elapsed=5665ms"}             <- dispatch 2 completes normally, no timeout
+```
+
+`grep -iE "timeout|evict|wedge|exit=1|warn"` against the full retest log
+matched only the three `timeout=120s` config-echo lines from each dispatch's
+own start-of-call log entry -- no eviction, no wedge, no `exit=1`, no `warn`.
+Each dispatch got its own fresh pid (`4021`, `4047` on the first pair of calls
+in the run; `4082`, `4114` on a second pair run moments later to confirm
+repeatability) and its own fresh session id every time, with every post-spawn
+MCP connect-back logging `member=false` -- the same explicit-opt-in-handshake
+gate signature as the `.8` retest above, confirming the fix is unchanged and
+still holding on current HEAD.
+
+Regression check, same as `.8`:
+
+```bash
+npx vitest run tests/execute-prompt-phantom-connectback.test.ts tests/execute-prompt-interactive.test.ts
+```
+
+Result: **18/18 tests pass**.
+
+**Result: PASS.** Two sequential same-member `execute_prompt` dispatches both
+completed with distinct fresh sessions; the second did not time out or wedge.
+Re-confirms apra-fleet-eft.74.1/eft.74.2 hold unmodified on
+`feat/sprint-service-1` at `5409182`, corroborating apra-fleet-eft.74.9's and
+apra-fleet-eft.74.10's "no code changes needed" closures.
