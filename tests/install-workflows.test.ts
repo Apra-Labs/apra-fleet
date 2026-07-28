@@ -391,4 +391,62 @@ describe('buildDevManifest scripts manifest excludes directories (regression for
       expect(stat.isFile(), `manifest.scripts['${key}'] (${relPath}) must be a file, not a directory`).toBe(true);
     }
   });
+
+  // apra-fleet-eft.84.2 -- dedicated hermetic fixture pinning the same
+  // regression, independent of this repo's current scripts/ layout (the test
+  // above depends on scripts/agent-doc-partials/ continuing to exist on disk).
+  // Builds a minimal fixture project root whose scripts/ dir mirrors the real
+  // layout that crashed dev-mode install: a flat non-.mjs script alongside a
+  // subdirectory holding its own file. Every other buildDevManifest() input
+  // (packages/, dist/, vendor/, examples/) is optional -- guarded by
+  // fs.existsSync in the real function -- so omitting them from the fixture
+  // just yields empty manifest sections, not a crash.
+  it('fixture root: scripts/ subdirectory never becomes a flat manifest key, and every emitted script is EISDIR-safe to read', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const real = await vi.importActual<typeof import('../src/cli/install.js')>('../src/cli/install.js');
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+    const osReal = await vi.importActual<typeof import('node:os')>('node:os');
+
+    const fixtureRoot = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'apra-fleet-eft84-2-'));
+    try {
+      fsReal.mkdirSync(pathReal.join(fixtureRoot, 'hooks'), { recursive: true });
+      fsReal.mkdirSync(pathReal.join(fixtureRoot, 'scripts', 'agent-doc-partials'), { recursive: true });
+      // Flat .cjs/.sh-style script -- must survive as a flat manifest.scripts key.
+      fsReal.writeFileSync(pathReal.join(fixtureRoot, 'scripts', 'sync-agent-docs.mjs.helper.cjs'), '// fixture script\n');
+      fsReal.writeFileSync(pathReal.join(fixtureRoot, 'scripts', 'recovery.sh'), '#!/bin/sh\necho fixture\n');
+      // Subdirectory (mirrors scripts/agent-doc-partials/) with a file inside --
+      // pre-fix this whole directory was emitted as ONE flat manifest.scripts
+      // entry (`agent-doc-partials` -> `scripts/agent-doc-partials`), and reading
+      // that path as a file crashed with EISDIR.
+      fsReal.writeFileSync(pathReal.join(fixtureRoot, 'scripts', 'agent-doc-partials', 'header.md'), '# fixture partial\n');
+      fsReal.writeFileSync(pathReal.join(fixtureRoot, 'version.json'), JSON.stringify({ version: '0.0.0-fixture' }));
+
+      const manifest = real._buildDevManifestForTest(fixtureRoot);
+
+      // The bare directory name must NEVER appear as a flat manifest.scripts key.
+      expect('agent-doc-partials' in manifest.scripts).toBe(false);
+      expect(Object.values(manifest.scripts)).not.toContain('scripts/agent-doc-partials');
+
+      // The flat sibling scripts are still collected as expected.
+      expect(manifest.scripts['recovery.sh']).toBe('scripts/recovery.sh');
+      expect(manifest.scripts['sync-agent-docs.mjs.helper.cjs']).toBe('scripts/sync-agent-docs.mjs.helper.cjs');
+
+      // Every manifest.scripts value must resolve to a real file, and reading
+      // it must not throw EISDIR -- the exact failure extractAsset() hit at
+      // install step [3/12] when a directory was emitted as a flat key.
+      expect(Object.keys(manifest.scripts).length).toBeGreaterThan(0);
+      for (const [key, relPath] of Object.entries(manifest.scripts)) {
+        const fullPath = pathReal.join(fixtureRoot, relPath);
+        const stat = fsReal.statSync(fullPath);
+        expect(stat.isFile(), `manifest.scripts['${key}'] (${relPath}) must be a file, not a directory`).toBe(true);
+        expect(() => fsReal.readFileSync(fullPath), `reading manifest.scripts['${key}'] (${relPath}) must not throw EISDIR`).not.toThrow();
+      }
+    } finally {
+      fsReal.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
 });
