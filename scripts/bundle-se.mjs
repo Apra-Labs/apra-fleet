@@ -149,6 +149,25 @@ await build({
   minify: false, // keep readable for debugging
   // cli.mjs's own shebang (#!/usr/bin/env node) is preserved by esbuild
   // automatically when it is the first line of the entry point.
+  //
+  // ESM output + a bundled CJS dependency needs a real `require` in scope.
+  // esbuild rewrites CJS `require(...)` calls into its own `__require` shim,
+  // and that shim's fallback THROWS -- `Dynamic require of "node:assert" is
+  // not supported` -- for any call it could not resolve statically. undici
+  // (pulled in transitively by @apralabs/apra-fleet-client's HTTP transport)
+  // does exactly that at runtime from lib/dispatcher/client.js, so every
+  // invocation of the bundled binary died on startup before parsing a single
+  // flag. The shim's first branch is `typeof require !== "undefined" ?
+  // require : <throwing fallback>`, so defining a genuine createRequire-backed
+  // `require` at module scope makes it take the working branch instead. This
+  // is the canonical esbuild ESM/CJS interop fix, not a workaround for undici
+  // specifically: any future CJS dep doing a dynamic require is covered.
+  banner: {
+    js: [
+      "import { createRequire as __apraCreateRequire } from 'node:module';",
+      'const require = __apraCreateRequire(import.meta.url);',
+    ].join('\n'),
+  },
   metafile: true,
 });
 
