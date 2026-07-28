@@ -729,12 +729,20 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
  * pre-existing behavior, same convention as the `agent` param on
  * syncMemberAfter.
  *
+ * apra-fleet-eft.87.1: an optional `resetToRemoteTip` (default false) changes
+ * the pull half from `git merge --ff-only` to a `git reset --hard <remote>/
+ * <branch>` so a RETRIED doer dispatch resumes on the published tip instead of
+ * failing on (or re-committing over) a divergence its own prior attempt left
+ * behind. Only set on a retry that may have mutated (withGitSync's
+ * resumeOntoRemoteTip); omitting it preserves the exact prior ff-only-merge
+ * behaviour for every first attempt / happy-path caller.
+ *
  * @param {string} member
- * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string, onAuthFailure?: Function }} opts
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string, onAuthFailure?: Function, resetToRemoteTip?: boolean }} opts
  * @returns {Promise<{ ok: true, member: string }>}
  */
 export async function syncMemberBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch, onAuthFailure } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch, onAuthFailure, resetToRemoteTip = false } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberBefore requires an injected command() in opts");
     }
@@ -765,6 +773,39 @@ export async function syncMemberBefore(member, opts = {}) {
             `[Sync] G-pull fetch failed for member '${member}': ${fetch.error}`,
             { member, gitOutput: fetch.error },
         );
+    }
+
+    // apra-fleet-eft.87.1: on a RETRIED doer dispatch whose prior attempt was
+    // NOT provably a no-mutation failure (it may have committed and/or pushed
+    // its single-task streak), a plain `git merge --ff-only` is the wrong
+    // recovery. If the prior attempt pushed and the local tip then diverged (a
+    // re-implemented duplicate commit vs the already-published one), the ff-only
+    // merge raises GitDivergedError and the streak can NEVER resume -- every
+    // subsequent `git push`/`git merge --ff-only` fails non-fast-forward (the
+    // eft.87 smoke-test symptom, `git rev-list --left-right` = '2 1'). When
+    // `resetToRemoteTip` is set (only ever on a retry that may have mutated --
+    // see withGitSync's resumeOntoRemoteTip), HARD-RESET the local branch onto
+    // the freshly fetched remote tip so the retry resumes ON TOP of already-
+    // published work rather than re-committing it. Only the code checkout is
+    // touched (beads live in a separate Dolt clone); a local commit that was
+    // never published is intentionally dropped and simply re-done by the retry,
+    // which is exactly what prevents the divergent duplicate commit. Requires a
+    // concrete branch to name a remote tip; without one it falls through to the
+    // normal ff-only merge below (unchanged behaviour).
+    if (resetToRemoteTip && branch) {
+        const resetTarget = `${remote}/${branch}`;
+        const reset = await runGitStep({
+            command, member, cmd: `git reset --hard ${resetTarget}`,
+            label: `G-pull reset-to-remote-tip for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        });
+        if (!reset.ok) {
+            throw new GitSyncError(
+                `[Sync] G-pull reset-to-remote-tip failed for member '${member}': ${reset.error}`,
+                { member, gitOutput: reset.error },
+            );
+        }
+        log(`[Sync] G-pull for member '${member}': hard-reset local branch onto '${resetTarget}' so a retried dispatch resumes on the published tip instead of re-committing (apra-fleet-eft.87.1).`);
+        return { ok: true, member };
     }
 
     const mergeCmd = branch ? `git merge --ff-only ${remote}/${branch}` : 'git merge --ff-only';
@@ -4569,7 +4610,7 @@ async function runSprintCycle(context) {
     // non-code-writing roles (pushCode:false short-circuits before the
     // conflict path is ever reached) and never fires for a plain, non-
     // conflict divergence.
-    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, skipPreDispatchSync = false, skipPreDispatchDoltPull = false } = {}) {
+    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, skipPreDispatchSync = false, skipPreDispatchDoltPull = false, resumeOntoRemoteTip = false } = {}) {
         // apra-fleet-eft.54.1: on a retry that immediately follows a TERMINAL
         // no-mutation dispatch failure for this same member (the Planner retry
         // ladder's 2nd..Nth attempt after a dispatch_failed/auth abort), the
@@ -4586,10 +4627,22 @@ async function runSprintCycle(context) {
         // PLANNER_DISPATCH_RETRY_DELAYS_MS backoff. The first attempt (and
         // every non-retry / happy-path call) keeps the exact prior pre-dispatch
         // behaviour -- skipPreDispatchSync defaults false.
+        // apra-fleet-eft.87.1: skipPreDispatchSync (the eft.54.1 optimization)
+        // and resumeOntoRemoteTip are mutually exclusive retry modes and MUST
+        // stay that way. skipPreDispatchSync short-circuits the entire pre-
+        // dispatch sync on the STRICT assumption "the prior attempt published
+        // nothing" -- it is only ever passed for a genuine TERMINAL no-mutation
+        // dispatch failure (isNoMutationDispatchFailure). resumeOntoRemoteTip is
+        // the opposite case: a retry whose prior attempt was NOT provably a no-
+        // mutation failure (it may have committed and/or pushed), so it must
+        // FETCH + reset the local branch onto the remote tip BEFORE the doer can
+        // commit, resuming on published work instead of re-implementing it and
+        // diverging. It therefore runs the full pre-dispatch sync with
+        // syncMemberBefore's resetToRemoteTip mode rather than the skip path.
         if (skipPreDispatchSync) {
             log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
         } else {
-            await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure });
+            await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip });
             // apra-fleet-eft.54.6: skipPreDispatchDoltPull skips ONLY the real
             // `bd dolt pull` SPAWN (the residual real-bd Dolt sync bracket the
             // terminal auth-abort path hung on) while STILL running
@@ -6649,7 +6702,13 @@ async function runSprintCycle(context) {
                 // by other sprints. This is the prevention layer that reduces
                 // row-level conflicts (C.2) by claiming beads based on the
                 // current remote state.
-                const dispatchDoer = () => withGitSync(doerMember, true, async () => {
+                // apra-fleet-eft.87.1: `syncOpts` lets a RETRY re-dispatch ask
+                // for resumeOntoRemoteTip so the pre-dispatch sync resets the
+                // local branch onto the streak branch's remote tip before the
+                // doer commits again -- see the retry call below. The FIRST
+                // attempt passes nothing, so its pre-dispatch sync keeps the
+                // exact prior ff-only behaviour (no reset on the happy path).
+                const dispatchDoer = (syncOpts = {}) => withGitSync(doerMember, true, async () => {
                     // apra-fleet-eft.9.7: per-bead work-claiming inside the brackets,
                     // after D-pull brings in the latest claim state. Only claim once.
                     if (!hasClaimedBeads) {
@@ -6735,7 +6794,7 @@ async function runSprintCycle(context) {
                             max_turns: BASE_DOER_MAX_TURNS,
                         }
                     );
-                }, { pushBeads: true });
+                }, { pushBeads: true, ...syncOpts });
 
                 // The resume-and-continue retry is the SAME logical doer
                 // streak continuing (same session, same code/bead-writing
@@ -6815,7 +6874,16 @@ async function runSprintCycle(context) {
                         log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
                         wasRetried = true;
                         try {
-                            report = await dispatchDoer();
+                            // apra-fleet-eft.87.1: this is a RETRIED doer
+                            // dispatch whose prior attempt was NOT a provable
+                            // no-mutation failure (a generic throw -- it may have
+                            // committed and/or pushed its single-task streak
+                            // before failing). Resume onto the streak branch's
+                            // remote tip so the retry builds on any already-
+                            // published work instead of re-implementing the task
+                            // as a divergent, content-identical duplicate commit
+                            // (the eft.87 non-fast-forward-forever symptom).
+                            report = await dispatchDoer({ resumeOntoRemoteTip: true });
                         } catch (err2) {
                             dispatchError = err2;
                         }
