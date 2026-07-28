@@ -793,9 +793,17 @@ ${parsed.result}`;
 session: ${parsed.sessionId}`;
     // Auto-harvest learnings from session output (fire-and-forget)
     if (parsed.result) {
+      // apra-fleet-tm7.2: only pass repo_path for local members. For a REMOTE
+      // member, agent.workFolder is a path on the remote host and will almost
+      // never exist on this (fleet server) machine, so resolveProjectSlug's
+      // git calls on it would fail and fall through to 'default' anyway --
+      // passing it here would be pointless. Omitting it lets kbHarvest fall
+      // back to its own default (also 'default'), which is at least not the
+      // server's own repo, so no cross-repo contamination happens.
+      const harvestRepoPath = agent.agentType === 'local' ? resolvedWorkFolder : undefined;
       void import('./kb-harvest.js')
         .then(({ kbHarvest }) =>
-          kbHarvest({ session_transcript: parsed.result, session_id: parsed.sessionId })
+          kbHarvest({ repo_path: harvestRepoPath, session_transcript: parsed.result, session_id: parsed.sessionId })
         )
         .catch((err: Error) => logWarn('kb_harvest', `auto-harvest failed: ${err.message}`));
     }
