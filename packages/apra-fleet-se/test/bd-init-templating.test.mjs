@@ -6,6 +6,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { runCmd, bdInitTemplateSpawnCount } from './helpers/bd-replay.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
 // apra-fleet-3ei -- template a pre-initialized empty bd directory for test
@@ -47,7 +48,7 @@ const BD_SKIP = BD_BIN
 
 test(
     'apra-fleet-3ei: real-mode `bd init` is templated -- one real spawn serves every scenario setup in this process',
-    { skip: BD_SKIP, timeout: 60000 },
+    { skip: BD_SKIP, timeout: scaledTimeout(60000) },
     async () => {
         const prevMode = process.env.APRA_FLEET_BD_MOCK;
         process.env.APRA_FLEET_BD_MOCK = 'real';

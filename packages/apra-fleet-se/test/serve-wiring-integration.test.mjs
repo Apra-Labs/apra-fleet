@@ -7,6 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.8.3 -- verification for eft.4.8: boots the REAL
@@ -76,7 +77,7 @@ function getFreePort() {
 }
 
 /** Poll until `pred()` is truthy or the deadline passes; throws on timeout. */
-async function waitFor(pred, { timeoutMs = 15000, intervalMs = 100, label = 'condition' } = {}) {
+async function waitFor(pred, { timeoutMs = scaledTimeout(15000), intervalMs = 100, label = 'condition' } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
         // eslint-disable-next-line no-await-in-loop
@@ -91,7 +92,7 @@ async function waitFor(pred, { timeoutMs = 15000, intervalMs = 100, label = 'con
 /** GET a path against a given host:port, resolving `{ status, headers, body }`. */
 function httpGet(port, urlPath, host = '127.0.0.1') {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host, port, path: urlPath, method: 'GET', timeout: 5000 }, (res) => {
+        const req = http.request({ host, port, path: urlPath, method: 'GET', timeout: scaledTimeout(5000) }, (res) => {
             let body = '';
             res.setEncoding('utf-8');
             res.on('data', (c) => { body += c; });
@@ -108,7 +109,7 @@ function httpPostJson(port, urlPath, payload, host = '127.0.0.1') {
     return new Promise((resolve, reject) => {
         const body = Buffer.from(JSON.stringify(payload ?? {}), 'utf-8');
         const req = http.request({
-            host, port, path: urlPath, method: 'POST', timeout: 5000,
+            host, port, path: urlPath, method: 'POST', timeout: scaledTimeout(5000),
             headers: { 'content-type': 'application/json', 'content-length': body.length },
         }, (res) => {
             let raw = '';
