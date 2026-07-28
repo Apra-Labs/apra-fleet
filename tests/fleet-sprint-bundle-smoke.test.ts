@@ -53,4 +53,43 @@ describe.skipIf(!bundleExists)('dist/fleet-sprint.mjs -- packaged binary smoke',
     const firstLine = readFileSync(bundlePath, 'utf-8').split('\n')[0];
     expect(firstLine).toBe('#!/usr/bin/env node');
   });
+
+  // Second regression guard, for a bug the --help smoke above cannot reach:
+  // runner.js is NOT bundled (engine.executeFile() reads it from disk as
+  // text), so its relative './x.mjs' imports resolve against dist/ at
+  // sprint-run time -- long after --help has exited 0. bundle-se.mjs used to
+  // copy a hardcoded three siblings; conflict-ladder.mjs and sprint-lock.mjs
+  // were added as runner imports later and never got copied, so the packaged
+  // binary died with ERR_MODULE_NOT_FOUND for dist/conflict-ladder.mjs on the
+  // first real sprint. Resolve the imports statically here so a missing
+  // sibling fails the build instead of a user's sprint.
+  it('ships every sibling module the unbundled runner imports', async () => {
+    const { readFileSync, existsSync: exists } = await import('node:fs');
+    const distDir = path.join(root, 'dist');
+    const runnerPath = path.join(distDir, 'fleet-sprint-runner.mjs');
+    expect(exists(runnerPath)).toBe(true);
+
+    // Walk transitively: a copied sibling may import further siblings.
+    const seen = new Set<string>();
+    const queue = [runnerPath];
+    const missing: string[] = [];
+
+    while (queue.length > 0) {
+      const filePath = queue.pop()!;
+      if (seen.has(filePath)) continue;
+      seen.add(filePath);
+
+      const src = readFileSync(filePath, 'utf-8');
+      for (const match of src.matchAll(/from\s+'(\.\/[A-Za-z0-9._-]+\.mjs)'/g)) {
+        const resolved = path.join(distDir, match[1]);
+        if (!exists(resolved)) {
+          missing.push(`${path.basename(filePath)} -> ${match[1]}`);
+        } else {
+          queue.push(resolved);
+        }
+      }
+    }
+
+    expect(missing).toEqual([]);
+  });
 });
