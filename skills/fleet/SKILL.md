@@ -128,7 +128,7 @@ Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
 
 Both `send_files` and `receive_files` are batch operations  -  always transfer all files in a single call, never one file per call.
 
-- `send_files`  -  push any files to a member: context files, plans, scripts, binaries, configs, or any other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Always try to batch multiple files in a single call.
+- `send_files`  -  push any files to a member: context files, plans, scripts, binaries, configs, or any other content. Takes `local_paths` (array of local file paths) and optional `dest_subdir` (destination subdirectory relative to work_folder on member; defaults to work_folder root, equivalent to `"."`). Optional `substitutions: { name: value }` replaces every `{{name}}` token in each file before transfer  -  see Substitutions section below. Always try to batch multiple files in a single call.
 - `receive_files`  -  pull files back: results, logs, build artifacts, updated configs, etc. Takes `remote_paths` (array of file paths on the member) and `local_dest_dir` (local directory to write files into). Always try to batch multiple files in a single call.
 
 **Directories and globs:** `send_files` accepts individual file paths only  -  directories and glob patterns are not supported yet. To transfer an entire directory, tar it locally and extract on the member:
@@ -141,6 +141,37 @@ Both `send_files` and `receive_files` are batch operations  -  always transfer a
 
 **Cross-OS transfers:** Both `send_files` and `receive_files` work bidirectionally for Linux<->Windows transfers (fleet host on Linux, member on Windows, and vice versa).
 
+## Substitutions (send_files and execute_prompt)
+
+Both `send_files` and `execute_prompt` accept an optional `substitutions: { "token_name": "value" }` parameter that replaces `{{token_name}}` placeholders in file content or prompt text before the content is delivered to the member.
+
+**Usage:**
+```
+send_files(
+  local_paths=["docs/sprint-briefing.md"],
+  substitutions={ branch: "feat/task-1", base_branch: "main", member_name: "Alice" }
+)
+
+execute_prompt(
+  member=...,
+  prompt="Continue Phase {{phase}}. Branch: {{branch}}.",
+  substitutions={ phase: "3", branch: "feat/task-1" }
+)
+```
+
+**Rules:**
+- Token names must match `[A-Za-z_][A-Za-z0-9_]*`  -  no dots, hyphens, or other special characters.
+- All tokens used in any file (or the prompt string) must have a corresponding key in `substitutions`. Missing tokens cause the call to fail with zero side effects (no files written, no CLI invoked).
+- Extra keys are silently ignored  -  pass a superset map without error.
+- No recursive substitution: values containing `{{...}}` are written verbatim.
+- Source files on the fleet host are never modified; only the delivered copy is substituted.
+- If `substitutions` is omitted and file/prompt content contains `{{token}}` patterns, a warning is returned (call still succeeds).
+
+**[SECURE] Secrets boundary -- never use substitutions for secrets:**
+- Substitution keys with dots (e.g. `secure.github_pat`) are rejected outright.
+- `{{secure.NAME}}` patterns in file/prompt content pass through verbatim  -  they are resolved later only by `execute_command` via the credential store, not here.
+- Substitution values are never logged. But callers must not put plaintext secrets in substitution values; use `{{secure.NAME}}` in `execute_command` for secrets.
+
 ## Permissions
 
 `compose_permissions` produces provider-native config automatically. See `permissions.md` for:
@@ -148,7 +179,11 @@ Both `send_files` and `receive_files` are batch operations  -  always transfer a
 - How to handle permission denials during execution
 - How to recompose when switching roles
 
-## execute_prompt Timeout Parameters
+## execute_prompt Parameters
+
+`execute_prompt` accepts `substitutions` (see Substitutions section above), `model`, `resume`, and timeout parameters.
+
+### Timeout Parameters
 
 `execute_prompt` accepts two independent timeout parameters:
 

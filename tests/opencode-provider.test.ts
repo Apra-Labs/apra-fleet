@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { OpenCodeProvider } from '../src/providers/opencode.js';
 import { getProvider } from '../src/providers/index.js';
 import type { SSHExecResult } from '../src/types.js';
-import { readFileSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import os from 'node:os';
 
 function makeResult(stdout: string, code = 0): SSHExecResult {
   return { stdout, stderr: '', code };
@@ -348,5 +349,106 @@ describe('OpenCodeProvider permission and auth methods', () => {
     expect(result).toContain('FLEET_PID:$pid');
     expect(result).toContain('opencode');
     expect(result).toContain('--args');
+  });
+});
+
+// -- T3.6: registerMcpEndpoint --
+
+describe('OpenCodeProvider registerMcpEndpoint', () => {
+  let homeDir: string;
+  let workFolder: string;
+  let restoreHomedir: () => void;
+
+  beforeEach(() => {
+    homeDir = mkdtempSync(join(os.tmpdir(), 'apra-fleet-opencode-home-'));
+    workFolder = mkdtempSync(join(os.tmpdir(), 'apra-fleet-opencode-work-'));
+    const original = os.homedir;
+    os.homedir = () => homeDir;
+    restoreHomedir = () => { os.homedir = original; };
+  });
+
+  afterEach(() => {
+    restoreHomedir();
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(workFolder, { recursive: true, force: true });
+  });
+
+  function userConfigFile(): string {
+    return join(homeDir, '.config', 'opencode', 'opencode.json');
+  }
+
+  function projectConfigFile(): string {
+    return join(workFolder, 'opencode.json');
+  }
+
+  it('writes the global config for scope=user with bearer-auth headers', async () => {
+    const result = await p.registerMcpEndpoint!({
+      url: 'http://127.0.0.1:7523/mcp?member=test',
+      token: 'testtoken123',
+      workFolder,
+      scope: 'user',
+    });
+
+    expect(result.mechanism).toBe('config-file-merge');
+    expect(existsSync(userConfigFile())).toBe(true);
+    expect(existsSync(projectConfigFile())).toBe(false);
+
+    const written = JSON.parse(readFileSync(userConfigFile(), 'utf-8'));
+    expect(written.mcp['apra-fleet-member']).toEqual({
+      type: 'remote',
+      url: 'http://127.0.0.1:7523/mcp?member=test',
+      enabled: true,
+      headers: { Authorization: 'Bearer testtoken123' },
+    });
+  });
+
+  it('writes the project config for scope=project', async () => {
+    await p.registerMcpEndpoint!({
+      url: 'http://127.0.0.1:7523/mcp?member=test',
+      token: 'tok',
+      workFolder,
+      scope: 'project',
+    });
+
+    expect(existsSync(projectConfigFile())).toBe(true);
+    expect(existsSync(userConfigFile())).toBe(false);
+
+    const written = JSON.parse(readFileSync(projectConfigFile(), 'utf-8'));
+    expect(written.mcp['apra-fleet-member'].type).toBe('remote');
+    expect(written.mcp['apra-fleet-member'].headers.Authorization).toBe('Bearer tok');
+  });
+
+  it('merges without clobbering sibling MCP entries', async () => {
+    mkdirSync(join(homeDir, '.config', 'opencode'), { recursive: true });
+    writeFileSync(userConfigFile(), JSON.stringify({
+      mcp: { 'some-other-server': { type: 'local', command: ['npx', 'foo'], enabled: true } },
+    }));
+
+    await p.registerMcpEndpoint!({
+      url: 'http://127.0.0.1:7523/mcp?member=test',
+      token: 'tok',
+      workFolder,
+      scope: 'user',
+    });
+
+    const written = JSON.parse(readFileSync(userConfigFile(), 'utf-8'));
+    expect(written.mcp['some-other-server']).toEqual({ type: 'local', command: ['npx', 'foo'], enabled: true });
+    expect(written.mcp['apra-fleet-member'].url).toBe('http://127.0.0.1:7523/mcp?member=test');
+  });
+
+  it('recovers from malformed existing file rather than throwing', async () => {
+    mkdirSync(join(homeDir, '.config', 'opencode'), { recursive: true });
+    writeFileSync(userConfigFile(), '{not valid json');
+
+    const result = await p.registerMcpEndpoint!({
+      url: 'http://127.0.0.1:7523/mcp?member=test',
+      token: 'tok',
+      workFolder,
+      scope: 'user',
+    });
+
+    expect(result.mechanism).toBe('config-file-merge');
+    const written = JSON.parse(readFileSync(userConfigFile(), 'utf-8'));
+    expect(written.mcp['apra-fleet-member'].url).toBe('http://127.0.0.1:7523/mcp?member=test');
   });
 });

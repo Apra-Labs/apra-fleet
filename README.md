@@ -1,4 +1,17 @@
-# Apra Fleet
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/marketing/hero-banner-dark.svg">
+  <img src="assets/marketing/hero-banner-light.svg" alt="apra-fleet: run a fleet of AI agents across your devices, your providers, your workflows." width="100%">
+</picture>
+
+# apra-fleet
+
+**Run a fleet of AI agents across your devices, your providers, your workflows.**
+
+What Kubernetes did for containers, apra-fleet does for AI agents:
+scheduling, credentials, isolation, and observability for an agentic
+workforce -- on any machine, anywhere, using every LLM provider at once.
 
 [![CI](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Apra-Labs/apra-fleet/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -6,171 +19,165 @@
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-fleet)
 
-### One goal. A team of AI agents that plan, execute, and review each other's work, and run across every machine you own.
+[Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [Docs](https://apra-labs.github.io/apra-fleet)
 
-Apra Fleet is an open-source **MCP server** that turns AI agents (Claude
-Code, Antigravity, Codex, Copilot, Gemini, OpenCode) into a coordinated team instead of a lone
-assistant. Any job that needs more than one agent -- software sprints,
-customer-support triage, cost and operations-efficiency analysis,
-infrastructure surveys -- becomes a fleet you direct in plain conversation.
-Need more horsepower? Fleet reaches across every machine on your network
-over SSH -- no dashboards, no orchestration YAML.
-
-**The agents need not share a vendor.** A Claude agent and an Antigravity agent can
-work the same sprint -- one writes, the other reviews -- so a different model,
-with different blind spots, checks every change. Cross-provider collaboration is
-a built-in quality mechanism, not an afterthought.
-
-> A *member* is one working folder plus one LLM CLI -- local or remote.
-> A fleet is however many of those you register, working in concert.
-
-### Watch a real run (3 min)
-
-[![Apra Fleet -- a doer-reviewer sprint, start to finish](https://img.youtube.com/vi/SGdHvIkSbY8/hqdefault.jpg)](https://youtu.be/SGdHvIkSbY8)
-
-Two agents ship a feature end to end: one plans and writes, the other reviews,
-findings loop back, and a clean diff lands -- driven by the **PM skill**. That is
-*one* of the workflows Fleet makes possible; the rest are below.
+</div>
 
 ---
 
-## See it in one example
+<img src="assets/marketing/dashboard-demo.gif" alt="apra-fleet fleet-sprint dashboard, real recording: the sprint's own integration tester finds two real bugs, files them against itself, then a second cycle plans, fixes, and closes them -- captions burned in." width="100%">
+
+> **This repository is built by the product you are looking at.** An
+> autonomous apra-fleet workflow plans, codes, reviews, tests, and ships
+> this codebase in multi-hour sprints -- filing bugs against itself and
+> fixing them. The recording above is a real run, not a mockup.
+
+---
+
+## Why a fleet?
+
+Running one AI agent is a demo. Running fifty -- across a MacBook in the
+office, a GPU box in the lab, three cloud VMs, and your CI -- is an
+operations problem nobody else has solved:
+
+- **Which machine runs which agent?** Real devices, not throwaway sandboxes:
+  registered, credentialed, health-checked members you already own.
+- **Which model does which job?** Claude for review, a cheap tier for
+  mechanical edits, a local vLLM model for private data -- all in one fleet,
+  routed by cost tier, switchable per task.
+- **Who watches the agents?** Durable workflows with supervisors, watchdogs,
+  reservations, and live dashboards. Agents that die get detected. Work that
+  stalls gets resumed. Nothing runs silently.
+- **Who holds the keys?** Secrets entered out-of-band, never visible to any
+  model. Per-provider permission composition. Network egress policy per
+  credential.
+
+One control plane. Any device. Any model. Any workflow. Any domain.
+
+## What you get
+
+| Pillar | Concretely |
+|---|---|
+| **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. |
+| **Any model** | Claude, Codex, Gemini, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
+| **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
+| **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/marketing/fleet-topology-dark.svg">
+  <img src="assets/marketing/fleet-topology-light.svg" alt="apra-fleet topology: one control plane dispatching to six heterogeneous member devices across providers and operating systems" width="100%">
+</picture>
+
+## Watch a fleet work
+
+Our flagship workflow, **fleet-sprint**, develops software autonomously:
+plan -> develop -> review -> deploy -> integration-test -> harvest, in
+cycles, until the goal is met or the evidence says stop.
+
+It is not a toy. It builds apra-fleet itself:
+
+- Multi-cycle sprints running for hours, unattended
+- 2,300+ unit tests and an 81-file integration suite against real backends
+- Files bugs against itself, decomposes them, fixes them, and blocks its
+  own release until quality gates pass
+- Every dispatch, verdict, and dollar visible live on the dashboard
+
+A fleet that has run in production:
 
 ```
-/pm add 2 local members at c:\projects cloned from <git-url> -- a developer and a reviewer -- and pair them
-/pm init project_icarus
-/pm plan ./feature.md
-/pm start the implementation sprint
-/pm status
+pm-1      Opus (premium)      orchestrator
+doer-1    Sonnet (standard)   feature work
+doer-2    Antigravity         large-context tasks
+reviewer  Opus (premium)      final review
 ```
 
-You describe the goal, approve the plan once, and Fleet runs the doer-reviewer loop to a reviewed PR.
+The engine does not know what a "sprint" is; it knows how to run your
+workflow reliably across your fleet (see **Any domain** above).
 
-## Quick start
+## Quick start (5 minutes)
 
-### Option A -- npm (all platforms, requires Node.js 22+)
+**1. Install** -- one command via npm (Node.js 22+), or grab the
+standalone installer binary for your platform from
+[Releases](https://github.com/Apra-Labs/apra-fleet/releases) and
+double-click it (installation is the default action):
 
 ```bash
 npm install -g @apralabs/apra-fleet
-apra-fleet                          # Claude Code (default) -- install is the default action
-apra-fleet --llm agy               # Google Antigravity CLI
-apra-fleet --llm gemini            # Gemini CLI
-apra-fleet --llm codex             # OpenAI Codex CLI
-apra-fleet --llm opencode          # OpenCode (local/self-hosted models)
+apra-fleet                   # installs for Claude Code (default)
+apra-fleet --llm agy         # or OpenCode/Codex/Copilot/Gemini
+cd ~/.apra-fleet/bin && apra-fleet start             # start the apra-fleet
 ```
 
-Run once per provider you want to support. After install, load the
-server in Claude Code using `/mcp`, or restart your CLI for other providers.
+**2. Connect your agent.** Load the fleet server in Claude Code with
+`/mcp` (or restart your provider CLI). Your agent now has a fleet.
 
-### Option B -- standalone binary (no Node.js required)
+**3. Register members -- in plain language.** apra-fleet is driven
+conversationally through any MCP-capable agent:
 
-Download the installer for your platform from
-[GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases) and
-**double-click it** (or run it from the terminal) -- installation is the default action.
-
-**macOS (Apple Silicon)**
-```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-darwin-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
-```
-
-**Linux (x64)**
-```bash
-curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
-```
-
-**Windows (x64)** -- download `apra-fleet-installer-win-x64.exe` and double-click, or run in PowerShell:
-```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe
-```
-
-> Installing for **Antigravity**, Codex, Copilot, Gemini, or **OpenCode** instead of
-> Claude? Add the `--llm` flag -- see
-> [Install for other providers](docs/install.md#install-for-other-providers-antigravity-codex-copilot-gemini).
-
-Then load it in your favorite LLM CLI (claude, agy, gemini, ...) using `/mcp`.
-
-Now register your first members:
-
-> "Register a local member called `doer`. Register another called `reviewer`.
-> Pair them."
-
-Verify it worked:
-
-> "Show me fleet status."
-
-You should see both members listed with status online or idle, grouped by
-category if any have been assigned one. Members carry keyword `tags` (up to 10,
-64 chars each) used for filtering in `list_members`, driving tag-aware permission
-profile composition in `compose_permissions`, and skill-matrix matching during
-onboarding. See [docs/features/member-tags.md](docs/features/member-tags.md).
-
-Add remote machines whenever you are ready:
+> "Register a local member called `doer`. Register another called
+> `reviewer`. Pair them."
 
 > "Register 192.168.1.10 as `build-server`. Username akhil, work folder
 > `/home/akhil/projects/myapp`."
 
-Fleet securely collects the machine's password out-of-band -- you type it into a
-separate terminal, never the chat -- uses it once to set up SSH key-based auth,
-then forgets it. Every connection after that is key-based.
+Remote passwords are collected out-of-band -- typed into a separate
+terminal, never the chat -- used once to set up SSH keys, then forgotten.
 
-Intel Mac users: build from source -- see [Development](#development).
-Install details (what it writes, the `--skill` flag, uninstall) are in
-[docs/install.md](docs/install.md).
+**4. Run your first workflow:**
 
-**Staying current is one command.** `apra-fleet update` checks GitHub for the
-latest release and installs it in place -- or tells you that you are already up
-to date. See [keeping Fleet updated](docs/features/update.md).
+```bash
+apra-fleet workflow hello-world
+```
+
+Then point the fleet at real work:
+
+```bash
+apra-fleet workflow fleet-sprint \
+  --issue my-project-epic --members doer \
+  --branch fleet-sprint/first-run --base main
+```
+
+Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop till closure
 
 ## How it works
 
 ```mermaid
-sequenceDiagram
-    actor You
-    participant PM as PM (orchestrator)
-    participant Doer
-    participant Reviewer
-    You->>PM: "Add a note sharing system, have it reviewed"
-    loop Plan: revise until the reviewer signs off
-        PM->>Doer: draft / revise the plan
-        Doer-->>PM: plan
-        PM->>Reviewer: review the plan
-        Reviewer-->>PM: rejected with fixes, or signed off
+flowchart LR
+    subgraph ControlPlane["Control plane (your machine)"]
+        S[Fleet server MCP or HTTP]
+        W[Workflow engine]
+        SUP[Supervisor - ledger, watchdog, dashboard]
     end
-    PM-->>You: plan for approval
-    You-->>PM: approved
-    loop Build: revise until the review is clean
-        PM->>Doer: execute / fix the task
-        Doer->>Doer: write code, commit, reach checkpoint
-        PM->>Reviewer: review the changes
-        Reviewer-->>PM: findings, or signed off
+    subgraph Members["Fleet members (any device, anywhere)"]
+        M1[MacBook - Claude]
+        M2[Linux GPU box - local vLLM]
+        M3[Cloud VM - Codex plus Gemini]
+        M4[Windows tower - Copilot]
     end
-    PM-->>You: reviewed code + PR
+    S ---|dispatch, files, credentials| M1
+    S --- M2
+    S --- M3
+    S --- M4
+    W --> S
+    SUP --> W
 ```
 
-A sprint runs in two reviewed phases: the **plan** is drafted, reviewed, and
-approved by you before any code is written; then the **build** is executed and
-every phase of development is reviewed against all the project documents
-(requirements, plan, design, etc.). The PM orchestrator talks to members through Fleet's MCP
-tools; Fleet carries the work to each member -- locally as a child process, or
-remotely over SSH. Agents sync state through git (`PLAN.md`, `progress.json`,
-`feedback.md`), so progress survives restarts.
+- **Fleet server**: the control plane. Registers members, dispatches
+  commands and prompts, moves files, brokers credentials. Speaks MCP, so
+  any MCP-capable agent can drive a fleet.
+- **Members**: real machines running provider CLIs. The server composes
+  provider-native permissions before every dispatch; unattended modes are
+  scoped, never blanket.
+- **Workflow engine**: runs workflow programs with phases, retries, turn
+  budgets, resumable sessions, and per-activity persistent state.
+- **Supervisor**: the always-on layer -- launch and stop sprints over HTTP,
+  member reservation ledger (no two workflows fight over a machine),
+  crash watchdog, run history.
 
-## What you can build on top
-
-Fleet is a coordination layer. The **PM skill** is its reference workflow library
-and ships today; the rest are recipes you assemble with the same tools.
-
-| Workflow | What it does | Status |
-|----------|--------------|--------|
-| **Doer / Reviewer** | Two agents pair: one writes, one reviews against a quality bar. | Ships (PM skill) |
-| **Plan / execute / verify** | Break work into steps, approve the plan, agents pause at checkpoints. | Ships (PM skill) |
-| **Knowledge Layer** | Agents learn across sessions, never re-read unchanged files, never repeat mistakes. | Ships |
-| **Pipeline** | Agent A extracts, B transforms, C ships -- handoff by file. | Recipe |
-| **Specialist routing** | Route Python work to a py-agent, Rust to a rust-agent. | Recipe |
-| **Parallel exploration** | Three agents try three approaches; you merge the winner. | Recipe |
-| **Cross-machine** | Build on Linux, test on Windows, deploy from a Mac. | Recipe |
-
-To write your own skill, see [docs/writing-skills.md](docs/writing-skills.md).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/marketing/workflow-memory-dark.svg">
+  <img src="assets/marketing/workflow-memory-light.svg" alt="Workflow memory and resumability in apra-fleet: stateless prompt chains vs durable workflows with atomic journal replay." width="100%">
+</picture>
 
 ## Knowledge Layer
 
@@ -205,143 +212,93 @@ a team, or plug in Postgres later -- all via a one-line config change.
 
 See [docs/knowledge-layer.md](docs/knowledge-layer.md) for the full guide.
 
-## Use cases
+## Explore with agents. Operate with programs.
 
-- Run your test suite on a Linux box while you develop on macOS.
-- Have one agent build the frontend, another the backend, a third running tests
-  -- all in parallel.
-- Use a beefy cloud VM for compilation while coding from your laptop.
-- Spin up isolated workspaces on one machine without them stepping on each other.
-- Customer-support triage: agents classify, draft replies, and escalate
-  tickets in parallel.
-- Cost and operations-efficiency analysis: fan out data gathering across
-  sources, consolidate findings.
-- Infrastructure surveys, log triage, and patch fan-out across many
-  machines.
+There are two ways to orchestrate agents, and apra-fleet is built on the
+observation that you need both -- at different stages of a workflow's life:
 
-## Cost
+- **Exploration mode.** While a workflow is still being discovered, let an
+  LLM orchestrate: flexible, adaptive, and token-hungry -- every step is a
+  decision, and every decision costs thinking.
+- **Operation mode.** Once you know what must happen, the control flow
+  becomes a deterministic workflow program. Shell, git, and file steps run
+  through `execute_command` -- zero tokens. The model is invoked only at
+  the corners that genuinely require judgment (`execute_prompt`): review
+  this diff, plan this backlog, decide this exception.
 
-Multi-agent tooling raises one question first: does coordinating several agents
-burn more tokens? In practice Fleet works to keep usage down -- and the core
-idea is the one Fleet was built on: **match the model to the task.**
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/marketing/cost-collapse-dark.svg">
+  <img src="assets/marketing/cost-collapse-light.svg" alt="Cost per apra-fleet e2e run: four real LLM-driven runs ranging $0.46-$3.05, then ~$0.00 / run forever after switching to a deterministic workflow." width="100%">
+</picture>
 
-A plan is a list of tasks of widely varying difficulty. Running every one of
-them on a single premium model is the waste. Instead, Fleet assigns each task a
-model tier commensurate with its complexity:
+That is not a projection -- it is this repository's own e2e setup+teardown
+step, before and after we hardened it. Development tokens are not
+operating tokens: pay once to discover the workflow, then run it free.
 
-- **cheap** -- boilerplate, status checks, running tests, deploys
-- **standard** -- routine feature work, code, configuration
-- **premium** -- planning, review, hard architectural reasoning
+| | LLM-orchestrated (explore) | Workflow-orchestrated (operate) |
+|---|---|---|
+| Control flow | the model decides each step (tokens) | deterministic program (free) |
+| Shell / git / file steps | narrated through the model | `execute_command`, zero tokens |
+| Where the model runs | everywhere | judgment nodes only (`execute_prompt`) |
+| Cost curve | scales with every step | scales with thinking only |
+| Failure mode | drift and silent retries | typed errors, resumable state |
 
-Only the work that genuinely needs a frontier model gets one; everything else
-runs on a lighter, cheaper tier. Two more mechanisms compound the savings:
+The collapse is two-dimensional. As a workflow hardens, control flow moves
+from model to program -- and the judgment nodes that remain move from
+frontier models to cheaper ones, because a well-specified task no longer
+needs discovery-grade reasoning. **Develop a workflow with Claude;
+operationalize it on OpenCode against a local or OpenRouter model.** Same
+fleet, same workflow -- swap the members. Tier routing makes it a
+registration change, not a rewrite.
 
-- **Shell over prompts** -- routine steps run through `execute_command` as plain
-  shell commands, which cost zero LLM tokens.
-- **Smart sessions** -- Fleet decides whether to resume an existing session
-  (reusing cached context) or start fresh, rather than re-sending history.
+Only a fleet makes that trade possible. Single-provider tools cannot leave
+their vendor; in-process frameworks cannot move orchestration out of the
+token path. Because apra-fleet's unit of execution is the member -- a
+machine plus a provider, swappable at registration -- the same hardened
+workflow runs on frontier models the day you design it and on commodity
+models every day after.
 
-**Token spend is measured, not estimated.** Fleet records token usage per
-member and per role -- PM, doer, reviewer -- so a team can see and analyze
-where their spend actually goes. Fleet's end-to-end CI suite exercises this
-in full: a complete reviewed sprint -- discover issues, plan, doer-reviewer
-loop, PR raised with green CI -- emits a per-role token breakdown (in one
-such run: PM ~6K, doer ~191K, reviewer ~19K, ~215K total). Those toy-repo
-figures are not a benchmark -- they show the measurement method works end
-to end. The point is the instrument: Fleet makes token cost something you
-can attribute and reason about, not guess at.
-
-Setup is a one-time cost; the recurring cost is the work itself. See the
-[FAQ](docs/FAQ.md) for the full breakdown.
+fleet-sprint is this principle, lived: it began as LLM-orchestrated
+exploration; each discovered pattern was hardened into the deterministic
+engine; today the engine drives hour-long autonomous runs in which models
+are consulted only as planner, doer, reviewer, tester, and harvester.
 
 ## Compare to alternatives
 
-| Tool | Overlap | Where Fleet differs |
-|------|---------|---------------------|
-| Single-agent coding assistants | AI writes code | Fleet adds a second agent that reviews before you do. |
-| CI self-hosted runners | Runs work on other machines | Fleet is conversational and stateful, not pipeline-triggered. |
-| SkyPilot / dstack | Multi-machine compute | Fleet coordinates *agents and their context*, not just jobs. |
-| Google A2A | Agent-to-agent messaging | Fleet is an opinionated workflow layer, not just a transport. |
+| Tool | Overlap | Where apra-fleet differs |
+|------|---------|--------------------------|
+| Single-agent coding assistants | AI writes code | A fleet adds agents that review, test, and deploy each other's work -- across vendors. |
+| CI self-hosted runners | Runs work on other machines | Conversational and stateful, not pipeline-triggered; agents carry context between phases. |
+| SkyPilot / dstack | Multi-machine compute | Coordinates agents and their context, credentials, and permissions -- not just jobs. |
+| Google A2A | Agent-to-agent messaging | An opinionated orchestration and operations layer, not just a transport. |
+| Agent frameworks (LangGraph, CrewAI, ...) | Multi-agent logic | Those compose agents inside one process; apra-fleet operates agents across real machines, providers, and days-long workflows. |
 
-When *not* to use Fleet: a one-off single-file change needs no second agent.
+When NOT to use it: a one-off single-file change needs no fleet.
 
-## Mix providers in one fleet
+## Security model, in one paragraph
 
-Every member runs its own LLM backend, and they collaborate across vendors. Put
-a Claude doer with an Antigravity reviewer, or the reverse - the reviewer's model
-disagrees with the doer's by construction, so it catches issues a same-model
-review would wave through. Mix by role:
+Secrets are entered out-of-band into a credential store and referenced as
+`{{secure.NAME}}` -- resolved server-side at execution, never visible to
+any LLM or log. Credentials scope to members, expire on TTL, and can carry
+a network egress policy (allow / deny / confirm). Every member runs with
+composed, provider-native permission files -- allow-listed tools, not
+god-mode. VCS access is provisioned and revocable per member.
 
-| Role | Recommended | Why |
-|------|-------------|-----|
-| PM (orchestrator) | Claude Code or Antigravity (agy) | Both plan and orchestrate well - both support planning, background tasks, and premium models (e.g., Opus / premium-tier). |
-| Doer | Any provider | Sonnet, Antigravity, Codex, Copilot, Gemini, OpenCode - mix freely. |
-| Reviewer | Premium-tier models | Catches subtle issues smaller models miss. |
+## The packages
 
-A fleet that has run in production:
+| Package | What it is |
+|---|---|
+| `apra-fleet` | The fleet platform: server, CLI, member management, credentials, workflows runtime |
+| `packages/apra-fleet-se` | The software-engineering vertical: fleet-sprint engine, agent contracts, integration suites |
+| `packages/apra-fleet-workflow` | Workflow authoring runtime: state, viewer, checkpointing |
+| `packages/fleet-api-contract` | Typed API contract shared by server and clients |
 
-```
-pm-1      Opus 4.7        orchestrator
-doer-1    Sonnet 4.6      feature work
-doer-2    Antigravity     large-context tasks
-reviewer  Opus 4.7        final review
-```
+## Status and roadmap
 
-**OpenCode and local models.** OpenCode works with any OpenAI-compatible
-endpoint (Ollama, vLLM, etc.), so it is the provider for self-hosted models.
-The model endpoint is the user's responsibility -- Fleet installs the CLI and
-agents but does not provision or manage the inference server. Configure the
-provider and base URL in `opencode.json`; see
-[docs/opencode-exploration.md](docs/opencode-exploration.md) for details.
-
-Because OpenCode members can run any model, model tiers (cheap / standard /
-premium) are set per member at registration via `model_tiers` in
-`register_member`. A single-model entry fills all three tiers.
-
-Provider strengths, role recommendations, and gotchas:
-[docs/provider-guide.md](docs/provider-guide.md).
-
-## The PM skill
-
-The **PM skill** is Fleet's reference workflow for **software development**
--- it ships today, fully built out. It is one skill on a general
-substrate: the same primitives -- members, tasks, git/SSH transport,
-doer-reviewer pairing -- coordinate agents for support triage, cost
-analysis, ops surveys, or any multi-agent job. PM is the worked example;
-the platform is the point.
-
-The Project Manager skill is installed by default and drives structured,
-multi-step work: planning with your approval, doer-reviewer loops, verification
-checkpoints, and git-synced progress. Task state persists across sessions via
-[**Beads**](docs/beads.md), the bundled open-source issue tracker (`bd` CLI, installed alongside Fleet) -- run `bd ready` any time to see
-what is in flight.
-
-| Command | Does |
-|---------|------|
-| `/pm init <project>` | Initialize a project folder and templates. |
-| `/pm pair <member> <member>` | Pair a doer with a reviewer. |
-| `/pm plan <requirement>` | Draft a plan for your approval. |
-| `/pm start <member>` | Begin execution; dispatches doer with plan and task harness. |
-| `/pm status <member>` | Check in-flight tasks, progress, and git log. |
-| `/pm resume <member>` | Resume after a verification checkpoint. |
-| `/pm deploy <member>` | Execute the project deployment runbook. |
-| `/pm recover <project>` | Re-orient after a PM restart; reads in-flight tasks and member state. |
-| `/pm cleanup <project>` | Finish the sprint, close tasks, and raise a PR. |
-| `/pm backlog` | Query and manage deferred items via Beads. |
-| `/pm tasks` | Show the current sprint task tree. |
-| `/auto-sprint` | Run a fully automated sprint loop with cost accounting. |
-
-See [skills/pm/SKILL.md](skills/pm/SKILL.md) for the full command reference.
-
-**Cost accounting.** When PM is installed, the installer also writes `cost.js`
-to the PM skill directory for every provider. `cost.js` exports the seven pure
-cost-computation functions (`computeSprintQuote`, `computeSprintAnalysis`,
-`buildSprintSummary`, etc.) extracted from the `auto-sprint.js` workflow. For
-Claude, the full `auto-sprint.js` is also copied to `~/.claude/workflows/` and
-`Skill(auto-sprint)` / `Workflow(auto-sprint)` are added to the allow-list
-automatically. See [docs/features/auto-sprint-install.md](docs/features/auto-sprint-install.md).
-
-Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/writing-skills.md).
+apra-fleet is under active development -- by its own fleet. Current focus:
+hardening autonomous sprint execution (the toughest workflow we know of),
+supervisor-orchestrated multi-sprint operation, and the workflow SDK for
+third-party verticals.
 
 ## Documentation
 
@@ -349,7 +306,10 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 |-------|------|
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
-| Choosing a provider | [docs/provider-guide.md](docs/provider-guide.md) |
+| Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |
+| Transport, service mode, and supported interfaces | [docs/transport-and-service-mode.md](docs/transport-and-service-mode.md) |
+| Cost model (tiering, shell-over-prompts, measured token spend) | [docs/cost-model.md](docs/cost-model.md) |
+| The PM skill (doer-reviewer sprints, `/pm` commands) | [docs/pm-skill-overview.md](docs/pm-skill-overview.md) |
 | FAQ | [docs/FAQ.md](docs/FAQ.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Keeping Fleet updated (`apra-fleet update`) | [docs/features/update.md](docs/features/update.md) |
@@ -362,6 +322,20 @@ Want to build your own skill on top of Fleet? See [docs/writing-skills.md](docs/
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
 | Code intelligence provider abstraction | [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) |
+| Hub-spoke cloud migration plan (historical; see tier-3 ownership ADR) | [docs/hub-spoke-master-plan.md](docs/hub-spoke-master-plan.md) |
+| Tier-3 ownership decision (fleet-dashboard vs `src/hub-service/`) | [docs/adr-tier3-ownership.md](docs/adr-tier3-ownership.md) |
+| Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |
+| Workflow engine internals (`agent()`/`parallel()`/`pipeline()`, journal, budget) | [packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md) |
+| Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
+| Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
+| Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
+| Auto-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
+| Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
+| Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
+| Auto-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
+| MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
+| MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
+| MCP client SDK getting started | [packages/apra-fleet-client/docs/getting-started.md](packages/apra-fleet-client/docs/getting-started.md) |
 
 ## Community
 
@@ -380,7 +354,6 @@ Build from source (also the path for Intel Macs):
 
 ```bash
 git clone https://github.com/Apra-Labs/apra-fleet && cd apra-fleet
-git submodule update --init
 npm install && npm run build && npm test
 ```
 
@@ -389,3 +362,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
 ## License
 
 Apache 2.0 -- see [LICENSE](LICENSE).
+
+---
+
+<div align="center">
+
+**Stop babysitting agents. Start operating fleets.**
+
+[Quick Start](#quick-start-5-minutes) - [GitHub Issues](https://github.com/Apra-Labs/apra-fleet/issues) - [Apra Labs](https://apralabs.com)
+
+</div>

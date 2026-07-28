@@ -1,0 +1,9 @@
+{
+  "serverInfo": {
+    "name": "apra fleet server {VERSION}",
+    "version": "{VERSION_NO_V}"
+  },
+  "capabilitiesHasLogging": true,
+  "hasVersionTool": true,
+  "versionToolResultText": "apra-fleet {VERSION}"
+}

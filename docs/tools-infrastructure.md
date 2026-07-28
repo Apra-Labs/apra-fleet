@@ -116,6 +116,25 @@ Writes an OAuth setup token to the provider's credential file. **Claude only** -
 `{ "claudeAiOauth": { "accessToken": "<token>" } }` into `~/.claude/.credentials.json` without
 touching other fields. Creates the file if absent. For Gemini use `--api-key` instead.
 
+**`--member <name>`** (apra-fleet-eft.48.8): provisions the token directly into a registered
+member's own `registry.json` record instead of writing any credential file:
+
+```
+apra-fleet auth --oauth --member <name> <token>
+apra-fleet auth --oauth --member <name> secure.<name>
+```
+
+Stores the token encrypted as `encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN` on the named member
+(Claude only -- resolved by friendly name via the same lookup `register_member`/`update_member`
+use). `buildAuthEnvPrefix()` (`src/utils/auth-env.ts`) exports this straight into every clean-env
+dispatch's child shell (`env -i ... bash -l -c 'export CLAUDE_CODE_OAUTH_TOKEN=... && claude ...'`),
+which the real Claude CLI accepts outright -- no credentials-file session shape needed at all, and
+it works identically across platforms (including macOS runners, where the real Claude credential
+lives in the Keychain and no `~/.claude/.credentials.json` ever exists for the plain `--oauth` form
+above to target). This is the **primary**, cross-platform path for provisioning a **local** member
+on a CI runner; the plain `--oauth` form above (writing the shared credential file for this
+machine) remains useful as a bonus/fallback when a real full `claudeAiOauth` object is available.
+
 ### apra-fleet auth --api-key
 
 ```

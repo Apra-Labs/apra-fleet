@@ -9,6 +9,7 @@ const __dirname = dirname(__filename);
 import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
+import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
@@ -187,8 +188,34 @@ function composeFromTags(profilesDir: string, mode: 'doer' | 'reviewer', tags: s
   return [...perms];
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Recursively merges `source` into `target`: nested plain objects merge key
+ *  by key (union of both sides); everything else (arrays, scalars) from
+ *  `source` overwrites the same key in `target`. This is what lets
+ *  compose_permissions rewrite `permissions`/`mcpServers.apra-fleet` while
+ *  preserving unrelated entries register_member already wrote to the same
+ *  file (e.g. `mcpServers['apra-fleet-member']`, which carries the member's
+ *  live JWT and was previously destroyed by a wholesale overwrite). */
+export function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...target };
+  for (const [key, value] of Object.entries(source)) {
+    if (isPlainObject(value) && isPlainObject(result[key])) {
+      result[key] = deepMerge(result[key] as Record<string, unknown>, value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 /** Deliver a single config file to the member.
- *  Creates parent directory and writes the content (JSON object or TOML string). */
+ *  Creates parent directory and writes the content (JSON object or TOML string).
+ *  JSON object content is deep-merged into whatever the file already
+ *  contains remotely, rather than overwriting it wholesale -- other tools
+ *  (e.g. register_member's mcpServers entry) may share the same file. */
 async function deliverConfigFile(
   strategy: Awaited<ReturnType<typeof getStrategy>>,
   agentOs: string,
@@ -201,9 +228,25 @@ async function deliverConfigFile(
     : `mkdir -p ${dir}`;
   await strategy.execCommand(mkdirCmd, 5000);
 
-  const contentStr = typeof content === 'string'
-    ? content
-    : JSON.stringify(content, null, 2);
+  let mergedContent: Record<string, unknown> | string = content;
+  if (isPlainObject(content)) {
+    const readCmd = agentOs === 'windows'
+      ? `Get-Content -Raw "${filePath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`
+      : `cat ${filePath} 2>/dev/null || true`;
+    const readResult = await strategy.execCommand(readCmd, 5000);
+    let existing: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(readResult.stdout.trim());
+      if (isPlainObject(parsed)) existing = parsed;
+    } catch {
+      // file missing, empty, or not JSON -- start from an empty object
+    }
+    mergedContent = deepMerge(existing, content);
+  }
+
+  const contentStr = typeof mergedContent === 'string'
+    ? mergedContent
+    : JSON.stringify(mergedContent, null, 2);
 
   const writeCmd = agentOs === 'windows'
     ? `[System.IO.File]::WriteAllText("${filePath.replace(/\//g, '\\')}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
@@ -279,6 +322,11 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       saveLedger(input.project_folder, ledger);
     }
 
+    // apra-fleet-eft.40.2: self-healing -- repair workspace trust on EVERY
+    // compose_permissions run (a member registered before this fix, or one whose
+    // trust was never seeded, gets fixed the next time permissions are composed).
+    await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
+
     return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}`;
   }
 
@@ -301,6 +349,11 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   for (let i = 0; i < paths.length; i++) {
     await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
   }
+
+  // apra-fleet-eft.40.2: self-healing -- repair workspace trust on EVERY
+  // compose_permissions run (a member registered before this fix, or one whose
+  // trust was never seeded, gets fixed the next time permissions are composed).
+  await seedWorkspaceTrust(agent, strategy, 'compose_permissions');
 
   const customTags = (input.tags ?? []).filter(t => t !== 'doer' && t !== 'reviewer');
   const tagsLine = customTags.length ? `\n  Tags: ${customTags.join(', ')}` : '';

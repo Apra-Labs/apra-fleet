@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/plan-reviewer-input@1",
+  "version": 1,
+  "title": "plan-reviewer input",
+  "description": "Required dispatch-context keys for the plan-reviewer role, per agents/plan-reviewer.md Inputs section. Consumed by callers for pre-dispatch validation only -- never appended to the prompt or shown to the LLM.",
+  "type": "object",
+  "required": ["scope"],
+  "properties": {
+    "scope": {
+      "type": "string",
+      "description": "The sprint root / open beads subtree this review pass covers."
+    }
+  }
+}

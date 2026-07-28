@@ -4,9 +4,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts'],
     exclude: ['tests/integration.test.ts'],
     setupFiles: ['tests/setup.ts'],
-    fileParallelism: false,  // Tests share registry.json in temp dir
+    globalSetup: ['tests/global-setup.ts'],
+    fileParallelism: false,  // Tests share registry.json in temp dir (unique per run, see global-setup.ts)
   },
 });

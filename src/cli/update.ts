@@ -89,14 +89,20 @@ export async function runUpdate(): Promise<void> {
 
     const config = readInstallConfig();
     const providers = Object.keys(config.providers);
-    
+
     let targetLlm = 'claude';
     let targetSkill = 'all';
+    // workflowsMode is optional for backward compatibility -- install-config.json
+    // files written before the workflow subsystem existed won't have this field;
+    // default to 'all' so those installs get workflows on the first update after
+    // upgrading, same as a fresh install (see config.ts MultiProviderInstallConfig).
+    let targetWorkflowsMode: 'all' | 'none' = 'all';
 
     const configPath = path.join(FLEET_DIR, 'install-config.json');
     if (providers.length > 0) {
       targetLlm = providers[0];
       targetSkill = config.providers[targetLlm].skill;
+      targetWorkflowsMode = config.providers[targetLlm].workflowsMode ?? 'all';
     } else if (!fs.existsSync(configPath)) {
       console.warn(`Warning: install-config.json missing, using defaults.`);
     } else {
@@ -105,7 +111,10 @@ export async function runUpdate(): Promise<void> {
 
     // --force so the spawned installer stops the running server before
     // replacing the binary; without it the running-process guard aborts.
-    const args = ['install', '--force', '--llm', targetLlm, '--skill', targetSkill];
+    // --workflows threads the persisted workflowsMode back in so a prior
+    // `--workflows none` choice survives an update instead of silently
+    // reverting to the `all` default on re-install (apra-fleet-7pm.10).
+    const args = ['install', '--force', '--llm', targetLlm, '--skill', targetSkill, '--workflows', targetWorkflowsMode];
     const installer = spawn(tmpPath, args, { detached: true, stdio: 'ignore' });
     installer.unref();
     process.exit(0);

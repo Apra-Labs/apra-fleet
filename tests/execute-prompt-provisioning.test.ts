@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
-import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { executePrompt, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -61,7 +61,7 @@ describe('execute_prompt: auto-provision stale remote agent files on dispatch', 
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('ok');
+    expect(resultText(result)).toContain('ok');
     expect(mockProvisionAgents).toHaveBeenCalledTimes(1);
     expect(mockProvisionAgents).toHaveBeenCalledWith(expect.objectContaining({ id: member.id }));
   });
@@ -95,7 +95,7 @@ describe('execute_prompt: auto-provision stale remote agent files on dispatch', 
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('ok');
+    expect(resultText(result)).toContain('ok');
     expect(mockProvisionAgents).not.toHaveBeenCalled();
 
     fs.rmSync(member.workFolder, { recursive: true, force: true });
@@ -108,7 +108,7 @@ describe('execute_prompt: auto-provision stale remote agent files on dispatch', 
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('ok');
+    expect(resultText(result)).toContain('ok');
     expect(mockRemoteAgentsDir).toHaveBeenCalledWith('codex');
     expect(mockProvisionAgents).not.toHaveBeenCalled();
   });
@@ -120,7 +120,7 @@ describe('execute_prompt: auto-provision stale remote agent files on dispatch', 
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
 
-    expect(result).toContain('ok');
+    expect(resultText(result)).toContain('ok');
     expect(mockProvisionAgents).toHaveBeenCalledTimes(1);
   });
 
@@ -173,7 +173,7 @@ describe('execute_prompt: auto-provision stale remote agent files on dispatch', 
     await new Promise((r) => setTimeout(r, 0));
 
     const secondResult = await executePrompt({ member_id: member.id, prompt: 'second', resume: false, timeout_s: 5 });
-    expect(secondResult).toContain('already running');
+    expect(resultText(secondResult)).toContain('already running');
 
     resolveFirst?.();
     await firstCall;

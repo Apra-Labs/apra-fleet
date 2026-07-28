@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/integ-test-runner-output@1",
+  "version": 1,
+  "title": "integ-test-runner output",
+  "description": "Canonical machine-readable output contract for the integ-test-runner role. See agents/integ-test-runner.md Step 4 for the prose contract this mirrors.",
+  "type": "object",
+  "required": ["featuresClosed", "issuesCreated", "passed", "bugsFiled", "summary"],
+  "properties": {
+    "featuresClosed": {
+      "type": "number"
+    },
+    "issuesCreated": {
+      "type": "number"
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "bugsFiled": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "summary": {
+      "type": "string"
+    },
+    "deployedSha": {
+      "type": "string",
+      "description": "The deploy-verified git commit part 2 (smoke test) actually ran against. Optional for backward compatibility, but an orchestrator that supplied a deployed SHA in the dispatch prompt treats a missing or mismatching value as INCONCLUSIVE evidence (never a pass). See integ-test-runner.md 'Part-2 evidence freshness'."
+    }
+  }
+}

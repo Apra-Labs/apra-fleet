@@ -1,0 +1,1125 @@
+# Auto-Sprint Stabilization Log
+
+Running log of issues found while driving the real `apra-fleet-eft` sprint
+(member: fleet-rev, branch `auto-sprint/eft-service`, base `feat/fleet-reorg`)
+per `docs/README.md`, and the fixes made for each. Newest entries at the
+bottom. Each entry: symptom -> root cause -> fix -> evidence.
+
+## Loop iteration 1 (2026-07-19)
+
+### Issue 1: Transport closed kills the whole sprint at start+~304s, every run
+
+- **Symptom**: every CLI sprint run died ~5 minutes in with
+  `FleetTransportError: Transport closed`, regardless of which dispatch
+  happened to be in flight at that moment (`sprint-logs/auto-sprint-relaunch2.log`,
+  `relaunch3`, `relaunch4`).
+- **Root cause** (deterministic, confirmed by timestamps): the
+  `StreamableHttpTransport` persistent SSE GET stream is normally silent
+  (JSON-RPC responses arrive over each POST's own SSE response). Node's
+  built-in fetch (undici) enforces a default ~300s idle `bodyTimeout` on
+  response bodies, so the single-shot GET stream died at start+~304s
+  (fleet server log: stream opened 23:37:40, `Transport closed` 23:42:44).
+  `transport.mjs`'s `finally` block then emitted `close`, and
+  `McpClient`'s close handler rejected EVERY in-flight request.
+- **Fix**: `packages/apra-fleet-client/src/client/transport.mjs` -- the
+  persistent GET stream is now a self-reconnecting background loop. An
+  idle-death is treated as an expected, recoverable event (quiet reopen with
+  capped backoff); `close` only surfaces on deliberate `stop()` or 5
+  consecutive reconnect failures. Regression test:
+  `packages/apra-fleet-client/test/transport-reconnect.test.mjs` (real local
+  SSE server, kills the first stream, asserts a second GET arrives and no
+  `close`/`error` fires).
+
+### Issue 2: busy-lock race -- orphaned remote session holds the member lock for minutes
+
+- **Symptom**: after any client-side abandonment of a dispatch (e.g. Issue
+  1's transport close), every subsequent dispatch to that member failed with
+  `execute_prompt is already running for "fleet-rev"` until the sprint
+  aborted. A blind timed backoff (up to ~110s) lost the race every time.
+- **Root cause**: the client-side failure does not cancel the REMOTE
+  session -- the member's CLI keeps running (fleet server log: the orphaned
+  plan-reviewer repair session ran 235s after the client gave up at 4.6s,
+  completing with a perfectly good 12,976-token response that was
+  discarded) and holds the server's one-dispatch-per-member lock the whole
+  time. Busy is transient-but-SLOW: minutes, not seconds.
+- **Fix**: `packages/apra-fleet-workflow/src/workflow/index.mjs` -- agent()
+  now busy-waits by default: on a `busy` dispatch rejection it polls
+  (cheap, side-effect-free re-dispatch) every `busyPollMs` (default 15s) up
+  to `busyWaitMs` (default 10 min) before surfacing the busy
+  AgentDispatchError. Tests:
+  `packages/apra-fleet-workflow/test/apra-fleet-workflow-busy-and-empty.test.mjs`.
+  (The runner-level Planner timed-backoff loop from earlier the same day is
+  retained as an outer safety net but should rarely trigger now.)
+
+### Issue 3: empty execute_prompt response misreported as "LLM returned invalid JSON" (apra-fleet-eft.14)
+
+- **Symptom**:
+  `[Agent API Error] Schema-invalid output ... Unexpected token '\ud83d', "[clipboard-emoji] Respons"... is not valid JSON`
+  -- looked like a Unicode/JSON bug. It is not: the emoji is just the first
+  char the JSON parser saw.
+- **Root cause**: the fleet server returned success (exit 0, no isError)
+  whose text was EXACTLY the display wrapper `"[clipboard-emoji] Response from
+  fleet-rev:\n\n"` -- 29 chars, empty parsed result, no Tokens/session
+  footer (the server-side log line for that dispatch also lacks its usual
+  `in=`/`out=` token counts: `exit=0 elapsed=65241ms`). The member CLI
+  produced no parseable output; the wrapper-only text then went to schema
+  extraction, which correctly found no JSON and misclassified the failure.
+  This is bead apra-fleet-eft.14 (first seen on the Planner, now confirmed
+  on the plan-reviewer). The underlying server-side parse gap (provider CLI
+  exits 0 with nothing parsed) is still open -- tracked in eft.14.
+- **Fix (client-side resilience)**:
+  `packages/apra-fleet-workflow/src/workflow/index.mjs` -- agent() now
+  detects a wrapper-only response (header + optional Tokens/session footer,
+  nothing else) and throws a typed
+  `AgentDispatchError` with `reason: 'empty_response'` instead of feeding
+  it to schema extraction (or returning it as a garbage success for
+  no-schema calls). Every runner dispatch site already catches
+  AgentDispatchError and degrades the round gracefully. Tests: same new
+  test file as Issue 2.
+
+### Issue 4: transport-closed rejections were untyped
+
+- **Symptom**: downstream had to sniff the string 'Transport closed'.
+- **Fix**: new `TransportClosedError` (`code: 'TRANSPORT_CLOSED'`) in
+  `packages/apra-fleet-client/src/client/errors.mjs`, used by McpClient's
+  close handler. Convention documented in that file: new
+  execute_prompt/execute_command failure kinds get a typed class there
+  (transport/request-level) or an AgentDispatchError `reason` code
+  (dispatch-level via structuredContent) -- never a bare Error message to
+  sniff.
+
+### Earlier same-day fixes (pre-loop, first crash analysis)
+
+- **FleetTransportError uncaught at schema dispatch sites**: every
+  combined-catch site (Reviewer, Plan Reviewer, Streak Assignment,
+  Deployer, Integ Test Runner, Final Review x2, Harvester) only handled
+  AgentOutputError/AgentDispatchError; a raw transport failure propagated
+  and killed the sprint. All sites now also catch FleetTransportError and
+  degrade to the same failed-round handling. (runner.js, commit 3daa8fe)
+- **finalizeAbort() rev-list against a nonexistent local base ref**: the
+  abort path ran `git rev-list --count <base>..<branch>` assuming the raw
+  `--base` value resolves locally on the member; exit 128 ("unknown
+  revision") made finalizeAbort itself throw and the [ABORTED] PR was never
+  raised. Now fetches the base branch and diffs against
+  `origin/<baseBranch>`. (runner.js, commit 3daa8fe)
+- **Planner dispatch single blind retry**: replaced with a bounded
+  retry-with-backoff loop (commits 96eaf25, fbb7619); superseded in
+  practice by Issue 2's busy-wait but retained as an outer net.
+- **Stale test assertions (4 failures)**: roleMap tests now exclude
+  per-member `bd dolt pull/push` sync brackets from the
+  orchestrator-routing assertion (verified correct via live dispatch-log
+  probe); R12 no-auto-merge check excludes the safe `git merge --ff-only`
+  self-sync; run1/run2/multidoer bd recordings re-recorded via
+  `npm run test:record`. (commit 827dabe)
+
+### Issue 5: G-pull fetch hard-fails on a brand-new (not-yet-pushed) sprint branch
+
+- **Symptom**: `mock-sprint-ensure-branch-fetch-failure.test.mjs` failing
+  with `[Sync] G-pull fetch failed ... couldn't find remote ref
+  auto-sprint/mock-branchnotexist` (110s of transient retries first).
+- **Root cause**: syncMemberBefore() treated EVERY fetch failure as an
+  error, but a sprint branch just created locally from base (first G-push
+  hasn't happened) legitimately does not exist on the remote yet -- there
+  is nothing to pull, which is a no-op, not a failure. Any real first-cycle
+  sprint on a fresh branch would have died on its first sync bracket.
+- **Fix**: runner.js syncMemberBefore() -- the exact `couldn't find remote
+  ref` git message (and only that message, mirroring Ensure Sprint Branch's
+  own fetch-fallback rationale) now skips the pull half of the bracket with
+  a log line instead of throwing.
+
+### Issue 6: injected git-push failure now surfaces as GitSyncError, not CommandError
+
+- **Symptom**: `mock-sprint-finalization-git-push-failure.test.mjs`
+  asserting `CommandError` failed with `GitSyncError`.
+- **Root cause**: not a bug -- an architecture shift. Before the sync
+  brackets, the first `git push` a sprint issued was the finalization
+  publish (plain command() -> CommandError). The brackets now G-push after
+  every code-writing dispatch, so an injected `/^git push/` failure is hit
+  first by a bracket push, surfacing as its typed GitSyncError.
+- **Fix**: test updated to accept either typed error (both are
+  never-swallowed surfaces of the same failure), with the
+  underlying-git-text assertion retained so a silent swallow still fails.
+
+### Issue 7: recording/snapshot drift from the sync-bracket work
+
+- `apra-fleet-mock-sprint-abortprfail.jsonl` was a crashed mid-scenario
+  capture (exitCode null entry) -> re-recorded via
+  `node scripts/run-tests.mjs record test/mock-sprint-abort-pr.test.mjs`.
+- Both golden transcripts regenerated (UPDATE_GOLDEN=1) after verifying
+  the diff is exactly the expected shape: sync-bracket commands (git
+  fetch / merge --ff-only / bd dolt pull before each dispatch, bd dolt
+  push after) interleaving an otherwise-identical dispatch sequence.
+
+**Iteration 1 result**: full apra-fleet-se suite 500/500 green (was 10
+failing). apra-fleet-client 21/21 + new reconnect test. apra-fleet-workflow
+core suites green + 8 new busy/empty tests; 2 pre-existing eft-WIP
+conditions confirmed NOT caused by this work (debounced-writer 3 failures,
+sprint-state file-level exit hang -- both reproduce with all stabilization
+changes stashed; they belong to the in-flight eft.2.1 feature work).
+
+## Loop iteration 2 (2026-07-19)
+
+### Issue 8: POST-stream idle timeout kills every >300s-silent dispatch ("terminated")
+
+- **Symptom** (run 5, `sprint-logs/auto-sprint-relaunch5.log`): long
+  dispatches failed with `[Agent API Error] terminated`, then the retry hit
+  `busy`, busy-waited out the orphan, re-dispatched -- and the redo ALSO
+  died with `terminated`. The sprint survived (Issues 1-3 fixes all held)
+  but ground in a terminated -> retry -> busy-wait -> duplicate-dispatch
+  loop, doing each long planner run twice and discarding the results.
+- **Root cause**: the Issue 1 fix covered the persistent GET stream, but
+  each POST's own SSE response stream has the same undici ~300s idle
+  bodyTimeout. `claude -p` prints nothing until the turn completes, so any
+  dispatch quieter than 300s+ loses its response stream mid-flight
+  ("terminated" is undici's body-timeout error message). Server log
+  evidence: planner R2 pid 15590 ran 675s (00:44:40 -> 00:55:55, exit=0
+  out=16285) -- client stream killed at ~00:49:40, full result discarded,
+  duplicate planner pid 18865 dispatched 00:55:55 by the busy-waiting
+  retry, which then also exceeded 300s and got terminated in turn.
+- **Fix**: `packages/apra-fleet-client` now depends on `undici` explicitly
+  and `transport.mjs` routes ALL StreamableHttpTransport fetches (init
+  POST, persistent GET, send POST) through undici's fetch with a shared
+  `Agent({ headersTimeout: 0, bodyTimeout: 0 })` dispatcher. No unbounded
+  hangs result: McpClient's per-request timeout still bounds every
+  JSON-RPC call, and the GET stream keeps its reconnect loop. Guard test:
+  `packages/apra-fleet-client/test/transport-idle-timeout-guard.test.mjs`
+  (asserts the wiring at source level -- a behavioral test would need a
+  >300s silent stream; the existing reconnect test exercises the undici
+  fetch path against a real server).
+- **Decision note**: server-side SSE keepalives on POST responses would fix
+  this for ALL clients and remain a good hardening follow-up, but need a
+  fleet-server rebuild+redeploy; the client-side dispatcher fix is
+  deterministic and deploy-free, so it ships first.
+
+### Server-side eft.14 classification (committed, deploy deferred)
+
+- `src/tools/execute-prompt.ts` now classifies an exit-0-with-empty-result
+  dispatch as a typed failure (`structuredContent: { isError: true,
+  reason: 'empty_response' }` + stderr tail in the text) instead of
+  returning a bare display wrapper as success. Tests added in
+  `tests/execute-prompt.test.ts`; full root vitest suite green (2318
+  passed). Deployment needs a fleet-server rebuild+reinstall+restart, which
+  kills live member sessions -- deferred to a natural stop; the workflow
+  layer's Issue 3 detection handles it in the meantime.
+
+## Loop iteration 3 (2026-07-19)
+
+Run 6 (the first on the Issue 8 transport fix) got dramatically further
+than any prior run: Plan C1 approved in round 1 (the previously
+empty-response-prone plan-reviewer completed normally), the full Develop
+C1 R1 phase ran multi-minute doer streaks back-to-back with ZERO transport
+failures (beads closed: eft.6.4, 9.1, 4.6, more; one streak correctly
+degraded on a VERIFY/still-open mismatch), and the sprint reached Review
+C1 R1 -- where it found the next two systemic issues:
+
+### Issue 9: reviewer budgets undersized for a full-cycle review + infra failures tripped the contract-violation guard
+
+- **Symptom** (run 6): the reviewer ran out of turns (num_turns=51 after
+  ~12 min of legitimate review work, typed max_turns_exhausted); the retry
+  then hit the 930s client-side request timeout. BOTH synthesized
+  CHANGES_NEEDED fallback verdicts had empty reopenIds/newTasks, so
+  isReviewerContractViolation() -- designed to catch a GENUINE
+  self-contradictory LLM verdict -- counted two "contract violations" and
+  aborted the sprint with ReviewerContractViolationError.
+- **Root cause**: two distinct gaps. (a) The reviewer dispatch had no
+  explicit max_turns and no resume path, so a big-cycle review
+  deterministically dies at the fleet default and a fresh retry re-dies
+  the same way. (b) dispatchReview() synthesized infrastructure-failure
+  verdicts in the same shape as LLM verdicts, so the contract-violation
+  guard could not tell them apart.
+- **Fix** (runner.js dispatchReview): explicit
+  `max_turns: BASE_REVIEWER_MAX_TURNS (60)`; on max_turns_exhausted the
+  SAME session is resumed once with a doubled budget (mirrors
+  dispatchDoerResume -- the session already holds the review context).
+  Synthesized failure verdicts now carry `dispatchFailed: true` and are
+  returned as a DEGRADED round (counting toward the bounded stall budget
+  like every other role) after one infrastructure retry -- they can no
+  longer throw ReviewerContractViolationError, which is reserved for
+  genuine schema-valid self-contradicting LLM verdicts. Structural test
+  baselines bumped (11 agent sites / 10 withGitSync brackets), reviewer
+  scenario recordings re-recorded; se suite 602/602.
+
+### Issue 10: agent() silently dropped max_total_s from the dispatch payload
+
+- **Symptom** (run 6): the reviewer retry timed out client-side at exactly
+  930000ms despite the runner passing `max_total_s: 3600` (which
+  deriveTimeoutMs prefers -- it should have produced a 3630s request
+  timeout).
+- **Root cause**: the payload object built inside
+  `packages/apra-fleet-workflow/src/workflow/index.mjs` agent() forwarded
+  timeout_s/max_turns/etc. but NOT max_total_s, so (a) the server never
+  received the hard wall-clock ceiling for ANY workflow dispatch, and (b)
+  the derived client timeout always fell back to timeout_s+30s = 930s,
+  killing any legitimately-slow dispatch at ~15.5 min while the remote
+  session kept running (orphan + busy lock).
+- **Fix**: `max_total_s: opts.max_total_s` added to the payload, with
+  JSDoc documenting both server- and client-side effects.
+
+### Issue 11: dirty member working tree kills the next sprint at Setup
+
+- **Symptom** (run 7): `Ensure Sprint Branch` died immediately with
+  `error: Your local changes to the following files would be overwritten
+  by checkout` -- fleet-rev had an uncommitted runner.js modification left
+  by an interrupted dispatch from run 5/6.
+- **Root cause**: any infrastructure-killed dispatch (transport drop,
+  timeout, stop_prompt) predictably leaves the member's tree dirty with
+  whatever the agent had in flight; `git checkout -B` refuses to proceed.
+  A stabilized sprint loop guarantees such orphans will keep happening, so
+  Setup must expect them.
+- **Fix** (runner.js Ensure Sprint Branch): the checkout is now failSoft;
+  on the specific "would be overwritten" failure the orphaned WIP is
+  preserved in a named stash (`git stash push -u -m "auto-sprint[branch]
+  auto-stash of orphaned WIP..."`) and the checkout retried once. Any
+  other checkout failure still aborts loudly. Happy path (clean tree)
+  issues no extra commands. The run-7 orphan itself (a one-line eft.8.x
+  error-shape WIP) was inspected and hand-stashed on fleet-rev with a
+  descriptive message; its bead is still open so a future streak redoes
+  it properly. Command-count baseline 26 -> 28.
+
+### Feature bug found by the loop, routed to the sprint backlog
+
+- The run-6 doer's new supervisor-lifecycle test (eft.4.6, written and
+  verified on macOS fleet-rev) fails on Windows: live-child re-adoption
+  recovers the port from the process command line via a ps reader that
+  returns nothing usable on Windows. Filed as a P1 bug bead under
+  apra-fleet-eft.4 (2026-07-19) so the sprint's own doers fix it --
+  stabilization-loop scope stays on the sprint machinery, not the eft
+  feature. se suite otherwise green (667 pass / 2 fail, both this bug).
+
+## Loop iteration 4 (2026-07-19)
+
+Run 8 was the best run yet: TWO full cycles of plan -> develop -> review,
+with the plan approved first-round both times, every reviewer round up to
+C2 returning a genuine actionable verdict (real catches: a red test suite
+from a doer regression, uncommitted freshest work, a stale guard-test
+baseline), the doer resume path recovering every turn-limit exhaustion,
+and Cycle 1 evaluation rolling into Cycle 2 cleanly. It died in Review C2
+R1 on two NEW issue types:
+
+### Issue 12: server inactivity timeout (900s) makes max_total_s unreachable for silent CLIs
+
+- **Symptom** (run 8): the C2 reviewer was killed with "Command timed out
+  after 900000ms of inactivity" despite max_total_s: 3600.
+- **Root cause**: `claude -p` prints nothing until the turn completes, so
+  server-side INACTIVITY == total runtime for every agent dispatch; the
+  900s inactivity timer always fires before the 3600s wall-clock ceiling
+  can matter. Earlier reviews survived only by finishing under 15 min.
+- **Fix**: every agent dispatch site in runner.js now sets
+  `timeout_s: 3600` equal to its `max_total_s: 3600` -- the hard ceiling
+  is the real limit; inactivity adds nothing for a silent-until-done CLI.
+  (Also: BASE_DOER_MAX_TURNS 50 -> 100, since in run 8 EVERY streak --
+  even single-bead ones -- exhausted 50 turns and paid a resume
+  round-trip; resumes now escalate 200 -> 400. Assertion ladder updated in
+  mock-sprint-doer-max-turns.test.mjs.)
+
+### Issue 13: sporadic client 'fetch failed' + sync-bracket failures are sprint-fatal at the review site
+
+- **Symptom** (run 8): sporadic `[Command API Error] fetch failed`
+  throughout the run (dashboard badge computation, a doer bracket, and
+  finally the review-retry G-pull). The last one surfaced as GitSyncError
+  from dispatchReview's sync bracket -- which the reviewer catch did not
+  handle -- and killed the sprint. The fleet server was healthy the whole
+  time.
+- **Root cause**: three stacked gaps. (a) The pooled undici dispatcher
+  (Issue 8 fix) can reuse a socket the server just decided to close
+  (Node http default keepAliveTimeout 5000ms) -- the request then fails at
+  the socket level as 'fetch failed'. (b) classifyGitFailure() rated
+  "Transport failure while executing command: fetch failed" as 'unknown'
+  (never retried) instead of transient. (c) dispatchReview degraded
+  dispatch/transport errors but not sync-bracket GitSyncError/
+  DoltSyncError.
+- **Fix**: (a) transport.mjs -- dispatcher keepAliveTimeout: 4000 (below
+  the server's 5000ms) plus a bounded connection-level retry in send()
+  (2 retries, 500ms/2s; only for rejections where no response was
+  received, so a re-send cannot double-execute). (b) the transport-failure
+  strings added to GIT_TRANSIENT_PATTERNS so runGitStep retries them.
+  (c) dispatchReview's catch now also degrades GitSyncError/DoltSyncError
+  (dispatchFailed round); GitDivergedError/DoltDivergedError still
+  propagate -- real divergence is an integrity problem, not a blip.
+
+Rebased over 10 doer commits from run 8 (including the doer's own
+eft.9.7 claim-loop restructure of dispatchDoer -- conflict resolved
+keeping the doer's structure with the new timeouts applied). se suite
+759 pass / 2 fail (both the beaded Windows lifecycle bug); client 22/22.
+
+## Loop iteration 5 (2026-07-19)
+
+Run 9 aborted at planning (SprintPlanRejectedError, 3 rounds): R1-R2
+flagged all-children-closed features as undecomposed (the planner resolved
+this itself by R3 -- no runner change needed), and R3's sole blocker was
+an operator-injected bug bead (eft.4.7) missing the `model` metadata the
+plan contract requires. Operator lesson recorded (bead injections must
+carry model metadata and be created member-side + dolt-pushed; the
+orchestrator's local clone is stale/conflicted outside sprint brackets).
+Run 10 relaunched after fixing the metadata; its plan R1 caught the run-9
+planner's duplicate re-creations of closed eft.13 work and R2 approved a
+deduplicated DAG -- the plan gate working as designed.
+
+### Final Review hardening (turn budget, resume, feedback-to-beads)
+
+- **Gap 1**: dispatchFinalReview had no explicit max_turns and no resume
+  path -- an epic-wide review would deterministically die at the fleet
+  default (50 turns) twice (the retry restarts from scratch) and flip the
+  sprint to a FAIL whose notes carry only the error text.
+- **Gap 2**: the finalVerdict schema was {verdict, notes} only; a FAIL's
+  actionable findings reached the PR body and analysis doc but NEVER
+  beads -- invisible to the next sprint's planner, which reads only
+  beads.
+- **Fix** (runner.js + contracts.mjs): FINAL_REVIEW_MAX_TURNS = 60 with
+  one same-session resume at 120 turns (mirrors doer/reviewer);
+  finalVerdict gains optional newTasks (same item shape as
+  reviewerVerdict), the prompt instructs findings-as-newTasks on FAIL,
+  and the orchestrator applies them via the same validateNewTask
+  allowlist + child-id allocator + D-push path as per-round reviewer
+  newTasks. Structural baselines 12 agent sites / 11 brackets; goldens
+  regenerated (diff = the Final Review prompt/schema line only); se
+  suite 759 pass / 2 fail (the beaded Windows lifecycle bug).
+
+### Issue 15: streak-assignment candidates with shortened bead ids silently lose the whole grouping
+
+- **Symptom** (run 8, Develop C2 R1; operator-reported): the streak
+  assignment LLM returned suffix-stripped ids
+  (`{"streaks":[["8.4","8.6"],["9.3","9.7"],...]}` for
+  apra-fleet-eft.8.4 etc.). selectStreaks() correctly rejected the
+  candidate (`unknown/non-ready bead id '8.4'`) and fell back to
+  one-bead-per-streak -- safe, but the model's sequencing intent
+  (8.4+8.6 same-doer, 9.3+9.7 same-doer) was silently discarded. On a
+  multi-doer fleet that fallback would PARALLELIZE beads the model said
+  must run sequentially.
+- **Design stance (per operator)**: bead ids from different scopes need
+  not share any prefix, so suffix-matching/prefix-inference repair is
+  forbidden -- a shortened id is genuinely ambiguous and must stay
+  rejected. The fix is to stop the model shortening ids and to recover
+  via RE-ASK, never via guessing.
+- **Fix** (runner.js): (a) buildStreakAssignmentPrompt now demands
+  verbatim ids (full prefix, character for character, explicit warning
+  that shortened ids are rejected); (b) one bounded semantic-repair
+  re-ask -- when a schema-VALID candidate fails selectStreaks(), the
+  agent is re-asked once with the exact rejection reason before the
+  one-bead-per-streak fallback engages. Structural baselines: 13 agent
+  sites; the repair re-ask is the second documented no-bracket exemption
+  (same pure-compute grouping task as the first).
+
+### Issue 14: pending-closure features misread as "undecomposed" burn entire plan phases
+
+- **Symptom**: run 9 (cycle 1) and run 10 (cycle 2) each exhausted all 3
+  planning rounds -- SprintPlanRejectedError -- because plan-reviewer
+  dispatches flagged features whose children are ALL CLOSED (eft.1/3/4/5/
+  7/8 by run 10) as "undecomposed, zero child tasks, no model metadata"
+  and demanded re-decomposition. The planner cannot sensibly satisfy that
+  without recreating closed work -- run 9's planner did exactly that, and
+  the NEXT review round correctly rejected the duplicates (thrash both
+  ways).
+- **Root cause**: verdict inconsistency across reviewer dispatches on the
+  same DAG state. The reviewer's child queries default to OPEN issues, so
+  an all-children-closed feature looks childless; some dispatches
+  correctly read it as "eligible for closure, non-blocking" (run 8 C2),
+  others fail hard criteria on it. Feature closure belongs to the
+  integ-test phase, so mid-sprint this state is NORMAL and long-lived.
+- **Fix** (runner.js): pin the interpretation in both prompts.
+  buildPlanReviewerPrompt now instructs: check closed children (bd list
+  --all) before flagging a feature undecomposed; all-children-closed =
+  pending feature-closure = non-blocking note only, never a criteria
+  failure, never a re-decomposition demand. buildPlannerPrompt's
+  re-planning preamble gets the symmetric guard: leave such features
+  alone even if review feedback appears to demand decomposition.
+
+### Issue 16: closed beads invisible in the viewer sprint tree
+
+- **Symptom** (operator-reported): the sprint viewer showed only open
+  items under the sprint tree, making progress impossible to judge -- by
+  run 11 most eft work was CLOSED, so the tree looked nearly empty.
+- **Root cause**: updateDashboard fetched beads via bdListScoped('--json').
+  Any non-empty argument string routes to a second plain `bd list`
+  invocation, which defaults to open/in_progress only. The no-args path
+  bdListScoped('') reuses the shared `bd list --all --limit 0 --json`
+  fetch, which includes closed beads.
+- **Fix** (runner.js): updateDashboard now calls bdListScoped('') so the
+  dashboard payload carries the full DAG including closed items. Golden
+  transcripts regenerated (the dashboard section of every golden changed).
+
+### Issue 17: reviewer pins CHANGES_NEEDED by reopening deferred P3 features
+
+- **Symptom**: run 11 cycles 2-3 -- reviews returned CHANGES_NEEDED with
+  reopenIds ['apra-fleet-eft.10','apra-fleet-eft.11' (,'.12')] round
+  after round. Those are P3 features, deferred by design under the sprint
+  goal constraint (P1/P2). The completion gate needs zero open
+  goal-priority beads AND a final APPROVED verdict, so a reviewer that
+  keeps reopening below-goal beads pins the verdict and starves the gate.
+- **Root cause**: buildReviewerPrompt never told the reviewer what the
+  sprint goal was. The reviewer read the epic's full child list, found P3
+  features with no commits, and (correctly, from its blind viewpoint)
+  demanded the missing work.
+- **Fix** (runner.js), two layers:
+  (a) buildReviewerPrompt now takes the goal and carries a SPRINT SCOPE
+  instruction: features/beads below the goal priority are deferred by
+  design, must not fail the verdict, must not appear in reopenIds.
+  (b) Deterministic guard at the reopen loop: when reopenIds is
+  non-empty, fetch the scoped DAG once (bdListScoped('')) and SKIP any
+  id whose bead priority is numerically below the goal (priority >
+  goalMax), logging the skip. The lookup is conditional on reopenIds
+  being non-empty so the common empty path issues no extra bd call.
+- **Test fallout lesson**: the first (unconditional) lookup shape caused
+  35 bd-replay drift failures; the conditional shape confined drift to
+  the 14 scenario files that genuinely exercise reopenIds. Those were
+  re-recorded (SUMMARY pass=37 fail=0) and the golden bd recordings +
+  transcripts re-recorded/regenerated; full suite green (789/789).
+
+### Issue 18: Deploy fails every cycle on a permission self-check; Integ Test never runs, so features can never close
+
+- **Symptom**: run 11 C1-C3 -- "Deploy FAILED this cycle: Stopped at
+  Step 0 (permission check)... Skipping Integration Test phase." Every
+  cycle evaluation then reports the same ~11 open P2+ beads. Those 11
+  are the pending-closure FEATURE nodes themselves (all children
+  closed): the integ-test-runner is the only role that closes verified
+  features, so with Deploy failing its pre-flight, the completion gate
+  (zero open goal beads + APPROVED) is mathematically unreachable and
+  every run rides to maxCycles.
+- **Root cause**: deploy.md's Permissions section requires Bash(gh run *),
+  Bash(gh release *), Bash(mkdir *), Bash(*apra-fleet-installer-*
+  install *), Bash(*apra-fleet-installer-* --version) in the member's
+  permissions.allow. fleet-rev's .claude/settings.json had no
+  permissions key at all, and settings.local.json (composed at
+  onboarding, BEFORE deploy.md existed -- the playbook is sprint-authored
+  content) covered only Bash(gh:*). Nothing re-composes member
+  permissions when the sprint's own doers author a playbook that carries
+  new permission requirements.
+- **Fix** (member-side, live, no sprint restart): added the five
+  deploy.md prefixes (plus a colon-syntax mkdir variant) to BOTH
+  .claude/settings.json and .claude/settings.local.json in fleet-rev's
+  sprint workspace. Both files are gitignored, so the member's working
+  tree stays clean. Applied while run 11 was in Review C4 R1, before
+  Deploy C4 fired.
+- **Durability caveat (watched)**: if fleet-rev's permissions are ever
+  re-composed (compose_permissions / re-onboarding), these entries are
+  lost. The structural fix belongs in the permission profile for the
+  deployer/integ-test roles, or a pre-Deploy permission-ensure step in
+  the runner; deferred until Integ Test is observed actually running.
+
+### Run 11 outcome: StalledSprintError, reopen-thrash on the deferred P3 trio
+
+- Run 11 ended at Deploy C4 with StalledSprintError: closed-count history
+  [57, 62, 62, 62], reopen-thrash detected on apra-fleet-eft.10/.11/.12
+  (each reopened more than 3 times). This is exactly the Issue 17
+  oscillation -- the stall detector (correctly) refused to burn cycle 5
+  on it. It also means Deploy C4 never ran, so the Issue 18 permission
+  fix gets its first live test in run 12. finalizeAbort worked as
+  designed (idempotent [ABORTED] PR, terminal history record). Run 11's
+  content record: 4 cycles, zero infrastructure failures, closed beads
+  57->62, every P1/P2 feature at all-children-closed pending closure.
+
+### Issue 19: deploy.md is non-idempotent and hardcodes the Windows artifact
+
+- **Symptom**: run 12 Deploy C1 -- with Issue 18's permissions in place the
+  deployer executed deploy.md for the first time ever, and failed mid-run:
+  `gh run download ... error extracting "apra-fleet-installer-win-x64.exe":
+  file exists` (/tmp/fleet-deploy already held the artifact from the same
+  deploy session's earlier attempt).
+- **Root cause**, two content defects in the sprint-authored playbook:
+  (a) NON-IDEMPOTENT: `mkdir -p /tmp/fleet-deploy` then download -- any
+  re-run (or step retry) collides with the previous download, and gh run
+  download has no overwrite flag. (b) WRONG PLATFORM: the Deploy and smoke
+  test sections hardcode apra-fleet-installer-win-x64.exe and
+  apra-fleet.exe -- authored from the orchestrator's Windows viewpoint,
+  but the runbook executes ON THE MEMBER (fleet-rev is macOS ARM). Even a
+  clean download would have died at the install step. The playbook's own
+  Platform binaries table already listed the right artifact names.
+- **Fix** (deploy.md, committed to the sprint branch): Deploy section now
+  selects the artifact by `uname -s` (Darwin/Linux/fallback-Windows),
+  does `rm -rf /tmp/fleet-deploy` before mkdir, and `chmod +x` before
+  install; smoke test tries both binary names; manual/rollback sections
+  parameterized on the platform table. Permissions section gains
+  `Bash(rm -rf /tmp/fleet-deploy*)`, `Bash(chmod +x /tmp/fleet-deploy*)`,
+  and widens the version check to `Bash(*apra-fleet* --version)` (the old
+  prefix only covered the installer, not the installed binary the smoke
+  test runs). Same prefixes added live to fleet-rev's settings files, and
+  the stale /tmp/fleet-deploy was removed on the member.
+
+### Issue 20: no deployable artifact exists for darwin-x64 members at all
+
+- **Symptom**: run 12 Deploy C2 -- the Issue 19 platform selection worked,
+  but install failed with exit 127 'bad CPU type in executable':
+  fleet-rev is an INTEL Mac (Darwin x86_64) and main's CI matrix builds
+  only win-x64, linux-x64, darwin-arm64. There is no working deploy path
+  for this member: the arm64 binary cannot execute, and the fallback
+  apra-fleet-tarball flow is broken on main (the tarball omits
+  install.cjs and scripts/ which install.sh requires, and the legacy
+  tarball installer never creates ~/.apra-fleet/bin/, so the smoke test
+  could never pass) -- a main-repo packaging defect worth its own bead
+  on that backlog.
+- **Disposition**: this is eft CONTENT (the deploy/integ runbooks are the
+  epic's own deliverables), not sprint-process infrastructure, so it was
+  filed as a sprint-scoped P2 bug bead apra-fleet-eft.15 per the bead
+  injection contract (created member-side with model metadata, dolt
+  pushed). The bead's preferred option is a build-from-source fallback
+  in deploy.md (npm run build:binary when no artifact matches
+  uname -s/-m), which is self-contained on the branch. Being P2 it
+  correctly holds the completion gate open until Deploy actually works.
+
+### Issue 21: childless bug beads are planned as directly-dispatchable, but doers refuse non-task beads
+
+- **Symptom**: run 12 C3 -- the planner assigned the injected bug bead
+  apra-fleet-eft.15 directly to a doer streak and the plan-reviewer
+  APPROVED that plan; the doer then skipped it per its contract ("doers
+  may only claim issue_type=task"), reporting BLOCKED, and the runner
+  marked the streak FAILED. Left alone this repeats every cycle the bug
+  stays open and the stall detector eventually kills the run -- the same
+  thrash shape as Issue 17, one layer down.
+- **Root cause**: a planning-side blind spot symmetric to Issue 14.
+  Features get decomposed into task children, but an injected bug that
+  arrives mid-sprint as a childless leaf is treated as dispatchable
+  as-is by both planner and plan-reviewer; only the doer contract knows
+  it is not.
+- **Fix** (runner.js, mirror-image prompt pins): buildPlannerPrompt now
+  states that doers can only claim task-type beads and any open childless
+  bug in scope must be decomposed into task-type children (with model
+  metadata and a [test] task where testable) during planning;
+  buildPlanReviewerPrompt gains the matching DISPATCHABILITY criterion --
+  a plan leaving an open childless bug-type leaf is CHANGES_NEEDED, with
+  an explicit carve-out for pending-closure features. Goldens
+  regenerated; full se suite green (863/0).
+- **Rollout**: the pin reaches the sprint at the next relaunch. Run 12's
+  C4 planner may still self-correct from the doer's BLOCKED note, which
+  recommended exactly this decomposition.
+
+### Run 12 outcome: StalledSprintError (flat closed count), Issues 19-21 discovered
+
+- Run 12 ended at the C3 evaluation with StalledSprintError: closed-count
+  history [62, 62, 62], no reopen-thrash. C1 was a clean sweep (plan +
+  3 reviews APPROVED first try -- Issues 14 and 17 both holding), and
+  Deploy executed deploy.md for the first time in the campaign (Issue 18
+  fix working), which surfaced Issues 19 (non-idempotent, Windows-only
+  playbook) and 20 (no darwin-x64 artifact exists; filed as bead
+  apra-fleet-eft.15). C2/C3 then closed nothing: the only non-feature
+  open bead was eft.15, which doers refused every round as issue_type=
+  bug (Issue 21), and the stall detector correctly aborted before Plan
+  C4 could decompose it. Run 13 launches with the Issue 21 planner/
+  plan-reviewer pins, so its FIRST planning pass must decompose eft.15
+  into workable task children -- unblocking Deploy, then Integ Test,
+  then feature closure.
+
+### Issue 22: integ-test-playbook.md permissions never provisioned (Issue 18's class, second member)
+
+- **Symptom**: run 13 Integ Test C1 -- the FIRST integ-test dispatch of
+  the campaign (Deploy C1 finally succeeded via eft.15's source-build
+  fallback) refused to run at Step 0a: five of the six permission
+  prefixes integ-test-playbook.md requires were missing from fleet-rev's
+  allowlist (only Bash(mkdir *) was present, from the Issue 18 fix).
+  featuresClosed: 0 -- the cycle's feature-closure opportunity was lost.
+- **Root cause**: same class as Issue 18. Sprint-authored playbooks
+  (deploy.md, integ-test-playbook.md) declare their own Permissions
+  sections, but nothing in onboarding or the sprint provisions those
+  prefixes onto the member; each playbook's Step 0 self-check then
+  correctly refuses.
+- **Fix** (member-side, live): added the five missing prefixes to both
+  settings files on fleet-rev before Integ Test C2.
+- **Structural fix candidate (watched)**: this is now the third
+  member-side permission patch (deploy Step 0, deploy rm/chmod/version,
+  integ Step 0a). The runner should get a pre-phase permission-ensure
+  step: parse the playbook's Permissions section and merge any missing
+  prefixes into the member's settings before dispatching deployer /
+  integ-test-runner. Defer until the current permission set proves
+  sufficient end-to-end, then implement once.
+
+### Issue 23: member workspace untrusted -- ALL settings.json permissions silently ignored
+
+- **Symptom**: run 13 Integ Test C2 -- the first real playbook dispatch
+  exhausted its turn budget, and the error carried the actual cause:
+  "Ignoring 18 permissions.allow entries from .claude/settings.json:
+  this workspace has not been trusted." Every playbook command was being
+  denied, so the agent burned its turns fighting refusals.
+- **Root cause**: the Claude CLI only honors a workspace's
+  .claude/settings.json after the interactive trust dialog has been
+  accepted for that directory -- recorded in ~/.claude.json under
+  projects[<path>].hasTrustDialogAccepted. Headless members never see
+  the dialog, so all the Issue 18/19/22 permission provisioning into
+  settings.json was silently inert. (settings.local.json entries also
+  gate on the same trust flag.)
+- **Fix** (member-side, live): set projects["/Users/akhil/git/
+  apra-fleet"].hasTrustDialogAccepted = true in ~/.claude.json on
+  fleet-rev. Onboarding lesson for the fleet: provisioning permissions
+  onto a member is only effective if the workspace is also trusted --
+  worth folding into compose_permissions / member onboarding.
+
+### Issue 24: integ-test-runner had no turn-exhaustion resume ladder
+
+- **Symptom**: same dispatch as Issue 23 -- max_turns_exhausted was
+  caught and degraded to passed:false (correct), but the cycle's entire
+  feature-closure opportunity was lost with no recovery attempt.
+- **Fix** (runner.js): INTEG_TEST_MAX_TURNS = 100 (doer-sized -- the
+  runner owns the sandbox lifecycle plus full functional suites) with
+  the same same-session resume-and-continue ladder the reviewer/final-
+  review dispatches use (resume at 200 turns, sandbox kept, then the
+  existing degrade path). Structural baselines updated: 14 agent sites,
+  12 withGitSync brackets, 6 pushBeads brackets (integ once + resume).
+  Full se suite green (863/0). Applies from run 14 (run 13 already
+  loaded its runner; its C3+ integ attempts rely on the Issue 23 trust
+  fix removing the turn waste).
+
+### Issue 25: universal turn-exhaustion resume (operator directive)
+
+- **Directive**: every max_turns-based dispatch failure, in ANY phase,
+  must be answered with a same-session resume at doubled turns and a
+  "continue where you left off" prompt -- never treated as a terminal
+  failure on the first exhaustion.
+- **Coverage before**: doer (100->200->400), reviewer (60->120), final
+  review (60->120), integ-test-runner (100->200, Issue 24). Uncovered:
+  planner, plan-reviewer, deployer, harvester -- each would degrade or
+  fail its round on a single exhaustion.
+- **Fix** (runner.js): all four remaining member-dispatch sites gain
+  explicit turn budgets and the same resume ladder -- planner 100->200
+  (doer-sized, builds the whole DAG), plan-reviewer 60->120, deployer
+  60->120 (the source-build fallback deploy runs npm ci + two builds),
+  harvester 60->120. Each resume repeats the role's withGitSync/dolt
+  bracket semantics (planner and harvester resumes carry pushBeads;
+  harvester resume carries pushCode).
+- **Deliberate exception**: the two streak-assignment agent() sites stay
+  ladder-free -- they are pure-compute schema asks (no member run) whose
+  failure degrades safely to one-bead-per-streak, and they already have
+  their own bounded semantic-repair re-ask (Issue 15).
+- **Structural baselines**: 18 agent sites, 16 withGitSync brackets,
+  8 pushBeads brackets, 4 pushCode brackets.
+- **Rollout**: run 14 launched minutes before this change (it has the
+  Issue 24 integ ladder, which is the one that matters for its critical
+  path); full coverage from run 15.
+
+### Run 14 outcome: full 5-cycle lifecycle, Final Verdict FAIL on the Issue 26 harness gap
+
+- Run 14 was the campaign's most productive run and the first to complete
+  the whole sprint lifecycle: 5 cycles + Final Review + Harvest +
+  Publish PR (idempotent -- updated the existing PR). The integ phase ran
+  for the first time end to end and CLOSED 8 features in cycle 1, then
+  drove a real find-fix loop through genuine PRODUCT bugs across cycles:
+  eft.16 (dolt no-remote), eft.18 (canary self-provision), eft.19 (P0:
+  dev-mode install missing undici), eft.20 (P1: state.json corruption --
+  doubled-quote breaking JSON.parse in the eft.2 persistence path,
+  stalling auto-sprint after Plan), eft.21 (teardown ~-reresolution).
+  Every one fixed with tests; unit suite ended green (2337 passing).
+- Final Verdict: FAIL -- correctly. The headline deliverable (auto-sprint
+  running a sprint end-to-end via the integ smoke test's Part 2 Test
+  scenario) never completed in any cycle. Root cause = Issue 26 below.
+  Final Review filed a newTask gating epic-close on a green Part 2 run.
+- Two run-14-only gaps (both fixed for run 15): the Harvester hit turn
+  exhaustion with NO resume (run 14 launched minutes before the Issue 25
+  universal ladder), so docs were not harvested; and the completion gate
+  was never reachable because of Issue 26.
+
+### Issue 26: integ-test-runner cannot complete its own playbook's Part 2 (no MCP tools)
+
+- **Symptom**: integ Part 2 "Test scenario" step 1 registered a member
+  via the `register_member` MCP tool, but the integ-test-runner agent is
+  granted only [Read, Bash, Grep, Glob] -- no MCP. Cycles C2/C3 only got
+  past it by hand-rolling a Bash HTTP/JSON-RPC call to the MCP server (the
+  workaround CLAUDE.md forbids); C4/C5 correctly refused and reported the
+  gap, so Part 2 never completed and the sprint could not sign off.
+- **Root cause**: the agent's tool grant contradicted the playbook it
+  owns end to end. `register_member` had no CLI equivalent, so Part 2
+  step 1 was not shell-drivable at all.
+- **Fix** (chosen by operator: add the CLI, not grant MCP -- keeps the
+  fix in apra-fleet, no apra-pm submodule/upstream PR, and makes Part 2
+  fully shell-only per the playbook's own Setup/Reset/Teardown principle):
+  new `register-member` CLI subcommand (src/cli/register-member.ts, wired
+  into src/index.ts) wrapping the SAME shared registerMember() function
+  the MCP tool uses (src/tools/register-member.ts:110) through the same
+  Zod schema -- no logic fork. integ-test-playbook.md Part 2 step 1
+  reworded to `node dist/index.js register-member --type local ...` via
+  Bash; the shell-vs-MCP notes updated (every section is now
+  shell-drivable). 9 new CLI tests; full suite green. Commit 60c518a.
+- **Note**: local+claude registration still bootstraps an interactive
+  session needing the running server (Setup starts it) and spawns a real
+  claude process -- identical to the MCP path, faithfully wrapped, not
+  diverged.
+
+### Observed while dispatching the 0ei hotfix (separate track): stale busy lock
+
+- fleet-dev's execute_prompt lock returned {"isError":true,"reason":
+  "busy"} for ~20 minutes while the member session was idle with no live
+  process (token counts frozen); stop_prompt reported "no active session
+  was running" and cleared it. A dispatch-layer lock leak on the fleet
+  server (v0.3.5_8a1ef3) -- likely left by an earlier abandoned/killed
+  dispatch. Watch for recurrence; if it repeats, file a server bead (lock
+  release on child-process reap, or a TTL/liveness check on
+  inFlightAgents).
+
+### Still open / watched
+
+- **apra-fleet-eft.14 (server)**: why does the provider CLI sometimes exit
+  0 with no parseable result/usage/sessionId? Client-side typed handling
+  is in place (Issue 3); the server-side parse gap needs its own
+  investigation.
+- **apra-fleet-eft.15 (perf)**: repeated near-identical project-wide
+  `bd list` dumps within a phase (clearly visible in the fleet server log,
+  ~1.5-2s each); P2, not sprint-fatal.
+- **POST-stream idle timeout risk**: OBSERVED in run 5 and fixed as Issue
+  8 (iteration 2). Server-side SSE keepalives remain an optional hardening
+  follow-up.
+- **apra-fleet-qv1**: parallel doer streaks to a single member are unsafe
+  (pre-existing bead, visible in the server log's bead dumps); single-member
+  sprints serialize doers so not currently hit.
+
+### Process change (2026-07-20): launch via the delivered CLI surface
+
+From run 16 onward the stabilization loop launches sprints through the
+delivered product surface instead of the raw engine path:
+
+    npm run build
+    node dist/index.js install     (refresh ~/.apra-fleet workflow runtime)
+    node dist/index.js workflow auto-sprint --issue apra-fleet-eft \
+      --members fleet-rev --branch auto-sprint/eft-service \
+      --base feat/fleet-reorg --viewer-port 18300
+
+Rationale: every relaunch now also exercises the dev-mode install asset
+pipeline, the workflow launcher (version-skew check, ADR server
+resolution, verbatim arg passthrough), matching how end users run
+sprints. An install/launcher regression now blocks the loop by design --
+that is surfaced signal, not friction to route around. The integ-test
+playbook's smoke test (Part 2 step 3) already launches via
+'apra-fleet workflow auto-sprint', so both lanes now run the same
+delivered surface. Version bumped to 0.4.0 on this branch (the reorg/eft
+line ships as 0.4.0; 0.3.5 was released from main).
+
+### Issue 27 (run 15 C1): bare "continue" resume prompts lose per-dispatch scope
+
+Observed live twice in run 15 C1. (a) The integ runner exhausted 100 turns,
+was resumed with a generic continue-prompt, and returned featuresClosed: 0
+with "this dispatch's .fleet-task.md carried no explicit feature-id list"
+-- correct behavior per its missing-scope contract, because a resumed
+dispatch DELIVERS A NEW PROMPT ARTIFACT to the member, replacing the
+original one that carried the feature-id scope. (b) The resumed doer for
+one streak drifted onto a previously-finished bead ("no new work to
+continue") for the same reason: its continue-prompt never restated the
+assigned bead ids.
+
+Fix: the three resume sites whose contracts depend on per-dispatch scope
+(integ-test-runner feature ids; doer bead ids + branch; reviewer bead ids
++ branch/base) now restate that scope verbatim inside the resume prompt.
+The five other resume sites (planner, plan-reviewer, deployer, final
+review, harvester) self-derive their scope or carry it in-session and are
+left as-is. Engine suite: 887 pass / 0 fail.
+
+### Issue 28 (run 15 C2/C3): undispatchable beads wasted a full doer dispatch per round
+
+Observed live: 4 of 6 streaks in one Develop round were bug-type beads a
+doer is contract-bound to refuse -- each still cost a complete LLM dispatch
+that returned "skip" deterministically. Three engine holes, three fixes:
+(a) readyLeafBeads built its decomposed-parent exclusion set from OPEN
+children only, so the moment a bug's task children all closed it re-entered
+doer seeding as a fake leaf -- now built from the any-status dump
+(bdListScoped('') -- no new bd command); (b) streak seeding now mirrors the
+doer contract engine-side, dropping non-task beads before dispatch, with
+target issues exempt (the eft.24 childless-leaf-target sprint case must
+stay dispatchable); (c) pending-closure BUGS (all task children closed) had
+no closure owner at all -- doers refuse, reviewers may not close, integ
+prompts only named features -- so they lingered open at goal forever; the
+integ dispatch prompt now names them for verify-and-close.
+
+### Issue 29 (run 15 C3 R3): '-tier'-suffixed model metadata 404-failed a whole streak
+
+An out-of-band injected bead carried metadata {"model": "standard-tier"};
+the engine passed it verbatim to execute_prompt, the server tier map missed
+it, and it reached the provider CLI as a literal model name: claude --model
+standard-tier -> api_error_status 404, streak lost. Fix: normalizeTierToken()
+containment-normalizes any value holding exactly ONE tier word (any
+case/shape) at the single engine read site; zero or multiple matches pass
+through untouched so explicit model ids are never mangled. The planner
+prompt's defensive '-tier' legalese was trimmed at the same time -- enforce
+in code, not prompts. Data fixed member-side (eft.26/27 -> "standard").
+
+### Issue 30 (run 15 C4, preemptive): 60-min hard ceiling would false-fail a long integ pass
+
+Found by inspection while Integ Test C4 was in flight -- the first integ
+pass expected to run LONG (real suites + a full sandbox smoke sprint),
+which is exactly when the ceiling matters. The integ dispatch set
+timeout_s: 3600 AND max_total_s: 3600. The first is an inactivity timer
+(resets on member stdout; the playbook's background-sprint poll loop keeps
+it fed). The second is a HARD kill at elapsed time regardless of activity
+or progress. A timer kill surfaces as a plain AgentDispatchError, which
+the catch converts to passed:false -- a FALSE integ failure -- and the
+resume ladder only matches reason max_turns_exhausted, so the killed run
+gets no resume even if minutes from done. Compounding: two such cycles
+with no other closes trip stall-abort and kill the whole run.
+
+Note the sprint-level stall detector is NOT a risk here: it is cycle-
+granular (closed-bead high-water mark at cycle evaluation), structurally
+unable to fire mid-phase.
+
+Fix: integ runner max_total_s raised to 7200 while keeping timeout_s at
+3600 -- a genuinely hung runner still dies after 60 min of silence; an
+active long pass gets 2h of headroom. Other roles keep 3600/3600 (deploy,
+plan, review are not plausibly hour-plus when healthy). Takes effect run
+16; run 15's in-flight C4 still carries the 60-min ceiling, so a C4 integ
+result of passed:false with a dispatch-failed summary near the 60-min mark
+should be read as THIS signature, not a real test failure.
+
+### Issue 31 (run 15 verdict FAIL, root cause of eft.30): D-push gate ran AFTER the push attempt
+
+The single most serious finding of run 15: in doltPushAfter(), `bd dolt
+push` was attempted FIRST and isMemberSyncRemoteConfigured() was consulted
+only on the FAILURE path (eft.30.2), to downgrade an unclassifiable failure
+to a benign skip. But bd auto-provisions a Dolt-level remote from git's own
+origin on the push attempt itself, so on a clone with valid credentials the
+push SUCCEEDS against the real shared remote -- neutralization verified
+clean seconds earlier is simply re-armed. Observed live in integ C4 AND C5:
+a sandbox reached the real fleet-e2e-toy remote and was stopped only by the
+machine's missing GitHub credentials, not by design. The C5 R3 reviewer
+reopened eft.30 with exactly this diagnosis; the final FAIL verdict cited
+it as the run's core defect.
+
+Fix: the push is now gated BEFORE being issued -- when the member's
+bd-level sync.remote is positively confirmed absent/neutralized, no `bd
+dolt push` command is issued at all (same benign no-remote skip result).
+isMemberSyncRemoteConfigured fails CLOSED (any inconclusive read reports
+configured), so a real, actively-synced clone always still pushes; the
+eft.30.2 failure-path downgrade stays as defense-in-depth. New test pins
+the load-bearing assertion: with sync.remote absent, ZERO push commands are
+ISSUED (not merely "the failure was benign"); a stateful-stub test keeps
+the failure-path branch covered. Cost: one `bd config get sync.remote`
+read per D-push bracket. Goldens refreshed (8 pre-gate reads now appear in
+the happy-path transcript); arg-contract member-routing tests exclude the
+new read alongside `bd dolt *` (same per-member bracket class). Engine
+suite: 960 pass / 0 fail; root vitest green minus the 2 known Windows-local
+teardown flakes.
+
+### Issue 32 (run 15 integ C4/C5): a live-but-silent hung dispatch costs a full hour, and no watchdog CAN fire
+
+The eft.28 recurrence signature: the sandbox planner dispatch hung with
+its PID alive, dashboard state frozen 2m15s+, zero output. "Why did no
+watchdog call it stalled?" -- because with `claude -p` there is no signal
+to watch: the CLI prints nothing until the turn completes (Issue 12), so
+server-side inactivity == total runtime and an output-based watchdog
+cannot distinguish a hang from silent work. The engine DOES self-heal (the
+dispatch dies at timeout_s and the retry/resume ladders take over) but at
+the cost of the full dispatch budget: 60 minutes lost per hang, fatal
+inside a 10-minute canary smoke test.
+
+Engine fix: the budget is now an arg. `dispatch_timeout_s` (default 3600,
+floor 60; CLI `--dispatch-timeout-s`) is applied as BOTH timeout_s and
+max_total_s at every dispatch site (the Issue 12 equality is preserved at
+any value), with the integ-test ceiling at 2x (preserving Issue 30). The
+integ playbook's sandbox canary launch now passes 900 -- a hang there
+costs 15 minutes and the sprint's own ladders recover. TRUE liveness
+detection (is the member's claude process making progress?) requires a
+member-side signal the orchestrator does not have; that remains the open
+eft.28 product bead (execute-prompt.ts), now with two cycles of fresh
+repro evidence.
+
+Also found while editing: the playbook's smoke step named a
+`skip_dolt_push: true` arg that has never existed in the engine
+(validateArgs would reject it; the CLI's strict parser has no such flag)
+-- removed, with sandbox isolation now genuinely enforced by the Issue 31
+pre-gate instead. Tests: arg-contract suite pins default/validation and
+end-to-end plumbing (every mock dispatch carries the overridden budget).
+Engine suite: 963 pass / 0 fail.
+
+### Issue 33 (run 15 C5): a regressed bug with closed children is unreachable by every role
+
+Observed end-to-end in run 15 C5: eft.28 and eft.30 carried fresh
+"recurred despite the landed fixes" evidence from integ C4, but their fix
+children were all closed -- so the plan reviewer classified them as
+pending-closure ("do NOT re-decompose"), the planner left them alone,
+doers refused them as non-task beads (three full develop rounds of nine
+refusals each), and the integ runner may only verify-and-close. Nobody in
+the role graph had authority to create NEW fix tasks for a regression;
+the run ended FAIL on exactly those two beads.
+
+Fix: a REGRESSION EXCEPTION added to both sides of the Issue 14/21 rule
+pair. buildPlannerPrompt (delta cycles): an open bug whose children are
+all closed but whose notes record the defect reproducing AFTER closure is
+a regression -- read the latest evidence and create NEW fix + [test] task
+children targeting the residual mechanism (never duplicating the closed
+fix). buildPlanReviewerPrompt: such a bug with no new open task children
+makes the plan NOT approvable (CHANGES_NEEDED); bugs without post-closure
+recurrence stay under pending-closure as before. Goldens refreshed.
+Engine suite: 963 pass / 0 fail.
+
+### Issue 34 (run 16 C1 R2): Issue 28's seeding filter missed the in-loop site
+
+Observed live: bug bead eft.37 (filed mid-run, after the plan phase) was
+seeded into its own doer streak in Develop C1 R2. Root cause: the Issue 28
+dispatchability filter was applied only to the PRE-LOOP readyBeads list
+(the round-zero check); the IN-LOOP currentReady list -- the one that
+actually feeds the streak-assignment prompt each round -- had no filter,
+so any non-task bead born after planning (reviewer newTasks are created
+as tasks, but out-of-band bug filings are not) reaches a doer and burns a
+dispatch on a contract-bound refusal. Fix: same filter (with the same
+target-issue exemption) applied at the in-loop site. Honest note: no test
+ever pinned the filter directly -- that is exactly why the second site
+slipped; the run-16 live sprint is the current verification, and a
+focused seeding-filter unit remains worth adding when the runner's
+seeding is next factored testably. Engine suite: 963 pass; the 2
+dolt-sync-discipline real-subprocess failures are the known Windows EBUSY
+temp-dir-cleanup flake (same class PR #332 fixed elsewhere), aggravated
+by the live sprint's dolt server -- unrelated to this change.
+
+## Issue 35: install boundary used a stale binary (9 commits behind tip)
+
+Observed: run 17's installed runtime (built at 4286ef0) lacked eft.38's
+viewer more-button plus engine fixes it was meant to validate (Issue 34
+in-loop filter, eft.28.3 client dispatch watchdog, eft.34/35 D-pull
+gates, eft.27.4 stdout cap). Root cause: the SEA binary was built hours
+before the install boundary and never rebuilt from the branch tip; the
+delivered-binary convention runs the INSTALLED runtime, so workspace
+commits after the build silently do not participate.
+
+Rule adopted: at every run boundary, git fetch + fast-forward the
+workspace to origin tip, run the suites, `npm run build:binary`, THEN
+`install --force` -- and verify `apra-fleet version` reports the tip
+short-SHA before relaunching. Never install a binary whose embedded
+version does not match the branch tip.
+
+## Issue 36: eft.41.1/41.2 fix pair killed every real sprint launch
+
+Observed: run 18 died at t=0 with the new 41.2 backstop's own error
+("entry did not execute ... Nothing happened"). cli.mjs self-executes
+via its isMainModule() guard but never declared the launcher contract
+`export const selfExecuting = true`; its async main() starts, the import
+resolves, the backstop sees no flag and no exported callable, errors,
+and returns 1 -- killing the sprint it just started. All platforms, all
+real launches. It escaped the doer's validation because `--help` calls
+process.exit(0) during import, before the backstop runs -- the only path
+CI smoke exercises (hello-world is safe the same way).
+
+Fix: declare `export const selfExecuting = true` in cli.mjs (d0c000a).
+Verified: run 19 launches and runs on the delivered binary. Lesson
+recorded on eft.41: the [test] child must exercise a REAL-ARGS launch
+through the launcher import path, not only --help; a backstop that fires
+on "no observable execution" must account for guarded self-executing
+modules that neither export nor exit.
+
+## Issue 37: sprint branches are a CI blind spot
+
+Observed: ci.yml triggers only on PRs to main and pushes to main, so the
+sprint branch accumulated ~20 commits with ZERO CI signal; the first-ever
+run (manual workflow_dispatch, 29803574606) immediately caught a broken
+intermediate state no member could see. Rule: at every install boundary,
+manually dispatch CI on the sprint branch (gh workflow run --ref <branch>)
+and treat its result as a gate input. Candidate engine fix: add a push
+trigger for auto-sprint/** or have the runner dispatch CI after each
+review-approved round.
+
+## Issue 38: never descope one half of a sequenced migration
+
+Observed: eft.37.1 (core rename) landed with an explicit note that the se
+package cannot import until eft.37.2 updates consumers; the orchestrator
+then descoped the whole eft.37 family to P3 -- stranding the branch in a
+knowingly-broken intermediate state that CI (Issue 37) exposed: all 10
+supervisor test files failed at import. Rule: before cutting scope, check
+each candidate for landed-but-incomplete sequenced work (a sibling commit
+already on the branch that depends on it); restore the minimal completing
+task (37.2) rather than reverting landed work.
+
+## Issue 39: stale in_progress beads are gate-blocking zombies
+
+Observed: eft.13.4 sat in_progress for 2 days after its doer streak was
+interrupted -- its work had actually LANDED (salvage commit 8b6c987) but
+the bead was never closed, and in_progress beads do not re-enter the ready
+set. A full audit found 5 more stale claims (eft.19/7/15/12/17.1), several
+with all work complete. Rules: audit Started/Updated timestamps, not
+status glyphs; cross-reference claimed beads against landed commits before
+believing any status; engine candidate: a streak that ends abnormally must
+reset its claimed beads to open (or the runner sweeps claims older than a
+cycle at plan time).
+
+## Issue 40: closed-bead notes are a feedback black hole
+
+Observed: recurring user feedback (viewer scroll, LLM-output more button)
+was appended as notes to CLOSED beads (eft.27 family, eft.38) where no
+planner or verifier ever looks; the defects survived multiple 'fixed'
+cycles. eft.38's closing unit test fabricated an activity shape (inline
+output + Truncated flag) the real pipeline never produces, so the feature
+shipped rendering zero buttons. Rules: post-closure regressions REOPEN the
+old bead with evidence (never file a duplicate -- lineage matters); search
+all statuses AND all prefixes before filing anything (two open scroll bugs
+sat outside the epic, invisible to every sprint); UX beads must carry
+machine-verifiable acceptance (DOM measurement or HTTP check) so integ can
+verify closures without a human eyeball.
+
+## Issue 41: the bead-injection contract applies to the orchestrator too
+
+Observed: orchestrator-injected eft.18.5 was rejected by the plan reviewer
+for exactly the defects the injection contract predicts: no model metadata
+key, oversized scope (playbook rewrite + multi-file test retirement in one
+task), and an open task under a closed parent. The planner had to spend a
+round restructuring it (18.5/.6/.7 + 18.8). Rule: orchestrator-side beads
+follow the same contract as member-side ones -- model metadata set, single
+-concern task size, correct parentage -- or they cost a plan round.
+
+## Issue 42: structural isolation beats runtime neutralization
+
+Observed: the smoke test's entire recurring bug family (eft.18/25/30/31/
+39/47 -- neutralize dance, origin breakage, canary misses, Dolt remote
+re-adoption) stems from one design divergence: it hydrates beads from the
+live shared Dolt remote (bd bootstrap) and then tries to clean up, while
+the e2e suite prevents the class structurally (no-db JSONL seeding, remote
+never configured). Adopted design (eft.18.5-.8, user-amended): seed like
+e2e (bd init --from-jsonl, hardcoded canary gh-toy-4ef) but keep the
+workflow's D-push/D-pull under test against a sandbox-local file://
+THROWAWAY remote; git origin points at a local mirror so bd's
+push-time remote auto-provisioning can only ever derive sandbox paths; the
+four-check guard script is retargeted (all remotes must resolve inside the
+sandbox), never deleted. Safety invariant: the real remote URL must not
+appear anywhere in sandbox git or beads config at any point.
+## Issue 43: Smoke-test rehearsal on a second platform finds holes the author platform cannot (2026-07-21)
+
+**What happened:** Before run 19's Integ C3 executed the rewritten smoke-test
+playbook on fleet-rev (macOS), the orchestrator rehearsed the same playbook
+on the Windows host in an isolated sandbox (own HOME, port, throwaway
+remotes), with real model dispatches. The rehearsal surfaced six holes, four
+of which would have failed the real run:
+
+1. (doc) Playbook assumes a built repo: `dist/` present and `packages/apra-fleet-se/apra-pm`
+   submodule initialized. Fresh checkout fails at `install` step 6/12.
+   Fix: prerequisites block (recursive clone/`git submodule update --init
+   --recursive`, `npm install && npm run build`).
+2. (product, Windows) `start` trusts `schtasks /query` for "service
+   installed" -- schtasks is per-user global, not HOME-scoped, so a
+   sandboxed start finds the operator's REAL ApraFleet task and starts
+   that; the sandbox server never spawns. The real server survived only
+   via its own singleton guard. macOS is immune (plist existence check
+   under the overridden HOME).
+3. (playbook, all platforms) Fresh sandbox HOME has no git identity; bd's
+   seed commit fails exit 128 and the toy doer's first commit would too.
+   Fix: seed `git config --global user.name/email` in Setup.
+4. (product, all platforms) `auth --oauth` wrote a credentials file with
+   ONLY `claudeAiOauth.accessToken`; the Claude CLI requires at least
+   `expiresAt` and treats the file as "Not logged in". Every dispatch
+   failed auth. Fix (validated in rehearsal): `auth --oauth` accepts a
+   full claudeAiOauth JSON object as the secret; the playbook seeds the
+   whole object from REAL_HOME, preserving real expiry + refresh token.
+   The eft.48.2 checker passed while dispatch failed -- it verifies the
+   file lands, not that Claude accepts it; harden with expiresAt check.
+5. (product+engine, all platforms) Auth failures are retried and can hang:
+   the non-interactive dispatch path fails fast (8s, classified 'auth'),
+   but (a) the interactive path waits the full --dispatch-timeout-s with
+   no output classification; (b) register_member launches the member's
+   live session BEFORE credentials are provisioned (playbook order:
+   register step 1, provision step 3), creating a permanently
+   unauthenticated zombie session that a later file fix cannot heal; and
+   (c) the engine's dispatch retry wrapper retries an error that begins
+   "Authentication failed" five times -- isRetryable() already says
+   'auth' is terminal, but the engine never consults it. A transport
+   timeout string was also fed into the schema-repair loop as if it were
+   agent output.
+6. (doc) The "every step is shell-drivable" claim has no shell-drivable
+   recovery: there is no remove-member/relaunch-session CLI path, so an
+   unauthenticated member cannot be relaunched without restarting the
+   sandbox server.
+
+**Lesson:** A playbook exercised only on the platform and machine where it
+was written inherits that machine's ambient state (running server, service
+registrations, git identity, credential shape). One rehearsal on a second
+platform with a genuinely cold HOME is cheap relative to an integ cycle and
+converts "integ failed, cycle N+1" into "root-caused beads before integ
+completed". Retry policy must be category-driven: an auth failure can never
+be solved by retry.
+
+**Outcome:** Holes 3/4 (playbook+product) fixed in 98ff2a1/ae8b870, hole
+5's engine piece (category-driven retry: never retry auth/trust) in
+5e5ab49, all pushed to the sprint branch before Cycle 4's develop rounds.
+Integ C3 on fleet-rev independently root-caused hole 4 with the identical
+diagnosis minutes later (its evidence lives on apra-fleet-eft.48; the
+silent retry hang is apra-fleet-eft.50), corroborating the rehearsal
+without either run seeing the other's analysis. Hole 5's remaining
+server-side pieces (interactive-path output classification,
+register-launch auth health check) and hole 2 (Windows schtasks leak)
+stay open as beads for the sprint.

@@ -42,22 +42,27 @@ needed.
 6. Spawns the installer detached, then exits with status 0:
 
    ```
-   <installer> install --force --llm <provider> --skill <skill>
+   <installer> install --force --llm <provider> --skill <skill> --workflows <mode>
    ```
 
    `--force` makes the installer stop the running apra-fleet server before
-   replacing the binary. The `--llm` and `--skill` values come from
-   `install-config.json` (see below).
+   replacing the binary. The `--llm`, `--skill`, and `--workflows` values come
+   from `install-config.json` (see below).
 
 Any unexpected error is caught and printed as `Error: Update failed -- <message>`.
 
 ## install-config.json
 
 `update` reads `~/.apra-fleet/data/install-config.json` and uses the first
-provider entry to recover the `--llm` provider and its `--skill` set, so the
-update preserves the original install configuration. If the file is missing or
-cannot be parsed, `update` prints a warning and falls back to
-`--llm claude --skill all`.
+provider entry to recover the `--llm` provider, its `--skill` set, and its
+persisted `workflowsMode` (`all` or `none`), so the update preserves the
+original install configuration -- including refreshing built-in workflow
+assets to the new version while leaving any user-authored workflows on disk
+untouched. `workflowsMode` is optional for backward compatibility: an
+`install-config.json` written before the workflow subsystem existed won't
+have the field, so `update` defaults it to `all`, matching a fresh install.
+If the file is missing or cannot be parsed, `update` prints a warning and
+falls back to `--llm claude --skill all --workflows all`.
 
 ## Stopping and restarting the server
 

@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getStrategy } from '../src/services/strategy.js';
+import { getOsCommands } from '../src/os/index.js';
+import { ClaudeProvider } from '../src/providers/claude.js';
 import { makeTestAgent, makeTestLocalAgent } from './test-helpers.js';
 
 const makeLocalAgent = makeTestLocalAgent;
@@ -41,6 +43,41 @@ describe('LocalStrategy', () => {
     } finally {
       delete process.env.CLAUDECODE;
     }
+  });
+
+  // apra-fleet-eft.65.3: pins apra-fleet-eft.65.1's fix -- a coding agent
+  // dispatched via LocalStrategy's clean-env exec must receive a
+  // tool-permission configuration that grants Edit/Write for a brand-new
+  // file in its own work folder (no hard-block), via the surgical
+  // `--permission-mode acceptEdits` flag rather than the broad
+  // `--dangerously-skip-permissions` bypass. Per eft.65.3's acceptance
+  // criteria, this asserts the deterministic, testable surface -- the
+  // composed permission config actually reaching the spawned process through
+  // LocalStrategy's real clean-env exec pipeline -- not live agent
+  // free-behavior (no real `claude` binary is required: the actual CLI name
+  // is substituted with `echo` so the test can inspect exactly what argv
+  // LocalStrategy hands to the child process).
+  it('LocalStrategy clean-env exec preserves the provider-composed Edit/Write permission-parity flag for a headless coding-agent dispatch', async () => {
+    const provider = new ClaudeProvider();
+    const cmds = getOsCommands(os.platform() === 'win32' ? 'windows' : 'linux');
+    const built = cmds.buildAgentPromptCommand(provider, { folder: tmpDir, promptFile: '.fleet-task.md' });
+    // Same command LocalStrategy would actually spawn for a real coding-agent
+    // dispatch, except the `claude` binary is swapped for `echo` so this test
+    // doesn't depend on a real CLI being installed -- we only need to prove
+    // the permission flag survives LocalStrategy's clean-env wrapping intact.
+    const echoCmd = built.replace(/claude(\.cmd)?\s+-p/, 'echo -p');
+
+    const member = makeLocalAgent({ workFolder: tmpDir });
+    const strategy = getStrategy(member);
+    const result = await strategy.execCommand(echoCmd);
+    console.log('strategy.test.ts result:', result);
+    expect(result.code).toBe(0);
+    // The tool-permission configuration handed to the dispatched agent
+    // grants Edit/Write parity for the work folder (no hard-block)...
+    const stdoutNormalized = result.stdout.replace(/\s+/g, ' ');
+    expect(stdoutNormalized).toContain('--permission-mode acceptEdits');
+    // ...via the surgical flag, never the broad permission-bypass escape hatch.
+    expect(stdoutNormalized).not.toContain('--dangerously-skip-permissions');
   });
 
   it('execCommand() returns non-zero code for failed commands', async () => {

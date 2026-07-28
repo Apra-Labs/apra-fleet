@@ -122,7 +122,19 @@ function redactOutput(output: string, credentials: ResolvedCredential[]): string
   return redacted;
 }
 
-export async function executeCommand(input: ExecuteCommandInput, extra?: any): Promise<string> {
+export interface ExecuteCommandStructured {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  [key: string]: unknown;
+}
+
+export interface ExecuteCommandResult {
+  text: string;
+  structuredContent?: ExecuteCommandStructured;
+}
+
+export async function executeCommand(input: ExecuteCommandInput, extra?: any): Promise<string | ExecuteCommandResult> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
@@ -256,8 +268,13 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     if (result.stderr) parts.push(`[stderr]\n${result.stderr}`);
     const rawOutput = parts.join('\n') || '(no output)';
 
-    // Redact credential values from output
+    // Redact credential values from output. Structured stdout/stderr are
+    // redacted independently (not just the combined display text) so a
+    // programmatic caller reading structuredContent never sees a secret that
+    // the text channel would have masked.
     const output = credentials.length > 0 ? redactOutput(rawOutput, credentials) : rawOutput;
+    const redactedStdout = credentials.length > 0 ? redactOutput(result.stdout ?? '', credentials) : (result.stdout ?? '');
+    const redactedStderr = credentials.length > 0 ? redactOutput(result.stderr ?? '', credentials) : (result.stderr ?? '');
 
     writeStatusline();
 
@@ -271,9 +288,16 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     if (result.code !== 0) scope.fail(`exit=${result.code}`);
     else scope.ok(`exit=0`);
 
-    return result.code === 0
-      ? `Exit code: 0\n${output}`
-      : `Exit code: ${result.code}\n${output}`;
+    // The `Exit code: N\n<output>` text stays for human/LLM-facing display
+    // (agents that dispatch execute_command conversationally read this
+    // directly, per the fleet skill's dispatch rules) -- structuredContent is
+    // an ADDITIVE machine-readable channel alongside it, not a replacement.
+    // Programmatic callers (e.g. FleetWorkflow.command()) should prefer
+    // structuredContent.stdout over scraping/stripping the text prefix.
+    return {
+      text: result.code === 0 ? `Exit code: 0\n${output}` : `Exit code: ${result.code}\n${output}`,
+      structuredContent: { exitCode: result.code, stdout: redactedStdout, stderr: redactedStderr },
+    };
   } catch (err: any) {
     writeStatusline(new Map([[agent.id, 'offline']]));
     scope.abort(err.message);

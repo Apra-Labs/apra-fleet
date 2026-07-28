@@ -202,7 +202,7 @@ describe('install binary-copy step in npm mode', () => {
     const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
     process.argv[1] = npmPath;
 
-    await runInstall([]);
+    await runInstall(['--transport', 'stdio']);
 
     // binaryPath is set to process.argv[1] in npm mode and flows into mcpConfig.args[0],
     // which is the second segment of the claude registration command. Assert on the real
@@ -258,7 +258,7 @@ describe('install MCP config in npm mode', () => {
     const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
     process.argv[1] = npmPath;
 
-    await runInstall([]);
+    await runInstall(['--transport', 'stdio']);
 
     // run() calls the mocked execSync; the claude registration command must carry BOTH the
     // node executable (process.execPath) AND the npm script path (process.argv[1]).
@@ -276,17 +276,33 @@ describe('install MCP config in npm mode', () => {
     const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
     process.argv[1] = npmPath;
 
-    await runInstall([]);
+    await runInstall(['--transport', 'stdio']);
 
     const calls = vi.mocked(execSync).mock.calls.map(c => String(c[0]));
     const mcpAdd = calls.find(c => c.includes('claude mcp add'));
     expect(mcpAdd).toBeDefined();
     // All segments are quoted so paths with spaces survive; assert the exact registered form.
-    // 'run' is appended as the last arg so the MCP host invokes `node <script> run` and
+    // 'run --transport stdio' is appended so the MCP host invokes the stdio server and
     // never accidentally triggers the default install action.
     expect(mcpAdd).toBe(
-      `claude mcp add --scope user apra-fleet -- "${process.execPath}" "${npmPath}" "run"`
+      `claude mcp add --scope user apra-fleet -- "${process.execPath}" "${npmPath}" "run" "--transport" "stdio"`
     );
+
+    process.argv[1] = origArgv1;
+  });
+
+  it('registers URL-based MCP config for default (http) transport in npm mode', async () => {
+    const origArgv1 = process.argv[1];
+    const npmPath = '/home/user/.npm/_npx/abc123/lib/node_modules/@apralabs/apra-fleet/dist/index.js';
+    process.argv[1] = npmPath;
+
+    await runInstall([]);
+
+    const calls = vi.mocked(execSync).mock.calls.map(c => String(c[0]));
+    const mcpAdd = calls.find(c => c.includes('claude mcp add'));
+    expect(mcpAdd).toBeDefined();
+    expect(mcpAdd).toContain('--transport http');
+    expect(mcpAdd).toContain('http://localhost:7523/mcp');
 
     process.argv[1] = origArgv1;
   });
