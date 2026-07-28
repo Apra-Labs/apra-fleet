@@ -79,7 +79,7 @@
 // the two @apralabs/* workspace packages below (apra-fleet-7pm.12).
 
 import { build } from 'esbuild';
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -178,8 +178,25 @@ copyFileSync(
 );
 console.log('Copied fleet-sprint/runner.js -> dist/fleet-sprint-runner.mjs');
 
-for (const name of ['contracts.mjs', 'errors.mjs', 'viewer-extensions.mjs']) {
-  copyFileSync(join(sePackageRoot, 'fleet-sprint', name), join(distDir, name));
+// Copy EVERY .mjs sibling of runner.js, not a hand-maintained subset.
+// runner.js is never bundled (it is read from disk as text by
+// engine.executeFile(), see above), so its relative './x.mjs' imports must be
+// satisfied by real files sitting next to dist/fleet-sprint-runner.mjs. This
+// list used to be the literal three ['contracts.mjs', 'errors.mjs',
+// 'viewer-extensions.mjs'], which silently went stale as siblings were added:
+// conflict-ladder.mjs and sprint-lock.mjs both became runner imports and
+// neither was copied, so the packaged binary died at startup with
+// ERR_MODULE_NOT_FOUND for dist/conflict-ladder.mjs on the very first sprint.
+// Nothing caught it because the dynamic-require crash masked it -- the binary
+// never got far enough to load the runner at all.
+//
+// Scanning the directory removes the failure mode rather than patching this
+// instance of it: a new sibling is copied automatically the moment it exists.
+// The cost of over-copying (a few KB for a sibling nothing imports yet) is
+// trivial next to shipping a binary that cannot start.
+const siblingDir = join(sePackageRoot, 'fleet-sprint');
+for (const name of readdirSync(siblingDir).filter((f) => f.endsWith('.mjs')).sort()) {
+  copyFileSync(join(siblingDir, name), join(distDir, name));
   console.log(`Copied fleet-sprint/${name} -> dist/${name}`);
 }
 
