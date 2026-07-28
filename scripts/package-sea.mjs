@@ -12,7 +12,7 @@
 import { execSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -171,7 +171,11 @@ function main() {
   console.log(`\nSEA binary ready: dist/${binaryName}`);
 }
 
-// Only run when invoked directly (not when imported for tests).
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only run when invoked directly (not when imported for tests). A naive
+// `file://${process.argv[1]}` string comparison never matches on Windows
+// (backslash paths vs. proper file:// URL encoding), so this silently
+// skipped main() there. pathToFileURL() normalizes both sides consistently
+// on every platform.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }
