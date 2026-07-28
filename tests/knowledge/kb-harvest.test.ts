@@ -156,5 +156,21 @@ describe('kb_harvest routes per repo_path (two repos, one process)', () => {
     expect(fromA.results.some((e: any) => e.summary.includes('beta'))).toBe(false);
     expect(fromB.results.some((e: any) => e.summary.includes('beta'))).toBe(true);
     expect(fromB.results.some((e: any) => e.summary.includes('alpha'))).toBe(false);
+
+    // Provenance must hold through the REAL per-repo routing, not just the
+    // mocked provider used by the suite above. Fetch repo B's own provider
+    // (same cached instance kbHarvest just wrote through) and check the
+    // harvested entry directly, since kbList's projection omits author/source.
+    const bProviders = await kbProvidersModule.getKbProviders(repoB);
+    const { results: betaEntries } = await bProviders.project.query({
+      query: 'cleanup handler leaks',
+      include_stale: true,
+    });
+    expect(betaEntries.length).toBeGreaterThanOrEqual(1);
+    for (const entry of betaEntries) {
+      expect(entry.confidence).toBe('UNVERIFIED');
+      expect(entry.author).toBe('harvest');
+      expect(entry.source).toBe('harvest');
+    }
   });
 });
