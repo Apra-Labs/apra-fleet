@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { kbHarvest } from '../../src/tools/kb-harvest.js';
-import * as kbServiceModule from '../../src/services/knowledge/kb-service.js';
+import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import { vi } from 'vitest';
 
 let provider: SqliteProvider;
@@ -9,8 +9,10 @@ let provider: SqliteProvider;
 beforeEach(async () => {
   provider = new SqliteProvider(':memory:');
   await provider.init();
-  vi.spyOn(kbServiceModule, 'getKBService').mockReturnValue({
-    getProvider: () => provider,
+  vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
+    project: provider,
+    global: provider,
+    projectSlug: 'test',
   } as any);
 });
 

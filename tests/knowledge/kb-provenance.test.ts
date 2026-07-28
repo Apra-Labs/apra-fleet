@@ -3,7 +3,6 @@ import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js'
 import { kbCapture } from '../../src/tools/kb-capture.js';
 import { kbHarvest } from '../../src/tools/kb-harvest.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
-import * as kbServiceModule from '../../src/services/knowledge/kb-service.js';
 
 // T2.3 / D5 (+ revised D7 harvest provenance): provenance enums stamped by the
 // tool layer, never a free string from the caller.
@@ -17,9 +16,6 @@ beforeEach(async () => {
     project: provider,
     global: provider,
     projectSlug: 'test',
-  } as any);
-  vi.spyOn(kbServiceModule, 'getKBService').mockReturnValue({
-    getProvider: () => provider,
   } as any);
 });
 
