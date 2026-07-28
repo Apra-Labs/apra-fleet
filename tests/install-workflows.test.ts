@@ -450,3 +450,145 @@ describe('buildDevManifest scripts manifest excludes directories (regression for
     }
   });
 });
+
+// apra-fleet-eft.86.2 -- regression coverage for bug apra-fleet-eft.86 (dev-mode
+// install silently skipped the entire workflow subsystem because
+// buildDevManifest()'s agentSchemasDir/wfPath still pointed at the retired
+// vendor/apra-pm path instead of packages/apra-fleet-se/apra-pm, so
+// hasWorkflowSubsystemAssets() saw agentSchemas as undefined and the installer
+// warned-and-skipped instead of installing). Fixed by apra-fleet-eft.86.1. Uses
+// the same real-filesystem pattern as the undici/eft.84 suites above, since this
+// exercises buildDevManifest()'s own disk resolution against this repo's real
+// project root -- the mocked-fs runInstall() suites elsewhere in this file can't
+// observe that.
+describe('buildDevManifest workflow-subsystem asset resolution (regression for apra-fleet-eft.86)', () => {
+  afterEach(() => {
+    vi.doMock('node:fs');
+    vi.doMock('node:child_process');
+  });
+
+  it('emits non-empty agentSchemas/workflowRuntime/builtinWorkflows against the real repo root, and hasWorkflowSubsystemAssets() gates true', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const installReal = await vi.importActual<typeof import('../src/cli/install.js')>('../src/cli/install.js');
+    const wfAssetsReal = await vi.importActual<typeof import('../src/cli/workflow-assets.js')>('../src/cli/workflow-assets.js');
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+
+    const testDir = pathReal.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = pathReal.resolve(testDir, '..');
+
+    const manifest = installReal._buildDevManifestForTest(projectRoot);
+
+    // agentSchemas: non-empty, keys derive from
+    // packages/apra-fleet-se/apra-pm/agents/schemas (doer-input.json/doer-output.json
+    // are two of the real files that live there).
+    expect(manifest.agentSchemas).toBeDefined();
+    const schemaKeys = Object.keys(manifest.agentSchemas!);
+    expect(schemaKeys.length).toBeGreaterThan(0);
+    expect(schemaKeys.some((k) => k.endsWith('doer-input.json'))).toBe(true);
+    expect(schemaKeys.some((k) => k.endsWith('doer-output.json'))).toBe(true);
+
+    expect(manifest.workflowRuntime).toBeDefined();
+    expect(Object.keys(manifest.workflowRuntime!).length).toBeGreaterThan(0);
+
+    expect(manifest.builtinWorkflows).toBeDefined();
+    expect(Object.keys(manifest.builtinWorkflows!).length).toBeGreaterThan(0);
+
+    // The exact AND-gate that silently disabled the workflow-subsystem install
+    // pre-fix (agentSchemas undefined -> false).
+    expect(wfAssetsReal.hasWorkflowSubsystemAssets(manifest as any)).toBe(true);
+
+    // Guard against regression: no manifest asset key resolves through the
+    // retired vendor/apra-pm path.
+    const allAssetValues = [
+      ...Object.values(manifest.agentSchemas!),
+      ...Object.values(manifest.workflowRuntime!),
+      ...Object.values(manifest.builtinWorkflows!),
+    ];
+    expect(allAssetValues.length).toBeGreaterThan(0);
+    for (const diskRelPath of allAssetValues) {
+      expect(diskRelPath).not.toContain('vendor/apra-pm');
+    }
+
+    // The resolved agentSchemas/workflowRuntime/builtinWorkflows source paths
+    // exist on disk at the resolved location (root-relative, per
+    // collectPackageTree()).
+    for (const diskRelPath of allAssetValues) {
+      const full = pathReal.join(projectRoot, diskRelPath);
+      expect(fsReal.existsSync(full), `${diskRelPath} must exist on disk at ${full}`).toBe(true);
+    }
+  });
+
+  // End-to-end assertion (mirrors the eft.86 acceptance + apra-fleet-9te.4.5
+  // dependency): extract the real dev-mode manifest's workflow-subsystem assets
+  // (via the SAME extractWorkflowSubsystemAssets() code path install.ts's
+  // installer and workflow.ts's self-heal both use) into a fresh temp HOME, then
+  // assert $HOME/.apra-fleet/workflows exists and the fleet-sprint workflow is
+  // resolvable via workflow.ts's own resolveWorkflowEntry() -- no "workflow
+  // \"fleet-sprint\" not found" / no "no workflow-subsystem assets (older
+  // manifest)" skip.
+  it('after extracting the dev-mode manifest into a fresh temp HOME, ~/.apra-fleet/workflows exists and fleet-sprint resolves', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+    vi.doUnmock('node:os');
+
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+    const osReal = await vi.importActual<typeof import('node:os')>('node:os');
+
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    const tmpHome = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'apra-fleet-eft86-2-home-'));
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+
+    try {
+      // Re-import fresh (module-cache-cleared) copies so config.js's
+      // FLEET_BASE = path.join(os.homedir(), '.apra-fleet') is computed against
+      // tmpHome, not whatever HOME was set to when this file's earlier suites
+      // first loaded config.js.
+      const installReal = await vi.importActual<typeof import('../src/cli/install.js')>('../src/cli/install.js');
+      const wfAssetsReal = await vi.importActual<typeof import('../src/cli/workflow-assets.js')>('../src/cli/workflow-assets.js');
+      const workflowReal = await vi.importActual<typeof import('../src/cli/workflow.js')>('../src/cli/workflow.js');
+      const configReal = await vi.importActual<typeof import('../src/cli/config.js')>('../src/cli/config.js');
+
+      expect(configReal.WORKFLOWS_DIR).toBe(pathReal.join(tmpHome, '.apra-fleet', 'workflows'));
+
+      const testDir = pathReal.dirname(fileURLToPath(import.meta.url));
+      const projectRoot = pathReal.resolve(testDir, '..');
+      const manifest = installReal._buildDevManifestForTest(projectRoot);
+      expect(wfAssetsReal.hasWorkflowSubsystemAssets(manifest as any)).toBe(true);
+
+      wfAssetsReal.extractWorkflowSubsystemAssets({
+        manifest: manifest as any,
+        extractAssetBuffer: (key: string) => fsReal.readFileSync(pathReal.join(projectRoot, key)),
+        version: '0.0.0-eft86-2-test',
+        includeBuiltins: true,
+      });
+
+      expect(fsReal.existsSync(configReal.WORKFLOWS_DIR)).toBe(true);
+      const fleetSprintDir = pathReal.join(configReal.WORKFLOWS_DIR, 'fleet-sprint');
+      expect(fsReal.existsSync(fleetSprintDir)).toBe(true);
+
+      const deps = {
+        workflowsDir: configReal.WORKFLOWS_DIR,
+        exists: (p: string) => fsReal.existsSync(p),
+        readFile: (p: string) => fsReal.readFileSync(p, 'utf-8'),
+      } as any;
+
+      // Must not throw "workflow \"fleet-sprint\" not found" / any WorkflowError.
+      const entry = workflowReal.resolveWorkflowEntry(deps, 'fleet-sprint');
+      expect(fsReal.existsSync(entry)).toBe(true);
+    } finally {
+      if (savedHome !== undefined) process.env.HOME = savedHome;
+      else delete process.env.HOME;
+      if (savedUserProfile !== undefined) process.env.USERPROFILE = savedUserProfile;
+      else delete process.env.USERPROFILE;
+      fsReal.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  }, 20000);
+});
