@@ -2966,6 +2966,96 @@ export const BYTES_PER_TOKEN = 4;
 export const DEFAULT_CONTEXT_CEILING = 150000;
 
 /**
+ * apra-fleet-eft.78.3 -- per-role, per-cycle session registry that drives
+ * "round resume": within ONE sprint cycle's approval loop, a role (planner,
+ * reviewer, ...) resumes its OWN prior-round session across rounds
+ * (planner R1->R2->R3, reviewer R1->R2->R3) via an explicit session id, so a
+ * re-plan / re-review keeps the warm context it already built instead of
+ * re-deriving it from scratch. The session id itself is whatever
+ * execute_prompt promoted into structuredContent.sessionId
+ * (apra-fleet-eft.78.1), surfaced to the engine by agent()'s onSessionId
+ * callback (packages/apra-fleet-workflow).
+ *
+ * Guards, all enforced here so the call sites stay tiny:
+ *   - NEVER resume across cycles (fresh eyes): a stored entry is keyed to the
+ *     cycle it was recorded in; asking for a different cycle returns `false`
+ *     (a fresh session), even before any new record overwrites it.
+ *   - Fall back to a fresh session on a prior-round dispatch error/timeout:
+ *     the call site invokes clear(role) in its failure branch, so the next
+ *     round has nothing to resume.
+ *   - Fall back to a fresh session near the context ceiling: if the recorded
+ *     dispatch's reported usage is at/above `ceilingFraction` of
+ *     `contextCeiling`, the entry is flagged and resumeArgFor() returns
+ *     `false` -- resuming a session already near its window limit would start
+ *     the next round out of room.
+ *   - Capability check by CAPABILITY, not provider-name: a provider that does
+ *     not support resume returns no session id, so record() is never called
+ *     with one and resumeArgFor() naturally yields `false` (fresh). There is
+ *     deliberately no `if (provider === 'claude')`-style name test anywhere.
+ *
+ * @param {{ log?: (msg: string) => void, contextCeiling?: number, ceilingFraction?: number }} [opts]
+ */
+export function createRoundSessionRegistry(opts = {}) {
+    const log = typeof opts.log === 'function' ? opts.log : () => {};
+    const contextCeiling = typeof opts.contextCeiling === 'number' && opts.contextCeiling > 0
+        ? opts.contextCeiling
+        : DEFAULT_CONTEXT_CEILING;
+    const ceilingFraction = typeof opts.ceilingFraction === 'number' && opts.ceilingFraction > 0
+        ? opts.ceilingFraction
+        : 0.9;
+    // role -> { cycle: number, sessionId: string, nearCeiling: boolean }
+    const byRole = new Map();
+
+    /**
+     * Record the session id a dispatch of `role` returned during `cycle`.
+     * A no-op for a missing/empty id (e.g. a provider that does not support
+     * resume) so the next round stays fresh.
+     */
+    function record(role, cycle, sessionId, meta = {}) {
+        if (!role || typeof sessionId !== 'string' || sessionId === '') {
+            return;
+        }
+        const totalTokens = meta && meta.usage && typeof meta.usage.total_tokens === 'number'
+            ? meta.usage.total_tokens
+            : null;
+        const nearCeiling = totalTokens !== null && totalTokens >= contextCeiling * ceilingFraction;
+        byRole.set(role, { cycle, sessionId, nearCeiling });
+        if (nearCeiling) {
+            log(`[round-resume] ${role} session recorded near the context ceiling ` +
+                `(~${totalTokens} tokens >= ${Math.round(contextCeiling * ceilingFraction)}); ` +
+                `the next round in this cycle will start a FRESH session.`);
+        }
+    }
+
+    /**
+     * The `resume` argument the NEXT dispatch of `role` in `cycle` should carry:
+     * the stored session id (a string) to resume that same session, or `false`
+     * to start fresh. Fresh whenever there is no prior round, the prior round
+     * was in a different cycle, the prior round ended near the context ceiling,
+     * or no session id was ever captured (provider without resume support).
+     */
+    function resumeArgFor(role, cycle) {
+        const entry = byRole.get(role);
+        if (!entry) return false;                 // no prior round -> fresh (R1)
+        if (entry.cycle !== cycle) return false;  // never resume across cycles
+        if (entry.nearCeiling) return false;      // near context ceiling -> fresh
+        if (!entry.sessionId) return false;       // no captured id -> fresh
+        return entry.sessionId;                   // resume THAT session explicitly
+    }
+
+    /**
+     * Drop any stored session for `role` so its next round starts fresh. Called
+     * by a dispatch site when the just-run round failed/timed out -- resuming a
+     * failed session would carry a broken/partial context forward.
+     */
+    function clear(role) {
+        byRole.delete(role);
+    }
+
+    return { record, resumeArgFor, clear };
+}
+
+/**
  * Estimates one task's predicted context-size contribution, in tokens, from:
  * - `task.files` (the task's named files) looked up in `opts.fileSizes` (a
  *   map of file path -> byte size), converted via BYTES_PER_TOKEN; and
@@ -4385,6 +4475,18 @@ async function runSprintCycle(context) {
     let cycle = 1;
     const MAX_CYCLES = validated.maxCycles;
 
+    // apra-fleet-eft.78.3: per-(role, cycle) session registry so a role's
+    // session is resumed across ROUNDS within one cycle (planner R1->R2->R3,
+    // reviewer R1->R2->R3) via an explicit session id, while NEVER resuming
+    // across cycles (fresh eyes) and falling back to a fresh session on a
+    // prior-round dispatch error/timeout or near the context ceiling. The
+    // session id comes from execute_prompt's structuredContent.sessionId
+    // (apra-fleet-eft.78.1), captured via agent()'s onSessionId callback; a
+    // provider that does not support resume returns none, so nothing is
+    // recorded and the next round is fresh (a capability signal, not a
+    // provider-name check). See createRoundSessionRegistry's doc comment.
+    const roundSessions = createRoundSessionRegistry({ log });
+
     const targetIssues = validated.targetIssues;
     const sprintFilter = targetIssues.length > 0 ? `--parent ${targetIssues.join(',')}` : '';
 
@@ -4747,6 +4849,17 @@ async function runSprintCycle(context) {
             timeout_s: DISPATCH_TIMEOUT_S,
             max_total_s: DISPATCH_TIMEOUT_S,
             max_turns: BASE_REVIEWER_MAX_TURNS,
+            // apra-fleet-eft.78.3: within THIS cycle's develop-review loop,
+            // resume the reviewer's OWN prior-round session (R1->R2->R3) via its
+            // explicit session id so a re-review of the next round's fixes keeps
+            // the diff/context it already built. `false` on R1 and on the first
+            // review of any later cycle (roundSessions never resumes across
+            // cycles); cleared on a failed round below so the next round is
+            // fresh. onSessionId captures this round's id for the next round.
+            // The max_turns-exhaustion resume (dispatchReviewerResume) still
+            // overrides this to `resume: true` (in-dispatch continuation).
+            resume: roundSessions.resumeArgFor('reviewer', cycle),
+            onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
         };
         const dispatchReviewerOnce = () => withGitSync(reviewerPool[0], false, () => agent(
             buildReviewerPrompt({
@@ -4801,6 +4914,10 @@ async function runSprintCycle(context) {
                 // contract violations and threw ReviewerContractViolationError).
                 if (err instanceof AgentOutputError) {
                     log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
+                    // apra-fleet-eft.78.3: a failed round's session must not be
+                    // resumed by the next round -- drop it so the next review is
+                    // a fresh session (prior-round error/timeout guard).
+                    roundSessions.clear('reviewer');
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
                         notes: `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
@@ -4827,6 +4944,9 @@ async function runSprintCycle(context) {
                     // is exactly as transient/non-schema as an AgentDispatchError -- must
                     // not be allowed to propagate and abort the whole sprint (apra-fleet-eft).
                     log(`Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
+                    // apra-fleet-eft.78.3: prior-round dispatch/transport failure
+                    // -> the next review round starts a FRESH session.
+                    roundSessions.clear('reviewer');
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
                         notes: `Reviewer dispatch failed: ${err.message}`,
@@ -5611,6 +5731,18 @@ async function runSprintCycle(context) {
                 timeout_s: DISPATCH_TIMEOUT_S,
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: PLANNER_MAX_TURNS,
+                // apra-fleet-eft.78.3: within THIS cycle's plan-review loop,
+                // resume the planner's OWN prior-round session (R1->R2->R3) via
+                // its explicit session id so a re-plan keeps warm context. This
+                // is `false` on R1 and on the first round of any LATER cycle
+                // (roundSessions never resumes across cycles). onSessionId
+                // captures the id this round returns for the next round to
+                // resume. Note: the max_turns-exhaustion resume path
+                // (dispatchPlannerResume) still overrides this to `resume: true`
+                // via spread order -- that is an in-dispatch continuation of the
+                // session just run, orthogonal to cross-round resume.
+                resume: roundSessions.resumeArgFor('planner', cycle),
+                onSessionId: (id, meta) => roundSessions.record('planner', cycle, id, meta),
             };
             // apra-fleet-eft.28.3: every interactive Planner dispatch attempt
             // (the FIRST/pre-plan one included -- withDispatchWatchdog wraps
