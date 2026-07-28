@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Per-member code-intelligence provider routing
+
+This sprint wires the previously schema-only `codeIntelProvider` field
+through to actual dispatch: code-intelligence tool calls now resolve a
+per-member provider instead of always falling back to the global config.
+
+`getProvider()` in `src/tools/code-intelligence.ts` accepts an optional
+member id. When supplied and the member's registry entry has a
+`codeIntelProvider` preference set, that provider wins over the global
+config; otherwise resolution falls back to the previous global-config
+behavior unchanged. A new `NullProvider` backs the `'none'` opt-out choice:
+all seven of its methods return a structured "disabled for this member"
+result instead of throwing, keeping the opt-out path uniform with how the
+other providers already signal non-fatal failure states.
+
+Each of the seven code-intel MCP tool handlers (`code_graph`,
+`code_impact`, `code_query`, `code_context`, `code_map`, `code_flow`,
+`code_tests`) now goes through a handler function that resolves the
+calling member from in-flight dispatch state before calling
+`getProvider()`. Direct MCP calls made without an unambiguous in-flight
+member still resolve via the global config, so this is additive: no tool
+schema changed, and no existing caller's behavior changes unless a member
+has set an explicit `codeIntelProvider` preference. See
+[docs/code-intelligence-providers.md](docs/code-intelligence-providers.md)
+for the full design, including the single-in-flight-member heuristic used
+to attribute a tool call to a member and its concurrency limitation.
+
+Twenty new tests cover per-member resolution, all seven handler functions'
+forwarding behavior, and the `NullProvider`. One test gap was noted in
+review: there is no dedicated test asserting that
+`codeIntelProvider: 'codebase-memory'` resolves to `CodebaseMemoryProvider`
+specifically (this path is exercised indirectly via the equivalent
+gitnexus test and a `PROVIDERS` map assertion) -- left open as low-priority
+backlog rather than blocking.
+
+#### Sprint cost analysis
+Calibration: none   Cycles: estimated 1.5, actual 2
+
+| Role       | Est tokens | Act tokens |   D%   | Est USD  | Act USD  |
+|------------|------------|------------|-------|----------|----------|
+| doer       |          0 |     21,874 |   n/a |   $0.000 |   $0.547 |
+| reviewer   |          0 |     11,334 |   n/a |   $0.000 |   $0.283 |
+| overhead   |      7,150 |     86,756 | +1113% |   $0.121 |   $0.611 |
+| TOTAL      |      7,150 |    119,964 | +1578% |   $0.121 |   $1.441 |
+True-cost estimate (output x 4x): $0.483
+
+Outliers (>200% variance): overhead
+Calibration failures (>500%): overhead
+
+### Review outcome
+
+**Build**: clean tsc compilation.
+**Tests**: 2334 passed, 5 skipped, 0 failures. No regressions.
+**Working tree**: no file hygiene issues, no security concerns.
+
+Two commits, three files changed, all directly justified by the sprint's
+task scope. All parent-task acceptance criteria are met; the routing
+handler and dispatch-wiring tasks were both approved outright, and the
+verification task was approved with the single non-blocking test-coverage
+gap noted above carried forward as backlog.
+
 ## [Unreleased] -- KB/code-intelligence audit and pre-init lifecycle: sprint goal closed out
 
 This entry reconciles the previous "sprint goal not met" note below: the
