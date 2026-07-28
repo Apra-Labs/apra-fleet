@@ -7,6 +7,8 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // since inspecting the KB's trust tiers is not "retrieval" for the purposes
 // of that telemetry.
 export const kbListSchema = z.object({
+  repo_path: z.string().optional()
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   confidence: z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED']).optional()
     .describe('Filter by confidence tier'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive']).optional()
@@ -20,7 +22,7 @@ export const kbListSchema = z.object({
 export type KbListInput = z.infer<typeof kbListSchema>;
 
 export async function kbList(input: KbListInput): Promise<string> {
-  const providers = await getKbProviders();
+  const providers = await getKbProviders(input.repo_path);
 
   const entries = await providers.project.list({
     confidence: input.confidence,

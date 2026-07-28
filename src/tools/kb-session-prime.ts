@@ -160,7 +160,8 @@ function parseContextNeighbors(result: unknown): string[] {
 export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string> {
   if (input.session_files?.length) validateFilePaths(input.session_files);
 
-  const providers = await getKbProviders();
+  // Prime the KB belonging to the repo being primed, not the server's cwd.
+  const providers = await getKbProviders(resolveRepoPath(input.repo_path) ?? undefined);
 
   const result = await providers.project.prime({
     session_files: input.session_files,

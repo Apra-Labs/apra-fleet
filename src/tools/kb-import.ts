@@ -122,7 +122,9 @@ export async function kbImport(input: KbImportInput): Promise<string> {
     throw new Error('kb_import: bible file is not a JSON array of entries: ' + biblePath);
   }
 
-  const providers = await getKbProviders();
+  // repoAnchor (resolved above) selects the KB, so an import 'for' repo B can
+  // never land in whichever repo the server process happens to sit in.
+  const providers = await getKbProviders(repoAnchor);
   const provider = providers.project;
 
   let imported = 0;

@@ -191,7 +191,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
     // P4a (design D4): KB enrichment lives one layer up from the provider --
     // the gitnexus provider file must not import the KB service. Only this
     // handler calls the helper, then merges.
-    const enriched = await enrichContextWithKb(input.name, result);
+    const enriched = await enrichContextWithKb(input.name, result, input.repo ?? undefined);
     return JSON.stringify(enriched);
   }));
   server.tool('code_map', 'Get the architectural map of a repository: module communities with their key symbols and files, ranked by size. Prefer this over directory listings or file reads when orienting in an unfamiliar codebase -- the answer is pre-indexed.', codeMapSchema.shape, wrapTool('code_map', async (input) => {

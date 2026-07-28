@@ -168,7 +168,10 @@ export async function kbExport(input: KbExportInput): Promise<string> {
   const repoPath = resolveRepoPath(input.repo_path);
   const scope = input.scope ?? 'project';
 
-  const providers = await getKbProviders();
+  // Read from the SAME repo we are about to write the bible into. Resolving the
+  // source from process cwd while writing to repoPath is how repo A's entries
+  // used to end up serialised into repo B's committed bible.
+  const providers = await getKbProviders(repoPath);
   const source = scope === 'global' ? providers.global : providers.project;
   const entries = await source.list({ confidence: 'CONFIRMED' });
 

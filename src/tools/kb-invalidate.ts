@@ -5,6 +5,8 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 
 export const kbInvalidateSchema = z.object({
+  repo_path: z.string().optional()
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   files: z.array(z.string()).min(1).describe('File paths to invalidate (context-cache entries for these files will be marked stale)'),
 });
 
@@ -30,7 +32,7 @@ export function installKbPostCommitHook(repoPath: string): void {
 export async function kbInvalidate(input: KbInvalidateInput): Promise<string> {
   validateFilePaths(input.files);
 
-  const providers = await getKbProviders();
+  const providers = await getKbProviders(input.repo_path);
   const { invalidated } = await providers.project.invalidate(input.files);
   return JSON.stringify({ invalidated, files: input.files });
 }

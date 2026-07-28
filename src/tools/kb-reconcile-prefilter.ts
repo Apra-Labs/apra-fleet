@@ -13,12 +13,15 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // empty/missing basis -> left untouched for the agent rung. Pairs involving
 // an ACTIVE user-directive are never touched (no resolve, no supersede, no
 // flag-clear) -- directives outrank mechanics.
-export const kbReconcilePrefilterSchema = z.object({});
+export const kbReconcilePrefilterSchema = z.object({
+  repo_path: z.string().optional()
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
+});
 
 export type KbReconcilePrefilterInput = z.infer<typeof kbReconcilePrefilterSchema>;
 
-export async function kbReconcilePrefilter(_input: KbReconcilePrefilterInput): Promise<string> {
-  const providers = await getKbProviders();
+export async function kbReconcilePrefilter(input: KbReconcilePrefilterInput): Promise<string> {
+  const providers = await getKbProviders(input.repo_path);
   const result = await providers.project.reconcilePrefilter();
   return JSON.stringify(result);
 }

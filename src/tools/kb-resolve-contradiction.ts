@@ -22,6 +22,8 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // refusal-on-invalid-state methods (kb_promote's directive refusal, kb_feedback's
 // missing-entry error).
 export const kbResolveContradictionSchema = z.object({
+  repo_path: z.string().optional()
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   winnerId: z.string().min(1).describe('ID of the KB entry the merged code (or trust tier) supports. Ends confidence=CONFIRMED with flags cleared; stale is cleared only if the D2 un-stale predicate holds post-flag-clear.'),
   loserId: z.string().min(1).describe('ID of the KB entry the merged code contradicts. Ends superseded_at=now, stale=1, flagged_for_review cleared. Never deleted.'),
   evidence: z.string().min(1).describe('Evidence note appended to the winner content, e.g. a file+symbol citation or the trust-tier rule applied. Verbatim "hash-basis match on merged worktree" when called by kb_reconcile_prefilter.'),
@@ -30,7 +32,7 @@ export const kbResolveContradictionSchema = z.object({
 export type KbResolveContradictionInput = z.infer<typeof kbResolveContradictionSchema>;
 
 export async function kbResolveContradiction(input: KbResolveContradictionInput): Promise<string> {
-  const providers = await getKbProviders();
+  const providers = await getKbProviders(input.repo_path);
   const result = await providers.project.resolveContradiction(input.winnerId, input.loserId, input.evidence);
   return JSON.stringify(result);
 }

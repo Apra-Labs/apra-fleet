@@ -26,7 +26,11 @@ export function resolveProjectSlug(cwd?: string): string {
 
 function slugify(s: string): string {
   return s
-    .replace(/^https?:\/\/[^@]*@?/, '')
+    // Strip userinfo ONLY when it is really there. `[^@]*@?` was greedy and
+    // unbounded, so a URL with no '@' at all (plain HTTPS -- the common case)
+    // had its entire remainder eaten, yielding '' and silently falling back to
+    // the directory basename. Bound the match to the authority section.
+    .replace(/^https?:\/\/(?:[^@/]*@)?/, '')
     .replace(/^git@/, '')
     .replace(/\.git$/, '')
     .replace(/[:/]/g, '-')

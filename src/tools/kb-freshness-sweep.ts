@@ -10,12 +10,15 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // cannot be -- prime's candidate set excludes stale entries, so branch-switch
 // revival requires a sweep, not just a prime. Invoked standalone by the PM
 // reconcile flow and internally by kb_import.
-export const kbFreshnessSweepSchema = z.object({});
+export const kbFreshnessSweepSchema = z.object({
+  repo_path: z.string().optional()
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
+});
 
 export type KbFreshnessSweepInput = z.infer<typeof kbFreshnessSweepSchema>;
 
-export async function kbFreshnessSweep(_input: KbFreshnessSweepInput): Promise<string> {
-  const providers = await getKbProviders();
+export async function kbFreshnessSweep(input: KbFreshnessSweepInput): Promise<string> {
+  const providers = await getKbProviders(input.repo_path);
   const result = await providers.project.freshnessSweep();
   return JSON.stringify(result);
 }

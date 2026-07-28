@@ -4,6 +4,8 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 const L2_CONTENT_CAP = 3200;
 
 export const kbQuerySchema = z.object({
+  repo_path: z.string().optional()
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag is provided.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),
@@ -24,7 +26,7 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
     throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
-  const providers = await getKbProviders();
+  const providers = await getKbProviders(input.repo_path);
 
   if (input.flagged_only) {
     const flaggedOpts = {

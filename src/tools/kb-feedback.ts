@@ -16,6 +16,8 @@ function validateAuthor(role: string | undefined): Author | 'unknown' {
 }
 
 export const kbFeedbackSchema = z.object({
+  repo_path: z.string().optional()
+    .describe('Path to the repo root this call is about. Selects WHICH project KB is read/written. When omitted, falls back to the calling process cwd, which is only correct for single-repo CLI use -- server-handled tool calls must pass it explicitly.'),
   id: z.string().min(1).describe('ID of the KB entry the feedback applies to'),
   reason: z.string().min(1).describe('What was wrong in practice -- appended to the entry content as an ASCII feedback note'),
   role: z.string().optional()
@@ -33,7 +35,7 @@ export type KbFeedbackInput = z.infer<typeof kbFeedbackSchema>;
 // review only (never staled) because directives outrank agent experience and
 // the human decides -- see SqliteProvider.feedback() for the exact guard.
 export async function kbFeedback(input: KbFeedbackInput): Promise<string> {
-  const providers = await getKbProviders();
+  const providers = await getKbProviders(input.repo_path);
   const author = validateAuthor(input.role);
   const entry = await providers.project.feedback(input.id, input.reason, author);
   return JSON.stringify({

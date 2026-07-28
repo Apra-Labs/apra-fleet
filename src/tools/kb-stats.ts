@@ -35,7 +35,8 @@ function resolveRepoPath(explicit?: string): string | null {
 }
 
 export async function kbStats(input: KbStatsInput): Promise<string> {
-  const providers = await getKbProviders();
+  // Stats must describe the repo asked about, not the server's cwd.
+  const providers = await getKbProviders(resolveRepoPath(input.repo) ?? undefined);
   const providerStats = await providers.project.stats({ symbols: input.symbols });
 
   // D5: bible.drift = count of live CONFIRMED entries whose updated_at
