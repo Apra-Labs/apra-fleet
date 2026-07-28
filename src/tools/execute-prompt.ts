@@ -20,6 +20,8 @@ import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
+import { recoverOrphanedDispatch } from '../services/orphan-recovery.js';
+import { durableOutputPath } from '../os/linux.js';
 import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
@@ -37,7 +39,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -167,9 +169,12 @@ async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFile
   }
 }
 
-async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFilePath: string): Promise<void> {
+async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFilePath: string, extraPaths: string[] = []): Promise<void> {
   if (agent.agentType === 'local') {
     try { fs.unlinkSync(promptFilePath); } catch { /* ignore */ }
+    for (const p of extraPaths) {
+      try { fs.unlinkSync(p); } catch { /* ignore */ }
+    }
     return;
   }
   const agentOs = getAgentOS(agent);
@@ -183,7 +188,10 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
   } else {
     const escapedFolder = escapeDoubleQuoted(remoteDir);
-    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}`).catch(() => { /* ignore */ });
+    // apra-fleet-6z8.1: the durable stdout mirror is cleaned up in the SAME
+    // round trip as the prompt file -- no extra exec per dispatch.
+    const extras = extraPaths.map(p => ` "${escapeDoubleQuoted(p)}"`).join('');
+    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}${extras}`).catch(() => { /* ignore */ });
   }
 }
 
@@ -682,6 +690,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
 
+  // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
+  // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). Windows
+  // members have no such companion tee, so recovery is skipped for them.
+  const durablePath = getAgentOS(agent) === 'windows' ? undefined : durableOutputPath(scope.getInv());
+  const dispatchStartedAt = Date.now();
+
   const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
 
@@ -769,7 +783,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // Write the rendered prompt (with substitutions applied) to the prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
 
+  // apra-fleet-6z8.1: remembered for the lease-of-life gate below -- the pid
+  // outlives the SSH channel that reported it, and is the only way to tell a
+  // fabricated "exit 0 / empty" close apart from a real one.
+  let capturedPid: number | undefined;
   const onPidCaptured = (pid: number) => {
+    capturedPid = pid;
     scope.info(`pid=${pid}`);
     if (mintedId) {
       try {
@@ -886,12 +905,53 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // which schema-extraction layers then misreported as "LLM returned
     // invalid JSON". Classify it at the source as a typed dispatch error
     // instead, with stderr's tail attached for diagnosis.
+    //
+    // apra-fleet-6z8.1 (lease-of-life gate): before declaring that, cross-check
+    // whether the captured pid is STILL ALIVE via a fresh short exec. ssh.ts
+    // substitutes code 0 when the channel closes without ever receiving an
+    // 'exit' event, so "exit 0 + empty" is ALSO exactly what a torn-down
+    // channel over a perfectly healthy, still-running turn looks like (live
+    // evidence: pid 89858 running 2+ minutes past the close). Declaring
+    // empty_response there orphans the CLI and invites a duplicate concurrent
+    // dispatch of the same scope. A confirmed-dead pid keeps today's behavior
+    // verbatim.
     if (!parsed.result || parsed.result.trim() === '') {
-      const stderrTail = (result.stderr || '').trim().slice(-500);
-      return {
-        text: `❌ execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
-        structuredContent: { isError: true, reason: 'empty_response' },
-      };
+      const recovery = await recoverOrphanedDispatch({
+        strategy,
+        cmds,
+        pid: capturedPid,
+        durablePath,
+        unsupported: getAgentOS(agent) === 'windows',
+        maxWaitMs: maxTotalMs !== undefined ? Math.max(maxTotalMs - (Date.now() - dispatchStartedAt), 0) : undefined,
+        scope,
+      });
+
+      if (recovery.status === 'timeout') {
+        scope.info(`orphan recovery timed out after ${Math.round((recovery.waitedMs ?? 0) / 1000)}s -- pid killed`);
+        return {
+          text: `❌ execute_prompt on "${agent.friendlyName}" lost its SSH channel while the member CLI (pid ${capturedPid}) was still running, and that process was still alive after the recovery window (${Math.round((recovery.waitedMs ?? 0) / 1000)}s). The process has been killed; no result was recovered. This is NOT an empty response -- do not treat it as a failed turn without checking the member's session transcript first.`,
+          structuredContent: { isError: true, reason: 'orphan_recovery_timeout' },
+        };
+      }
+
+      if (recovery.status === 'recovered' && recovery.stdout) {
+        // Feed the durable output through the normal provider parse path,
+        // exactly as if it had arrived on the original channel.
+        const recoveredParsed = provider.parseResponse({ stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 });
+        if (recoveredParsed.result && recoveredParsed.result.trim() !== '') {
+          scope.info(`recovered the real result from the durable output file after a false-alarm empty_response (waited ${Math.round((recovery.waitedMs ?? 0) / 1000)}s)`);
+          parsed = recoveredParsed;
+          if (parsed.usage) _epUsage = parsed.usage;
+        }
+      }
+
+      if (!parsed.result || parsed.result.trim() === '') {
+        const stderrTail = (result.stderr || '').trim().slice(-500);
+        return {
+          text: `❌ execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
+          structuredContent: { isError: true, reason: 'empty_response' },
+        };
+      }
     }
 
     // Session-id assertion: returned id must match the one we minted/resumed
@@ -984,6 +1044,6 @@ session: ${parsed.sessionId}`;
       inFlightAgents.delete(agent.id);
     }
     stallDetector.remove(agent.id);
-    await deletePromptFile(agent, strategy, promptFilePath);
+    await deletePromptFile(agent, strategy, promptFilePath, durablePath ? [durablePath] : []);
   }
 }
