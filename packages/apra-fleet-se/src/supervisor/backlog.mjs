@@ -88,7 +88,7 @@ export function normalizeBead(raw) {
  * tree here.
  * @returns {Promise<Array<ReturnType<typeof normalizeBead>>>}
  */
-export async function bdListAllBeads() {
+async function fetchAllBeadsRaw() {
     // shell: true -- on Windows, `bd` (npm-installed via @beads/bd) resolves to
     // a `bd.cmd` shim, which Node's child_process cannot spawn directly without
     // a shell (spawn ENOENT even though `bd` is on PATH and works from any
@@ -103,6 +103,25 @@ export async function bdListAllBeads() {
         throw new Error(`[backlog] failed to parse 'bd list --json': ${err.message}`);
     }
     if (!Array.isArray(rows)) return [];
+    return rows.filter((b) => b && typeof b.id === 'string' && b.id.length > 0);
+}
+
+/**
+ * Raw `bd list --json --limit 0` rows, UNNORMALIZED -- every field `bd` emits
+ * (dependencies, priority, issue_type, metadata, description, parent, ...) is
+ * preserved. `bdListAllBeads()` below builds its minimal tree-node shape from
+ * this; `createBacklog().buildBacklogTasks()` uses the SAME call (one `bd`
+ * invocation per page render, not two) because it needs the fuller shape to
+ * feed fleet-sprint's `renderBeadsHtml()` (type/status/priority/model badges,
+ * `blocks`-edge nesting, full descriptions) unchanged.
+ * @returns {Promise<Array<object>>}
+ */
+export async function bdListAllBeadsRaw() {
+    return fetchAllBeadsRaw();
+}
+
+export async function bdListAllBeads() {
+    const rows = await fetchAllBeadsRaw();
     return rows.map(normalizeBead).filter((b) => b.id.length > 0);
 }
 
@@ -129,8 +148,9 @@ export function buildBacklogTree(beads, claimedBy) {
     const byId = new Map(list.map((b) => [b.id, b]));
     const isClaimed = (id) => claims.has(id);
 
-    // Full-tracker child index (INCLUDING claimed children) -- the partial-claim
-    // annotation counts need the complete direct-child set, not just free ones.
+    // Full-tracker child index (INCLUDING claimed children) -- buildNode()
+    // below needs the complete direct-child set to split into free/claimed,
+    // not just the free ones.
     const allChildrenOf = new Map();
     for (const b of list) {
         const pid = b.parentId;
@@ -140,32 +160,22 @@ export function buildBacklogTree(beads, claimedBy) {
         }
     }
 
+    // The partial-claim annotation itself (counts + owning sprints) is the
+    // SAME computation the flat beads-tree view needs (buildBacklogTasks()
+    // below) -- computePartialClaimByBead() is the one place that logic
+    // lives; this function only adds tree STRUCTURE (nesting, pruning
+    // claimed subtrees) on top of it.
+    const partialClaimById = computePartialClaimByBead(list, claims);
+
     function buildNode(bead) {
         const kids = allChildrenOf.get(bead.id) ?? [];
         const freeKids = kids.filter((c) => !isClaimed(c.id));
-        const claimedKids = kids.filter((c) => isClaimed(c.id));
-        let partialClaim = null;
-        if (claimedKids.length > 0) {
-            // Per-sprint claimed-child counts, in first-seen order.
-            const sprintCounts = new Map();
-            for (const c of claimedKids) {
-                for (const owner of ownersOf(claims.get(c.id))) {
-                    sprintCounts.set(owner, (sprintCounts.get(owner) ?? 0) + 1);
-                }
-            }
-            partialClaim = {
-                totalCount: kids.length,
-                claimedCount: claimedKids.length,
-                freeCount: freeKids.length,
-                sprints: [...sprintCounts.entries()].map(([sprintId, count]) => ({ sprintId, count })),
-            };
-        }
         return {
             id: bead.id,
             title: bead.title,
             issueType: bead.issueType,
             status: bead.status,
-            partialClaim,
+            partialClaim: partialClaimById.get(bead.id) ?? null,
             children: freeKids.map(buildNode),
         };
     }
@@ -180,6 +190,58 @@ export function buildBacklogTree(beads, claimedBy) {
         return !(pid && byId.has(pid) && !isClaimed(pid));
     });
     return roots.map(buildNode);
+}
+
+/**
+ * Per-bead partial-claim lookup: `Map<freeBeadId, PartialClaim|null>`, keyed
+ * off each free bead's OWN direct children. Shared by `buildBacklogTree()`
+ * above (which attaches each entry to its tree node) and
+ * `createBacklog().buildBacklogTasks()` below (which has no containment tree
+ * to hang the annotation off -- its beads-tree view nests by `blocks` edges,
+ * not `parent` containment -- so it reads this map directly and renders the
+ * annotation inline on the flat row instead).
+ * @param {Array<{ id: string, parentId: string|null }>} beads - normalizeBead() shape
+ * @param {Map<string, string|string[]>} claimedBy
+ * @returns {Map<string, { totalCount: number, claimedCount: number, freeCount: number, sprints: Array<{ sprintId: string, count: number }> }|null>}
+ */
+export function computePartialClaimByBead(beads, claimedBy) {
+    const list = Array.isArray(beads) ? beads : [];
+    const claims = claimedBy instanceof Map ? claimedBy : new Map();
+    const byId = new Map(list.map((b) => [b.id, b]));
+    const isClaimed = (id) => claims.has(id);
+
+    const allChildrenOf = new Map();
+    for (const b of list) {
+        const pid = b.parentId;
+        if (pid && byId.has(pid)) {
+            if (!allChildrenOf.has(pid)) allChildrenOf.set(pid, []);
+            allChildrenOf.get(pid).push(b);
+        }
+    }
+
+    const result = new Map();
+    for (const b of list) {
+        if (isClaimed(b.id)) continue;
+        const kids = allChildrenOf.get(b.id) ?? [];
+        const claimedKids = kids.filter((c) => isClaimed(c.id));
+        if (claimedKids.length === 0) {
+            result.set(b.id, null);
+            continue;
+        }
+        const sprintCounts = new Map();
+        for (const c of claimedKids) {
+            for (const owner of ownersOf(claims.get(c.id))) {
+                sprintCounts.set(owner, (sprintCounts.get(owner) ?? 0) + 1);
+            }
+        }
+        result.set(b.id, {
+            totalCount: kids.length,
+            claimedCount: claimedKids.length,
+            freeCount: kids.length - claimedKids.length,
+            sprints: [...sprintCounts.entries()].map(([sprintId, count]) => ({ sprintId, count })),
+        });
+    }
+    return result;
 }
 
 /**
@@ -247,6 +309,57 @@ export function renderBacklogTreeHtml(tree) {
  */
 
 /**
+ * apra-fleet-7xk-style server-side narrowing: filters a flat raw-bead-row
+ * array (the same shape `bdListAllBeadsRaw()` returns, plus this module's
+ * `partialClaim` field) down to the rows matching every supplied criterion,
+ * AND reports which distinct values are actually present (so a caller can
+ * populate Type/Status/Priority/Model filter controls from real data, not a
+ * guessed enum). Pure/synchronous -- narrows the SET before it is ever handed
+ * to a renderer, not a client-side hide/show pass over an already-fetched
+ * full set (that distinction is the acceptance criterion this mirrors).
+ * @param {Array<object>} rows
+ * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string }} [filters]
+ * @returns {{ tasks: object[], total: number, filterOptions: { type: string[], status: string[], priority: number[], model: string[] } }}
+ */
+export function applyBeadFilters(rows, filters) {
+    const list = Array.isArray(rows) ? rows : [];
+    const typeOf = (r) => (r.issue_type ?? r.issueType ?? '').toString();
+    const modelOf = (r) => (r.metadata && r.metadata.model) || '';
+
+    const filterOptions = {
+        type: [...new Set(list.map(typeOf).filter((v) => v.length > 0))].sort(),
+        status: [...new Set(list.map((r) => (r.status ?? '').toString()).filter((v) => v.length > 0))].sort(),
+        priority: [...new Set(list.map((r) => r.priority).filter((p) => typeof p === 'number' && Number.isFinite(p)))].sort((a, b) => a - b),
+        model: [...new Set(list.map(modelOf).filter((v) => v.length > 0))].sort(),
+    };
+
+    const f = filters || {};
+    const norm = (v) => (typeof v === 'string' && v.length > 0 ? v.trim().toLowerCase() : undefined);
+    const type = norm(f.type);
+    const status = norm(f.status);
+    const model = norm(f.model);
+    const q = norm(f.q);
+    const priority = f.priority !== undefined && f.priority !== null && f.priority !== ''
+        ? Number(f.priority)
+        : undefined;
+    const hasPriorityFilter = priority !== undefined && Number.isFinite(priority);
+
+    const tasks = list.filter((r) => {
+        if (type && typeOf(r).toLowerCase() !== type) return false;
+        if (status && (r.status ?? '').toString().toLowerCase() !== status) return false;
+        if (hasPriorityFilter && r.priority !== priority) return false;
+        if (model && modelOf(r).toLowerCase() !== model) return false;
+        if (q) {
+            const haystack = (String(r.id) + ' ' + String(r.title ?? '')).toLowerCase();
+            if (!haystack.includes(q)) return false;
+        }
+        return true;
+    });
+
+    return { tasks, total: list.length, filterOptions };
+}
+
+/**
  * Create the Backlog seam. Collaborators injected for unit testing without a
  * real `bd` / live sprints.
  *
@@ -268,7 +381,12 @@ export function createBacklog(deps = {}) {
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
     const listChildren = deps.listChildren ?? bdListChildren;
     const expand = deps.expandScope ?? ((roots) => expandScope(roots, listChildren));
-    const listAllBeads = deps.listAllBeads ?? bdListAllBeads;
+    // Raw rows by default -- buildTree() below normalizes whatever this
+    // returns itself (normalizeBead() is idempotent on already-normalized
+    // input), and buildBacklogTasks() needs the FULLER raw shape (priority,
+    // dependencies, metadata, description) that a normalized row drops. One
+    // `bd` call per render either way -- never two.
+    const listAllBeads = deps.listAllBeads ?? bdListAllBeadsRaw;
     const watchdog = deps.watchdog ?? null;
 
     /**
@@ -336,10 +454,33 @@ export function createBacklog(deps = {}) {
         }
     }
 
+    /**
+     * The flat, unclaimed bead set -- fleet-sprint's `renderBeadsHtml()` shape
+     * (raw `bd list --json` rows, plus a `partialClaim` field this module adds
+     * so the epic-with-some-children-claimed case, eft.6.2's original point,
+     * still surfaces even though this view has no containment tree of its own
+     * to hang the annotation off). `filters` narrows the SET ITSELF (not just
+     * what gets rendered from an already-fetched set) -- see applyBeadFilters().
+     * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string }} [filters]
+     * @returns {Promise<{ tasks: object[], total: number, filterOptions: object }>}
+     */
+    async function buildBacklogTasks(filters) {
+        const [rawBeads, claimedBy] = await Promise.all([listAllBeads(), buildClaimedBy()]);
+        const rows = (Array.isArray(rawBeads) ? rawBeads : [])
+            .filter((b) => b && typeof b.id === 'string' && b.id.length > 0);
+        const normalized = rows.map(normalizeBead);
+        const partialClaimById = computePartialClaimByBead(normalized, claimedBy);
+        const free = rows
+            .filter((b) => !claimedBy.has(b.id))
+            .map((b) => ({ ...b, partialClaim: partialClaimById.get(b.id) ?? null }));
+        return applyBeadFilters(free, filters);
+    }
+
     return {
         name: 'backlog',
         buildClaimedBy,
         buildTree,
+        buildBacklogTasks,
         renderHtml,
     };
 }
