@@ -39,6 +39,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     username: agent.username ?? undefined,
     os,
     folder: agent.workFolder,
+    vcsProvider: agent.vcsProvider ?? undefined,
   };
 
   // -- Cloud Info (parallel with connectivity check) --
