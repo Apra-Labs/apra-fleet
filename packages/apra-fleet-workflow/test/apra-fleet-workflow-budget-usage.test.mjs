@@ -151,6 +151,48 @@ describe('apra-fleet-unw.4: pricing table sanity', () => {
     test('calculateCost returns null when model name is omitted', () => {
         assert.strictEqual(calculateCost(undefined, { input_tokens: 100, output_tokens: 100 }), null);
     });
+
+    test('calculateCost returns null for an empty usage object (no input_tokens/output_tokens keys)', () => {
+        assert.strictEqual(calculateCost('gpt-4o', {}), null);
+    });
+});
+
+describe('apra-fleet-202.2: calculateCost reads real usage.input_tokens/output_tokens (regression guard for apra-fleet-202)', () => {
+    // apra-fleet-202: the real usage shape from execute-prompt.ts
+    // structuredContent is {input_tokens, output_tokens, total_tokens} -- NOT
+    // {prompt_tokens, completion_tokens}. Before apra-fleet-202.1's fix,
+    // calculateCost() read the wrong field names, so real usage objects
+    // shaped like this always silently defaulted both token counts to 0 and
+    // returned $0 (a valid-looking, non-null number) instead of the actual
+    // priced cost or null. This test asserts a strictly positive number for
+    // a known-priced model given ONLY the real field names -- it would have
+    // failed (asserting 0 is not > 0) against the pre-fix
+    // prompt_tokens/completion_tokens reads.
+    test('calculateCost returns a positive cost for a known-priced model given real {input_tokens, output_tokens} usage', () => {
+        const usage = { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 };
+        const cost = calculateCost('gpt-4o', usage);
+        assert.strictEqual(typeof cost, 'number');
+        assert.ok(Number.isFinite(cost) && cost > 0, `Expected a positive finite cost, got ${cost}`);
+        // Pin the exact value so a future regression back to
+        // prompt_tokens/completion_tokens (which would silently yield 0) is
+        // caught, not just "some positive number".
+        const expected = (1000 / 1_000_000) * 5.00 + (500 / 1_000_000) * 15.00;
+        assert.strictEqual(cost, expected);
+    });
+
+    test('calculateCost returns null for empty usage (no token fields present)', () => {
+        assert.strictEqual(calculateCost('gpt-4o', {}), null);
+        assert.strictEqual(calculateCost('gpt-4o', null), null);
+        assert.strictEqual(calculateCost('gpt-4o', undefined), null);
+    });
+
+    test('calculateCost ignores legacy prompt_tokens/completion_tokens fields (only input_tokens/output_tokens are read)', () => {
+        // A usage object shaped with the OLD (wrong) field names and no real
+        // input_tokens/output_tokens must still be treated as empty usage
+        // (null), proving the implementation no longer reads the legacy names.
+        const legacyShapedUsage = { prompt_tokens: 1000, completion_tokens: 500 };
+        assert.strictEqual(calculateCost('gpt-4o', legacyShapedUsage), null);
+    });
 });
 
 describe('apra-fleet-unw2.8 (N10): fleet model pricing rows (fable/opus/sonnet/haiku)', () => {
