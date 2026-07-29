@@ -158,18 +158,35 @@ function clientScriptSource() {
     }
     renderSelectedIssues();
 
+    // apra-fleet supervisor-viewer-parity: the Backlog panel now renders via
+    // fleet-sprint's renderBeadsHtml() (<tr data-bead-id="...">), not this
+    // module's own <li data-bead-id> markup -- select on 'tr', and ignore
+    // clicks that land on the row's OWN interactive bits (.tree-toggle
+    // collapse/expand, .bead-desc description expand) so opening a
+    // description doesn't also toggle launch selection.
+    //
+    // window.__fleetSeLaunch.isSelected() is a tiny, deliberate cross-script
+    // hook: backlog.mjs's own embedded client script re-renders #backlog-table
+    // (collapse/expand, filter changes) independently of this one, and reads
+    // it to re-apply the .bead-row-selected highlight a fresh innerHTML would
+    // otherwise silently drop -- without the two scripts sharing a closure.
+    window.__fleetSeLaunch = {
+        isSelected: function (id) { return selectedRoots.indexOf(id) !== -1; },
+    };
+
     if (backlogEl) {
         backlogEl.addEventListener('click', function (ev) {
-            var li = ev.target.closest ? ev.target.closest('li[data-bead-id]') : null;
-            if (!li) return;
-            var id = li.getAttribute('data-bead-id');
+            if (ev.target.closest && (ev.target.closest('.tree-toggle') || ev.target.closest('.bead-desc'))) return;
+            var row = ev.target.closest ? ev.target.closest('tr[data-bead-id]') : null;
+            if (!row) return;
+            var id = row.getAttribute('data-bead-id');
             var idx = selectedRoots.indexOf(id);
             if (idx === -1) {
                 selectedRoots.push(id);
-                li.style.outline = '2px solid #60a5fa';
+                row.classList.add('bead-row-selected');
             } else {
                 selectedRoots.splice(idx, 1);
-                li.style.outline = '';
+                row.classList.remove('bead-row-selected');
             }
             renderSelectedIssues();
         });
@@ -273,8 +290,8 @@ function clientScriptSource() {
                     resultEl.textContent = 'Launched sprint ' + r.json.sprintId + '.';
                     selectedRoots = [];
                     renderSelectedIssues();
-                    document.querySelectorAll('#backlog li[data-bead-id]').forEach(function (li) {
-                        li.style.outline = '';
+                    document.querySelectorAll('#backlog tr[data-bead-id]').forEach(function (tr) {
+                        tr.classList.remove('bead-row-selected');
                     });
                 } else {
                     resultEl.style.color = '#ef4444';

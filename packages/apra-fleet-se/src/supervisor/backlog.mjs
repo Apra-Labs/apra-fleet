@@ -40,6 +40,8 @@ import { promisify } from 'node:util';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
+import { renderBeadsHtml } from '../../fleet-sprint/viewer-extensions.mjs';
+import { sendJson } from './server.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -357,6 +359,173 @@ export function applyBeadFilters(rows, filters) {
     });
 
     return { tasks, total: list.length, filterOptions };
+}
+
+/**
+ * One `<select name="...">` filter control -- "(all)" plus one `<option>` per
+ * `{ value, label }` pair. `name` (not just `id`) is required: the client
+ * script reads the active filter set via `new FormData(form)`, which keys off
+ * each control's `name`.
+ */
+function filterSelectHtml(id, name, label, options) {
+    const optionsHtml = ['<option value="">(all)</option>']
+        .concat((options || []).map((o) => {
+            const val = escapeHtml(String(o.value));
+            return '<option value="' + val + '">' + escapeHtml(String(o.label)) + '</option>';
+        }));
+    return '<label style="font-size: 12px; color: var(--text-muted, #a1a1aa); display: flex; align-items: center; gap: 4px;">' +
+        escapeHtml(label) + ' <select id="' + id + '" name="' + name + '" style="background: rgba(255,255,255,0.06); color: inherit; border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 4px; padding: 3px 6px; font-size: 12px;">' +
+        optionsHtml.join('') + '</select></label>';
+}
+
+/**
+ * The Backlog tab's client-side behavior: re-renders `#backlog-table` from
+ * `renderBeadsHtml()` on every collapse/expand toggle (mirrors
+ * fleet-sprint's beadsExtension client script, minus its live SSE-poll/detail-
+ * fetch machinery -- this page has no running workflow to poll and every
+ * bead's full `description` is already inlined server-side, so there is
+ * nothing to lazy-fetch), and re-fetches `GET /api/backlog/tasks` -- a real
+ * network round trip that narrows the row SET server-side (apra-fleet-7xk's
+ * "not just UI" requirement) -- whenever a filter control changes.
+ * @returns {string}
+ */
+function backlogPanelClientScript() {
+    return `
+(function () {
+    var container = document.getElementById('backlog-table');
+    var form = document.getElementById('backlog-filters-form');
+    var indicator = document.getElementById('backlog-active-filters');
+    var clearBtn = document.getElementById('backlog-filter-clear');
+    if (!container) return;
+
+    var collapsedBeadIds = new Set();
+    var lastTasks = window.__backlogTasks || [];
+
+    ${escapeHtml.toString()}
+    ${renderBeadsHtml.toString()}
+
+    function renderTable() {
+        container.innerHTML = renderBeadsHtml([], lastTasks, collapsedBeadIds);
+        // Re-apply any launch-form row selection (see launch-form.mjs) that a
+        // fresh innerHTML would otherwise wipe -- the two scripts cooperate
+        // via this one small window-scoped hook rather than sharing a closure.
+        if (window.__fleetSeLaunch && typeof window.__fleetSeLaunch.isSelected === 'function') {
+            container.querySelectorAll('tr[data-bead-id]').forEach(function (tr) {
+                if (window.__fleetSeLaunch.isSelected(tr.getAttribute('data-bead-id'))) {
+                    tr.classList.add('bead-row-selected');
+                }
+            });
+        }
+    }
+
+    container.addEventListener('click', function (e) {
+        var toggle = e.target && e.target.closest ? e.target.closest('.tree-toggle') : null;
+        if (!toggle) return;
+        var id = toggle.dataset.toggleId;
+        if (!id) return;
+        if (collapsedBeadIds.has(id)) collapsedBeadIds.delete(id);
+        else collapsedBeadIds.add(id);
+        renderTable();
+    });
+
+    function activeFilterEntries() {
+        var entries = [];
+        if (!form) return entries;
+        new FormData(form).forEach(function (value, key) {
+            if (value) entries.push(key + ': ' + value);
+        });
+        return entries;
+    }
+
+    function applyFilters() {
+        var params = form ? new URLSearchParams(new FormData(form)) : new URLSearchParams();
+        [...params.keys()].forEach(function (k) { if (!params.get(k)) params.delete(k); });
+        fetch('/api/backlog/tasks?' + params.toString())
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                lastTasks = (data && Array.isArray(data.tasks)) ? data.tasks : [];
+                window.__backlogTasks = lastTasks;
+                collapsedBeadIds.clear();
+                renderTable();
+                var entries = activeFilterEntries();
+                if (indicator) indicator.textContent = entries.length ? ('Filtering by ' + entries.join(', ') + ' -- ' + lastTasks.length + ' of ' + (data.total || lastTasks.length) + ' shown') : '';
+            })
+            .catch(function () { /* leave the last-known-good table in place */ });
+    }
+
+    if (form) {
+        form.addEventListener('change', applyFilters);
+        form.addEventListener('submit', function (e) { e.preventDefault(); applyFilters(); });
+    }
+    if (clearBtn) {
+        clearBtn.addEventListener('click', function () {
+            if (form) form.reset();
+            applyFilters();
+        });
+    }
+})();
+`;
+}
+
+/**
+ * Renders the Backlog tab's full content: a filter bar (Type/Status/Priority/
+ * Model dropdowns built from `filterOptions`'s REAL observed values, a free-
+ * text search box, an active-filter indicator, and a Clear button) followed
+ * by the beads table itself, server-rendered via fleet-sprint's
+ * `renderBeadsHtml()` with an empty `sprintTasks` (the supervisor has no
+ * single sprint's containment tree to show here -- only the cross-sprint free
+ * set) so the initial page load needs no client-side render pass at all.
+ * @param {object[]} tasks
+ * @param {{ type: string[], status: string[], priority: number[], model: string[] }} filterOptions
+ * @returns {string}
+ */
+export function renderBacklogPanelHtml(tasks, filterOptions) {
+    const opts = filterOptions || { type: [], status: [], priority: [], model: [] };
+    const tableHtml = renderBeadsHtml([], tasks, new Set());
+    const tasksJson = JSON.stringify(Array.isArray(tasks) ? tasks : []).replace(/</g, '\\u003c');
+    return (
+        '<form id="backlog-filters-form" style="display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; padding: 10px 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 6px;">' +
+        filterSelectHtml('backlog-filter-type', 'type', 'Type', opts.type.map((v) => ({ value: v, label: v }))) +
+        filterSelectHtml('backlog-filter-status', 'status', 'Status', opts.status.map((v) => ({ value: v, label: v }))) +
+        filterSelectHtml('backlog-filter-priority', 'priority', 'Pri', opts.priority.map((p) => ({ value: p, label: 'P' + p }))) +
+        filterSelectHtml('backlog-filter-model', 'model', 'Model', opts.model.map((v) => ({ value: v, label: v }))) +
+        '<label style="font-size: 12px; color: var(--text-muted, #a1a1aa); display: flex; align-items: center; gap: 4px;">Search ' +
+        '<input id="backlog-filter-q" name="q" type="text" placeholder="id or title..." style="background: rgba(255,255,255,0.06); color: inherit; border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 4px; padding: 3px 6px; font-size: 12px; width: 140px;"/></label>' +
+        '<button type="button" id="backlog-filter-clear" class="btn btn-secondary" style="padding: 3px 10px; font-size: 12px;">Clear</button>' +
+        '<span id="backlog-active-filters" style="font-size: 12px; color: var(--accent, #3b82f6);"></span>' +
+        '</form>' +
+        '<div id="backlog-table">' + tableHtml + '</div>' +
+        '<script>window.__backlogTasks = ' + tasksJson + ';</script>' +
+        '<script>' + backlogPanelClientScript() + '</script>'
+    );
+}
+
+/**
+ * Registers `GET /api/backlog/tasks` -- the flat, filterable beads-tree data
+ * source for the Backlog tab's client-side filter re-fetch (see
+ * backlogPanelClientScript() above). Deliberately separate from the existing
+ * `GET /api/backlog` (api.mjs, the nested BacklogNode[] shape other callers
+ * may already depend on) -- this is an additive endpoint, not a replacement.
+ * @param {{ route: (method: string, path: string, handler: Function) => void }} supervisor
+ * @param {ReturnType<typeof createBacklog>} backlog
+ */
+export function registerBacklogRoutes(supervisor, backlog) {
+    supervisor.route('GET', '/api/backlog/tasks', async (req, res) => {
+        try {
+            const url = new URL(req.url, 'http://localhost');
+            const filters = {
+                type: url.searchParams.get('type') || undefined,
+                status: url.searchParams.get('status') || undefined,
+                priority: url.searchParams.get('priority') || undefined,
+                model: url.searchParams.get('model') || undefined,
+                q: url.searchParams.get('q') || undefined,
+            };
+            const result = await backlog.buildBacklogTasks(filters);
+            sendJson(res, 200, result);
+        } catch (err) {
+            sendJson(res, 500, { error: 'failed to build backlog tasks' });
+        }
+    });
 }
 
 /**
