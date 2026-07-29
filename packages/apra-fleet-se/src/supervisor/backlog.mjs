@@ -89,7 +89,12 @@ export function normalizeBead(raw) {
  * @returns {Promise<Array<ReturnType<typeof normalizeBead>>>}
  */
 export async function bdListAllBeads() {
-    const { stdout } = await execFileAsync('bd', ['list', '--json', '--limit', '0']);
+    // shell: true -- on Windows, `bd` (npm-installed via @beads/bd) resolves to
+    // a `bd.cmd` shim, which Node's child_process cannot spawn directly without
+    // a shell (spawn ENOENT even though `bd` is on PATH and works from any
+    // interactive shell). Safe here: every argument is a static literal, none
+    // of it is caller-controlled.
+    const { stdout } = await execFileAsync('bd', ['list', '--json', '--limit', '0'], { shell: true });
     const text = stdout && stdout.trim() ? stdout : '[]';
     let rows;
     try {
