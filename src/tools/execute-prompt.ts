@@ -39,7 +39,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -925,9 +925,24 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
     _epExitCode = result.code;
     if (result.code !== 0) {
+      // apra-fleet-391: surface an auth failure as a STRUCTURED reason (not
+      // just prose in `text`) so callers -- notably fleet-sprint's
+      // isAuthDispatchError -- can key off it directly instead of regexing
+      // the message string. Overloading 'nonzero_exit' for this case was
+      // what made auth self-heal impossible to wire reliably upstream.
+      const failureCategory: PromptErrorCategory = parsed.terminalReason === 'max_turns'
+        ? 'max_turns'
+        : provider.classifyError(result.stderr || result.stdout);
       return {
         text: buildFailureMessage(agent.friendlyName, result, provider, parsed),
-        structuredContent: { isError: true, reason: parsed.terminalReason === 'max_turns' ? 'max_turns_exhausted' : 'nonzero_exit' },
+        structuredContent: {
+          isError: true,
+          reason: failureCategory === 'max_turns'
+            ? 'max_turns_exhausted'
+            : failureCategory === 'auth'
+              ? 'auth'
+              : 'nonzero_exit',
+        },
       };
     }
 

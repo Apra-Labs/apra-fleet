@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isAuthDispatchError, isPostDispatchSyncFailure } from './errors.mjs';
 
 // apra-fleet-6z8.3: backoff for retrying ONLY the post-dispatch sync step of a
 // bracket whose dispatch already completed. Short and bounded -- this is a
@@ -2114,6 +2114,19 @@ export function parseOwnerRepoFromRemoteUrl(url) {
  * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
  * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
  */
+// apra-fleet-391: shared MCP tool-result-to-text extractor (mirrors the
+// identically-named local helpers already duplicated at
+// createMemberReservationClient/createMemberSessionGuard) -- both self-heal
+// callbacks below need it to detect provision_* failure strings, which are
+// returned as a leading-emoji string ('OK'/'warning'/'error'), never thrown.
+function selfHealResultText(result) {
+    if (typeof result === 'string') return result;
+    if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
+        return result.content[0].text;
+    }
+    return '';
+}
+
 export function createVcsAuthSelfHealCallback(opts = {}) {
     const { callTool, command, log = () => {} } = opts;
     const fleetApi = new ApraFleet({ callTool });
@@ -2135,15 +2148,80 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
             log(`[Sync] self-heal: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
         }
 
-        await fleetApi.provisionVcsAuth({
+        // apra-fleet-391: TODO -- this still hardcodes provider:'github',
+        // github_mode:'github-app' rather than reading the member's own
+        // persisted agent.vcsProvider (src/tools/provision-vcs-auth.ts:167-
+        // 170, now surfaced on member_detail's json output). Deliberately
+        // NOT wired here yet -- doing so cleanly needs its own dedicated
+        // mock plumbing in this file's test suite (vcs-auth-self-heal.test.mjs
+        // asserts an exact single-call provision_vcs_auth args shape per
+        // scenario); tracked as follow-up under this same bead rather than
+        // risking those tests to land the higher-priority fix below.
+        const provisionRes = await fleetApi.provisionVcsAuth({
             member_name: member,
             provider: 'github',
             github_mode: 'github-app',
             git_access: 'push',
             ...(repos ? { repos } : {}),
         });
+        const provisionText = selfHealResultText(provisionRes);
+        // apra-fleet-391: provision_vcs_auth NEVER throws on failure -- it
+        // returns a string starting with the failure emoji. Without this
+        // check, a failed re-provision was silently logged as "succeeded"
+        // and burned the one-shot self-heal for nothing.
+        if ((provisionRes && provisionRes.isError) || /^❌/.test(provisionText.trim())) {
+            throw new Error(`provision_vcs_auth failed for member '${member}': ${provisionText || '(no detail)'}`);
+        }
 
         log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
+    };
+}
+
+/**
+ * apra-fleet-391 -- LLM-auth counterpart to createVcsAuthSelfHealCallback.
+ * Called exactly once by a dispatch-site catch handler when
+ * isAuthDispatchError(err) is true: re-provisions LLM credentials for the
+ * failing member via provision_llm_auth, then the caller retries its own
+ * dispatch once. Skips (does not throw, returns false = "do not retry")
+ * for local members, since provision_llm_auth is a documented no-op for
+ * them -- local members share the operator's own host credentials, and
+ * only an interactive `/login` on this machine can fix an expired local
+ * session (see the `local member auth expiry recovery` operating note).
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, log?: Function }} opts
+ * @returns {(info: { member: string, label: string, error: string }) => Promise<boolean>} resolves true if healed (retry), false if not (do not retry)
+ */
+export function createLlmAuthSelfHealCallback(opts = {}) {
+    const { callTool, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+
+    return async function onLlmAuthFailure({ member, label, error }) {
+        log(`[Dispatch] self-heal: LLM auth failure detected for member '${member}' (${label}); calling provision_llm_auth to re-provision credentials: ${error}`);
+
+        let provisionRes;
+        try {
+            provisionRes = await fleetApi.provisionLlmAuth({ member_name: member });
+        } catch (callErr) {
+            log(`[Dispatch] self-heal: provision_llm_auth call failed for member '${member}': ${callErr.message}. Not retrying -- fix credentials manually and re-run.`);
+            return false;
+        }
+
+        const text = selfHealResultText(provisionRes).trim();
+
+        if (/^⏭/.test(text)) {
+            // "skip" (local member) -- provision_llm_auth is a documented
+            // no-op here; retrying would just reproduce the same failure.
+            log(`[Dispatch] self-heal: provision_llm_auth skipped for local member '${member}': ${text || '(no detail)'}. This member's credentials can only be refreshed via an interactive /login on this machine.`);
+            return false;
+        }
+
+        if ((provisionRes && provisionRes.isError) || /^❌/.test(text)) {
+            log(`[Dispatch] self-heal: provision_llm_auth failed for member '${member}': ${text || '(no detail)'}. Not retrying.`);
+            return false;
+        }
+
+        log(`[Dispatch] self-heal: provision_llm_auth succeeded for member '${member}' (${label}); the failed dispatch will be retried once.`);
+        return true;
     };
 }
 
@@ -4496,6 +4574,17 @@ async function runSprintCycle(context) {
             : undefined
     );
 
+    // apra-fleet-391: LLM-auth counterpart to onAuthFailure immediately
+    // above -- same three-source precedence. Dispatch-site catch handlers
+    // call this (via isAuthDispatchError(err)) before deciding whether to
+    // retry a non-retryable dispatch failure; it resolves true ("healed,
+    // retry once") or false ("not healed, abort as before").
+    const onLlmAuthFailure = context.onLlmAuthFailure ?? (
+        (args && typeof args.callTool === 'function')
+            ? createLlmAuthSelfHealCallback({ callTool: args.callTool, log })
+            : undefined
+    );
+
     // Validate BEFORE any agent()/command() dispatch (apra-fleet-unw.14,
     // A7 defense in depth): a rejected/malformed arg must result in zero
     // fleet dispatches.
@@ -5017,6 +5106,15 @@ async function runSprintCycle(context) {
                     }
                 }
             } catch (err) {
+                // apra-fleet-391: this role's existing retry-once loop
+                // (reviewAttempt <= 2 below) already blind-retries an
+                // AgentDispatchError -- including an LLM-auth failure, which
+                // deterministically reproduces on an unhealed retry. Attempt
+                // one self-heal here so that retry actually has a chance to
+                // succeed; the existing loop control below is unchanged.
+                if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                    await onLlmAuthFailure({ member: reviewerPool[0], label: 'Reviewer dispatch', error: err.message });
+                }
                 // Stabilization log Issue 9: these synthesized verdicts are
                 // INFRASTRUCTURE failures, not the reviewer contradicting
                 // itself -- mark them dispatchFailed so the contract-violation
@@ -6012,6 +6110,18 @@ async function runSprintCycle(context) {
                     // loop immediately instead of burning the remaining
                     // attempts' dispatch budgets reproducing the same failure.
                     if (isNonRetryableDispatchError(err)) {
+                        // apra-fleet-391: an LLM-auth failure (as opposed to
+                        // workspace-trust, which self-heal cannot fix) gets
+                        // one self-heal attempt before this loop gives up --
+                        // mirrors runGitStep/runDoltStep's bounded one-shot
+                        // VCS self-heal.
+                        if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                            const healed = await onLlmAuthFailure({ member: getMemberForRole('planner'), label: 'Planner dispatch', error: err.message });
+                            if (healed) {
+                                log(`Planner dispatch: LLM auth self-heal succeeded -- retrying.`);
+                                continue;
+                            }
+                        }
                         log(`Planner dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting retries -- fix the member's credentials/trust and re-run.`);
                         break;
                     }
@@ -6075,6 +6185,13 @@ async function runSprintCycle(context) {
                     }
                 }
             } catch (err) {
+                // apra-fleet-391: an unhealed LLM-auth failure here would
+                // otherwise reproduce identically on every one of the
+                // (bounded, max 3) remaining planning rounds. One self-heal
+                // attempt gives the next round a real chance to succeed.
+                if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                    await onLlmAuthFailure({ member: getMemberForRole('plan-reviewer'), label: 'Plan Reviewer dispatch', error: err.message });
+                }
                 // Persistent non-JSON/non-schema-compliant output, or a failed
                 // dispatch, both FAIL this plan round -- neither must ever be
                 // treated as an approval.
@@ -6383,6 +6500,12 @@ async function runSprintCycle(context) {
                     log(`Scoped Replan Planner: ${scopedPlannerRes}`);
                 } catch (err) {
                     scopedPlannerOk = false;
+                    // apra-fleet-391: self-heal an LLM-auth failure so the
+                    // NEXT cycle's planner (which this bead gets deferred to
+                    // below) doesn't just hit the identical wall.
+                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                        await onLlmAuthFailure({ member: getMemberForRole('planner'), label: 'Scoped Replan Plan dispatch', error: err.message });
+                    }
                     log(`[fleet-sprint] in-cycle scoped replan: planner dispatch failed (${err.message}) -- leaving bead(s) ${replanScopeIds.join(', ')} flagged for the next cycle's planner.`);
                 }
 
@@ -6407,6 +6530,12 @@ async function runSprintCycle(context) {
                         log(`Scoped Replan Reviewer: ${JSON.stringify(scopedVerdict)}`);
                         scopedReplanApproved = scopedVerdict.verdict === 'APPROVED';
                     } catch (err) {
+                        // apra-fleet-391: same rationale as the scoped planner
+                        // catch above -- self-heal before this defers to the
+                        // next cycle's planner/plan-reviewer pass.
+                        if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                            await onLlmAuthFailure({ member: getMemberForRole('plan-reviewer'), label: 'Scoped Replan Review dispatch', error: err.message });
+                        }
                         // A schema-repair-exhausted or dispatch failure is a
                         // FAILED scoped review (never an approval), same
                         // discipline as the main plan loop above.
@@ -6542,6 +6671,12 @@ async function runSprintCycle(context) {
                 if (err instanceof AgentOutputError) {
                     log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
                 } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                    // apra-fleet-391: self-heal now so the SAME member's next
+                    // dispatch this cycle (it reuses the planner member) isn't
+                    // walking into the identical unhealed auth failure.
+                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                        await onLlmAuthFailure({ member: getMemberForRole('planner'), label: 'Streak Assignment dispatch', error: err.message });
+                    }
                     log(`Streak Assignment: agent dispatch failed, falling back to one-bead-per-streak: ${err.message}`);
                 } else {
                     throw err;
@@ -6868,8 +7003,28 @@ async function runSprintCycle(context) {
                     } else if (isNonRetryableDispatchError(err)) {
                         // Stabilization Issue 43: auth/trust failures cannot be
                         // fixed by retrying the identical dispatch.
-                        log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw a non-retryable error (auth/trust): ${err.message}. Not retrying.`);
-                        dispatchError = err;
+                        // apra-fleet-391: an LLM-auth (not workspace-trust)
+                        // failure gets one self-heal + one bounded retry
+                        // first, mirroring the Planner's ladder above.
+                        let healedAndRetried = false;
+                        if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                            const healed = await onLlmAuthFailure({ member: doerMember, label: `Doer streak [${actualBeadIds.join(', ')}]`, error: err.message });
+                            if (healed) {
+                                try {
+                                    log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}': LLM auth self-heal succeeded -- retrying once.`);
+                                    report = await dispatchDoer();
+                                    dispatchError = null;
+                                    healedAndRetried = true;
+                                } catch (retryErr) {
+                                    dispatchError = retryErr;
+                                    healedAndRetried = true;
+                                }
+                            }
+                        }
+                        if (!healedAndRetried) {
+                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw a non-retryable error (auth/trust): ${err.message}. Not retrying.`);
+                            dispatchError = err;
+                        }
                     } else {
                         log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
                         wasRetried = true;
@@ -7211,6 +7366,12 @@ async function runSprintCycle(context) {
                     log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
                     deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
                 } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                    // apra-fleet-391: self-heal now so the next cycle's
+                    // Deployer dispatch on this same member isn't walking
+                    // into the identical unhealed auth failure.
+                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                        await onLlmAuthFailure({ member: getMemberForRole('deployer'), label: 'Deployer dispatch', error: err.message });
+                    }
                     log(`Deployer: agent dispatch failed, treating as deployed:false: ${err.message}`);
                     deployResult = { deployed: false, notes: `Deployer dispatch failed: ${err.message}` };
                 } else {
@@ -7398,6 +7559,12 @@ async function runSprintCycle(context) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
                 } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                    // apra-fleet-391: self-heal now so the next cycle's Integ
+                    // Test Runner dispatch on this same member isn't walking
+                    // into the identical unhealed auth failure.
+                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                        await onLlmAuthFailure({ member: getMemberForRole('integ-test-runner'), label: 'Integ Test Runner dispatch', error: err.message });
+                    }
                     log(`Integ Test Runner: agent dispatch failed, treating as passed:false: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner dispatch failed: ${err.message}` };
                 } else {
@@ -7694,7 +7861,19 @@ async function runSprintCycle(context) {
         if (isNonRetryableDispatchError(err)) {
             // Stabilization Issue 43: auth/trust failures are deterministic --
             // the retry below would only reproduce them.
-            throw err;
+            // apra-fleet-391: unless it's specifically an LLM-auth failure
+            // self-heal can fix -- one attempt, then fall through to the
+            // existing retry-once path below.
+            let healedByLlmAuthSelfHeal = false;
+            if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                const healed = await onLlmAuthFailure({ member: getMemberForRole('reviewer'), label: 'Final Review dispatch', error: err.message });
+                if (healed) {
+                    log(`Final Review: LLM auth self-heal succeeded -- retrying once.`);
+                    finalVerdictResult = await runFinalReviewAttempt();
+                    healedByLlmAuthSelfHeal = true;
+                }
+            }
+            if (!healedByLlmAuthSelfHeal) throw err;
         }
         if (err instanceof AgentOutputError) {
             log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
@@ -7865,6 +8044,13 @@ async function runSprintCycle(context) {
         if (err instanceof AgentOutputError) {
             log(`Harvester: schema-repair exhausted, proceeding without a validated harvester report: ${err.message}`);
         } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+            // apra-fleet-391: self-heal now -- harvester is the run's last
+            // dispatch, but the SAME member/credentials get reused by the
+            // next sprint cycle, so an unhealed auth failure here just
+            // reproduces there.
+            if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                await onLlmAuthFailure({ member: getMemberForRole('harvester'), label: 'Harvester dispatch', error: err.message });
+            }
             log(`Harvester: agent dispatch failed, proceeding without a validated harvester report: ${err.message}`);
         } else {
             throw err;

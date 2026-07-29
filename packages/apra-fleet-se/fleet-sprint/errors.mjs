@@ -282,8 +282,12 @@ export class DoltSyncError extends WorkflowError {
 // at second zero). The fleet server already classifies these categories as
 // non-retryable (src/utils/prompt-errors.ts isRetryable()); this mirrors
 // that judgment on the engine side, keyed off the server's own error-message
-// signatures since the message string is all that crosses the dispatch
-// boundary today.
+// signatures since the message string was, until apra-fleet-391, all that
+// crossed the dispatch boundary. execute-prompt.ts now also emits a
+// structured `details.reason` ('auth' | 'workspace_not_trusted') on
+// AgentDispatchError -- checked FIRST below since it can't be fooled by
+// auth-like noise in an unrelated failure's message text; the regex remains
+// as a fallback for older/mocked errors that only ever set `.message`.
 const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace not trusted|has not been trusted/i;
 
 /**
@@ -294,7 +298,27 @@ const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace
  * @returns {boolean}
  */
 export function isNonRetryableDispatchError(err) {
+    const reason = err?.details?.reason;
+    if (reason === 'auth' || reason === 'workspace_not_trusted') return true;
     return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
+}
+
+// apra-fleet-391: subset of NON_RETRYABLE_DISPATCH_RE that is specifically an
+// LLM credential failure (as opposed to workspace-trust, which
+// provision_llm_auth cannot fix -- that needs an operator to run `claude
+// --dangerously-skip-permissions` or trust the folder interactively).
+const AUTH_DISPATCH_RE = /authentication failed|not logged in/i;
+
+/**
+ * True when a dispatch error is specifically an LLM auth/credential failure
+ * (not workspace-trust) -- the subset self-heal via provision_llm_auth can
+ * actually fix.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isAuthDispatchError(err) {
+    if (err?.details?.reason === 'auth') return true;
+    return AUTH_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 
 // ---------------------------------------------------------------------------
