@@ -362,20 +362,80 @@ export function applyBeadFilters(rows, filters) {
 }
 
 /**
- * One `<select name="...">` filter control -- "(all)" plus one `<option>` per
- * `{ value, label }` pair. `name` (not just `id`) is required: the client
- * script reads the active filter set via `new FormData(form)`, which keys off
- * each control's `name`.
+ * Injects an interactive select/search control into each of the 6 static
+ * `<th>` cells `renderBeadsHtml()` emits (ID/Title/Type/Status/Pri/Model), so
+ * the Backlog tab's filter controls live IN the column headers themselves
+ * instead of a separate filter bar above the table -- ID's header carries the
+ * free-text search (matches id OR title, same as `applyBeadFilters()`'s `q`),
+ * Title stays a plain label (search already covers title text), and Type/
+ * Status/Pri/Model become `<select>`s seeded from `filterOptions`'s REAL
+ * observed values. `currentFilters` re-selects/re-fills each control so a
+ * table re-render (collapse toggle, a fresh filtered fetch) never resets what
+ * the operator had chosen -- this function is called fresh on every
+ * `renderTable()` pass client-side, not just once at page load.
+ * @param {{ type: string[], status: string[], priority: number[], model: string[] }} filterOptions
+ * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string }} [currentFilters]
+ * @returns {string}
  */
-function filterSelectHtml(id, name, label, options) {
-    const optionsHtml = ['<option value="">(all)</option>']
-        .concat((options || []).map((o) => {
-            const val = escapeHtml(String(o.value));
-            return '<option value="' + val + '">' + escapeHtml(String(o.label)) + '</option>';
-        }));
-    return '<label style="font-size: 12px; color: var(--text-muted, #a1a1aa); display: flex; align-items: center; gap: 4px;">' +
-        escapeHtml(label) + ' <select id="' + id + '" name="' + name + '" style="background: rgba(255,255,255,0.06); color: inherit; border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 4px; padding: 3px 6px; font-size: 12px;">' +
-        optionsHtml.join('') + '</select></label>';
+function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
+    const opts = filterOptions || { type: [], status: [], priority: [], model: [] };
+    const f = currentFilters || {};
+    const CTRL_STYLE = 'width: 100%; background: rgba(255,255,255,0.06); color: inherit; border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 4px; padding: 3px 6px; font-size: 12px;';
+
+    function selectHtml(field, allLabel, values, current, labelFn) {
+        const currentStr = current !== undefined && current !== null ? String(current) : '';
+        const optionsHtml = ['<option value="">' + escapeHtml(allLabel) + '</option>']
+            .concat((values || []).map((v) => {
+                const val = escapeHtml(String(v));
+                const label = escapeHtml(labelFn ? String(labelFn(v)) : String(v));
+                const selected = String(v) === currentStr ? ' selected' : '';
+                return '<option value="' + val + '"' + selected + '>' + label + '</option>';
+            }));
+        return '<select data-filter-field="' + field + '" style="' + CTRL_STYLE + '">' + optionsHtml.join('') + '</select>';
+    }
+
+    const qVal = escapeHtml(f.q || '');
+    return '<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">' +
+        '<th style="padding: 8px; width: 110px;">ID</th>' +
+        '<th style="padding: 8px;"><input type="text" data-filter-field="q" placeholder="Search ID or Title..." value="' + qVal + '" style="' + CTRL_STYLE + '"/></th>' +
+        '<th style="padding: 8px; width: 90px;">' + selectHtml('type', 'Type', opts.type, f.type) + '</th>' +
+        '<th style="padding: 8px; width: 100px;">' + selectHtml('status', 'Status', opts.status, f.status) + '</th>' +
+        '<th style="padding: 8px; width: 50px;">' + selectHtml('priority', 'Pri', opts.priority, f.priority, (p) => 'P' + p) + '</th>' +
+        '<th style="padding: 8px; width: 80px;">' + selectHtml('model', 'Model', opts.model, f.model) + '</th>' +
+        '</tr>';
+}
+
+/**
+ * Splices `headerRowHtml` in place of the static plain-label header row
+ * `renderBeadsHtml()` always emits (`<th>ID</th><th>Title</th>...`), WITHOUT
+ * modifying the shared function itself -- fleet-sprint's own live viewer
+ * calls `renderBeadsHtml()` too and must keep its plain, non-interactive
+ * header untouched. First-match-only string replace: the header row renders
+ * exactly once, at the top of the `<table>`.
+ * @param {string} tableHtml
+ * @param {string} headerRowHtml
+ * @returns {string}
+ */
+function injectFilterHeader(tableHtml, headerRowHtml) {
+    return tableHtml.replace(/<tr[^>]*>\s*(?:<th[^>]*>[\s\S]*?<\/th>\s*){6}<\/tr>/, headerRowHtml);
+}
+
+/**
+ * Injects a select-checkbox into every data row's leading ID cell (right
+ * after that cell's opening `<td>`, before the tree-toggle/id text) --
+ * again via string splice on `renderBeadsHtml()`'s OUTPUT, never by touching
+ * the shared renderer, so fleet-sprint's own viewer (which never calls this)
+ * is unaffected. `launch-form.mjs`'s client script drives selection off
+ * these checkboxes (see its 'change' listener), including cascading a
+ * parent's check state onto its visible children by walking sibling rows'
+ * indentation depth.
+ * @param {string} tableHtml
+ * @returns {string}
+ */
+function injectRowCheckboxes(tableHtml) {
+    return tableHtml.replace(/(<tr data-bead-id="([^"]*)"[^>]*>\s*<td[^>]*>)/g, function (match, trAndTd, id) {
+        return trAndTd + '<input type="checkbox" class="bead-select-checkbox" data-bead-id="' + id + '" style="margin-right:6px; vertical-align:middle;"/>';
+    });
 }
 
 /**
@@ -393,26 +453,47 @@ function backlogPanelClientScript() {
     return `
 (function () {
     var container = document.getElementById('backlog-table');
-    var form = document.getElementById('backlog-filters-form');
     var indicator = document.getElementById('backlog-active-filters');
     var clearBtn = document.getElementById('backlog-filter-clear');
     if (!container) return;
 
     var collapsedBeadIds = new Set();
     var lastTasks = window.__backlogTasks || [];
+    var filterOptions = window.__backlogFilterOptions || { type: [], status: [], priority: [], model: [] };
+    var currentFilters = {};
 
     ${escapeHtml.toString()}
     ${renderBeadsHtml.toString()}
+    ${injectRowCheckboxes.toString()}
+    ${buildFilterHeaderRowHtml.toString()}
+    ${injectFilterHeader.toString()}
+
+    function wireHeaderControls() {
+        container.querySelectorAll('[data-filter-field]').forEach(function (el) {
+            var field = el.getAttribute('data-filter-field');
+            var evt = el.tagName === 'SELECT' ? 'change' : 'change';
+            el.addEventListener(evt, function () {
+                currentFilters[field] = el.value;
+                applyFilters();
+            });
+        });
+    }
 
     function renderTable() {
-        container.innerHTML = renderBeadsHtml([], lastTasks, collapsedBeadIds);
-        // Re-apply any launch-form row selection (see launch-form.mjs) that a
-        // fresh innerHTML would otherwise wipe -- the two scripts cooperate
-        // via this one small window-scoped hook rather than sharing a closure.
+        var raw = renderBeadsHtml([], lastTasks, collapsedBeadIds);
+        var headerRow = buildFilterHeaderRowHtml(filterOptions, currentFilters);
+        container.innerHTML = injectRowCheckboxes(injectFilterHeader(raw, headerRow));
+        wireHeaderControls();
+        // Re-apply any launch-form checkbox selection (see launch-form.mjs)
+        // that a fresh innerHTML would otherwise wipe -- the two scripts
+        // cooperate via this one small window-scoped hook rather than
+        // sharing a closure.
         if (window.__fleetSeLaunch && typeof window.__fleetSeLaunch.isSelected === 'function') {
-            container.querySelectorAll('tr[data-bead-id]').forEach(function (tr) {
-                if (window.__fleetSeLaunch.isSelected(tr.getAttribute('data-bead-id'))) {
-                    tr.classList.add('bead-row-selected');
+            container.querySelectorAll('input.bead-select-checkbox').forEach(function (cb) {
+                if (window.__fleetSeLaunch.isSelected(cb.getAttribute('data-bead-id'))) {
+                    cb.checked = true;
+                    var tr = cb.closest('tr');
+                    if (tr) tr.classList.add('bead-row-selected');
                 }
             });
         }
@@ -428,74 +509,71 @@ function backlogPanelClientScript() {
         renderTable();
     });
 
-    function activeFilterEntries() {
-        var entries = [];
-        if (!form) return entries;
-        new FormData(form).forEach(function (value, key) {
-            if (value) entries.push(key + ': ' + value);
-        });
-        return entries;
-    }
-
     function applyFilters() {
-        var params = form ? new URLSearchParams(new FormData(form)) : new URLSearchParams();
-        [...params.keys()].forEach(function (k) { if (!params.get(k)) params.delete(k); });
+        var params = new URLSearchParams();
+        Object.keys(currentFilters).forEach(function (k) {
+            var v = currentFilters[k];
+            if (v) params.set(k, v);
+        });
         fetch('/api/backlog/tasks?' + params.toString())
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 lastTasks = (data && Array.isArray(data.tasks)) ? data.tasks : [];
                 window.__backlogTasks = lastTasks;
+                if (data && data.filterOptions) filterOptions = data.filterOptions;
                 collapsedBeadIds.clear();
                 renderTable();
-                var entries = activeFilterEntries();
+                var entries = Object.keys(currentFilters)
+                    .filter(function (k) { return currentFilters[k]; })
+                    .map(function (k) { return k + ': ' + currentFilters[k]; });
                 if (indicator) indicator.textContent = entries.length ? ('Filtering by ' + entries.join(', ') + ' -- ' + lastTasks.length + ' of ' + (data.total || lastTasks.length) + ' shown') : '';
             })
             .catch(function () { /* leave the last-known-good table in place */ });
     }
 
-    if (form) {
-        form.addEventListener('change', applyFilters);
-        form.addEventListener('submit', function (e) { e.preventDefault(); applyFilters(); });
-    }
     if (clearBtn) {
         clearBtn.addEventListener('click', function () {
-            if (form) form.reset();
+            currentFilters = {};
             applyFilters();
         });
     }
+
+    wireHeaderControls();
 })();
 `;
 }
 
 /**
- * Renders the Backlog tab's full content: a filter bar (Type/Status/Priority/
- * Model dropdowns built from `filterOptions`'s REAL observed values, a free-
- * text search box, an active-filter indicator, and a Clear button) followed
- * by the beads table itself, server-rendered via fleet-sprint's
- * `renderBeadsHtml()` with an empty `sprintTasks` (the supervisor has no
- * single sprint's containment tree to show here -- only the cross-sprint free
- * set) so the initial page load needs no client-side render pass at all.
+ * Renders the Backlog tab's full content: the beads table itself, server-
+ * rendered via fleet-sprint's `renderBeadsHtml()` with an empty `sprintTasks`
+ * (the supervisor has no single sprint's containment tree to show here --
+ * only the cross-sprint free set), then two supervisor-only post-processing
+ * passes over that same markup: `injectFilterHeader()` swaps the plain ID/
+ * Title/Type/Status/Pri/Model header row for one carrying live filter
+ * controls (search folded into the ID column, Type/Status/Pri/Model as
+ * `<select>`s seeded from `filterOptions`'s real observed values -- apra-
+ * fleet-7xk), and `injectRowCheckboxes()` adds a select-checkbox to every row
+ * (driven by launch-form.mjs's selection/cascade logic). Neither pass touches
+ * the shared `renderBeadsHtml()` itself, so fleet-sprint's own live viewer
+ * (which also calls it) is unaffected.
  * @param {object[]} tasks
  * @param {{ type: string[], status: string[], priority: number[], model: string[] }} filterOptions
  * @returns {string}
  */
 export function renderBacklogPanelHtml(tasks, filterOptions) {
     const opts = filterOptions || { type: [], status: [], priority: [], model: [] };
-    const tableHtml = renderBeadsHtml([], tasks, new Set());
+    const rawTable = renderBeadsHtml([], tasks, new Set());
+    const headerRow = buildFilterHeaderRowHtml(opts, {});
+    const tableHtml = injectRowCheckboxes(injectFilterHeader(rawTable, headerRow));
     const tasksJson = JSON.stringify(Array.isArray(tasks) ? tasks : []).replace(/</g, '\\u003c');
+    const filterOptionsJson = JSON.stringify(opts).replace(/</g, '\\u003c');
     return (
-        '<form id="backlog-filters-form" style="display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; padding: 10px 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 6px;">' +
-        filterSelectHtml('backlog-filter-type', 'type', 'Type', opts.type.map((v) => ({ value: v, label: v }))) +
-        filterSelectHtml('backlog-filter-status', 'status', 'Status', opts.status.map((v) => ({ value: v, label: v }))) +
-        filterSelectHtml('backlog-filter-priority', 'priority', 'Pri', opts.priority.map((p) => ({ value: p, label: 'P' + p }))) +
-        filterSelectHtml('backlog-filter-model', 'model', 'Model', opts.model.map((v) => ({ value: v, label: v }))) +
-        '<label style="font-size: 12px; color: var(--text-muted, #a1a1aa); display: flex; align-items: center; gap: 4px;">Search ' +
-        '<input id="backlog-filter-q" name="q" type="text" placeholder="id or title..." style="background: rgba(255,255,255,0.06); color: inherit; border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 4px; padding: 3px 6px; font-size: 12px; width: 140px;"/></label>' +
-        '<button type="button" id="backlog-filter-clear" class="btn btn-secondary" style="padding: 3px 10px; font-size: 12px;">Clear</button>' +
+        '<div style="display:flex; justify-content:flex-end; align-items:center; gap:8px; margin-bottom: 6px;">' +
         '<span id="backlog-active-filters" style="font-size: 12px; color: var(--accent, #3b82f6);"></span>' +
-        '</form>' +
+        '<button type="button" id="backlog-filter-clear" class="btn btn-secondary" style="padding: 3px 10px; font-size: 12px;">Clear filters</button>' +
+        '</div>' +
         '<div id="backlog-table">' + tableHtml + '</div>' +
-        '<script>window.__backlogTasks = ' + tasksJson + ';</script>' +
+        '<script>window.__backlogTasks = ' + tasksJson + '; window.__backlogFilterOptions = ' + filterOptionsJson + ';</script>' +
         '<script>' + backlogPanelClientScript() + '</script>'
     );
 }
