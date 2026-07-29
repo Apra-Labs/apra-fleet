@@ -217,11 +217,23 @@ untouched by `git reset`/`git clean` -- remotes live in `.git/config`, not
 the working tree -- so it stays sandbox-local across every Reset with no
 re-wiring needed.
 
+Before the git reset, this also kills any process still bound to the toy
+app's dev-server port (3001, from `npm run start:test` /
+`cross-env PORT=3001`): a prior abandoned attempt's background dev server
+can otherwise survive a Reset into the next attempt and cause
+`listen EADDRINUSE :::3001` in the next Deploy phase. This gives Reset an
+equivalent per-member spawned-process cleanup to what `## Teardown` already
+does for the fleet server (`node dist/index.js stop`).
+
 ```bash
 SANDBOX="$HOME/temp/.apra-fleet-tests"
 export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
+PIDS="$(lsof -ti tcp:3001 2>/dev/null || true)"
+if [ -n "$PIDS" ]; then
+  kill -9 $PIDS 2>/dev/null || true
+fi
 cd "$HOME/toy-repo"
 git fetch origin
 git reset --hard origin/main
