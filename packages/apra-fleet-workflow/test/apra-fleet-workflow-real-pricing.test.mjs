@@ -7,7 +7,7 @@ import { FleetWorkflow } from '../src/workflow/index.mjs';
 // degradation when the tool is unavailable/errors/returns no pricing.
 
 const KNOWN_MEMBER = 'fleet-dev';
-const USAGE = { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 };
+const USAGE = { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 };
 
 function createMockFleetApi({ executePromptImpl, getMemberModelPricingImpl } = {}) {
     return {

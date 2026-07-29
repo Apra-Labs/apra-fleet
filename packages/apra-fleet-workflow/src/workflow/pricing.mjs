@@ -57,14 +57,14 @@ const TIER_BAND_KEYS = new Set(['cheap', 'standard', 'premium']);
 
 /**
  * @param {string} modelName
- * @param {{ prompt_tokens?: number, completion_tokens?: number }|null} usage
+ * @param {{ input_tokens?: number, output_tokens?: number }|null} usage
  * @returns {number|null} the estimated cost in USD, or `null` when usage is
  *   missing/empty, or when `modelName` doesn't match any entry in
  *   MODEL_PRICING (unknown models are never silently priced with a default
  *   -- see apra-fleet-unw.4).
  */
 export function calculateCost(modelName, usage) {
-    if (!usage || (!usage.prompt_tokens && !usage.completion_tokens)) return null;
+    if (!usage || (!usage.input_tokens && !usage.output_tokens)) return null;
 
     let pricing = null;
     if (modelName) {
@@ -89,8 +89,8 @@ export function calculateCost(modelName, usage) {
     }
     if (!pricing) return null;
 
-    const pTokens = usage.prompt_tokens || 0;
-    const cTokens = usage.completion_tokens || 0;
+    const pTokens = usage.input_tokens || 0;
+    const cTokens = usage.output_tokens || 0;
 
     const promptCost = (pTokens / 1000000) * pricing.prompt;
     const compCost = (cTokens / 1000000) * pricing.completion;

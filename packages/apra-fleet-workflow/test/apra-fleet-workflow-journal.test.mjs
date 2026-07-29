@@ -37,7 +37,7 @@ function createTrackingFleetApi() {
             }
             return {
                 content: [{ text: `echo: ${payload.prompt}` }],
-                usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+                usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
             };
         },
         async executeCommand(payload) {
@@ -69,7 +69,7 @@ function createCrashingFleetApi(crashAtCallIndex) {
             }
             return {
                 content: [{ text: `echo: ${payload.prompt}` }],
-                usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+                usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
             };
         },
         async executeCommand(payload) {
@@ -99,7 +99,7 @@ function createGuardedFleetApi(forbiddenPrompts) {
             }
             return {
                 content: [{ text: `echo: ${payload.prompt}` }],
-                usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+                usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
             };
         },
         async executeCommand(payload) {
@@ -372,7 +372,7 @@ describe('apra-fleet-unw.11 (F6): ambiguity guard', () => {
         const lines = [
             { event: 'run:start', runId: 'crashed-run', timestamp: Date.now(), scriptPath: 'irrelevant.mjs', args: {} },
             { event: 'activity:start', id: 'act-1', type: 'agent', phase: null, runId: 'crashed-run', label: 'step1', member: 'fleet-dev', model: 'default', repairAttempt: 0, startTime: Date.now(), sequence: 0, replayKey: step1Key },
-            { event: 'activity:end', id: 'act-1', type: 'agent', phase: null, runId: 'crashed-run', label: 'step1', member: 'fleet-dev', model: 'default', repairAttempt: 0, sequence: 0, replayKey: step1Key, duration: 5, success: true, usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }, cost: 0.0001, output: 'echo: step1' },
+            { event: 'activity:end', id: 'act-1', type: 'agent', phase: null, runId: 'crashed-run', label: 'step1', member: 'fleet-dev', model: 'default', repairAttempt: 0, sequence: 0, replayKey: step1Key, duration: 5, success: true, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }, cost: 0.0001, output: 'echo: step1' },
             // step2 started, never finished:
             { event: 'activity:start', id: 'act-2', type: 'agent', phase: null, runId: 'crashed-run', label: 'step2', member: 'fleet-dev', model: 'default', repairAttempt: 0, startTime: Date.now(), sequence: 1, replayKey: step2Key }
         ];
@@ -526,7 +526,7 @@ describe('apra-fleet-unw2.14 (N6): order-independent replay keys across parallel
         const oldKey = (seq, text) => computeActivityKey({ sequence: seq, type: 'agent', member: 'fleet-dev', textHash: hashText(text) });
         const rec = (id, seq, prompt, label) => ([
             { event: 'activity:start', id, type: 'agent', phase: null, runId: 'old-run', label, member: 'fleet-dev', model: 'gpt-4o', repairAttempt: 0, startTime: Date.now(), sequence: seq, replayKey: oldKey(seq, prompt) },
-            { event: 'activity:end', id, type: 'agent', phase: null, runId: 'old-run', label, member: 'fleet-dev', model: 'gpt-4o', repairAttempt: 0, sequence: seq, replayKey: oldKey(seq, prompt), duration: 5, success: true, usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }, cost: 0.0001, output: `echo: ${prompt}` }
+            { event: 'activity:end', id, type: 'agent', phase: null, runId: 'old-run', label, member: 'fleet-dev', model: 'gpt-4o', repairAttempt: 0, sequence: seq, replayKey: oldKey(seq, prompt), duration: 5, success: true, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }, cost: 0.0001, output: `echo: ${prompt}` }
         ]);
         const lines = [
             { event: 'run:start', runId: 'old-run', timestamp: Date.now(), scriptPath: 'irrelevant.mjs', args: {} },

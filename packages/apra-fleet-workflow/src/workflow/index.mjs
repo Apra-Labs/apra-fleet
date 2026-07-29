@@ -607,8 +607,8 @@ export class FleetWorkflow extends EventEmitter {
                 const realPricing = await this._getMemberPricing(memberKey, opts);
                 const entry = realPricing && realPricing[tier];
                 if (entry && typeof entry.promptPrice === 'number' && typeof entry.completionPrice === 'number') {
-                    const pTokens = usage.prompt_tokens || 0;
-                    const cTokens = usage.completion_tokens || 0;
+                    const pTokens = usage.input_tokens || 0;
+                    const cTokens = usage.output_tokens || 0;
                     const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice;
                     budget._pricedReal++;
                     return cost;
