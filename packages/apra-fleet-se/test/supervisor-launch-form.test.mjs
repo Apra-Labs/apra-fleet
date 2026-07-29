@@ -153,13 +153,19 @@ describe('launch-form -- renderLaunchFormHtml', () => {
     });
 });
 
-describe('launch-form -- attaches to the index page after the Backlog', () => {
-    test('renderIndexPageHtml places the Launch Sprint form after the Backlog section', () => {
+describe('launch-form -- attaches to the index page in the Sprints tab', () => {
+    // supervisor-viewer-parity: Sprint Stack and Launch Sprint now share one
+    // "Sprints" tab (launching is a sprints-tab action), and Backlog is a
+    // separate tab -- so the form no longer sits AFTER the Backlog section;
+    // it sits after the sprint stack, in the same tab. `id="sprint-stack"`
+    // still precedes `id="backlog"` in raw document order regardless (see
+    // supervisor-backlog.test.mjs), which is the ordering that still matters.
+    test('renderIndexPageHtml places the Launch Sprint form after the sprint stack, in the Sprints tab', () => {
         const html = renderIndexPageHtml([], '<p>no backlog</p>');
-        const backlogIdx = html.indexOf('id="backlog"');
+        const stackIdx = html.indexOf('id="sprint-stack"');
         const launchIdx = html.indexOf('id="launch-form"');
-        assert.ok(backlogIdx !== -1 && launchIdx !== -1);
-        assert.ok(launchIdx > backlogIdx, 'Launch Sprint form must come after the Backlog');
+        assert.ok(stackIdx !== -1 && launchIdx !== -1);
+        assert.ok(launchIdx > stackIdx, 'Launch Sprint form must come after the sprint stack');
         assert.ok(html.includes('id="launch-sprint-form"'));
     });
 

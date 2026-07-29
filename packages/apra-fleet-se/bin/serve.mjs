@@ -34,7 +34,7 @@ import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt
 // operator endpoints (eft.4.4). These were fully implemented and unit-tested
 // but never imported/registered here -- this is that wiring.
 import { createWatchdog } from '../src/supervisor/watchdog.mjs';
-import { createBacklog } from '../src/supervisor/backlog.mjs';
+import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.mjs';
 // launch-form.mjs (renderLaunchFormHtml/buildLaunchRequestBody) has no
 // register*Routes()/create*() seam of its own -- dashboard.mjs's
 // renderIndexPageHtml() already imports it directly and falls back to
@@ -152,6 +152,13 @@ export async function serveMain(argv = process.argv.slice(2)) {
 
     // eft.6.1: GET / -- the Sprint Stack + Backlog + Launch Sprint page.
     registerDashboardRoutes(supervisor, dashboard);
+
+    // supervisor-viewer-parity: GET /api/backlog/tasks -- the flat,
+    // filterable data source the dashboard's Backlog tab re-fetches from
+    // client-side on every filter change (see backlog.mjs's
+    // backlogPanelClientScript()). Additive to GET /api/backlog below (the
+    // sprint controller's older nested-tree shape), not a replacement.
+    registerBacklogRoutes(supervisor, backlog);
 
     // eft.4.4: the six operator-facing sprint/member/backlog endpoints.
     // listMembers is fleet-backed (fleet-members.mjs opens a short-lived MCP

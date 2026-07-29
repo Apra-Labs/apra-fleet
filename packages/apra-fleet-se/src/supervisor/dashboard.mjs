@@ -35,13 +35,20 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderLaunchFormHtml } from './launch-form.mjs';
+import { renderBacklogPanelHtml } from './backlog.mjs';
 
-/** Badge color per four-status classifier value; unknown values fall back to grey. */
+/**
+ * Badge color per four-status classifier value; unknown values fall back to
+ * grey. Uses the same `var(--success)`/`var(--warning)`/`var(--danger)`
+ * tokens DASHBOARD_CSS defines below (and fleet-sprint's renderBeadsHtml
+ * badges already reference) rather than independent hardcoded hex, so a live
+ * sprint's health badge and its beads-tree status badges read as one system.
+ */
 const STATUS_BADGE_COLORS = Object.freeze({
-    [WATCHDOG_STATUS.RUNNING_HEALTHY]: '#22c55e',
-    [WATCHDOG_STATUS.RUNNING_UNRESPONSIVE]: '#f59e0b',
-    [WATCHDOG_STATUS.CRASHED]: '#ef4444',
-    [WATCHDOG_STATUS.FINISHED]: '#71717a',
+    [WATCHDOG_STATUS.RUNNING_HEALTHY]: 'var(--success)',
+    [WATCHDOG_STATUS.RUNNING_UNRESPONSIVE]: 'var(--warning)',
+    [WATCHDOG_STATUS.CRASHED]: 'var(--danger)',
+    [WATCHDOG_STATUS.FINISHED]: 'var(--text-muted)',
 });
 
 /**
@@ -135,43 +142,118 @@ export function renderSprintStackHtml(views) {
     return list.map(renderSprintSection).join('\n');
 }
 
+// apra-fleet supervisor-viewer-parity: the SAME CSS custom-property names and
+// header/tab/panel vocabulary as apra-fleet-workflow's per-sprint dashboard
+// (packages/apra-fleet-workflow/src/viewer/index.mjs's HTML_TEMPLATE) -- one
+// operator moving between "a single sprint's live view" and "the cross-sprint
+// supervisor" should not have to re-learn a second visual language. fleet-
+// sprint's own beads-tree extension (viewer-extensions.mjs's renderBeadsHtml,
+// reused verbatim for the Backlog tab below) already styles its badges via
+// `var(--accent)` / `var(--danger)` etc, so defining the SAME tokens here is
+// what makes that reuse actually look right, not just share markup shape.
+const DASHBOARD_CSS = `
+    :root {
+      --bg: #09090b; --bg-glass: rgba(24, 24, 27, 0.6); --border: rgba(255, 255, 255, 0.1);
+      --text: #e4e4e7; --text-muted: #a1a1aa; --accent: #3b82f6; --accent-glow: rgba(59, 130, 246, 0.2);
+      --success: #10b981; --warning: #f59e0b; --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { background: var(--bg); color: var(--text); font-family: sans-serif; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
+    a { color: var(--accent); }
+    .header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--bg-glass); border-bottom: 1px solid var(--border); }
+    .header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+    .header-actions { display: flex; gap: 12px; align-items: center; }
+    .stats-banner { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); background: rgba(0,0,0,0.3); padding: 4px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); }
+    .stats-banner span strong { color: var(--text); font-weight: 600; }
+
+    .btn { padding: 4px 12px; font-size: 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: 600; transition: opacity 0.2s; }
+    .btn:hover { opacity: 0.8; }
+    .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
+
+    .main-content { display: flex; flex: 1; overflow: hidden; min-height: 0; }
+    .content-area { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+    .panel { background: var(--bg-glass); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
+    .panel-header { flex-shrink: 0; padding: 10px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); text-transform: uppercase; letter-spacing: 0.5px; }
+    .panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
+
+    .tab-bar { display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; flex-shrink: 0; }
+    .tab-btn { background: transparent; color: var(--text-muted); border: none; padding: 6px 12px; cursor: pointer; border-radius: 4px; font-size: 13px; }
+    .tab-btn:hover { background: rgba(255,255,255,0.05); }
+    .tab-btn.active { color: #fff; background: rgba(255,255,255,0.1); }
+    .tab-content { display: none; }
+    .tab-content.active { display: flex; min-height: 0; }
+
+    .bead-row-selected { outline: 2px solid var(--accent); background: var(--accent-glow) !important; }
+    table tr:hover { background: rgba(255,255,255,0.03); }
+`;
+
+const DASHBOARD_TAB_SCRIPT = `
+    function switchTab(id) {
+        document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
+        document.querySelectorAll('.tab-content').forEach(function (c) { c.classList.remove('active'); });
+        event.currentTarget.classList.add('active');
+        document.getElementById('tab-' + id).classList.add('active');
+    }
+`;
+
 /**
- * Renders the full index page (`GET /` document). The sprint-stack section
- * (Plan Part 2.3, first block) is rendered FIRST; the Backlog-last tree
- * (eft.6.2) is rendered after every running sprint's section, so the operator
- * reads live sprints top-down and the free/backlog picker sits below them.
- * The Launch Sprint form (eft.6.3) attaches LAST, after the Backlog it picks
- * issues from -- the operator clicks a Backlog row, then fills in the form
- * beneath it. The History link (eft.6.5) is a separate task that attaches to
- * this same single page.
+ * Renders the full index page (`GET /` document): a header, then a Sprints
+ * tab (Sprint Stack + the Launch Sprint form that fills it -- the two stay
+ * together since launching is a sprints-tab action) and a separate Backlog
+ * tab (eft.6.2's cross-sprint free-set view), using the same tab-bar/panel
+ * chrome as apra-fleet-workflow's per-sprint viewer (see DASHBOARD_CSS
+ * above). `id="sprint-stack"` still renders before `id="backlog"` in the raw
+ * HTML (existing acceptance criterion, still meaningful even though the two
+ * are now tab-switched rather than stacked) -- callers relying on that
+ * ordering (or on `data-bead-id`/`data-sprint-id` markers anywhere in the
+ * body) are unaffected by which tab happens to be visually active.
  * @param {SprintView[]} [views]
- * @param {string} [backlogHtml] - pre-rendered Backlog tree HTML (eft.6.2)
+ * @param {string} [backlogHtml] - pre-rendered Backlog tab content (eft.6.2 / renderBacklogPanelHtml())
  * @param {string} [launchFormHtml] - pre-rendered Launch Sprint form HTML (eft.6.3)
  * @returns {string}
  */
 export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
     const backlogSection = typeof backlogHtml === 'string'
         ? backlogHtml
-        : '<p style="color:#71717a; font-style: italic;">No unclaimed work in the backlog.</p>';
+        : '<p style="color:var(--text-muted); font-style: italic;">No unclaimed work in the backlog.</p>';
     const launchFormSection = typeof launchFormHtml === 'string' ? launchFormHtml : renderLaunchFormHtml();
+    const runningCount = Array.isArray(views) ? views.length : 0;
     return (
         '<!DOCTYPE html>\n' +
         '<html lang="en">\n' +
         '<head>\n' +
         '<meta charset="utf-8"/>\n' +
+        '<meta name="viewport" content="width=device-width,initial-scale=1">\n' +
         '<title>Auto-Sprint Supervisor</title>\n' +
-        '<style>body{background:#18181b;color:#e4e4e7;font-family:system-ui,sans-serif;margin:24px;}' +
-        'a{color:#60a5fa;}</style>\n' +
+        '<style>' + DASHBOARD_CSS + '</style>\n' +
         '</head>\n' +
         '<body>\n' +
-        '<h1>Sprint Stack</h1>\n' +
-        '<div id="sprint-stack">\n' + renderSprintStackHtml(views) + '\n</div>\n' +
-        // Backlog comes after the sprint stack (eft.6.2 acceptance criterion).
-        '<h1>Backlog</h1>\n' +
-        '<div id="backlog">\n' + backlogSection + '\n</div>\n' +
-        // Launch Sprint form (eft.6.3) is LAST: it consumes Backlog clicks above it.
-        '<h1>Launch Sprint</h1>\n' +
-        '<div id="launch-form">\n' + launchFormSection + '\n</div>\n' +
+        '<div class="header">' +
+        '<h1>Auto-Sprint Supervisor</h1>' +
+        '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div></div>' +
+        '</div>\n' +
+        '<div class="main-content"><div class="content-area">' +
+        '<div class="tab-bar" id="tab-bar">' +
+        '<button class="tab-btn active" onclick="switchTab(\'sprints\')">Sprints</button>' +
+        '<button class="tab-btn" onclick="switchTab(\'backlog\')">Backlog</button>' +
+        '</div>\n' +
+        '<div id="tab-sprints" class="tab-content active panel">' +
+        '<div class="panel-header">Sprint Stack</div>' +
+        '<div id="sprint-stack" class="panel-body">\n' + renderSprintStackHtml(views) + '\n</div>' +
+        '<div class="panel-header" style="border-top: 1px solid var(--border);">Launch Sprint</div>' +
+        '<div id="launch-form" class="panel-body">\n' + launchFormSection + '\n</div>' +
+        '</div>\n' +
+        // Backlog is its own tab (this file's tab restructuring) -- still
+        // ALWAYS rendered after the sprint stack in raw document order (the
+        // original eft.6.2 acceptance criterion), regardless of which tab a
+        // viewer happens to have active.
+        '<div id="tab-backlog" class="tab-content panel">' +
+        '<div class="panel-header">Backlog</div>' +
+        '<div id="backlog" class="panel-body">\n' + backlogSection + '\n</div>' +
+        '</div>\n' +
+        '</div></div>\n' +
+        '<script>' + DASHBOARD_TAB_SCRIPT + '</script>\n' +
         '</body>\n' +
         '</html>\n'
     );
@@ -281,13 +363,27 @@ export function createDashboard(deps = {}) {
         async stop() {},
         buildSprintViews,
         async renderIndexPage() {
-            // Render the sprint stack and the Backlog concurrently; the Backlog
-            // is placed after the stack, and the Launch Sprint form (eft.6.3,
-            // static/dependency-free -- see launch-form.mjs) after that, by
-            // renderIndexPageHtml. A Backlog render failure is isolated so it
-            // can never take the whole page down.
+            // Render the sprint stack and the Backlog tab content concurrently
+            // with the page shell; a Backlog render failure is isolated so it
+            // can never take the whole page down (renderIndexPageHtml falls
+            // back to an explicit empty state when backlogHtml is undefined).
+            //
+            // Prefers buildBacklogTasks() (the flat, filterable, renderBeadsHtml-
+            // shaped data createBacklog() now exposes -- see backlog.mjs) over
+            // the older renderHtml() (the plain <ul>/<li> tree), so the real
+            // supervisor renders the SAME beads-tree UI fleet-sprint's own
+            // viewer uses. A caller injecting a minimal backlog stub that only
+            // implements renderHtml() (as some tests still do) still works via
+            // that fallback.
             let backlogHtml;
-            if (backlog && typeof backlog.renderHtml === 'function') {
+            if (backlog && typeof backlog.buildBacklogTasks === 'function') {
+                try {
+                    const { tasks, filterOptions } = await backlog.buildBacklogTasks();
+                    backlogHtml = renderBacklogPanelHtml(tasks, filterOptions);
+                } catch (err) {
+                    logError('[dashboard] backlog render failed:', err);
+                }
+            } else if (backlog && typeof backlog.renderHtml === 'function') {
                 try {
                     backlogHtml = await backlog.renderHtml();
                 } catch (err) {

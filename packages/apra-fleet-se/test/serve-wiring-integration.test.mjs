@@ -186,16 +186,28 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         const res = await httpGet(port, '/');
         assert.equal(res.status, 200, res.body);
         assert.ok(res.headers['content-type'].includes('text/html'), res.headers['content-type']);
-        assert.ok(res.body.includes('<h1>Sprint Stack</h1>'), 'expected the Sprint Stack section');
-        assert.ok(res.body.includes('<h1>Backlog</h1>'), 'expected the Backlog section');
+        // supervisor-viewer-parity: section labels are now `.panel-header`
+        // text inside a Sprints/Backlog tab layout (matching apra-fleet-
+        // workflow's per-sprint viewer chrome -- see dashboard.mjs's
+        // DASHBOARD_CSS), not standalone <h1> tags; the page's one <h1> is
+        // the page title.
+        assert.ok(res.body.includes('class="panel-header">Sprint Stack</div>'), 'expected the Sprint Stack section');
+        assert.ok(res.body.includes('class="panel-header">Backlog</div>'), 'expected the Backlog section');
         assert.ok(res.body.includes('id="backlog"'), 'expected the Backlog seam-rendered container');
-        assert.ok(res.body.includes('<h1>Launch Sprint</h1>'), 'expected the Launch Sprint form section');
+        assert.ok(res.body.includes('id="backlog-table"'), 'expected the rich beads-tree table container (renderBeadsHtml)');
+        assert.ok(res.body.includes('class="panel-header"'), 'expected launch-sprint panel-header markup');
+        assert.ok(res.body.includes('>Launch Sprint</div>'), 'expected the Launch Sprint form section');
+        assert.ok(res.body.includes('id="tab-sprints"') && res.body.includes('id="tab-backlog"'), 'expected the Sprints/Backlog tabs');
 
-        // Section order per eft.6.1/6.3: stack, then Backlog, then the form.
-        const stackIdx = res.body.indexOf('<h1>Sprint Stack</h1>');
-        const backlogIdx = res.body.indexOf('<h1>Backlog</h1>');
-        const launchIdx = res.body.indexOf('<h1>Launch Sprint</h1>');
-        assert.ok(stackIdx < backlogIdx && backlogIdx < launchIdx, 'expected Sprint Stack, then Backlog, then Launch Sprint');
+        // Sprint Stack and Launch Sprint now share the Sprints tab (stack,
+        // then the form that launches into it); Backlog is a separate tab,
+        // rendered after the Sprints tab in raw document order (still true
+        // regardless of which tab is visually active on load).
+        const stackIdx = res.body.indexOf('id="sprint-stack"');
+        const launchIdx = res.body.indexOf('id="launch-form"');
+        const backlogIdx = res.body.indexOf('id="backlog"');
+        assert.ok(stackIdx < launchIdx, 'expected Sprint Stack before Launch Sprint, within the Sprints tab');
+        assert.ok(launchIdx < backlogIdx, 'expected the Sprints tab (stack + form) before the Backlog tab');
     });
 
     test('POST /api/sprints reaches the real sprint controller (validation error, not 404)', async () => {
