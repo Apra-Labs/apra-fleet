@@ -15,7 +15,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
-import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.js';
+import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
@@ -724,11 +724,39 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         return `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath.replace(/\\/g, '/')}\n  ${userPath.replace(/\\/g, '/')}`;
       }
     } else {
-      const ef = escapeDoubleQuoted;
-      const projCheck = `${ef(resolvedWorkFolder)}/${agentRelDir}/${ef(input.agent)}.md`;
-      const userCheck = `$HOME/${agentRelDir}/${ef(input.agent)}.md`;
-      const checkResult = await strategy.execCommand(`test -f "${projCheck}" || test -f "${userCheck}"`, 10000);
-      if (checkResult.code !== 0) {
+      // Canonical PM role agents (planner/doer/reviewer/plan-reviewer/...) are
+      // already guaranteed present in ~/${agentRelDir} by
+      // ensureAgentFilesProvisioned() above (ln ~576, which ran provisionAgents()
+      // for this exact member earlier in this same call) -- trust that instead
+      // of re-probing the remote here. This also SIDESTEPS the bug this check
+      // used to have: the old code hand-rolled a POSIX-only
+      // `test -f ... || test -f ...` command run via strategy.execCommand(),
+      // which throws a PowerShell parser error (not a POSIX shell) on every
+      // Windows remote -- a nonzero exit that this check misread as "agent not
+      // found" even when the file genuinely existed (apra-fleet P0 bug, fleet-
+      // sprint via a Windows remote member always failed plan-review with
+      // "agent 'plan-reviewer' not found").
+      const canonicalRelPath = `${input.agent}.md`;
+      agentFound = remoteAgentsDir(provName) !== null
+        && loadCanonicalAgentSet(provName).some((f) => f.relPath === canonicalRelPath);
+
+      if (!agentFound) {
+        // Not part of the canonical PM set (e.g. a project-local custom
+        // agent) -- fall back to a REAL existence probe, built platform-aware
+        // via this repo's own getOsCommands() abstraction (src/os/*.ts,
+        // already used the same way by list-members.ts/member-detail.ts for
+        // credential-file checks) instead of a single hardcoded shell dialect.
+        const cmds = getOsCommands(getAgentOS(agent));
+        const projPath = `${resolvedWorkFolder}/${agentRelDir}/${input.agent}.md`;
+        const userPath = `~/${agentRelDir}/${input.agent}.md`;
+        const [projResult, userResult] = await Promise.all([
+          strategy.execCommand(cmds.credentialFileCheck(projPath), 10000),
+          strategy.execCommand(cmds.credentialFileCheck(userPath), 10000),
+        ]);
+        agentFound = projResult.stdout.includes('found') || userResult.stdout.includes('found');
+      }
+
+      if (!agentFound) {
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
