@@ -41,6 +41,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { validateIssueId } from '../../fleet-sprint/runner.js';
+
 const execFileAsync = promisify(execFile);
 
 /**
@@ -53,7 +55,15 @@ const execFileAsync = promisify(execFile);
  * @returns {Promise<string[]>}
  */
 export async function bdListChildren(parentId) {
-    const { stdout } = await execFileAsync('bd', ['list', '--parent', parentId, '--json', '--limit', '0']);
+    // shell: true is required for the same reason as backlog.mjs's
+    // bdListAllBeads() (Windows npm shim, see comment there) -- but unlike that
+    // call, parentId here ultimately traces back to caller-supplied issue ids
+    // (launch requests, ledger entries). validateIssueId() enforces the same
+    // letters/digits/'.'/'_'/'-' -only charset already required at the launch
+    // API boundary (runner.js ISSUE_ID_PATTERN), so no shell metacharacter can
+    // reach the shell even if some future caller forgets to validate upstream.
+    validateIssueId(parentId);
+    const { stdout } = await execFileAsync('bd', ['list', '--parent', parentId, '--json', '--limit', '0'], { shell: true });
     const text = stdout && stdout.trim() ? stdout : '[]';
     let rows;
     try {
