@@ -7128,7 +7128,12 @@ async function runSprintCycle(context) {
             // order -- so this evidence-gathering step is deterministic even
             // though the doer streaks it aggregates ran concurrently. See
             // the readyTitleById comment just above.
-            const assignedBeadIds = streakOutcomes.flatMap((o) => o.beadIds)
+            // apra-fleet-wrc.1: permanently-failed streaks (outcome === 'failed')
+            // had no actual work happen to their beads -- exclude their beadIds
+            // from Review dispatch so the Reviewer isn't asked to review nothing.
+            // Those beads remain in their current still-ready state for the next
+            // Develop round to pick up.
+            const assignedBeadIds = streakOutcomes.filter((o) => o.outcome !== 'failed').flatMap((o) => o.beadIds)
                 .slice().sort((a, b) => {
                     const ta = readyTitleById.get(a) || a;
                     const tb = readyTitleById.get(b) || b;
