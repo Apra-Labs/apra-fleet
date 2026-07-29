@@ -57,6 +57,9 @@ COPILOT-INSTRUCTIONS.md
 /auto-sprint-*.log
 /auto-sprint-*.err.log
 
+# Fleet-sprint orchestrator run artifacts left in repo root
+/fleet-sprint-eft-*.log*
+
 # Per-file integration-test progress state (scripts/run-integ-suites.mjs)
 /integ-suite-status.json
 /integ-suite-status.json.tmp
