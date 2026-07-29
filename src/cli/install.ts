@@ -224,7 +224,10 @@ function collectPackageTree(
   return results;
 }
 
-function buildDevManifest(root: string): AssetManifest {
+// Exported for tests: the dev-mode manifest is what gates the entire workflow
+// subsystem install, and its inputs are filesystem paths that can silently go
+// stale when directories move (see agentSchemasDir below).
+export function buildDevManifest(root: string): AssetManifest {
   const hooks: Record<string, string> = {};
   for (const entry of fs.readdirSync(path.join(root, 'hooks'))) {
     hooks[entry] = `hooks/${entry}`;
