@@ -198,6 +198,23 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         return '<span style="color: #a1a1aa; font-size: 10px;">' + (model ? escapeHtml(model) : 'n/a') + '</span>';
     }
 
+    // apra-fleet supervisor's Backlog view (src/supervisor/backlog.mjs) has no
+    // containment tree of its own to hang a partial-claim annotation off (its
+    // beads-tree nests by `blocks` edges, not `parent`), so it attaches the
+    // annotation directly onto the flat row object it hands this renderer as
+    // `node.partialClaim`. Every fleet-sprint caller leaves this field
+    // undefined, so this is a no-op there -- same "defensive, never throws on
+    // an absent/unrecognized field" rule the badge builders above already
+    // follow.
+    function partialClaimAnnotationHtml(partialClaim) {
+        if (!partialClaim) return '';
+        const sprintLabel = partialClaim.sprints.length === 0
+            ? 'an active sprint'
+            : partialClaim.sprints.map((s) => (partialClaim.sprints.length > 1 ? s.sprintId + ' (' + s.count + ')' : s.sprintId)).join(', ');
+        const text = partialClaim.claimedCount + ' of ' + partialClaim.totalCount + ' children claimed by ' + sprintLabel + '; ' + partialClaim.freeCount + ' free';
+        return '<div data-partial-claim="true" style="margin-top: 4px; font-size: 10px; color: #f59e0b; font-style: italic;">' + escapeHtml(text) + '</div>';
+    }
+
     // apra-fleet-eft.27.2: descriptions are no longer inlined into the
     // dashboard's recurring poll payload -- apra-fleet-eft.27.1's lean
     // list-state transform (src/viewer/lean-state.mjs) strips every bead's
@@ -314,12 +331,17 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
             const blockers = node.blockedBy.slice().sort().map((id) => '#' + escapeHtml(id)).join(', ');
             extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">blocked by: ' + blockers + '</div>';
         }
+        extraBlockedByHtml += partialClaimAnnotationHtml(node.partialClaim);
 
         const children = (childrenOf[nodeId] || []).slice().sort();
         const isCollapsed = children.length > 0 && collapsedIds.has(String(nodeId));
         const toggleHtml = treeToggleHtml(nodeId, children.length > 0, isCollapsed);
 
-        let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
+        // data-bead-id round-trips the raw (unescaped) id back via HTML entity
+        // decoding, same convention as .bead-desc's data-bead-id / .tree-toggle's
+        // data-toggle-id above -- lets a host page (e.g. the supervisor's Launch
+        // Sprint form) wire row click-to-select without parsing rendered text.
+        let html = '<tr data-bead-id="' + safeId + '" style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + toggleHtml + prefix + '#' + safeId + '</td>' +
             '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(node.status) + ';">' + titleHtml + extraBlockedByHtml + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(node.issue_type, node.title) + '</td>' +
@@ -405,12 +427,13 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
             const blockers = node.blockedBy.slice().sort().map((id) => '#' + escapeHtml(id)).join(', ');
             extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">blocked by: ' + blockers + '</div>';
         }
+        extraBlockedByHtml += partialClaimAnnotationHtml(node.partialClaim);
 
         const children = (backlogChildrenOf[nodeId] || []).slice().sort(priorityThenId);
         const isCollapsed = children.length > 0 && collapsedIds.has(String(nodeId));
         const toggleHtml = treeToggleHtml(nodeId, children.length > 0, isCollapsed);
 
-        let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
+        let html = '<tr data-bead-id="' + safeId + '" style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + toggleHtml + prefix + '#' + safeId + '</td>' +
             '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(node.status) + ';">' + titleHtml + extraBlockedByHtml + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(node.issue_type, node.title) + '</td>' +
