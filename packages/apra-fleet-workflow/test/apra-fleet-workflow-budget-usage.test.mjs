@@ -13,7 +13,7 @@ function createMockFleetApi({ executePromptImpl } = {}) {
     return {
         async executePrompt(payload) {
             if (executePromptImpl) return executePromptImpl(payload);
-            return { content: [{ text: `Mock response to: ${payload.prompt}` }], usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 } };
+            return { content: [{ text: `Mock response to: ${payload.prompt}` }], usage: { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 } };
         },
         async executeCommand(payload) {
             return { content: [{ text: payload.command }], isError: false };
@@ -39,7 +39,7 @@ describe('apra-fleet-unw.4: honest usage reporting', () => {
 
     test('usage missing total_tokens (malformed) also yields null usage/cost, not a random guess', async () => {
         const wf = new FleetWorkflow(createMockFleetApi({
-            executePromptImpl: async () => ({ content: [{ text: 'ok' }], usage: { prompt_tokens: 10 } })
+            executePromptImpl: async () => ({ content: [{ text: 'ok' }], usage: { input_tokens: 10 } })
         }));
 
         let endMeta;
@@ -59,7 +59,7 @@ describe('apra-fleet-unw.4: honest usage reporting', () => {
 
         await wf.agent('hello', { member_name: KNOWN_MEMBER, model: 'gpt-4o' });
 
-        assert.deepStrictEqual(endMeta.usage, { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 });
+        assert.deepStrictEqual(endMeta.usage, { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 });
         assert.strictEqual(typeof endMeta.cost, 'number');
         assert.ok(endMeta.cost > 0);
     });
@@ -115,7 +115,7 @@ describe('apra-fleet-unw.4: budget debit and enforcement', () => {
         const wf = new FleetWorkflow(createMockFleetApi({
             executePromptImpl: async (payload) => {
                 dispatchCount++;
-                return { content: [{ text: 'ok' }], usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 } };
+                return { content: [{ text: 'ok' }], usage: { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 } };
             }
         }));
         wf.budget.total = 0.01;
@@ -135,12 +135,12 @@ describe('apra-fleet-unw.4: budget debit and enforcement', () => {
 
 describe('apra-fleet-unw.4: pricing table sanity', () => {
     test('calculateCost returns a known numeric price for a listed model', () => {
-        const cost = calculateCost('gpt-4o', { prompt_tokens: 1000000, completion_tokens: 1000000 });
+        const cost = calculateCost('gpt-4o', { input_tokens: 1000000, output_tokens: 1000000 });
         assert.strictEqual(cost, 5.00 + 15.00);
     });
 
     test('calculateCost returns null for an unknown/unlisted model instead of a default guess', () => {
-        const cost = calculateCost('some-mystery-model-v9', { prompt_tokens: 1000, completion_tokens: 1000 });
+        const cost = calculateCost('some-mystery-model-v9', { input_tokens: 1000, output_tokens: 1000 });
         assert.strictEqual(cost, null);
     });
 
@@ -149,7 +149,7 @@ describe('apra-fleet-unw.4: pricing table sanity', () => {
     });
 
     test('calculateCost returns null when model name is omitted', () => {
-        assert.strictEqual(calculateCost(undefined, { prompt_tokens: 100, completion_tokens: 100 }), null);
+        assert.strictEqual(calculateCost(undefined, { input_tokens: 100, output_tokens: 100 }), null);
     });
 });
 
@@ -163,7 +163,7 @@ describe('apra-fleet-unw2.8 (N10): fleet model pricing rows (fable/opus/sonnet/h
     // for it, exactly the N10 finding this issue fixes.
     for (const model of ['fable', 'opus', 'sonnet', 'haiku']) {
         test(`calculateCost prices '${model}' as a known, positive, finite number`, () => {
-            const cost = calculateCost(model, { prompt_tokens: 1_000_000, completion_tokens: 1_000_000 });
+            const cost = calculateCost(model, { input_tokens: 1_000_000, output_tokens: 1_000_000 });
             assert.strictEqual(typeof cost, 'number');
             assert.ok(Number.isFinite(cost) && cost > 0, `Expected a positive finite cost for '${model}', got ${cost}`);
         });
@@ -173,13 +173,13 @@ describe('apra-fleet-unw2.8 (N10): fleet model pricing rows (fable/opus/sonnet/h
         // Mirrors the flexible substring match the pricing table's own doc
         // comment describes: a longer, more specific model id that merely
         // CONTAINS one of the short fleet-tier keys should still price.
-        const cost = calculateCost('claude-haiku-4.5-20260601', { prompt_tokens: 1000, completion_tokens: 1000 });
+        const cost = calculateCost('claude-haiku-4.5-20260601', { input_tokens: 1000, output_tokens: 1000 });
         assert.strictEqual(typeof cost, 'number');
         assert.ok(cost > 0);
     });
 
     test('haiku is priced strictly cheaper than sonnet, which is priced strictly cheaper than opus, for identical usage', () => {
-        const usage = { prompt_tokens: 1_000_000, completion_tokens: 1_000_000 };
+        const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000 };
         const haikuCost = calculateCost('haiku', usage);
         const sonnetCost = calculateCost('sonnet', usage);
         const opusCost = calculateCost('opus', usage);
