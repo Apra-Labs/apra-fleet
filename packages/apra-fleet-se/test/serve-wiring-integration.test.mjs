@@ -183,7 +183,22 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
     });
 
     test('GET / returns 200 with the Sprint Stack, Backlog, and Launch Sprint markers', async () => {
-        const res = await httpGet(port, '/');
+        // apra-fleet-04g.3.1: unlike /api/health above, the '/' route renders
+        // the full dashboard (renderBeadsHtml over real bd), which on first
+        // hit under CPU contention (e.g. --test-concurrency=8) can exceed the
+        // per-request scaledTimeout(5000) in httpGet. Retry via the same
+        // waitFor() pattern used for the /api/health boot-check above until
+        // the route answers 200, then run the body-marker assertions once
+        // against that response -- this tolerates first-render latency
+        // without weakening any assertion below.
+        const res = await waitFor(async () => {
+            try {
+                const attempt = await httpGet(port, '/');
+                return attempt.status === 200 ? attempt : false;
+            } catch {
+                return false;
+            }
+        }, { label: 'GET / to render the dashboard' });
         assert.equal(res.status, 200, res.body);
         assert.ok(res.headers['content-type'].includes('text/html'), res.headers['content-type']);
         // supervisor-viewer-parity: section labels are now `.panel-header`
