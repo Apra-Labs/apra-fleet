@@ -3470,6 +3470,40 @@ export function normalizeTierToken(raw) {
     return matches.length === 1 ? matches[0] : raw;
 }
 
+// apra-fleet-04g.2 -- LLM reviewers (the finalVerdict-schema agent that
+// authors newTask entries) routinely emit "smart" punctuation -- em-dash/
+// en-dash, curly quotes, horizontal ellipsis -- that a human writer would
+// consider a plain ASCII equivalent, but which falls outside
+// SAFE_DESCRIPTION_RE's \t\n\r\x20-\x7E allowlist and so gets the whole
+// newTask rejected outright (04g.2's repro: an em-dash in the description
+// silently blocked canary closure). Since description no longer carries a
+// shell-interpolation injection risk (see the block comment above
+// SAFE_DESCRIPTION_RE), the same "sanitize instead of reject" precedent used
+// for finalVerdictResult.notes (sanitizePrText, above) applies here: swap
+// this narrow set of common non-ASCII punctuation for ASCII equivalents
+// BEFORE the allowlist check, rather than rejecting the whole task over
+// characters that lose no meaningful information when normalized. Anything
+// still outside the allowlist after normalization (e.g. an emoji) remains a
+// hard rejection -- this is a small substitution table, not a general
+// Unicode stripper, so fail-closed behaviour is preserved. Scope is
+// deliberately limited to description: SAFE_TEXT_RE (title) is NOT loosened,
+// since title is still interpolated inline into a `bd create "..."` command
+// string and must stay on the tighter shell-safety allowlist.
+/**
+ * Normalizes the handful of common non-ASCII punctuation characters LLM
+ * reviewers routinely emit in newTask descriptions to their ASCII
+ * equivalents, before SAFE_DESCRIPTION_RE validation.
+ * @param {string} description
+ * @returns {string}
+ */
+export function sanitizeNewTaskDescription(description) {
+    return String(description ?? '')
+        .replace(/[\u2014\u2013]/g, '--') // em dash (\u2014), en dash (\u2013)
+        .replace(/[\u2018\u2019]/g, "'") // curly single quotes (\u2018 \u2019)
+        .replace(/[\u201C\u201D]/g, '"') // curly double quotes (\u201C \u201D)
+        .replace(/\u2026/g, '...'); // horizontal ellipsis (\u2026)
+}
+
 export function validateNewTask(newTask) {
     const priority = String(newTask && newTask.priority);
     if (!SAFE_PRIORITY_RE.test(priority)) {
@@ -3479,7 +3513,7 @@ export function validateNewTask(newTask) {
     if (!title || !SAFE_TEXT_RE.test(title)) {
         return { ok: false, reason: `title fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(title)}` };
     }
-    const description = String(newTask && newTask.description);
+    const description = sanitizeNewTaskDescription(newTask && newTask.description);
     if (!description || !SAFE_DESCRIPTION_RE.test(description)) {
         return { ok: false, reason: `description fails ASCII-printable validation ${SAFE_DESCRIPTION_RE} (or is empty): ${JSON.stringify(description)}` };
     }
