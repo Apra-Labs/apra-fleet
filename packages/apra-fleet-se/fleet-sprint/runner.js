@@ -6988,6 +6988,22 @@ async function runSprintCycle(context) {
                 ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true })
                 : '[]';
 
+            // apra-fleet-wrc.1: empty-guard -- when EVERY streak this round
+            // failed, assignedBeadIds is [] and there is nothing for the
+            // Reviewer to look at. Skip the dispatch entirely rather than
+            // sending an empty-scope review: an empty review is prone to
+            // returning CHANGES_NEEDED with empty reopenIds+newTasks, which
+            // trips the contract-violation check below and, after the
+            // retry-once path, throws ReviewerContractViolationError -- a
+            // hard sprint abort over a round where no work happened at all.
+            // The failed-streak beads simply stay ready (their state was
+            // never touched) for the next Develop round to pick up; the
+            // `stillOpen` check just below still runs so the loop correctly
+            // continues instead of prematurely treating the cycle as
+            // organically complete.
+            if (assignedBeadIds.length === 0) {
+                log(`Develop C${cycle} R${devRounds}: all streaks this round failed with no beadIds assigned -- skipping Review dispatch (nothing to review). Failed-streak beads remain ready for the next Develop round.`);
+            } else {
             // N8 (work item b): dispatchReview() applies the shared
             // contract-violation retry-once-then-throw rule (see its own doc
             // comment and ReviewerContractViolationError) -- a CHANGES_NEEDED
@@ -7129,6 +7145,7 @@ async function runSprintCycle(context) {
             // beads (reopens + newTask creates) in its own clone -- D-push so
             // members observe them on their next dispatch's D-pull.
             await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
             await updateDashboard();
 
