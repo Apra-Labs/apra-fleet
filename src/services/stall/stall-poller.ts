@@ -15,8 +15,18 @@ const TAIL_BYTES = 65536;
 
 /** Last `"timestamp": "..."` occurrence in the raw tail -- the fallback for a
  *  sample whose only complete-looking entry is still too large to have been
- *  captured whole (apra-fleet-6z8.2). */
-const RAW_TIMESTAMP_RE = /"timestamp"\s*:\s*"([^"]+)"/g;
+ *  captured whole (apra-fleet-6z8.2).
+ *
+ *  apra-fleet-979: a tool_result's content is itself JSON-serialized into a
+ *  string field (e.g. `"content":"{\"timestamp\":\"...\"}"`), so any
+ *  "timestamp" key embedded in that payload appears in the raw text with its
+ *  surrounding quotes backslash-escaped (`\"timestamp\"`), never as bare
+ *  `"timestamp"`. A genuine top-level transcript-entry timestamp is a direct
+ *  key of the JSON-lines object and its quotes are never escaped. The
+ *  negative lookbehind on the opening quote excludes the escaped/nested form;
+ *  restricting the value to `[^"\\]*` keeps the match from running past an
+ *  escaped quote inside a neighboring embedded payload. */
+const RAW_TIMESTAMP_RE = /(?<!\\)"timestamp"\s*:\s*"([^"\\]*)"/g;
 
 export async function pollLogFile(memberId: string, logFilePath: string): Promise<PollResult> {
   const agent = getAgent(memberId);
