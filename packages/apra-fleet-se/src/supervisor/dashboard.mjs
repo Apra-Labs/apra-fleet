@@ -199,15 +199,15 @@ const DASHBOARD_TAB_SCRIPT = `
 
 /**
  * Renders the full index page (`GET /` document): a header, then a Sprints
- * tab (Sprint Stack + the Launch Sprint form that fills it -- the two stay
- * together since launching is a sprints-tab action) and a separate Backlog
- * tab (eft.6.2's cross-sprint free-set view), using the same tab-bar/panel
- * chrome as apra-fleet-workflow's per-sprint viewer (see DASHBOARD_CSS
- * above). `id="sprint-stack"` still renders before `id="backlog"` in the raw
- * HTML (existing acceptance criterion, still meaningful even though the two
- * are now tab-switched rather than stacked) -- callers relying on that
- * ordering (or on `data-bead-id`/`data-sprint-id` markers anywhere in the
- * body) are unaffected by which tab happens to be visually active.
+ * tab (Sprint Stack alone) and a separate Backlog tab (eft.6.2's cross-sprint
+ * free-set view, followed by the Launch Sprint form -- launching starts from
+ * picking rows out of the Backlog, so the two live in the same tab), using
+ * the same tab-bar/panel chrome as apra-fleet-workflow's per-sprint viewer
+ * (see DASHBOARD_CSS above). `id="sprint-stack"` still renders before
+ * `id="backlog"`, which still renders before `id="launch-form"`, in the raw
+ * HTML -- callers relying on that ordering (or on `data-bead-id`/`data-
+ * sprint-id` markers anywhere in the body) are unaffected by which tab
+ * happens to be visually active.
  * @param {SprintView[]} [views]
  * @param {string} [backlogHtml] - pre-rendered Backlog tab content (eft.6.2 / renderBacklogPanelHtml())
  * @param {string} [launchFormHtml] - pre-rendered Launch Sprint form HTML (eft.6.3)
@@ -225,12 +225,12 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '<head>\n' +
         '<meta charset="utf-8"/>\n' +
         '<meta name="viewport" content="width=device-width,initial-scale=1">\n' +
-        '<title>Auto-Sprint Supervisor</title>\n' +
+        '<title>Fleet-Sprint Supervisor</title>\n' +
         '<style>' + DASHBOARD_CSS + '</style>\n' +
         '</head>\n' +
         '<body>\n' +
         '<div class="header">' +
-        '<h1>Auto-Sprint Supervisor</h1>' +
+        '<h1>Fleet-Sprint Supervisor</h1>' +
         '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div></div>' +
         '</div>\n' +
         '<div class="main-content"><div class="content-area">' +
@@ -241,16 +241,20 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '<div id="tab-sprints" class="tab-content active panel">' +
         '<div class="panel-header">Sprint Stack</div>' +
         '<div id="sprint-stack" class="panel-body">\n' + renderSprintStackHtml(views) + '\n</div>' +
-        '<div class="panel-header" style="border-top: 1px solid var(--border);">Launch Sprint</div>' +
-        '<div id="launch-form" class="panel-body">\n' + launchFormSection + '\n</div>' +
         '</div>\n' +
         // Backlog is its own tab (this file's tab restructuring) -- still
         // ALWAYS rendered after the sprint stack in raw document order (the
         // original eft.6.2 acceptance criterion), regardless of which tab a
-        // viewer happens to have active.
+        // viewer happens to have active. Launch Sprint now lives HERE too
+        // (below the backlog table, in the same tab) -- launching starts
+        // from picking rows out of the Backlog, so the two belong together;
+        // it renders after `id="backlog"` in raw document order.
         '<div id="tab-backlog" class="tab-content panel">' +
         '<div class="panel-header">Backlog</div>' +
-        '<div id="backlog" class="panel-body">\n' + backlogSection + '\n</div>' +
+        '<div id="backlog" class="panel-body">\n' + backlogSection +
+        '\n<div class="panel-header" style="border-top: 1px solid var(--border); margin: 12px -14px -14px; border-radius: 0 0 6px 6px;">Launch Sprint</div>' +
+        '<div id="launch-form" style="padding-top: 12px;">\n' + launchFormSection + '\n</div>' +
+        '\n</div>' +
         '</div>\n' +
         '</div></div>\n' +
         '<script>' + DASHBOARD_TAB_SCRIPT + '</script>\n' +

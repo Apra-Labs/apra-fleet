@@ -199,15 +199,16 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         assert.ok(res.body.includes('>Launch Sprint</div>'), 'expected the Launch Sprint form section');
         assert.ok(res.body.includes('id="tab-sprints"') && res.body.includes('id="tab-backlog"'), 'expected the Sprints/Backlog tabs');
 
-        // Sprint Stack and Launch Sprint now share the Sprints tab (stack,
-        // then the form that launches into it); Backlog is a separate tab,
-        // rendered after the Sprints tab in raw document order (still true
-        // regardless of which tab is visually active on load).
+        // supervisor-viewer-parity (quick-tasks follow-up): Launch Sprint now
+        // lives in the Backlog tab, below the backlog table -- launching
+        // starts from picking rows out of the Backlog, so the two share a
+        // tab. Sprint Stack (its own tab) still renders first in raw
+        // document order, then Backlog, then Launch Sprint within it.
         const stackIdx = res.body.indexOf('id="sprint-stack"');
-        const launchIdx = res.body.indexOf('id="launch-form"');
         const backlogIdx = res.body.indexOf('id="backlog"');
-        assert.ok(stackIdx < launchIdx, 'expected Sprint Stack before Launch Sprint, within the Sprints tab');
-        assert.ok(launchIdx < backlogIdx, 'expected the Sprints tab (stack + form) before the Backlog tab');
+        const launchIdx = res.body.indexOf('id="launch-form"');
+        assert.ok(stackIdx < backlogIdx, 'expected Sprint Stack before the Backlog tab');
+        assert.ok(backlogIdx < launchIdx, 'expected Launch Sprint after the Backlog table, within the Backlog tab');
     });
 
     test('POST /api/sprints reaches the real sprint controller (validation error, not 404)', async () => {

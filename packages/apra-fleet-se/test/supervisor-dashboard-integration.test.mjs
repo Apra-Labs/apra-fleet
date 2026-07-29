@@ -320,9 +320,13 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
         // c1 is claimed by the just-launched sprint: it must not appear anywhere
         // in the Backlog tree.
         assert.ok(!res.body.includes('data-bead-id="c1"'), 'claimed bead c1 must not appear in the Backlog');
-        // The free root and the free siblings are still present, each exactly once.
+        // The free root and the free siblings are still present, each exactly
+        // once as a ROW (`<tr data-bead-id="...">` -- not a plain substring
+        // count: supervisor-viewer-parity's injectRowCheckboxes() also puts a
+        // `data-bead-id="..."` attribute on that row's <input> checkbox, so a
+        // bare 'data-bead-id="id"' marker legitimately appears twice per row).
         for (const id of ['f0', 'c2', 'c3', 'c4', 'c5']) {
-            const marker = 'data-bead-id="' + id + '"';
+            const marker = '<tr data-bead-id="' + id + '"';
             const first = res.body.indexOf(marker);
             const last = res.body.lastIndexOf(marker);
             assert.notEqual(first, -1, `${id} should still be free in the Backlog`);
