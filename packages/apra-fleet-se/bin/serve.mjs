@@ -21,7 +21,7 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
-import { createHistory } from '../src/supervisor/history.mjs';
+import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
@@ -99,7 +99,34 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // spawned sprint child's cli.mjs receives --service-url and threads it
     // into runner.js's HTTP-backed dolt-mutex/id-allocator clients (see
     // spawner.mjs's buildSprintArgv/createSpawner doc comments).
-    const spawner = createSpawner({ serviceUrl: `http://localhost:${port}` });
+    //
+    // apra-fleet-k7b.3: onChildExit is this SAME-INSTANCE spawner's own
+    // 'exit' listener notification (Node's own exit code/signal, keyed by
+    // the launch's runId -- the SAME sprintId createSprintController claims
+    // in the ledger BEFORE spawning, apra-fleet-k7b.1). Persist it two
+    // places: (1) ledger.recordExit() annotates the still-held reservation
+    // in place (does not release it) so the watchdog/dashboard can report
+    // e.g. "exited 1 at ..." instead of a bare "pid gone"; (2) history
+    // records a CHILD_EXITED audit event so the exit is still visible after
+    // the reservation is eventually released. Both are independently best-
+    // effort -- a missing/already-released reservation (e.g. a force-release
+    // raced the child's own exit) must never crash this listener.
+    const spawner = createSpawner({
+        serviceUrl: `http://localhost:${port}`,
+        onChildExit: async ({ runId, exitCode, signal, at }) => {
+            if (!runId) return;
+            try {
+                await ledger.recordExit(runId, { exitCode, signal, at });
+            } catch (err) {
+                console.error(`[spawner] ledger.recordExit failed for '${runId}':`, err);
+            }
+            try {
+                await history.record({ sprintId: runId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at });
+            } catch (err) {
+                console.error(`[spawner] history.record(CHILD_EXITED) failed for '${runId}':`, err);
+            }
+        },
+    });
     const reconciler = createReconciler({ ledger, history });
     // eft.4.5: re-adopts still-live children by PID at startup (see below),
     // registering their recovered --viewer-port with the spawner seam so

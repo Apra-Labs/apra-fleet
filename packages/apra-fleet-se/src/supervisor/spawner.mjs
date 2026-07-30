@@ -186,6 +186,8 @@ export function buildSprintArgv(opts = {}) {
  *   isPortAvailable?: (port: number) => Promise<boolean>,
  *   logger?: { log?: Function, error?: Function },
  *   serviceUrl?: string,
+ *   onChildExit?: (info: { pid: number, runId: string|null, exitCode: number|null, signal: string|null, at: string }) => void,
+ *   now?: () => string,
  * }} [deps]
  * @returns {{
  *   name: string,
@@ -214,6 +216,11 @@ export function createSpawner(deps = {}) {
     // one, spawned children simply omit --service-url and fall back exactly
     // as before -- no crash, unchanged behavior.
     const serviceUrl = deps.serviceUrl;
+    // apra-fleet-k7b.3: optional same-instance child-exit notification (see
+    // the 'exit' listener below) and its injectable clock (test determinism,
+    // matching ledger.mjs/history.mjs's own `now` seam convention).
+    const onChildExit = deps.onChildExit;
+    const nowFn = deps.now ?? (() => new Date().toISOString());
 
     /**
      * Live sprints launched BY THIS supervisor process, keyed by child pid.
@@ -254,7 +261,38 @@ export function createSpawner(deps = {}) {
         // Free this port for reuse and drop local bookkeeping once the child
         // actually exits. This ONLY reacts to the child's own lifecycle --
         // never to the supervisor's, and never to another child's.
-        child.once('exit', () => { live.delete(pid); });
+        //
+        // apra-fleet-k7b.3: also forward the exit code/signal (Node's own
+        // 'exit' event args) to the optional onChildExit callback, keyed by
+        // this launch's runId (the SAME sprintId createSprintController
+        // generates and claims in the ledger BEFORE spawning, apra-fleet-
+        // k7b.1) -- NOT re-derived here, so this stays a thin same-instance
+        // notification rather than owning ledger/history persistence itself
+        // (bin/serve.mjs's wiring does that). A throwing callback must never
+        // take down this listener's own bookkeeping cleanup above it.
+        child.once('exit', (code, signal) => {
+            live.delete(pid);
+            if (typeof onChildExit === 'function') {
+                try {
+                    // Promise.resolve(...).catch(...) covers BOTH a synchronous
+                    // throw and an async callback's rejected promise (bin/
+                    // serve.mjs's real wiring is `async`) -- either way this
+                    // listener's own bookkeeping cleanup above must never be
+                    // affected, and no unhandled rejection should escape.
+                    Promise.resolve(onChildExit({
+                        pid,
+                        runId: opts.runId ?? null,
+                        exitCode: code ?? null,
+                        signal: signal ?? null,
+                        at: nowFn(),
+                    })).catch((err) => {
+                        logError(`[spawner] onChildExit callback rejected for pid=${pid}:`, err);
+                    });
+                } catch (err) {
+                    logError(`[spawner] onChildExit callback threw for pid=${pid}:`, err);
+                }
+            }
+        });
         child.once('error', (err) => {
             logError(`[spawner] child pid=${pid} (issue=${opts.issue}) emitted error:`, err);
             live.delete(pid);

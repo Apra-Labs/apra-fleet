@@ -50,6 +50,10 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
             issueRoots: ['apra-fleet-x'],
             childPid: 4321,
             reservedAt: '2026-07-18T00:00:00.000Z',
+            // apra-fleet-k7b.3: null until recordExit() is called.
+            exitCode: null,
+            signal: null,
+            exitedAt: null,
         });
 
         await fsp.rm(dir, { recursive: true, force: true });
@@ -158,6 +162,59 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
         await reloaded.start();
         assert.equal(reloaded.get('sprint-a').childPid, 9999);
 
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-k7b.3: recordExit() persists the detached child's own exit
+    // code/signal/timestamp onto its still-held reservation (does NOT
+    // release it -- that stays reconcile.mjs's/force-release's job).
+    test('recordExit annotates the reservation with exitCode/signal/exitedAt, both axes preserved, and persists across reload', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath, now: () => '2026-07-30T21:25:50.000Z' });
+        await ledger.start();
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'], childPid: 4321 });
+
+        const updated = await ledger.recordExit('sprint-a', { exitCode: 1, signal: null });
+        assert.equal(updated.exitCode, 1);
+        assert.equal(updated.signal, null);
+        assert.equal(updated.exitedAt, '2026-07-30T21:25:50.000Z');
+        // Both reservation axes (and childPid) are untouched.
+        assert.deepEqual(updated.members, ['alice']);
+        assert.deepEqual(updated.issueRoots, ['apra-fleet-x']);
+        assert.equal(updated.childPid, 4321);
+
+        const reloaded = createLedger({ filePath });
+        await reloaded.start();
+        const r = reloaded.get('sprint-a');
+        assert.equal(r.exitCode, 1);
+        assert.equal(r.signal, null);
+        assert.equal(r.exitedAt, '2026-07-30T21:25:50.000Z');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('recordExit accepts an explicit "at" timestamp and a non-null signal (killed by SIGKILL)', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+
+        const updated = await ledger.recordExit('sprint-a', { exitCode: null, signal: 'SIGKILL', at: '2026-07-30T21:30:00.000Z' });
+        assert.equal(updated.exitCode, null);
+        assert.equal(updated.signal, 'SIGKILL');
+        assert.equal(updated.exitedAt, '2026-07-30T21:30:00.000Z');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('recordExit rejects a sprintId with no held reservation', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+        await assert.rejects(() => ledger.recordExit('no-such-sprint', { exitCode: 0 }), /holds no reservation/);
         await fsp.rm(dir, { recursive: true, force: true });
     });
 

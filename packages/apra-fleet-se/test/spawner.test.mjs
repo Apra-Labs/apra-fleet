@@ -265,6 +265,122 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
         assert.ok(!calls[0].args.includes('--service-url'));
     });
 
+    // apra-fleet-k7b.3: the optional onChildExit callback is invoked with the
+    // Node 'exit' event's own (code, signal) args, this launch's runId, and
+    // an injectable clock -- so bin/serve.mjs's wiring can persist them into
+    // the ledger/history without the spawner owning that persistence itself.
+    describe('onChildExit (apra-fleet-k7b.3)', () => {
+        test('is called with pid, runId, exitCode, signal, and the injected clock on a nonzero exit', async () => {
+            const { spawnFn, children } = makeFakeSpawn([777]);
+            const calls = [];
+            const spawner = createSpawner({
+                spawn: spawnFn,
+                basePort: 9070,
+                isPortAvailable: async () => true,
+                onChildExit: (info) => calls.push(info),
+                now: () => '2026-07-30T21:25:50.000Z',
+            });
+
+            const result = await spawner.spawnSprint({
+                issue: 'i1', members: 'm1', branch: 'b1', base: 'main', runId: 'PROJ-1-abc123',
+            });
+            children[0].emit('exit', 1, null);
+
+            assert.equal(calls.length, 1);
+            assert.deepEqual(calls[0], {
+                pid: result.pid,
+                runId: 'PROJ-1-abc123',
+                exitCode: 1,
+                signal: null,
+                at: '2026-07-30T21:25:50.000Z',
+            });
+        });
+
+        test('reports a null exitCode and the killing signal when the child was killed by a signal', async () => {
+            const { spawnFn, children } = makeFakeSpawn([778]);
+            const calls = [];
+            const spawner = createSpawner({
+                spawn: spawnFn,
+                basePort: 9071,
+                isPortAvailable: async () => true,
+                onChildExit: (info) => calls.push(info),
+            });
+
+            await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main', runId: 'PROJ-1-xyz' });
+            children[0].emit('exit', null, 'SIGKILL');
+
+            assert.equal(calls.length, 1);
+            assert.equal(calls[0].exitCode, null);
+            assert.equal(calls[0].signal, 'SIGKILL');
+            assert.equal(calls[0].runId, 'PROJ-1-xyz');
+        });
+
+        test('reports runId: null when the launch had no opts.runId (e.g. a direct/standalone call)', async () => {
+            const { spawnFn, children } = makeFakeSpawn([779]);
+            const calls = [];
+            const spawner = createSpawner({
+                spawn: spawnFn, basePort: 9072, isPortAvailable: async () => true,
+                onChildExit: (info) => calls.push(info),
+            });
+
+            await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+            children[0].emit('exit', 0, null);
+
+            assert.equal(calls[0].runId, null);
+        });
+
+        test('a throwing onChildExit callback never blocks the port/pid bookkeeping cleanup', async () => {
+            const { spawnFn, children } = makeFakeSpawn([780, 781]);
+            const spawner = createSpawner({
+                spawn: spawnFn, basePort: 9073, isPortAvailable: async () => true,
+                onChildExit: () => { throw new Error('boom'); },
+                logger: { error: () => {} }, // swallow the logged error for a clean test
+            });
+
+            await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
+            assert.equal(spawner.liveCount, 1);
+            children[0].emit('exit', 1, null);
+            // Bookkeeping cleanup (live.delete) still ran despite the callback throwing.
+            assert.equal(spawner.liveCount, 0);
+
+            // And the spawner is still fully usable afterward.
+            const b = await spawner.spawnSprint({ issue: 'b', members: 'm', branch: 'bb', base: 'main' });
+            assert.ok(Number.isInteger(b.port));
+        });
+
+        test('an onChildExit callback that returns a REJECTED promise (the real async wiring in serve.mjs) never surfaces as an unhandled rejection', async () => {
+            const { spawnFn, children } = makeFakeSpawn([783, 784]);
+            const spawner = createSpawner({
+                spawn: spawnFn, basePort: 9075, isPortAvailable: async () => true,
+                onChildExit: async () => { throw new Error('async boom'); },
+                logger: { error: () => {} },
+            });
+
+            const unhandled = [];
+            const onUnhandled = (err) => unhandled.push(err);
+            process.on('unhandledRejection', onUnhandled);
+            try {
+                await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
+                children[0].emit('exit', 1, null);
+                // Let the callback's rejected promise's microtask/catch settle.
+                await new Promise((resolve) => setImmediate(resolve));
+                assert.equal(unhandled.length, 0, 'the async callback rejection must be caught, never surfaced as unhandledRejection');
+                assert.equal(spawner.liveCount, 0);
+            } finally {
+                process.removeListener('unhandledRejection', onUnhandled);
+            }
+        });
+
+        test('spawnSprint works exactly as before when no onChildExit is injected', async () => {
+            const { spawnFn, children } = makeFakeSpawn([782]);
+            const spawner = createSpawner({ spawn: spawnFn, basePort: 9074, isPortAvailable: async () => true });
+
+            await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
+            assert.doesNotThrow(() => children[0].emit('exit', 0, null));
+            assert.equal(spawner.liveCount, 0);
+        });
+    });
+
     test('two concurrent sprints never receive the same port', async () => {
         const { spawnFn } = makeFakeSpawn([1, 2]);
         const spawner = createSpawner({ spawn: spawnFn, basePort: 9100, isPortAvailable: async () => true });

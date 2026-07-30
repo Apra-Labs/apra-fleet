@@ -59,6 +59,17 @@ export const LEDGER_FILENAME = 'reservations.json';
  * @property {number|null} childPid  Detached child PID (for restart PID-probe
  *                                   reconciliation); null until known.
  * @property {string} reservedAt     ISO-8601 timestamp of the claim.
+ * @property {number|null} exitCode  apra-fleet-k7b.3: the detached child's own
+ *                                   process 'exit' code, recorded by
+ *                                   recordExit() the moment the SAME-instance
+ *                                   spawner observes it exit; null until then
+ *                                   (or forever, for an entry re-adopted after
+ *                                   a restart with no in-memory exit listener).
+ * @property {string|null} signal    apra-fleet-k7b.3: the signal that killed
+ *                                   the child (e.g. 'SIGKILL'), or null if it
+ *                                   exited normally / is unknown.
+ * @property {string|null} exitedAt  apra-fleet-k7b.3: ISO-8601 timestamp of
+ *                                   the recorded exit, or null until known.
  *
  * @typedef {object} LedgerDocument
  * @property {number} version                              Equals LEDGER_VERSION.
@@ -85,6 +96,13 @@ export const LEDGER_SCHEMA = Object.freeze({
                     issueRoots: { type: 'array', items: { type: 'string' } },
                     childPid: { type: ['integer', 'null'] },
                     reservedAt: { type: 'string' },
+                    // apra-fleet-k7b.3: optional (not in `required`) so a
+                    // ledger file persisted before this field existed still
+                    // loads -- normalizeReservation() below defaults every
+                    // one of these to null when absent.
+                    exitCode: { type: ['integer', 'null'] },
+                    signal: { type: ['string', 'null'] },
+                    exitedAt: { type: ['string', 'null'] },
                 },
             },
         },
@@ -138,7 +156,28 @@ function normalizeReservation(input, now) {
         throw new TypeError('childPid must be an integer or null');
     }
     const reservedAt = typeof input.reservedAt === 'string' ? input.reservedAt : now();
-    return { members, issueRoots, childPid, reservedAt };
+
+    // apra-fleet-k7b.3: exitCode/signal/exitedAt default to null (unknown --
+    // the child hasn't exited, or this reservation predates the field/was
+    // re-adopted after a restart with no in-memory exit listener), exactly
+    // like childPid's own null-until-known convention above.
+    let exitCode = input.exitCode;
+    if (exitCode === undefined) exitCode = null;
+    if (exitCode !== null && !Number.isInteger(exitCode)) {
+        throw new TypeError('exitCode must be an integer or null');
+    }
+    let signal = input.signal;
+    if (signal === undefined) signal = null;
+    if (signal !== null && typeof signal !== 'string') {
+        throw new TypeError('signal must be a string or null');
+    }
+    let exitedAt = input.exitedAt;
+    if (exitedAt === undefined) exitedAt = null;
+    if (exitedAt !== null && typeof exitedAt !== 'string') {
+        throw new TypeError('exitedAt must be a string or null');
+    }
+
+    return { members, issueRoots, childPid, reservedAt, exitCode, signal, exitedAt };
 }
 
 /** Deep-clone a reservation so callers can never mutate ledger-internal state. */
@@ -148,6 +187,9 @@ function cloneReservation(r) {
         issueRoots: [...r.issueRoots],
         childPid: r.childPid,
         reservedAt: r.reservedAt,
+        exitCode: r.exitCode ?? null,
+        signal: r.signal ?? null,
+        exitedAt: r.exitedAt ?? null,
     };
 }
 
@@ -383,6 +425,38 @@ export function createLedger(deps = {}) {
                     throw new Error(`cannot set childPid: sprint ${sprintId} holds no reservation`);
                 }
                 r.childPid = childPid;
+                updated = r;
+            });
+            return cloneReservation(updated);
+        },
+
+        /**
+         * apra-fleet-k7b.3: record the detached child's own process exit
+         * (code/signal/timestamp) onto its still-held reservation -- called by
+         * the spawner's SAME-INSTANCE `child.once('exit', ...)` listener via
+         * bin/serve.mjs's wiring, the moment the child actually exits. This
+         * does NOT release the reservation (that stays reconcile.mjs's job on
+         * restart, or an operator force-release); it only annotates it so the
+         * watchdog can report e.g. "exited 1 at 2026-07-30T21:25:50.000Z"
+         * instead of a bare "pid gone" for any sprint whose exit this SAME
+         * supervisor instance actually witnessed.
+         * @param {string} sprintId
+         * @param {{ exitCode?: number|null, signal?: string|null, at?: string }} info
+         * @returns {Promise<Reservation>}
+         */
+        async recordExit(sprintId, info = {}) {
+            if (typeof sprintId !== 'string' || sprintId.length === 0) {
+                throw new TypeError('recordExit() requires a non-empty sprintId');
+            }
+            let updated;
+            await transact((draft) => {
+                const r = draft.get(sprintId);
+                if (!r) {
+                    throw new Error(`cannot record exit: sprint ${sprintId} holds no reservation`);
+                }
+                r.exitCode = info.exitCode === undefined ? null : info.exitCode;
+                r.signal = info.signal === undefined ? null : info.signal;
+                r.exitedAt = typeof info.at === 'string' ? info.at : now();
                 updated = r;
             });
             return cloneReservation(updated);

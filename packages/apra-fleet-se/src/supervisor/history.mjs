@@ -30,6 +30,13 @@ export const HISTORY_FILENAME = 'sprint-history.json';
 export const HISTORY_EVENTS = Object.freeze({
     ABORTED_BY_RESTART: 'aborted-by-restart',
     FORCE_RELEASED: 'force-released',
+    // apra-fleet-k7b.3: the spawner's own SAME-INSTANCE `child.once('exit',
+    // ...)` observation -- NOT a terminal reservation event (the ledger
+    // reservation stays held; see ledger.mjs's recordExit() doc comment).
+    // Recorded here too (in addition to the ledger annotation) so the exit
+    // is visible in the durable audit trail even once the reservation is
+    // eventually released.
+    CHILD_EXITED: 'child-exited',
 });
 
 /** An empty, well-formed history document. */
@@ -53,6 +60,11 @@ function cloneEvent(e) {
         members: [...(e.members ?? [])],
         issueRoots: [...(e.issueRoots ?? [])],
         at: e.at,
+        // apra-fleet-k7b.3: only meaningful for a CHILD_EXITED event; null for
+        // every other (pre-existing) event kind, matching `by`'s optional
+        // null-default convention above.
+        exitCode: e.exitCode === undefined ? null : e.exitCode,
+        signal: e.signal === undefined ? null : e.signal,
     };
 }
 
@@ -126,7 +138,7 @@ export function createHistory(deps = {}) {
         /**
          * Append one terminal event and persist atomically. The in-memory log is
          * committed only after the disk write succeeds.
-         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string }} entry
+         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null }} entry
          * @returns {Promise<object>} a clone of the stored event
          */
         async record(entry) {
@@ -144,6 +156,8 @@ export function createHistory(deps = {}) {
                 members: entry.members,
                 issueRoots: entry.issueRoots,
                 at: typeof entry.at === 'string' ? entry.at : now(),
+                exitCode: entry.exitCode,
+                signal: entry.signal,
             });
             const run = txChain.then(async () => {
                 const next = [...events, stored];

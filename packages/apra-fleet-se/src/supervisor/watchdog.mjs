@@ -215,6 +215,28 @@ export function probeChildHttp(port, opts = {}) {
 }
 
 /**
+ * apra-fleet-k7b.3: formats a human-readable exit-detail string for a
+ * PID-gone sprint from whatever the ledger's recordExit() (spawner's own
+ * SAME-INSTANCE 'exit' listener, see spawner.mjs/bin/serve.mjs's wiring)
+ * annotated onto its reservation -- e.g. "exited 1 at
+ * 2026-07-30T21:25:50.000Z" or "killed by signal SIGKILL at ...". Falls back
+ * to the previous bare "pid gone" when nothing was ever recorded (a restart
+ * severed the in-memory 'exit' listener before this instance ever observed
+ * the child exit -- see this module's own file-level doc comment).
+ * @param {{ exitCode?: number|null, signal?: string|null, exitedAt?: string|null }} [info]
+ * @returns {string}
+ */
+export function formatExitDetail(info = {}) {
+    const { exitCode, signal, exitedAt } = info;
+    if (exitCode == null && !signal) return 'pid gone';
+    const at = exitedAt ? ` at ${exitedAt}` : '';
+    if (exitCode != null) {
+        return signal ? `exited ${exitCode} (signal ${signal})${at}` : `exited ${exitCode}${at}`;
+    }
+    return `killed by signal ${signal}${at}`;
+}
+
+/**
  * apra-fleet-eft.20.3: default terminal-error recorder, invoked the FIRST
  * time a sprint is observed transitioning into CRASHED. The apra-fleet-eft.20
  * smoke-test symptom this fixes: a doer sub-session died mid-Develop and the
@@ -235,11 +257,18 @@ export function probeChildHttp(port, opts = {}) {
  *       declared crashed stays classified crashed on every later tick, it
  *       never silently becomes "finished" just because this recorder
  *       touched its file.
- * @param {{ sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: { log?: Function, error?: Function } }} info
+ * apra-fleet-k7b.3: `detail` (formatExitDetail() above) reports the child's
+ * OWN recorded exit code/signal/time when this instance's spawner witnessed
+ * it (e.g. "exited 1 at 2026-07-30T21:25:50.000Z"), replacing the previously
+ * unconditional bare "pid gone" -- unchanged fallback when nothing was
+ * recorded (a restart severed the in-memory exit listener, see this
+ * module's file-level doc comment).
+ * @param {{ sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: { log?: Function, error?: Function }, detail?: string }} info
  */
-export function defaultRecordTerminalError({ sprintId, childPid, env, logger }) {
+export function defaultRecordTerminalError({ sprintId, childPid, env, logger, detail }) {
     const log = (logger && (logger.error ?? logger.log)) ?? (() => {});
-    const message = `Sprint '${sprintId}' (pid ${childPid ?? 'unknown'}) is no longer alive and never recorded a terminal state -- classified CRASHED by the PID-liveness watchdog.`;
+    const exitDetail = detail ?? 'pid gone';
+    const message = `Sprint '${sprintId}' (pid ${childPid ?? 'unknown'}) is no longer alive (${exitDetail}) and never recorded a terminal state -- classified CRASHED by the PID-liveness watchdog.`;
     log(`[watchdog] TERMINAL ERROR: ${message}`);
     try {
         const statePath = getRunningRunStatePath(sprintId, env);
@@ -255,7 +284,7 @@ export function defaultRecordTerminalError({ sprintId, childPid, env, logger }) 
         writeJsonFileAtomic(statePath, {
             ...existing,
             status: 'failed',
-            terminalReason: existing.terminalReason || 'watchdog: crashed (pid gone, no terminal state ever persisted)',
+            terminalReason: existing.terminalReason || `watchdog: crashed (${exitDetail}, no terminal state ever persisted)`,
             lastError: {
                 message,
                 sprintId,
@@ -384,6 +413,14 @@ export function createWatchdog(deps = {}) {
         // PID gone: a persisted terminal state in old_runs/ (or legacy
         // old_sprints/) means it FINISHED; its absence means it CRASHED (died
         // without recording a terminal state).
+        //
+        // apra-fleet-k7b.3: `detail` reports whatever this SAME instance's
+        // spawner actually witnessed (ledger.recordExit(), see spawner.mjs/
+        // bin/serve.mjs's wiring) -- e.g. "exited 1 at ..." -- falling back to
+        // the previous bare "pid gone" when nothing was recorded (a restart
+        // severed the in-memory exit listener before this instance ever saw
+        // the child exit; see this module's file-level doc comment).
+        const detail = formatExitDetail(entry);
         const finished = hasTerminalState(sprintId);
         if (!finished) {
             // apra-fleet-eft.20.3: this is the silent-death case the
@@ -395,7 +432,7 @@ export function createWatchdog(deps = {}) {
             if (!recordedCrashes.has(sprintId)) {
                 recordedCrashes.add(sprintId);
                 try {
-                    recordTerminalError({ sprintId, childPid, env, logger });
+                    recordTerminalError({ sprintId, childPid, env, logger, detail });
                 } catch (err) {
                     // The recorder itself must never take the classifier down
                     // with it -- classification (the watchdog's core contract)
@@ -411,6 +448,7 @@ export function createWatchdog(deps = {}) {
             httpOk: false,
             childPid,
             port,
+            detail,
         };
     }
 

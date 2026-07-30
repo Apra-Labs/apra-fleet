@@ -10,6 +10,7 @@ import {
     makeChildPidProbe,
     probeChildHttp,
     defaultRecordTerminalError,
+    formatExitDetail,
     WATCHDOG_STATUS,
     WATCHDOG_DEFAULT_INTERVAL_MS,
 } from '../src/supervisor/watchdog.mjs';
@@ -93,6 +94,62 @@ describe('watchdog -- four-status classifier', () => {
         const [r] = await wd.classifyAll();
         assert.equal(r.status, WATCHDOG_STATUS.CRASHED);
         assert.equal(r.pidAlive, false);
+    });
+
+    // apra-fleet-k7b.3: classifySprint()'s returned `detail` reports the
+    // exit info the ledger recorded (spawner.mjs's onChildExit -> bin/
+    // serve.mjs's ledger.recordExit() wiring), not just a bare "pid gone".
+    describe('apra-fleet-k7b.3: PID-gone detail reports the ledger-recorded exit code/signal/time', () => {
+        test('classifySprint() reports "pid gone" when the ledger entry carries no exit info', async () => {
+            const wd = makeWatchdog(
+                [{ sprintId: 's1', childPid: 100 }],
+                { ports: { s1: 9000 }, alivePids: new Set(), terminalSprints: new Set() },
+            );
+            const [r] = await wd.classifyAll();
+            assert.equal(r.detail, 'pid gone');
+        });
+
+        test('classifySprint() reports "exited <code> at <time>" when the ledger entry carries a recorded exit', async () => {
+            const wd = makeWatchdog(
+                [{ sprintId: 's1', childPid: 100, exitCode: 1, signal: null, exitedAt: '2026-07-30T21:25:50.000Z' }],
+                { ports: { s1: 9000 }, alivePids: new Set(), terminalSprints: new Set() },
+            );
+            const [r] = await wd.classifyAll();
+            assert.equal(r.detail, 'exited 1 at 2026-07-30T21:25:50.000Z');
+        });
+
+        test('classifySprint() reports "killed by signal <signal> at <time>" for a null exitCode with a signal', async () => {
+            const wd = makeWatchdog(
+                [{ sprintId: 's1', childPid: 100, exitCode: null, signal: 'SIGKILL', exitedAt: '2026-07-30T21:30:00.000Z' }],
+                { ports: { s1: 9000 }, alivePids: new Set(), terminalSprints: new Set() },
+            );
+            const [r] = await wd.classifyAll();
+            assert.equal(r.detail, 'killed by signal SIGKILL at 2026-07-30T21:30:00.000Z');
+        });
+
+        test('a recorded exit is also reported for a FINISHED (not just CRASHED) sprint', async () => {
+            const wd = makeWatchdog(
+                [{ sprintId: 's1', childPid: 100, exitCode: 0, signal: null, exitedAt: '2026-07-30T21:40:00.000Z' }],
+                { ports: { s1: 9000 }, alivePids: new Set(), terminalSprints: new Set(['s1']) },
+            );
+            const [r] = await wd.classifyAll();
+            assert.equal(r.status, WATCHDOG_STATUS.FINISHED);
+            assert.equal(r.detail, 'exited 0 at 2026-07-30T21:40:00.000Z');
+        });
+
+        test('the CRASHED terminal-error recorder receives the same detail string', async () => {
+            const calls = [];
+            const wd = makeWatchdog(
+                [{ sprintId: 's1', childPid: 100, exitCode: 137, signal: null, exitedAt: '2026-07-30T21:50:00.000Z' }],
+                {
+                    ports: { s1: 9000 }, alivePids: new Set(), terminalSprints: new Set(),
+                    recordTerminalError: (info) => calls.push(info),
+                },
+            );
+            await wd.classifyAll();
+            assert.equal(calls.length, 1);
+            assert.equal(calls[0].detail, 'exited 137 at 2026-07-30T21:50:00.000Z');
+        });
     });
 
     test('every classification is exactly one of the four documented statuses', async () => {
@@ -385,5 +442,105 @@ describe('watchdog -- apra-fleet-eft.20.3: CRASHED sprints get a recorded termin
             assert.equal(persisted.status, 'failed');
             assert.equal(persisted.lastError.childPid, null);
         });
+
+        // apra-fleet-k7b.3: the bead's literal acceptance line -- "the
+        // watchdog can report 'exited 1 at 14:25:50' instead of just 'pid
+        // gone'". Asserts the ACTUAL emitted log line and persisted
+        // terminalReason, not just the `detail` value handed to a spy.
+        test('a supplied `detail` (e.g. "exited 1 at ...") appears verbatim in the logged TERMINAL ERROR line and the persisted terminalReason', () => {
+            const sprintId = 'sprint-k7b-3-exit-detail';
+            const statePath = getRunningRunStatePath(sprintId, env);
+            assert.equal(fs.existsSync(statePath), false);
+
+            const logLines = [];
+            defaultRecordTerminalError({
+                sprintId,
+                childPid: 4321,
+                env,
+                logger: { error: (...a) => logLines.push(a.join(' ')) },
+                detail: 'exited 1 at 2026-07-30T21:25:50.000Z',
+            });
+
+            assert.ok(
+                logLines.some((line) => line.includes('TERMINAL ERROR') && line.includes('exited 1 at 2026-07-30T21:25:50.000Z')),
+                `expected the logged line to include the exit detail verbatim, got: ${JSON.stringify(logLines)}`,
+            );
+            const persisted = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+            assert.ok(
+                persisted.terminalReason.includes('exited 1 at 2026-07-30T21:25:50.000Z'),
+                `expected terminalReason to include the exit detail verbatim, got: '${persisted.terminalReason}'`,
+            );
+        });
+    });
+});
+
+// apra-fleet-k7b.3: proves the FULL same-instance pipeline end to end with a
+// REAL ledger (not fakeLedger) -- ledger.recordExit() -> ledger.list() ->
+// createWatchdog's classifySprint(entry) -> formatExitDetail(entry) -- so a
+// future change that stops cloneReservation() from forwarding
+// exitCode/signal/exitedAt would fail HERE even though the watchdog's own
+// unit tests (which hand-write those fields directly onto a fakeLedger
+// entry) and the ledger's own unit tests (which never call the watchdog)
+// would both stay green.
+describe('watchdog + REAL ledger integration (apra-fleet-k7b.3)', () => {
+    test('a real ledger.recordExit() is visible in classifySprint()\'s detail via ledger.list()', async () => {
+        const { createLedger, LEDGER_FILENAME } = await import('../src/supervisor/ledger.mjs');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-watchdog-real-ledger-'));
+        try {
+            const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME) });
+            await ledger.start();
+            await ledger.claim('sprint-real', { members: ['alice'], issueRoots: ['apra-fleet-x'], childPid: 4321 });
+            await ledger.recordExit('sprint-real', { exitCode: 1, signal: null, at: '2026-07-30T21:25:50.000Z' });
+
+            const wd = createWatchdog({
+                ledger,
+                isChildAlive: () => false,
+                hasTerminalState: () => false,
+                recordTerminalError: () => {},
+            });
+            const [r] = await wd.classifyAll();
+            assert.equal(r.sprintId, 'sprint-real');
+            assert.equal(r.status, WATCHDOG_STATUS.CRASHED);
+            assert.equal(r.detail, 'exited 1 at 2026-07-30T21:25:50.000Z');
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+// apra-fleet-k7b.3: formatExitDetail() is the pure formatter behind
+// classifySprint()'s `detail` field and defaultRecordTerminalError()'s
+// message -- unit-tested standalone here for every input combination.
+describe('formatExitDetail (apra-fleet-k7b.3)', () => {
+    test('returns "pid gone" when nothing is recorded', () => {
+        assert.equal(formatExitDetail({}), 'pid gone');
+        assert.equal(formatExitDetail(), 'pid gone');
+        assert.equal(formatExitDetail({ exitCode: null, signal: null, exitedAt: null }), 'pid gone');
+    });
+
+    test('formats "exited <code>" without a timestamp when exitedAt is absent', () => {
+        assert.equal(formatExitDetail({ exitCode: 1 }), 'exited 1');
+    });
+
+    test('formats "exited <code> at <time>" when both are present', () => {
+        assert.equal(formatExitDetail({ exitCode: 0, exitedAt: '2026-07-30T21:25:50.000Z' }), 'exited 0 at 2026-07-30T21:25:50.000Z');
+    });
+
+    test('formats "exited <code> (signal <signal>) at <time>" when both exitCode and signal are present', () => {
+        assert.equal(
+            formatExitDetail({ exitCode: 1, signal: 'SIGTERM', exitedAt: '2026-07-30T21:25:50.000Z' }),
+            'exited 1 (signal SIGTERM) at 2026-07-30T21:25:50.000Z',
+        );
+    });
+
+    test('formats "killed by signal <signal> at <time>" for a null exitCode with a signal', () => {
+        assert.equal(
+            formatExitDetail({ exitCode: null, signal: 'SIGKILL', exitedAt: '2026-07-30T21:30:00.000Z' }),
+            'killed by signal SIGKILL at 2026-07-30T21:30:00.000Z',
+        );
+    });
+
+    test('exitCode 0 (falsy but recorded) is still reported, not treated as absent', () => {
+        assert.equal(formatExitDetail({ exitCode: 0, exitedAt: '2026-07-30T21:25:50.000Z' }), 'exited 0 at 2026-07-30T21:25:50.000Z');
     });
 });
