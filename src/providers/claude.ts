@@ -407,10 +407,13 @@ export class ClaudeProvider implements ProviderAdapter {
     await execCommand(writeCmd, 10000);
 
     const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
-    console.error(`[claude] workspace trust: seeded for "${key}"${mcpNote}`);
+    // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --
+    // `detail` already encodes that distinction, so log it verbatim rather than
+    // hard-coding "seeded" for the already-trusted/servers-only case.
     const detail = trustNeeded
       ? `seeded trust: ${key}${mcpNote}`
       : `already trusted: ${key}${mcpNote}`;
+    console.error(`[claude] workspace trust: ${detail}`);
     return { seeded: trustNeeded, detail, mcpServersSeeded: serversToAdd };
   }
 }
