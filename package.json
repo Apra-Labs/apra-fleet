@@ -38,7 +38,9 @@
     "packages/apra-fleet-se/apra-pm/agents/",
     "packages/apra-fleet-se/apra-pm/skills/",
     "packages/apra-fleet-workflow/src/",
-    "packages/apra-fleet-client/src/"
+    "packages/apra-fleet-workflow/package.json",
+    "packages/apra-fleet-client/src/",
+    "packages/apra-fleet-client/package.json"
   ],
   "publishConfig": {
     "access": "public"
