@@ -269,6 +269,23 @@ const KNOWN_ARG_KEYS = new Set([
     // Optional; when omitted the per-bead work-claiming prevention layer stays
     // dormant and bead selection uses the legacy unassigned `bd list --ready`.
     'assignee',
+    // apra-fleet-eft.79: multi-streak worklist dispatch mode when a develop
+    // round has more ready streaks than doers. 'resume' (default): per-streak
+    // dispatches that resume the SAME doer session by explicit session id
+    // (warm-context carryover, every engine checkpoint kept between streaks).
+    // 'batch' (config-gated, overhead-dominated scenarios): one dispatch
+    // carries a doer's whole ordered worklist (tier-homogeneous REQUIRED).
+    'doer_worklist_mode',
+    // apra-fleet-eft.79: capability opt-in -- the doer pool's provider
+    // supports changing model on a RESUMED session (execute_prompt's `model`
+    // param applies to resumed sessions for Claude). Only then may a resumed
+    // -sequence worklist carry mixed tiers, each streak dispatching at its
+    // own tier; default false = safe fallback to tier-homogeneous grouping.
+    // See resolveWorklistTierPolicy() for the capability-check seam.
+    'resume_model_switch',
+    // apra-fleet-eft.79: per-doer effort-point budget for worklist packing
+    // (planner.md effort formula units). Default DEFAULT_EFFORT_THRESHOLD.
+    'worklist_effort_budget',
     // apra-fleet-eft.75.1: an optional live `(name, args) => Promise<any>`
     // MCP tool-call function, wired by bin/cli.mjs from its already-connected
     // `mcpClient.callTool` (see the call site there). Consumed by
@@ -2591,6 +2608,28 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid dispatch_timeout_s "${dispatchTimeoutS}": must be an integer >= 60 (seconds).`);
     }
 
+    // --- doer_worklist_mode (optional, default 'resume'; apra-fleet-eft.79) --
+    // Mode (ii) RESUMED SEQUENCE is the default; mode (i) BATCH stays behind
+    // this config flag (see the KNOWN_ARG_KEYS comment above).
+    const doerWorklistMode = args.doer_worklist_mode === undefined ? 'resume' : args.doer_worklist_mode;
+    if (doerWorklistMode !== 'resume' && doerWorklistMode !== 'batch') {
+        throw new Error(`[Arg Contract] Invalid doer_worklist_mode "${doerWorklistMode}": must be 'resume' (default) or 'batch'.`);
+    }
+
+    // --- resume_model_switch (optional, default false; apra-fleet-eft.79) ---
+    const resumeModelSwitch = args.resume_model_switch === undefined ? false : args.resume_model_switch;
+    if (typeof resumeModelSwitch !== 'boolean') {
+        throw new Error(`[Arg Contract] Invalid resume_model_switch "${resumeModelSwitch}": must be a boolean.`);
+    }
+
+    // --- worklist_effort_budget (optional; apra-fleet-eft.79) ---------------
+    if (args.worklist_effort_budget !== undefined
+        && (typeof args.worklist_effort_budget !== 'number'
+            || !Number.isFinite(args.worklist_effort_budget)
+            || args.worklist_effort_budget <= 0)) {
+        throw new Error(`[Arg Contract] Invalid worklist_effort_budget "${args.worklist_effort_budget}": must be a positive finite number (effort points).`);
+    }
+
     return {
         targetIssues,
         members: args.members,
@@ -2604,6 +2643,9 @@ export function validateArgs(args) {
         serviceUrl: args.serviceUrl,
         assignee: args.assignee,
         dispatchTimeoutS,
+        doerWorklistMode,
+        resumeModelSwitch,
+        worklistEffortBudget: args.worklist_effort_budget,
     };
 }
 
@@ -3183,6 +3225,451 @@ export function createRoundSessionRegistry(opts = {}) {
     }
 
     return { record, resumeArgFor, clear };
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-eft.79 -- multi-streak assignment per doer (ordered worklists)
+// ---------------------------------------------------------------------------
+//
+// When a develop round's ready streak count exceeds the doer-pool size, the
+// engine used to feed each doer ONE streak per round and re-pay the full
+// fixed dispatch overhead (sync brackets, prompt assembly, cold repo
+// re-exploration) for every subsequent streak. The pure functions below
+// instead pack the round's streaks into PER-DOER ORDERED WORKLISTS so a doer
+// can work several streaks back to back, resuming its own warm session
+// between them (mode ii, default) or carrying the whole worklist in a single
+// batched dispatch (mode i, config-gated).
+//
+// Everything here is plain, deterministic, unit-testable JavaScript -- there
+// is deliberately NO LLM call anywhere in the assignment/ordering decision
+// (same character as groupStreaksFromLaneMetadata above).
+
+// The model weight a streak with NO model metadata at all is treated as for
+// tier-grouping purposes: its own group key ('unspecified'), never silently
+// folded into a real tier (that would either under-run required work or
+// silently upgrade cheap work -- both forbidden by eft.79's tier rules).
+const UNSPECIFIED_TIER_KEY = 'unspecified';
+
+/**
+ * apra-fleet-eft.79: a streak's REQUIRED model tier -- the maximum
+ * (most-capable) tier across its member beads' `metadata.model`, per the
+ * planner-streaks formula ("max model weight in the lane"). A streak must
+ * never execute on a tier below this. Beads whose model metadata is missing
+ * or not one of the three tier names contribute nothing; a streak where NO
+ * bead names a tier returns `null` (dispatch runs unpriced/untiered exactly
+ * like today's no-metadata path).
+ * @param {Array<{metadata?: {model?: unknown}}>} streak
+ * @returns {'cheap'|'standard'|'premium'|null}
+ */
+export function streakRequiredTier(streak) {
+    let best = null;
+    for (const bead of streak || []) {
+        const tier = normalizeTierToken(bead && bead.metadata && bead.metadata.model);
+        if (typeof tier === 'string' && MODEL_WEIGHT[tier] && (!best || MODEL_WEIGHT[tier] > MODEL_WEIGHT[best])) {
+            best = tier;
+        }
+    }
+    return best;
+}
+
+/**
+ * apra-fleet-eft.79 (priority-ordered worklist, operator-requested
+ * 2026-07-30): a streak's priority = the MINIMUM (i.e. highest-urgency)
+ * numeric priority value among its member beads (bd's `priority` field:
+ * 0 = P0). Beads without a numeric priority contribute nothing; a streak
+ * with no numeric priority at all returns POSITIVE_INFINITY so it sorts
+ * after every priority-carrying streak and falls to the existing
+ * deterministic tie-break.
+ * @param {Array<{priority?: unknown}>} streak
+ * @returns {number}
+ */
+export function streakMinPriority(streak) {
+    let min = Number.POSITIVE_INFINITY;
+    for (const bead of streak || []) {
+        const p = bead ? bead.priority : undefined;
+        if (typeof p === 'number' && Number.isFinite(p) && p < min) {
+            min = p;
+        }
+    }
+    return min;
+}
+
+/**
+ * apra-fleet-eft.79: a streak's effort-point total, REUSING the planner.md
+ * effort formula (computeLaneEffort above: sum of size points x max model
+ * weight) rather than inventing a new one. planner.md only mandates
+ * `model`/`streak`/`streakOrder` metadata, so at runtime a bead usually has
+ * no recorded size -- judgment call, documented here: a bead without a
+ * usable `metadata.size` (S/M/L) defaults to 'M' (2 points), the middle of
+ * the scale, and a bead without a tier-shaped model defaults to 'standard'
+ * for WEIGHT purposes only (the weight term needs some value for the
+ * budget arithmetic; this never affects what model the dispatch actually
+ * runs on -- see streakRequiredTier for that).
+ * @param {Array<{metadata?: {size?: unknown, model?: unknown}}>} streak
+ * @returns {number}
+ */
+export function streakEffortPoints(streak) {
+    const tasks = (streak || []).map((bead) => {
+        const rawSize = bead && bead.metadata ? bead.metadata.size : undefined;
+        const size = typeof rawSize === 'string' && SIZE_POINTS[rawSize.trim().toUpperCase()]
+            ? rawSize.trim().toUpperCase()
+            : 'M';
+        const tier = normalizeTierToken(bead && bead.metadata && bead.metadata.model);
+        const model = typeof tier === 'string' && MODEL_WEIGHT[tier] ? tier : 'standard';
+        return { size, model };
+    });
+    return computeLaneEffort(tasks);
+}
+
+/**
+ * apra-fleet-eft.79: the ids a bead declares a `blocks`-type dependency on
+ * (i.e. beads that must finish BEFORE it). Tolerant of the two shapes bd
+ * emits (`bd show --json` dependencies are full objects carrying
+ * `dependency_type`; some callers/tests hand plain id strings). Parent-child
+ * dependency entries are NOT ordering constraints and are ignored.
+ * @param {{dependencies?: Array<string|{id?: string, depends_on_id?: string, dependency_type?: string}>}} bead
+ * @returns {string[]}
+ */
+export function beadBlocksDependencyIds(bead) {
+    const out = [];
+    const deps = bead && Array.isArray(bead.dependencies) ? bead.dependencies : [];
+    for (const dep of deps) {
+        if (typeof dep === 'string' && dep) {
+            out.push(dep);
+        } else if (dep && typeof dep === 'object') {
+            if (dep.dependency_type && dep.dependency_type !== 'blocks') continue;
+            const id = dep.depends_on_id || dep.id;
+            if (typeof id === 'string' && id) out.push(id);
+        }
+    }
+    return out;
+}
+
+/**
+ * apra-fleet-eft.79: the tier policy for this round's worklist assignment --
+ * the seam where the "provider supports model-switch-on-resume" CAPABILITY
+ * check happens. Mode (i) BATCH is a single dispatch = a single model, so it
+ * ALWAYS requires a tier-homogeneous worklist (a mixed batch is rejected at
+ * assignment time, never resolved by running everything at max tier). Mode
+ * (ii) RESUMED SEQUENCE may carry mixed tiers ONLY when the provider
+ * supports changing model on a resumed session (execute_prompt's `model`
+ * param applies to resumed sessions for Claude); the fleet does not yet
+ * expose this capability per member, so it arrives as the
+ * `resume_model_switch` config arg (default false = the SAFE fallback:
+ * tier-homogeneous grouping). When a per-member capability signal lands
+ * server-side, wire it in here -- this function is the single decision
+ * point.
+ * @param {{ mode: 'resume'|'batch', resumeModelSwitch?: boolean }} opts
+ * @returns {{ tierHomogeneous: boolean }}
+ */
+export function resolveWorklistTierPolicy({ mode, resumeModelSwitch = false }) {
+    if (mode === 'batch') return { tierHomogeneous: true };
+    return { tierHomogeneous: !resumeModelSwitch };
+}
+
+/**
+ * apra-fleet-eft.79 (context-headroom admission, apra-fleet-eft.81 seam):
+ * whether the last dispatch's reported usage leaves enough context headroom
+ * to RESUME that session for the next streak. Mirrors
+ * createRoundSessionRegistry's near-ceiling rule: admission fails when the
+ * reported total_tokens is at/above `ceilingFraction` of `contextCeiling`.
+ * Unknown usage (provider reported none) admits -- same stance as the
+ * registry, which only flags nearCeiling on a REAL number. When the full
+ * context-headroom-admission-control seam (apra-fleet-eft.81) lands, this
+ * helper is the single call site to upgrade; the fallback on refusal is
+ * always a FRESH session with the FULL prompt (never a delta prompt into a
+ * fresh session -- resume-by-session-id rule, apra-fleet-eft.78).
+ * @param {{total_tokens?: number}|null|undefined} usage
+ * @param {{ contextCeiling?: number, ceilingFraction?: number }} [opts]
+ * @returns {boolean}
+ */
+export function hasContextHeadroomForResume(usage, opts = {}) {
+    const contextCeiling = typeof opts.contextCeiling === 'number' && opts.contextCeiling > 0
+        ? opts.contextCeiling
+        : DEFAULT_CONTEXT_CEILING;
+    const ceilingFraction = typeof opts.ceilingFraction === 'number' && opts.ceilingFraction > 0
+        ? opts.ceilingFraction
+        : 0.9;
+    const totalTokens = usage && typeof usage.total_tokens === 'number' ? usage.total_tokens : null;
+    if (totalTokens === null) return true;
+    return totalTokens < contextCeiling * ceilingFraction;
+}
+
+/**
+ * apra-fleet-eft.79 -- THE pure assignment function: packs this round's
+ * streaks (as produced by groupStreaksFromLaneMetadata/selectStreaks above)
+ * into per-doer ORDERED worklists.
+ *
+ * Back-compat guarantee: when `streaks.length <= doerCount` there is nothing
+ * to pack -- every doer gets exactly one streak, in the exact input order,
+ * byte-identical to the pre-eft.79 one-streak-per-doer behavior (no
+ * re-sorting, no budget, no tier logic).
+ *
+ * Packing path (`streaks.length > doerCount`) -- ordering rules, in strict
+ * precedence order:
+ *  1. `blocks`-edge-derived constraints between streaks are HARD: a streak
+ *     whose beads depend on beads in another streak of this round is placed
+ *     in the SAME doer's worklist AFTER that streak (co-location is the only
+ *     arrangement that guarantees order under the global FIFO dispatch
+ *     gate), or overflows if that is impossible. Per lane-formation rules
+ *     such edges normally cannot exist between ready streaks -- but when one
+ *     is present it is never violated. A streak whose in-round dependency
+ *     overflowed overflows too.
+ *  2. Priority (operator-requested, 2026-07-30): among streaks with no
+ *     dependency relationship, sort by streakMinPriority ascending (P0
+ *     first) -- a P3 streak must never occupy a doer ahead of an
+ *     equally-ready P0 streak for no dependency reason.
+ *  3. Existing deterministic tie-break: input index. The input order of
+ *     `streaks` IS the existing tie-break (lane minOrder, then
+ *     streakId/title/id for the lane-metadata path -- see
+ *     groupStreaksFromLaneMetadata), so falling back to it introduces no
+ *     new nondeterminism.
+ *
+ * Grouping rules:
+ *  - TIER-OUTLIER ISOLATION (operator-requested, 2026-07-30): streaks are
+ *    PARTITIONED BY TIER FIRST, before any priority/effort-budget packing
+ *    runs, and each tier partition packs independently into its own
+ *    dedicated worklist slot(s). A minority-tier outlier streak is never
+ *    folded into a majority-tier worklist just because effort-budget
+ *    headroom would allow it. Worklist slots round-robin over the doer pool
+ *    at the dispatch site, so with MORE tier partitions than doers each
+ *    partition still dispatches THIS round as its own separate, tier-pure
+ *    worklist on a shared doer ("separate dispatches") when the tier policy
+ *    is homogeneous (mode i BATCH, or mode ii without the
+ *    model-switch-on-resume capability) -- a mixed worklist is never built;
+ *    when mixed tiers ARE allowed (mode ii + capability), whole partitions
+ *    merge into at most doerCount worklists, each partition appended as its
+ *    own CONTIGUOUS run, never interleaved among another tier's streaks.
+ *  - Effort budget (opts.effortBudget, default DEFAULT_EFFORT_THRESHOLD,
+ *    reusing the planner.md effort-point formula): a streak only joins a
+ *    non-empty worklist if the running effort total stays within budget;
+ *    otherwise it queues to the next round via `overflow`. An EMPTY worklist
+ *    always accepts (a single over-budget streak must still dispatch --
+ *    the planner should have split it, but starving it forever is worse).
+ *
+ * @param {Array<Array<object>>} streaks - arrays of ORIGINAL bead objects
+ * @param {number} doerCount
+ * @param {{ effortBudget?: number, tierHomogeneous?: boolean }} [opts]
+ * @returns {{
+ *   worklists: Array<Array<Array<object>>>,  // worklists[doerIndex] = ordered streak list
+ *   overflow: Array<Array<object>>,          // streaks queued to the next round
+ *   packed: boolean,                          // false = pass-through (no packing needed)
+ * }}
+ */
+export function assignDoerWorklists(streaks, doerCount, opts = {}) {
+    if (!Array.isArray(streaks) || streaks.length === 0
+        || !Number.isInteger(doerCount) || doerCount < 1) {
+        return { worklists: [], overflow: [], packed: false };
+    }
+    if (streaks.length <= doerCount) {
+        return { worklists: streaks.map((s) => [s]), overflow: [], packed: false };
+    }
+
+    const effortBudget = typeof opts.effortBudget === 'number' && opts.effortBudget > 0
+        ? opts.effortBudget
+        : DEFAULT_EFFORT_THRESHOLD;
+    const tierHomogeneous = opts.tierHomogeneous === true;
+
+    // --- Descriptors -------------------------------------------------------
+    const descs = streaks.map((streak, index) => ({
+        streak,
+        index,
+        priority: streakMinPriority(streak),
+        tierKey: streakRequiredTier(streak) || UNSPECIFIED_TIER_KEY,
+        effort: streakEffortPoints(streak),
+        beadIds: new Set(streak.map((b) => String(b && b.id))),
+        depIndexes: new Set(),
+    }));
+    const descByBeadId = new Map();
+    for (const d of descs) {
+        for (const id of d.beadIds) descByBeadId.set(id, d);
+    }
+    for (const d of descs) {
+        for (const bead of d.streak) {
+            for (const depId of beadBlocksDependencyIds(bead)) {
+                const other = descByBeadId.get(String(depId));
+                if (other && other !== d) d.depIndexes.add(other.index);
+            }
+        }
+    }
+
+    // --- Global order: dependency (hard) -> priority -> input index --------
+    // Kahn-style topological pass that, among the currently-unblocked
+    // streaks, always picks the (priority, index)-minimal one. Dependency
+    // order therefore always wins over priority; priority only orders
+    // mutually-independent streaks; index (the existing tie-break) decides
+    // priority ties.
+    const order = [];
+    const remaining = new Set(descs.map((d) => d.index));
+    while (remaining.size > 0) {
+        let ready = [...remaining]
+            .map((i) => descs[i])
+            .filter((d) => [...d.depIndexes].every((di) => !remaining.has(di)));
+        if (ready.length === 0) {
+            // Dependency cycle between streaks (cannot happen for genuinely
+            // ready beads; defensive) -- fall back to (priority, index) order
+            // for the remainder rather than looping forever.
+            ready = [...remaining].map((i) => descs[i]);
+        }
+        ready.sort((a, b) => a.priority - b.priority || a.index - b.index);
+        const next = ready[0];
+        order.push(next);
+        remaining.delete(next.index);
+    }
+
+    // --- Packing: TIER-OUTLIER ISOLATION (partition-first) ------------------
+    // Operator-requested (2026-07-30): partition the round's streaks by tier
+    // FIRST, before any priority/effort-budget packing runs, and pack each
+    // tier partition's worklist(s) independently. A minority-tier "outlier"
+    // streak (e.g. one premium streak amid a standard-tier majority) gets its
+    // OWN dedicated worklist slot(s) and is never folded into a majority-tier
+    // worklist just because effort-budget headroom would allow it --
+    // otherwise any "effective tier = max of everything assigned" step would
+    // silently escalate cheap/standard work to premium cost (a real
+    // cost/quality-contamination risk, and what makes the tier-homogeneity
+    // hard rule actually hold once multi-streak worklists exist). Priority
+    // ordering (the global topo+priority order above) applies WITHIN each
+    // partition; partitions themselves are claimed in order of their first
+    // appearance in the global order, so the highest-priority work claims
+    // slots first.
+    //
+    // Worklist SLOTS are not doers: the returned worklists round-robin over
+    // the doer pool at the dispatch site (worklists[i] -> doerPool[i % N]),
+    // exactly like the pre-eft.79 per-streak round-robin -- so when there are
+    // MORE tier partitions than doers, each partition still dispatches THIS
+    // round as its own separate, tier-pure worklist on a shared doer
+    // (sequentially, via the global FIFO gate) rather than deferring whole
+    // tiers to the next round. Sessions never carry across worklists, so a
+    // shared doer's second worklist starts a fresh session -- tier-pure by
+    // construction.
+    const overflow = [];
+    const overflowed = new Set();
+    const slots = []; // { items: desc[], effort: number, tierKey: string }
+    const slotOfDesc = new Map(); // desc.index -> slot object
+
+    const newSlot = (tierKey) => {
+        const slot = { items: [], effort: 0, tierKey };
+        slots.push(slot);
+        return slot;
+    };
+    const fits = (slot, d) => slot.items.length === 0 || slot.effort + d.effort <= effortBudget;
+    const place = (slot, d) => {
+        slot.items.push(d);
+        slot.effort += d.effort;
+        if (slot.items.length === 1 || slot.tierKey === null) slot.tierKey = d.tierKey;
+        else if (slot.tierKey !== d.tierKey) slot.tierKey = 'mixed';
+        slotOfDesc.set(d.index, slot);
+    };
+    const spill = (d) => {
+        overflow.push(d.streak);
+        overflowed.add(d.index);
+    };
+
+    // Tier partitions, in order of each tier's first appearance in the global
+    // order; members stay in global (topo -> priority -> tie-break) order.
+    const partitions = [];
+    const partitionByTier = new Map();
+    for (const d of order) {
+        if (!partitionByTier.has(d.tierKey)) {
+            const p = { tierKey: d.tierKey, members: [], slots: [] };
+            partitionByTier.set(d.tierKey, p);
+            partitions.push(p);
+        }
+        partitionByTier.get(d.tierKey).members.push(d);
+    }
+
+    // Slot allocation. Every partition gets AT LEAST one dedicated slot
+    // (outlier isolation: a 1-streak minority partition gets a whole slot of
+    // its own before any majority partition gets a second one) -- EXCEPT in
+    // the mixed-tiers-allowed case below when partitions outnumber doers.
+    // When there are FEWER partitions than doers, the spare doer capacity is
+    // handed out one slot at a time to the partition with the highest
+    // per-slot load (ties: earliest partition), so e.g. 4 same-tier streaks
+    // over 2 doers still split 2/2. Deterministic throughout.
+    if (!tierHomogeneous && partitions.length > doerCount) {
+        // Mixed tiers allowed (mode ii + model-switch-on-resume capability)
+        // and more tier partitions than doers: merge WHOLE partitions into
+        // doerCount slots, each merged partition appended as its own
+        // CONTIGUOUS run (never interleaved among another tier's streaks --
+        // contamination-avoidance ordering; each streak still dispatches at
+        // its own tier). Each partition (in order) joins the slot with the
+        // fewest streaks so far (ties: creation order).
+        // Slots start tier-less (null); the first placement stamps the real
+        // tier (place() marks 'mixed' only on a REAL mismatch).
+        for (let i = 0; i < doerCount; i++) newSlot(null);
+        // Partition -> host slot: BALANCE BY STREAK COUNT of what earlier
+        // partitions already claimed. Claims happen partition-by-partition
+        // (whole partitions), so count claimed members, not placed items.
+        const claimedCount = new Map(slots.map((s) => [s, 0]));
+        for (const p of partitions) {
+            const host = slots
+                .map((slot, si) => ({ slot, si }))
+                .sort((a, b) => claimedCount.get(a.slot) - claimedCount.get(b.slot) || a.si - b.si)[0].slot;
+            p.slots = [host];
+            claimedCount.set(host, claimedCount.get(host) + p.members.length);
+        }
+    } else {
+        for (const p of partitions) {
+            p.slots = [newSlot(p.tierKey)];
+        }
+        let spare = doerCount - partitions.length;
+        while (spare > 0) {
+            let target = null;
+            for (const p of partitions) {
+                const load = p.members.length / p.slots.length;
+                if (!target || load > target.members.length / target.slots.length) target = p;
+            }
+            if (!target) break;
+            target.slots.push(newSlot(target.tierKey));
+            spare--;
+        }
+    }
+
+    // Dependency gate: a streak whose in-round `blocks` dependency
+    // overflowed, is not placed yet (cross-partition edges are placed in
+    // partition order, and slots interleave at dispatch time, so order across
+    // slots is never guaranteed), or whose placed dependencies span slots the
+    // candidate set cannot honor, overflows to the next round (its dependency
+    // closes first). Returns the single slot all placed deps share, `null`
+    // for "no in-round dependency constraint", or `false` for "cannot place".
+    const depSlotFor = (d) => {
+        if (d.depIndexes.size === 0) return null;
+        const depSlots = new Set();
+        for (const di of d.depIndexes) {
+            if (overflowed.has(di)) return false;
+            if (!slotOfDesc.has(di)) return false; // not placed (yet) -> no order guarantee
+            depSlots.add(slotOfDesc.get(di));
+        }
+        return depSlots.size === 1 ? [...depSlots][0] : false;
+    };
+
+    for (const p of partitions) {
+        for (const d of p.members) {
+            const depSlot = depSlotFor(d);
+            if (depSlot === false) { spill(d); continue; }
+            // Dependency co-location: the dependent must land in the SAME
+            // slot AFTER its dependency -- but only if that slot is one this
+            // partition may use (tier purity is never sacrificed for a
+            // dependency; a cross-tier in-round edge overflows instead).
+            const candidates = (depSlot !== null ? [depSlot] : p.slots)
+                .filter((slot) => (depSlot === null || p.slots.includes(slot)) && fits(slot, d))
+                .sort((a, b) => a.items.length - b.items.length || slots.indexOf(a) - slots.indexOf(b));
+            if (candidates.length === 0) spill(d);
+            else place(candidates[0], d);
+        }
+    }
+
+    // Drop slots that ended up empty (a mixed-merge pre-created slot no
+    // partition landed on, or a partition slot whose members all spilled).
+    const worklists = slots
+        .filter((slot) => slot.items.length > 0)
+        // Worklist order within each slot = insertion order: contiguous tier
+        // blocks (partition-by-partition placement), and inside each block
+        // the global topo -> priority -> tie-break order (partition members
+        // were placed in that order).
+        .map((slot) => slot.items.map((d) => d.streak));
+
+    return { worklists, overflow, packed: true };
 }
 
 /**
@@ -6818,9 +7305,57 @@ async function runSprintCycle(context) {
             // parallel/merger dispatch is explicitly deferred to Phase 3+.
             let globalDoerTurn = Promise.resolve();
             const streakOutcomes = [];
-            await parallel(streaks, async (streak, index) => {
+
+            // --- apra-fleet-eft.79: per-doer ORDERED WORKLISTS -----------------
+            // When this round has more ready streaks than doers, pack them into
+            // per-doer ordered worklists (dependency order -> priority -> the
+            // existing tie-break; tier grouping + effort budget -- see
+            // assignDoerWorklists) instead of one-streak-per-doer feeding. Each
+            // doer then works its worklist back to back: mode 'resume' (default)
+            // re-dispatches per streak, resuming the SAME doer session by
+            // explicit session id so warm context carries across streaks while
+            // every engine checkpoint (git/dolt sync bracket, per-streak failure
+            // attribution) is kept BETWEEN streaks; mode 'batch' (config-gated)
+            // sends one dispatch carrying the whole ordered worklist. When
+            // streaks <= doers, assignDoerWorklists is a pass-through and
+            // behavior is unchanged from the pre-eft.79 one-streak-per-doer
+            // path.
+            const worklistMode = validated.doerWorklistMode || 'resume';
+            const { tierHomogeneous } = resolveWorklistTierPolicy({
+                mode: worklistMode,
+                resumeModelSwitch: validated.resumeModelSwitch === true,
+            });
+            const worklistPacking = assignDoerWorklists(streaks, doerPool.length, {
+                effortBudget: validated.worklistEffortBudget,
+                tierHomogeneous,
+            });
+            if (worklistPacking.packed) {
+                const fmtStreak = (s) => `(${s.map((b) => b.id).join(', ')})`;
+                const fmtWorklist = (wl) => `[${wl.map(fmtStreak).join(' -> ')}]`;
+                log(
+                    `Doer worklists (apra-fleet-eft.79): ${streaks.length} ready streak(s) > ${doerPool.length} doer(s) -- ` +
+                    `packed into per-doer ordered worklists (mode: ${worklistMode}, ` +
+                    `${tierHomogeneous ? 'tier-homogeneous' : 'mixed tiers allowed (resume_model_switch)'}): ` +
+                    worklistPacking.worklists.map((wl, i) => `doer '${doerPool[i % doerPool.length]}': ${fmtWorklist(wl)}`).join('; ') +
+                    (worklistPacking.overflow.length > 0
+                        ? `; overflow queued to the next round (effort budget/tier grouping): ${worklistPacking.overflow.map(fmtStreak).join(' ')}`
+                        : '')
+                );
+            }
+
+            // One streak's full dispatch turn (claim -> dispatch -> verify ->
+            // attribute). Extracted from the old per-streak parallel() callback
+            // body so a worklist can run it once per streak; body semantics are
+            // unchanged for the single-streak (non-packed) case. MUST be called
+            // with no prior `await` in the caller so the global-gate capture
+            // below stays synchronous and deterministic in dispatch order.
+            // `worklistCtx` carries the doer's session id + last reported usage
+            // across the streaks of ONE worklist (never across worklists/doers);
+            // `batchStreaks` (mode 'batch') is the ordered list of sub-streaks a
+            // single merged dispatch carries, for per-streak outcome
+            // attribution.
+            const runStreakTurn = async ({ streak, doerMember, worklistCtx, worklistPosition = 0, worklistLength = 1, packed = false, batchStreaks = null }) => {
                 let beadIds = streak.map((b) => b.id);
-                const doerMember = doerPool[index % doerPool.length];
                 const priorTurn = globalDoerTurn;
                 let releaseTurn;
                 globalDoerTurn = new Promise((resolve) => { releaseTurn = resolve; });
@@ -6938,19 +7473,98 @@ async function runSprintCycle(context) {
                     // server-side echo lands (explicitly descoped -- see
                     // docs/plan.md and the pricing.mjs header comment).
                     const streakModels = [...new Set(actualBeadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
-                    if (streakModels.length > 1) {
-                        log(`Doer streak [${actualBeadIds.join(', ')}] spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${streakModels[0]}'.`);
+                    let doerModel = streakModels[0];
+                    // apra-fleet-eft.79: in a PACKED worklist round, a streak
+                    // must never dispatch below its REQUIRED tier (the max of
+                    // its beads' declared models, per the planner-streaks
+                    // formula) -- override the legacy first-bead pick with the
+                    // required tier. The non-packed (streaks <= doers) path
+                    // keeps the pre-eft.79 first-bead behavior byte-identically.
+                    if (packed) {
+                        const requiredTier = streakRequiredTier(streak);
+                        if (requiredTier) doerModel = requiredTier;
                     }
-                    const doerModel = streakModels[0];
+                    if (streakModels.length > 1) {
+                        log(`Doer streak [${actualBeadIds.join(', ')}] spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${doerModel}'.`);
+                    }
+
+                    // apra-fleet-eft.79 (mode ii RESUMED SEQUENCE): resume the
+                    // doer's OWN prior-streak session by EXPLICIT session id
+                    // when one was captured for this worklist and the
+                    // context-headroom admission check (eft.81 seam --
+                    // hasContextHeadroomForResume) passes. On refusal or when
+                    // no session id exists (first streak of the worklist,
+                    // provider without resume support, prior streak failed),
+                    // fall back to a FRESH session carrying the FULL prompt --
+                    // never a delta prompt into a fresh session
+                    // (resume-by-session-id rule, apra-fleet-eft.78).
+                    let worklistResumeArg = false;
+                    if (worklistCtx && worklistCtx.sessionId) {
+                        if (hasContextHeadroomForResume(worklistCtx.usage)) {
+                            worklistResumeArg = worklistCtx.sessionId;
+                        } else {
+                            log(
+                                `Doer worklist on '${doerMember}': context headroom insufficient to resume session ` +
+                                `'${worklistCtx.sessionId}' for streak ${worklistPosition + 1}/${worklistLength} ` +
+                                `[${actualBeadIds.join(', ')}] -- starting a FRESH session with the full prompt instead.`
+                            );
+                            worklistCtx.sessionId = null;
+                            worklistCtx.usage = null;
+                        }
+                    }
+                    if (worklistResumeArg) {
+                        log(
+                            `Doer worklist on '${doerMember}': dispatching streak ${worklistPosition + 1}/${worklistLength} ` +
+                            `[${actualBeadIds.join(', ')}] as a RESUME of session '${worklistResumeArg}'` +
+                            `${doerModel ? ` (model=${doerModel})` : ''} -- warm context carries over.`
+                        );
+                    }
+
+                    const basePrompt = buildDoerPrompt({ beadIds: actualBeadIds, branch: validated.branch, feedback: feedbackForStreak || null });
+                    let doerPrompt = basePrompt;
+                    if (batchStreaks) {
+                        // Mode (i) BATCH: one dispatch carries the whole ordered
+                        // worklist. The prompt names each streak boundary and
+                        // mandates strict in-order completion.
+                        doerPrompt =
+                            'ORDERED MULTI-STREAK WORKLIST (single batched dispatch): your assigned beads below form ' +
+                            `${batchStreaks.length} streak(s). Work them strictly in this order, fully completing each ` +
+                            'streak (implement, verify, `bd close` its beads) before starting the next: ' +
+                            batchStreaks.map((s, i) => `streak ${i + 1}: [${s.map((b) => b.id).join(', ')}]`).join('; ') +
+                            '.\n\n' + basePrompt;
+                    } else if (worklistResumeArg) {
+                        // Issue 27 discipline: a resumed dispatch restates its
+                        // FULL scope (the entire buildDoerPrompt output), never
+                        // a bare "continue" delta -- the preamble only tells the
+                        // session it may reuse its warm context.
+                        doerPrompt =
+                            'WORKLIST CONTINUATION: you are the same doer session that just completed the previous ' +
+                            'streak of your worklist. Your warm context (repository layout, conventions, files already ' +
+                            'read) carries over -- do not re-explore the repository from scratch. Your NEXT assigned ' +
+                            'streak follows, with its scope restated in full.\n\n' + basePrompt;
+                    }
 
                     return agent(
-                        buildDoerPrompt({ beadIds: actualBeadIds, branch: validated.branch, feedback: feedbackForStreak || null }),
+                        doerPrompt,
                         {
                             member_name: doerMember,
                             agentType: 'doer',
                             label: `Streak [${actualBeadIds.join(', ')}]`,
                             schema: doerReport,
                             model: doerModel,
+                            resume: worklistResumeArg,
+                            // apra-fleet-eft.79: capture this dispatch's session
+                            // id + usage so the NEXT streak in this worklist can
+                            // resume the same session (warm-context carryover).
+                            // A provider without resume support never reports a
+                            // session id, so the callback simply never fires and
+                            // every streak stays fresh (capability signal, not a
+                            // provider-name check).
+                            onSessionId: (id, meta) => {
+                                if (!worklistCtx) return;
+                                worklistCtx.sessionId = id;
+                                worklistCtx.usage = meta && meta.usage ? meta.usage : null;
+                            },
                             // apra-fleet-aw8: doer streaks run a full impl+test+commit
                             // cycle, categorically heavier than a one-shot prompt --
                             // the fleet generic execute_prompt default (300s) was
@@ -6987,6 +7601,15 @@ async function runSprintCycle(context) {
                         max_total_s: DISPATCH_TIMEOUT_S,
                         resume: true,
                         max_turns: maxTurns,
+                        // apra-fleet-eft.79: a successful max-turns ladder resume
+                        // leaves the session valid for the worklist's NEXT streak
+                        // -- re-record its id + latest usage so the next streak's
+                        // headroom admission judges the CURRENT session size.
+                        onSessionId: (id, meta) => {
+                            if (!worklistCtx) return;
+                            worklistCtx.sessionId = id;
+                            worklistCtx.usage = meta && meta.usage ? meta.usage : null;
+                        },
                     }
                 ), { pushBeads: true });
 
@@ -6996,6 +7619,18 @@ async function runSprintCycle(context) {
                 try {
                     report = await dispatchDoer();
                 } catch (err) {
+                    // apra-fleet-eft.79: a dispatch-level failure means this
+                    // worklist's captured session can no longer be trusted (the
+                    // failed attempt may have run partial turns in it) -- clear
+                    // it so every in-body retry below AND the worklist's next
+                    // streak start from a FRESH session with the full prompt,
+                    // mirroring createRoundSessionRegistry's clear-on-failure
+                    // rule. (The max-turns ladder is unaffected: it resumes the
+                    // member's last session via `resume: true`, not this id.)
+                    if (worklistCtx) {
+                        worklistCtx.sessionId = null;
+                        worklistCtx.usage = null;
+                    }
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                         wasRetried = true;
                         let currentMaxTurns = BASE_DOER_MAX_TURNS * 2;
@@ -7094,10 +7729,31 @@ async function runSprintCycle(context) {
                     });
                     const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
                     log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
-                    streakOutcomes.push({
-                        beadIds: actualBeadIds, doerMember, outcome: 'failed', wasRetried,
-                        report: null, unclosedIds, closedIds, error: dispatchError.message,
-                    });
+                    if (batchStreaks) {
+                        // apra-fleet-eft.79 (mode i): PER-STREAK attribution for
+                        // a failed batch dispatch -- a sub-streak whose beads all
+                        // verifiably closed before the failure keeps its work
+                        // (outcome 'success', its closes stand and go to
+                        // review); only sub-streaks with still-open beads are
+                        // 'failed' and re-lane next round.
+                        for (const sub of batchStreaks) {
+                            const subIds = sub.map((b) => b.id).filter((id) => actualBeadIds.includes(id));
+                            if (subIds.length === 0) continue;
+                            const subUnclosed = subIds.filter((id) => unclosedIds.includes(id));
+                            const subClosed = subIds.filter((id) => !subUnclosed.includes(id));
+                            streakOutcomes.push({
+                                beadIds: subIds, doerMember, wasRetried, report: null,
+                                unclosedIds: subUnclosed, closedIds: subClosed,
+                                outcome: subUnclosed.length > 0 ? 'failed' : 'success',
+                                ...(subUnclosed.length > 0 ? { error: dispatchError.message } : {}),
+                            });
+                        }
+                    } else {
+                        streakOutcomes.push({
+                            beadIds: actualBeadIds, doerMember, outcome: 'failed', wasRetried,
+                            report: null, unclosedIds, closedIds, error: dispatchError.message,
+                        });
+                    }
                     // Rethrow so parallel()'s continueOnError:true isolates
                     // this failure from sibling streaks (the outcome above
                     // is already recorded via closure, so no information is
@@ -7144,14 +7800,87 @@ async function runSprintCycle(context) {
                     log(`Doer streak [${actualBeadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
                 }
 
-                streakOutcomes.push({
-                    beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds, closedIds,
-                    outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
-                });
+                if (batchStreaks) {
+                    // apra-fleet-eft.79 (mode i): PER-STREAK outcome attribution
+                    // for the batch dispatch -- one outcome per sub-streak, so
+                    // review scope and re-laning stay per-streak exactly as in
+                    // mode (ii).
+                    for (const sub of batchStreaks) {
+                        const subIds = sub.map((b) => b.id).filter((id) => actualBeadIds.includes(id));
+                        if (subIds.length === 0) continue;
+                        const subUnclosed = subIds.filter((id) => unclosedIds.includes(id));
+                        const subClosed = subIds.filter((id) => !subUnclosed.includes(id));
+                        streakOutcomes.push({
+                            beadIds: subIds, doerMember, wasRetried, report,
+                            unclosedIds: subUnclosed, closedIds: subClosed,
+                            outcome: subUnclosed.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                        });
+                    }
+                } else {
+                    streakOutcomes.push({
+                        beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds, closedIds,
+                        outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
+                    });
+                }
                 await updateDashboard();
                 } finally {
                     releaseTurn();
                 }
+            };
+
+            await parallel(worklistPacking.worklists, async (worklist, index) => {
+                if (!worklist || worklist.length === 0) return;  // a packed round can leave a doer idle
+                const doerMember = doerPool[index % doerPool.length];
+                // Per-worklist session context (apra-fleet-eft.79): the doer's
+                // captured session id + last reported usage, carried across the
+                // streaks of THIS worklist only -- never across doers or rounds.
+                const worklistCtx = { sessionId: null, usage: null };
+
+                if (worklistMode === 'batch' && worklist.length > 1) {
+                    // Mode (i) BATCH: one dispatch carries the whole ordered
+                    // worklist (assignDoerWorklists guarantees it is
+                    // tier-homogeneous). Per-streak outcomes are attributed
+                    // after the fact via `batchStreaks`.
+                    await runStreakTurn({
+                        streak: worklist.flat(),
+                        doerMember,
+                        worklistCtx,
+                        packed: worklistPacking.packed,
+                        batchStreaks: worklist,
+                    });
+                    return;
+                }
+
+                // Mode (ii) RESUMED SEQUENCE (default): one dispatch per streak,
+                // in worklist order, each going through the SAME global FIFO
+                // gate (runStreakTurn acquires it per streak) and the same
+                // git/dolt sync brackets -- so every engine checkpoint is kept
+                // BETWEEN streaks. A failure in streak N is recorded and
+                // isolated: streaks 1..N-1's closes already stand (per-bead
+                // attribution), and N+1.. still dispatch (fresh session -- the
+                // catch clears the worklist session so a broken session is
+                // never resumed).
+                let firstError = null;
+                for (let wIdx = 0; wIdx < worklist.length; wIdx++) {
+                    try {
+                        await runStreakTurn({
+                            streak: worklist[wIdx],
+                            doerMember,
+                            worklistCtx,
+                            worklistPosition: wIdx,
+                            worklistLength: worklist.length,
+                            packed: worklistPacking.packed,
+                        });
+                    } catch (err) {
+                        firstError = firstError || err;
+                        worklistCtx.sessionId = null;
+                        worklistCtx.usage = null;
+                    }
+                }
+                // Rethrow (after ALL streaks ran) so parallel()'s
+                // continueOnError:true accounting still logs this worklist's
+                // failure exactly like the old per-streak isolation did.
+                if (firstError) throw firstError;
             }, { continueOnError: true });
 
             log(`Develop C${cycle} R${devRounds} streak outcomes: ${JSON.stringify(streakOutcomes.map((o) => ({ beadIds: o.beadIds, outcome: o.outcome })))}`);
