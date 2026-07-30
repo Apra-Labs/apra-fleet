@@ -119,13 +119,13 @@ export async function allocateFreePort(opts = {}) {
  *   issue: string, members: string, branch: string, base: string,
  *   goal?: string, maxCycles?: number|string, allowMissingMembers?: boolean,
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
- *   viewerPort: number, extraArgs?: string[],
+ *   viewerPort: number, serviceUrl?: string, extraArgs?: string[],
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, extraArgs } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, extraArgs } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -149,6 +149,13 @@ export function buildSprintArgv(opts = {}) {
         args.push('--role-map', typeof roleMap === 'string' ? roleMap : JSON.stringify(roleMap));
     }
     if (budget !== undefined) args.push('--budget', String(budget));
+    // apra-fleet-f34.1: when this supervisor instance has a known --service-url
+    // (its own HTTP listen address, wired in from createSpawner()'s deps.serviceUrl
+    // below), forward it so the spawned cli.mjs child threads it into
+    // runner.js's HTTP-backed dolt-mutex/id-allocator clients instead of the
+    // source-3 no-op fallback. Absent a configured serviceUrl this is omitted
+    // entirely -- fallback behavior is unchanged.
+    if (serviceUrl !== undefined) args.push('--service-url', serviceUrl);
     if (Array.isArray(extraArgs)) args.push(...extraArgs);
     return args;
 }
@@ -168,6 +175,7 @@ export function buildSprintArgv(opts = {}) {
  *   spawn?: typeof import('node:child_process').spawn,
  *   isPortAvailable?: (port: number) => Promise<boolean>,
  *   logger?: { log?: Function, error?: Function },
+ *   serviceUrl?: string,
  * }} [deps]
  * @returns {{
  *   name: string,
@@ -187,6 +195,15 @@ export function createSpawner(deps = {}) {
     const basePort = Number.isInteger(deps.basePort) ? deps.basePort : DEFAULT_SPAWNER_BASE_PORT;
     const command = deps.command ?? process.execPath;
     const cliPath = deps.cliPath ?? defaultCliPath();
+    // apra-fleet-f34.1: the supervisor's OWN HTTP listen address (e.g.
+    // `http://localhost:8787`), the same address it already binds for its
+    // dolt-mutex/id-allocator/sprint-control API. Threaded into every spawned
+    // child's `--service-url` (see buildSprintArgv above) so runner.js takes
+    // the HTTP-backed dolt-mutex/id-allocator clients instead of the source-3
+    // no-op fallback. Optional: when the caller (bin/serve.mjs) does not pass
+    // one, spawned children simply omit --service-url and fall back exactly
+    // as before -- no crash, unchanged behavior.
+    const serviceUrl = deps.serviceUrl;
 
     /**
      * Live sprints launched BY THIS supervisor process, keyed by child pid.
@@ -209,7 +226,7 @@ export function createSpawner(deps = {}) {
      */
     async function spawnSprint(opts = {}) {
         const port = await allocateFreePort({ startPort: basePort, excludedPorts: livePortSet(), isAvailable });
-        const args = [cliPath, ...buildSprintArgv({ ...opts, viewerPort: port })];
+        const args = [cliPath, ...buildSprintArgv({ ...opts, viewerPort: port, serviceUrl: opts.serviceUrl ?? serviceUrl })];
 
         const child = spawnImpl(command, args, {
             detached: true,

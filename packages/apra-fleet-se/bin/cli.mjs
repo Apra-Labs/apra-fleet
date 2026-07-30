@@ -139,6 +139,13 @@ export function buildOptionsSpec() {
         'requirements-file': { type: 'string' },
         'role-map': { type: 'string' },
         'viewer-port': { type: 'string', default: String(DEFAULT_VIEWER_PORT) },
+        // apra-fleet-f34.1: the supervisor's own HTTP listen address, threaded
+        // in by src/supervisor/spawner.mjs's buildSprintArgv() when this CLI is
+        // launched as a supervisor-spawned child (see spawnSprint()). Optional
+        // -- when a sprint is launched directly (not via the supervisor), it is
+        // simply absent and runner.js falls back to its source-3 no-op clients
+        // exactly as before.
+        'service-url': { type: 'string' },
         budget: { type: 'string' },
         // Stabilization Issue 32: per-dispatch time budget in seconds
         // (timeout_s == max_total_s at every dispatch; integ ceiling 2x).
@@ -168,6 +175,10 @@ Options:
       --role-map <json|@file>  JSON object mapping role -> member[] (e.g. '{"doer":["m1","m2"]}'),
                                 either inline JSON or '@path/to/file.json'.
       --viewer-port <port>     Port for the local dashboard viewer. Default: 8080.
+      --service-url <url>      The supervisor's own HTTP service URL (e.g. http://localhost:8787),
+                                enabling the HTTP-backed dolt-mutex/id-allocator clients. Normally
+                                set automatically when the supervisor spawns this sprint; omit for
+                                a directly-launched sprint (falls back to the no-op clients).
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
       --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 3600). Applied as both
@@ -278,7 +289,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, serviceUrl }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -291,6 +302,11 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     if (roleMap !== undefined) args.roleMap = roleMap;
     if (budget !== undefined) args.budget = budget;
     if (dispatchTimeoutS !== undefined) args.dispatch_timeout_s = dispatchTimeoutS;
+    // apra-fleet-f34.1: forwarded straight through to runner.js's validateArgs()
+    // (args.serviceUrl), which is what actually switches it onto the
+    // HTTP-backed dolt-mutex/id-allocator clients (fleet-sprint/runner.js
+    // ~5013-5052). Omitted when not supplied -- unchanged fallback behavior.
+    if (serviceUrl !== undefined) args.serviceUrl = serviceUrl;
     return args;
 }
 
@@ -444,6 +460,7 @@ async function main() {
     const allowMissingMembers = Boolean(values['allow-missing-members']);
     const requirementsFile = values['requirements-file'];
     const viewerPort = values['viewer-port'] !== undefined ? Number(values['viewer-port']) : DEFAULT_VIEWER_PORT;
+    const serviceUrl = values['service-url'];
     const budget = values.budget !== undefined ? Number(values.budget) : undefined;
     const dispatchTimeoutS = values['dispatch-timeout-s'] !== undefined ? Number(values['dispatch-timeout-s']) : undefined;
 
@@ -717,6 +734,7 @@ async function main() {
                 roleMap,
                 budget,
                 dispatchTimeoutS,
+                serviceUrl,
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc

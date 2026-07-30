@@ -344,6 +344,46 @@ describe('--budget flag (f: CLI budget ceiling)', () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// apra-fleet-f34.1: --service-url threads from a supervisor-spawned child's
+// argv into runner.js's validated args (args.serviceUrl), which is what
+// actually switches runner.js onto the HTTP-backed dolt-mutex/id-allocator
+// clients instead of the source-3 no-op fallback. Absent --service-url the
+// flag/args.serviceUrl are simply omitted -- unchanged fallback behavior.
+// ---------------------------------------------------------------------------
+
+describe('--service-url flag (apra-fleet-f34.1)', () => {
+    test('parseCliArgs accepts --service-url', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--service-url', 'http://localhost:8787']);
+        assert.strictEqual(values['service-url'], 'http://localhost:8787');
+    });
+
+    test('buildRunnerArgs threads --service-url through as args.serviceUrl', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+            serviceUrl: 'http://localhost:8787',
+        });
+        assert.strictEqual(args.serviceUrl, 'http://localhost:8787');
+
+        // Round-trips through runner.js's own validateArgs without throwing.
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.serviceUrl, 'http://localhost:8787');
+    });
+
+    test('buildRunnerArgs omits args.serviceUrl entirely when --service-url is not passed (unchanged fallback behavior)', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+            serviceUrl: undefined,
+        });
+        assert.strictEqual('serviceUrl' in args, false);
+
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.serviceUrl, undefined);
+    });
+});
+
 describe('formatViewerListenError / attachViewerErrorHandler (e: viewer port)', () => {
     test('formats an actionable message for EADDRINUSE', () => {
         const err = Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' });

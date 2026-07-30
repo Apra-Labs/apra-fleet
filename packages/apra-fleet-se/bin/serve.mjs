@@ -95,7 +95,11 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // collaborators so a restarted supervisor reconciles against on-disk state.
     const ledger = createLedger();
     const history = createHistory();
-    const spawner = createSpawner();
+    // apra-fleet-f34.1: pass this supervisor's OWN listening address so every
+    // spawned sprint child's cli.mjs receives --service-url and threads it
+    // into runner.js's HTTP-backed dolt-mutex/id-allocator clients (see
+    // spawner.mjs's buildSprintArgv/createSpawner doc comments).
+    const spawner = createSpawner({ serviceUrl: `http://localhost:${port}` });
     const reconciler = createReconciler({ ledger, history });
     // eft.4.5: re-adopts still-live children by PID at startup (see below),
     // registering their recovered --viewer-port with the spawner seam so

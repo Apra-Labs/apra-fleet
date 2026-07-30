@@ -112,6 +112,25 @@ describe('buildSprintArgv', () => {
         assert.deepEqual(args, ['--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main', '--viewer-port', '8080']);
     });
 
+    // apra-fleet-f34.1: --service-url is forwarded to the spawned cli.mjs
+    // child so runner.js takes the HTTP-backed dolt-mutex/id-allocator
+    // clients instead of the source-3 no-op fallback.
+    test('appends --service-url when serviceUrl is provided', () => {
+        const args = buildSprintArgv({
+            issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080,
+            serviceUrl: 'http://localhost:8787',
+        });
+        assert.deepEqual(args, [
+            '--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main',
+            '--viewer-port', '8080', '--service-url', 'http://localhost:8787',
+        ]);
+    });
+
+    test('omits --service-url entirely when serviceUrl is not provided (unchanged fallback behavior)', () => {
+        const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
+        assert.ok(!args.includes('--service-url'));
+    });
+
     test('throws when a required flag is missing', () => {
         assert.throws(() => buildSprintArgv({ members: 'm', branch: 'b', base: 'main', viewerPort: 8080 }), /issue, members, branch, and base/);
     });
@@ -197,6 +216,34 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
         assert.equal(children[0].unrefCalled, true);
         assert.equal(spawner.liveCount, 1);
         assert.deepEqual(spawner.livePorts, new Set([9000]));
+    });
+
+    // apra-fleet-f34.1: createSpawner's own deps.serviceUrl (the supervisor's
+    // listening address, as wired by bin/serve.mjs) is forwarded into every
+    // spawnSprint() call's argv via buildSprintArgv, without the caller
+    // needing to pass serviceUrl itself on each spawnSprint() call.
+    test('spawnSprint threads deps.serviceUrl through to the child argv as --service-url', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([222]);
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            basePort: 9050,
+            isPortAvailable: async () => true,
+            serviceUrl: 'http://localhost:8787',
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.ok(calls[0].args.includes('--service-url'));
+        assert.equal(calls[0].args[calls[0].args.indexOf('--service-url') + 1], 'http://localhost:8787');
+    });
+
+    test('spawnSprint omits --service-url when neither deps.serviceUrl nor opts.serviceUrl is set', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([223]);
+        const spawner = createSpawner({ spawn: spawnFn, basePort: 9060, isPortAvailable: async () => true });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.ok(!calls[0].args.includes('--service-url'));
     });
 
     test('two concurrent sprints never receive the same port', async () => {
