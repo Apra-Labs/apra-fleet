@@ -1307,7 +1307,7 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     expect(resultText(result)).not.toContain('/login');
   });
 
-  it('still classifies a genuine auth error as nonzero_exit with login advice when there is no max_turns signal', async () => {
+  it('classifies a genuine auth error as a structured "auth" reason with login advice when there is no max_turns signal', async () => {
     const member = makeTestAgent({ friendlyName: 'genuine-auth-fail' });
     addAgent(member);
     mockExecCommand
@@ -1317,7 +1317,10 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
 
-    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'nonzero_exit' });
+    // apra-fleet-391: 'auth' is a structured reason (not overloaded onto
+    // 'nonzero_exit') so fleet-sprint's LLM-auth self-heal can key off
+    // err.details.reason directly instead of regexing the message text.
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'auth' });
     expect(resultText(result)).toContain('/login');
   });
 
