@@ -23,10 +23,10 @@
 //   bd init --from-jsonl --prefix <prefix> --remote file://<dolt-remote> --non-interactive   (cwd: toy repo)
 //   bd dolt push                                                                             (cwd: toy repo)
 
-import { execFileSync } from 'node:child_process';
 import { rmSync, existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { execBdSync } from './lib/exec-bd.mjs';
 
 const GUARD = '[sandbox-seed guard]';
 
@@ -110,7 +110,7 @@ function main() {
         // Reset re-seed: bd auto-derives its Dolt remote from the toy clone's
         // own git origin (already sandbox-local, asserted by the playbook's
         // check script). No explicit remote is written and nothing is pushed.
-        execFileSync('bd', ['init', '--from-jsonl', '--prefix', args.prefix, '--non-interactive'], {
+        execBdSync(['init', '--from-jsonl', '--prefix', args.prefix, '--non-interactive'], {
             cwd: repo,
             stdio: 'inherit',
         });
@@ -120,11 +120,11 @@ function main() {
 
     rmSync(remote, { recursive: true, force: true });
     const remoteUrl = pathToFileURL(remote).href;
-    execFileSync('bd', ['init', '--from-jsonl', '--prefix', args.prefix, '--remote', remoteUrl, '--non-interactive'], {
+    execBdSync(['init', '--from-jsonl', '--prefix', args.prefix, '--remote', remoteUrl, '--non-interactive'], {
         cwd: repo,
         stdio: 'inherit',
     });
-    execFileSync('bd', ['dolt', 'push'], { cwd: repo, stdio: 'inherit' });
+    execBdSync(['dolt', 'push'], { cwd: repo, stdio: 'inherit' });
     console.log(`[sandbox-seed] OK: seeded '${repo}' with sync.remote '${remoteUrl}' (all paths inside the sandbox root)`);
 }
 

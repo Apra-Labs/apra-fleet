@@ -97,6 +97,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { execBdSync } from './lib/exec-bd.mjs';
 
 // Substring identifying the real, shared fleet-e2e-toy Dolt remote that the
 // sandbox must never actively sync to. Kept as one constant so both checks
@@ -344,13 +345,18 @@ export function parseDoltRemoteList(output) {
  * @returns {{ok: boolean, message: string}}
  */
 export function checkDoltRemoteAbsent(repoPath, sandboxPath = defaultSandboxPath(repoPath), deps = {}) {
-  const run = deps.execFileSync ?? execFileSync;
+  // apra-fleet-2cc.1: routed through the shared execBdSync helper (always
+  // `{ shell: true }`) so this resolves on Windows, where the npm-installed
+  // `bd` is a POSIX shim `execFileSync` cannot exec directly without a shell.
+  // `deps.execFileSync` (test injection) is forwarded through unchanged --
+  // existing tests that stub it with a fake `(cmd, args, opts) => output`
+  // function are unaffected by the added `shell: true` in real opts.
   let output;
   try {
-    output = run('bd', ['dolt', 'remote', 'list', '--json'], {
+    output = execBdSync(['dolt', 'remote', 'list', '--json'], {
       cwd: repoPath,
       encoding: 'utf-8',
-    });
+    }, deps.execFileSync);
   } catch (err) {
     // No beads DB / no bd binary reachable in this clone (or the command
     // otherwise fails outright): there is nothing to check -- vacuously
