@@ -51,13 +51,18 @@ export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSy
     return execFileSyncImpl('bd', args, { ...options, shell: true });
 }
 
-// Argv values 'bd' invocations legitimately need: bd subcommands/flags
-// (letters, digits, '-', '--'), issue ids (letters/digits/'.'/'_'/'-', same
-// charset runner.js's ISSUE_ID_PATTERN / validateIssueId() already enforce at
-// the launch API boundary), and small numeric/flag values. Nothing 'bd' ever
-// legitimately needs contains a shell metacharacter, so this allowlist is not
-// a functional restriction -- it is a hard backstop against exactly the
-// injection class this helper exists to close off.
+// execBdAsync's two current callers (backlog.mjs's fetchAllBeadsRaw(),
+// scope-overlap.mjs's bdListChildren()) only ever make structured list/query
+// invocations: bd subcommands/flags (letters, digits, '-', '--'), issue ids
+// (letters/digits/'.'/'_'/'-', same charset runner.js's ISSUE_ID_PATTERN /
+// validateIssueId() already enforce at the launch API boundary), and small
+// numeric values. This allowlist is scoped to THAT usage, not to 'bd' as a
+// whole -- free-text values a different invocation might carry (e.g. `bd
+// create --title "..."`, `--reason=...`) would legitimately contain
+// characters this pattern rejects, which is exactly why `execBdSync` (used by
+// callers that DO pass free text, e.g. sandbox-seed-beads.mjs) does not apply
+// this same validation; a shared allowlist tight enough to be a real
+// injection backstop cannot also cover arbitrary free text.
 const SAFE_ARG_PATTERN = /^[A-Za-z0-9_.\-]+$/;
 
 /**
