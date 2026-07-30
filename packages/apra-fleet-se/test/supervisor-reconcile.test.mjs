@@ -158,6 +158,47 @@ describe('reconcile -- force-release', () => {
         );
         await fsp.rm(dir, { recursive: true, force: true });
     });
+
+    test('apra-fleet-3i3.3: force-release echoes back the released entry\'s branch/base/goal (read BEFORE release() erases the entry), enabling a caller to reconstruct the original launch request', async () => {
+        const dir = await tmpDir();
+        const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME), now: () => '2026-07-18T00:00:00.000Z' });
+        await ledger.start();
+        await ledger.claim('wedged', {
+            members: ['m1', 'm2'],
+            issueRoots: ['root-w'],
+            childPid: 999,
+            branch: 'feat/restart-me',
+            base: 'main',
+            goal: 'P1/P2',
+        });
+        const history = createHistory({ filePath: path.join(dir, HISTORY_FILENAME), now: () => '2026-07-18T02:00:00.000Z' });
+        await history.start();
+        const reconciler = createReconciler({ ledger, history });
+
+        const audit = await reconciler.forceRelease('wedged', { reason: 'restarted via Sprint Stack Restart button' });
+        assert.equal(audit.branch, 'feat/restart-me');
+        assert.equal(audit.base, 'main');
+        assert.equal(audit.goal, 'P1/P2');
+        // Still gone from the ledger, same as before this bead.
+        assert.equal(ledger.get('wedged'), undefined);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-3i3.3: a pre-3i3.2 legacy entry with no persisted branch/base/goal echoes null for each, never a fabricated value', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await seed(dir, [
+            { sprintId: 'legacy', members: ['m1'], issueRoots: ['root-l'], childPid: 555 },
+        ]);
+        const reconciler = createReconciler({ ledger, history });
+
+        const audit = await reconciler.forceRelease('legacy', { reason: 'op' });
+        assert.equal(audit.branch, null);
+        assert.equal(audit.base, null);
+        assert.equal(audit.goal, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
 });
 
 describe('reconcile -- apra-fleet-3i3.1 force-release also kills the live child', () => {

@@ -36,6 +36,17 @@
 // constructs createReconciler({ ledger, history }) without injecting killPid
 // therefore never sends a real signal, even when a seeded reservation happens
 // to carry a low/system-adjacent childPid.
+//
+// apra-fleet-3i3.3: forceRelease()'s return now ALSO echoes the released
+// entry's branch/base/goal (in addition to the members/issueRoots history.
+// record() already echoed) -- release() deletes the whole ledger entry, so
+// this is the last point they are readable. The Sprint Stack's new Restart
+// control (dashboard.mjs) is a client-side, two-step flow: it calls THIS
+// same force-release route first, then POSTs the SAME branch/base/goal/
+// members/issueRoots straight back to POST /api/sprints to relaunch, without
+// a dedicated server-side "restart" endpoint or any new plumbing here. Purely
+// additive to forceRelease()'s existing return shape -- every pre-existing
+// caller that ignores the new fields is unaffected.
 // =============================================================================
 
 import { readJsonBody, sendJson } from './server.mjs';
@@ -179,9 +190,11 @@ export function createReconciler(deps = {}) {
      * SprintNotFoundError for an unknown sprint.
      * @param {string} sprintId
      * @param {{ by?: string, reason?: string }} [audit]
-     * @returns {Promise<object>} the recorded history event, plus `childPid`
-     *   and `killed` (whether the kill signal was believed to land; null when
-     *   there was no recorded childPid to kill)
+     * @returns {Promise<object>} the recorded history event, plus `childPid`,
+     *   `killed` (whether the kill signal was believed to land; null when
+     *   there was no recorded childPid to kill), and (apra-fleet-3i3.3) the
+     *   released entry's `branch`/`base`/`goal` (each `null` when the entry
+     *   never persisted it -- a pre-3i3.2 legacy entry, or an omitted `goal`)
      */
     async function forceRelease(sprintId, audit = {}) {
         if (typeof sprintId !== 'string' || sprintId.length === 0) {
@@ -193,6 +206,11 @@ export function createReconciler(deps = {}) {
         }
         const childPid = entry.childPid ?? null;
         const killed = childPid != null ? kill(childPid) : null;
+        // apra-fleet-3i3.3: capture BEFORE release() below deletes the whole
+        // entry -- this is the last point these are readable from the ledger.
+        const branch = entry.branch ?? null;
+        const base = entry.base ?? null;
+        const goal = entry.goal ?? null;
         await ledger.release(sprintId);
         const recorded = await history.record({
             sprintId,
@@ -203,7 +221,7 @@ export function createReconciler(deps = {}) {
             issueRoots: entry.issueRoots,
             at: now(),
         });
-        return { ...recorded, childPid, killed };
+        return { ...recorded, childPid, killed, branch, base, goal };
     }
 
     return {

@@ -124,6 +124,21 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(html.includes('stop-result'));
         assert.ok(/Stop</.test(html));
     });
+
+    test('apra-fleet-3i3.3: renders a Restart button and a per-row inline result element, both keyed by sprintId', () => {
+        const html = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: 0,
+            members: [],
+        });
+        assert.ok(html.includes('btn-restart-sprint'));
+        assert.ok(html.includes('restart-result'));
+        assert.ok(/Restart</.test(html));
+    });
 });
 
 describe('dashboard -- apra-fleet-3i3.1 formatStopError', () => {
@@ -328,5 +343,24 @@ describe('dashboard -- renderIndexPageHtml', () => {
         assert.ok(html.includes('/force-release'));
         assert.ok(html.includes('btn-stop-sprint'));
         assert.ok(html.includes('confirm('));
+    });
+
+    test('apra-fleet-3i3.3: embeds the Restart button client script (force-release THEN /api/sprints relaunch wiring, via formatLaunchError for the relaunch step)', () => {
+        const html = renderIndexPageHtml([{
+            sprintId: 'sprint-1', branch: 'feat/x', goal: 'P1', status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [], beadCount: 0, members: [],
+        }]);
+        // Both the release step's error formatter (shared with Stop) and the
+        // relaunch step's error formatter (shared with the Launch Sprint
+        // form, per this bead's acceptance criterion) are embedded verbatim.
+        assert.ok(html.includes('formatStopError'));
+        assert.ok(html.includes('formatLaunchError'));
+        assert.ok(html.includes('btn-restart-sprint'));
+        // Restart is a two-step flow: release first (no separate manual Stop
+        // required), THEN relaunch via the same validated launch endpoint.
+        assert.ok(html.includes('/force-release'));
+        assert.ok(html.includes("fetch('/api/sprints'"));
+        assert.ok(html.includes('audit.branch'));
+        assert.ok(html.includes('audit.issueRoots'));
     });
 });

@@ -35,7 +35,7 @@
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
-import { renderLaunchFormHtml } from './launch-form.mjs';
+import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
 import { renderBacklogPanelHtml } from './backlog.mjs';
 
 /**
@@ -121,6 +121,14 @@ export function renderSprintSection(view) {
         // form's formatLaunchError() inline-feedback convention.
         '<button type="button" class="btn btn-secondary btn-stop-sprint" data-sprint-id="' + sprintId + '" ' +
         'style="font-size: 12px;">Stop</button>' +
+        // apra-fleet-3i3.3: releases the SAME reservation (via the SAME
+        // force-release route Stop uses) then re-launches the SAME sprint via
+        // POST /api/sprints, without a separate manual Stop first -- see
+        // SPRINT_RESTART_SCRIPT below and reconcile.mjs's forceRelease(),
+        // which now echoes back branch/base/goal/members/issueRoots for
+        // exactly this purpose.
+        '<button type="button" class="btn btn-secondary btn-restart-sprint" data-sprint-id="' + sprintId + '" ' +
+        'style="font-size: 12px;">Restart</button>' +
         '</div>' +
         '<div style="margin-top: 8px; font-size: 13px; color: #d4d4d8;">' +
         '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + '</div>' +
@@ -132,6 +140,7 @@ export function renderSprintSection(view) {
         membersHtml +
         '</div>' +
         '<div class="stop-result" data-sprint-id="' + sprintId + '" style="margin-top: 6px; font-size: 12px;"></div>' +
+        '<div class="restart-result" data-sprint-id="' + sprintId + '" style="margin-top: 6px; font-size: 12px;"></div>' +
         '</section>'
     );
 }
@@ -253,7 +262,13 @@ const SPRINT_STOP_SCRIPT = `
         if (!sprintId) return;
         if (!confirm('Stop sprint ' + sprintId + '? This kills its process and releases its reservation.')) return;
         var resultEl = document.querySelector('.stop-result[data-sprint-id="' + sprintId + '"]');
+        var section = btn.closest('section[data-sprint-id]');
+        // apra-fleet-3i3.3: also disable Restart while a Stop is in flight on
+        // the SAME row, so the two controls can never race each other into
+        // two concurrent force-release calls for the same sprintId.
+        var restartBtn = section ? section.querySelector('.btn-restart-sprint') : null;
         btn.disabled = true;
+        if (restartBtn) restartBtn.disabled = true;
         if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = 'Stopping...'; }
         fetch('/api/reservations/' + encodeURIComponent(sprintId) + '/force-release', {
             method: 'POST',
@@ -266,15 +281,154 @@ const SPRINT_STOP_SCRIPT = `
         }).then(function (r) {
             if (r.status === 200) {
                 if (resultEl) { resultEl.style.color = '#22c55e'; resultEl.textContent = 'Stopped.'; }
-                var section = btn.closest('section[data-sprint-id]');
                 if (section) section.remove();
             } else {
                 btn.disabled = false;
+                if (restartBtn) restartBtn.disabled = false;
                 if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = formatStopError(r.status, r.json); }
             }
         }).catch(function (err) {
             btn.disabled = false;
+            if (restartBtn) restartBtn.disabled = false;
             if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = 'Stop request failed: ' + err.message; }
+        });
+    });
+`;
+
+/**
+ * The Sprint Stack's per-row Restart button behavior, as a source string
+ * ready to inline into a `<script>` tag (same embedding pattern as
+ * SPRINT_STOP_SCRIPT above). A click on any `.btn-restart-sprint` button:
+ *
+ *   1. Confirms with the operator (destructive-ish: discards the old
+ *      sprint's history, same framing as Stop).
+ *   2. POSTs the SAME POST /api/reservations/:sprintId/force-release route
+ *      Stop uses (apra-fleet-3i3.1) -- releasing the reservation (and killing
+ *      the child, if still alive) with NO separate manual Stop first
+ *      (acceptance criterion).
+ *   3. Reads branch/base/goal/members/issueRoots off THAT response's `audit`
+ *      (apra-fleet-3i3.3's reconcile.mjs extension) rather than a second
+ *      network round-trip. When branch or base -- both server-REQUIRED
+ *      fields (api.mjs's validateLaunchRequest) -- is null (a pre-3i3.2
+ *      legacy entry that never persisted it), prompts the operator to enter
+ *      it; declining aborts the restart (the old reservation is already
+ *      released either way, matching Stop's own irreversibility). `goal` is
+ *      optional at launch, so a null goal only offers a prompt the operator
+ *      may leave blank, never aborts.
+ *   4. POSTs the reconstructed request to POST /api/sprints (the SAME
+ *      validated launch endpoint the Launch Sprint form uses), surfacing a
+ *      201 success (with a link to the new sprint's live view) or failure
+ *      (via launch-form.mjs's OWN formatLaunchError(), consistent with that
+ *      form's error-surfacing pattern per the acceptance criterion) INLINE in
+ *      that row's `.restart-result` element.
+ *
+ * Every promise chain ends in a `.catch()` (never a silent no-op / unhandled
+ * browser rejection). Unlike Stop, a successfully force-released row's
+ * `<section>` is NOT removed from the DOM on success -- the freshly-launched
+ * sprint has no server-rendered view model yet (branch/goal/bead-count/
+ * members are all built server-side in buildSprintViews()), so removing it
+ * would discard the only place left to show the success message and the new
+ * sprint's live-view link; both buttons are left disabled instead, since the
+ * old reservation is gone either way and a further click on either would only
+ * ever 404.
+ */
+const SPRINT_RESTART_SCRIPT = `
+    ${formatStopError.toString()}
+    ${formatLaunchError.toString()}
+    document.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.btn-restart-sprint');
+        if (!btn) return;
+        var sprintId = btn.getAttribute('data-sprint-id');
+        if (!sprintId) return;
+        if (!confirm('Restart sprint ' + sprintId + '? This releases its current reservation and relaunches the same scope as a NEW sprint.')) return;
+        var resultEl = document.querySelector('.restart-result[data-sprint-id="' + sprintId + '"]');
+        var section = btn.closest('section[data-sprint-id]');
+        var stopBtn = section ? section.querySelector('.btn-stop-sprint') : null;
+        btn.disabled = true;
+        if (stopBtn) stopBtn.disabled = true;
+        if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = 'Releasing old reservation...'; }
+        fetch('/api/reservations/' + encodeURIComponent(sprintId) + '/force-release', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ reason: 'restarted via Sprint Stack Restart button' }),
+        }).then(function (res) {
+            return res.json().catch(function () { return {}; }).then(function (json) {
+                return { status: res.status, json: json };
+            });
+        }).then(function (r) {
+            if (r.status !== 200) {
+                btn.disabled = false;
+                if (stopBtn) stopBtn.disabled = false;
+                if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = formatStopError(r.status, r.json); }
+                return;
+            }
+            var audit = (r.json && r.json.audit) || {};
+            var issueRoots = Array.isArray(audit.issueRoots) ? audit.issueRoots : [];
+            var members = Array.isArray(audit.members) ? audit.members : [];
+            var issue = issueRoots.length > 0 ? issueRoots[0] : null;
+            var branch = (typeof audit.branch === 'string' && audit.branch) ? audit.branch : null;
+            var base = (typeof audit.base === 'string' && audit.base) ? audit.base : null;
+            var goal = (typeof audit.goal === 'string' && audit.goal) ? audit.goal : null;
+
+            if (!issue || members.length === 0) {
+                if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = 'Reservation released, but the original issue/members could not be recovered -- use the Launch Sprint form to relaunch manually.'; }
+                return;
+            }
+            if (!branch) {
+                branch = (window.prompt('Branch name is not recoverable for this sprint -- enter it to continue the restart (Cancel aborts; the old reservation is already released):') || '').trim();
+                if (!branch) {
+                    if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = 'Restart cancelled: branch name is required. The old reservation has already been released -- use the Launch Sprint form to relaunch manually.'; }
+                    return;
+                }
+            }
+            if (!base) {
+                base = (window.prompt('Base branch name is not recoverable for this sprint -- enter it to continue the restart (Cancel aborts; the old reservation is already released):') || '').trim();
+                if (!base) {
+                    if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = 'Restart cancelled: base branch name is required. The old reservation has already been released -- use the Launch Sprint form to relaunch manually.'; }
+                    return;
+                }
+            }
+            if (!goal) {
+                goal = (window.prompt('Goal (e.g. P1, P1/P2, P1/P2/P3) for the restarted sprint. Leave blank to launch without one:') || '').trim();
+            }
+
+            if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = 'Relaunching...'; }
+            var body = { issue: issue, members: members, branch: branch, base: base };
+            if (goal) body.goal = goal;
+            fetch('/api/sprints', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+            }).then(function (res2) {
+                return res2.json().catch(function () { return {}; }).then(function (json2) {
+                    return { status: res2.status, json: json2 };
+                });
+            }).then(function (r2) {
+                if (r2.status === 201) {
+                    if (resultEl) {
+                        resultEl.style.color = '#22c55e';
+                        resultEl.textContent = 'Restarted as sprint ' + r2.json.sprintId + '. ';
+                        var link = document.createElement('a');
+                        link.href = '/sprints/' + encodeURIComponent(r2.json.sprintId) + '/live';
+                        link.target = '_blank';
+                        link.rel = 'noopener';
+                        link.textContent = 'Open live view';
+                        resultEl.appendChild(link);
+                    }
+                } else {
+                    btn.disabled = false;
+                    if (stopBtn) stopBtn.disabled = false;
+                    if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = 'Reservation released, but relaunch failed: ' + formatLaunchError(r2.status, r2.json); }
+                }
+            }).catch(function (err2) {
+                btn.disabled = false;
+                if (stopBtn) stopBtn.disabled = false;
+                if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = 'Reservation released, but the relaunch request failed: ' + err2.message; }
+            });
+        }).catch(function (err) {
+            btn.disabled = false;
+            if (stopBtn) stopBtn.disabled = false;
+            if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = 'Restart request failed: ' + err.message; }
         });
     });
 `;
@@ -341,6 +495,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '</div></div>\n' +
         '<script>' + DASHBOARD_TAB_SCRIPT + '</script>\n' +
         '<script>' + SPRINT_STOP_SCRIPT + '</script>\n' +
+        '<script>' + SPRINT_RESTART_SCRIPT + '</script>\n' +
         '</body>\n' +
         '</html>\n'
     );
