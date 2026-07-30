@@ -71,9 +71,12 @@ export function livePrefixFor(sprintId) {
 /**
  * Rewrites the child viewer's served HTML so its absolute app-path client calls
  * re-enter this proxy under the live prefix. Targets the child's known call
- * sites verbatim (single-quoted literals in viewer/index.mjs): `'/events'`,
- * `'/state?`, `'/stop'`, `'/save_logs'`. String (not regex) replacement keeps it
- * unambiguous and metachar-safe.
+ * sites verbatim (single-quoted literals in viewer/index.mjs and
+ * fleet-sprint/viewer-extensions.mjs): `'/events'`, `'/state?`, `'/stop'`,
+ * `'/save_logs'`, `'/extensions/` (generic on-demand-detail route, apra-fleet-04g.1
+ * -- covers every extension id, e.g. the beads task-tree description fetch),
+ * `'/activities/` (the activity tree's 'more...' full-output fetch). String (not
+ * regex) replacement keeps it unambiguous and metachar-safe.
  * @param {string} html
  * @param {string} prefix - e.g. `/sprints/my-sprint/live`
  * @returns {string}
@@ -84,7 +87,9 @@ export function rewriteChildHtml(html, prefix) {
         .split("'/events'").join("'" + prefix + "/events'")
         .split("'/state?").join("'" + prefix + "/state?")
         .split("'/stop'").join("'" + prefix + "/stop'")
-        .split("'/save_logs'").join("'" + prefix + "/save_logs'");
+        .split("'/save_logs'").join("'" + prefix + "/save_logs'")
+        .split("'/extensions/").join("'" + prefix + "/extensions/")
+        .split("'/activities/").join("'" + prefix + "/activities/");
 }
 
 /** Copy request headers for the upstream call, dropping host/encoding/hop-by-hop. */
@@ -392,6 +397,34 @@ export function createLiveProxy(deps = {}) {
     const handleStop = makeSubpath(() => '/stop');
     const handleSaveLogs = makeSubpath(() => '/save_logs');
 
+    // apra-fleet-04g.1: the generic on-demand-detail route (extension id +
+    // item id both come from the URL, unlike the fixed-path subpaths above) and
+    // the activity tree's full-output route. Both are GET, no request body.
+    async function handleExtensionDetail(req, res, ctx) {
+        const sprintId = ctx?.params?.id;
+        if (!sprintId) { sendPlain(res, 400, 'missing sprint id in path'); return; }
+        const port = safeResolvePort(sprintId);
+        if (!Number.isInteger(port)) {
+            sendPlain(res, 404, `sprint '${sprintId}' is no longer live`);
+            return;
+        }
+        const childPath = '/extensions/' + encodeURIComponent(ctx?.params?.extId ?? '')
+            + '/detail/' + encodeURIComponent(ctx?.params?.itemId ?? '');
+        proxyStream({ host, port, childPath, req, res, logError });
+    }
+
+    async function handleActivityOutput(req, res, ctx) {
+        const sprintId = ctx?.params?.id;
+        if (!sprintId) { sendPlain(res, 400, 'missing sprint id in path'); return; }
+        const port = safeResolvePort(sprintId);
+        if (!Number.isInteger(port)) {
+            sendPlain(res, 404, `sprint '${sprintId}' is no longer live`);
+            return;
+        }
+        const childPath = '/activities/' + encodeURIComponent(ctx?.params?.activityId ?? '') + '/output';
+        proxyStream({ host, port, childPath, req, res, logError });
+    }
+
     return {
         name: 'live-proxy',
         resolvePort: safeResolvePort,
@@ -401,6 +434,8 @@ export function createLiveProxy(deps = {}) {
         handleState,
         handleStop,
         handleSaveLogs,
+        handleExtensionDetail,
+        handleActivityOutput,
     };
 }
 
@@ -416,4 +451,6 @@ export function registerLiveRoutes(supervisor, proxy) {
     supervisor.route('GET', '/sprints/:id/live/state', proxy.handleState);
     supervisor.route('POST', '/sprints/:id/live/stop', proxy.handleStop);
     supervisor.route('POST', '/sprints/:id/live/save_logs', proxy.handleSaveLogs);
+    supervisor.route('GET', '/sprints/:id/live/extensions/:extId/detail/:itemId', proxy.handleExtensionDetail);
+    supervisor.route('GET', '/sprints/:id/live/activities/:activityId/output', proxy.handleActivityOutput);
 }
