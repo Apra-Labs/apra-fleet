@@ -110,9 +110,13 @@ The installed binary is `apra-fleet.exe` on Windows and `apra-fleet` elsewhere:
 ```
 
 Exit 0 = healthy. After a manual deploy, also run `/mcp` in Claude Code to
-reconnect, then `fleet_status` to confirm all members are online (not
-automatable from this file -- a follow-up human/Claude-Code-session step,
-not part of the exit-code smoke test above).
+reconnect, then call the `version` MCP tool (`mcp__apra-fleet__version`) as a
+quick smoke test that the new build is actually being served through MCP, not
+just installed on disk -- its reply (e.g. `apra-fleet v0.4.0_39b031`) should
+match the version/commit you just built. Follow with `fleet_status` to confirm
+all members are online (none of this is automatable from this file -- it's a
+follow-up human/Claude-Code-session step, not part of the exit-code smoke test
+above).
 
 ## Manual / ad-hoc deploys
 
