@@ -655,7 +655,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // explicit session id string, a cross-cycle dispatch carries
             // `false`. Purely additive (a new object key); no existing
             // assertion reads/compares the whole `dispatched` entry shape.
-            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id, resume: opts.resume });
+            // apra-fleet-eft.79: also record the resolved `model` each dispatch
+            // carried -- lets a worklist test assert per-streak tier values
+            // (e.g. a standard streak resumed after a cheap streak dispatches
+            // with model=standard). Purely additive, same rationale as the
+            // `resume` key above.
+            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id, resume: opts.resume, model: opts.model });
             await sleep(DELAY_MS);
 
             // --- plan phase: planner ---
@@ -1093,6 +1098,11 @@ export async function runDevelopLoopScenario(tag, {
     // createMemberSessionGuard()'s `stop_prompt` call end-to-end, rather than
     // only unit-testing the guard helper in isolation.
     callTool,
+    // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
+    // args (validateArgs: doer_worklist_mode 'resume'|'batch',
+    // resume_model_switch boolean, worklist_effort_budget positive number) --
+    // used by the worklist mock-sprint scenarios.
+    doerWorklistMode, resumeModelSwitch, worklistEffortBudget,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -1166,6 +1176,9 @@ export async function runDevelopLoopScenario(tag, {
                 max_cycles: maxCycles,
                 ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
                 ...(callTool !== undefined ? { callTool } : {}),
+                ...(doerWorklistMode !== undefined ? { doer_worklist_mode: doerWorklistMode } : {}),
+                ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
+                ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
             }, true);
         } catch (err) {
             error = err;
