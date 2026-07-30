@@ -34,16 +34,12 @@
 // helps the operator pick a non-overlapping set in the first place.
 // =============================================================================
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderBeadsHtml } from '../../fleet-sprint/viewer-extensions.mjs';
 import { sendJson } from './server.mjs';
-
-const execFileAsync = promisify(execFile);
+import { execBdAsync } from '../../../../scripts/lib/exec-bd.mjs';
 
 /**
  * Extract a bead's parent id from a raw `bd list --json` row. The parent-child
@@ -91,12 +87,13 @@ export function normalizeBead(raw) {
  * @returns {Promise<Array<ReturnType<typeof normalizeBead>>>}
  */
 async function fetchAllBeadsRaw() {
-    // shell: true -- on Windows, `bd` (npm-installed via @beads/bd) resolves to
-    // a `bd.cmd` shim, which Node's child_process cannot spawn directly without
-    // a shell (spawn ENOENT even though `bd` is on PATH and works from any
-    // interactive shell). Safe here: every argument is a static literal, none
-    // of it is caller-controlled.
-    const { stdout } = await execFileAsync('bd', ['list', '--json', '--limit', '0'], { shell: true });
+    // Routed through the shared execBdAsync() helper (apra-fleet-xuo.2) --
+    // on Windows it resolves the `bd.cmd` shim directly (no `shell: true`),
+    // avoiding both the ENOENT spawn issue a bare `execFileAsync('bd', ...)`
+    // would hit AND the metacharacter-injection risk `shell: true` carries.
+    // Every argument here is a static literal anyway (none caller-controlled),
+    // but the shared helper keeps this call consistent with scope-overlap.mjs's.
+    const { stdout } = await execBdAsync(['list', '--json', '--limit', '0']);
     const text = stdout && stdout.trim() ? stdout : '[]';
     let rows;
     try {
