@@ -185,6 +185,11 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
             cliPath: VIEWER_FIXTURE,
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir },
             logger: silentLogger,
+            // apra-fleet-ou7.1: createSpawner()'s own SE dataDir (per-sprint log
+            // files) -- reuse the SAME temp dir already created/cleaned up for
+            // this suite's ledger/history, distinct from the child fixture's own
+            // APRA_FLEET_DATA_DIR above.
+            dataDir,
         });
 
         // Mirrors proxy.mjs's own defaultResolvePort: sprintId -> ledger childPid

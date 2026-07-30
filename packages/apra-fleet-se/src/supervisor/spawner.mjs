@@ -34,6 +34,9 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -41,6 +44,50 @@ const __dirname = path.dirname(__filename);
 
 /** Default first port tried when allocating a fresh `--viewer-port`. */
 export const DEFAULT_SPAWNER_BASE_PORT = 8081;
+
+/**
+ * The default service data directory. Overridable via the FLEET_SE_DATA_DIR
+ * env var, otherwise `~/.apra-fleet-se`. Mirrors ledger.mjs's/history.mjs's
+ * own identically-named helper (each module keeps its own small copy rather
+ * than cross-importing one another -- the established convention in this
+ * package, see id-allocator.mjs's own copy too).
+ * @returns {string}
+ */
+export function defaultDataDir() {
+    return process.env.FLEET_SE_DATA_DIR
+        ? path.resolve(process.env.FLEET_SE_DATA_DIR)
+        : path.join(os.homedir(), '.apra-fleet-se');
+}
+
+/** Subdirectory (under the SE data dir) that per-sprint raw stdout/stderr log files live in. */
+export const SPRINT_LOG_SUBDIR = 'logs';
+
+/**
+ * apra-fleet-ou7.1: builds the per-sprint raw stdout/stderr log file path
+ * (`<dataDir>/logs/<stem>.log`) a spawned child's stdio is teed to for its
+ * whole lifetime, including after a crash (spawnSprint() below opens this
+ * BEFORE spawning and hands the fd directly to the child, so a Node-level
+ * buffered stream is never in the way of capturing a crash's last output).
+ *
+ * `stem` is sanitized to the same shell/filesystem-safe character class
+ * fleet-sprint/runner.js's ISSUE_ID_PATTERN already uses for issue ids
+ * (letters, digits, '.', '_', '-') so a caller-supplied runId can never
+ * escape the logs directory (no '/', '\\', or '..' path-traversal) and never
+ * needs any extra shell quoting.
+ * @param {string} dataDir
+ * @param {string} stem - typically the sprint's runId; sanitized before use
+ * @returns {string}
+ */
+export function resolveSprintLogPath(dataDir, stem) {
+    const safeStem = String(stem ?? '').replace(/[^A-Za-z0-9._-]/g, '_');
+    const fileName = `${safeStem.length > 0 ? safeStem : 'sprint'}.log`;
+    // Defense in depth: even after sanitizing, refuse anything that is not
+    // a single plain filename (e.g. a sanitized-to-'..'-only stem).
+    if (fileName !== path.basename(fileName) || fileName === '.log') {
+        throw new Error(`[spawner] refusing to build an unsafe sprint log file name from stem '${stem}'`);
+    }
+    return path.join(dataDir, SPRINT_LOG_SUBDIR, fileName);
+}
 
 /**
  * Resolves the on-disk path to `bin/cli.mjs`, the existing per-sprint CLI this
@@ -186,17 +233,23 @@ export function buildSprintArgv(opts = {}) {
  *   isPortAvailable?: (port: number) => Promise<boolean>,
  *   logger?: { log?: Function, error?: Function },
  *   serviceUrl?: string,
- *   onChildExit?: (info: { pid: number, runId: string|null, exitCode: number|null, signal: string|null, at: string }) => void,
+ *   onChildExit?: (info: { pid: number, runId: string|null, exitCode: number|null, signal: string|null, at: string, logPath: string }) => void,
  *   now?: () => string,
+ *   dataDir?: string,
+ *   fs?: {
+ *     mkdirSync: typeof import('node:fs').mkdirSync,
+ *     openSync: typeof import('node:fs').openSync,
+ *     closeSync: typeof import('node:fs').closeSync,
+ *   },
  * }} [deps]
  * @returns {{
  *   name: string,
  *   start(): Promise<void>,
  *   stop(): Promise<void>,
- *   spawnSprint(opts: object): Promise<{ pid: number, port: number, command: string, args: string[] }>,
+ *   spawnSprint(opts: object): Promise<{ pid: number, port: number, command: string, args: string[], logPath: string }>,
  *   liveCount: number,
  *   livePorts: Set<number>,
- *   getLiveEntry(pid: number): { port: number, child: object }|undefined,
+ *   getLiveEntry(pid: number): { port: number, child: object, logPath: string }|undefined,
  * }}
  */
 export function createSpawner(deps = {}) {
@@ -205,6 +258,11 @@ export function createSpawner(deps = {}) {
     const spawnImpl = deps.spawn ?? nodeSpawn;
     const isAvailable = deps.isPortAvailable ?? isPortAvailable;
     const basePort = Number.isInteger(deps.basePort) ? deps.basePort : DEFAULT_SPAWNER_BASE_PORT;
+    // apra-fleet-ou7.1: where per-sprint raw stdout/stderr log files live
+    // (<dataDir>/logs/<stem>.log, resolveSprintLogPath() above). Injectable
+    // fs so a test can drive a temp dir/fake fs without touching real disk.
+    const dataDir = deps.dataDir ?? defaultDataDir();
+    const fsImpl = deps.fs ?? fs;
     const command = deps.command ?? process.execPath;
     const cliPath = deps.cliPath ?? defaultCliPath();
     // apra-fleet-f34.1: the supervisor's OWN HTTP listen address (e.g.
@@ -227,7 +285,7 @@ export function createSpawner(deps = {}) {
      * This is only ever used to keep --viewer-port allocation unique within
      * this process's lifetime; it is NOT the durable source of truth (that is
      * eft.5's ledger, re-adopted across restarts by eft.4.5).
-     * @type {Map<number, { port: number, child: import('node:child_process').ChildProcess }>}
+     * @type {Map<number, { port: number, child: import('node:child_process').ChildProcess, logPath: string }>}
      */
     const live = new Map();
 
@@ -238,25 +296,64 @@ export function createSpawner(deps = {}) {
     /**
      * Spawns one sprint as a detached `bin/cli.mjs` child with a freshly
      * allocated, currently-unique `--viewer-port`.
+     *
+     * apra-fleet-ou7.1: the child's stdout+stderr are teed to a per-sprint
+     * raw log file (resolveSprintLogPath()) instead of `stdio: 'ignore'` --
+     * opened BEFORE spawning and handed to the child as a real fd (not a
+     * Node stream), so raw output is captured for the sprint's WHOLE
+     * lifetime, including whatever it wrote right before a crash. The
+     * file's own fd is a plain OS-level dup once spawn() hands it to the
+     * child, so this process's copy is safe to close the moment the child
+     * itself exits (or immediately, if spawn/the pid check fails) without
+     * losing anything the child is still writing.
      * @param {object} opts - the sprint's cli.mjs flags (issue, members, branch, base, ...)
-     * @returns {Promise<{ pid: number, port: number, command: string, args: string[] }>}
+     * @returns {Promise<{ pid: number, port: number, command: string, args: string[], logPath: string }>}
      */
     async function spawnSprint(opts = {}) {
         const port = await allocateFreePort({ startPort: basePort, excludedPorts: livePortSet(), isAvailable });
         const args = [cliPath, ...buildSprintArgv({ ...opts, viewerPort: port, serviceUrl: opts.serviceUrl ?? serviceUrl })];
 
-        const child = spawnImpl(command, args, {
-            detached: true,
-            stdio: 'ignore',
-            ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
-            ...(deps.env !== undefined ? { env: deps.env } : {}),
-        });
+        // apra-fleet-ou7.1: opts.runId is the SAME sprintId createSprintController
+        // generates and claims in the ledger BEFORE spawning (apra-fleet-k7b.1) --
+        // reused here (not re-derived) so the log file name and the ledger's
+        // sprintId key always agree. A direct/standalone spawnSprint() call with
+        // no runId (or a test) still gets a unique file via the randomUUID() fallback.
+        const logPath = resolveSprintLogPath(dataDir, opts.runId || `direct-${randomUUID()}`);
+        fsImpl.mkdirSync(path.dirname(logPath), { recursive: true });
+        const logFd = fsImpl.openSync(logPath, 'a');
+        let logFdClosed = false;
+        const closeLogFd = () => {
+            if (logFdClosed) return;
+            logFdClosed = true;
+            try {
+                fsImpl.closeSync(logFd);
+            } catch (err) {
+                logError(`[spawner] failed to close log fd for '${logPath}':`, err);
+            }
+        };
+
+        let child;
+        try {
+            child = spawnImpl(command, args, {
+                detached: true,
+                stdio: ['ignore', logFd, logFd],
+                ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
+                ...(deps.env !== undefined ? { env: deps.env } : {}),
+            });
+        } catch (err) {
+            // Spawn itself threw synchronously (e.g. an injected fake spawn in
+            // a test) -- our copy of the fd is never handed off, close it now
+            // so a failed launch can never leak it.
+            closeLogFd();
+            throw err;
+        }
 
         if (!child || typeof child.pid !== 'number') {
+            closeLogFd();
             throw new Error('[spawner] spawn did not return a pid; sprint child process failed to launch');
         }
         const pid = child.pid;
-        live.set(pid, { port, child });
+        live.set(pid, { port, child, logPath });
 
         // Free this port for reuse and drop local bookkeeping once the child
         // actually exits. This ONLY reacts to the child's own lifecycle --
@@ -270,8 +367,16 @@ export function createSpawner(deps = {}) {
         // notification rather than owning ledger/history persistence itself
         // (bin/serve.mjs's wiring does that). A throwing callback must never
         // take down this listener's own bookkeeping cleanup above it.
+        //
+        // apra-fleet-ou7.1: this is also where the log fd is closed --
+        // acceptance criterion "file handles are closed on child exit (no fd
+        // leak across many launches)". The child has its own OS-level
+        // duplicated descriptor (dup2'd at spawn time), so closing OUR copy
+        // here never truncates or loses anything the child wrote, including
+        // its very last output before a crash.
         child.once('exit', (code, signal) => {
             live.delete(pid);
+            closeLogFd();
             if (typeof onChildExit === 'function') {
                 try {
                     // Promise.resolve(...).catch(...) covers BOTH a synchronous
@@ -285,6 +390,7 @@ export function createSpawner(deps = {}) {
                         exitCode: code ?? null,
                         signal: signal ?? null,
                         at: nowFn(),
+                        logPath,
                     })).catch((err) => {
                         logError(`[spawner] onChildExit callback rejected for pid=${pid}:`, err);
                     });
@@ -296,6 +402,9 @@ export function createSpawner(deps = {}) {
         child.once('error', (err) => {
             logError(`[spawner] child pid=${pid} (issue=${opts.issue}) emitted error:`, err);
             live.delete(pid);
+            // 'error' can fire instead of, or alongside, 'exit' -- closeLogFd()
+            // is idempotent, so whichever fires (or both) closes exactly once.
+            closeLogFd();
         });
 
         // CRITICAL (acceptance criterion): unref() so this child never keeps
@@ -304,7 +413,7 @@ export function createSpawner(deps = {}) {
         // supervisor SIGKILL/exit can never take this child down with it.
         child.unref();
 
-        return { pid, port, command, args };
+        return { pid, port, command, args, logPath };
     }
 
     return {
@@ -338,6 +447,12 @@ export function createSpawner(deps = {}) {
          * NOT re-verify liveness (the caller -- eft.4.5's re-adopter -- has
          * already PID-probed via the restart reconciler before calling this).
          * Idempotent: adopting the same pid again simply overwrites its port.
+         *
+         * apra-fleet-ou7.1: `logPath` is not recovered here (unlike --viewer-
+         * port, it is not on the re-adopted child's own command line) --
+         * consumers needing it for a re-adopted sprint read it from the
+         * ledger's own persisted reservation (recorded at the ORIGINAL
+         * claim/spawn, survives the restart), not from this in-memory entry.
          * @param {number} pid
          * @param {number} port
          */
@@ -348,7 +463,7 @@ export function createSpawner(deps = {}) {
             if (!Number.isInteger(port) || port <= 0 || port > 65535) {
                 throw new TypeError('adopt() requires an integer port in [1, 65535]');
             }
-            live.set(pid, { port, child: null });
+            live.set(pid, { port, child: null, logPath: null });
         },
 
         /** Number of sprints spawned by this process that haven't exited yet. */

@@ -111,9 +111,14 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // the reservation is eventually released. Both are independently best-
     // effort -- a missing/already-released reservation (e.g. a force-release
     // raced the child's own exit) must never crash this listener.
+    // apra-fleet-ou7.1: onChildExit also carries logPath (spawner.mjs's own
+    // per-sprint raw stdout/stderr log file) through into the CHILD_EXITED
+    // history event -- the ledger already has it (recorded at claim() time,
+    // see createSprintController's launch()), but history's own copy stays
+    // discoverable even after the reservation is eventually released.
     const spawner = createSpawner({
         serviceUrl: `http://localhost:${port}`,
-        onChildExit: async ({ runId, exitCode, signal, at }) => {
+        onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
             if (!runId) return;
             try {
                 await ledger.recordExit(runId, { exitCode, signal, at });
@@ -121,7 +126,7 @@ export async function serveMain(argv = process.argv.slice(2)) {
                 console.error(`[spawner] ledger.recordExit failed for '${runId}':`, err);
             }
             try {
-                await history.record({ sprintId: runId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at });
+                await history.record({ sprintId: runId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at, logPath });
             } catch (err) {
                 console.error(`[spawner] history.record(CHILD_EXITED) failed for '${runId}':`, err);
             }

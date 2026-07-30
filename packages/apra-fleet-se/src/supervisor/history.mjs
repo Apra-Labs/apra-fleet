@@ -65,6 +65,11 @@ function cloneEvent(e) {
         // null-default convention above.
         exitCode: e.exitCode === undefined ? null : e.exitCode,
         signal: e.signal === undefined ? null : e.signal,
+        // apra-fleet-ou7.1: same optional/null-default convention -- the
+        // sprint's per-sprint raw log file path, recorded on a CHILD_EXITED
+        // event so it is still discoverable once the ledger reservation that
+        // originally carried it is released.
+        logPath: e.logPath === undefined ? null : e.logPath,
     };
 }
 
@@ -138,7 +143,7 @@ export function createHistory(deps = {}) {
         /**
          * Append one terminal event and persist atomically. The in-memory log is
          * committed only after the disk write succeeds.
-         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null }} entry
+         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null, logPath?: string|null }} entry
          * @returns {Promise<object>} a clone of the stored event
          */
         async record(entry) {
@@ -158,6 +163,7 @@ export function createHistory(deps = {}) {
                 at: typeof entry.at === 'string' ? entry.at : now(),
                 exitCode: entry.exitCode,
                 signal: entry.signal,
+                logPath: entry.logPath,
             });
             const run = txChain.then(async () => {
                 const next = [...events, stored];

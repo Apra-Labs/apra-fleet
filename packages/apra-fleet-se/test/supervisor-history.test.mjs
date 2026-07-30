@@ -52,11 +52,14 @@ describe('history -- CHILD_EXITED event (apra-fleet-k7b.3)', () => {
             exitCode: 1,
             signal: null,
             at: '2026-07-30T21:25:50.000Z',
+            // apra-fleet-ou7.1: the sprint's per-sprint raw log file path.
+            logPath: '/home/x/.apra-fleet-se/logs/s1.log',
         });
         assert.equal(stored.event, 'child-exited');
         assert.equal(stored.exitCode, 1);
         assert.equal(stored.signal, null);
         assert.equal(stored.at, '2026-07-30T21:25:50.000Z');
+        assert.equal(stored.logPath, '/home/x/.apra-fleet-se/logs/s1.log');
 
         // Round-trips through list()/latestFor() and survives a reload.
         assert.equal(history.latestFor('s1').exitCode, 1);
@@ -67,6 +70,7 @@ describe('history -- CHILD_EXITED event (apra-fleet-k7b.3)', () => {
         assert.equal(ev.exitCode, 1);
         assert.equal(ev.signal, null);
         assert.equal(ev.at, '2026-07-30T21:25:50.000Z');
+        assert.equal(ev.logPath, '/home/x/.apra-fleet-se/logs/s1.log');
 
         await fsp.rm(dir, { recursive: true, force: true });
     });

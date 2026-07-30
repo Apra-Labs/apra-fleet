@@ -70,6 +70,12 @@ export const LEDGER_FILENAME = 'reservations.json';
  *                                   exited normally / is unknown.
  * @property {string|null} exitedAt  apra-fleet-k7b.3: ISO-8601 timestamp of
  *                                   the recorded exit, or null until known.
+ * @property {string|null} logPath   apra-fleet-ou7.1: path to this sprint's
+ *                                   raw stdout/stderr log file (spawner.mjs's
+ *                                   resolveSprintLogPath()), recorded at the
+ *                                   SAME claim() call that sets childPid;
+ *                                   null only for a reservation claimed
+ *                                   before this field existed.
  *
  * @typedef {object} LedgerDocument
  * @property {number} version                              Equals LEDGER_VERSION.
@@ -103,6 +109,8 @@ export const LEDGER_SCHEMA = Object.freeze({
                     exitCode: { type: ['integer', 'null'] },
                     signal: { type: ['string', 'null'] },
                     exitedAt: { type: ['string', 'null'] },
+                    // apra-fleet-ou7.1: same optional/null-defaulted convention.
+                    logPath: { type: ['string', 'null'] },
                 },
             },
         },
@@ -177,7 +185,15 @@ function normalizeReservation(input, now) {
         throw new TypeError('exitedAt must be a string or null');
     }
 
-    return { members, issueRoots, childPid, reservedAt, exitCode, signal, exitedAt };
+    // apra-fleet-ou7.1: logPath defaults to null (unknown -- a reservation
+    // predating this field), same convention as above.
+    let logPath = input.logPath;
+    if (logPath === undefined) logPath = null;
+    if (logPath !== null && typeof logPath !== 'string') {
+        throw new TypeError('logPath must be a string or null');
+    }
+
+    return { members, issueRoots, childPid, reservedAt, exitCode, signal, exitedAt, logPath };
 }
 
 /** Deep-clone a reservation so callers can never mutate ledger-internal state. */
@@ -189,6 +205,7 @@ function cloneReservation(r) {
         reservedAt: r.reservedAt,
         exitCode: r.exitCode ?? null,
         signal: r.signal ?? null,
+        logPath: r.logPath ?? null,
         exitedAt: r.exitedAt ?? null,
     };
 }

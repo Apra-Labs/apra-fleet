@@ -226,8 +226,8 @@ export function proxyChildStop(port, opts = {}) {
  *     claim: (id: string, r: object) => Promise<object>,
  *   },
  *   spawner: {
- *     spawnSprint: (opts: object) => Promise<{ pid: number, port: number, args?: string[] }>,
- *     getLiveEntry?: (pid: number) => { port: number }|undefined,
+ *     spawnSprint: (opts: object) => Promise<{ pid: number, port: number, args?: string[], logPath?: string }>,
+ *     getLiveEntry?: (pid: number) => { port: number, logPath?: string }|undefined,
  *   },
  *   history?: { latestFor: (id: string) => object|undefined, forSprint: (id: string) => object[] },
  *   listMembers: () => Promise<object|object[]>|object|object[],
@@ -358,12 +358,17 @@ export function createSprintController(deps = {}) {
             runId: sprintId,
         };
         const spawned = await spawner.spawnSprint(spawnOpts);
-        await ledger.claim(sprintId, { members: union, issueRoots, childPid: spawned.pid });
+        // apra-fleet-ou7.1: spawner.spawnSprint() always opens a per-sprint
+        // raw stdout/stderr log file before spawning -- record its path on
+        // the SAME claim() call that sets childPid, so a dashboard/consumer
+        // reading the ledger can find it for a live OR crashed sprint alike.
+        await ledger.claim(sprintId, { members: union, issueRoots, childPid: spawned.pid, logPath: spawned.logPath });
 
         return {
             sprintId,
             pid: spawned.pid,
             port: spawned.port,
+            logPath: spawned.logPath,
             issueRoots,
             members: union,
             goal: body.goal ?? null,

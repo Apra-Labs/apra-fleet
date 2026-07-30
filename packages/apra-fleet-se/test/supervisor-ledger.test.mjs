@@ -54,6 +54,8 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
             exitCode: null,
             signal: null,
             exitedAt: null,
+            // apra-fleet-ou7.1: null unless claim() is given a logPath.
+            logPath: null,
         });
 
         await fsp.rm(dir, { recursive: true, force: true });
@@ -162,6 +164,37 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
         await reloaded.start();
         assert.equal(reloaded.get('sprint-a').childPid, 9999);
 
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-ou7.1: claim() accepts (and persists) a logPath -- the
+    // spawner's per-sprint raw stdout/stderr log file path, recorded at the
+    // SAME claim() call that sets childPid.
+    test('claim() persists a logPath, and it survives a reload', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+        await ledger.claim('sprint-a', {
+            members: ['alice'], issueRoots: ['apra-fleet-x'], childPid: 4321,
+            logPath: '/home/x/.apra-fleet-se/logs/sprint-a.log',
+        });
+        assert.equal(ledger.get('sprint-a').logPath, '/home/x/.apra-fleet-se/logs/sprint-a.log');
+
+        const reloaded = createLedger({ filePath });
+        await reloaded.start();
+        assert.equal(reloaded.get('sprint-a').logPath, '/home/x/.apra-fleet-se/logs/sprint-a.log');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('claim() without a logPath defaults it to null (unchanged prior behavior)', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+        assert.equal(ledger.get('sprint-a').logPath, null);
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
