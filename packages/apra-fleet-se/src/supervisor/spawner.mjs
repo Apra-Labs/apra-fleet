@@ -119,13 +119,13 @@ export async function allocateFreePort(opts = {}) {
  *   issue: string, members: string, branch: string, base: string,
  *   goal?: string, maxCycles?: number|string, allowMissingMembers?: boolean,
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
- *   viewerPort: number, serviceUrl?: string, extraArgs?: string[],
+ *   viewerPort: number, serviceUrl?: string, runId?: string, extraArgs?: string[],
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, extraArgs } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, extraArgs } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -156,6 +156,16 @@ export function buildSprintArgv(opts = {}) {
     // source-3 no-op fallback. Absent a configured serviceUrl this is omitted
     // entirely -- fallback behavior is unchanged.
     if (serviceUrl !== undefined) args.push('--service-url', serviceUrl);
+    // apra-fleet-k7b.1: the supervisor's own sprintId (its ledger reservation
+    // key) forwarded as this child's --run-id, so the engine's run-state
+    // (running/<runId>.json -> old_runs/<runId>.json, apra-fleet-workflow's
+    // viewer) and the dashboard viewer's identity are keyed by the SAME
+    // incarnation-unique id the supervisor already uses -- not the sprint
+    // branch name, which is reused across relaunches on the same branch and
+    // would otherwise silently overwrite prior run history. Omitted here (a
+    // direct/standalone CLI launch never goes through this spawner) means
+    // cli.mjs falls back to the branch name itself.
+    if (runId !== undefined) args.push('--run-id', runId);
     if (Array.isArray(extraArgs)) args.push(...extraArgs);
     return args;
 }

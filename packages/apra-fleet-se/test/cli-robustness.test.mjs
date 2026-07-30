@@ -384,6 +384,34 @@ describe('--service-url flag (apra-fleet-f34.1)', () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// apra-fleet-k7b.1: --run-id (this launch's incarnation-unique identity,
+// forwarded by the supervisor spawner as its own ledger sprintId) is what
+// cli.mjs's `runId` (createDashboardViewer opt, see main()'s effectiveRunId)
+// prefers over branchName -- unit-tested here as parseCliArgs coverage plus
+// the fallback expression itself, since main()'s own createDashboardViewer
+// call isn't independently exported/pure like buildRunnerArgs.
+// ---------------------------------------------------------------------------
+
+describe('--run-id flag (apra-fleet-k7b.1)', () => {
+    test('parseCliArgs accepts --run-id', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--run-id', 'bd-1-abc123']);
+        assert.strictEqual(values['run-id'], 'bd-1-abc123');
+    });
+
+    test('effectiveRunId prefers --run-id over the branch name (mirrors main()\'s fallback expression)', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--run-id', 'bd-1-abc123']);
+        const effectiveRunId = values['run-id'] || values.branch;
+        assert.strictEqual(effectiveRunId, 'bd-1-abc123');
+    });
+
+    test('effectiveRunId falls back to the branch name when --run-id is absent (direct/standalone launch)', () => {
+        const { values } = parseCliArgs(BASE_ARGV);
+        const effectiveRunId = values['run-id'] || values.branch;
+        assert.strictEqual(effectiveRunId, 'auto-sprint/x');
+    });
+});
+
 describe('formatViewerListenError / attachViewerErrorHandler (e: viewer port)', () => {
     test('formats an actionable message for EADDRINUSE', () => {
         const err = Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' });

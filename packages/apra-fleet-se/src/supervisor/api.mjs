@@ -334,6 +334,14 @@ export function createSprintController(deps = {}) {
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
         await beforeLaunch({ members: union, issueRoots });
 
+        // apra-fleet-k7b.1: generate the sprintId BEFORE spawning (not after,
+        // as before) so it can be forwarded into the child's own argv as
+        // --run-id (buildSprintArgv) -- the SAME incarnation-unique id this
+        // ledger reservation uses, so the engine's run-state and the ledger
+        // agree on one identity for this launch instead of the child falling
+        // back to reusing the (relaunch-shared) branch name.
+        const sprintId = generateSprintId(issue);
+
         // Forward the per-request goal straight into the child argv (buildSprintArgv
         // pushes `--goal <goal>` when goal !== undefined).
         const spawnOpts = {
@@ -347,9 +355,9 @@ export function createSprintController(deps = {}) {
             requirementsFile: body.requirementsFile,
             roleMap,
             budget: body.budget,
+            runId: sprintId,
         };
         const spawned = await spawner.spawnSprint(spawnOpts);
-        const sprintId = generateSprintId(issue);
         await ledger.claim(sprintId, { members: union, issueRoots, childPid: spawned.pid });
 
         return {

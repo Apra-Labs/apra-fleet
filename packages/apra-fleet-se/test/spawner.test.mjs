@@ -131,6 +131,25 @@ describe('buildSprintArgv', () => {
         assert.ok(!args.includes('--service-url'));
     });
 
+    // apra-fleet-k7b.1: --run-id forwards the supervisor's own sprintId so the
+    // spawned cli.mjs child's engine run-state and dashboard viewer identity
+    // are keyed by an incarnation-unique id, not the (relaunch-shared) branch.
+    test('appends --run-id when runId is provided', () => {
+        const args = buildSprintArgv({
+            issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080,
+            runId: 'PROJ-1-abc123',
+        });
+        assert.deepEqual(args, [
+            '--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main',
+            '--viewer-port', '8080', '--run-id', 'PROJ-1-abc123',
+        ]);
+    });
+
+    test('omits --run-id entirely when runId is not provided (falls back to --branch in cli.mjs)', () => {
+        const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
+        assert.ok(!args.includes('--run-id'));
+    });
+
     test('throws when a required flag is missing', () => {
         assert.throws(() => buildSprintArgv({ members: 'm', branch: 'b', base: 'main', viewerPort: 8080 }), /issue, members, branch, and base/);
     });

@@ -112,6 +112,35 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // apra-fleet-k7b.1: the sprintId is now generated BEFORE spawning (not
+    // after) so it can be forwarded into the child's own argv as --run-id --
+    // asserting here that the child's --run-id argv value is the EXACT SAME
+    // id the caller gets back as result.sprintId (and that the ledger claims
+    // that same id), not some independently-generated value.
+    test('forwards the ledger sprintId into the child argv as --run-id', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice', 'bob'], branch: 'feat/x', base: 'main',
+        });
+
+        assert.equal(captured.length, 1);
+        const args = captured[0].args;
+        const ri = args.indexOf('--run-id');
+        assert.ok(ri >= 0, 'child argv must contain --run-id');
+        assert.equal(args[ri + 1], result.sprintId);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('a launch WITHOUT a goal emits no --goal flag', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
