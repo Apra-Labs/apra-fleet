@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseClaudeOAuthSecret, extractBearerTokenFromSecret, runAuth } from '../src/cli/auth.js';
+import { parseClaudeOAuthSecret, extractBearerTokenFromSecret, resolveAmbientClaudeCredential, runAuth } from '../src/cli/auth.js';
 import { checkCleanEnvCredentialsFile, checkMemberEnvVarProvisioned, defaultRegistryPath } from '../scripts/check-toy-doer-credentials.mjs';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { decryptPassword } from '../src/utils/crypto.js';
@@ -80,6 +80,101 @@ describe('parseClaudeOAuthSecret', () => {
     expect(typeof result.expiresAt).toBe('number');
     expect(result.expiresAt as number).toBeGreaterThan(Date.now());
     expect(result.scopes as string[]).toContain('user:inference');
+  });
+});
+
+// apra-fleet-04g.5 (fix for apra-fleet-04g.4, "[integ] Smoke-test step 3a
+// credential-file-first fallback silently prefers stale expired token over
+// fresh CLAUDE_CODE_OAUTH_TOKEN"): integ-test-playbook.md step 3a's own
+// inline shell script used to check the credential FILE first, so a live env
+// token was ignored whenever the file existed with any (even expired)
+// accessToken. resolveAmbientClaudeCredential() is the fix -- env var wins
+// whenever it is set, file is only consulted as a fallback.
+describe('resolveAmbientClaudeCredential (apra-fleet-04g.5)', () => {
+  let tmpHome: string;
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-resolve-ambient-cred-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  function writeCredFile(claudeAiOauth: Record<string, unknown>): void {
+    fs.mkdirSync(path.join(tmpHome, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpHome, '.claude', '.credentials.json'),
+      JSON.stringify({ claudeAiOauth }),
+    );
+  }
+
+  it('prefers a fresh CLAUDE_CODE_OAUTH_TOKEN env var over an EXPIRED credential-file accessToken (the reported regression)', () => {
+    writeCredFile({
+      accessToken: 'sk-stale-expired-file-token',
+      expiresAt: Date.now() - 1000 * 60 * 60, // expired an hour ago
+      scopes: ['user:inference'],
+    });
+
+    const result = resolveAmbientClaudeCredential(
+      { CLAUDE_CODE_OAUTH_TOKEN: 'sk-fresh-live-env-token' } as NodeJS.ProcessEnv,
+      tmpHome,
+    );
+
+    expect(result).toBe('sk-fresh-live-env-token');
+  });
+
+  it('falls back to the credential file (probe-safe, refresh fields stripped) when the env var is unset', () => {
+    writeCredFile({
+      accessToken: 'sk-file-token',
+      refreshToken: 'sk-should-be-stripped',
+      refreshTokenExpiresAt: 1999999999999,
+      expiresAt: 1999999999999,
+      scopes: ['user:inference'],
+    });
+
+    const result = resolveAmbientClaudeCredential({} as NodeJS.ProcessEnv, tmpHome);
+
+    const parsed = JSON.parse(result);
+    expect(parsed.accessToken).toBe('sk-file-token');
+    expect(parsed.refreshToken).toBeUndefined();
+    expect(parsed.refreshTokenExpiresAt).toBeUndefined();
+  });
+
+  it('falls back to the credential file when the env var is empty string', () => {
+    writeCredFile({ accessToken: 'sk-file-fallback-empty-env', expiresAt: 1999999999999 });
+
+    const result = resolveAmbientClaudeCredential({ CLAUDE_CODE_OAUTH_TOKEN: '' } as NodeJS.ProcessEnv, tmpHome);
+
+    const parsed = JSON.parse(result);
+    expect(parsed.accessToken).toBe('sk-file-fallback-empty-env');
+  });
+
+  it('returns an empty string when neither the env var nor the credential file is available', () => {
+    const result = resolveAmbientClaudeCredential({} as NodeJS.ProcessEnv, tmpHome);
+    expect(result).toBe('');
+  });
+
+  // apra-fleet-04g.4.1 acceptance bullet 3: document/assert the intended
+  // precedence for the case where BOTH sources are present and the file
+  // token is valid+fresh (not expired) -- resolveAmbientClaudeCredential's
+  // documented contract (see the comment above its definition) is that the
+  // env var wins unconditionally whenever set, regardless of the file
+  // token's own freshness. This pins that intent so a future change cannot
+  // silently flip to "prefer whichever is fresher."
+  it('prefers the env var over the credential file even when the file token is itself valid+fresh (env always wins when set)', () => {
+    writeCredFile({
+      accessToken: 'sk-fresh-file-token',
+      expiresAt: Date.now() + 1000 * 60 * 60, // fresh, expires an hour from now
+      scopes: ['user:inference'],
+    });
+
+    const result = resolveAmbientClaudeCredential(
+      { CLAUDE_CODE_OAUTH_TOKEN: 'sk-fresh-live-env-token' } as NodeJS.ProcessEnv,
+      tmpHome,
+    );
+
+    expect(result).toBe('sk-fresh-live-env-token');
   });
 });
 

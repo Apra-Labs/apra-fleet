@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isAuthDispatchError, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 
 // apra-fleet-6z8.3: backoff for retrying ONLY the post-dispatch sync step of a
 // bracket whose dispatch already completed. Short and bounded -- this is a
@@ -8183,6 +8183,12 @@ async function runSprintCycle(context) {
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
             let integResult;
+            // apra-fleet-04g.6: set when the integ dispatch failed for an
+            // INFRASTRUCTURE reason (empty_response / inactivity timeout /
+            // orphan-recovery timeout) rather than producing a real pass/fail
+            // verdict -- recorded as INCONCLUSIVE below instead of a false
+            // passed:false FAIL. Carries {reason, message} for the note.
+            let integInfraInconclusive = null;
             try {
                 // apra-fleet-xbu.C3: integ-test-runner.md's own contract
                 // requires "an explicit list of feature ids ... already
@@ -8335,6 +8341,24 @@ async function runSprintCycle(context) {
                         log(`Integ Test Runner exhausted its turn limit (max_turns=${INTEG_TEST_MAX_TURNS}) -- resuming the same session with max_turns=${INTEG_TEST_MAX_TURNS * 2} instead of restarting the run.`);
                         await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
                         integResult = await dispatchIntegResume();
+                    } else if (err instanceof AgentDispatchError && isInfraDispatchFailure(err)) {
+                        // apra-fleet-04g.6: an INFRA dispatch failure
+                        // (empty_response / inactivity timeout / orphan-recovery
+                        // timeout -- the exact faults that silently sank cycles
+                        // C4 and C5) is NOT a test verdict: the runner's CLI
+                        // died mid-turn or lost its result envelope without ever
+                        // reporting pass or fail. Retry ONCE by resuming the same
+                        // session -- the run may have made real progress and
+                        // merely lost its envelope, and the resume ladder already
+                        // restates the full scope so nothing is lost. If the
+                        // resume ALSO fails for an infra reason, let it propagate
+                        // to the outer catch, which records the cycle as
+                        // INCONCLUSIVE (never a false passed:false FAIL) so the
+                        // infra fault is distinguishable from a genuine test
+                        // failure.
+                        log(`Integ Test Runner: infrastructure dispatch failure (${err.details?.reason}) -- the member CLI produced no test verdict (no result envelope). This is NOT a test failure; resuming the same session once to recover before recording anything.`);
+                        await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
+                        integResult = await dispatchIntegResume();
                     } else {
                         throw err;
                     }
@@ -8343,6 +8367,19 @@ async function runSprintCycle(context) {
                 if (err instanceof AgentOutputError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
+                } else if (err instanceof AgentDispatchError && isInfraDispatchFailure(err)) {
+                    // apra-fleet-04g.6: the dispatch failed for an INFRASTRUCTURE
+                    // reason even after the single resume retry above -- the
+                    // member CLI never delivered a test verdict (this is the
+                    // C4 empty_response / C5 inactivity-timeout family). Record
+                    // it as INCONCLUSIVE below, NOT as a genuine passed:false
+                    // FAIL: an infra fault must never masquerade as a real test
+                    // failure and block the sprint's confidence check. integResult
+                    // is stubbed only so downstream references stay defined; the
+                    // integInfraInconclusive branch below owns what gets recorded.
+                    integInfraInconclusive = { reason: err.details?.reason ?? 'unknown', message: err.message };
+                    log(`Integ Test Runner: infrastructure dispatch failure (${integInfraInconclusive.reason}) persisted after a resume retry -- recording INCONCLUSIVE, NOT a test FAIL: ${err.message}`);
+                    integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner infra dispatch failure (${integInfraInconclusive.reason}): ${err.message}` };
                 } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
                     // apra-fleet-391: self-heal now so the next cycle's Integ
                     // Test Runner dispatch on this same member isn't walking
@@ -8372,7 +8409,19 @@ async function runSprintCycle(context) {
             // an unresolvable deployedSha, see getDeployedSha) falls
             // through unchanged to the ordinary pass/fail check below.
             const part2Evidence = validatePart2Evidence(integResult, deployedSha);
-            if (part2Evidence.inconclusive) {
+            if (integInfraInconclusive) {
+                // apra-fleet-04g.6: an infra dispatch failure (empty_response /
+                // inactivity timeout / orphan-recovery timeout) produced no test
+                // verdict at all. Record INCONCLUSIVE -- tagged and worded
+                // distinctly, exactly like the part-2 stale-evidence path -- so
+                // the final reviewer/harvester can tell an infra fault apart
+                // from real test evidence, and it is never counted as a genuine
+                // pass or fail. Checked BEFORE part2Evidence/`passed` because the
+                // stubbed integResult carries no meaningful verdict.
+                const inconclusiveNote = `INCONCLUSIVE (infra dispatch failure -- ${integInfraInconclusive.reason}; the member CLI produced no test verdict): ${integInfraInconclusive.message}`;
+                integFailures.push({ cycle, notes: inconclusiveNote, bugsFiled: [], inconclusive: true });
+                log(`Integration tests INCONCLUSIVE this cycle (C${cycle}): infra dispatch failure (${integInfraInconclusive.reason}) -- not accepted as pass or fail evidence.`);
+            } else if (part2Evidence.inconclusive) {
                 const reasonText = part2Evidence.reason === 'absent'
                     ? 'the report carries no deployedSha (nor legacy PART2_SHA marker)'
                     : `the report's deployedSha (${part2Evidence.reportedSha}) does not match this cycle's deploy-verified SHA (${deployedSha})`;

@@ -225,14 +225,42 @@ can otherwise survive a Reset into the next attempt and cause
 equivalent per-member spawned-process cleanup to what `## Teardown` already
 does for the fleet server (`node dist/index.js stop`).
 
+apra-fleet-04g.7 (follow-through on apra-fleet-04g.1): the original
+port-cleanup was a single fire-and-forget `lsof`+`kill -9` with no
+verification -- it never confirmed the port was actually free before
+handing off to the next attempt's Deploy phase, so a stray process that
+survives (or reappears after) the first kill attempt -- the
+resumed-session/interrupted-attempt case, as opposed to the single
+fresh-listener case the regression test originally simulated -- could
+still be bound to 3001 by the time Deploy ran. This now mirrors
+`node dist/index.js stop`'s own shutdown pattern (`src/cli/stop.ts`):
+poll with a bounded deadline, re-killing anything still bound each pass,
+and fail loud (non-zero exit, before the git reset even runs) if the port
+is still occupied once the deadline is reached, instead of silently
+proceeding into a Reset that did not actually clean up.
+
 ```bash
 SANDBOX="$HOME/temp/.apra-fleet-tests"
 export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
-PIDS="$(lsof -ti tcp:3001 2>/dev/null || true)"
-if [ -n "$PIDS" ]; then
+DEADLINE=$(( $(date +%s) + 5 ))
+while :; do
+  PIDS="$(lsof -ti tcp:3001 2>/dev/null || true)"
+  if [ -z "$PIDS" ]; then
+    break
+  fi
   kill -9 $PIDS 2>/dev/null || true
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+    break
+  fi
+  sleep 1
+done
+if [ -n "$(lsof -ti tcp:3001 2>/dev/null || true)" ]; then
+  echo "Reset: port 3001 is still bound after 5s of kill retries -- a stray" \
+       "toy-app dev server survived cleanup. Manually run" \
+       "'lsof -ti tcp:3001 | xargs kill -9' before continuing." >&2
+  exit 1
 fi
 cd "$HOME/toy-repo"
 git fetch origin
@@ -382,9 +410,17 @@ shell-drivable -- no MCP tool is required to run the scenario.
    rotation of the runner's credentials. `auth --oauth` accepts either a
    bare token or a JSON object as the secret and merges whichever it gets.
 
+   apra-fleet-04g.4/04g.5: this used to check the credential FILE first and
+   only fall back to `CLAUDE_CODE_OAUTH_TOKEN` when the file yielded nothing
+   -- so a live, freshly-exported env token was silently ignored whenever the
+   file existed with ANY accessToken, even an EXPIRED one. The order below
+   matches the precedence documented above (env var if set, else the file)
+   and mirrors `resolveAmbientClaudeCredential()` in `src/cli/auth.ts`, which
+   pins this same order under unit test.
+
    ```bash
-   SECRET=""
-   if [ -f "$REAL_HOME/.claude/.credentials.json" ]; then
+   SECRET="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+   if [ -z "$SECRET" ] && [ -f "$REAL_HOME/.claude/.credentials.json" ]; then
      SECRET=$(node -e "
        const fs = require('fs');
        const c = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8'));
@@ -396,9 +432,6 @@ shell-drivable -- no MCP tool is required to run the scenario.
          process.stdout.write(JSON.stringify(probeSafe));
        }
      " "$REAL_HOME/.claude/.credentials.json")
-   fi
-   if [ -z "$SECRET" ]; then
-     SECRET="${CLAUDE_CODE_OAUTH_TOKEN:-}"
    fi
    if [ -z "$SECRET" ]; then
      echo "No ambient Claude credential found (CLAUDE_CODE_OAUTH_TOKEN unset" \
