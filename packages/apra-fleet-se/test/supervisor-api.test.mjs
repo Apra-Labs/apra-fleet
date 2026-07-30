@@ -125,6 +125,38 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    test('apra-fleet-3i3.2: launch() persists branch/base/goal on the ledger reservation', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/my-topic', base: 'main', goal: 'P1/P2',
+        });
+        const reservation = ledger.get(result.sprintId);
+        assert.equal(reservation.branch, 'feat/my-topic');
+        assert.equal(reservation.base, 'main');
+        assert.equal(reservation.goal, 'P1/P2');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-3i3.2: launch() without a goal persists goal=null on the reservation (not undefined/omitted)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        const reservation = ledger.get(result.sprintId);
+        assert.equal(reservation.branch, 'feat/x');
+        assert.equal(reservation.base, 'main');
+        assert.equal(reservation.goal, null);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('invalid issue id => 400 naming the issue field (via imported validateIssueId)', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);

@@ -6,8 +6,17 @@
 // ONE combined, supervisor-owned ledger of every live sprint's reservations:
 //
 //   reservations: {
-//     [sprintId]: { members, issueRoots, childPid, reservedAt }
+//     [sprintId]: { members, issueRoots, childPid, reservedAt, branch, base, goal }
 //   }
+//
+// apra-fleet-3i3.2: branch/base/goal are OPTIONAL launch metadata (persisted
+// at claim() time, defaulting to null when omitted or absent from a
+// pre-existing on-disk entry written before these fields existed) -- enough,
+// together with the two reservation axes already stored, for a future
+// Restart control to reconstruct the original POST /api/sprints request
+// without operator re-entry. This module still does not know or care what a
+// Restart DOES with them; it only stores and returns them like every other
+// reservation field.
 //
 // The two reservation axes -- the member set and the issue-scope root ids -- are
 // claimed and released in EXACT LOCKSTEP:
@@ -59,6 +68,19 @@ export const LEDGER_FILENAME = 'reservations.json';
  * @property {number|null} childPid  Detached child PID (for restart PID-probe
  *                                   reconciliation); null until known.
  * @property {string} reservedAt     ISO-8601 timestamp of the claim.
+ * @property {string|null} branch    apra-fleet-3i3.2: the launch's `--branch`
+ *                                   argv value, persisted so a Restart can
+ *                                   reconstruct the original POST /api/sprints
+ *                                   request without operator re-entry. Null for
+ *                                   pre-existing on-disk entries written before
+ *                                   this field existed (backward compatible).
+ * @property {string|null} base      apra-fleet-3i3.2: the launch's `--base`
+ *                                   argv value. Same null-for-legacy-entries
+ *                                   contract as branch above.
+ * @property {string|null} goal      apra-fleet-3i3.2: the launch's `--goal`
+ *                                   argv value (undefined/omitted at launch
+ *                                   normalizes to null, same as a legacy entry
+ *                                   that predates this field).
  *
  * @typedef {object} LedgerDocument
  * @property {number} version                              Equals LEDGER_VERSION.
@@ -85,6 +107,14 @@ export const LEDGER_SCHEMA = Object.freeze({
                     issueRoots: { type: 'array', items: { type: 'string' } },
                     childPid: { type: ['integer', 'null'] },
                     reservedAt: { type: 'string' },
+                    // apra-fleet-3i3.2: optional launch metadata, persisted so
+                    // a Restart can reconstruct the original POST /api/sprints
+                    // request. NOT in `required` -- a pre-existing on-disk
+                    // entry written before this field existed must still load
+                    // (normalizeReservation() below defaults each to null).
+                    branch: { type: ['string', 'null'] },
+                    base: { type: ['string', 'null'] },
+                    goal: { type: ['string', 'null'] },
                 },
             },
         },
@@ -138,7 +168,22 @@ function normalizeReservation(input, now) {
         throw new TypeError('childPid must be an integer or null');
     }
     const reservedAt = typeof input.reservedAt === 'string' ? input.reservedAt : now();
-    return { members, issueRoots, childPid, reservedAt };
+
+    // apra-fleet-3i3.2: optional launch metadata. `undefined`/`null` both
+    // normalize to `null` -- this is what makes a pre-existing on-disk entry
+    // (written before these fields existed, so `input.branch` etc. are
+    // `undefined`) load without error, identically to a fresh launch that
+    // simply omitted `goal`.
+    const toNullableString = (v, label) => {
+        if (v === undefined || v === null) return null;
+        if (typeof v !== 'string') throw new TypeError(`${label} must be a string or null`);
+        return v;
+    };
+    const branch = toNullableString(input.branch, 'branch');
+    const base = toNullableString(input.base, 'base');
+    const goal = toNullableString(input.goal, 'goal');
+
+    return { members, issueRoots, childPid, reservedAt, branch, base, goal };
 }
 
 /** Deep-clone a reservation so callers can never mutate ledger-internal state. */
@@ -148,6 +193,9 @@ function cloneReservation(r) {
         issueRoots: [...r.issueRoots],
         childPid: r.childPid,
         reservedAt: r.reservedAt,
+        branch: r.branch ?? null,
+        base: r.base ?? null,
+        goal: r.goal ?? null,
     };
 }
 
@@ -322,7 +370,7 @@ export function createLedger(deps = {}) {
          * Claim BOTH axes for a sprint in one atomic write. Storage-level only:
          * overlap rejection is layered on by eft.5.2/eft.5.3 before calling this.
          * @param {string} sprintId
-         * @param {{ members?: string[], issueRoots?: string[], childPid?: number|null, reservedAt?: string }} claimInput
+         * @param {{ members?: string[], issueRoots?: string[], childPid?: number|null, reservedAt?: string, branch?: string|null, base?: string|null, goal?: string|null }} claimInput
          * @returns {Promise<Reservation>} a clone of the stored reservation
          */
         async claim(sprintId, claimInput = {}) {

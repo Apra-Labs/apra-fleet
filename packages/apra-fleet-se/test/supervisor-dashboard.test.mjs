@@ -208,6 +208,32 @@ describe('dashboard -- createDashboard', () => {
         assert.equal(view2.members[0].role, null);
     });
 
+    test('apra-fleet-3i3.2: default getSprintMeta derives branch/goal from ledger.get() when the caller injects nothing', async () => {
+        const ledgerWithMeta = {
+            list: () => [{ sprintId: 's1', members: ['alice'], issueRoots: [], childPid: 1 }],
+            get: (id) => (id === 's1' ? { branch: 'feat/persisted', base: 'main', goal: 'P1/P2' } : undefined),
+        };
+        const dashboard = createDashboard({
+            ledger: ledgerWithMeta,
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(),
+        });
+        const [view] = await dashboard.buildSprintViews();
+        assert.equal(view.branch, 'feat/persisted');
+        assert.equal(view.goal, 'P1/P2');
+    });
+
+    test('apra-fleet-3i3.2: default getSprintMeta is a safe no-op against a ledger stub that only implements list()', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(),
+        });
+        const [view] = await dashboard.buildSprintViews();
+        assert.equal(view.branch, null);
+        assert.equal(view.goal, null);
+    });
+
     test('a throwing getSprintMeta/expandScope for one sprint does not take down the whole page (isolated fallback)', async () => {
         const dashboard = createDashboard({
             ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['r'], childPid: 1 }]),

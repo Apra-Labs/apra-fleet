@@ -11,18 +11,19 @@
 // excluded from the stack entirely -- they belong in the process-free
 // History view (apra-fleet-eft.6.5), not here.
 //
-// DATA AVAILABILITY NOTE: the reservation ledger (eft.5.1,
-// src/supervisor/ledger.mjs) durably stores only `members` (a flat union,
-// role information already folded away) and `issueRoots` -- it does not
-// (yet) persist `branch`, `goal`, or a per-member role map. This module does
-// NOT reach into the ledger's on-disk schema or into cli.mjs's launch argv to
-// backfill that (both are out of this task's file scope, and either is
-// actively being touched by other in-flight work). Instead, `branch`/`goal`/
-// per-member roles are sourced from an INJECTED `getSprintMeta(sprintId)`
-// collaborator that defaults to returning `{}` -- every field the page needs
-// still renders (with an explicit "unknown" fallback, never a blank/throw),
-// and wiring a real metadata source later is a pure dependency-injection
-// swap, no template change required.
+// DATA AVAILABILITY NOTE: as of apra-fleet-3i3.2 the reservation ledger
+// (eft.5.1, src/supervisor/ledger.mjs) also durably persists `branch`,
+// `base`, and `goal` at claim() time (alongside the `members`/`issueRoots`
+// axes it always stored) -- a pre-existing on-disk entry written before those
+// fields existed simply reads back as null for them, never an error. This
+// module still does NOT reach into the ledger's on-disk schema directly for
+// `branch`/`goal`: it sources them (and any per-member role map, which the
+// ledger still does not persist) from an INJECTED `getSprintMeta(sprintId)`
+// collaborator, defaulting to one that reads `branch`/`goal` straight off the
+// ledger entry (see createDashboard() below) when the caller does not inject
+// its own. Every field the page needs still renders (with an explicit
+// "unknown" fallback, never a blank/throw) even when nothing is injected and
+// the ledger entry itself predates these fields.
 //
 // Claimed scope's bead count reuses eft.5.3's live subtree expansion
 // (`expandScope()` in ./scope-overlap.mjs) rather than a fresh reimplementation,
@@ -362,7 +363,10 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  * ledger + watchdog classifier, and renders the index page HTML.
  *
  * @param {{
- *   ledger: { list: () => Array<{ sprintId: string, members: string[], issueRoots: string[], childPid: number|null }> },
+ *   ledger: {
+ *     list: () => Array<{ sprintId: string, members: string[], issueRoots: string[], childPid: number|null }>,
+ *     get?: (sprintId: string) => { branch?: string|null, goal?: string|null }|undefined,
+ *   },
  *   watchdog: { classifySprint: (entry: object) => Promise<{ status: string }> },
  *   listChildren?: (parentId: string) => Promise<string[]>,
  *   expandScope?: (roots: string[]) => Promise<Set<string>>,
@@ -391,10 +395,19 @@ export function createDashboard(deps = {}) {
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
     const listChildren = deps.listChildren ?? bdListChildren;
     const expand = deps.expandScope ?? ((roots) => expandScope(roots, listChildren));
-    // Best-effort per-sprint metadata (branch/goal/member roles). See the
-    // module doc for why this defaults to an empty object rather than
-    // reaching into the ledger's current on-disk schema.
-    const getSprintMeta = deps.getSprintMeta ?? (() => ({}));
+    // apra-fleet-3i3.2: best-effort per-sprint metadata (branch/goal/member
+    // roles). Defaults to reading branch/goal straight off the ledger entry
+    // (which now persists them -- see ledger.mjs) when the caller injects
+    // nothing; per-member roles still have no ledger-backed source, so this
+    // default never populates `roles`, matching the pre-existing "no roles ->
+    // every member's role renders null" fallback. `ledger.get` is OPTIONAL on
+    // the injected ledger (some tests only implement list()) -- guarded so
+    // this default is a safe no-op, not a throw, against those.
+    const getSprintMeta = deps.getSprintMeta ?? ((sprintId) => {
+        if (typeof ledger.get !== 'function') return {};
+        const entry = ledger.get(sprintId);
+        return entry ? { branch: entry.branch ?? null, goal: entry.goal ?? null } : {};
+    });
     // Backlog-last tree (eft.6.2). Injected so the dashboard renders it as the
     // final page section without owning its full-tracker/claim computation. When
     // absent, renderIndexPageHtml() falls back to an explicit empty state.
