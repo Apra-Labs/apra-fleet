@@ -252,6 +252,34 @@ async function handleOAuth(args: string[]): Promise<void> {
 // (apra-fleet-eft.48.8), instead of writing a provider credential file.
 // ---------------------------------------------------------------------------
 
+// apra-fleet-vak.1: unlike parseClaudeOAuthSecret (used for the
+// credentials-FILE path), the env-var path must store ONLY the bare access
+// token string -- it must never synthesize expiresAt/scopes fields, since
+// those belong to the credentials-file session shape, not an env var value.
+// If the resolved secret is a full claudeAiOauth JSON object (or the nested
+// { claudeAiOauth: { accessToken } } wrapper matching the on-disk
+// credentials-file shape), extract just its accessToken. Otherwise pass the
+// secret through unchanged (a bare token, or a non-JSON/invalid-JSON string
+// that merely starts with '{').
+export function extractBearerTokenFromSecret(secret: string): string {
+  const trimmed = secret.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.accessToken === 'string') {
+          return parsed.accessToken;
+        }
+        const nested = (parsed as Record<string, unknown>).claudeAiOauth;
+        if (nested && typeof nested === 'object' && typeof (nested as Record<string, unknown>).accessToken === 'string') {
+          return (nested as Record<string, unknown>).accessToken as string;
+        }
+      }
+    } catch { /* fall through to verbatim pass-through */ }
+  }
+  return secret;
+}
+
 async function provisionEnvVarForMember(provider: string, token: string, memberName: string): Promise<void> {
   if (provider !== 'claude') {
     console.error(`✗ --member provisioning currently only supports provider "claude" (CLAUDE_CODE_OAUTH_TOKEN). Got "${provider}".`);
@@ -271,8 +299,9 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
   try {
     const { encryptPassword } = await import('../utils/crypto.js');
     const { updateAgent } = await import('../services/registry.js');
+    const bearerToken = extractBearerTokenFromSecret(token);
     const updated = updateAgent(agentOrError.id, {
-      encryptedEnvVars: { ...agentOrError.encryptedEnvVars, [envVarName]: encryptPassword(token) },
+      encryptedEnvVars: { ...agentOrError.encryptedEnvVars, [envVarName]: encryptPassword(bearerToken) },
     });
     if (!updated) {
       console.error(`✗ Failed to update member "${memberName}" -- not found in registry.`);
