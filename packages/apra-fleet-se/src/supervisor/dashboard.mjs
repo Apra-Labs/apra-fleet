@@ -112,6 +112,14 @@ export function renderSprintSection(view) {
         '<strong style="font-size: 14px;">' + sprintId + '</strong>' +
         statusBadge(view.status) +
         '<a href="' + liveHref + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">Open live view</a>' +
+        // apra-fleet-3i3.1: kills the still-live child AND releases the
+        // member+scope reservation in one action (POST /api/reservations/
+        // :sprintId/force-release, extended -- see reconcile.mjs). A plain
+        // button (not a form submit) wired up by SPRINT_STOP_SCRIPT below via
+        // event delegation on data-sprint-id, matching the Launch Sprint
+        // form's formatLaunchError() inline-feedback convention.
+        '<button type="button" class="btn btn-secondary btn-stop-sprint" data-sprint-id="' + sprintId + '" ' +
+        'style="font-size: 12px;">Stop</button>' +
         '</div>' +
         '<div style="margin-top: 8px; font-size: 13px; color: #d4d4d8;">' +
         '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + '</div>' +
@@ -122,6 +130,7 @@ export function renderSprintSection(view) {
         '<span style="color:#a1a1aa; font-size: 12px;">Members:</span><br/>' +
         membersHtml +
         '</div>' +
+        '<div class="stop-result" data-sprint-id="' + sprintId + '" style="margin-top: 6px; font-size: 12px;"></div>' +
         '</section>'
     );
 }
@@ -198,6 +207,78 @@ const DASHBOARD_TAB_SCRIPT = `
 `;
 
 /**
+ * Renders a POST /api/reservations/:sprintId/force-release error response
+ * (reconcile.mjs's ApiError-shaped JSON: `{ error: string }`, e.g. a 404 for
+ * an already-gone sprint) as a legible operator-facing message. Mirrors
+ * launch-form.mjs's formatLaunchError() pattern exactly (acceptance
+ * criterion: "inline success/error feedback consistent with the Launch
+ * Sprint form's formatLaunchError() pattern") -- same pure, side-effect-free,
+ * `.toString()`-embeddable shape.
+ * @param {number} status
+ * @param {{ error?: string }|null|undefined} errJson
+ * @returns {string}
+ */
+export function formatStopError(status, errJson) {
+    const message = (errJson && typeof errJson.error === 'string' && errJson.error.length > 0)
+        ? errJson.error
+        : `Stop failed (HTTP ${status}).`;
+    if (status === 404) {
+        return `Already gone: ${message}`;
+    }
+    return message;
+}
+
+/**
+ * The Sprint Stack's per-row Stop button behavior, as a source string ready
+ * to inline into a `<script>` tag (same `.toString()`-embedding pattern as
+ * launch-form.mjs's clientScriptSource(), so the exact code under test is the
+ * exact code shipped to the browser). Event-delegated on `document` (no
+ * client-side re-render of the Sprint Stack ever replaces these buttons, so a
+ * single delegated listener wired once at page load is sufficient): a click
+ * on any `.btn-stop-sprint` button confirms with the operator, then POSTs
+ * POST /api/reservations/:sprintId/force-release (extended by apra-fleet-3i3.1
+ * to also kill the child), surfacing success/failure INLINE in that row's
+ * `.stop-result` element (never a silent no-op, and every promise chain ends
+ * in a `.catch()` so a network failure can never surface as an unhandled
+ * browser rejection). On success the whole `<section>` is removed from the
+ * DOM so the stopped sprint no longer visually claims to still be running.
+ */
+const SPRINT_STOP_SCRIPT = `
+    ${formatStopError.toString()}
+    document.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.btn-stop-sprint');
+        if (!btn) return;
+        var sprintId = btn.getAttribute('data-sprint-id');
+        if (!sprintId) return;
+        if (!confirm('Stop sprint ' + sprintId + '? This kills its process and releases its reservation.')) return;
+        var resultEl = document.querySelector('.stop-result[data-sprint-id="' + sprintId + '"]');
+        btn.disabled = true;
+        if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = 'Stopping...'; }
+        fetch('/api/reservations/' + encodeURIComponent(sprintId) + '/force-release', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ reason: 'stopped via Sprint Stack Stop button' }),
+        }).then(function (res) {
+            return res.json().catch(function () { return {}; }).then(function (json) {
+                return { status: res.status, json: json };
+            });
+        }).then(function (r) {
+            if (r.status === 200) {
+                if (resultEl) { resultEl.style.color = '#22c55e'; resultEl.textContent = 'Stopped.'; }
+                var section = btn.closest('section[data-sprint-id]');
+                if (section) section.remove();
+            } else {
+                btn.disabled = false;
+                if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = formatStopError(r.status, r.json); }
+            }
+        }).catch(function (err) {
+            btn.disabled = false;
+            if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = 'Stop request failed: ' + err.message; }
+        });
+    });
+`;
+
+/**
  * Renders the full index page (`GET /` document): a header, then a Sprints
  * tab (Sprint Stack alone) and a separate Backlog tab (eft.6.2's cross-sprint
  * free-set view, followed by the Launch Sprint form -- launching starts from
@@ -258,6 +339,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '</div>\n' +
         '</div></div>\n' +
         '<script>' + DASHBOARD_TAB_SCRIPT + '</script>\n' +
+        '<script>' + SPRINT_STOP_SCRIPT + '</script>\n' +
         '</body>\n' +
         '</html>\n'
     );

@@ -23,7 +23,7 @@ import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { createHistory } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
-import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
+import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
@@ -96,7 +96,11 @@ export async function serveMain(argv = process.argv.slice(2)) {
     const ledger = createLedger();
     const history = createHistory();
     const spawner = createSpawner();
-    const reconciler = createReconciler({ ledger, history });
+    // apra-fleet-3i3.1: the real kill-signal implementation is only wired in
+    // HERE -- createReconciler()'s own default is a safe no-op (see
+    // reconcile.mjs's module doc) so nothing outside this production entry
+    // point can accidentally send a real signal to an arbitrary pid.
+    const reconciler = createReconciler({ ledger, history, killPid });
     // eft.4.5: re-adopts still-live children by PID at startup (see below),
     // registering their recovered --viewer-port with the spawner seam so
     // they are tracked/watchdog-monitored/HTTP-proxyable exactly like a

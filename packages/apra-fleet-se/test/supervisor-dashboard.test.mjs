@@ -8,6 +8,7 @@ import {
     renderSprintStackHtml,
     renderSprintSection,
     statusBadge,
+    formatStopError,
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
@@ -106,6 +107,35 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(!html.includes('<img src=x>'));
         assert.ok(!html.includes('<xss>'));
         assert.ok(!html.includes('<role>'));
+    });
+
+    test('apra-fleet-3i3.1: renders a Stop button and a per-row inline result element, both keyed by sprintId', () => {
+        const html = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: 0,
+            members: [],
+        });
+        assert.ok(html.includes('btn-stop-sprint'));
+        assert.ok(html.includes('data-sprint-id="sprint-1"'));
+        assert.ok(html.includes('stop-result'));
+        assert.ok(/Stop</.test(html));
+    });
+});
+
+describe('dashboard -- apra-fleet-3i3.1 formatStopError', () => {
+    test('surfaces the server error message verbatim (e.g. a 404 for an already-gone sprint)', () => {
+        const msg = formatStopError(404, { error: "no live reservation for sprint 'x'" });
+        assert.ok(msg.includes("no live reservation for sprint 'x'"));
+    });
+
+    test('never throws on a missing/malformed error body', () => {
+        assert.doesNotThrow(() => formatStopError(500, null));
+        assert.doesNotThrow(() => formatStopError(500, undefined));
+        assert.ok(formatStopError(500, {}).length > 0);
     });
 });
 
@@ -258,5 +288,19 @@ describe('dashboard -- renderIndexPageHtml', () => {
         assert.doesNotThrow(() => renderIndexPageHtml());
         assert.doesNotThrow(() => renderIndexPageHtml(null));
         assert.doesNotThrow(() => renderIndexPageHtml([]));
+    });
+
+    test('apra-fleet-3i3.1: embeds the Stop button client script (formatStopError + force-release wiring)', () => {
+        const html = renderIndexPageHtml([{
+            sprintId: 'sprint-1', branch: 'feat/x', goal: 'P1', status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [], beadCount: 0, members: [],
+        }]);
+        // The exact code under test (formatStopError) is embedded verbatim
+        // via .toString() -- same convention launch-form.mjs's
+        // formatLaunchError/buildLaunchRequestBody use.
+        assert.ok(html.includes('formatStopError'));
+        assert.ok(html.includes('/force-release'));
+        assert.ok(html.includes('btn-stop-sprint'));
+        assert.ok(html.includes('confirm('));
     });
 });
