@@ -322,6 +322,45 @@ export function isAuthDispatchError(err) {
 }
 
 // ---------------------------------------------------------------------------
+// apra-fleet-04g.6 -- infrastructure dispatch failures (NOT a test verdict)
+// ---------------------------------------------------------------------------
+//
+// execute-prompt.ts emits these structured `reason`s when the member CLI
+// itself failed to deliver a parseable result envelope, as opposed to running
+// a task to a real pass/fail conclusion:
+//   - 'empty_response'         -- CLI exited 0 but produced no parseable output
+//                                 (died silently mid-turn without printing its
+//                                 result envelope; observed live cycle C4).
+//   - 'dispatch_failed'        -- strategy.execCommand threw, e.g. an
+//                                 inactivity timeout kill or an SSH/transport
+//                                 failure (observed live cycle C5: a 3600000ms
+//                                 inactivity timeout).
+//   - 'orphan_recovery_timeout'-- the SSH channel was lost while the CLI was
+//                                 still running and it was still alive after
+//                                 the recovery window; the pid was killed with
+//                                 no result recovered.
+//
+// For an integ-test-runner dispatch, all three mean "no test verdict was ever
+// produced" -- the run never reported pass or fail. Treating them as a genuine
+// passed:false FAIL (the pre-04g.6 behavior) is a false negative: it records a
+// test failure that never happened and blocks the sprint's confidence check on
+// an infra fault. Callers use this classifier to (a) retry once via a session
+// resume and (b) failing that, record the cycle as INCONCLUSIVE rather than a
+// test FAIL -- exactly as the part-2 stale-evidence path already does.
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout']);
+
+/**
+ * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
+ * delivered a parseable result envelope) rather than a genuine task
+ * pass/fail conclusion -- keyed off the server's structured `details.reason`.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isInfraDispatchFailure(err) {
+    return INFRA_DISPATCH_REASONS.has(err?.details?.reason);
+}
+
+// ---------------------------------------------------------------------------
 // apra-fleet-eft.75.2 -- sprint-launch machine-local pidfile mutex
 // ---------------------------------------------------------------------------
 
