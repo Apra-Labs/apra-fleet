@@ -106,6 +106,45 @@ async function parseTokenArgs(
 }
 
 // ---------------------------------------------------------------------------
+// resolveAmbientClaudeCredential: pick the ambient Claude Code credential a
+// runner's own real session already has, for seeding a sandboxed dispatcher's
+// persistent secret store (integ-test-playbook.md "Test scenario" step 3a).
+//
+// apra-fleet-04g.4/04g.5: step 3a's own inline shell script previously
+// checked $REAL_HOME/.claude/.credentials.json FIRST and only fell back to
+// CLAUDE_CODE_OAUTH_TOKEN when the file yielded an empty result -- so a live,
+// freshly-exported env token was silently ignored whenever the file existed
+// with ANY accessToken, even an EXPIRED one (observed 2026-07-29: expired
+// file token won over a valid env token, breaking Planner dispatch auth).
+// Per the playbook's own documented precedence ("its CLAUDE_CODE_OAUTH_TOKEN
+// env var if set, else the ... file"), the env var must win. This function is
+// the single, unit-testable source of truth for that order (fix candidate
+// (a) from apra-fleet-04g.4's report) -- previously this logic only existed
+// as an untested inline bash/`node -e` snippet in the markdown playbook.
+export function resolveAmbientClaudeCredential(
+  env: NodeJS.ProcessEnv = process.env,
+  realHome: string = env.REAL_HOME || os.homedir(),
+): string {
+  const envToken = env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (envToken) return envToken;
+
+  const credPath = path.join(realHome, '.claude', '.credentials.json');
+  if (!fs.existsSync(credPath)) return '';
+  try {
+    const parsed = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
+    const oauth = parsed?.claudeAiOauth;
+    if (oauth && typeof oauth.accessToken === 'string' && oauth.accessToken) {
+      // Session-shape fields only -- refreshToken/refreshTokenExpiresAt are
+      // deliberately stripped so nothing seeded from this can rotate the
+      // runner's real credentials (see integ-test-playbook.md step 3a note).
+      const { refreshToken, refreshTokenExpiresAt, ...probeSafe } = oauth;
+      return JSON.stringify(probeSafe);
+    }
+  } catch { /* malformed file -- treat as no ambient credential */ }
+  return '';
+}
+
+// ---------------------------------------------------------------------------
 // --oauth: write token to provider credential file
 // ---------------------------------------------------------------------------
 

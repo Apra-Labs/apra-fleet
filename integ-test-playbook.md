@@ -382,9 +382,17 @@ shell-drivable -- no MCP tool is required to run the scenario.
    rotation of the runner's credentials. `auth --oauth` accepts either a
    bare token or a JSON object as the secret and merges whichever it gets.
 
+   apra-fleet-04g.4/04g.5: this used to check the credential FILE first and
+   only fall back to `CLAUDE_CODE_OAUTH_TOKEN` when the file yielded nothing
+   -- so a live, freshly-exported env token was silently ignored whenever the
+   file existed with ANY accessToken, even an EXPIRED one. The order below
+   matches the precedence documented above (env var if set, else the file)
+   and mirrors `resolveAmbientClaudeCredential()` in `src/cli/auth.ts`, which
+   pins this same order under unit test.
+
    ```bash
-   SECRET=""
-   if [ -f "$REAL_HOME/.claude/.credentials.json" ]; then
+   SECRET="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+   if [ -z "$SECRET" ] && [ -f "$REAL_HOME/.claude/.credentials.json" ]; then
      SECRET=$(node -e "
        const fs = require('fs');
        const c = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8'));
@@ -396,9 +404,6 @@ shell-drivable -- no MCP tool is required to run the scenario.
          process.stdout.write(JSON.stringify(probeSafe));
        }
      " "$REAL_HOME/.claude/.credentials.json")
-   fi
-   if [ -z "$SECRET" ]; then
-     SECRET="${CLAUDE_CODE_OAUTH_TOKEN:-}"
    fi
    if [ -z "$SECRET" ]; then
      echo "No ambient Claude credential found (CLAUDE_CODE_OAUTH_TOKEN unset" \
