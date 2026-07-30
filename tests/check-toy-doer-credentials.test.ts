@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {
   CREDENTIAL_ENV_VAR,
   defaultRegistryPath,
@@ -13,6 +14,7 @@ import {
   hasSufficientSessionShape,
   checkMemberEnvVarProvisioned,
   checkCleanEnvCredentialsFile,
+  checkEnvVarNotJsonBlob,
   checkToyDoerCredentialsProvisioned,
 } from '../scripts/check-toy-doer-credentials.mjs';
 
@@ -317,6 +319,80 @@ describe('checkCleanEnvCredentialsFile', () => {
     const result = checkCleanEnvCredentialsFile(tmpDir, { execSync: throwingExecSync });
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/probe failed to run/);
+  });
+});
+
+// apra-fleet-vak.3: verification for apra-fleet-vak.2's checkEnvVarNotJsonBlob
+// (the hard-fail guard that catches a full claudeAiOauth JSON blob stored
+// verbatim in encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN instead of the bare
+// accessToken apra-fleet-vak.1's provisionEnvVarForMember is supposed to
+// extract). Ciphertexts here are built with a self-contained AES-256-GCM
+// helper that mirrors decryptEnvVarValue's own 'ivHex:authTagHex:cipherHex'
+// format -- this stubs/injects the decrypt path via a fixture salt file
+// under a fresh temp dir, rather than depending on a real
+// ~/.apra-fleet/data/salt or requiring `npm run build` first.
+describe('checkEnvVarNotJsonBlob (apra-fleet-vak.2, regression for apra-fleet-vak.1)', () => {
+  let tmpDir: string;
+  let saltPath: string;
+  let key: Buffer;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-toy-doer-creds-jsonblob-test-'));
+    saltPath = path.join(tmpDir, 'salt');
+    key = crypto.randomBytes(32);
+    fs.writeFileSync(saltPath, key.toString('hex'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function encryptForFixture(plaintext: string): string {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag();
+    return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
+  }
+
+  it('plaintext-available + JSON-shaped value -> hard-fails, message mentions apra-fleet-vak', () => {
+    const ciphertext = encryptForFixture(JSON.stringify({ accessToken: 'sk-leaked', expiresAt: 123 }));
+    const result = checkEnvVarNotJsonBlob(ciphertext, { saltPath });
+    expect(result.status).toBe('hard-fail');
+    expect(result.message).toMatch(/apra-fleet-vak/);
+  });
+
+  it('plaintext-available + bare token -> ok', () => {
+    const ciphertext = encryptForFixture('sk-bare-token-value');
+    const result = checkEnvVarNotJsonBlob(ciphertext, { saltPath });
+    expect(result.status).toBe('ok');
+  });
+
+  it('plaintext unavailable (no readable salt) -> indeterminate, not ok-by-default, does not throw', () => {
+    const ciphertext = encryptForFixture('sk-bare-token-value');
+    const missingSaltPath = path.join(tmpDir, 'no-such-salt');
+    expect(() => {
+      const result = checkEnvVarNotJsonBlob(ciphertext, { saltPath: missingSaltPath });
+      expect(result.status).toBe('indeterminate');
+      expect(result.status).not.toBe('ok');
+      expect(result.message).toMatch(/INDETERMINATE/);
+    }).not.toThrow();
+  });
+
+  it('end-to-end via checkMemberEnvVarProvisioned\'s ciphertext field: a JSON-shaped provisioned token is caught from a real registry.json fixture', () => {
+    const registryPath = path.join(tmpDir, 'registry.json');
+    const ciphertext = encryptForFixture(JSON.stringify({ accessToken: 'sk-leaked-e2e', expiresAt: 123 }));
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: '1.0',
+        agents: [{ friendlyName: 'toy-doer', encryptedEnvVars: { CLAUDE_CODE_OAUTH_TOKEN: ciphertext } }],
+      }),
+    );
+    const envVarCheck = checkMemberEnvVarProvisioned(registryPath, 'toy-doer');
+    expect(envVarCheck.ok).toBe(true);
+    const jsonBlobCheck = checkEnvVarNotJsonBlob(envVarCheck.ciphertext, { saltPath });
+    expect(jsonBlobCheck.status).toBe('hard-fail');
   });
 });
 

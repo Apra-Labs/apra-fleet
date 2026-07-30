@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseClaudeOAuthSecret, runAuth } from '../src/cli/auth.js';
+import { parseClaudeOAuthSecret, extractBearerTokenFromSecret, runAuth } from '../src/cli/auth.js';
 import { checkCleanEnvCredentialsFile, checkMemberEnvVarProvisioned, defaultRegistryPath } from '../scripts/check-toy-doer-credentials.mjs';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
 import { decryptPassword } from '../src/utils/crypto.js';
@@ -220,6 +220,40 @@ describe('handleOAuth / getOAuthCredentialPatch write path (apra-fleet-eft.48.5)
   });
 });
 
+// apra-fleet-vak.1: unlike parseClaudeOAuthSecret (credentials-FILE path,
+// which SYNTHESIZES expiresAt/scopes for bare tokens), the env-var path must
+// extract ONLY the bare accessToken from a JSON-object secret and otherwise
+// pass bare tokens/malformed-JSON-looking strings through byte-identical.
+describe('extractBearerTokenFromSecret', () => {
+  it('extracts accessToken from a full claudeAiOauth JSON object', () => {
+    const full = { accessToken: 'sk-test-access', refreshToken: 'sk-test-refresh', expiresAt: 123, scopes: ['user:inference'] };
+    expect(extractBearerTokenFromSecret(JSON.stringify(full))).toBe('sk-test-access');
+  });
+
+  it('extracts accessToken from a nested { claudeAiOauth: { accessToken } } wrapper', () => {
+    const wrapped = { claudeAiOauth: { accessToken: 'sk-test-nested', expiresAt: 123 } };
+    expect(extractBearerTokenFromSecret(JSON.stringify(wrapped))).toBe('sk-test-nested');
+  });
+
+  it('tolerates surrounding whitespace on a JSON secret', () => {
+    const full = { accessToken: 'sk-a', expiresAt: 123 };
+    expect(extractBearerTokenFromSecret(`  ${JSON.stringify(full)}\n`)).toBe('sk-a');
+  });
+
+  it('passes a bare token through unchanged', () => {
+    expect(extractBearerTokenFromSecret('sk-bare-token')).toBe('sk-bare-token');
+  });
+
+  it('falls back to verbatim pass-through for malformed JSON starting with a brace', () => {
+    expect(extractBearerTokenFromSecret('{not json')).toBe('{not json');
+  });
+
+  it('falls back to verbatim pass-through for valid JSON with no accessToken string', () => {
+    const noToken = JSON.stringify({ expiresAt: 123 });
+    expect(extractBearerTokenFromSecret(noToken)).toBe(noToken);
+  });
+});
+
 // apra-fleet-eft.48.8 (ORCHESTRATOR STEER, post-Integ-C4): `auth --oauth
 // --member <name>` provisions the member's registry.json
 // encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN directly instead of writing a
@@ -250,6 +284,25 @@ describe('handleOAuth --member env-var provisioning (apra-fleet-eft.48.8)', () =
     expect(stored).toBeTruthy();
     expect(stored).not.toBe('sk-test-member-envvar-token'); // never plaintext
     expect(decryptPassword(stored!)).toBe('sk-test-member-envvar-token');
+  });
+
+  it('extracts only the bare accessToken when the resolved secret is a full claudeAiOauth JSON object (apra-fleet-vak.1)', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'toy-doer-json' });
+    addAgent(member);
+    const full = {
+      accessToken: 'sk-test-json-access',
+      refreshToken: 'sk-test-json-refresh',
+      expiresAt: 1999999999999,
+      scopes: ['user:inference'],
+      subscriptionType: 'max',
+    };
+
+    await runAuth(['--oauth', '--member', 'toy-doer-json', JSON.stringify(full)]);
+
+    const updated = getAllAgents().find(a => a.friendlyName === 'toy-doer-json');
+    const stored = updated!.encryptedEnvVars?.CLAUDE_CODE_OAUTH_TOKEN;
+    expect(stored).toBeTruthy();
+    expect(decryptPassword(stored!)).toBe('sk-test-json-access');
   });
 
   it('resolves a secure.<name> credential-store reference rather than accepting plaintext on the command line', async () => {

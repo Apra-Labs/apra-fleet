@@ -137,12 +137,12 @@ function buildFailureMessage(agentName: string, result: SSHExecResult, provider:
   // message, etc.) that would otherwise misclassify it as an auth failure.
   const category: PromptErrorCategory = parsed?.terminalReason === 'max_turns' ? 'max_turns' : provider.classifyError(output);
   if (category === 'max_turns') {
-    return `❌ Prompt on "${agentName}" was stopped after exhausting its turn limit (max_turns), not a genuine failure -- the model ran out of turns before finishing:
+    return `[FAIL] Prompt on "${agentName}" was stopped after exhausting its turn limit (max_turns), not a genuine failure -- the model ran out of turns before finishing:
 ${output}`;
   }
   return category === 'auth'
     ? authErrorAdvice(agentName)
-    : `❌ Prompt failed on "${agentName}":
+    : `[FAIL] Prompt failed on "${agentName}":
 ${output}`;
 }
 
@@ -386,13 +386,13 @@ async function executePromptInteractive(
   const parsed = JSON.parse(sendResult);
   if (parsed.error) {
     scope.abort(`send failed: ${parsed.error}`);
-    return `❌ Failed to deliver prompt to "${agent.friendlyName}" (interactive session): ${parsed.error}`;
+    return `[FAIL] Failed to deliver prompt to "${agent.friendlyName}" (interactive session): ${parsed.error}`;
   }
 
   try {
     const response = await waitForInteractiveResponse(agent, workspaceId, parsed.msgid, timeoutS * 1000, scope);
     scope.ok('interactive response received');
-    let output = `📋 Response from ${agent.friendlyName}:\n\n${response}`;
+    let output = `[RESULT] Response from ${agent.friendlyName}:\n\n${response}`;
     if (heuristicWarningSuffix) output += heuristicWarningSuffix;
     return output;
   } catch (err: any) {
@@ -416,7 +416,7 @@ async function executePromptInteractive(
       sessionRegistry.unregister(workspaceId, agent.id);
       scope.info(`[interactive] timed-out session for "${agent.friendlyName}" has no verifiable live pid (pid=${timedOutPid ?? 'none'}) -- evicting so the next dispatch falls back to subprocess`);
     }
-    return `❌ Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`;
+    return `[FAIL] Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`;
   }
 }
 
@@ -454,7 +454,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   try {
     agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
   } catch (err: any) {
-    return `❌ Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+    return `[FAIL] Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
 
   // Server-side member reservation enforcement (apra-fleet-eft.10.3): a member
@@ -489,7 +489,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   if (inFlightAgents.has(agent.id)) {
     return {
-      text: `❌ execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`,
+      text: `[FAIL] execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`,
       structuredContent: { isError: true, reason: 'busy' },
     };
   }
@@ -500,7 +500,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // state is entered, rather than relying on NoneProvider's methods to throw
   // deeper in either dispatch path.
   if (agent.llmProvider === 'none') {
-    return `❌ "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
+    return `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
   }
 
   // Interactive routing (apra-fleet-2xs.8/us9.8, docs/cloud-fleet-architecture.md
@@ -711,7 +711,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       stallDetector.remove(agent.id);
       writeStatusline(new Map([[agent.id, 'idle']]));
       return {
-        text: `❌ execute_prompt on "${agent.friendlyName}" rejected -- session "${explicitResumeId}" cannot be resumed (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (resume=false), or resume=true for best-effort recovery.`,
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- session "${explicitResumeId}" cannot be resumed (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (resume=false), or resume=true for best-effort recovery.`,
         structuredContent: { isError: true, reason: 'session_not_found', sessionId: explicitResumeId },
       };
     }
@@ -818,7 +818,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       stallDetector.remove(agent.id);
       writeStatusline(new Map([[agent.id, 'idle']]));
       return {
-        text: `❌ execute_prompt on "${agent.friendlyName}" rejected -- insufficient context headroom (demand=${admission.detail.demand}, headroom=${admission.detail.headroom}, window=${admission.detail.window}). Start a fresh session, shrink the task, or split it.`,
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- insufficient context headroom (demand=${admission.detail.demand}, headroom=${admission.detail.headroom}, window=${admission.detail.window}). Start a fresh session, shrink the task, or split it.`,
         structuredContent: { isError: true, reason: 'insufficient_context_headroom', detail: admission.detail },
       };
     }
@@ -841,7 +841,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       stallDetector.remove(agent.id);
       writeStatusline(new Map([[agent.id, 'idle']]));
       return {
-        text: `❌ execute_prompt on "${agent.friendlyName}" rejected -- budget exhausted (scope=${budgetScope}, spent=${preBudget.block.spent}, budget=${preBudget.block.budget} ${preBudget.block.unit}, source=${preBudget.block.source}). No LLM call was made; raise or reset the budget to resume.`,
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- budget exhausted (scope=${budgetScope}, spent=${preBudget.block.spent}, budget=${preBudget.block.budget} ${preBudget.block.unit}, source=${preBudget.block.source}). No LLM call was made; raise or reset the budget to resume.`,
         structuredContent: { isError: true, reason: 'budget_exhausted', budgetUsage: preBudget.block },
       };
     }
@@ -924,7 +924,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // ensureWorkspaceTrusted (apra-fleet-eft.40.1/40.2) as the remediation.
     if (result.code !== 0 && provider.classifyError(result.stderr || result.stdout) === 'workspace_not_trusted') {
       return {
-        text: `❌ ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${result.stderr || result.stdout}`,
+        text: `[FAIL] ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${result.stderr || result.stdout}`,
         structuredContent: { isError: true, reason: 'workspace_not_trusted' },
       };
     }
@@ -1014,7 +1014,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (recovery.status === 'timeout') {
         scope.info(`orphan recovery timed out after ${Math.round((recovery.waitedMs ?? 0) / 1000)}s -- pid killed`);
         return {
-          text: `❌ execute_prompt on "${agent.friendlyName}" lost its SSH channel while the member CLI (pid ${capturedPid}) was still running, and that process was still alive after the recovery window (${Math.round((recovery.waitedMs ?? 0) / 1000)}s). The process has been killed; no result was recovered. This is NOT an empty response -- do not treat it as a failed turn without checking the member's session transcript first.`,
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}" lost its SSH channel while the member CLI (pid ${capturedPid}) was still running, and that process was still alive after the recovery window (${Math.round((recovery.waitedMs ?? 0) / 1000)}s). The process has been killed; no result was recovered. This is NOT an empty response -- do not treat it as a failed turn without checking the member's session transcript first.`,
           structuredContent: { isError: true, reason: 'orphan_recovery_timeout' },
         };
       }
@@ -1033,7 +1033,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (!parsed.result || parsed.result.trim() === '') {
         const stderrTail = (result.stderr || '').trim().slice(-500);
         return {
-          text: `❌ execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
           structuredContent: { isError: true, reason: 'empty_response' },
         };
       }
@@ -1090,7 +1090,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (postBudget?.warned) budgetUsage = postBudget.block;
     }
 
-    let output = `📋 Response from ${agent.friendlyName}:
+    let output = `[RESULT] Response from ${agent.friendlyName}:
 
 ${parsed.result}`;
     if (parsed.sessionId) output += `
@@ -1113,7 +1113,7 @@ session: ${parsed.sessionId}`;
     _epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
     _epError = err.message;
     return {
-      text: `❌ Failed to execute prompt on "${agent.friendlyName}": ${err.message}`,
+      text: `[FAIL] Failed to execute prompt on "${agent.friendlyName}": ${err.message}`,
       structuredContent: { isError: true, reason: 'dispatch_failed' },
     };
   } finally {

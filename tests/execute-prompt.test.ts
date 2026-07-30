@@ -8,6 +8,7 @@ import { writeStatusline } from '../src/services/statusline.js';
 import { getOsCommands } from '../src/os/index.js';
 import type { SSHExecResult } from '../src/types.js';
 import { setBudget, _resetBudgetState } from '../src/services/budget-awareness.js';
+import { recordSessionUsage, _resetSessionUsage, DEFAULT_SIZE_BUCKET_TOKENS } from '../src/services/context-admission.js';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -1524,7 +1525,6 @@ describe('budget_exhausted admission gate (apra-fleet-eft.80.3)', () => {
     expect(mockExecCommand).toHaveBeenCalled();
   });
 });
-
 // apra-fleet-<bead>: a prompt written whole into a single remote exec command
 // line can exceed the SSH exec channel's / Windows CreateProcess's
 // command-line ceiling once the Windows path's UTF-16LE + base64
@@ -1632,6 +1632,142 @@ describe('writePromptFile chunking (large remote prompts)', () => {
     expect(resultText(result)).toContain('ok');
     // 3 calls: single writePromptFile chunk + main command + deletePromptFile
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+
+// apra-fleet-eft.81.2: context-headroom admission control (apra-fleet-eft.81.1)
+// pins the same 3-band decision at the execute_prompt tool boundary: a demand
+// that doesn't fit a resumed session's remaining window rejects BEFORE any
+// spawn; the identical demand against a fresh session passes; a demand that
+// fits the raw window but eats into the reserved safety margin passes with a
+// structured contextWarning attached; and declaring no demand at all (both
+// expected_context_tokens and context_size omitted) is a total no-op --
+// back-compat with every pre-eft.81.1 caller. The "engine supplies bucket"
+// case pins that context_size ('S'/'M'/'L') alone -- with no explicit
+// expected_context_tokens -- is enough to derive the numeric demand used in
+// the admission decision (DEFAULT_SIZE_BUCKET_TOKENS), i.e. a caller (an
+// orchestrating "engine") that only knows a task's S/M/L size metadata still
+// gets a real admission check.
+describe('context-headroom admission gate at the execute_prompt boundary (apra-fleet-eft.81.2)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    _resetSessionUsage();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    _resetSessionUsage();
+  });
+
+  it('rejects with insufficient_context_headroom and makes no LLM call when a resumed session with high cumulative usage cannot fit an L-size demand', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-reject-resumed', sessionId: 'sess-high-cumulative' });
+    addAgent(member);
+    // claude (non-opus) window = 200_000. Cumulative usage of 150_000 leaves
+    // only 50_000 raw remaining -- less than the L bucket's 60_000 demand, so
+    // this does not fit at all (band 3: REJECT), regardless of the 20_000
+    // safety margin.
+    recordSessionUsage('sess-high-cumulative', { input_tokens: 100_000, output_tokens: 50_000 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, context_size: 'L', timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({
+      isError: true,
+      reason: 'insufficient_context_headroom',
+      detail: { demand: DEFAULT_SIZE_BUCKET_TOKENS.L, window: 200_000 },
+    });
+    expect(resultText(result)).toContain('insufficient context headroom');
+    // The gate sits ahead of writePromptFile/the main exec/deletePromptFile:
+    // the spawn-spy sees zero calls, exactly like the budget_exhausted gate.
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('the identical L-size demand against a fresh session (no prior cumulative usage) passes and dispatches normally', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-pass-fresh' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-fresh-ok' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, context_size: 'L', timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true, reason: 'insufficient_context_headroom' });
+    expect((result.structuredContent as any)?.contextWarning).toBeUndefined();
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('a near-margin demand (fits the raw window but eats into the safety margin) still dispatches, with a structured contextWarning attached', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-near-margin', sessionId: 'sess-near-margin' });
+    addAgent(member);
+    // window=200_000, cumulative=145_000 -> rawRemaining=55_000, margin=20_000
+    // -> headroom=35_000. A 40_000-token demand fits the raw remaining window
+    // (55_000) but lands inside the 20_000 safety margin (band 2: ALLOW +
+    // structured warning), not a band-1 comfortable fit and not a band-3 reject.
+    recordSessionUsage('sess-near-margin', { input_tokens: 100_000, output_tokens: 45_000 });
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-near-margin' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, expected_context_tokens: 40_000, timeout_s: 5 });
+
+    expect(mockExecCommand).toHaveBeenCalled();
+    expect((result.structuredContent as any)?.contextWarning).toMatchObject({
+      detail: { demand: 40_000, window: 200_000 },
+    });
+    expect((result.structuredContent as any)?.contextWarning?.message).toContain('safety margin');
+  });
+
+  it('back-compat: omitting both expected_context_tokens and context_size skips the admission check entirely -- no rejection, no warning', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-omitted-backcompat', sessionId: 'sess-omitted' });
+    addAgent(member);
+    // Seed a cumulative total that WOULD reject any declared L/M/S demand, to
+    // prove the gate is skipped altogether (not merely "always passes") when
+    // the caller declares no demand at all.
+    recordSessionUsage('sess-omitted', { input_tokens: 190_000, output_tokens: 5_000 });
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-omitted' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true, reason: 'insufficient_context_headroom' });
+    expect((result.structuredContent as any)?.contextWarning).toBeUndefined();
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('engine supplies bucket: context_size alone (no explicit expected_context_tokens) derives the numeric demand from S/M/L size metadata', async () => {
+    const member = makeTestAgent({ friendlyName: 'context-engine-bucket', sessionId: 'sess-engine-bucket' });
+    addAgent(member);
+    // Cumulative usage chosen so the S bucket (4_000) fits comfortably but the
+    // M bucket (20_000) does not fit at all -- this proves the actual bucket
+    // token VALUE (not just "some declared demand") reaches the admission
+    // decision, i.e. the size metadata was really translated into a token
+    // count rather than being ignored.
+    recordSessionUsage('sess-engine-bucket', { input_tokens: 190_000, output_tokens: 0 });
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-engine-bucket' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const passing = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, context_size: 'S', timeout_s: 5 });
+    expect(passing.structuredContent).not.toMatchObject({ isError: true, reason: 'insufficient_context_headroom' });
+
+    const rejecting = await executePrompt({ member_id: member.id, prompt: 'hi', resume: true, context_size: 'M', timeout_s: 5 });
+    expect(rejecting.structuredContent).toMatchObject({
+      isError: true,
+      reason: 'insufficient_context_headroom',
+      detail: { demand: DEFAULT_SIZE_BUCKET_TOKENS.M },
+    });
   });
 });
 
