@@ -1525,3 +1525,113 @@ describe('budget_exhausted admission gate (apra-fleet-eft.80.3)', () => {
   });
 });
 
+// apra-fleet-<bead>: a prompt written whole into a single remote exec command
+// line can exceed the SSH exec channel's / Windows CreateProcess's
+// command-line ceiling once the Windows path's UTF-16LE + base64
+// -EncodedCommand encoding (~2.67x inflation) is applied -- observed live
+// (2026-07-30, fleet-win-dev1) as a garbled "Unable to exec ..." response
+// instead of real review output for a large (multi-bead `bd show --json`)
+// Review-phase prompt. writePromptFile() now chunks any content over
+// REMOTE_PROMPT_CHUNK_CHARS across multiple bounded exec calls (first
+// creates/overwrites, the rest append) rather than embedding it whole.
+describe('writePromptFile chunking (large remote prompts)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    provisionedRemoteAgents.clear();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('writes a large prompt to a Windows remote member in multiple bounded Set-Content/Add-Content calls', async () => {
+    const member = makeTestAgent({ friendlyName: 'win-chunk-member', os: 'windows' });
+    addAgent(member);
+    const bigPrompt = 'A'.repeat(9500); // > 2 chunks at 4000 chars/chunk
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-chunked' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: bigPrompt, resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('ok');
+
+    // 3 chunks (4000 + 4000 + 1500) + main command + deletePromptFile = 5 calls.
+    const calls = mockExecCommand.mock.calls;
+    expect(calls.length).toBe(5);
+    const writeCalls = calls.slice(0, 3).map((c) => c[0] as string);
+    // Every write call must stay well under a Windows CreateProcess-safe ceiling.
+    for (const cmd of writeCalls) {
+      expect(cmd.length).toBeLessThan(20000);
+    }
+
+    // Decode each -EncodedCommand blob and confirm the chunks reconstruct the
+    // exact original prompt in order (accounting for the doubled '' escaping
+    // Set-Content/Add-Content -Value apply to single quotes).
+    const decoded = writeCalls.map((cmd) => {
+      const b64 = cmd.replace(/^powershell -EncodedCommand /, '').trim();
+      return Buffer.from(b64, 'base64').toString('utf16le');
+    });
+    expect(decoded[0]).toContain('Set-Content');
+    expect(decoded[1]).toContain('Add-Content');
+    expect(decoded[2]).toContain('Add-Content');
+    const reconstructed = decoded
+      .map((psScript) => {
+        const m = psScript.match(/-Value '([\s\S]*)' -NoNewline/);
+        return m ? m[1].replace(/''/g, "'") : '';
+      })
+      .join('');
+    expect(reconstructed).toBe(bigPrompt);
+  });
+
+  it('writes a large prompt to a POSIX remote member in multiple bounded base64 append calls', async () => {
+    const member = makeTestAgent({ friendlyName: 'posix-chunk-member', os: 'linux' });
+    addAgent(member);
+    const bigPrompt = 'B'.repeat(8200); // > 2 chunks at 4000 chars/chunk
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-chunked-posix' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: bigPrompt, resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('ok');
+
+    // 3 chunks (4000 + 4000 + 200) + main command + deletePromptFile = 5 calls.
+    const calls = mockExecCommand.mock.calls;
+    expect(calls.length).toBe(5);
+    const writeCalls = calls.slice(0, 3).map((c) => c[0] as string);
+    expect(writeCalls[0]).toContain('mkdir -p');
+    expect(writeCalls[0]).toMatch(/> \.fleet-task\.md$/);
+    expect(writeCalls[1]).toMatch(/>> \.fleet-task\.md$/);
+    expect(writeCalls[2]).toMatch(/>> \.fleet-task\.md$/);
+
+    const reconstructed = writeCalls
+      .map((cmd) => {
+        const m = cmd.match(/echo '([^']+)' \| base64 -d/);
+        return m ? Buffer.from(m[1], 'base64').toString('utf-8') : '';
+      })
+      .join('');
+    expect(reconstructed).toBe(bigPrompt);
+  });
+
+  it('small prompts still write in a single exec call on both OS paths (no behavior change under the chunk threshold)', async () => {
+    const member = makeTestAgent({ friendlyName: 'small-prompt-member', os: 'windows' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-small' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'a short prompt', resume: false, timeout_s: 5 });
+    expect(resultText(result)).toContain('ok');
+    // 3 calls: single writePromptFile chunk + main command + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+

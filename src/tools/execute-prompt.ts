@@ -148,6 +148,29 @@ ${output}`;
 
 const SERVER_RETRY_DELAY_MS = 5000;
 
+// A prompt written whole into a single remote exec command line can exceed
+// the SSH exec channel's / Windows CreateProcess's command-line ceiling once
+// the Windows path's UTF-16LE + base64 -EncodedCommand encoding (~2.67x
+// inflation) is applied -- observed live (2026-07-30, fleet-win-dev1): a
+// Review dispatch embedding full `bd show --json` output (description +
+// acceptance criteria) for 5 beads produced a garbled "Unable to exec ..."
+// response instead of real review output, because the encoded command line
+// was too long for the remote shell to exec at all. Doer dispatches (small,
+// just branch + bead ids) never hit this; only the larger Review-phase
+// prompts do -- and only on Windows, where the encoding overhead is worst.
+// Chunking keeps every single exec command line bounded regardless of total
+// prompt size, on both OS paths (POSIX has a much higher real-world ceiling
+// but shares the same underlying single-exec-command-line hazard).
+const REMOTE_PROMPT_CHUNK_CHARS = 4000;
+
+function chunkContent(content: string): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < content.length; i += REMOTE_PROMPT_CHUNK_CHARS) {
+    chunks.push(content.slice(i, i + REMOTE_PROMPT_CHUNK_CHARS));
+  }
+  return chunks.length > 0 ? chunks : [''];
+}
+
 async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFilePath: string, content: string): Promise<void> {
   if (agent.agentType === 'local') {
     fs.writeFileSync(promptFilePath, content, 'utf-8');
@@ -156,16 +179,27 @@ async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFile
   const agentOs = getAgentOS(agent);
   const promptFileName = path.basename(promptFilePath);
   const remoteDir = path.dirname(promptFilePath);
+  const chunks = chunkContent(content);
 
   if (agentOs === 'windows') {
     const escapedFolder = escapeWindowsArg(remoteDir);
-    const psScript = `New-Item -Path '${escapedFolder}' -ItemType Directory -Force | Out-Null; Set-Location "${escapedFolder}"; Set-Content -Path "${promptFileName}" -Value '${content.replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
-    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    await strategy.execCommand(`powershell -EncodedCommand ${encoded}`);
+    for (let i = 0; i < chunks.length; i++) {
+      const setup = i === 0 ? `New-Item -Path '${escapedFolder}' -ItemType Directory -Force | Out-Null; ` : '';
+      const cmdlet = i === 0 ? 'Set-Content' : 'Add-Content';
+      const psScript = `${setup}Set-Location "${escapedFolder}"; ${cmdlet} -Path "${promptFileName}" -Value '${chunks[i].replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
+      const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+      // eslint-disable-next-line no-await-in-loop -- each chunk must land before the next appends
+      await strategy.execCommand(`powershell -EncodedCommand ${encoded}`);
+    }
   } else {
-    const b64 = Buffer.from(content).toString('base64');
     const escapedFolder = escapeDoubleQuoted(remoteDir);
-    await strategy.execCommand(`mkdir -p "${escapedFolder}" && cd "${escapedFolder}" && echo '${b64}' | base64 -d > ${promptFileName}`);
+    for (let i = 0; i < chunks.length; i++) {
+      const b64 = Buffer.from(chunks[i]).toString('base64');
+      const redirect = i === 0 ? '>' : '>>';
+      const mkdirPrefix = i === 0 ? `mkdir -p "${escapedFolder}" && ` : '';
+      // eslint-disable-next-line no-await-in-loop -- each chunk must land before the next appends
+      await strategy.execCommand(`${mkdirPrefix}cd "${escapedFolder}" && echo '${b64}' | base64 -d ${redirect} ${promptFileName}`);
+    }
   }
 }
 
