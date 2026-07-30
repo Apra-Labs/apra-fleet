@@ -1943,6 +1943,154 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
 }
 
 /**
+ * apra-fleet-f34.2 -- shared MCP tool-result-to-JSON parser for the two
+ * fleet-MCP-hosted coordination clients below. Tool handlers return a JSON
+ * STRING (wrapTool wraps it in the standard content[] envelope), so both
+ * clients need the same extract-then-parse step.
+ * @param {any} result
+ * @param {string} label
+ * @returns {object}
+ */
+function parseCoordinationToolResult(result, label) {
+    let text = result;
+    if (typeof text !== 'string') {
+        text = (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string')
+            ? result.content[0].text
+            : '';
+    }
+    let payload;
+    try {
+        payload = JSON.parse(text);
+    } catch {
+        throw new Error(`${label} returned a non-JSON response: ${String(text).slice(0, 200) || '(empty)'}`);
+    }
+    if (payload && payload.error) throw new Error(`${label} error: ${payload.error}`);
+    return payload ?? {};
+}
+
+/**
+ * apra-fleet-f34.2 -- the MCP-transport counterpart to
+ * createHttpDoltPushMutexClient above, for the SUPERVISOR-LESS topology.
+ *
+ * A standalone/detached-binary CLI launch has no supervisor to reach, so
+ * `--service-url` is absent and the HTTP client cannot be built -- but cli.mjs
+ * ALWAYS holds a connected MCP client to the shared fleet HTTP singleton (it
+ * refuses to self-spawn a private stdio server), so the fleet server's own
+ * `dolt_push_mutex` tool (src/tools/dolt-push-mutex.ts) is a reachable
+ * cross-process coordination point for exactly that topology.
+ *
+ * Ticketed acquire, not long-poll: an MCP tool call cannot block indefinitely,
+ * so `acquire` waits a bounded slice per call and then RE-POLLS the same ticket.
+ * The server keeps the waiter enqueued across polls, so FIFO order is preserved
+ * (a cancel-and-retry loop would send every timed-out waiter to the back of the
+ * queue). The caller's real pid is threaded through so a crashed holder is
+ * reclaimed by the server's dead-pid probe rather than wedging the mutex.
+ *
+ * Implemented INLINE here for the same reason as the HTTP clients above:
+ * runner.js is copied verbatim next to the bundle and loaded via
+ * engine.executeFile(), so a cross-package relative import would not resolve.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, sprintId?: string, waitMs?: number, timeoutMs?: number, log?: Function }} opts
+ * @returns {{ acquire: Function, release: Function }}
+ */
+export function createMcpDoltPushMutexClient(opts = {}) {
+    const { callTool, sprintId: boundSprintId, log = () => {} } = opts;
+    if (typeof callTool !== 'function') throw new Error('createMcpDoltPushMutexClient requires a callTool function');
+    const waitMs = Number.isFinite(opts.waitMs) && opts.waitMs > 0 ? opts.waitMs : 5000;
+    // Overall ceiling on how long a single acquire may keep re-polling before
+    // giving up (a wedged peer is bounded by the server-side lease anyway).
+    const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : 15 * 60 * 1000;
+
+    async function call(args) {
+        return parseCoordinationToolResult(await callTool('dolt_push_mutex', args), '[dolt-mutex/mcp]');
+    }
+
+    return {
+        async acquire(sprintId, o = {}) {
+            const id = sprintId || boundSprintId;
+            if (!id) throw new Error('[dolt-mutex/mcp] acquire requires a sprintId');
+            const deadline = Date.now() + timeoutMs;
+            let payload = await call({ action: 'acquire', sprint_id: id, pid: o.pid ?? undefined, wait_ms: waitMs });
+            while (!payload.granted) {
+                if (Date.now() >= deadline) {
+                    try { await call({ action: 'cancel', ticket: payload.ticket }); } catch { /* best effort */ }
+                    throw new Error(`[dolt-mutex/mcp] timed out after ${timeoutMs} ms waiting for the push mutex (sprint '${id}')`);
+                }
+                log(`[dolt-mutex/mcp] waiting for the global push mutex (sprint '${id}', ticket ${payload.ticket})`);
+                payload = await call({ action: 'poll', ticket: payload.ticket, wait_ms: waitMs });
+            }
+            return { token: payload.token ?? null, sprintId: id, expiresAt: payload.expiresAt };
+        },
+        async release(token) {
+            if (token == null) return true;
+            try {
+                const payload = await call({ action: 'release', token });
+                return Boolean(payload.released);
+            } catch (err) {
+                // Non-fatal: the holder's lease expiry reclaims the mutex even
+                // if this release never lands (same posture as the HTTP client).
+                log(`[dolt-mutex/mcp] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+    };
+}
+
+/**
+ * apra-fleet-f34.2 -- the MCP-transport counterpart to
+ * createHttpChildIdAllocatorClient above, for the SUPERVISOR-LESS topology.
+ * Speaks the fleet server's own `child_id_allocator` tool
+ * (src/tools/child-id-allocator.ts); same rationale, same inline-implementation
+ * constraint, and the same { allocate, confirm, release } surface the
+ * bead-creation path already calls.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, sprintId?: string, log?: Function }} opts
+ * @returns {{ allocate: Function, confirm: Function, release: Function }}
+ */
+export function createMcpChildIdAllocatorClient(opts = {}) {
+    const { callTool, sprintId: boundSprintId, log = () => {} } = opts;
+    if (typeof callTool !== 'function') throw new Error('createMcpChildIdAllocatorClient requires a callTool function');
+
+    async function call(args) {
+        return parseCoordinationToolResult(await callTool('child_id_allocator', args), '[id-allocator/mcp]');
+    }
+
+    return {
+        async allocate(parentId, o = {}) {
+            if (!parentId) throw new Error('[id-allocator/mcp] allocate requires a parentId');
+            const payload = await call({
+                action: 'allocate',
+                parent_id: parentId,
+                pid: o.pid ?? undefined,
+                sprint_id: o.sprintId ?? boundSprintId ?? undefined,
+                floor: o.floor,
+            });
+            return { childId: payload.childId ?? null, seq: payload.seq, token: payload.token ?? null, expiresAt: payload.expiresAt };
+        },
+        async confirm(token) {
+            if (token == null) return true;
+            try {
+                const payload = await call({ action: 'confirm', token });
+                return Boolean(payload.confirmed);
+            } catch (err) {
+                log(`[id-allocator/mcp] confirm failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+        async release(token) {
+            if (token == null) return true;
+            try {
+                const payload = await call({ action: 'release', token });
+                return Boolean(payload.released);
+            } catch (err) {
+                log(`[id-allocator/mcp] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+    };
+}
+
+/**
  * apra-fleet-eft.26.1 (Reservation interop gap, Hole 1) -- reserves and
  * releases every sprint member against the fleet server's OWN per-member
  * reservation record (`member_reservation` tool, apra-fleet-eft.10.1/10.2),
@@ -5014,18 +5162,31 @@ async function runSprintCycle(context) {
     //      HTTP-backed client that acquires/releases against the always-on
     //      supervisor's mutex routes, so two independently-detached sprint
     //      children genuinely serialize their pushes through one supervisor.
-    //   3. neither -- a no-op client: a lone sprint (single-process/dev/test)
-    //      has, by definition, no second sprint to conflict with, so the push
-    //      is safely unguarded and the D-push call sites stay uniform (they
-    //      always acquire/release; only the wiring differs).
-    const doltPushMutex = context.doltPushMutex ?? (
-        (args && args.serviceUrl)
-            ? createHttpDoltPushMutexClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log })
-            : {
-                async acquire() { return { token: null }; },
-                async release() { return true; },
-            }
-    );
+    //   3. `args.callTool` present (apra-fleet-f34.2) -- the SUPERVISOR-LESS
+    //      path: a standalone/detached-binary CLI launch has no supervisor to
+    //      reach, but it always holds a connected MCP client to the SHARED
+    //      fleet HTTP singleton, so the fleet server's own `dolt_push_mutex`
+    //      tool coordinates that topology.
+    //   4. none of the above -- a no-op client: a lone sprint
+    //      (single-process/dev/test) has, by definition, no second sprint to
+    //      conflict with, so the push is unguarded and the D-push call sites
+    //      stay uniform (they always acquire/release; only the wiring differs).
+    //      This is a real DEGRADATION whenever a second sprint could exist, so
+    //      it is logged rather than taken silently.
+    const doltPushMutex = context.doltPushMutex ?? (() => {
+        if (args && args.serviceUrl) {
+            return createHttpDoltPushMutexClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log });
+        }
+        if (args && typeof args.callTool === 'function') {
+            log(`[dolt-mutex] no supervisor serviceUrl; coordinating the global push mutex through the fleet MCP server's dolt_push_mutex tool (sprint '${sprintMutexId}').`);
+            return createMcpDoltPushMutexClient({ callTool: args.callTool, sprintId: sprintMutexId, log });
+        }
+        log('[dolt-mutex] DEGRADED: no supervisor serviceUrl and no fleet MCP connection -- falling back to an UNGUARDED no-op push mutex. Concurrent sprints could push dolt at the same time and hard-conflict (PoC constraints C.2/C.3).');
+        return {
+            async acquire() { return { token: null }; },
+            async release() { return true; },
+        };
+    })();
 
     // apra-fleet-eft.9.3 (Plan 3.4): the supervisor-owned global child-id
     // allocator client. Every reviewer-proposed newTask create below mints its
@@ -5038,18 +5199,29 @@ async function runSprintCycle(context) {
     //      client that allocates/confirms against the always-on supervisor's
     //      allocator routes, so two detached sprint children genuinely serialize
     //      their id minting through one supervisor authority.
-    //   3. neither -- a no-op client: a lone sprint has, by definition, no second
-    //      sprint that could mint a colliding id, so bd derives the id itself
-    //      (childId null -> no `--id` flag). The create call sites stay uniform.
-    const childIdAllocator = context.idAllocator ?? (
-        (args && args.serviceUrl)
-            ? createHttpChildIdAllocatorClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log })
-            : {
-                async allocate() { return { childId: null, token: null }; },
-                async confirm() { return true; },
-                async release() { return true; },
-            }
-    );
+    //   3. `args.callTool` present (apra-fleet-f34.2) -- the SUPERVISOR-LESS
+    //      path: the fleet server's own `child_id_allocator` tool, reached over
+    //      the MCP connection every standalone CLI launch already holds.
+    //   4. none of the above -- a no-op client: a lone sprint has, by
+    //      definition, no second sprint that could mint a colliding id, so bd
+    //      derives the id itself (childId null -> no `--id` flag). The create
+    //      call sites stay uniform. Logged, not silent: it is a real
+    //      degradation whenever a second sprint could exist.
+    const childIdAllocator = context.idAllocator ?? (() => {
+        if (args && args.serviceUrl) {
+            return createHttpChildIdAllocatorClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log });
+        }
+        if (args && typeof args.callTool === 'function') {
+            log(`[id-allocator] no supervisor serviceUrl; minting child ids through the fleet MCP server's child_id_allocator tool (sprint '${sprintMutexId}').`);
+            return createMcpChildIdAllocatorClient({ callTool: args.callTool, sprintId: sprintMutexId, log });
+        }
+        log('[id-allocator] DEGRADED: no supervisor serviceUrl and no fleet MCP connection -- falling back to a no-op allocator; bd derives child ids locally, so two concurrent sprints under the same parent could mint the SAME child id (PoC constraint C.4).');
+        return {
+            async allocate() { return { childId: null, token: null }; },
+            async confirm() { return true; },
+            async release() { return true; },
+        };
+    })();
 
     // apra-fleet-eft.75.1: guards every resume re-dispatch below against
     // spawning a second concurrent session on top of a prior one that is

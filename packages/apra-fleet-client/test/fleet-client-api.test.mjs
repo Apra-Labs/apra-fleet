@@ -229,6 +229,44 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    test('doltPushMutex', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { action: 'acquire', sprint_id: 'feat/x', pid: 4321, wait_ms: 1000 };
+        const result = await fleet.doltPushMutex(options);
+
+        assert.strictEqual(calledName, 'dolt_push_mutex');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('childIdAllocator', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { action: 'allocate', parent_id: 'apra-fleet-f34', sprint_id: 'feat/x', pid: 4321, floor: 3 };
+        const result = await fleet.childIdAllocator(options);
+
+        assert.strictEqual(calledName, 'child_id_allocator');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
     test('shutdownServer', async () => {
         let calledName, calledArgs, calledOpts;
         const mockClient = {

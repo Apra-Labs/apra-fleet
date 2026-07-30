@@ -326,6 +326,39 @@ export class ApraFleet {
     }
 
     /**
+     * Fleet-server-hosted global dolt push mutex (apra-fleet-f34.2,
+     * src/tools/dolt-push-mutex.ts). Serializes cross-sprint `bd dolt push`
+     * for sprints launched WITHOUT a supervisor to coordinate through.
+     *
+     * `acquire` is ticketed (an MCP call cannot long-poll): it returns
+     * `{ granted, ticket, token? }` after a bounded wait, and the caller
+     * re-`poll`s the SAME ticket until granted. Polling never dequeues the
+     * waiter, so FIFO order is preserved. Pass the caller's real `pid` so a
+     * crashed holder is reclaimed by the dead-pid probe.
+     *
+     * @param {{ action: 'acquire'|'poll'|'release'|'renew'|'cancel'|'status',
+     *           sprint_id?: string, ticket?: string, token?: string,
+     *           pid?: number, wait_ms?: number }} options
+     */
+    async doltPushMutex(options) {
+        return this.mcpClient.callTool('dolt_push_mutex', options);
+    }
+
+    /**
+     * Fleet-server-hosted global child-bead-id allocator (apra-fleet-f34.2,
+     * src/tools/child-id-allocator.ts). Mints globally-distinct child ids under
+     * a shared parent for sprints launched WITHOUT a supervisor, so two sprints
+     * creating children under the same parent never derive the same id.
+     *
+     * @param {{ action: 'allocate'|'confirm'|'release'|'status',
+     *           parent_id?: string, token?: string, sprint_id?: string,
+     *           pid?: number, floor?: number }} options
+     */
+    async childIdAllocator(options) {
+        return this.mcpClient.callTool('child_id_allocator', options);
+    }
+
+    /**
      * Gracefully shut down the fleet server this client is connected to.
      * Self-terminates the server process (deletes the singleton pointer,
      * closes the HTTP transport and all SSH connections) -- does not touch
