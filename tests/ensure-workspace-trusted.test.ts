@@ -237,6 +237,24 @@ describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding
     expect(written.projects['/home/member/work/project-a'].disabledMcpjsonServers).toEqual(['serverB']);
   });
 
+  it('union-merges into a pre-existing enabledMcpjsonServers list instead of clobbering it', async () => {
+    const provider = new ClaudeProvider();
+    const existing = {
+      projects: {
+        '/home/member/work/project-a': { hasTrustDialogAccepted: true, enabledMcpjsonServers: ['humanAdded'] },
+      },
+    };
+    const { exec, getFileContent } = makeFakeExec(JSON.stringify(existing), mcpJson);
+
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+
+    expect(result.mcpServersSeeded).toEqual(['serverA', 'serverB']);
+    const written = JSON.parse(getFileContent()!);
+    // The human's pre-existing entry is preserved (union), not replaced, and new
+    // servers are appended in declaration order after it.
+    expect(written.projects['/home/member/work/project-a'].enabledMcpjsonServers).toEqual(['humanAdded', 'serverA', 'serverB']);
+  });
+
   it('idempotent re-run over the post-write state: no duplicates, no clobbering of sibling/other-project fields', async () => {
     const provider = new ClaudeProvider();
     const existing = {
