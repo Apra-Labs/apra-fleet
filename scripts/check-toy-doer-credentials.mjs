@@ -54,6 +54,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 export const CREDENTIAL_ENV_VAR = 'CLAUDE_CODE_OAUTH_TOKEN';
 
@@ -757,6 +758,17 @@ function main() {
 }
 
 // Only run when invoked directly (not when imported for tests).
-if (import.meta.url === `file://${process.argv[1]}`) {
+//
+// apra-fleet-2cc.2: the previous `file://${process.argv[1]}` comparison never
+// matched on Windows -- import.meta.url always uses forward slashes
+// (file:///C:/...), while process.argv[1] is a native Windows path with
+// backslashes, so the string built here never equalled import.meta.url and
+// main() silently never ran (the script always exited 0, regardless of
+// provisioning state, disabling the apra-fleet-vak JSON-blob hard-failure
+// check too). pathToFileURL() normalizes process.argv[1] the same way
+// import.meta.url is itself produced, so the comparison is exact on every
+// platform (unchanged behavior on POSIX, where both sides were already
+// equivalent).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }
