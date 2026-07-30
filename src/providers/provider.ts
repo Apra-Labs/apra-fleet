@@ -81,6 +81,10 @@ export interface EnsureWorkspaceTrustedResult {
   /** Human-readable detail for logging/audit (apra-fleet-eft.40.1: "log distinctly
    *  when it SEEDS trust vs finds it already present"). */
   detail: string;
+  /** apra-fleet-9oo: names from the project's .mcp.json that this call just ADDED to
+   *  projects[<key>].enabledMcpjsonServers (empty/absent when nothing was added).
+   *  Optional so the non-Claude no-op adapters need no change. */
+  mcpServersSeeded?: string[];
 }
 
 export interface ProviderAdapter {

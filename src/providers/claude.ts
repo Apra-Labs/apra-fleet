@@ -313,18 +313,47 @@ export class ClaudeProvider implements ProviderAdapter {
     const homeFile = isWindows ? '$env:USERPROFILE\\.claude.json' : '$HOME/.claude.json';
     const tmpFile = isWindows ? '$env:USERPROFILE\\.claude.json.fleet-trust-tmp' : '$HOME/.claude.json.fleet-trust-tmp';
 
+    // apra-fleet-9oo: the project's .mcp.json lives in the MEMBER's work folder, not on
+    // the orchestrator host, so it must be read through the same execCommand channel --
+    // never local node:fs. It rides along in the SAME read command as ~/.claude.json:
+    // one round-trip, and (crucially) the already-satisfied case still costs exactly one
+    // exec, so the "no write when nothing to do" contract is observable as before.
+    const mcpFile = `${key}/.mcp.json`;
+    const SPLIT = '---FLEET_MCP_SPLIT---';
+
     const readCmd = isWindows
-      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue`
-      : `cat "${homeFile}" 2>/dev/null || true`;
+      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue; Write-Output "${SPLIT}"; Get-Content -Raw "${mcpFile}" -ErrorAction SilentlyContinue`
+      : `cat "${homeFile}" 2>/dev/null || true; echo "${SPLIT}"; cat "${mcpFile}" 2>/dev/null || true`;
     const readResult = await execCommand(readCmd, 10000);
+
+    // Substring split (not line-split): if ~/.claude.json has no trailing newline the
+    // marker glues onto its closing brace, and only a substring split separates cleanly.
+    // No marker at all -> treat the whole payload as ~/.claude.json with no .mcp.json.
+    const rawStdout = readResult.stdout;
+    const splitIdx = rawStdout.indexOf(SPLIT);
+    const homeRaw = (splitIdx === -1 ? rawStdout : rawStdout.slice(0, splitIdx)).trim();
+    const mcpRaw = (splitIdx === -1 ? '' : rawStdout.slice(splitIdx + SPLIT.length)).trim();
 
     let existing: Record<string, unknown> = {};
     try {
-      const parsed = JSON.parse(readResult.stdout.trim());
+      const parsed = JSON.parse(homeRaw);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
     } catch {
       // File missing, empty, or not JSON -- a member that has never run Claude
       // interactively has no ~/.claude.json at all yet. Start from an empty object.
+    }
+
+    // A missing / unparseable / server-less .mcp.json is NOT an error: seed nothing
+    // extra and fall through to the pre-existing trust-only behaviour.
+    let declaredServers: string[] = [];
+    try {
+      const mcpParsed = JSON.parse(mcpRaw);
+      const servers = mcpParsed?.mcpServers;
+      if (servers && typeof servers === 'object' && !Array.isArray(servers)) {
+        declaredServers = Object.keys(servers);
+      }
+    } catch {
+      // no .mcp.json (or garbage in it) -- trust-only path.
     }
 
     const rawProjects = existing.projects;
@@ -336,15 +365,36 @@ export class ClaudeProvider implements ProviderAdapter {
       ? rawEntry as Record<string, unknown>
       : {};
 
-    if (existingEntry.hasTrustDialogAccepted === true) {
+    // apra-fleet-9oo: trust and MCP-server enablement are computed INDEPENDENTLY, because
+    // an already-trusted member (hasTrustDialogAccepted true) can still be missing its
+    // enabledMcpjsonServers entries -- the old unconditional early return here is exactly
+    // why members never got project MCP servers auto-approved. Short-circuit only when
+    // BOTH are already satisfied.
+    const trustNeeded = existingEntry.hasTrustDialogAccepted !== true;
+
+    const enabled = Array.isArray(existingEntry.enabledMcpjsonServers)
+      ? (existingEntry.enabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
+      : [];
+    const disabled = Array.isArray(existingEntry.disabledMcpjsonServers)
+      ? (existingEntry.disabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
+      : [];
+    // Union-merge, deny wins: keep every existing entry in its existing order, append
+    // only names that are missing (in .mcp.json declaration order, so re-runs are
+    // byte-identical), and NEVER add a name a human explicitly disabled.
+    const serversToAdd = declaredServers.filter(n => !enabled.includes(n) && !disabled.includes(n));
+
+    if (!trustNeeded && serversToAdd.length === 0) {
       console.error(`[claude] workspace trust: already present for "${key}"`);
-      return { seeded: false, detail: `already trusted: ${key}` };
+      return { seeded: false, detail: `already trusted: ${key}`, mcpServersSeeded: [] };
     }
 
     // MERGE: preserve every sibling field already on the project entry (history,
     // allowedTools, etc.) and every other project's entry in the file -- never replace
-    // the entry, or the file, wholesale.
-    const mergedProjects = { ...projects, [key]: { ...existingEntry, hasTrustDialogAccepted: true } };
+    // the entry, or the file, wholesale. Note enabledMcpjsonServers is only written when
+    // something is actually being added -- an absent array is never "tidied" into [].
+    const mergedEntry: Record<string, unknown> = { ...existingEntry, hasTrustDialogAccepted: true };
+    if (serversToAdd.length > 0) mergedEntry.enabledMcpjsonServers = [...enabled, ...serversToAdd];
+    const mergedProjects = { ...projects, [key]: mergedEntry };
     const merged = { ...existing, projects: mergedProjects };
     const contentStr = JSON.stringify(merged, null, 2);
 
@@ -356,8 +406,12 @@ export class ClaudeProvider implements ProviderAdapter {
       : `cat > "${tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${tmpFile}" "${homeFile}"`;
     await execCommand(writeCmd, 10000);
 
-    console.error(`[claude] workspace trust: seeded for "${key}"`);
-    return { seeded: true, detail: `seeded trust: ${key}` };
+    const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
+    console.error(`[claude] workspace trust: seeded for "${key}"${mcpNote}`);
+    const detail = trustNeeded
+      ? `seeded trust: ${key}${mcpNote}`
+      : `already trusted: ${key}${mcpNote}`;
+    return { seeded: trustNeeded, detail, mcpServersSeeded: serversToAdd };
   }
 }
 
