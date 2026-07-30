@@ -88,6 +88,19 @@ one step. On prebuilt-artifact platforms (win-x64, linux-x64, darwin-arm64)
 behaviour is unchanged from before; only the no-matching-artifact case (e.g.
 Darwin+x86_64) takes the source-build fallback path.
 
+**Caution: `install --force` stops the running fleet server first.** This is
+the shared singleton MCP server (`localhost:7523`) that every live supervisor
+sprint's dispatches depend on, not just your own MCP connection. If a
+supervisor is running sprints when you deploy, the restart can collaterally
+kill their child processes (observed live: 2026-07-30, a healthy in-flight
+sprint's child pid died and the watchdog classified it CRASHED after an
+`install --force` cycle). Before deploying onto a machine running the
+supervisor, check `GET /api/sprints` for active sprints; if any are running,
+either wait for them to finish or be ready to force-release their stale
+reservations and relaunch afterward. Also always rebuild the SEA binary
+(`npm run build:binary`) and install from that binary -- never
+`node dist/index.js install` -- so the installed binary matches source.
+
 ## Smoke test
 
 The installed binary is `apra-fleet.exe` on Windows and `apra-fleet` elsewhere:
