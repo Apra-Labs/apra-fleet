@@ -50,6 +50,7 @@ import http from 'node:http';
 import fsp from 'node:fs/promises';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
+import { withTimestamps } from './log-timestamp.mjs';
 
 /** Hop-by-hop headers that must never be forwarded verbatim across a proxy. */
 const HOP_BY_HOP = Object.freeze([
@@ -305,7 +306,8 @@ export function createLiveProxy(deps = {}) {
     const spawner = deps.spawner ?? null;
     const host = deps.host ?? '127.0.0.1';
     const env = deps.env ?? process.env;
-    const logger = deps.logger ?? console;
+    // apra-fleet-k7b.2: ISO-timestamp-prefix every log line from this module.
+    const logger = withTimestamps(deps.logger ?? console);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
 
     // Default port resolution: sprintId -> ledger childPid -> spawner live port.

@@ -111,6 +111,10 @@ export const LEDGER_SCHEMA = Object.freeze({
                     exitedAt: { type: ['string', 'null'] },
                     // apra-fleet-ou7.1: same optional/null-defaulted convention.
                     logPath: { type: ['string', 'null'] },
+                    // apra-fleet-k7b.2: same optional/null-defaulted convention;
+                    // see normalizeReservation()'s doc comment for why this is a
+                    // distinct field from sprintId.
+                    branch: { type: ['string', 'null'] },
                 },
             },
         },
@@ -193,7 +197,21 @@ function normalizeReservation(input, now) {
         throw new TypeError('logPath must be a string or null');
     }
 
-    return { members, issueRoots, childPid, reservedAt, exitCode, signal, exitedAt, logPath };
+    // apra-fleet-k7b.2: the sprint's branch name, defaulting to null (a
+    // reservation predating this field). This is deliberately NOT the same
+    // as sprintId post-k7b.1 (sprintId is now an incarnation-unique run-id,
+    // reused-on-relaunch branch is a separate identity) -- the watchdog's
+    // hasTerminalState() needs it as a fallback lookup key for a
+    // reservation claimed BEFORE k7b.1 shipped, whose terminal state (if
+    // any) was persisted under the pre-fix branch-keyed old_runs/ filename,
+    // not under this reservation's own sprintId.
+    let branch = input.branch;
+    if (branch === undefined) branch = null;
+    if (branch !== null && typeof branch !== 'string') {
+        throw new TypeError('branch must be a string or null');
+    }
+
+    return { members, issueRoots, childPid, reservedAt, exitCode, signal, exitedAt, logPath, branch };
 }
 
 /** Deep-clone a reservation so callers can never mutate ledger-internal state. */
@@ -207,6 +225,10 @@ function cloneReservation(r) {
         signal: r.signal ?? null,
         logPath: r.logPath ?? null,
         exitedAt: r.exitedAt ?? null,
+        // apra-fleet-k7b.2: must be cloned too, or every claim()/list()/get()
+        // caller silently observes branch as undefined even when it was
+        // recorded -- see normalizeReservation()'s doc comment above.
+        branch: r.branch ?? null,
     };
 }
 

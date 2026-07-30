@@ -362,7 +362,10 @@ export function createSprintController(deps = {}) {
         // raw stdout/stderr log file before spawning -- record its path on
         // the SAME claim() call that sets childPid, so a dashboard/consumer
         // reading the ledger can find it for a live OR crashed sprint alike.
-        await ledger.claim(sprintId, { members: union, issueRoots, childPid: spawned.pid, logPath: spawned.logPath });
+        // apra-fleet-k7b.2: also record the launch branch on the reservation --
+        // hasTerminalState()'s legacy fallback needs it as a lookup key for
+        // reservations claimed before k7b.1's run-id plumbing shipped.
+        await ledger.claim(sprintId, { members: union, issueRoots, childPid: spawned.pid, logPath: spawned.logPath, branch });
 
         return {
             sprintId,

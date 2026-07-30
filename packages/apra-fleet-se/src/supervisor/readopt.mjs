@@ -26,6 +26,7 @@
 // =============================================================================
 
 import { readProcessCmdline } from './watchdog.mjs';
+import { withTimestamps } from './log-timestamp.mjs';
 
 /**
  * Extracts the `--viewer-port <N>` value from a process command line string
@@ -73,7 +74,8 @@ export function createReadopter(deps = {}) {
         throw new TypeError('createReadopter requires a reconciler with a reconcile() method');
     }
     const readCmdline = deps.readCmdline ?? readProcessCmdline;
-    const logger = deps.logger ?? console;
+    // apra-fleet-k7b.2: ISO-timestamp-prefix every log line from this module.
+    const logger = withTimestamps(deps.logger ?? console);
     const log = (...a) => logger.log?.(...a);
     const logWarn = (...a) => (logger.warn ?? logger.log)?.(...a);
 

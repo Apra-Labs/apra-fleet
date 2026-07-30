@@ -37,6 +37,13 @@ export const HISTORY_EVENTS = Object.freeze({
     // is visible in the durable audit trail even once the reservation is
     // eventually released.
     CHILD_EXITED: 'child-exited',
+    // apra-fleet-k7b.2: the watchdog observed a PID-gone sprint WITH a
+    // persisted terminal run-state (old_runs/, or the legacy branch-keyed
+    // fallback) -- i.e. classifySprint() returned FINISHED, not CRASHED.
+    // Recorded the first time this instance's watchdog classifies a given
+    // sprint FINISHED (see watchdog.mjs's `recordedFinishes` guard), same
+    // once-per-sprint discipline as apra-fleet-eft.20.3's CRASHED recorder.
+    FINISHED: 'finished',
 });
 
 /** An empty, well-formed history document. */
@@ -70,6 +77,14 @@ function cloneEvent(e) {
         // event so it is still discoverable once the ledger reservation that
         // originally carried it is released.
         logPath: e.logPath === undefined ? null : e.logPath,
+        // apra-fleet-k7b.2: only meaningful for a FINISHED event -- the
+        // engine's own terminalReason / extensions.terminal.verdict, copied
+        // verbatim from the persisted terminal run-state so the durable
+        // audit trail carries the SAME words the watchdog log line and the
+        // History view do. Null for every other (pre-existing) event kind,
+        // same optional/null-default convention as the fields above.
+        terminalReason: e.terminalReason === undefined ? null : e.terminalReason,
+        verdict: e.verdict === undefined ? null : e.verdict,
     };
 }
 
@@ -143,7 +158,7 @@ export function createHistory(deps = {}) {
         /**
          * Append one terminal event and persist atomically. The in-memory log is
          * committed only after the disk write succeeds.
-         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null, logPath?: string|null }} entry
+         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null, logPath?: string|null, terminalReason?: string|null, verdict?: string|null }} entry
          * @returns {Promise<object>} a clone of the stored event
          */
         async record(entry) {
@@ -164,6 +179,8 @@ export function createHistory(deps = {}) {
                 exitCode: entry.exitCode,
                 signal: entry.signal,
                 logPath: entry.logPath,
+                terminalReason: entry.terminalReason,
+                verdict: entry.verdict,
             });
             const run = txChain.then(async () => {
                 const next = [...events, stored];

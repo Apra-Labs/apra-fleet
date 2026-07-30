@@ -167,7 +167,11 @@ export async function serveMain(argv = process.argv.slice(2)) {
         if (!entry || entry.childPid == null) return undefined;
         return spawner.getLiveEntry ? spawner.getLiveEntry(entry.childPid)?.port : undefined;
     };
-    const watchdog = createWatchdog({ ledger, resolvePort: resolveSprintPort });
+    // apra-fleet-k7b.2: `history` lets the watchdog append a durable
+    // FINISHED event (terminalReason/verdict) to sprint-history.json the
+    // first time it observes a PID-gone sprint's persisted terminal state,
+    // the same collaborator the spawner's CHILD_EXITED wiring above uses.
+    const watchdog = createWatchdog({ ledger, resolvePort: resolveSprintPort, history });
 
     // eft.6.2: the Backlog-last tree (full tracker minus every active
     // sprint's live-expanded scope). Reused both as the dashboard page's
