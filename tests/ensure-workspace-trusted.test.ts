@@ -25,8 +25,17 @@ import type { SSHExecResult } from '../src/types.js';
 
 /** A fake delivery channel standing in for AgentStrategy.execCommand -- tracks a
  *  single virtual remote file (~/.claude.json) across read/write commands, the same
- *  way the real member-side file would evolve across calls. */
-function makeFakeExec(initialFileContent: string | null) {
+ *  way the real member-side file would evolve across calls.
+ *
+ *  apra-fleet-9oo.2: the impl's read command fetches ~/.claude.json AND the project's
+ *  .mcp.json in one round-trip, joined by a literal split marker embedded in the
+ *  command text itself (`echo "${SPLIT}"` / `Write-Output "${SPLIT}"`). Rather than
+ *  hard-coding that marker string here (and drifting if it ever changes), extract it
+ *  straight out of the command being executed -- that's what makes this fake robust to
+ *  the exact marker value while still exercising the impl's real split-on-substring
+ *  parsing. `mcpFileContent` stands in for the project's .mcp.json; pass null/undefined
+ *  to simulate no .mcp.json existing at all. */
+function makeFakeExec(initialFileContent: string | null, mcpFileContent?: string | null) {
   let fileContent: string | null = initialFileContent;
   const calls: string[] = [];
 
@@ -34,7 +43,9 @@ function makeFakeExec(initialFileContent: string | null) {
     calls.push(cmd);
 
     if (cmd.includes('cat "') || cmd.includes('Get-Content')) {
-      return { stdout: fileContent ?? '', stderr: '', code: 0 };
+      const markerMatch = cmd.match(/(?:echo|Write-Output) "([^"]+)"/);
+      const marker = markerMatch ? markerMatch[1] : '---FLEET_MCP_SPLIT---';
+      return { stdout: `${fileContent ?? ''}\n${marker}\n${mcpFileContent ?? ''}`, stderr: '', code: 0 };
     }
 
     const heredocMatch = cmd.match(/<< 'FLEET_TRUST_EOF'\n([\s\S]*?)\nFLEET_TRUST_EOF/);
@@ -170,6 +181,112 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
 
     expect(result.seeded).toBe(true);
     expect(JSON.parse(getFileContent()!).projects['/home/member/work/project-a'].hasTrustDialogAccepted).toBe(true);
+  });
+});
+
+describe('ClaudeProvider.ensureWorkspaceTrusted -- enabledMcpjsonServers seeding (apra-fleet-9oo.2, regression for apra-fleet-9oo.1)', () => {
+  const mcpJson = JSON.stringify({ mcpServers: { serverA: {}, serverB: {} } });
+
+  it('fresh member: seeds every server name declared in .mcp.json into enabledMcpjsonServers', async () => {
+    const provider = new ClaudeProvider();
+    const { exec, getFileContent } = makeFakeExec(null, mcpJson);
+
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+
+    expect(result.seeded).toBe(true);
+    expect(result.mcpServersSeeded).toEqual(['serverA', 'serverB']);
+    const written = JSON.parse(getFileContent()!);
+    expect(written.projects['/home/member/work/project-a'].enabledMcpjsonServers).toEqual(['serverA', 'serverB']);
+  });
+
+  it('already-trusted member missing servers still gets them seeded (guards against the old early return)', async () => {
+    const provider = new ClaudeProvider();
+    const existing = {
+      projects: {
+        '/home/member/work/project-a': { hasTrustDialogAccepted: true },
+      },
+    };
+    const { exec, getFileContent } = makeFakeExec(JSON.stringify(existing), mcpJson);
+
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+
+    // Trust was already present, so `seeded` (trust-seeded) stays false, but the
+    // servers must still be added -- this is exactly the bug apra-fleet-9oo.1 fixed.
+    expect(result.seeded).toBe(false);
+    expect(result.mcpServersSeeded).toEqual(['serverA', 'serverB']);
+    const written = JSON.parse(getFileContent()!);
+    expect(written.projects['/home/member/work/project-a'].hasTrustDialogAccepted).toBe(true);
+    expect(written.projects['/home/member/work/project-a'].enabledMcpjsonServers).toEqual(['serverA', 'serverB']);
+  });
+
+  it('deny wins: a server listed in disabledMcpjsonServers is never added', async () => {
+    const provider = new ClaudeProvider();
+    const existing = {
+      projects: {
+        '/home/member/work/project-a': { hasTrustDialogAccepted: true, disabledMcpjsonServers: ['serverB'] },
+      },
+    };
+    const { exec, getFileContent } = makeFakeExec(JSON.stringify(existing), mcpJson);
+
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+
+    expect(result.mcpServersSeeded).toEqual(['serverA']);
+    const written = JSON.parse(getFileContent()!);
+    expect(written.projects['/home/member/work/project-a'].enabledMcpjsonServers).toEqual(['serverA']);
+    // The deny list itself is untouched -- still exactly what the human set.
+    expect(written.projects['/home/member/work/project-a'].disabledMcpjsonServers).toEqual(['serverB']);
+  });
+
+  it('idempotent re-run over the post-write state: no duplicates, no clobbering of sibling/other-project fields', async () => {
+    const provider = new ClaudeProvider();
+    const existing = {
+      projects: {
+        '/home/member/work/project-a': { hasTrustDialogAccepted: true, history: ['unrelated'] },
+        '/home/member/work/other-project': { hasTrustDialogAccepted: true, allowedTools: ['Bash'] },
+      },
+    };
+    const { exec, getFileContent } = makeFakeExec(JSON.stringify(existing), mcpJson);
+
+    const first = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    expect(first.mcpServersSeeded).toEqual(['serverA', 'serverB']);
+
+    const second = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+    expect(second.seeded).toBe(false);
+    expect(second.mcpServersSeeded).toEqual([]);
+
+    const written = JSON.parse(getFileContent()!);
+    // No duplicates from the second pass.
+    expect(written.projects['/home/member/work/project-a'].enabledMcpjsonServers).toEqual(['serverA', 'serverB']);
+    // Sibling field on the SAME entry untouched.
+    expect(written.projects['/home/member/work/project-a'].history).toEqual(['unrelated']);
+    // Other project's entry untouched.
+    expect(written.projects['/home/member/work/other-project']).toEqual({ hasTrustDialogAccepted: true, allowedTools: ['Bash'] });
+  });
+
+  it('missing .mcp.json degrades to trust-only behaviour without throwing', async () => {
+    const provider = new ClaudeProvider();
+    const { exec, getFileContent } = makeFakeExec(null, null);
+
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+
+    expect(result.seeded).toBe(true);
+    expect(result.mcpServersSeeded).toEqual([]);
+    const written = JSON.parse(getFileContent()!);
+    expect(written.projects['/home/member/work/project-a'].hasTrustDialogAccepted).toBe(true);
+    expect(written.projects['/home/member/work/project-a'].enabledMcpjsonServers).toBeUndefined();
+  });
+
+  it('unparseable .mcp.json degrades to trust-only behaviour without throwing', async () => {
+    const provider = new ClaudeProvider();
+    const { exec, getFileContent } = makeFakeExec(null, 'not-json-at-all{{{');
+
+    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux');
+
+    expect(result.seeded).toBe(true);
+    expect(result.mcpServersSeeded).toEqual([]);
+    const written = JSON.parse(getFileContent()!);
+    expect(written.projects['/home/member/work/project-a'].hasTrustDialogAccepted).toBe(true);
+    expect(written.projects['/home/member/work/project-a'].enabledMcpjsonServers).toBeUndefined();
   });
 });
 
