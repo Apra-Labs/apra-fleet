@@ -190,4 +190,42 @@ describe('validateNewTask', () => {
         assert.doesNotThrow(() => validateNewTask({ title: 123, description: null, priority: undefined }));
         assert.strictEqual(validateNewTask({}).ok, false);
     });
+
+    test('accepts square brackets in title (apra-fleet-19o.1 -- planner [test] convention)', () => {
+        const result = validateNewTask({
+            title: '[test] Fix race condition in auth handler',
+            description: 'Ensure proper locking mechanisms.',
+            priority: 'P1',
+        });
+        assert.strictEqual(result.ok, true);
+        assert.strictEqual(result.title, '[test] Fix race condition in auth handler');
+    });
+
+    test('accepts complex title with square brackets', () => {
+        const result = validateNewTask({
+            title: '[test] [blocker] Validate auth flow (v2)',
+            description: 'Test description.',
+            priority: 'P2',
+        });
+        assert.strictEqual(result.ok, true);
+        assert.strictEqual(result.title, '[test] [blocker] Validate auth flow (v2)');
+    });
+
+    test('still rejects genuinely unsafe characters ($ and backtick) in title', () => {
+        const unsafeChars = [
+            'Title with $(injection)',
+            'Title with `backtick`',
+            'Title with "quote',
+            'Title with backslash\\',
+        ];
+        for (const title of unsafeChars) {
+            const result = validateNewTask({
+                title,
+                description: 'Safe description.',
+                priority: 'P1',
+            });
+            assert.strictEqual(result.ok, false, `expected title "${title}" to be rejected`);
+            assert.match(result.reason, /title/);
+        }
+    });
 });

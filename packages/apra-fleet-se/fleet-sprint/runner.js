@@ -3987,7 +3987,7 @@ export function extractContestedBeadIds(verdict) {
 // SAFE_DESCRIPTION_RE only enforces the repo's own ASCII-only convention
 // (plus non-empty) -- legitimate technical characters ('=', '&', '+', '"',
 // backticks-as-text, '%', '#', '[', ']', etc.) are allowed again.
-const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/-]+$/;
+const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/\[\]-]+$/;
 const SAFE_DESCRIPTION_RE = /^[\t\n\r\x20-\x7E]+$/;
 const SAFE_PRIORITY_RE = /^P[0-4]$/;
 

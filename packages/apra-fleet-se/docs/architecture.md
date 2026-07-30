@@ -156,7 +156,7 @@ double-quoted `bd create "..."` shell command. Because sprint members run
 mixed shells (POSIX and Windows) with no single reliably-safe escaping
 scheme, `validateNewTask()` uses an **allowlist**, not escaping:
 `priority` must match `^P[0-4]$`; `title`/`description` must match
-`^[A-Za-z0-9 .,:;!?()'_/-]+$` (notably excluding backtick, `$`, double-quote,
+`^[A-Za-z0-9 .,:;!?()'_/\[\]-]+$` (notably excluding backtick, `$`, double-quote,
 and backslash -- the characters that can break out of or smuggle commands
 through a double-quoted shell argument). A rejected `newTask` is logged,
 recorded in `rejectedNewTasks` (surfaced later in the final-review prompt and
