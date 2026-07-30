@@ -154,6 +154,28 @@ describe('resolveAmbientClaudeCredential (apra-fleet-04g.5)', () => {
     const result = resolveAmbientClaudeCredential({} as NodeJS.ProcessEnv, tmpHome);
     expect(result).toBe('');
   });
+
+  // apra-fleet-04g.4.1 acceptance bullet 3: document/assert the intended
+  // precedence for the case where BOTH sources are present and the file
+  // token is valid+fresh (not expired) -- resolveAmbientClaudeCredential's
+  // documented contract (see the comment above its definition) is that the
+  // env var wins unconditionally whenever set, regardless of the file
+  // token's own freshness. This pins that intent so a future change cannot
+  // silently flip to "prefer whichever is fresher."
+  it('prefers the env var over the credential file even when the file token is itself valid+fresh (env always wins when set)', () => {
+    writeCredFile({
+      accessToken: 'sk-fresh-file-token',
+      expiresAt: Date.now() + 1000 * 60 * 60, // fresh, expires an hour from now
+      scopes: ['user:inference'],
+    });
+
+    const result = resolveAmbientClaudeCredential(
+      { CLAUDE_CODE_OAUTH_TOKEN: 'sk-fresh-live-env-token' } as NodeJS.ProcessEnv,
+      tmpHome,
+    );
+
+    expect(result).toBe('sk-fresh-live-env-token');
+  });
 });
 
 // apra-fleet-eft.48.5: regression verification for the parent apra-fleet-eft.48
