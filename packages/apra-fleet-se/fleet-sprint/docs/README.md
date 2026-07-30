@@ -26,12 +26,16 @@ apra-fleet workflow fleet-sprint \
   --viewer-port 18300
 ```
 
-The launcher resolves the workflow from `~/.apra-fleet/workflows/fleet-sprint`
-(installed by `apra-fleet install`, self-healed on demand). Everything after
-the workflow name is passed through verbatim, so
-`apra-fleet workflow fleet-sprint --help` prints the engine's own help.
+This is the ONE command for every install method -- git-clone dev checkout,
+`npm install -g @apralabs/apra-fleet`, and the pre-built standalone binary
+all resolve it identically; there is no separate npm-only invocation to
+learn. The launcher resolves the workflow from
+`~/.apra-fleet/workflows/fleet-sprint` (installed by `apra-fleet install`,
+self-healed on demand). Everything after the workflow name is passed
+through verbatim, so `apra-fleet workflow fleet-sprint --help` prints the
+engine's own help.
 
-### 2. Directly from a source checkout (development)
+### 2. Directly from a source checkout (development only)
 
 ```bash
 node packages/apra-fleet-se/bin/cli.mjs \
@@ -42,8 +46,10 @@ node packages/apra-fleet-se/bin/cli.mjs \
   --viewer-port 18300
 ```
 
-Useful when you are changing the engine itself and want to run the working
-tree rather than the installed copy.
+A development-only shortcut for when you are actively changing the engine
+itself and want to run the working tree directly rather than the installed
+copy. Not needed, and not documented as a supported path, for any other use
+-- use mode 1 above.
 
 ### Backgrounding
 

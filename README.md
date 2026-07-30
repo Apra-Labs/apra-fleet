@@ -139,6 +139,14 @@ apra-fleet workflow fleet-sprint \
 
 Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop till closure
 
+**Running fleet-sprint after npm install:** the `apra-fleet workflow
+fleet-sprint ...` command above is the same one command for everyone --
+whether you installed via `npm install -g @apralabs/apra-fleet`, the
+standalone binary, or a git-clone dev checkout. There is no separate
+`fleet-sprint` command to install or remember. See
+[the full flag reference](packages/apra-fleet-se/fleet-sprint/docs/README.md)
+for every option.
+
 ## How it works
 
 ```mermaid
@@ -294,6 +302,7 @@ third-party verticals.
 | Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
 | Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
+| Running fleet-sprint (full flag reference; identical for npm-install, standalone binary, and git-clone dev checkout) | [packages/apra-fleet-se/fleet-sprint/docs/README.md](packages/apra-fleet-se/fleet-sprint/docs/README.md) |
 | Auto-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
 | Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
 | Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
