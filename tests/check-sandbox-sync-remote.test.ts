@@ -80,6 +80,56 @@ describe('resolvesInsideSandbox', () => {
   it('is true for other +file:// compound schemes (e.g. hg+file://) resolving inside the sandbox root', () => {
     expect(resolvesInsideSandbox(`hg+file://${sandbox}/.some-remote`, sandbox)).toBe(true);
   });
+
+  // Windows-only: file:// URLs with a drive letter, in the three forms
+  // actually observed in practice (apra-fleet-xuo.9 / xuo.9.1). Guarded to
+  // win32 because fileURLToPath() requires an actual drive letter to parse
+  // these and would throw (or mis-resolve, pre-fix) on POSIX hosts.
+  const winDescribe = os.platform() === 'win32' ? describe : describe.skip;
+  winDescribe('Windows drive-letter and MSYS file:// forms (apra-fleet-xuo.9.1)', () => {
+    const winSandbox = 'C:/Users/akhil/temp/.apra-fleet-tests';
+
+    it('is true for a 3-slash drive file:// URL (file:///C:/...) inside the sandbox root', () => {
+      expect(
+        resolvesInsideSandbox(
+          'file:///C:/Users/akhil/temp/.apra-fleet-tests/.apra-fleet-toy-dolt-remote',
+          winSandbox,
+        ),
+      ).toBe(true);
+    });
+
+    it('is true for an MSYS/git-bash single-letter-segment form (file:///c/...) inside the sandbox root', () => {
+      expect(
+        resolvesInsideSandbox(
+          'file:///c/Users/akhil/temp/.apra-fleet-tests/.apra-fleet-toy-origin.git',
+          winSandbox,
+        ),
+      ).toBe(true);
+    });
+
+    it('is true for the 2-slash drive form emitted by "bd dolt remote list --json" (file://C:/...) inside the sandbox root', () => {
+      expect(
+        resolvesInsideSandbox(
+          'file://C:/Users/akhil/temp/.apra-fleet-tests/.apra-fleet-toy-dolt-remote',
+          winSandbox,
+        ),
+      ).toBe(true);
+    });
+
+    it('is false for a genuinely outside drive-letter file:// path (safety guard not loosened)', () => {
+      expect(resolvesInsideSandbox('file:///C:/Users/akhil/git/apra-fleet', winSandbox)).toBe(false);
+    });
+
+    it('is false for a sibling directory that merely shares a string prefix, in drive-letter file:// form (no substring false-PASS)', () => {
+      expect(
+        resolvesInsideSandbox(`file:///${winSandbox.replace(/^([A-Za-z]):/, '$1:')}-other/repo`, winSandbox),
+      ).toBe(false);
+    });
+
+    it('is false for a sibling directory that merely shares a string prefix, in plain path form (no substring false-PASS)', () => {
+      expect(resolvesInsideSandbox(`${winSandbox}-other/repo`, winSandbox)).toBe(false);
+    });
+  });
 });
 
 describe('parseActiveSyncRemoteValue', () => {
