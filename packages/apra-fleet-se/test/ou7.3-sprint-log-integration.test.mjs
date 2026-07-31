@@ -159,6 +159,7 @@ describe('apra-fleet-ou7.3: every sprint has a traceable stdout/stderr log reach
         const childExitedEvents = history.list().filter((e) => e.sprintId === runId && e.event === HISTORY_EVENTS.CHILD_EXITED);
         assert.strictEqual(childExitedEvents.length, 1);
         assert.strictEqual(childExitedEvents[0].logPath, spawned.logPath, 'the CHILD_EXITED history event must carry the same logPath too');
+        assert.strictEqual(childExitedEvents[0].exitCode, 3, 'the CHILD_EXITED history event must carry the same nonzero exit code as the ledger');
 
         // Poll the real log file (never a fixed sleep) until BOTH the stdout
         // and stderr lines the child wrote have landed -- proving the
