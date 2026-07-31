@@ -181,7 +181,15 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // data-loss incident where a successful fetch was wrongly treated as always
 // safe to reset over. Both new sites pass member_name: member, confirmed
 // present.
-const EXPECTED_COMMAND_COUNT = 41;
+// 41 -> 40 (integ/regression split): getDeployedSha()'s `command('git
+// rev-parse HEAD', { member_name: orchestratorMember, ... })` site was
+// REMOVED. It existed only to prove the Integ Test phase's part-2 (smoke
+// test) evidence was fresh; the smoke test moved to the once-per-sprint
+// Regression Test phase, which provisions its own sandbox and has no
+// deployed SHA to attest against, so the probe had no remaining consumer.
+// The new Regression Test phase adds NO new command() site -- it reuses the
+// existing probeFileExists() helper.
+const EXPECTED_COMMAND_COUNT = 40;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -203,7 +211,12 @@ const EXPECTED_COMMAND_COUNT = 41;
 // getMemberForRole('planner')) and (2) the scoped plan-review dispatch
 // (member_name: getMemberForRole('plan-reviewer')), both literal member_name
 // present, verified compliant.
-const EXPECTED_AGENT_COUNT = 20;
+// 20 -> 22 (integ/regression split): the new once-per-sprint Regression Test
+// phase (Finalization, between Final Review and Harvest) adds two agent()
+// call sites -- the dispatch itself and its max_turns-exhaustion
+// resume-and-continue, both `member_name:
+// getMemberForRole('regression-test-runner')`, verified compliant.
+const EXPECTED_AGENT_COUNT = 22;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in

@@ -183,30 +183,28 @@ describe('engine report validation with a full mock integ report (eft.55.3 / eft
     });
 });
 
-// apra-fleet-eft.66.2: the dispatch/golden fixture must ASK for the
-// structured `deployedSha` output field (not just accept it if volunteered).
-// This pins two things statically, so a revert is caught even though no
-// golden-transcript scenario currently has a non-null deployedSha in-flight
-// (the existing fixture's part-2 cycle runs before any deploy succeeds):
-//   (a) runner.js's Part-2 dispatch clause (the `part2ShaClause` template
-//       literal built in runSprintCycle right before the integ-test-runner
-//       dispatch) instructs the runner to record the SHA in the structured
-//       `deployedSha` output field, not the legacy `PART2_SHA:` prose marker.
-//   (b) the vendored integ-test-runner output schema fixture actually
-//       defines a `deployedSha` property, so a role obeying (a) has
-//       somewhere schema-valid to put it.
-describe('dispatch/golden fixture requests the deployedSha field (eft.66.2)', () => {
+// Integ/regression split: the eft.66.2 pin below used to assert the OPPOSITE
+// -- that runner.js's Integ Test dispatch built a `part2ShaClause` asking the
+// runner to echo the deploy-verified SHA back. That handoff is retired: the
+// per-cycle Integ Test phase is feature closure only, and the part-2 smoke
+// test it attested to now lives in the once-per-sprint Regression Test phase,
+// which provisions its own throwaway sandbox and has no deployed SHA to
+// attest against. The assertion is inverted rather than deleted so a
+// re-introduction of the dead threading is caught. `validatePart2Evidence` /
+// `extractPart2Sha` themselves stay exported and unit-tested above: they are
+// pure, and a future phase may want the same freshness check.
+describe('the part-2 deployedSha handoff is retired from the engine', () => {
     const runnerSource = fs.readFileSync(
         path.join(__dirname, '..', 'fleet-sprint', 'runner.js'),
         'utf8'
     );
 
-    test('the Part-2 dispatch clause in runner.js asks for the structured deployedSha output field', () => {
-        assert.match(runnerSource, /part2ShaClause/);
-        assert.match(runnerSource, /your report's "deployedSha" output field/);
+    test('runner.js no longer threads a part-2 SHA clause into the Integ Test dispatch', () => {
+        assert.doesNotMatch(runnerSource, /const part2ShaClause/);
+        assert.doesNotMatch(runnerSource, /your report's "deployedSha" output field/);
     });
 
-    test('the vendored integ-test-runner output schema fixture declares a deployedSha property', () => {
+    test('the vendored integ-test-runner output schema fixture still declares deployedSha (optional, backward compatible)', () => {
         const schemaPath = path.join(
             __dirname,
             '..',

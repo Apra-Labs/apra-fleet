@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, CommandError, WorkflowError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
 import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
-    deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
+    deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isPostDispatchSyncFailure } from './errors.mjs';
 
@@ -3811,7 +3811,24 @@ function buildAnalysisText({
     closedCountHistory, highWaterClosedCount,
     deployFailures, integFailures, rejectedNewTasks,
     finalVerdictResult, finalClosedCount, finalOpenAtGoalCount,
+    regressionResult = null,
 }) {
+    // Informational only -- the once-per-sprint Regression Test phase runs
+    // AFTER the final verdict is decided and never gates it. Its failures are
+    // filed as parent-less `[regression][carry-over]` beads, which is why
+    // they do not appear in the open-at-goal count above; they are surfaced
+    // here so the sprint analysis still tells the whole story.
+    const regressionLines = regressionResult === null
+        ? ['Regression pass: not run this sprint (no regression-test-playbook.md, or the probe failed).']
+        : [
+            `Regression pass: ${regressionResult.passed === true ? 'PASSED' : 'FAILED'} `
+            + `(real-bd suite: ${regressionResult.suitePassed === true ? 'pass' : 'fail'}, `
+            + `smoke test: ${regressionResult.smokePassed === true ? 'pass' : 'fail'}).`,
+            `Carry-over beads filed: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}.`,
+            `Summary: ${regressionResult.summary || '(none reported)'}`,
+            'Informational only -- this pass ran after the final verdict and did not gate it; any bead '
+            + 'above is parent-less by design and carries over to a future sprint.',
+        ];
     const lines = [
         `# Sprint Analysis: ${branch}`,
         '',
@@ -3844,6 +3861,10 @@ function buildAnalysisText({
         '## Final verdict',
         '',
         `${finalVerdictResult.verdict}${finalVerdictResult.notes ? ` -- ${finalVerdictResult.notes}` : ''}`,
+        '',
+        '## Regression pass (once per sprint, informational)',
+        '',
+        ...regressionLines,
     ];
     return lines.join('\n');
 }
@@ -5506,31 +5527,15 @@ async function runSprintCycle(context) {
         return res.output.trim() === 'found';
     }
 
-    // apra-fleet-eft.55.2: resolves the SHA the sprint branch's HEAD sat at
-    // right after a successful deploy this cycle -- the "deploy-verified
-    // SHA" the Integ Test phase below hands to the integ-test-runner
-    // dispatch and later checks its part-2 (smoke test) evidence against
-    // (see validatePart2Evidence). Same failSoft probe idiom as
-    // probeFileExists: a transient/portability failure here must never
-    // throw and kill the sprint -- it just means part-2 SHA freshness
-    // cannot be verified this cycle (validatePart2Evidence treats a null
-    // deployedSha as "nothing to validate against", falling back to plain
-    // pass/fail).
-    async function getDeployedSha() {
-        const res = await command('git rev-parse HEAD', {
-            member_name: orchestratorMember, silent: true, label: 'Resolve deploy-verified SHA', failSoft: true,
-        });
-        if (!res.ok) {
-            log(`Could not resolve the deploy-verified SHA this cycle (treating as unknown, skipping part-2 SHA freshness validation): ${res.error}`);
-            return null;
-        }
-        const sha = res.output.trim();
-        if (!/^[0-9a-f]{7,40}$/i.test(sha)) {
-            log(`git rev-parse HEAD returned an unexpected value ("${sha}") -- treating the deploy-verified SHA as unknown, skipping part-2 SHA freshness validation.`);
-            return null;
-        }
-        return sha.toLowerCase();
-    }
+    // NOTE (integ/regression split): the eft.55.2 `getDeployedSha()` helper
+    // that used to live here has been removed. It resolved this cycle's
+    // deploy-verified SHA purely so the Integ Test phase could prove its
+    // part-2 (smoke test) evidence was fresh. The smoke test is no longer
+    // part of that phase -- it moved to the once-per-sprint Regression Test
+    // phase, which provisions its own throwaway sandbox and therefore has
+    // nothing to attest a deployed SHA against. `validatePart2Evidence` /
+    // `extractPart2Sha` remain exported below as pure helpers (still unit
+    // tested) but no longer have an engine call site.
 
     // apra-fleet-eft.34: D-pull the orchestrator's OWN beads clone before the
     // very first bd query pre-sprint validation issues (via updateDashboard's
@@ -7161,7 +7166,6 @@ async function runSprintCycle(context) {
         const hasPlaybook = await probeFileExists('integ-test-playbook.md');
 
         let deployedThisCycle = hasDeploy ? null : false; // null = not attempted yet
-        let deployedSha = null; // apra-fleet-eft.55.2: this cycle's deploy-verified SHA, set only on a real deploy success
 
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
@@ -7225,12 +7229,6 @@ async function runSprintCycle(context) {
             if (!deployedThisCycle) {
                 deployFailures.push({ cycle, notes: deployResult.notes });
                 log(`Deploy FAILED this cycle (C${cycle}): ${deployResult.notes}. Skipping Integration Test phase.`);
-            } else {
-                // apra-fleet-eft.55.2: resolve THIS cycle's deploy-verified
-                // SHA now, right after a real deploy success, so the Integ
-                // Test dispatch below can hand it to the runner and later
-                // check its part-2 evidence was actually run against it.
-                deployedSha = await getDeployedSha();
             }
         } else {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
@@ -7286,37 +7284,22 @@ async function runSprintCycle(context) {
                       `your pass shows the underlying defect no longer reproduces, close it (bd close) with a ` +
                       `note naming the evidence; if it still reproduces, leave it open and say why.`
                     : '';
-                // apra-fleet-eft.55.2: hand the runner THIS cycle's
-                // deploy-verified SHA and require it to echo the SHA back in
-                // its report -- the engine below (validatePart2Evidence)
-                // rejects a report with an absent/mismatched SHA as
-                // INCONCLUSIVE rather than trusting stale part-2 (smoke
-                // test) evidence inherited from a pre-fix run (the eft.55
-                // incident). Omitted entirely when deployedSha could not be
-                // resolved this cycle (see getDeployedSha) -- nothing to
-                // require freshness against.
-                //
-                // apra-fleet-eft.66.1: request the structured `deployedSha`
-                // output-schema field (packages/apra-fleet-se/apra-pm commit 844112e) rather
-                // than a prose marker embedded in `summary` -- the schema
-                // field is the primary evidence source `validatePart2Evidence`
-                // reads; the old "PART2_SHA: <sha>" summary marker is kept
-                // engine-side only as a legacy fallback for pre-upgrade
-                // integ-test-runner builds.
-                const part2ShaClause = deployedSha
-                    ? ` This cycle's deploy-verified SHA is ${deployedSha}. Part 2 (the smoke test) MUST be ` +
-                      `(re)run fresh against this deployed SHA this cycle -- a part-2 result reused from a ` +
-                      `resumed session's earlier, pre-fix run does NOT satisfy this. Record this exact SHA in ` +
-                      `your report's "deployedSha" output field once part 2 has actually run against it.`
-                    : '';
+                // The per-cycle Integ Test phase is FEATURE CLOSURE ONLY as
+                // of the integ/regression split: integ-test-playbook.md no
+                // longer owns a sandbox, a smoke test, or the real-bd suite
+                // (those moved to regression-test-playbook.md, dispatched
+                // once per sprint in Finalization below). With part 2 gone
+                // from this role there is nothing left whose freshness a
+                // deploy-verified SHA could attest to, so the eft.55.2
+                // `part2ShaClause` handoff and its engine-side
+                // validatePart2Evidence gate are both retired here.
                 const featurePrompt = (openFeatures.length > 0
                     ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
                       `${openFeatures.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
                       `--parent ${targetIssues[0]}.`
                     : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
-                      `this cycle -- if the playbook still names concrete checks to run, run them; ` +
-                      `otherwise report nothing to test. Add bug beads if needed, filed under ` +
-                      `--parent ${targetIssues[0]}.`) + pendingClosureClause + part2ShaClause;
+                      `this cycle -- report nothing to test. Add bug beads if needed, filed under ` +
+                      `--parent ${targetIssues[0]}.`) + pendingClosureClause;
                 // apra-fleet-eft.8.2: integ-test-runner does NOT touch code
                 // (pushCode: false, no git push) but it DOES mutate beads --
                 // it closes passing features and files bug beads. Per Plan 3.3
@@ -7408,28 +7391,14 @@ async function runSprintCycle(context) {
             }
             // apra-fleet-eft.69.1: no duplicate log() dump -- see the
             // Reviewer dispatch site's comment (~line 4523).
-            // apra-fleet-eft.55.2: before trusting `passed` at all, verify
-            // part-2 (smoke test) evidence actually came from THIS cycle's
-            // deploy-verified SHA -- see validatePart2Evidence's doc
-            // comment for the eft.55 incident this guards against (a
-            // resumed session's part-2 result from BEFORE this cycle's
-            // fixes were deployed, verification verdicts issued from stale
-            // evidence). An absent/mismatched SHA is INCONCLUSIVE, not a
-            // pass/fail verdict -- still recorded here so stale evidence can
-            // never silently masquerade as a genuine pass, but tagged
-            // (`inconclusive: true`) and worded distinctly so the final
-            // reviewer/harvester can tell the two apart. A matching SHA (or
-            // an unresolvable deployedSha, see getDeployedSha) falls
-            // through unchanged to the ordinary pass/fail check below.
-            const part2Evidence = validatePart2Evidence(integResult, deployedSha);
-            if (part2Evidence.inconclusive) {
-                const reasonText = part2Evidence.reason === 'absent'
-                    ? 'the report carries no deployedSha (nor legacy PART2_SHA marker)'
-                    : `the report's deployedSha (${part2Evidence.reportedSha}) does not match this cycle's deploy-verified SHA (${deployedSha})`;
-                const inconclusiveNote = `INCONCLUSIVE (part-2/smoke evidence not verified fresh -- ${reasonText}): ${integResult.summary}`;
-                integFailures.push({ cycle, notes: inconclusiveNote, bugsFiled: integResult.bugsFiled, inconclusive: true });
-                log(`Integration tests INCONCLUSIVE this cycle (C${cycle}): ${reasonText}. Not accepted as pass or fail evidence.`);
-            } else if (integResult.passed !== true) {
+            // Integ/regression split: the eft.55.2 part-2 SHA-freshness gate
+            // (validatePart2Evidence) is retired at this site. It existed to
+            // stop a resumed session presenting a STALE smoke-test result as
+            // this cycle's evidence; this phase no longer runs a smoke test
+            // at all, so there is nothing stale to guard against. Feature
+            // closure is judged against the features' own `[test]` tasks in
+            // the branch working tree, which is inherently current.
+            if (integResult.passed !== true) {
                 // A4: never swallow a failure just because the agent chose
                 // to (or didn't) file bugs -- `passed` is the honest source
                 // of truth, checked explicitly and propagated below
@@ -7776,6 +7745,128 @@ async function runSprintCycle(context) {
         }
     }
 
+    // =======================
+    // 6b. Regression Test (once per sprint, informational -- never a gate)
+    // =======================
+    //
+    // Sits deliberately BETWEEN Final Review and Harvest.
+    //
+    // After Final Review, because `finalVerdictResult` is already computed by
+    // the time this runs -- so a regression failure structurally CANNOT
+    // perturb the sprint's verdict. No LLM-trusted "please ignore this"
+    // instruction is needed; the ordering is the guarantee.
+    //
+    // Before Harvest, because the harvester writes
+    // docs/sprint-analysis-<slug>.md and this phase's summary is folded into
+    // that document (informational section, see buildAnalysisText).
+    //
+    // This is the sprint's standing confidence check: it proves EXISTING
+    // functionality still works, which is why it runs once per sprint rather
+    // than once per cycle, and why its failures are filed as STANDALONE,
+    // PARENT-LESS `[regression][carry-over]` beads. `bdListScoped()` builds
+    // the sprint's scope tree by walking `.parent` edges only, so a
+    // parent-less bead is mechanically invisible to `openAtGoal` /
+    // `finalOpenAtGoal` -- a regression failure therefore carries over to a
+    // future sprint (the planner discovers them with `bd search
+    // "[carry-over]"`) instead of retroactively blocking the sprint that
+    // happened to find it.
+    //
+    // No deployedSha handoff: part 1 runs against branch HEAD directly and
+    // part 2 provisions its own fresh sandbox install, so neither has ever
+    // depended on the per-cycle Deploy target.
+    let regressionResult = null;
+    const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md');
+    if (hasRegressionPlaybook) {
+        phase(`Regression Test C${finalCycleLabel}`);
+        // Same turn budget as the per-cycle integ runner used to need when it
+        // still owned both parts (the real-bd suite alone spends ~1 turn per
+        // liveness poll for the better part of an hour), and a WIDER hard
+        // ceiling: this single dispatch now carries the full suite AND the
+        // sandbox smoke sprint that used to be spread across cycles.
+        const REGRESSION_TEST_MAX_TURNS = 200;
+        const REGRESSION_TEST_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 3;
+        const regressionPrompt =
+            `Run the full regression pass using regression-test-playbook.md at the repo root: part 1 ` +
+            `(the real functional suite) and part 2 (the sandbox smoke test), then ALWAYS run the ` +
+            `playbook's Teardown before returning, pass or fail. ` +
+            `File every failure you find as a STANDALONE bead: run bd create WITHOUT any --parent flag ` +
+            `and do NOT bd dep add it to any sprint bead, titled "[regression][carry-over] <description>". ` +
+            `Search bd for "[carry-over]" first and update an existing bead rather than filing a duplicate. ` +
+            `Filing these parent-less is what makes them carry over to a future sprint instead of blocking ` +
+            `this one -- do not "helpfully" parent them under a sprint bead. ` +
+            `This sprint's verdict has already been decided and your result is informational: report it ` +
+            `honestly, and never soften a failure because the sprint has otherwise passed.`;
+        const regressionDispatchOpts = {
+            member_name: getMemberForRole('regression-test-runner'),
+            agentType: 'regression-test-runner',
+            schema: regressionReport,
+            model: FIXED_ROLE_TIER['regression-test-runner'],
+            // Same shape as the integ dispatch's Issue 30 reasoning: keep the
+            // 1h INACTIVITY timer (a genuinely hung runner still dies) while
+            // giving the HARD elapsed-time ceiling real headroom, since a
+            // max_total_s kill surfaces as a plain AgentDispatchError that the
+            // max_turns resume ladder below cannot catch.
+            timeout_s: DISPATCH_TIMEOUT_S,
+            max_total_s: REGRESSION_TEST_MAX_TOTAL_S,
+            max_turns: REGRESSION_TEST_MAX_TURNS,
+        };
+        try {
+            // Mutates beads (files carry-over bugs) but never touches code:
+            // pushCode false / pushBeads true, exactly like the integ runner.
+            try {
+                regressionResult = await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
+                    regressionPrompt,
+                    { ...regressionDispatchOpts, member_name: getMemberForRole('regression-test-runner') }
+                ), { pushBeads: true });
+            } catch (err) {
+                if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                    log(`Regression Test Runner exhausted its turn limit (max_turns=${REGRESSION_TEST_MAX_TURNS}) -- resuming the same session with max_turns=${REGRESSION_TEST_MAX_TURNS * 2} instead of restarting the pass.`);
+                    await memberSessionGuard.killIfAlive(getMemberForRole('regression-test-runner'));
+                    // Stabilization log Issue 27: a resume DELIVERS A NEW prompt
+                    // artifact, so restate the dispatch's scope/filing rules --
+                    // a bare "continue" would lose the parent-less filing rule,
+                    // which is the whole point of this phase.
+                    regressionResult = await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
+                        'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining work, run Teardown, and return your final report now. ' +
+                        'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
+                        {
+                            ...regressionDispatchOpts,
+                            member_name: getMemberForRole('regression-test-runner'),
+                            label: `Regression Test (resume, max_turns=${REGRESSION_TEST_MAX_TURNS * 2})`,
+                            resume: true,
+                            max_turns: REGRESSION_TEST_MAX_TURNS * 2,
+                        }
+                    ), { pushBeads: true });
+                } else {
+                    throw err;
+                }
+            }
+            if (regressionResult.passed !== true) {
+                log(`Regression pass reported FAILURES (carry-over beads: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}): ${regressionResult.summary}`);
+            } else {
+                log(`Regression pass PASSED (suite: ${regressionResult.suitePassed}, smoke: ${regressionResult.smokePassed}).`);
+            }
+        } catch (err) {
+            // Deliberately NO outer retry-once wrapper, and deliberately no
+            // rethrow of the dispatch error classes: unlike Final Review --
+            // whose failure legitimately fails the whole sprint -- a
+            // Regression Test dispatch failure must soft-fail and log. It can
+            // never abort the run, gate the verdict, or block Harvest.
+            if (err instanceof AgentOutputError) {
+                log(`Regression Test Runner: schema-repair exhausted, continuing without a regression result: ${err.message}`);
+                regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
+            } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                log(`Regression Test Runner: agent dispatch failed, continuing without a regression result: ${err.message}`);
+                regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression test runner dispatch failed: ${err.message}` };
+            } else {
+                throw err;
+            }
+        }
+        await updateDashboard();
+    } else {
+        log('Skipping Regression Test Phase (no regression-test-playbook.md found, or the probe itself failed -- see prior log line)');
+    }
+
     phase(`Harvest C${finalCycleLabel}`);
     // N12 (apra-fleet-unw2.10): wire the harvester's five vendored-required
     // inputs with real, runner-computed values -- see buildAnalysisText()/
@@ -7802,6 +7893,7 @@ async function runSprintCycle(context) {
         finalVerdictResult,
         finalClosedCount,
         finalOpenAtGoalCount: finalOpenAtGoal.length,
+        regressionResult,
     });
     const costAnalysis = buildCostAnalysis(budget);
     const harvesterPrompt = buildHarvesterPrompt({
