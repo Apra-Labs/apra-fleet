@@ -40,6 +40,22 @@ Also read any requirementsFile or design docs mentioned in your task.
 Run `git log --oneline -10` to understand what the codebase already has.
 Read key source files to understand existing conventions and structure.
 
+Also check for carry-over regression failures left by a previous sprint:
+
+```bash
+bd search "[carry-over]"
+```
+
+A prior sprint's Regression Test phase files its failures as STANDALONE,
+PARENT-LESS beads titled `[regression][carry-over] <description>` -- deliberately
+outside any sprint's scope tree, so a regression failure never blocks the sprint
+that found it. That also means nothing pulls them into a new sprint automatically:
+you are the only discovery point. Read each open one (`bd show <id>`), and for any
+that is in scope for this sprint's goals, adopt it by parenting it under the sprint
+goal (`bd update <id> --parent <sprint-id>`) so it becomes real, gated sprint work.
+Leave the rest parent-less for a later sprint; do not close a carry-over bead you
+are not adopting.
+
 ## Step 2 -- Decompose sprint goals into features
 
 For each sprint goal create type=feature issues as direct children:
