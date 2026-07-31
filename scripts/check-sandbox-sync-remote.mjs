@@ -97,7 +97,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { execBdSync } from './lib/exec-bd.mjs';
 
 // Substring identifying the real, shared fleet-e2e-toy Dolt remote that the
@@ -120,6 +120,46 @@ export function defaultSandboxPath(repoPath) {
 }
 
 /**
+ * Converts a well-formed 'file://' URL string to a filesystem path via
+ * node:url's fileURLToPath(), falling back to normalizing MSYS/git-bash
+ * single-letter-segment drive forms ('file:///c/Users/...' ->
+ * 'file:///C:/Users/...') and retrying, and finally falling back to the raw
+ * remainder-after-'file://' string itself (matching this function's
+ * pre-apra-fleet-xuo.9.1 behavior) when neither parse succeeds -- e.g. a
+ * POSIX-style path ('file:///home/x/...') evaluated on a win32 host, where
+ * fileURLToPath() requires an actual drive letter and would otherwise throw
+ * for a case this function must keep resolving (relative to the current
+ * drive, exactly as path.resolve() always has) rather than reject outright.
+ *
+ * @param {string} fileUrl a string starting with 'file://'
+ * @returns {string}
+ */
+function fileUrlToCandidatePath(fileUrl) {
+  try {
+    return fileURLToPath(fileUrl);
+  } catch {
+    // fall through to the MSYS-normalization retry below
+  }
+
+  const rawRemainder = fileUrl.replace(/^file:\/\//, '');
+  // MSYS/git-bash single-letter drive segment ('/c/Users/...' or
+  // '/c'): normalize to a real drive path ('C:/Users/...') before retrying
+  // fileURLToPath, which requires an actual 'C:'-style drive letter on
+  // win32.
+  const msys = /^\/([a-zA-Z])(\/.*)?$/.exec(rawRemainder);
+  if (msys) {
+    const normalizedUrl = `file:///${msys[1].toUpperCase()}:${msys[2] ?? '/'}`;
+    try {
+      return fileURLToPath(normalizedUrl);
+    } catch {
+      // fall through to the raw-remainder fallback below
+    }
+  }
+
+  return rawRemainder;
+}
+
+/**
  * Does `remoteValue` (a git/Dolt remote URL or filesystem path) resolve to
  * somewhere INSIDE `sandboxPath`?
  *
@@ -131,6 +171,14 @@ export function defaultSandboxPath(repoPath) {
  * (`https://`, `git+https://`, `ssh://`, etc. -- including the real
  * fleet-e2e-toy identity) is never a sandbox-local filesystem path, so it
  * always resolves to "outside" (fail-closed).
+ *
+ * `file://` URLs are converted to filesystem paths via
+ * fileUrlToCandidatePath() (node:url's fileURLToPath(), with a fallback for
+ * MSYS/git-bash drive-letter forms -- apra-fleet-xuo.9.1) rather than a raw
+ * regex-strip + path.resolve(), which mis-resolved well-formed Windows
+ * drive-letter file:// URLs (e.g. 'file:///C:/Users/...' resolved to
+ * 'C:\C:\Users\...', always outside any real sandbox path, a false-FAIL of
+ * this safety guard -- see apra-fleet-xuo.9's bug report).
  *
  * @param {string} remoteValue
  * @param {string} sandboxPath
@@ -148,7 +196,7 @@ export function resolvesInsideSandbox(remoteValue, sandboxPath) {
   const fileUrlMatch = /^file:\/\/(.*)$/.exec(normalizedValue);
   let candidatePath;
   if (fileUrlMatch) {
-    candidatePath = fileUrlMatch[1];
+    candidatePath = fileUrlToCandidatePath(normalizedValue);
   } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedValue)) {
     // Some other URL scheme (https, git+https, ssh, ...) -- never a
     // sandbox-local filesystem path, e.g. the real
