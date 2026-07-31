@@ -12,10 +12,14 @@
 // WHY "minus the live-expanded union", not "minus a launch-time snapshot": a
 // sprint's subtree grows mid-run (planners/reviewers add tasks under an
 // already-claimed root). So the claimed set is recomputed AT RENDER TIME by
-// re-expanding each active sprint's roots via eft.5.3's expandScope()
-// (./scope-overlap.mjs) -- the exact same live-subtree question the overlap
-// guard answers. A bead created after launch, under a claimed root, is claimed
-// the instant it exists and never leaks into the Backlog.
+// re-expanding each active sprint's roots -- the exact same live-subtree
+// question eft.5.3's expandScope() (./scope-overlap.mjs) answers for the
+// launch-time overlap guard, but computed here IN-MEMORY (apra-fleet-c4s) via
+// expandScopeInMemory(), walking a child-index built off the single bulk
+// `bd list --json --limit 0` fetch this module already does per render,
+// instead of one `bd list --parent <id>` subprocess call per discovered node.
+// A bead created after launch, under a claimed root, is claimed the instant
+// it exists and never leaks into the Backlog.
 //
 // NO DUPLICATION across the page (acceptance criterion): a claimed bead appears
 // ONLY under its owning sprint's section, NEVER in the Backlog, and NEVER
@@ -38,7 +42,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
-import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderBeadsHtml } from '../../fleet-sprint/viewer-extensions.mjs';
 import { sendJson } from './server.mjs';
@@ -125,6 +128,61 @@ export async function bdListAllBeadsRaw() {
 export async function bdListAllBeads() {
     const rows = await fetchAllBeadsRaw();
     return rows.map(normalizeBead).filter((b) => b.id.length > 0);
+}
+
+/**
+ * Build a parent-id -> direct-child-ids index off an already-fetched, already-
+ * normalized beads list. This is the SAME technique `buildBacklogTree()`
+ * (below, `allChildrenOf`) and `computePartialClaimByBead()` already use to
+ * derive containment structure from one bulk `bd list` fetch, factored out
+ * here so `expandScopeInMemory()` can share it.
+ * @param {Array<{ id: string, parentId: string|null }>} beads - normalizeBead() shape
+ * @returns {Map<string, string[]>}
+ */
+export function buildChildIndex(beads) {
+    const idx = new Map();
+    for (const b of Array.isArray(beads) ? beads : []) {
+        const pid = b && b.parentId;
+        if (!pid) continue;
+        if (!idx.has(pid)) idx.set(pid, []);
+        idx.get(pid).push(b.id);
+    }
+    return idx;
+}
+
+/**
+ * In-memory equivalent of `expandScope()` (./scope-overlap.mjs): expands a set
+ * of root issue ids into the full parent-child subtree they span (roots
+ * INCLUDED), via the identical breadth-first-walk logic -- but walking a
+ * `buildChildIndex()` Map built off an already-fetched flat beads list
+ * instead of issuing one `bd list --parent <id>` subprocess call per
+ * discovered node. Same roots + same beads list -> IDENTICAL result to the
+ * subprocess-based `expandScope()` (apra-fleet-c4s).
+ * @param {Iterable<string>} roots
+ * @param {Map<string, string[]>} childIndex - from buildChildIndex()
+ * @returns {Set<string>} every bead id in the subtree, roots included
+ */
+export function expandScopeInMemory(roots, childIndex) {
+    const idx = childIndex instanceof Map ? childIndex : new Map();
+    const scope = new Set();
+    const frontier = [];
+    for (const r of roots ?? []) {
+        if (typeof r === 'string' && r.length > 0 && !scope.has(r)) {
+            scope.add(r);
+            frontier.push(r);
+        }
+    }
+    while (frontier.length > 0) {
+        const id = frontier.shift();
+        const children = idx.get(id) ?? [];
+        for (const child of children) {
+            if (typeof child === 'string' && child.length > 0 && !scope.has(child)) {
+                scope.add(child);
+                frontier.push(child);
+            }
+        }
+    }
+    return scope;
 }
 
 /** Normalize a claimedBy value (single owner string) into an array of sprint ids. */
@@ -613,11 +671,19 @@ export function registerBacklogRoutes(supervisor, backlog) {
  * @param {{
  *   ledger: { list: () => Array<{ sprintId: string, issueRoots: string[] }> },
  *   listAllBeads?: () => Promise<Array<object>>|Array<object>,
- *   listChildren?: (parentId: string) => Promise<string[]>,
- *   expandScope?: (roots: string[]) => Promise<Set<string>>,
+ *   expandScope?: (roots: string[]) => Promise<Set<string>>|Set<string>,
  *   watchdog?: { classifySprint: (entry: object) => Promise<{ status: string }> },
  *   logger?: { log?: Function, error?: Function },
  * }} deps
+ *
+ * `expandScope`, if supplied, fully overrides claimed-scope computation (used
+ * by tests to stub scope expansion deterministically without a real `bd` /
+ * beads fixture). When omitted (the production default -- apra-fleet-c4s),
+ * claimed scope is computed IN-MEMORY via `expandScopeInMemory()`, walking a
+ * `buildChildIndex()` built off the SAME `listAllBeads()` result `buildTree()`
+ * / `buildBacklogTasks()` already fetch in the same render pass -- zero extra
+ * `bd` subprocess calls, never the old per-node `expandScope()` (./scope-
+ * overlap.mjs) subprocess walker.
  */
 export function createBacklog(deps = {}) {
     const ledger = deps.ledger;
@@ -626,8 +692,10 @@ export function createBacklog(deps = {}) {
     }
     const logger = deps.logger ?? console;
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
-    const listChildren = deps.listChildren ?? bdListChildren;
-    const expand = deps.expandScope ?? ((roots) => expandScope(roots, listChildren));
+    // Only used when a caller (test) explicitly overrides claimed-scope
+    // computation wholesale -- the production default path below never calls
+    // this (apra-fleet-c4s: no per-node `bd` subprocess walk on every render).
+    const explicitExpand = deps.expandScope ?? null;
     // Raw rows by default -- buildTree() below normalizes whatever this
     // returns itself (normalizeBead() is idempotent on already-normalized
     // input), and buildBacklogTasks() needs the FULLER raw shape (priority,
@@ -661,19 +729,38 @@ export function createBacklog(deps = {}) {
     }
 
     /**
-     * Build the claimed-id -> owning-sprint map by LIVE-expanding every active
-     * sprint's roots right now. First writer wins per id (exact-overlap policy
-     * guarantees no two active sprints share a bead anyway). A per-sprint
-     * expansion failure is isolated -- that one sprint contributes no claims
-     * rather than taking the whole Backlog down.
+     * Build the claimed-id -> owning-sprint map by expanding every active
+     * sprint's roots to their live full subtree. First writer wins per id
+     * (exact-overlap policy guarantees no two active sprints share a bead
+     * anyway). A per-sprint expansion failure is isolated -- that one sprint
+     * contributes no claims rather than taking the whole Backlog down.
+     *
+     * Production default (no `deps.expandScope` override, apra-fleet-c4s):
+     * computed purely IN-MEMORY via `expandScopeInMemory()` off a
+     * `buildChildIndex()` built from `rawBeadsArg` if the caller already
+     * fetched it this render (buildTree()/buildBacklogTasks() below always
+     * do), or from one `listAllBeads()` call otherwise -- never a per-node
+     * `bd` subprocess walk.
+     * @param {Array<object>} [rawBeadsArg] - already-fetched `listAllBeads()`
+     *        result, reused to avoid a second bulk fetch in the same render.
      * @returns {Promise<Map<string, string>>}
      */
-    async function buildClaimedBy() {
+    async function buildClaimedBy(rawBeadsArg) {
         const claimedBy = new Map();
         const reservations = await activeReservations();
+        if (reservations.length === 0) return claimedBy;
+
+        let childIndex = null;
+        if (!explicitExpand) {
+            const rawBeads = rawBeadsArg ?? await listAllBeads();
+            const beads = (Array.isArray(rawBeads) ? rawBeads : []).map(normalizeBead).filter((b) => b.id.length > 0);
+            childIndex = buildChildIndex(beads);
+        }
+
         await Promise.all(reservations.map(async (r) => {
             try {
-                const scope = await expand(r.issueRoots ?? []);
+                const roots = r.issueRoots ?? [];
+                const scope = explicitExpand ? await explicitExpand(roots) : expandScopeInMemory(roots, childIndex);
                 for (const id of scope) {
                     if (!claimedBy.has(id)) claimedBy.set(id, r.sprintId);
                 }
@@ -686,7 +773,8 @@ export function createBacklog(deps = {}) {
 
     /** Build the Backlog forest (full tracker minus live-claimed subtrees). */
     async function buildTree() {
-        const [rawBeads, claimedBy] = await Promise.all([listAllBeads(), buildClaimedBy()]);
+        const rawBeads = await listAllBeads();
+        const claimedBy = await buildClaimedBy(rawBeads);
         const beads = (Array.isArray(rawBeads) ? rawBeads : []).map(normalizeBead).filter((b) => b.id.length > 0);
         return buildBacklogTree(beads, claimedBy);
     }
@@ -712,7 +800,8 @@ export function createBacklog(deps = {}) {
      * @returns {Promise<{ tasks: object[], total: number, filterOptions: object }>}
      */
     async function buildBacklogTasks(filters) {
-        const [rawBeads, claimedBy] = await Promise.all([listAllBeads(), buildClaimedBy()]);
+        const rawBeads = await listAllBeads();
+        const claimedBy = await buildClaimedBy(rawBeads);
         const rows = (Array.isArray(rawBeads) ? rawBeads : [])
             .filter((b) => b && typeof b.id === 'string' && b.id.length > 0);
         const normalized = rows.map(normalizeBead);

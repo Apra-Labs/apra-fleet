@@ -4,12 +4,14 @@ import assert from 'node:assert';
 import {
     createBacklog,
     buildBacklogTree,
+    buildChildIndex,
+    expandScopeInMemory,
     renderBacklogTreeHtml,
     formatPartialClaim,
     parentIdOf,
     normalizeBead,
 } from '../src/supervisor/backlog.mjs';
-import { createScopeGuard } from '../src/supervisor/scope-overlap.mjs';
+import { createScopeGuard, expandScope } from '../src/supervisor/scope-overlap.mjs';
 import { createDashboard, renderIndexPageHtml } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 
@@ -115,6 +117,84 @@ describe('backlog -- buildBacklogTree', () => {
         const tree = buildBacklogTree(beads, claimed);
         // c1..c5 (free) surface as roots since their parent E is claimed; f0 too.
         assert.deepEqual(tree.map((n) => n.id).sort(), ['c1', 'c2', 'c3', 'c4', 'c5', 'f0']);
+    });
+});
+
+describe('backlog -- expandScopeInMemory equivalence with expandScope() (apra-fleet-c4s)', () => {
+    // The same tracker shape supervisor-scope-overlap.test.mjs-style fixtures
+    // use: epic E -> c1..c5, one of which (c2) has its own grandchildren.
+    const beads = [
+        normalizeBead(trackerBead('E', 'Epic', null, 'epic')),
+        normalizeBead(trackerBead('c1', 'C1', 'E')),
+        normalizeBead(trackerBead('c2', 'C2', 'E')),
+        normalizeBead(trackerBead('c3', 'C3', 'E')),
+        normalizeBead(trackerBead('c4', 'C4', 'E')),
+        normalizeBead(trackerBead('c5', 'C5', 'E')),
+        normalizeBead(trackerBead('g1', 'G1', 'c2')),
+        normalizeBead(trackerBead('g2', 'G2', 'c2')),
+        normalizeBead(trackerBead('f0', 'Free root', null)),
+    ];
+    const childIndex = buildChildIndex(beads);
+
+    /** Subprocess-shaped listChildren stub backed by the SAME fixture, for the old expandScope(). */
+    function listChildrenFromFixture(parentId) {
+        return Promise.resolve((childIndex.get(parentId) ?? []).slice());
+    }
+
+    test('same roots + same beads list -> IDENTICAL claimed-id set as the subprocess-based expandScope()', async () => {
+        for (const roots of [['E'], ['c2'], ['c1', 'c3'], ['f0'], ['c2', 'c4'], ['does-not-exist']]) {
+            const oldResult = await expandScope(roots, listChildrenFromFixture);
+            const newResult = expandScopeInMemory(roots, childIndex);
+            assert.deepEqual([...newResult].sort(), [...oldResult].sort(),
+                `expandScopeInMemory(${JSON.stringify(roots)}) must match expandScope() exactly`);
+        }
+    });
+
+    test('expandScopeInMemory is a synchronous pure Set/Map traversal (no subprocess/IO)', () => {
+        // Calling it returns a plain Set directly, not a Promise -- proving no
+        // async subprocess spawn (unlike expandScope(), which is async and
+        // awaits one `bd list --parent` call per discovered node).
+        const scope = expandScopeInMemory(['c2'], childIndex);
+        assert.ok(scope instanceof Set, 'must return a Set synchronously, not a Promise');
+        assert.deepEqual([...scope].sort(), ['c2', 'g1', 'g2']);
+    });
+});
+
+describe('backlog -- createBacklog production default computes claimed scope in-memory (apra-fleet-c4s)', () => {
+    const allBeads = [
+        trackerBead('E', 'Epic', null, 'epic'),
+        trackerBead('c1', 'C1', 'E'),
+        trackerBead('c2', 'C2', 'E'),
+        trackerBead('c3', 'C3', 'E'),
+        trackerBead('f0', 'Free', null),
+    ];
+
+    test('buildClaimedBy() with no expandScope override expands live subtrees off listAllBeads(), zero extra bd calls', async () => {
+        let listAllBeadsCalls = 0;
+        const backlog = createBacklog({
+            ledger: fakeLedger([{ sprintId: 's1', issueRoots: ['E'] }]),
+            listAllBeads: () => { listAllBeadsCalls += 1; return allBeads; },
+            // Deliberately NOT injecting `expandScope` -- exercises the
+            // production default (in-memory) path.
+        });
+        const claimedBy = await backlog.buildClaimedBy();
+        // E's live subtree (via the same allBeads fixture) is E,c1,c2,c3.
+        assert.deepEqual([...claimedBy.keys()].sort(), ['E', 'c1', 'c2', 'c3']);
+        assert.equal(listAllBeadsCalls, 1, 'buildClaimedBy() must fetch beads at most once when not given a pre-fetched list');
+    });
+
+    test('buildTree() and buildBacklogTasks() each fetch listAllBeads() exactly ONCE per call (no duplicate bulk fetch)', async () => {
+        let listAllBeadsCalls = 0;
+        const backlog = createBacklog({
+            ledger: fakeLedger([{ sprintId: 's1', issueRoots: ['c1'] }]),
+            listAllBeads: () => { listAllBeadsCalls += 1; return allBeads; },
+        });
+        await backlog.buildTree();
+        assert.equal(listAllBeadsCalls, 1, 'buildTree() must call listAllBeads() exactly once');
+
+        listAllBeadsCalls = 0;
+        await backlog.buildBacklogTasks();
+        assert.equal(listAllBeadsCalls, 1, 'buildBacklogTasks() must call listAllBeads() exactly once');
     });
 });
 
