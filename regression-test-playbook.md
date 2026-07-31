@@ -45,6 +45,7 @@ Commands below require these prefixes in `.claude/settings.json` under
 - `Bash(git -C ~/temp/.apra-fleet-tests* *)`
 - `Bash(node scripts/run-integ-suites.mjs *)` (for the
   "Run the apra-fleet-se suite against real bd" section only)
+- `Bash(npm run test:slow*)` (same section, the slow-lane run)
 - `Bash(bd *)` (for "Reporting failures" below -- `bd search` to dedupe and
   `bd create` to file the parent-less carry-over beads; also the sandbox
   `bd show`/`bd dolt` steps in `## Setup` and `## Test scenario`)
@@ -69,6 +70,17 @@ compatibility or re-measuring real-bd wall time -- is:
 
 ```bash
 npm run test:integration --workspace=@apralabs/apra-fleet-se
+```
+
+Also run the slow lane (`test/slow/`): two real-time watchdog regression
+tests (~8 minutes total) excluded from the default `test` script and from
+CI, but still owned by this once-per-sprint pass -- they prove Node's
+event-loop keep-alive and full retry-exhaustion timing for the dispatch
+watchdog, which cannot be faked with mock timers (see the file-level
+comments in each for why).
+
+```bash
+npm run test:slow --workspace=@apralabs/apra-fleet-se
 ```
 
 ## Setup

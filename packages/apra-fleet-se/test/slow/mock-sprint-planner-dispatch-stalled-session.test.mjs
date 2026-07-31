@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
-import { createMemberReservationClient } from '../fleet-sprint/runner.js';
+import { runDevelopLoopScenario, withScenarioMarkers } from '../helpers/mock-sprint-harness.mjs';
+import { createMemberReservationClient } from '../../fleet-sprint/runner.js';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 

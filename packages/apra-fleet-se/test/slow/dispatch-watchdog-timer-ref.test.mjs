@@ -48,7 +48,7 @@ import { spawnSync } from 'node:child_process';
 // pending but the event loop has already resolved").
 // =============================================================================
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RUNNER_URL = pathToFileURL(path.join(REPO_ROOT, 'fleet-sprint', 'runner.js')).href;
 
 // timeoutS=1 (the smallest useful value -- withDispatchWatchdog() itself has
