@@ -12,6 +12,7 @@ import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 
 import { setupMinimal, buildMockFleetApi, runCmd, teardown, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { bdMode } from './helpers/bd-replay.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { buildSprintArgv } from '../src/supervisor/spawner.mjs';
 import { createDoltMutex } from '../src/supervisor/dolt-mutex.mjs';
@@ -72,6 +73,23 @@ const SE_PKG_ROOT = path.join(__dirname, '..');
 const RUNNER_SCRIPT = path.join(__dirname, '../fleet-sprint/runner.js');
 
 const DEGRADED_MARKER = 'DEGRADED';
+
+// This suite requires REAL bd/dolt engagement to be meaningful: it wires an
+// actual `bd dolt push` remote (wireRealDoltRemote) and asserts on real
+// server-side mutex/allocator traffic. Under the suite's default replay mode
+// (APRA_FLEET_BD_MOCK unset -- see bd-replay.mjs), `bd dolt push`/`pull` are
+// synthesized as no-ops by design (isDoltSyncCommand), which would make the
+// mutex-acquire assertions here vacuous rather than a real regression check,
+// and every other `bd` call would need a committed replay fixture this
+// scenario deliberately does not ship (its whole point is REAL bd/dolt
+// behavior, not a recorded transcript of it). Skip outside real mode instead
+// of faking coverage -- same "skip with a clear message, never a silent
+// pass" pattern as DOLT_SKIP (dolt-sync-discipline.test.mjs) and BD_SKIP
+// (bd-init-templating.test.mjs). Run with APRA_FLEET_BD_MOCK=real (or the
+// INTEG-SUITE.md real-bd pass) to execute this suite.
+const REPLAY_SKIP = bdMode() === 'real'
+    ? false
+    : `apra-fleet-f34.3 needs real bd/dolt engagement (APRA_FLEET_BD_MOCK=real) to be meaningful -- skipping under bd mode '${bdMode()}'.`;
 
 function sleep(ms) {
     return new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -297,7 +315,7 @@ async function stopRealSupervisor({ proc, port }) {
 }
 
 describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-allocator (no silent no-op fallback)', () => {
-    test('supervisor-spawned topology (f34.1): two concurrent real sprints reach the real supervisor over --service-url, never DEGRADED', async () => {
+    test('supervisor-spawned topology (f34.1): two concurrent real sprints reach the real supervisor over --service-url, never DEGRADED', { skip: REPLAY_SKIP }, async () => {
         await withScenarioMarkers('f34-3-http', async () => {
             const supervisor = await bootRealSupervisor();
             const proxyRecord = [];
@@ -367,6 +385,11 @@ describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-al
                 // apra-fleet-04g.1 incident shape.
                 const finalChildren = JSON.parse((await runCmd(`bd list --parent ${epicBead.id} --json`, tempDir)).stdout || '[]');
                 const childIds = finalChildren.map((b) => b.id);
+                // apra-fleet-04g.1 collision claim is only non-trivial if both
+                // concurrent sprints' reviewers actually landed a child under
+                // the shared parent -- assert a floor so this cannot pass
+                // vacuously on zero created children.
+                assert.ok(childIds.length >= 2, `expected at least 2 child beads created under the shared parent (one per concurrent sprint's reviewer newTask), got ${JSON.stringify(childIds)}`);
                 assert.equal(new Set(childIds).size, childIds.length, `expected no duplicate child ids under the shared parent, got ${JSON.stringify(childIds)}`);
             } finally {
                 await stopRealSupervisor(supervisor);
@@ -376,7 +399,7 @@ describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-al
         });
     });
 
-    test('supervisor-less MCP topology (f34.2): two concurrent real sprints reach real coordination via args.callTool, never DEGRADED', async () => {
+    test('supervisor-less MCP topology (f34.2): two concurrent real sprints reach real coordination via args.callTool, never DEGRADED', { skip: REPLAY_SKIP }, async () => {
         await withScenarioMarkers('f34-3-mcp', async () => {
             // Real coordination CORE (the same module bin/serve.mjs's HTTP
             // routes wrap) -- NOT a re-implementation. The adapter below only
