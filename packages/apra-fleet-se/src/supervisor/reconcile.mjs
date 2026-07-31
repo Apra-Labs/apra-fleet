@@ -23,6 +23,30 @@
 //
 // Both flows go through the SAME ledger.release() (one atomic both-axis write)
 // and the SAME history log, so the audit trail is uniform.
+//
+// apra-fleet-3i3.1: force-release now ALSO kills the reservation's still-live
+// child (if any) via the injected `killPid` collaborator, in the SAME action
+// -- previously an operator had to separately hunt down and kill a wedged
+// child by hand after force-releasing its reservation. `killPid` defaults to
+// a SAFE NO-OP (kills nothing, always returns false): sending a real
+// destructive signal to an arbitrary pid must never be something a caller
+// gets by omission. Only bin/serve.mjs's production wiring injects the real
+// `killPid` export below (`process.kill(pid, 'SIGKILL')`, guarded), scoped to
+// pids the eft.4.2 spawner actually tracks. Every existing/other test that
+// constructs createReconciler({ ledger, history }) without injecting killPid
+// therefore never sends a real signal, even when a seeded reservation happens
+// to carry a low/system-adjacent childPid.
+//
+// apra-fleet-3i3.3: forceRelease()'s return now ALSO echoes the released
+// entry's branch/base/goal (in addition to the members/issueRoots history.
+// record() already echoed) -- release() deletes the whole ledger entry, so
+// this is the last point they are readable. The Sprint Stack's new Restart
+// control (dashboard.mjs) is a client-side, two-step flow: it calls THIS
+// same force-release route first, then POSTs the SAME branch/base/goal/
+// members/issueRoots straight back to POST /api/sprints to relaunch, without
+// a dedicated server-side "restart" endpoint or any new plumbing here. Purely
+// additive to forceRelease()'s existing return shape -- every pre-existing
+// caller that ignores the new fields is unaffected.
 // =============================================================================
 
 import { readJsonBody, sendJson } from './server.mjs';
@@ -43,6 +67,34 @@ export function isPidAlive(pid) {
         return true;
     } catch (err) {
         if (err && err.code === 'EPERM') return true;
+        return false;
+    }
+}
+
+/**
+ * Real kill-signal implementation: sends `signal` (default SIGKILL, an
+ * immediate hard kill -- distinct from the existing cooperative
+ * POST /api/sprints/:id/stop proxy, which asks the child's own /stop
+ * endpoint to shut down gracefully) to `pid`. ESRCH (already gone) is
+ * treated as success -- the goal ("make sure this pid is not running") is
+ * already satisfied. Any other failure (e.g. EPERM) returns false rather
+ * than throwing, so a kill failure never blocks the reservation release
+ * that follows it in forceRelease() below.
+ *
+ * NOT wired as createReconciler()'s default -- see the module doc above for
+ * why an accidental real kill must never happen by omission. Only
+ * bin/serve.mjs's production wiring imports and injects this explicitly.
+ * @param {number} pid
+ * @param {NodeJS.Signals} [signal]
+ * @returns {boolean}
+ */
+export function killPid(pid, signal = 'SIGKILL') {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, signal);
+        return true;
+    } catch (err) {
+        if (err && err.code === 'ESRCH') return true;
         return false;
     }
 }
@@ -68,6 +120,7 @@ export class SprintNotFoundError extends Error {
  *   },
  *   history: { record: (entry: object) => Promise<object> },
  *   isPidAlive?: (pid: number) => boolean,
+ *   killPid?: (pid: number) => boolean,
  *   now?: () => string,
  *   logger?: { log?: Function, error?: Function },
  * }} deps
@@ -82,6 +135,10 @@ export function createReconciler(deps = {}) {
         throw new TypeError('createReconciler requires a history with record()');
     }
     const probe = deps.isPidAlive ?? isPidAlive;
+    // apra-fleet-3i3.1: safe no-op default -- see killPid()'s and the module
+    // doc's explanation of why a real kill must be an explicit opt-in, never
+    // an accidental default.
+    const kill = deps.killPid ?? (() => false);
     const now = deps.now ?? (() => new Date().toISOString());
     const logger = deps.logger ?? console;
     const log = (...a) => logger.log?.(...a);
@@ -125,11 +182,19 @@ export function createReconciler(deps = {}) {
     }
 
     /**
-     * Operator force-release of a wedged reservation. Releases both axes and
-     * records an audit reason. Throws SprintNotFoundError for an unknown sprint.
+     * Operator force-release of a wedged reservation. apra-fleet-3i3.1: ALSO
+     * kills the reservation's still-live child (if any, via the injected
+     * `killPid`) in the SAME action, before releasing both axes and
+     * recording an audit reason -- a kill failure (or no recorded childPid at
+     * all) never blocks the release that follows it. Throws
+     * SprintNotFoundError for an unknown sprint.
      * @param {string} sprintId
      * @param {{ by?: string, reason?: string }} [audit]
-     * @returns {Promise<object>} the recorded history event
+     * @returns {Promise<object>} the recorded history event, plus `childPid`,
+     *   `killed` (whether the kill signal was believed to land; null when
+     *   there was no recorded childPid to kill), and (apra-fleet-3i3.3) the
+     *   released entry's `branch`/`base`/`goal` (each `null` when the entry
+     *   never persisted it -- a pre-3i3.2 legacy entry, or an omitted `goal`)
      */
     async function forceRelease(sprintId, audit = {}) {
         if (typeof sprintId !== 'string' || sprintId.length === 0) {
@@ -139,8 +204,15 @@ export function createReconciler(deps = {}) {
         if (!entry) {
             throw new SprintNotFoundError(sprintId);
         }
+        const childPid = entry.childPid ?? null;
+        const killed = childPid != null ? kill(childPid) : null;
+        // apra-fleet-3i3.3: capture BEFORE release() below deletes the whole
+        // entry -- this is the last point these are readable from the ledger.
+        const branch = entry.branch ?? null;
+        const base = entry.base ?? null;
+        const goal = entry.goal ?? null;
         await ledger.release(sprintId);
-        return history.record({
+        const recorded = await history.record({
             sprintId,
             event: HISTORY_EVENTS.FORCE_RELEASED,
             reason: audit.reason ?? 'force-released by operator',
@@ -149,6 +221,7 @@ export function createReconciler(deps = {}) {
             issueRoots: entry.issueRoots,
             at: now(),
         });
+        return { ...recorded, childPid, killed, branch, base, goal };
     }
 
     return {

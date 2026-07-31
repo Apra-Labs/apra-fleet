@@ -1103,6 +1103,14 @@ export async function runDevelopLoopScenario(tag, {
     // resume_model_switch boolean, worklist_effort_budget positive number) --
     // used by the worklist mock-sprint scenarios.
     doerWorklistMode, resumeModelSwitch, worklistEffortBudget,
+    // apra-fleet-glv.2: optional `args.roleMap` passthrough (validateArgs:
+    // object mapping role -> member[], see runner.js's getMemberForRole/
+    // getMembersForRole). Lets a scenario pin a specific role (e.g.
+    // 'reviewer') onto a member DIFFERENT from the default doer member, so a
+    // test can assert per-role behavior (such as the VCS-auth preflight's
+    // pushCode gating) against a member that provably never receives a
+    // code-writing dispatch.
+    roleMap,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
@@ -1179,6 +1187,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(doerWorklistMode !== undefined ? { doer_worklist_mode: doerWorklistMode } : {}),
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
+                ...(roleMap !== undefined ? { roleMap } : {}),
             }, true);
         } catch (err) {
             error = err;

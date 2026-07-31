@@ -574,9 +574,13 @@ describe('R9 -- binary built without the workflow asset sections', () => {
     const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(1);
     const msg = h.errors.join('\n');
-    expect(msg).toContain('built without the workflow subsystem assets');
-    expect(msg).toContain('npm run build:binary');
+    expect(msg).toContain('missing its workflow subsystem assets');
     expect(msg).toContain('apra-fleet update');
+    // apra-fleet-kuh.3: this message must not assume the reader has any
+    // build/SEA tooling available (a plain npm-install user has none) --
+    // it must never suggest a rebuild command.
+    expect(msg).not.toContain('npm run build:binary');
+    expect(msg).not.toContain('Rebuild the binary');
     // Explicitly NOT the raw "not found" resolution failure.
     expect(msg).not.toContain('has no workflow.json and none of');
     expect(h.imported).toEqual([]);
@@ -586,7 +590,7 @@ describe('R9 -- binary built without the workflow asset sections', () => {
     const h = harness(fleetSprintFiles(), { hasAssets: false });
     const code = await runWorkflow(['fleet-sprint'], h.deps);
     expect(code).toBe(0);
-    expect(h.errors.join('\n')).not.toContain('built without the workflow subsystem assets');
+    expect(h.errors.join('\n')).not.toContain('missing its workflow subsystem assets');
   });
 
   it('a current binary with assets reports the normal not-found error', async () => {
@@ -594,7 +598,7 @@ describe('R9 -- binary built without the workflow asset sections', () => {
     const code = await runWorkflow(['nope'], h.deps);
     expect(code).toBe(1);
     expect(h.errors.join('\n')).toContain('not found');
-    expect(h.errors.join('\n')).not.toContain('built without the workflow subsystem assets');
+    expect(h.errors.join('\n')).not.toContain('missing its workflow subsystem assets');
   });
 });
 

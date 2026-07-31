@@ -43,6 +43,8 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
         assert.deepEqual(onDisk.reservations['sprint-a'].issueRoots, ['apra-fleet-x']);
 
         // A fresh ledger reloads EXACTLY from disk (restart fidelity).
+        // apra-fleet-3i3.2: branch/base/goal are now always-present fields
+        // (defaulting to null when the claim() call, as here, omits them).
         const reloaded = createLedger({ filePath });
         await reloaded.start();
         assert.deepEqual(reloaded.get('sprint-a'), {
@@ -50,6 +52,9 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
             issueRoots: ['apra-fleet-x'],
             childPid: 4321,
             reservedAt: '2026-07-18T00:00:00.000Z',
+            branch: null,
+            base: null,
+            goal: null,
         });
 
         await fsp.rm(dir, { recursive: true, force: true });
@@ -202,6 +207,82 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
         await ledger.start();
         assert.equal(ledger.size, 0);
         assert.deepEqual(ledger.toDocument(), emptyLedgerDocument());
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('ledger -- apra-fleet-3i3.2 launch metadata (branch/base/goal)', () => {
+    test('claim() persists branch/base/goal and a fresh ledger reloads them exactly', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath, now: () => '2026-07-30T00:00:00.000Z' });
+        await ledger.start();
+
+        const r = await ledger.claim('sprint-meta', {
+            members: ['alice'],
+            issueRoots: ['apra-fleet-y'],
+            childPid: 555,
+            branch: 'feat/my-topic',
+            base: 'main',
+            goal: 'P1/P2',
+        });
+        assert.equal(r.branch, 'feat/my-topic');
+        assert.equal(r.base, 'main');
+        assert.equal(r.goal, 'P1/P2');
+
+        const onDisk = JSON.parse(await fsp.readFile(filePath, 'utf-8'));
+        assert.equal(onDisk.reservations['sprint-meta'].branch, 'feat/my-topic');
+        assert.equal(onDisk.reservations['sprint-meta'].base, 'main');
+        assert.equal(onDisk.reservations['sprint-meta'].goal, 'P1/P2');
+
+        const reloaded = createLedger({ filePath });
+        await reloaded.start();
+        const got = reloaded.get('sprint-meta');
+        assert.equal(got.branch, 'feat/my-topic');
+        assert.equal(got.base, 'main');
+        assert.equal(got.goal, 'P1/P2');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('claim() omitting branch/base/goal defaults them to null (goal is optional at launch)', async () => {
+        const dir = await tmpDir();
+        const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME) });
+        await ledger.start();
+        const r = await ledger.claim('sprint-nogoal', { members: ['a'], issueRoots: ['r'], childPid: 1 });
+        assert.equal(r.branch, null);
+        assert.equal(r.base, null);
+        assert.equal(r.goal, null);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a pre-existing on-disk entry written before branch/base/goal existed still loads, defaulting them to null', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        // Simulate a legacy document from before apra-fleet-3i3.2: no
+        // branch/base/goal keys on the reservation at all.
+        const legacyDoc = {
+            version: LEDGER_VERSION,
+            reservations: {
+                'legacy-sprint': {
+                    members: ['carol'],
+                    issueRoots: ['r-legacy'],
+                    childPid: 42,
+                    reservedAt: '2026-01-01T00:00:00.000Z',
+                },
+            },
+            scopeFreshness: { lastSyncedAt: null },
+        };
+        await fsp.writeFile(filePath, JSON.stringify(legacyDoc), 'utf-8');
+
+        const ledger = createLedger({ filePath });
+        await assert.doesNotReject(() => ledger.start());
+        const got = ledger.get('legacy-sprint');
+        assert.deepEqual(got.members, ['carol']);
+        assert.equal(got.branch, null);
+        assert.equal(got.base, null);
+        assert.equal(got.goal, null);
+
         await fsp.rm(dir, { recursive: true, force: true });
     });
 });

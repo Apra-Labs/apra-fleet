@@ -2144,6 +2144,82 @@ function selfHealResultText(result) {
     return '';
 }
 
+// apra-fleet-glv.1: shared provisioning core used by BOTH the REACTIVE
+// onAuthFailure self-heal (createVcsAuthSelfHealCallback, unchanged
+// behavior/log lines below) and the new PROACTIVE preflight
+// (createVcsAuthPreflightCallback, further down) -- one call shape, one
+// owner/repo derivation, one success/failure text-parsing rule, so the two
+// paths can never drift on what "provisioned" means. This is a NEW CALL
+// SITE for the existing ApraFleet.provisionVcsAuth() machinery, not new
+// plumbing: no new MCP tool, no new client method, no schema change.
+//
+// Returns the newly-provisioned credential's `expiresAt` (a Date, or null
+// when the response carries no expiry metadata -- PAT-mode credentials, see
+// src/services/vcs/github.ts's deployPat(), never expire) so a caller can
+// cache it and skip a future redundant call.
+// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
+// @returns {Promise<{ expiresAt: Date|null }>}
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix }) {
+    let repos;
+    try {
+        const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+        const url = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
+        const repo = parseOwnerRepoFromRemoteUrl(url);
+        if (repo) {
+            repos = [repo];
+        } else {
+            log(`${logPrefix}: could not derive an owner/repo from member '${member}' git remote (raw: '${url}'); calling provision_vcs_auth without an explicit repos scope.`);
+        }
+    } catch (remoteErr) {
+        log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
+    }
+
+    // apra-fleet-391: TODO -- this still hardcodes provider:'github',
+    // github_mode:'github-app' rather than reading the member's own
+    // persisted agent.vcsProvider (src/tools/provision-vcs-auth.ts:167-
+    // 170, now surfaced on member_detail's json output). Deliberately
+    // NOT wired here yet -- doing so cleanly needs its own dedicated
+    // mock plumbing in this file's test suite (vcs-auth-self-heal.test.mjs
+    // asserts an exact single-call provision_vcs_auth args shape per
+    // scenario); tracked as follow-up under this same bead rather than
+    // risking those tests to land the higher-priority fix below.
+    const provisionRes = await fleetApi.provisionVcsAuth({
+        member_name: member,
+        provider: 'github',
+        github_mode: 'github-app',
+        git_access: 'push',
+        ...(repos ? { repos } : {}),
+    });
+    const provisionText = selfHealResultText(provisionRes);
+    // apra-fleet-391: provision_vcs_auth NEVER throws on failure -- it
+    // returns a string starting with the failure emoji. Without this
+    // check, a failed re-provision was silently logged as "succeeded"
+    // and burned the one-shot self-heal for nothing.
+    if ((provisionRes && provisionRes.isError) || /^❌/.test(provisionText.trim())) {
+        throw new Error(`provision_vcs_auth failed for member '${member}': ${provisionText || '(no detail)'}`);
+    }
+
+    return { expiresAt: parseExpiresAtFromProvisionText(provisionText) };
+}
+
+// apra-fleet-glv.1: provision_vcs_auth returns plain, human-readable text
+// (src/tools/provision-vcs-auth.ts has no structured/JSON response shape) --
+// there is no field to read directly. The GitHub App path always renders its
+// metadata as one '  <key>: <value>' line per entry (src/services/vcs/
+// github.ts's deployAppToken()'s `metadata.expiresAt`), so this extracts
+// THAT line. PAT-mode credentials carry no expiry metadata line at all, so
+// this returns null for them -- treated the SAME as "no expiry tracked ->
+// OK" everywhere else in this codebase (see checkVcsTokenExpiry,
+// src/utils/agent-helpers.ts).
+// @param {string} text
+// @returns {Date|null}
+function parseExpiresAtFromProvisionText(text) {
+    const m = /^\s*expiresAt:\s*(\S+)\s*$/m.exec(text || '');
+    if (!m) return null;
+    const d = new Date(m[1]);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export function createVcsAuthSelfHealCallback(opts = {}) {
     const { callTool, command, log = () => {} } = opts;
     const fleetApi = new ApraFleet({ callTool });
@@ -2151,46 +2227,77 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
     return async function onAuthFailure({ member, label, error }) {
         log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
 
-        let repos;
-        try {
-            const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
-            const url = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
-            const repo = parseOwnerRepoFromRemoteUrl(url);
-            if (repo) {
-                repos = [repo];
-            } else {
-                log(`[Sync] self-heal: could not derive an owner/repo from member '${member}' git remote (raw: '${url}'); calling provision_vcs_auth without an explicit repos scope.`);
-            }
-        } catch (remoteErr) {
-            log(`[Sync] self-heal: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
-        }
-
-        // apra-fleet-391: TODO -- this still hardcodes provider:'github',
-        // github_mode:'github-app' rather than reading the member's own
-        // persisted agent.vcsProvider (src/tools/provision-vcs-auth.ts:167-
-        // 170, now surfaced on member_detail's json output). Deliberately
-        // NOT wired here yet -- doing so cleanly needs its own dedicated
-        // mock plumbing in this file's test suite (vcs-auth-self-heal.test.mjs
-        // asserts an exact single-call provision_vcs_auth args shape per
-        // scenario); tracked as follow-up under this same bead rather than
-        // risking those tests to land the higher-priority fix below.
-        const provisionRes = await fleetApi.provisionVcsAuth({
-            member_name: member,
-            provider: 'github',
-            github_mode: 'github-app',
-            git_access: 'push',
-            ...(repos ? { repos } : {}),
-        });
-        const provisionText = selfHealResultText(provisionRes);
-        // apra-fleet-391: provision_vcs_auth NEVER throws on failure -- it
-        // returns a string starting with the failure emoji. Without this
-        // check, a failed re-provision was silently logged as "succeeded"
-        // and burned the one-shot self-heal for nothing.
-        if ((provisionRes && provisionRes.isError) || /^❌/.test(provisionText.trim())) {
-            throw new Error(`provision_vcs_auth failed for member '${member}': ${provisionText || '(no detail)'}`);
-        }
+        await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] self-heal' });
 
         log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
+    };
+}
+
+// apra-fleet-glv.1: how far ahead of a credential's known expiry the
+// preflight treats it as "expiring soon" and re-provisions early, rather
+// than waiting for it to actually lapse mid-dispatch. Mirrors the server's
+// own EXPIRY_WARNING_MS threshold (src/utils/agent-helpers.ts's
+// checkVcsTokenExpiry) so the two "is this credential about to expire?"
+// judgments never disagree.
+const VCS_AUTH_EXPIRY_PREFLIGHT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * apra-fleet-glv.1: proactive VCS-auth PREFLIGHT. Unlike
+ * createVcsAuthSelfHealCallback above (REACTIVE: only ever fires after a
+ * git/dolt command has already failed with an 'auth' classification), this
+ * is called BEFORE every pushCode:true dispatch's pre-dispatch G-pull (see
+ * withGitSync below) and only calls provision_vcs_auth when this member's
+ * last-known credential is missing, unknown, or expiring within
+ * VCS_AUTH_EXPIRY_PREFLIGHT_MS. This is what closes the gap the reactive
+ * self-heal alone leaves open: a credential that lapses BETWEEN dispatches
+ * (no failed git command yet to react to) now gets refreshed before the
+ * NEXT dispatch's git commands run, instead of waiting for one of them to
+ * fail first.
+ *
+ * The freshness cache is scoped to the callback instance returned here (one
+ * instance per run, same lifetime/three-source-precedence wiring as
+ * onAuthFailure -- see its call site in runSprintCycle). A fresh run always
+ * re-provisions each member's FIRST pushCode:true dispatch (no cache entry
+ * yet), then skips the call for that member until the cached expiry
+ * approaches. A response that carries no expiry at all (PAT mode, which
+ * never expires) is cached as "known-good, never needs refresh" -- the SAME
+ * "no expiry tracked -> OK" semantics checkVcsTokenExpiry already applies
+ * server-side.
+ *
+ * NEVER throws: a preflight failure (fleet unreachable, provision_vcs_auth
+ * itself failing) is logged and swallowed so it can never abort a dispatch
+ * that might otherwise have succeeded fine on its still-valid existing
+ * credential. fmu's REACTIVE self-heal (onAuthFailure, still wired
+ * unchanged into every runGitStep/runDoltStep call) remains the actual
+ * safety net if the credential turns out to genuinely be stale.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function, now?: () => number }} opts
+ * @returns {(member: string) => Promise<void>}
+ */
+export function createVcsAuthPreflightCallback(opts = {}) {
+    const { callTool, command, log = () => {}, now = () => Date.now() } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+    /** @type {Map<string, Date|null>} member -> last-known expiresAt (null = no expiry tracked, e.g. PAT mode). */
+    const knownGoodUntil = new Map();
+
+    return async function ensureVcsAuthFresh(member) {
+        if (knownGoodUntil.has(member)) {
+            const expiresAt = knownGoodUntil.get(member);
+            if (expiresAt === null || expiresAt.getTime() - now() > VCS_AUTH_EXPIRY_PREFLIGHT_MS) {
+                // Still fresh (or a no-expiry credential type) -- skip the
+                // call entirely so this is NOT an unconditional GitHub API
+                // call on every dispatch.
+                return;
+            }
+        }
+        log(`[Sync] preflight: ensuring member '${member}' has a fresh VCS credential before dispatch; calling provision_vcs_auth.`);
+        try {
+            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight' });
+            knownGoodUntil.set(member, expiresAt);
+            log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}'${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ''}.`);
+        } catch (err) {
+            log(`[Sync] preflight: provision_vcs_auth failed for member '${member}' (continuing -- the existing credential may still be valid; the reactive self-heal will fire if a git/dolt command actually fails): ${err.message}`);
+        }
     };
 }
 
@@ -5095,6 +5202,31 @@ async function runSprintCycle(context) {
             : undefined
     );
 
+    // apra-fleet-glv.1: the PROACTIVE counterpart to onAuthFailure
+    // immediately above -- same three-source precedence, but unlike
+    // onAuthFailure (undefined when neither source is wired -- every
+    // dispatch-site call site guards with `typeof onAuthFailure ===
+    // 'function'`), this defaults to a callable async no-op so
+    // withGitSync's pre-dispatch bracket below can call it unconditionally
+    // (gated only on `pushCode`, never on whether this was wired). Every
+    // existing caller/test that does not wire `callTool` (and does not
+    // explicitly inject `ensureVcsAuthFresh`) sees ZERO behavior change: the
+    // no-op default never calls provision_vcs_auth, exactly as before this
+    // bead.
+    //   1. `context.ensureVcsAuthFresh` -- an explicitly-injected callback
+    //      (tests wire an in-process one to prove the preflight fires/skips
+    //      without a live fleet server).
+    //   2. `args.callTool` -- the REAL end-to-end path
+    //      (createVcsAuthPreflightCallback, this file).
+    //   3. neither -- a no-op: no proactive provision_vcs_auth call is ever
+    //      made; fmu's reactive onAuthFailure self-heal (unaffected by this
+    //      bead) remains the only auth-recovery path, exactly as before.
+    const ensureVcsAuthFresh = context.ensureVcsAuthFresh ?? (
+        (args && typeof args.callTool === 'function')
+            ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log })
+            : async () => {}
+    );
+
     // apra-fleet-391: LLM-auth counterpart to onAuthFailure immediately
     // above -- same three-source precedence. Dispatch-site catch handlers
     // call this (via isAuthDispatchError(err)) before deciding whether to
@@ -5252,6 +5384,20 @@ async function runSprintCycle(context) {
         if (skipPreDispatchSync) {
             log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
         } else {
+            // apra-fleet-glv.1: proactively ensure this member's VCS
+            // credentials are fresh BEFORE the pre-dispatch G-pull, gated to
+            // code-writing (pushCode:true) roles only -- read-only roles
+            // (reviewer/plan-reviewer/deployer) never `git push`, so there is
+            // nothing to preflight for them. Skipped on the skipPreDispatchSync
+            // fast path above for the same reason that path skips G-pull/D-pull
+            // entirely: the prior attempt's preflight on this same member
+            // already ran moments ago in this same retry chain, nothing about
+            // credential freshness has changed since. ensureVcsAuthFresh
+            // itself is a no-op (skips the call) when a still-fresh credential
+            // is already cached for this member -- see its doc comment.
+            if (pushCode) {
+                await ensureVcsAuthFresh(member);
+            }
             await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip });
             // apra-fleet-eft.54.6: skipPreDispatchDoltPull skips ONLY the real
             // `bd dolt pull` SPAWN (the residual real-bd Dolt sync bracket the

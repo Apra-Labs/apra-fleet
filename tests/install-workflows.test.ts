@@ -592,3 +592,165 @@ describe('buildDevManifest workflow-subsystem asset resolution (regression for a
     }
   }, 20000);
 });
+
+// apra-fleet-kuh.2 -- regression coverage for the npm-installed-tree path
+// resolution bug. buildDevManifest() runs at `apra-fleet install` time inside a
+// REAL npm install, where root is node_modules/@apralabs/apra-fleet and npm
+// HOISTS the workflow-runtime deps (ajv, undici, fast-uri, ...) up to a PARENT
+// node_modules. The pre-fix code probed a fixed root/node_modules/<dep>, which
+// misses every hoisted dep, so the workflowRuntime section failed its existsSync
+// gate and silently dropped out -- leaving `apra-fleet workflow fleet-sprint`
+// dead with no error. resolveNodeModulesDir() walks the node_modules chain up
+// from root like Node's own resolver, finding the deps wherever npm placed them.
+//
+// This fixture reproduces the exact hoisted layout (deps at
+// <parent>/node_modules/<dep>, package at <parent>/node_modules/@apralabs/apra-fleet)
+// so the assertion pins the real breakage rather than this repo's dev-checkout
+// layout (where nothing is hoisted above the root and the bug is invisible).
+describe('buildDevManifest resolves hoisted node_modules deps (regression for apra-fleet-kuh.2)', () => {
+  afterEach(() => {
+    vi.doMock('node:fs');
+    vi.doMock('node:child_process');
+  });
+
+  it('populates workflowRuntime from a hoisted (npm-installed) layout, and every value resolves via join(root, value)', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const real = await vi.importActual<typeof import('../src/cli/install.js')>('../src/cli/install.js');
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+    const osReal = await vi.importActual<typeof import('node:os')>('node:os');
+
+    const parent = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'apra-fleet-kuh2-npm-'));
+    try {
+      // Deps HOISTED to the top-level node_modules (npm's real behavior for a
+      // single installed package). Each gets a package.json so collectPackageTree
+      // has a file to emit.
+      const HOISTED_DEPS = ['ajv', 'fast-deep-equal', 'fast-uri', 'json-schema-traverse', 'require-from-string', 'undici'];
+      for (const dep of HOISTED_DEPS) {
+        const d = pathReal.join(parent, 'node_modules', dep);
+        fsReal.mkdirSync(d, { recursive: true });
+        fsReal.writeFileSync(pathReal.join(d, 'package.json'), JSON.stringify({ name: dep, version: '0.0.0' }));
+        fsReal.writeFileSync(pathReal.join(d, 'index.js'), `module.exports = ${JSON.stringify(dep)};\n`);
+      }
+
+      // The installed package root -- node_modules/@apralabs/apra-fleet, with NO
+      // node_modules of its own (the pre-fix root/node_modules/<dep> probe fails here).
+      const root = pathReal.join(parent, 'node_modules', '@apralabs', 'apra-fleet');
+      fsReal.mkdirSync(root, { recursive: true });
+
+      // Unconditional buildDevManifest() inputs (read without an existsSync guard).
+      fsReal.mkdirSync(pathReal.join(root, 'hooks'), { recursive: true });
+      fsReal.writeFileSync(pathReal.join(root, 'hooks', 'noop.sh'), '#!/bin/sh\n');
+      fsReal.mkdirSync(pathReal.join(root, 'scripts'), { recursive: true });
+      fsReal.writeFileSync(pathReal.join(root, 'scripts', 'fleet-statusline.sh'), '#!/bin/sh\n');
+      fsReal.writeFileSync(pathReal.join(root, 'version.json'), JSON.stringify({ version: '0.0.0-kuh2-fixture' }));
+
+      // First-party workflow-runtime packages -- shipped under root/packages/ by the
+      // files allowlist (src/ + package.json, the latter needed for their exports maps).
+      for (const pkg of ['apra-fleet-workflow', 'apra-fleet-client']) {
+        const base = pathReal.join(root, 'packages', pkg);
+        fsReal.mkdirSync(pathReal.join(base, 'src'), { recursive: true });
+        fsReal.writeFileSync(pathReal.join(base, 'package.json'), JSON.stringify({ name: `@apralabs/${pkg}`, type: 'module', main: 'src/index.mjs' }));
+        fsReal.writeFileSync(pathReal.join(base, 'src', 'index.mjs'), 'export const ok = true;\n');
+      }
+
+      // Pre-fix probe target must be absent -- this is what silently disabled the section.
+      expect(fsReal.existsSync(pathReal.join(root, 'node_modules', 'ajv'))).toBe(false);
+
+      const manifest = real._buildDevManifestForTest(root);
+
+      // The section must be populated despite the deps being hoisted above root.
+      expect(manifest.workflowRuntime).toBeDefined();
+      const keys = Object.keys(manifest.workflowRuntime!);
+      // Both first-party packages AND every hoisted dep are represented.
+      expect(keys.some((k) => k.startsWith('@apralabs/apra-fleet-workflow/'))).toBe(true);
+      expect(keys.some((k) => k.startsWith('@apralabs/apra-fleet-client/'))).toBe(true);
+      for (const dep of HOISTED_DEPS) {
+        expect(keys.some((k) => k.startsWith(`${dep}/`)), `workflowRuntime must include hoisted dep '${dep}'`).toBe(true);
+      }
+
+      // Every manifest value is a root-relative disk path (with `../` segments for
+      // hoisted deps) that must resolve back to a real file via join(root, value) --
+      // the exact dev-mode extractAsset() contract.
+      for (const [key, diskVal] of Object.entries(manifest.workflowRuntime!)) {
+        const full = pathReal.join(root, diskVal);
+        expect(fsReal.existsSync(full), `workflowRuntime['${key}'] (${diskVal}) must resolve on disk`).toBe(true);
+      }
+    } finally {
+      fsReal.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+});
+
+// apra-fleet-kuh.4 -- regression coverage for a live install-time crash found
+// during the real npm-pack verification this bead required: a genuine `npm
+// pack` + tarball install + `apra-fleet workflow fleet-sprint --help` (not a
+// workspace symlink) failed with "workflow \"fleet-sprint\" has no
+// workflow.json and none of main.mjs, index.mjs, runner.js in
+// <...>/workflows/fleet-sprint" -- NOT the older 'workflow subsystem assets'
+// error kuh.3 already reworded, a different, previously-unseen failure. Root
+// cause: packages/apra-fleet-se/workflow.json (the file that names this
+// built-in workflow and points at its bin/cli.mjs entry point -- see
+// collectPackageTree()'s `fleetSprintDir` call above) was never added to root
+// package.json's `files` allowlist alongside the fleet-sprint/, bin/, and
+// apra-pm/ subtrees kuh.1 added, so a real `npm pack` silently dropped it: a
+// dev checkout (where the file simply exists on disk regardless of `files`)
+// never observed the bug, only a genuine tarball install did. Fixed by adding
+// "packages/apra-fleet-se/workflow.json" to package.json's `files` array.
+describe('buildDevManifest ships packages/apra-fleet-se/workflow.json (regression for apra-fleet-kuh.4)', () => {
+  afterEach(() => {
+    vi.doMock('node:fs');
+    vi.doMock('node:child_process');
+  });
+
+  it('builtinWorkflows includes fleet-sprint/workflow.json, pointing at a real, parseable workflow.json whose OWN entry file is also a manifest entry', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const real = await vi.importActual<typeof import('../src/cli/install.js')>('../src/cli/install.js');
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+
+    const testDir = pathReal.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = pathReal.resolve(testDir, '..');
+
+    const manifest = real._buildDevManifestForTest(projectRoot);
+    expect(manifest.builtinWorkflows).toBeDefined();
+    const builtin = manifest.builtinWorkflows!;
+
+    expect(builtin['fleet-sprint/workflow.json']).toBe('packages/apra-fleet-se/workflow.json');
+    const workflowJsonDisk = pathReal.join(projectRoot, builtin['fleet-sprint/workflow.json']);
+    expect(fsReal.existsSync(workflowJsonDisk)).toBe(true);
+    const parsed = JSON.parse(fsReal.readFileSync(workflowJsonDisk, 'utf-8'));
+    expect(parsed.name).toBe('fleet-sprint');
+    expect(typeof parsed.entry).toBe('string');
+    expect(parsed.entry.length).toBeGreaterThan(0);
+
+    // Shipping the pointer without its target is equally broken (this is
+    // exactly what the pre-fix state did NOT have -- bin/cli.mjs WAS already
+    // a manifest entry, only workflow.json itself was missing).
+    const entryKey = `fleet-sprint/${parsed.entry}`;
+    expect(builtin[entryKey], `builtinWorkflows must also carry '${entryKey}' (workflow.json's own entry field)`).toBeDefined();
+    expect(fsReal.existsSync(pathReal.join(projectRoot, builtin[entryKey]))).toBe(true);
+  });
+
+  it('the root package.json "files" allowlist ships packages/apra-fleet-se/workflow.json, not just its fleet-sprint/ and bin/ subtrees', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+
+    const testDir = pathReal.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = pathReal.resolve(testDir, '..');
+    const pkg = JSON.parse(fsReal.readFileSync(pathReal.join(projectRoot, 'package.json'), 'utf-8')) as { files?: string[] };
+
+    expect(Array.isArray(pkg.files)).toBe(true);
+    expect(pkg.files).toContain('packages/apra-fleet-se/workflow.json');
+  });
+});

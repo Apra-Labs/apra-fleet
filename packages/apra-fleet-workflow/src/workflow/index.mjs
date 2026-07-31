@@ -878,7 +878,19 @@ export class FleetWorkflow extends EventEmitter {
                 if (structured && structured.isError) {
                     const text = result && result.content && result.content.length > 0 ? result.content[0].text : '';
                     console.error(`[Agent API Error]`, text);
-                    this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
+                    // apra-fleet-202.3: a dispatch that FAILED (isError) but still
+                    // reported real input/output tokens really did consume that
+                    // spend -- carry its usage/cost onto the activity record (as
+                    // the empty-response failure path below already does) so the
+                    // dashboard's per-activity totalTokens/totalCost tally
+                    // includes it instead of silently dropping it. budget._spent
+                    // was already bumped above (drives the harvester cost-
+                    // analysis via spent()), and this failed activity was never
+                    // previously recorded with a cost, so neither total is
+                    // double-counted. When the provider reported no usage at all,
+                    // result.usage is null and cost is null -- the viewer then
+                    // tallies it as an unknown-cost activity rather than fiction.
+                    this.emit('activity:end', { ...activityMeta, error: text, duration, usage: result.usage, cost, success: false });
                     throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id } });
                 }
 

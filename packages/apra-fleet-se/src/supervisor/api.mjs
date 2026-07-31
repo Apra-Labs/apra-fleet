@@ -350,7 +350,21 @@ export function createSprintController(deps = {}) {
         };
         const spawned = await spawner.spawnSprint(spawnOpts);
         const sprintId = generateSprintId(issue);
-        await ledger.claim(sprintId, { members: union, issueRoots, childPid: spawned.pid });
+        // apra-fleet-3i3.2: persist enough launch metadata (branch/base/goal,
+        // alongside the two reservation axes already claimed here) that a
+        // future Restart control can reconstruct this exact POST /api/sprints
+        // request without operator re-entry. `goal` normalizes `undefined`
+        // (the "no goal supplied" case validateLaunchRequest/buildSprintArgv
+        // already treat as omitted) to `null`, matching how the ledger treats
+        // a pre-existing entry that predates this field.
+        await ledger.claim(sprintId, {
+            members: union,
+            issueRoots,
+            childPid: spawned.pid,
+            branch,
+            base,
+            goal: body.goal ?? null,
+        });
 
         return {
             sprintId,

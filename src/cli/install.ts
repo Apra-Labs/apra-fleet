@@ -184,6 +184,53 @@ function collectFilesRec(dir: string, base: string, rootBase?: string): Record<s
 // scripts/gen-sea-config.mjs's PACKAGE_TREE_EXCLUDE_DIRS.
 const PACKAGE_TREE_EXCLUDE_DIRS = new Set(['test', 'docs', 'scripts', 'examples']);
 
+/**
+ * Resolve a runtime dependency's package directory by walking the node_modules
+ * chain upward from `root`, the way Node's own resolver does.
+ *
+ * Why this exists: gen-sea-config.mjs (the SEA parity source) can assume every
+ * runtime dep sits at `root/node_modules/<pkg>` because it always runs from the
+ * git/workspace checkout, where nothing is hoisted above the repo root. But
+ * buildDevManifest() also runs at `apra-fleet install` time inside a REAL
+ * npm-installed tree, where `root` is `node_modules/@apralabs/apra-fleet` and
+ * npm HOISTS shared deps (ajv, undici, fast-uri, ...) up to a PARENT
+ * node_modules. A fixed `root/node_modules/<pkg>` probe misses every hoisted
+ * dep there, so the whole workflow-runtime section fails its existsSync gate and
+ * silently drops out -- leaving `apra-fleet workflow fleet-sprint` dead with no
+ * error (the exact class of failure tests/install-dev-manifest.test.ts guards).
+ * Walking up the chain resolves the dep wherever npm actually placed it; in a
+ * dev checkout the first candidate (`root/node_modules/<pkg>`) still wins, so
+ * the manifest is byte-identical there. Returns null when the dep is nowhere on
+ * the chain.
+ */
+function resolveNodeModulesDir(root: string, pkg: string): string | null {
+  let dir = root;
+  for (;;) {
+    const candidate = path.join(dir, 'node_modules', pkg);
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // reached filesystem root
+    dir = parent;
+  }
+}
+
+// Runtime deps of the workflow subsystem that live under node_modules (as
+// opposed to the first-party packages/ trees). Each tuple is [package name on
+// disk, manifest prefix]; the two coincide today but are kept explicit to
+// mirror gen-sea-config.mjs's collectPackageTree(..., '<prefix>') calls exactly.
+const WORKFLOW_RUNTIME_NODE_MODULES_DEPS: ReadonlyArray<readonly [string, string]> = [
+  ['ajv', 'ajv'],
+  ['fast-deep-equal', 'fast-deep-equal'],
+  ['fast-uri', 'fast-uri'],
+  ['json-schema-traverse', 'json-schema-traverse'],
+  ['require-from-string', 'require-from-string'],
+  // undici is a direct runtime dependency of apra-fleet-client's transport
+  // (packages/apra-fleet-client/src/client/transport.mjs). undici-types is a
+  // types-only peer dependency (no runtime require of it in undici's lib), so
+  // it is intentionally not bundled here.
+  ['undici', 'undici'],
+];
+
 function collectFilesFilteredRec(
   dir: string, base: string, rootBase: string, excludeDirs: Set<string>
 ): Record<string, string> {
@@ -291,28 +338,27 @@ export function buildDevManifest(root: string): AssetManifest {
 
   // Workflow subsystem parity (mirrors scripts/gen-sea-config.mjs) so `node
   // dist/index.js install` behaves identically to the SEA binary. Each source
-  // tree is optional -- an npm global install (no node_modules/ajv, no apra-pm
-  // package, no packages/) simply omits the section, same as an older SEA
-  // manifest built before this epic; the install step warns and skips.
+  // tree is optional -- an npm global install missing any piece simply omits
+  // the section, same as an older SEA manifest built before this epic; the
+  // install step warns and skips. The first-party packages/ trees resolve
+  // relative to root (shipped inside the tarball by the files allowlist); the
+  // node_modules runtime deps resolve via resolveNodeModulesDir() so a real
+  // npm-installed tree (which hoists them above root) still finds them.
   const workflowRuntimeDir = path.join(root, 'packages', 'apra-fleet-workflow');
   const clientDir = path.join(root, 'packages', 'apra-fleet-client');
-  const ajvDir = path.join(root, 'node_modules', 'ajv');
+  const resolvedRuntimeDeps = WORKFLOW_RUNTIME_NODE_MODULES_DEPS.map(
+    ([pkg, prefix]) => [prefix, resolveNodeModulesDir(root, pkg)] as const
+  );
+  const allRuntimeDepsResolved = resolvedRuntimeDeps.every(([, dir]) => dir !== null);
   let workflowRuntime: Record<string, string> | undefined;
-  if (fs.existsSync(workflowRuntimeDir) && fs.existsSync(clientDir) && fs.existsSync(ajvDir)) {
+  if (fs.existsSync(workflowRuntimeDir) && fs.existsSync(clientDir) && allRuntimeDepsResolved) {
     workflowRuntime = {
       ...collectPackageTree(root, workflowRuntimeDir, '@apralabs/apra-fleet-workflow'),
       ...collectPackageTree(root, clientDir, '@apralabs/apra-fleet-client'),
-      ...collectPackageTree(root, ajvDir, 'ajv'),
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'fast-deep-equal'), 'fast-deep-equal'),
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'fast-uri'), 'fast-uri'),
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'json-schema-traverse'), 'json-schema-traverse'),
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'require-from-string'), 'require-from-string'),
-      // undici is a direct runtime dependency of apra-fleet-client's transport
-      // (packages/apra-fleet-client/src/client/transport.mjs). undici-types is
-      // a types-only peer dependency (no runtime require of it in undici's
-      // lib), so it is intentionally not bundled here.
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'undici'), 'undici'),
     };
+    for (const [prefix, dir] of resolvedRuntimeDeps) {
+      Object.assign(workflowRuntime, collectPackageTree(root, dir as string, prefix));
+    }
   }
 
   const agentSchemasDir = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents', 'schemas');
