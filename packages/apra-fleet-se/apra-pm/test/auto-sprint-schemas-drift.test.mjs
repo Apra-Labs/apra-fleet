@@ -25,6 +25,7 @@ const ROLES = [
   ['doer', 'DOER_STATUS_SCHEMA'],
   ['deployer', 'DEPLOYER_SCHEMA'],
   ['integ-test-runner', 'INTEG_RUN_SCHEMA'],
+  ['regression-test-runner', 'REGRESSION_RUN_SCHEMA'],
   ['ci-watcher', 'CI_SCHEMA'],
   ['harvester', 'HARVEST_SCHEMA'],
 ];
