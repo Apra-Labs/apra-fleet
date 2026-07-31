@@ -187,7 +187,14 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // non-empty, to reconcile the pending resurface list against beads actually
 // created under the parent since the rejection (title-independent, matched
 // on description) -- member_name: orchestratorMember confirmed present.
-const EXPECTED_COMMAND_COUNT = 42;
+// 42 -> 43 (apra-fleet-xuo.7.1): createChildBeadWithAllocatedId() gained a
+// `bd update <childId> --parent <parentId>` command() call site, dispatched
+// only on the explicit-allocated-id path immediately after the `bd create`
+// -- bd rejects `--id` and `--parent` on the same create ("cannot specify
+// both --id and --parent flags"), so the parent edge is now recorded by this
+// separate update. It passes member_name: member (the same member the create
+// itself is dispatched to), confirmed present.
+const EXPECTED_COMMAND_COUNT = 43;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
