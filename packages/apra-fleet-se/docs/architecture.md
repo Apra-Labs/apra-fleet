@@ -684,6 +684,39 @@ children are still alive, two mechanisms make restart survivable:
   the sprints API can proxy its live state). Sprints are only expected to
   survive a *supervisor-process* restart, not a full machine restart.
 
+**Manual force-release (operator recovery, no restart required)**: the two
+mechanisms above only release a wedged reservation at supervisor *startup*.
+Nothing releases a ledger entry during normal runtime -- not even the
+watchdog: it is deliberately observe-only and never mutates the ledger on a
+`crashed` classification (an operator-attention signal, not an
+auto-remediation trigger). So a sprint whose child died (or was killed)
+leaves its member(s) and issue-scope root 409-blocked for any new launch
+until either the supervisor restarts, or an operator explicitly clears it:
+
+```
+POST /api/reservations/:sprintId/force-release
+Body (optional): { "by": "<operator/reason tag>", "reason": "<free text>" }
+```
+
+- Releases **both ledger axes** (member set + issue-scope root) for that
+  sprint id in one call, unconditionally -- no live child or reachable port
+  required, unlike `POST /api/sprints/:id/stop` (which proxies to the
+  child's own `/stop` and 409s with "no reachable child" if the child is
+  already dead -- exactly the case this route exists for).
+- Records a `force-released` event in the durable event history (sprint id,
+  members, issue roots, `by`, `reason`, timestamp), so a manual recovery is
+  auditable after the fact, not silent.
+- 404s if the sprint id has no active ledger entry (already released, or
+  never claimed).
+- **Only touches the supervisor's own local ledger.** It does NOT touch the
+  separate, fleet-server-side per-member `reservedBy` field described below
+  ("Server-side member reservation") -- that is a different store, keyed
+  differently (by branch name, not the ledger's `sprintId`), and requires
+  its own recovery call: `mcp__apra-fleet__member_reservation` with
+  `action: "force_release"` and the member name. A crashed sprint can leave
+  either axis wedged independently of the other -- check both if a relaunch
+  still 409s after force-releasing one.
+
 An operator-facing HTTP surface (members with live-reservation overlay,
 backlog, sprint CRUD, a proxy for each child's own cooperative stop endpoint)
 reuses the same request-validation helpers the CLI path already uses (never a
