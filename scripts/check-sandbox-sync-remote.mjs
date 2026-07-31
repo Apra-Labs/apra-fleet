@@ -328,6 +328,13 @@ export function parseDoltRemoteList(output) {
   return list;
 }
 
+// Known database directory layouts produced by `bd init`. apra-fleet-2cc.1:
+// .dolt/ and db/ are legacy; embeddeddolt is the current layout from `bd init`.
+// If bd introduces new layouts in the future, add them here to prevent silent
+// regression when checkDoltRemoteAbsent optimizes away the `bd dolt remote list`
+// call.
+const BEADS_DATABASE_DIRS = ['.dolt', 'db', 'embeddeddolt'];
+
 /**
  * Check that every Dolt-level remote (independent of the bd-level
  * sync.remote YAML key checked by checkSyncRemoteInert above) resolves to a
@@ -359,7 +366,7 @@ export function checkDoltRemoteAbsent(repoPath, sandboxPath = defaultSandboxPath
   // `(cmd, args, opts) => output` function are unaffected.
 
   // Quick check: if there is no .beads directory at all, or no actual Dolt database
-  // within it (no .dolt/ or db/ subdirectory), skip invoking bd entirely.
+  // within it (no known database directory), skip invoking bd entirely.
   // A beads DB that hasn't been initialized yet has no database files, so there's
   // nothing for bd to query. Return the vacuously-safe result without trying to run bd.
   // (Skip this optimization when deps.execFileSync is provided, to allow tests to
@@ -372,9 +379,9 @@ export function checkDoltRemoteAbsent(repoPath, sandboxPath = defaultSandboxPath
         message: `OK: 'bd dolt remote list' unavailable at '${repoPath}' (no .beads directory) -- nothing wired yet.`,
       };
     }
-    const doltDir = path.join(beadsDir, '.dolt');
-    const dbDir = path.join(beadsDir, 'db');
-    if (!fs.existsSync(doltDir) && !fs.existsSync(dbDir)) {
+    // Check for any known database directory layout.
+    const hasDatabase = BEADS_DATABASE_DIRS.some((dir) => fs.existsSync(path.join(beadsDir, dir)));
+    if (!hasDatabase) {
       return {
         ok: true,
         message: `OK: 'bd dolt remote list' unavailable at '${repoPath}' (no Dolt database initialized) -- nothing wired yet.`,

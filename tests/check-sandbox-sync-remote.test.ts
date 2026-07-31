@@ -349,6 +349,56 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
     });
     expect(result.ok).toBe(true);
   });
+
+  // apra-fleet-xuo.8.1: exercises the no-injection branch (no deps.execFileSync)
+  // against a real .beads/embeddeddolt directory to ensure the predicate recognizes
+  // all known database layouts and does not silent-return "nothing wired yet" for
+  // directories that actually contain a database.
+  it('recognizes .beads/embeddeddolt as a database layout and invokes bd without short-circuiting', async () => {
+    let tmpDir: string | null = null;
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-embeddeddolt-check-'));
+      const repoPath = path.join(tmpDir, 'toy-repo');
+      const beadsDir = path.join(repoPath, '.beads');
+      fs.mkdirSync(beadsDir, { recursive: true });
+      // Create the embeddeddolt directory layout that bd init produces.
+      fs.mkdirSync(path.join(beadsDir, 'embeddeddolt'));
+      // Also create a minimal config.yaml so the repo looks initialized.
+      fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'sync:\n  remote: file://sandbox-local\n');
+
+      // NO deps.execFileSync injected -- this exercises the real filesystem check
+      // against the embeddeddolt layout. The function should recognize the database
+      // and attempt to run bd, not short-circuit with "nothing wired yet".
+      const result = checkDoltRemoteAbsent(repoPath, tmpDir);
+      expect(result.ok).toBe(true);
+      // The key assertion: the message must NOT be the "no Dolt database initialized"
+      // message that the old code would have returned when it failed to recognize
+      // embeddeddolt. Instead, it should report either an actual Dolt remote status
+      // or an error from trying to run bd.
+      expect(result.message).not.toMatch(/no Dolt database initialized/);
+      // Since we created an empty embeddeddolt with no actual Dolt config,
+      // the message should indicate that bd ran and found no remotes (or found
+      // whatever remotes are configured in this minimal setup).
+      expect(result.message).toMatch(/Dolt-level remotes|unavailable/);
+
+    } finally {
+      // Clean up: on Windows, file locks may persist briefly after the function call,
+      // so retry cleanup with delays to allow locks to be released.
+      if (tmpDir) {
+        const cleanupAttempts = 10;
+        for (let i = 0; i < cleanupAttempts; i++) {
+          try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+            break; // Success
+          } catch (err) {
+            if (i === cleanupAttempts - 1) throw err;
+            // Small delay before retry to allow file handles to be released
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        }
+      }
+    }
+  }, 60000); // Increase timeout for this test due to retry logic
 });
 
 describe('checkGitOriginNotHazard: git-origin resolves-inside-sandbox (apra-fleet-eft.18.6 retarget of apra-fleet-eft.31)', () => {
