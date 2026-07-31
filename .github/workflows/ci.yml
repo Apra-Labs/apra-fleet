@@ -79,6 +79,20 @@ jobs:
           npm install -g @beads/bd --foreground-scripts
           bd --version
 
+      # serve-wiring-integration.test.mjs and supervisor-dashboard-
+      # integration.test.mjs boot the real supervisor against THIS repo
+      # checkout and render the real backlog dashboard, which shells out to
+      # `bd list`/`bd show` against this repo's own beads DB. Only
+      # .beads/issues.jsonl is git-tracked (the Dolt DB itself is
+      # gitignored), so a fresh CI checkout has no queryable DB yet -- `bd
+      # list` fails, buildBacklogTasks() throws, and dashboard.mjs's catch
+      # silently falls back to an empty-backlog placeholder page, which
+      # fails the "rich beads-tree table container" assertion even though
+      # the route still answers 200. `bd bootstrap` is non-destructive and
+      # auto-detects the git-tracked JSONL to import from.
+      - name: Bootstrap this repo's own beads DB (required by dashboard/backlog integration tests)
+        run: bd bootstrap --yes
+
       # apra-fleet-3ns.3: apra-fleet-se, apra-fleet-workflow, and
       # apra-fleet-client each keep their tests in test/ (singular) as
       # *.test.mjs run via `node --test`, NOT vitest.config.ts's
