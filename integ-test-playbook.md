@@ -81,12 +81,13 @@ For each feature id handed to the runner:
      - **P2**: requirement partially met; degraded or inconsistent behaviour
      - **P3**: quality, performance, or UX issue that does not block the core function
 
-     Before creating a new bug, search for duplicates:
+     Before creating a new bug, search for duplicates across BOTH tags --
      ```bash
      bd search "[integ]"
+     bd search "[carry-over]"
      ```
-     If an existing bug covers the same failure, update its description
-     rather than creating a new one.
+     If an existing bug (either tag) covers the same failure, update its
+     description rather than creating a new one.
    - **Inconclusive** (test infrastructure failure, flaky, environment
      error): leave the feature open and note why:
      ```bash

@@ -1,10 +1,8 @@
 # Fleet Regression Test Playbook
 
-This playbook is run ONCE PER SPRINT by the `regression-test-runner` agent,
-in the Finalization group -- after Final Review, before Harvest. Its job is
-to prove EXISTING functionality still works. It is NOT a gate on the current
-sprint's new work: feature-closure testing for the current cycle's features
-lives in `integ-test-playbook.md`, run every cycle by `integ-test-runner`.
+Run by `regression-test-runner` to prove EXISTING functionality still works.
+It is NOT a gate on the current sprint's new work: feature-closure testing
+for the current cycle's features lives in `integ-test-playbook.md` instead.
 (The `deployer` agent is a different role: it follows `deploy.md` to install
 the software on a target. It does not run this file.)
 
@@ -20,14 +18,10 @@ The playbook has two parts, and a full regression pass runs BOTH:
    of apra-fleet-se works -- install, server boot, member registration,
    sprint, harvest.
 
-Together they give stakeholders confidence in working functionality: the
-first that the product's behavior is correct against the real backend, the
-second that the product as installed actually runs.
-
-The smoke test's sandbox is fully isolated: it never touches the real
-`~/.apra-fleet` (production) install or its credentials/registry, and it
-lives at a fixed, well-known path (not a random per-run directory) so no
-hand-off file is needed between steps.
+The smoke test's sandbox never touches the real `~/.apra-fleet`
+(production) install or its credentials/registry. It lives at a fixed,
+well-known path (not a random per-run directory) so no hand-off file is
+needed between steps.
 
 Conventions used below:
 - Sandbox root: `~/temp/.apra-fleet-tests` (`$HOME/temp/.apra-fleet-tests`
@@ -130,22 +124,19 @@ and reports the server listening on `18700`.
 
 ### Seed the sandbox beads DB (structural isolation, no bootstrap, no neutralize)
 
-Adopts the e2e suite's own technique (see `packages/apra-fleet-se/apra-pm/e2e/run-e2e.mjs`):
-seed the sandbox's local beads DB straight from the git-committed
-`.beads/issues.jsonl` already sitting in the clone above, rather than
-pulling the local Dolt DB from the real `fleet-e2e-toy` Dolt remote and
-patching the result back to a safe state afterward. This flow wires every
-remote the sandbox will ever talk to as a sandbox-local throwaway BEFORE
-the local Dolt DB is created, so there is nothing to fix up after the fact:
-the real `fleet-e2e-toy` remote URL is never adopted into the sandbox's
-git or beads config at any step below.
+Adopts the e2e suite's own technique (see
+`packages/apra-fleet-se/apra-pm/e2e/run-e2e.mjs`): seed the sandbox's local
+beads DB straight from the git-committed `.beads/issues.jsonl` already
+sitting in the clone above, rather than pulling from the real
+`fleet-e2e-toy` Dolt remote. This wires every remote the sandbox will ever
+talk to as sandbox-local throwaway BEFORE the local Dolt DB is created, so
+the real `fleet-e2e-toy` remote URL is never adopted into the sandbox's git
+or beads config.
 
-Point the sandbox clone's git `origin` at a sandbox-local bare mirror of its
-own just-cloned content -- never the real `fleet-e2e-toy` URL -- before any
-`bd` command runs in the clone. This is safety-invariant layer (1): even
-though `bd init` below auto-provisions a Dolt remote from git `origin` as a
-side effect, it can now only ever derive a sandbox-local remote, because
-`origin` no longer resolves to anything real.
+First, point the sandbox clone's git `origin` at a sandbox-local bare
+mirror of its own just-cloned content -- never the real `fleet-e2e-toy`
+URL -- so `bd init`'s auto-provisioned Dolt remote (a side effect of the
+next step) can only ever derive a sandbox-local remote:
 
 ```bash
 TOY_REPO="$HOME/toy-repo"
@@ -155,55 +146,26 @@ git clone --bare "$TOY_REPO" "$GIT_MIRROR"
 git -C "$TOY_REPO" remote set-url origin "file://$GIT_MIRROR"
 ```
 
-Seed the local beads DB from the git-tracked JSONL only (no Dolt history is
-pulled from anywhere), wiring `sync.remote` in the same command to a second,
-dedicated sandbox-local throwaway directory -- deliberately not
-`$GIT_MIRROR` above, since Dolt's `file://` remote format writes its own
-storage directly into its target directory and would otherwise collide with
-`$GIT_MIRROR`'s git-bare-repo layout. This is safety-invariant layer (2):
+Then seed the local beads DB from that git-tracked JSONL (no Dolt history
+pulled from anywhere) via the guarded script below -- NOT `bd init` / `bd
+dolt remote` by hand. It wires `sync.remote` to a second, dedicated
+sandbox-local directory (kept separate from `$GIT_MIRROR` above, since
+Dolt's `file://` remote writes its own storage into its target directory)
+and hard-asserts every path resolves inside the sandbox root before
+mutating anything, refusing outright (a named `[sandbox-seed guard]`
+failure, zero mutations) if not: an earlier ad-hoc inline seed once
+rewired the HOST repo's `sync.remote` to a sandbox path and aborted the
+sprint when the sandbox was deleted -- this guard exists specifically to
+make that impossible.
 
 ```bash
 node "<repo-root>/scripts/sandbox-seed-beads.mjs" --sandbox-root "$HOME" --toy-repo "$TOY_REPO"
 ```
 
-The script performs the seed steps that used to be inlined here (clear the
-toy clone's local Dolt state, recreate `$HOME/.apra-fleet-toy-dolt-remote`,
-`bd init --from-jsonl --prefix gh-toy --remote file://... --non-interactive`,
-`bd dolt push`) -- but only after hard path-guard assertions: the toy repo
-and the Dolt remote must both resolve INSIDE the sandbox root, and the
-sandbox root must be fully disjoint from the product repo the script lives
-in. Any violation is a named `[sandbox-seed guard]` failure with zero
-mutations performed. Do NOT run `bd init`, `bd dolt remote`, or any other
-beads remote-rewiring command by hand in this playbook -- this guarded
-script is the only sanctioned entry point. (An earlier ad-hoc inline seed
-once rewired the HOST repo's `sync.remote` to a sandbox path and aborted
-the sprint when the sandbox was deleted -- this guard exists specifically
-to make that impossible.)
-
-`bd init --from-jsonl` imports the issues committed in `.beads/issues.jsonl`
-into a fresh local Dolt DB and refuses to run at all if the `--remote`
-target already carries real Dolt history it would have to discard --
-exactly the guard that makes this seed step safe to treat as a hard failure
-rather than a silent overwrite. `--remote` persists as `sync.remote` in
-`.beads/config.yaml` in the same command, so it is live from the start;
-`bd dolt push` immediately after seeds that throwaway remote with the
-freshly-initialized DB once, so the rest of the run's D-push/D-pull
-brackets have real history to sync against.
-
-Verify: `.beads/config.yaml`'s `sync.remote` and the sandbox clone's own
-Dolt remote list (`bd dolt remote list --json`) must both resolve to a path
-*inside* the sandbox root (not merely `!= fleet-e2e-toy`), and the sandbox
-clone's `git remote get-url origin` must likewise resolve inside the
-sandbox root -- none of the three may ever reference `fleet-e2e-toy`.
-`scripts/check-sandbox-sync-remote.mjs` asserts exactly that for those
-three checks. Its fourth check (no outbound git commits ahead of
-`origin/main`) is printed but no longer gates this guard's exit code: `bd
-init --from-jsonl` above always commits its own scaffolding into the
-sandbox clone after `origin` has already been re-pointed at `$GIT_MIRROR`,
-so the clone is *always* exactly 1 commit ahead of `origin/main` on a
-successful run -- expected, not a hazard, since `origin` itself is already
-covered by the git-origin check. Run it from `<repo-root>`, after the steps
-above:
+Verify none of the three remotes (`.beads/config.yaml`'s `sync.remote`,
+the sandbox clone's `bd dolt remote list --json`, its `git remote get-url
+origin`) ever resolve outside the sandbox root or reference
+`fleet-e2e-toy`:
 
 ```bash
 node "<repo-root>/scripts/check-sandbox-sync-remote.mjs" "$HOME/toy-repo"
@@ -223,27 +185,16 @@ the working tree -- so it stays sandbox-local across every Reset with no
 re-wiring needed.
 
 Before the git reset, this also kills any process still bound to the toy
-app's dev-server port (3001, from `npm run start:test` /
-`cross-env PORT=3001`): a prior abandoned attempt's background dev server
-(started by that attempt's own toy-repo fleet-sprint Deploy phase) can
-otherwise survive a Reset into the next attempt and cause
-`listen EADDRINUSE :::3001` in the next Deploy phase. This gives Reset an
-equivalent per-member spawned-process cleanup to what `## Teardown` already
-does for the fleet server (`node dist/index.js stop`).
-
-apra-fleet-04g.7 (follow-through on apra-fleet-04g.1): the original
-port-cleanup was a single fire-and-forget `lsof`+`kill -9` with no
-verification -- it never confirmed the port was actually free before
-handing off to the next attempt's Deploy phase, so a stray process that
-survives (or reappears after) the first kill attempt -- the
-resumed-session/interrupted-attempt case, as opposed to the single
-fresh-listener case the regression test originally simulated -- could
-still be bound to 3001 by the time Deploy ran. This mirrors
-`node dist/index.js stop`'s own shutdown pattern (`src/cli/stop.ts`):
-poll with a bounded deadline, re-killing anything still bound each pass,
-and fail loud (non-zero exit, before the git reset even runs) if the port
-is still occupied once the deadline is reached, instead of silently
-proceeding into a Reset that did not actually clean up.
+app's dev-server port (3001, from `npm run start:test` / `cross-env
+PORT=3001`): a prior abandoned attempt's background dev server (started by
+that attempt's own toy-repo fleet-sprint Deploy phase) can otherwise
+survive a Reset into the next attempt and cause `listen EADDRINUSE :::3001`
+in the next Deploy phase. apra-fleet-04g.7: this polls with a bounded
+deadline (re-killing anything still bound each pass) and fails loud before
+the git reset ever runs if the port is still occupied once the deadline
+elapses -- a single fire-and-forget kill (the original approach) does not
+reliably free a port a resumed/interrupted-attempt process is still
+holding.
 
 ```bash
 SANDBOX="$HOME/temp/.apra-fleet-tests"
@@ -364,54 +315,26 @@ scenario.
    the toy sprint's planner from inventing scope: there is exactly one
    obvious task, one obvious change, and one objectively checkable
    outcome.
-3. Provision LLM credentials for the `toy-doer` member, so the real Planner
-   dispatch in step 4 below can authenticate (`LocalStrategy` dispatches for
-   local members run through a clean-env `env -i ... bash -l -c` exec path
-   that strips the runner's ambient `CLAUDE_CODE_OAUTH_TOKEN`/macOS Keychain
-   session, so an unprovisioned member fails every dispatch with
-   "Authentication failed"). This uses the single-machine CI-runner model
-   documented in `docs/tools-infrastructure.md` ("apra-fleet auth (CLI)"),
-   not the SSH-based `provision_llm_auth` MCP flow: `regression-test-runner`
-   has only [Read, Bash, Grep, Glob] tools and cannot call MCP tools (see
-   "Adding new features to this test" below), and this CLI path is exactly
-   the one that model doc section designs for CI runners where the fleet PM
-   and its members share one machine.
+3. Provision LLM credentials for the `toy-doer` member -- without this,
+   step 4's Planner dispatch fails auth. Use the CLI auth path documented
+   in `docs/tools-infrastructure.md` ("apra-fleet auth (CLI)"), not the
+   MCP `provision_llm_auth` flow: `regression-test-runner` has no MCP
+   tools available (see "Adding new features to this test" below).
 
-   **3a. Resolve the token and seed the persistent secret store, plus a
-   BONUS credential-file write (runs BEFORE step 1's registration).** The
-   credential source is whichever ambient Claude Code credential the
-   runner's own real session already has -- its `CLAUDE_CODE_OAUTH_TOKEN`
-   env var if set, else the `claudeAiOauth.accessToken` field of its real,
-   pre-sandbox `$REAL_HOME/.claude/.credentials.json` (see `REAL_HOME` in
-   `## Setup`). That token is seeded into the sandbox's own **persistent**
-   credential store as `secure.INTEG-TOY-DOER-TOKEN` (`node dist/index.js
-   secret --set ... --persist`, per `docs/tools-infrastructure.md`'s
-   `secure.<name>` convention) -- both this and the bonus file write below
-   run with the already-sandboxed `HOME=$SANDBOX` from `## Setup`, so the
-   persistent store lands at `$SANDBOX/.apra-fleet/data/credentials.json`;
-   neither command touches `$HOME/toy-repo` or anything under its
-   `.git`/`.beads`, so this step cannot reach or write to the real
-   `fleet-e2e-toy` git remote or its Dolt remote.
+   **3a. Seed the persistent secret store (run BEFORE step 1's
+   registration).** Resolve the token from the runner's own ambient Claude
+   credential -- its `CLAUDE_CODE_OAUTH_TOKEN` env var if set, else
+   `claudeAiOauth.accessToken` from its real, pre-sandbox
+   `$REAL_HOME/.claude/.credentials.json` (see `REAL_HOME` in `## Setup`)
+   -- store it as `secure.INTEG-TOY-DOER-TOKEN`, then also write it to a
+   credentials file so step 1's interactive session comes up already
+   logged in.
 
-   The bonus file write (`node dist/index.js auth --oauth`) is optional
-   defense-in-depth, kept ONLY so the interactive claude session step 1
-   launches comes up already logged in (it inherits the fleet server
-   process's own ambient env/credentials file, not any per-member
-   provisioning) -- it is no longer required for the real Planner dispatch
-   in step 4, which is what step 3b below provisions directly. Seed the
-   full session-shape fields of `claudeAiOauth` -- but NEVER the refresh
-   token: a credentials file containing only `accessToken` is rejected by
-   the Claude CLI as "Not logged in" (it needs `expiresAt` and `scopes` to
-   treat the session as valid), so seed those real fields; but
-   `refreshToken`/`refreshTokenExpiresAt` MUST be stripped -- OAuth
-   refresh-token rotation is server-side, so any sandbox process that
-   refreshes with a COPIED refresh token invalidates the original holder's
-   live session (a prior probe run expired the operator's interactive login
-   twice this way). The sandbox lives one canary sprint; the access token's
-   own validity window covers it, and if it expires mid-run the honest
-   failure is re-provisioning, not a silent rotation of the runner's
-   credentials. `auth --oauth` accepts either a bare token or a JSON object
-   as the secret and merges whichever it gets.
+   NEVER include the refresh token: refresh-token rotation is
+   server-side, so a sandbox process that refreshes with a COPIED refresh
+   token invalidates the operator's real, live session -- this has
+   expired the operator's login twice. Seed only
+   `accessToken`/`expiresAt`/`scopes`.
 
    ```bash
    SECRET=""
@@ -421,8 +344,6 @@ scenario.
        const c = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8'));
        const o = c.claudeAiOauth;
        if (o && o.accessToken) {
-         // Session-shape fields only -- refreshToken deliberately omitted
-         // so nothing in the sandbox can rotate the runner's credentials.
          const { refreshToken, refreshTokenExpiresAt, ...probeSafe } = o;
          process.stdout.write(JSON.stringify(probeSafe));
        }
@@ -432,46 +353,25 @@ scenario.
      SECRET="${CLAUDE_CODE_OAUTH_TOKEN:-}"
    fi
    if [ -z "$SECRET" ]; then
-     echo "No ambient Claude credential found (CLAUDE_CODE_OAUTH_TOKEN unset" \
-          "and $REAL_HOME/.claude/.credentials.json missing/empty). Run" \
-          "'/login' in a real session first, or export" \
-          "CLAUDE_CODE_OAUTH_TOKEN, then re-run this step." >&2
+     echo "No ambient Claude credential found. Run '/login' in a real" \
+          "session first, or export CLAUDE_CODE_OAUTH_TOKEN, then re-run" \
+          "this step." >&2
      exit 1
    fi
    printf '%s' "$SECRET" | node dist/index.js secret --set INTEG-TOY-DOER-TOKEN --persist -y
-   # Bonus only -- see note above. Never plaintext: the secret always flows
-   # through the persistent store's secure.<name> reference, both here and
-   # in step 3b below.
    node dist/index.js auth --oauth --llm claude secure.INTEG-TOY-DOER-TOKEN
    ```
 
-   **3b. PRIMARY: provision `toy-doer`'s `encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN`
-   directly -- runs AFTER step 1's registration, since it resolves the
-   member by name.** `apra-fleet auth --oauth --member <name>` stores the
-   token (secret-store reference only, never plaintext) in the member's own
-   registry.json record instead of writing any credentials file;
-   `buildAuthEnvPrefix()` (`src/utils/auth-env.ts`) exports it directly into
-   every clean-env dispatch's child shell (`env -i ... bash -l -c 'export
-   CLAUDE_CODE_OAUTH_TOKEN=... && claude ...'`, see `src/os/linux.ts` /
-   `src/os/windows.ts`), which the real Claude CLI accepts outright -- no
-   synthesized credentials-file session shape needed, and it works
-   identically on every platform (including macOS runners, where the real
-   credential lives in the Keychain and `$REAL_HOME/.claude/.credentials.json`
-   never exists, so step 3a's file write can never engage there).
+   **3b. Provision the member directly (run AFTER step 1's registration --
+   it looks the member up by name). This is the path step 4's dispatch
+   actually uses.**
 
    ```bash
    node dist/index.js auth --oauth --member toy-doer secure.INTEG-TOY-DOER-TOKEN
    ```
 
-   Verify with `scripts/check-toy-doer-credentials.mjs` (its env-var check
-   already covers this path) -- it checks `toy-doer`'s registry.json
-   `encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN` first (the primary path
-   above) and falls back to reproducing `getCleanEnv()`'s exact `env -i
-   ... bash -l -c` exec path against the step 3a bonus credentials file,
-   exiting non-zero with an actionable message if neither path is
-   provisioned. Run it from `<repo-root>` immediately after step 3b, so a
-   skipped/broken provisioning step fails loud right here instead of only
-   surfacing after 5 wasted Planner dispatch retries in step 4:
+   Verify immediately, so a broken provisioning step fails loud here
+   instead of after 5 wasted Planner dispatch retries in step 4:
 
    ```bash
    node "<repo-root>/scripts/check-toy-doer-credentials.mjs" toy-doer "$SANDBOX"
@@ -531,12 +431,15 @@ breakage, not new work item of the sprint that just ran, so it should
 carry over to be picked up by a future sprint rather than blocking this
 one's completion.
 
-Before creating a new bug, search for duplicates:
+Before creating a new bug, search for duplicates across BOTH tags -- the
+same underlying defect can surface here, or in `integ-test-playbook.md`'s
+per-cycle pass, filed there under `[integ]` instead:
 ```bash
 bd search "[carry-over]"
+bd search "[integ]"
 ```
-If an existing bug covers the same failure, update its description rather
-than creating a new one.
+If an existing bug (either tag) covers the same failure, update its
+description rather than creating a new one.
 
 ## Adding new features to this test
 
