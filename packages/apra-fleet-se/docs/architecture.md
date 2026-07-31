@@ -408,9 +408,10 @@ optional hardening:
   only sees the siblings it already has), so both mint the same id and their
   D-pushes then hard-conflict on that row.
 
-Two supervisor-owned, globally-shared coordination primitives address these
-directly (owned by the supervisor because a per-sprint-process lock cannot
-coordinate across independently detached sprint processes):
+Two globally-shared coordination primitives address these directly (a
+per-sprint-process lock cannot coordinate across independently detached
+sprint processes, so both need a process that every sprint can already
+reach):
 
 - **A global Dolt push mutex** -- serializes every cross-sprint `bd dolt
   push` so at most one sprint is ever mid-push at a time, granted strictly
@@ -421,6 +422,67 @@ coordinate across independently detached sprint processes):
   same counter read), and hands each creator an explicit, pre-decided,
   distinct id to pass to `bd create --id <childId>` -- so two sprints
   creating siblings under the same parent always target different rows.
+
+### Two coordination hosts, not one -- and why
+
+Both primitives exist in **two independent implementations that must stay
+semantically identical**, not because of duplication oversight but because
+neither host alone can reach every launch topology:
+
+- The **supervisor** (`fleet-se serve`) hosts the original mutex/allocator
+  (`src/supervisor/dolt-mutex.mjs`, `src/supervisor/id-allocator.mjs`) over
+  its own HTTP routes, reachable by any sprint launched *through* the
+  supervisor via `--service-url`. This covers supervisor-launched sprints
+  only.
+- The **fleet MCP server** hosts a from-scratch TypeScript re-statement of
+  the same semantics (`src/services/sprint-coordination.ts`, exposed as the
+  `dolt-push-mutex` and `child-id-allocator` MCP tools). This covers the
+  standalone/detached-binary CLI launch path (`packages/apra-fleet-se/
+  bin/cli.mjs`), which has no supervisor to reach at all -- but which
+  already hard-requires a connection to the shared fleet MCP HTTP singleton
+  (it refuses to self-spawn a private stdio server), making that server the
+  one genuine cross-process coordination point for that topology.
+
+This is a deliberate, forced trade-off, not an oversight: the fleet server
+is TypeScript compiled with `allowJs` off from a `rootDir` that excludes the
+supervisor's `.mjs` sources, and the root package's dependency direction
+runs the opposite way (through `@apralabs/apra-fleet-client`, never
+importing the supervisor directly) -- so importing the supervisor's modules
+from the server would introduce a workspace build cycle. Extracting a third
+shared workspace package is the architecturally-right end state but is
+tracked as separate follow-up work, not bundled into this coordination fix.
+**Any behavioral change to the mutex or allocator's semantics (FIFO
+ordering, lease/reclaim behavior, synchronous seq assignment, atomic
+persistence) must be mirrored in both files by hand** -- there is no shared
+module enforcing this today.
+
+The one genuinely new piece in the MCP-hosted copy is the **transport
+adaptation**: the supervisor's HTTP acquire route can long-poll (it simply
+does not answer until the caller owns the mutex), but an MCP tool call
+cannot block indefinitely. The MCP-hosted mutex is therefore **ticketed**:
+`acquire` enqueues the real underlying `acquire()` promise exactly once and
+parks it server-side under a ticket id, returning `{ granted: false, ticket
+}` after a bounded wait; the caller re-polls with that ticket. The
+underlying waiter stays enqueued across every poll -- a naive
+cancel-and-retry-on-timeout loop would silently send a timed-out waiter to
+the back of the FIFO queue and destroy the fairness guarantee this whole
+mechanism exists to provide. A ticket whose underlying grant is reclaimed
+out from under it (lease expiry or a dead-pid probe, independent of the
+ticket's own release/cancel path) is cleaned up via an explicit
+`onReclaim()` subscription -- otherwise, on an always-on fleet server,
+reclaimed-but-never-cleaned-up ticket entries would accumulate for the
+life of the process.
+
+`packages/apra-fleet-se/bin/cli.mjs` threads `--service-url` end-to-end so
+the standalone CLI path actually engages this coordination (rather than the
+tools existing but going unused): every code-writing dispatch that would
+mutate beads or push Dolt state resolves its mutex/allocator client against
+that URL, and `packages/apra-fleet-client` (`api.mjs`'s `doltPushMutex()`
+and `childIdAllocator()`) is the thin wrapper both the supervisor path and
+the standalone path call through -- it is kept in lockstep with the MCP
+tool schemas as a hard requirement, not optional cleanup, precisely because
+a drifted client would silently give one of these two call sites a stale or
+inconsistent view of what the server actually accepts.
 
 **D-push conflict policy is mechanical, not judgment-based**: whichever
 D-push loses a race (the remote moved first) reconciles with exactly one
@@ -503,6 +565,82 @@ serialization primitives existed, or an operational failure):
    decided the same way as the git ladder's Tier 2: a mechanical
    re-verification (clean conflict state, a genuinely successful push), never
    the agent's own claim.
+
+## Run identity: truthful termination classification
+
+Before this sprint's stabilization work, the supervisor watchdog inferred a
+sprint's outcome from process-liveness signals alone (PID gone -> assume
+crashed unless a terminal state file happened to exist). That collapsed two
+genuinely different situations -- "the engine finished and recorded why" and
+"something killed the process before it could record anything" -- into the
+same generic CRASHED-sounding classification whenever the terminal-state
+read raced the process exit, or the two disagreed for any other reason.
+
+The fix threads one **run-id** from the supervisor into the sprint child's
+own engine run-state at spawn time, so the watchdog/dashboard/history layer
+can key its own state to the same identity the engine uses internally
+across consecutive supervisor-launched sprints (rather than the supervisor
+guessing at a mapping). On top of that shared identity:
+
+- The watchdog's FINISHED classification now copies the engine's own
+  `terminalReason` (and, where present, `extensions.terminal.verdict`)
+  **verbatim** into its log line and the persisted `sprint-history.json`
+  FINISHED event, rather than re-deriving or paraphrasing a reason. A
+  PID-gone sprint with no persisted terminal state is classified CRASHED,
+  carrying a `terminalReason` that says explicitly no terminal state was
+  ever persisted -- so an operator reading history can distinguish "the
+  engine told us why it stopped" from "we never heard from it again."
+- The spawner records the child process's actual exit code, signal, and
+  exit time into the ledger the moment the child process exits -- this is
+  independent of (and does not wait for) whatever the engine itself
+  manages to persist, so even a child that dies before writing any terminal
+  state still leaves a mechanically-observed exit record.
+- An unmergeable Dolt conflict (`DOLT_DIVERGED`, see "Dolt sync discipline"
+  above) is classified as its own terminal state -- `BEADS_SYNC_CONFLICT` --
+  distinct from a generic failure, and carries the captured conflict dump
+  forward into history rather than discarding it once the sprint aborts.
+
+The throughline is the same "never trust a claim, verify mechanically"
+pattern used elsewhere in this runner (see "The doer's own claimed status is
+never trusted" above): a sprint's recorded outcome is now built from signals
+the supervisor observes or the engine explicitly persists, never inferred
+from the absence of a process.
+
+## Per-sprint stdio capture
+
+Each sprint child's stdout/stderr is teed to a per-sprint log file (in
+addition to whatever the child would otherwise write), and the supervisor
+dashboard serves and links that file per sprint. This exists specifically so
+a sprint's raw output is traceable after the fact even when the child never
+reaches a point where it can report anything structured back to the
+supervisor (e.g. it dies before its first heartbeat) -- previously that
+output was only visible if an operator happened to be attached to the
+child's own process at the time. A non-zero-exit child is required to still
+leave a traceable log/ledger entry rather than vanishing silently; this was
+verified end-to-end (not just at the unit level) as part of this sprint's
+integration pass.
+
+## newTask allowlist and rejected-task resurfacing
+
+The `validateNewTask()` character allowlist (see "newTask validation
+(injection defense)" above) was extended to accept square brackets, so a
+reviewer-proposed task titled with the `[test]` convention (see the
+graph-semantics doc's "Marking a task as verification work" rule) no longer
+gets rejected purely for using the same bracket convention every other
+consumer of that prefix relies on.
+
+A newTask can still be rejected for other allowlist violations (backticks,
+`$`, quotes, backslash -- the actual injection-relevant characters). Rather
+than letting a rejected proposal simply vanish once logged, the runner now
+**resurfaces** rejected newTasks into the next planning dispatch, so the
+planner gets a chance to either reformulate the proposal in allowlist-safe
+terms or explicitly decide not to pursue it -- a rejection is surfaced as
+future planning input, not silently dropped. A resurfaced task is cleared
+from the pending-resurface set once resubmitted, **title-independently**:
+clearing must not require the resubmission to reuse the exact original
+title verbatim (a planner reformulating a previously-rejected proposal will
+usually change the wording), or a task that already made it back through
+would resurface again to a following cycle in error.
 
 ## Determinism
 
