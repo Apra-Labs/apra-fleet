@@ -81,6 +81,9 @@ It is not a toy. It builds apra-fleet itself:
 - Files bugs against itself, decomposes them, fixes them, and blocks its
   own release until quality gates pass
 - Every dispatch, verdict, and dollar visible live on the dashboard
+- Every sprint's raw child stdout/stderr is captured to a per-sprint log
+  and linked from the dashboard, so a run's output is traceable even if it
+  crashes before reporting anything back
 
 A fleet that has run in production:
 
