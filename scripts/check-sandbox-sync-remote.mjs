@@ -357,6 +357,31 @@ export function checkDoltRemoteAbsent(repoPath, sandboxPath = defaultSandboxPath
   // invocation. `deps.execFileSync` (test injection) is forwarded through
   // unchanged -- existing tests that stub it with a fake
   // `(cmd, args, opts) => output` function are unaffected.
+
+  // Quick check: if there is no .beads directory at all, or no actual Dolt database
+  // within it (no .dolt/ or db/ subdirectory), skip invoking bd entirely.
+  // A beads DB that hasn't been initialized yet has no database files, so there's
+  // nothing for bd to query. Return the vacuously-safe result without trying to run bd.
+  // (Skip this optimization when deps.execFileSync is provided, to allow tests to
+  // inject custom executors for paths that don't actually exist on disk.)
+  if (!deps.execFileSync) {
+    const beadsDir = path.join(repoPath, '.beads');
+    if (!fs.existsSync(beadsDir)) {
+      return {
+        ok: true,
+        message: `OK: 'bd dolt remote list' unavailable at '${repoPath}' (no .beads directory) -- nothing wired yet.`,
+      };
+    }
+    const doltDir = path.join(beadsDir, '.dolt');
+    const dbDir = path.join(beadsDir, 'db');
+    if (!fs.existsSync(doltDir) && !fs.existsSync(dbDir)) {
+      return {
+        ok: true,
+        message: `OK: 'bd dolt remote list' unavailable at '${repoPath}' (no Dolt database initialized) -- nothing wired yet.`,
+      };
+    }
+  }
+
   let output;
   try {
     output = execBdSync(['dolt', 'remote', 'list', '--json'], {
@@ -461,6 +486,10 @@ function main() {
   const repoPath = process.argv[2] ?? path.join(process.env.HOME ?? '', 'toy-repo');
   if (!repoPath) {
     console.error('[check-sandbox-sync-remote] Usage: node scripts/check-sandbox-sync-remote.mjs <toy-repo-path> [sandbox-root-path]');
+    process.exit(2);
+  }
+  if (!fs.existsSync(repoPath)) {
+    console.error(`[check-sandbox-sync-remote] repo path does not exist: '${repoPath}'`);
     process.exit(2);
   }
   const sandboxPath = process.argv[3] ?? defaultSandboxPath(repoPath);
