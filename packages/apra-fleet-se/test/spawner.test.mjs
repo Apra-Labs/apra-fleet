@@ -33,16 +33,35 @@ function onExit(child) {
 function firstLine(stream) {
     return new Promise((resolve, reject) => {
         let buf = '';
+        function cleanup() {
+            stream.off('data', onData);
+            stream.off('error', onError);
+            stream.off('close', onClose);
+        }
         function onData(chunk) {
             buf += chunk.toString('utf-8');
             const idx = buf.indexOf('\n');
             if (idx !== -1) {
-                stream.off('data', onData);
+                cleanup();
                 resolve(buf.slice(0, idx));
             }
         }
+        function onError(err) {
+            cleanup();
+            reject(err);
+        }
+        // The child can exit (crash, or close stdout) before ever writing a
+        // full line -- without this, the promise would hang forever (no
+        // 'data' with a newline ever arrives, and 'error' alone does not
+        // fire on a clean-but-empty stream close), turning a fast child
+        // failure into an indefinite test stall.
+        function onClose() {
+            cleanup();
+            reject(new Error(`stream closed before a full line was read (buffered so far: ${JSON.stringify(buf)})`));
+        }
         stream.on('data', onData);
-        stream.once('error', reject);
+        stream.once('error', onError);
+        stream.once('close', onClose);
     });
 }
 

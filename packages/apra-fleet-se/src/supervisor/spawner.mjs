@@ -61,29 +61,44 @@ export function defaultCliPath(deps = {}) {
  * real OS-level availability, not just what this supervisor process itself
  * has handed out.
  *
- * Defaults the probe bind to the wildcard address (no host, matching how the
- * real viewer's `server.listen(port, cb)` binds every interface -- see
- * apra-fleet-workflow/src/viewer/index.mjs) rather than '127.0.0.1'. On
- * Windows, a loopback-only bind and a pre-existing wildcard bind on the same
- * port can coexist without either side erroring, so probing '127.0.0.1' can
- * report a port "free" when a real viewer already owns it via a wildcard
- * bind -- allocateFreePort would then hand that port to a second process,
- * and inbound connections silently split between the two. Probing the
- * wildcard address instead fails to bind whenever ANY process already holds
- * the port on ANY interface, which is what "free" actually needs to mean.
+ * The real viewer binds the wildcard address (`server.listen(port, cb)`, no
+ * host -- see apra-fleet-workflow/src/viewer/index.mjs). On Windows, a
+ * loopback-only bind and a pre-existing wildcard bind on the same port can
+ * coexist without either side erroring, so a plain `host` bind-test alone
+ * can report a port "free" when a real viewer already owns it via a
+ * wildcard bind -- allocateFreePort would then hand that port to a second
+ * process, and inbound connections would silently split between the two.
+ *
+ * This is deliberately NOT fixed by making the probe itself bind the
+ * wildcard address: doing so opens this process up to inbound connections
+ * from every interface, which triggers an interactive Windows Firewall
+ * "allow this app" prompt on first use per port -- and in a headless/CI
+ * run nothing ever dismisses that prompt, so the bind call hangs
+ * indefinitely (confirmed directly: a wildcard-bind probe stalled a real
+ * test run with zero CPU progress). Instead, first try to CONNECT to
+ * `host` -- a connect (never a bind) never triggers that firewall prompt,
+ * and it reaches a wildcard-bound listener just as reliably as a
+ * loopback-only one, since either accepts loopback connections. Only if
+ * nothing answers do we fall back to the original bind test, which still
+ * catches a same-host bind conflict a connect probe alone cannot (e.g. a
+ * listener that accepted the socket but is slow to respond).
  * @param {number} port
  * @param {string} [host]
  * @returns {Promise<boolean>}
  */
-export function isPortAvailable(port, host) {
+export function isPortAvailable(port, host = '127.0.0.1') {
     return new Promise((resolve) => {
-        const tester = net.createServer();
-        tester.unref();
-        tester.once('error', () => resolve(false));
-        const listenOpts = { port, exclusive: true };
-        if (host) listenOpts.host = host;
-        tester.listen(listenOpts, () => {
-            tester.close(() => resolve(true));
+        const probe = net.connect({ port, host });
+        const onOccupied = () => { probe.destroy(); resolve(false); };
+        probe.once('connect', onOccupied);
+        probe.once('error', () => {
+            probe.destroy();
+            const tester = net.createServer();
+            tester.unref();
+            tester.once('error', () => resolve(false));
+            tester.listen({ port, host, exclusive: true }, () => {
+                tester.close(() => resolve(true));
+            });
         });
     });
 }
