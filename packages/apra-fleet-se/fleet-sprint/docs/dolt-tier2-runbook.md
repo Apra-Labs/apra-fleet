@@ -6,6 +6,23 @@ its own. It is the dolt counterpart of the git conflict ladder's Tier 2
 runbook (`conflict-ladder.mjs`'s `buildConflictResolutionRunbookPrompt`) -- see
 that module's header comment for the git version of the same posture.
 
+## When to use this runbook (vs the operator runbook)
+
+Use **this** runbook when: a fleet MEMBER's clone is wedged during an automated
+sprint, a human operator at a terminal cannot resolve it, and an agent has been
+dispatched (by `dolt-recovery-tier2.mjs`) as the last-resort escalation after
+the scripted Path A/Path B recovery ladder both failed.
+
+Use [the operator runbook](../../../docs/dolt-operator-conflict-runbook.md)
+instead when: you are a human operator with direct terminal/`dolt` CLI access
+to your own local beads clone, and `bd dolt pull` reported a merge conflict.
+That is a different actor (you at a terminal, not a dispatched agent), a
+different clone (your own, not a fleet member's), and a different entry point
+(manual resolution, not automated escalation).
+
+See also: the operator runbook links back here for the "I am a dispatched agent,
+not a human at a terminal" case.
+
 ## Script-first posture: when this is (and is not) dispatched
 
 The dolt sync discipline (Plan Part 3.3/3.4, apra-fleet-eft.9) is
