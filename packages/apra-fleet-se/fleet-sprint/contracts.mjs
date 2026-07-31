@@ -455,10 +455,14 @@ const FALLBACK_deployerReport = {
 
 // Fallback for role "integ-test-runner". Canonical source:
 // packages/apra-fleet-se/apra-pm/agents/schemas/integ-test-runner-output.json.
-// apra-fleet-eft.66.1: `deployedSha` added (optional) alongside the vendor/
-// apra-pm bump to commit 844112e -- validatePart2Evidence (runner.js) reads
-// it as the primary part-2 SHA-freshness evidence source, falling back to
-// the legacy PART2_SHA summary marker only when this field is absent.
+// `deployedSha` (optional) is a VESTIGIAL field, kept only to mirror the
+// vendored integ-test-runner-output.json, which keeps it for backward
+// compatibility with pre-split agent builds that still emit it. Nothing
+// reads it any more: the eft.66.1 engine-side consumer
+// (validatePart2Evidence) was removed with the integ/regression split, since
+// the per-cycle Integ Test phase no longer runs the part-2 smoke test whose
+// freshness it attested. Do not add new consumers -- if a phase needs deploy
+// provenance, model it explicitly rather than reviving this field.
 const FALLBACK_integReport = {
     $id: 'integReport',
     type: 'object',

@@ -3619,115 +3619,27 @@ export function isHostedGithubRemote(remoteUrl) {
 }
 
 // ---------------------------------------------------------------------------
-// Integ report part-2 (smoke test) SHA-freshness validation (apra-fleet-eft.55.2)
+// (removed) Integ report part-2 (smoke test) SHA-freshness validation
 // ---------------------------------------------------------------------------
 //
-// apra-fleet-eft.55 (run 19 Integ C5): a resumed integ-test-runner session
-// reused a part-2 (smoke test) result executed EARLIER in the same session,
-// before the cycle's fixes were deployed, then issued verification verdicts
-// from that stale evidence. The Integ Test dispatch (runSprintCycle, below)
-// hands the runner this cycle's deploy-verified SHA and instructs it to echo
-// that SHA back in its report.
+// The eft.55.2/eft.66.1 `extractPart2Sha` / `validatePart2Evidence` helpers
+// used to live here. They existed to prove that the per-cycle Integ Test
+// phase's part-2 (smoke test) evidence came from THIS cycle's deploy-verified
+// SHA, rather than being stale evidence inherited from a resumed session (the
+// eft.55 incident). The integ/regression split retired that whole concern:
+// part 2 moved to the once-per-sprint Regression Test phase, which provisions
+// its own throwaway sandbox and therefore has no deployed SHA to attest
+// against, and the per-cycle Integ Test phase is now feature closure only,
+// judged against the features' own `[test]` tasks in the branch working tree
+// (inherently current, nothing to go stale). `getDeployedSha()` -- the engine
+// probe that fed these -- was removed at its call site in the same change,
+// leaving these two exported but unreachable, so they are removed here too
+// rather than left as tested-but-dead code.
 //
-// apra-fleet-eft.66 / eft.66.1: originally the runner was asked to echo the
-// SHA back via a "PART2_SHA: <sha>" marker embedded in the free-text
-// `summary` field, which bypassed the role's own output schema and forced
-// this consumer to grep prose. packages/apra-fleet-se/apra-pm commit 844112e
-// (fix/integ-runner-part2-sha-freshness) added a proper, optional
-// `deployedSha` field to integ-test-runner-output.json for exactly this
-// purpose. `validatePart2Evidence` now reads `integResult.deployedSha` as
-// the PRIMARY source of the reported SHA; the `PART2_SHA:` summary-marker
-// grep (`extractPart2Sha`) is kept ONLY as a legacy fallback for reports
-// from an integ-test-runner build that predates the schema field, and its
-// use is logged as a deprecation warning so stragglers are visible rather
-// than silently tolerated forever.
-
-// Case-insensitive; matches a short or full git SHA following the marker.
-const PART2_SHA_MARKER_RE = /PART2_SHA:\s*([0-9a-f]{7,40})/i;
-
-/**
- * Extracts a `PART2_SHA: <sha>` marker from an integ-test-runner report's
- * free-text `summary`, if present. LEGACY fallback only -- see
- * `validatePart2Evidence`'s doc comment; the structured `deployedSha`
- * report field is the primary source and this is consulted only when that
- * field is absent.
- * @param {unknown} summary
- * @returns {string|null} the SHA, lowercased, or null if no marker is found.
- */
-export function extractPart2Sha(summary) {
-    if (typeof summary !== 'string') return null;
-    const match = PART2_SHA_MARKER_RE.exec(summary);
-    return match ? match[1].toLowerCase() : null;
-}
-
-/**
- * Normalizes an integ-test-runner report's structured `deployedSha` field:
- * trims and lowercases a non-empty string, otherwise null.
- * @param {unknown} value
- * @returns {string|null}
- */
-function normalizeReportedShaField(value) {
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    return trimmed ? trimmed.toLowerCase() : null;
-}
-
-/**
- * Validates that an integ-test-runner report's part-2 (smoke test) evidence
- * is fresh -- i.e. cites THIS cycle's deploy-verified SHA, not a prior
- * deploy's stale result carried over by a resumed session. Mostly
- * pure/testable: takes the already-dispatched integ report and the
- * engine-computed deploy-verified SHA for this cycle, and does no I/O of its
- * own beyond an optional deprecation console.warn (see below).
- *
- * The reported SHA is read PRIMARILY from the report's structured
- * `deployedSha` field (apra-pm commit 844112e). Only when that field is
- * absent does this fall back to grepping a legacy `PART2_SHA: <sha>` marker
- * out of the report's free-text `summary` (`extractPart2Sha`) -- a report
- * from an integ-test-runner build that predates the schema field. That
- * fallback path logs a one-line deprecation warning so lingering marker-only
- * reports stay visible instead of silently normalizing forever.
- *
- * A short SHA on either side is accepted as a match via prefix comparison
- * (git's own short-SHA convention), so a runner that only has `git rev-parse
- * --short HEAD` available is not unfairly penalized.
- * @param {{deployedSha?: string, summary?: string}} integResult - the
- *   integ-test-runner's report.
- * @param {string|null} deployedSha - this cycle's deploy-verified SHA
- *   (lowercased), or null if the engine could not resolve one this cycle --
- *   in which case there is nothing to validate against, so this always
- *   returns `inconclusive: false` (falls back to plain pass/fail handling).
- * @returns {{ inconclusive: boolean, reason: ('absent'|'mismatched'|null), reportedSha: (string|null) }}
- */
-export function validatePart2Evidence(integResult, deployedSha) {
-    let reportedSha = normalizeReportedShaField(integResult && integResult.deployedSha);
-    if (!reportedSha) {
-        reportedSha = extractPart2Sha(integResult && integResult.summary);
-        if (reportedSha) {
-            console.warn(
-                '[deprecated] validatePart2Evidence: no structured `deployedSha` report field found; ' +
-                'falling back to the legacy "PART2_SHA: <sha>" summary-marker grep. Upgrade the ' +
-                'integ-test-runner agent (packages/apra-fleet-se/apra-pm >= 844112e) to emit the deployedSha field ' +
-                '-- this fallback exists only for reports from a pre-upgrade build and will be removed.'
-            );
-        }
-    }
-    if (!deployedSha) {
-        return { inconclusive: false, reason: null, reportedSha };
-    }
-    if (!reportedSha) {
-        return { inconclusive: true, reason: 'absent', reportedSha: null };
-    }
-    const normalizedDeployed = deployedSha.toLowerCase();
-    const matches = normalizedDeployed === reportedSha
-        || normalizedDeployed.startsWith(reportedSha)
-        || reportedSha.startsWith(normalizedDeployed);
-    if (!matches) {
-        return { inconclusive: true, reason: 'mismatched', reportedSha };
-    }
-    return { inconclusive: false, reason: null, reportedSha };
-}
-
+// If a future phase ever needs the same freshness guarantee, restore this
+// from git history (search: PART2_SHA_MARKER_RE) rather than reinventing it.
+// The anti-regression pin that the dispatch no longer threads a part-2 SHA
+// clause lives in test/regression-phase-never-gates.test.mjs.
 // ---------------------------------------------------------------------------
 // Finalization prompt builders (apra-fleet-unw.17, A6)
 // ---------------------------------------------------------------------------
@@ -5533,9 +5445,9 @@ async function runSprintCycle(context) {
     // part-2 (smoke test) evidence was fresh. The smoke test is no longer
     // part of that phase -- it moved to the once-per-sprint Regression Test
     // phase, which provisions its own throwaway sandbox and therefore has
-    // nothing to attest a deployed SHA against. `validatePart2Evidence` /
-    // `extractPart2Sha` remain exported below as pure helpers (still unit
-    // tested) but no longer have an engine call site.
+    // nothing to attest a deployed SHA against. The `validatePart2Evidence` /
+    // `extractPart2Sha` helpers it fed have since been removed as well -- see
+    // the "(removed) Integ report part-2 ..." note earlier in this file.
 
     // apra-fleet-eft.34: D-pull the orchestrator's OWN beads clone before the
     // very first bd query pre-sprint validation issues (via updateDashboard's
@@ -7847,19 +7759,63 @@ async function runSprintCycle(context) {
                 log(`Regression pass PASSED (suite: ${regressionResult.suitePassed}, smoke: ${regressionResult.smokePassed}).`);
             }
         } catch (err) {
-            // Deliberately NO outer retry-once wrapper, and deliberately no
-            // rethrow of the dispatch error classes: unlike Final Review --
-            // whose failure legitimately fails the whole sprint -- a
-            // Regression Test dispatch failure must soft-fail and log. It can
-            // never abort the run, gate the verdict, or block Harvest.
+            // Deliberately NO outer retry-once wrapper, and deliberately a
+            // CATCH-ALL: unlike Final Review -- whose failure legitimately
+            // fails the whole sprint -- ANY failure of this phase must
+            // soft-fail and log. It can never abort the run, gate the
+            // verdict, or block Harvest.
+            //
+            // The catch-all is load-bearing, not defensive sloppiness. An
+            // earlier cut of this block enumerated only the three dispatch
+            // error classes (AgentOutputError / AgentDispatchError /
+            // FleetTransportError) and rethrew everything else, which quietly
+            // reopened the exact hole this phase's placement was designed to
+            // close. The dispatch above is wrapped in withGitSync(...,
+            // { pushBeads: true }), whose pre-dispatch G-pull/D-pull and
+            // post-dispatch G-push/D-push can throw GitSyncError /
+            // GitDivergedError / DoltSyncError / DoltDivergedError /
+            // PostDispatchSyncError -- and this is the ONE phase whose whole
+            // job is mutating beads (filing carry-over bugs), so a D-push
+            // failure here is a routine outcome, not an exotic one. Every one
+            // of those classes extends WorkflowError, so isTypedAbortError()
+            // returns true for them and the top-level handler in this file's
+            // exported entry point turns the throw into a terminal
+            // `verdict: 'ABORTED'` record -- skipping Harvest AND Publish PR,
+            // and discarding the already-computed finalVerdictResult, which is
+            // only published after Harvest. A green sprint would be reported
+            // as ABORTED because an informational pass could not push a bug
+            // bead. Catch broadly; record the failure in the summary instead.
+            //
+            // Two deliberate exceptions, both RUN-level control signals rather
+            // than "the regression phase failed":
+            //   - CancelledError: the operator/supervisor cancelled the run.
+            //     Honouring cancellation outranks finishing an informational
+            //     phase (and isTypedAbortError() already excludes it, so it is
+            //     not a spurious ABORT).
+            //   - BudgetExceededError: the sprint's hard spend ceiling is
+            //     blown. Swallowing it here would let Harvest keep spending
+            //     past a limit the operator set. Same treatment it gets at
+            //     every other dispatch site in this file.
+            if (err instanceof CancelledError || err instanceof BudgetExceededError) {
+                throw err;
+            }
             if (err instanceof AgentOutputError) {
                 log(`Regression Test Runner: schema-repair exhausted, continuing without a regression result: ${err.message}`);
                 regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
             } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
                 log(`Regression Test Runner: agent dispatch failed, continuing without a regression result: ${err.message}`);
                 regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression test runner dispatch failed: ${err.message}` };
+            } else if (isPostDispatchSyncFailure(err) || err instanceof WorkflowError) {
+                // Sync/publish failure around an informational phase. The
+                // carry-over beads may or may not have reached the shared
+                // remote, so say so honestly in the summary rather than
+                // reporting a clean "the pass failed", and let the sprint
+                // finish normally.
+                log(`Regression Test Runner: git/beads sync around the regression dispatch FAILED (${err.name}: ${err.message}). Continuing to Harvest -- this phase is informational and never aborts the sprint. Any carry-over beads it filed may still be local-only; re-check with: bd search "[carry-over]"`);
+                regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression pass could not be completed: git/beads sync around the dispatch failed (${err.name}: ${err.message}). Any carry-over beads filed may not have reached the shared remote.` };
             } else {
-                throw err;
+                log(`Regression Test Runner: unexpected error, continuing without a regression result (this phase never aborts the sprint): ${err && err.stack ? err.stack : err}`);
+                regressionResult = { passed: false, suitePassed: false, smokePassed: false, bugsFiled: [], summary: `Regression test runner failed with an unexpected error: ${err && err.message ? err.message : String(err)}` };
             }
         }
         await updateDashboard();

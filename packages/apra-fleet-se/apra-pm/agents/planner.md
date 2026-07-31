@@ -56,6 +56,16 @@ goal (`bd update <id> --parent <sprint-id>`) so it becomes real, gated sprint wo
 Leave the rest parent-less for a later sprint; do not close a carry-over bead you
 are not adopting.
 
+Two things about that search, both verified against the real `bd` CLI:
+
+- It matches the `[carry-over]` tag anywhere in the title, so the doubled
+  `[regression][carry-over] ...` prefix the runner files under is found
+  correctly -- you do not need to quote, escape, or search for `[regression]`
+  separately.
+- It EXCLUDES closed issues by default, which is what you want: a carry-over
+  that a previous sprint already adopted and fixed will not resurface here. Add
+  `--status all` only if you are auditing history rather than scoping work.
+
 ## Step 2 -- Decompose sprint goals into features
 
 For each sprint goal create type=feature issues as direct children:

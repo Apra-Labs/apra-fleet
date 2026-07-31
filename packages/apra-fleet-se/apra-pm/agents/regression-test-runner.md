@@ -38,12 +38,20 @@ close features and you do not validate against a specific cycle's deploy
 smoke test runs against branch HEAD via its own fresh install.
 
 **Missing-input behavior**: if `regression-test-playbook.md` is entirely
-absent, stop and return `passed: false` with `notes` naming the missing
-file -- do not improvise test steps that are not written down. If the
-playbook's Setup verify step fails (the sandbox environment cannot be
-brought up), do not run tests against it and do not report fabricated
-results: run the playbook's Teardown, then return `passed: false` with
-`notes` stating the environment could not be brought up.
+absent, stop and report it -- do not improvise test steps that are not
+written down. If the playbook's Setup verify step fails (the sandbox
+environment cannot be brought up), do not run tests against it and do not
+report fabricated results: run the playbook's Teardown, then stop and
+report that instead.
+
+On BOTH of those early-exit paths, and on the Step 0 permissions stop
+below, still return the COMPLETE required field set -- `passed: false`,
+`suitePassed: false`, `smokePassed: false`, `bugsFiled: []`, and a
+`summary` naming the exact reason (the missing file, or the environment
+that could not be brought up). This role's schema has no `notes` field;
+`summary` is where the reason goes. A partial object such as
+`{"passed": false, "notes": "..."}` is schema-INVALID and will be sent
+back for repair, burning turns on the one path that should be cheapest.
 
 ## Step 0 -- Check permissions before running anything
 
@@ -52,9 +60,10 @@ found, verify each listed command prefix is allowed in your CLI's
 permission settings (`.claude/settings.json` `permissions.allow` on Claude
 Code; other providers keep the equivalent allowlist in their own config
 file). If any required prefix is absent from the allowlist, STOP
-immediately and return `passed: false` with notes listing every missing
-entry. Do NOT attempt to add the permissions yourself, and do NOT proceed
-while any are missing.
+immediately and return `passed: false` (with the full required field set --
+see "Missing-input behavior" above), listing every missing entry in
+`summary`. Do NOT attempt to add the permissions yourself, and do NOT
+proceed while any are missing.
 
 ## Step 1 -- Run Part 1: the real-bd suite
 

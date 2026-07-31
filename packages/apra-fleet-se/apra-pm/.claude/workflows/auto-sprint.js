@@ -269,6 +269,12 @@ const DEFAULT_CALIBRATION = {
     // regression-test-runner runs ONCE PER SPRINT (Finalization, after Final Review),
     // so it belongs here rather than in the per-cycle costing. integ-test-runner has no
     // entry here on purpose -- it runs every cycle, not once per sprint.
+    // NOTE: this key is joined to actuals by computeSprintAnalysis's roleOf(), which
+    // derives the role from the DISPATCH LABEL. The regression dispatch below must
+    // therefore keep label: 'regression-test-runner' -- underscores here, dashes there.
+    // An earlier cut labelled it 'regression-runner', which mapped to a nonexistent
+    // 'regression_runner' key and silently dropped this role from the calibration
+    // outlier/suggestion pass.
     regression_test_runner: 3000,
     ci_watcher:          300,
     log_flush_per_cycle: 100,
@@ -3053,7 +3059,7 @@ if (regressionTestEnabled) {
       `Return the full contract: passed (boolean), suitePassed (boolean), smokePassed\n` +
       `(boolean), bugsFiled (array of the parent-less carry-over bead ids, [] if none),\n` +
       `summary (one paragraph).`,
-      { model: MODEL_SONNET, label: 'regression-runner', phase: 'Harvest',
+      { model: MODEL_SONNET, label: 'regression-test-runner', phase: 'Harvest',
         schema: REGRESSION_RUN_SCHEMA, agentType: 'regression-test-runner' }
     );
   } catch (e) {
