@@ -2,6 +2,80 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint stabilization: run identity, dolt coordination, Windows fixes
+
+Sprint goal: stabilize the always-on multi-sprint supervisor by fixing the
+run-identity/termination-classification gaps, wiring cross-sprint Dolt
+coordination end to end for the standalone CLI launch path, closing a
+Windows shell-invocation and a class of Windows entrypoint-guard defects,
+and reconciling the reviewer's newTask allowlist with the planner's
+verification-task convention. **Goal not fully met -- sprint verdict is
+FAIL**, for release-process reasons rather than code-quality ones.
+
+What shipped and is genuinely solid:
+
+- Supervisor run-identity threaded into the sprint child's own engine
+  run-state, so the watchdog/dashboard/history layer reports the engine's
+  own terminal reason (and, where present, its verdict) truthfully instead
+  of inferring an outcome from process liveness alone; a mismerge-able Dolt
+  conflict is now its own distinct terminal classification carrying the
+  conflict dump forward; child exit code/signal/time are recorded into the
+  ledger the moment the child process exits, independent of whatever the
+  engine itself manages to persist.
+- Per-sprint child stdout/stderr is teed to a log file, served and linked
+  from the dashboard, so a sprint's raw output stays traceable even when it
+  crashes before reporting anything structured.
+- The dolt-push mutex and child-id allocator (previously supervisor-only)
+  are now also hosted on the fleet MCP server and wired end to end
+  (`--service-url` threaded through the standalone CLI launch path), closing
+  the coordination gap for sprints launched outside the supervisor. The
+  thin client wrapper other packages use to call fleet MCP tools was
+  updated in lockstep so it cannot silently drift from what the server
+  actually accepts.
+- Reviewer newTask title allowlist now accepts square brackets (reconciling
+  with the `[test]` verification-task convention), and a rejected newTask is
+  resurfaced into the next planning dispatch rather than silently dropped.
+- Fixed a class of Windows entrypoint-guard scripts whose "is this the
+  directly-run script" check compared `import.meta.url` against a
+  hand-built `file://` string, which never matches on Windows (a native
+  path vs. a properly-encoded URL), so the affected verification scripts
+  previously exited 0 having verified nothing -- a false-pass, not a crash.
+  Also fixed a Windows `bd` invocation
+  path that threw ENOENT when spawned without a shell, without reintroducing
+  the shell-injection surface a naive `{ shell: true }` fix would have
+  opened.
+- The full local unit/build suite is green, and the real (non-mocked)
+  integration suite passed 142/142 files with zero failures on its final
+  runs this sprint.
+
+Why the sprint still failed:
+
+- **The deploy step never executed in any cycle** -- a required permissions
+  allowlist was missing from the local tool-permission configuration, so no
+  deploy command ran and nothing was verified as actually deployable.
+- **The integration playbook's smoke-test scenario completed in zero of
+  four attempted cycles** -- each run stopped at the credential-provisioning
+  step because no live provider credential was available to the runner,
+  which is an environment/credential gap rather than a product defect, but
+  it means there is no end-to-end evidence of a real planner dispatch,
+  closure, or version-flag assertion against any deployed build this
+  sprint. The real (non-mocked) functional suite was independently green.
+- **Scope was not complete**: a number of P1 items remain open, carried
+  forward to a future sprint -- a launch-failure fast path and
+  diagnose-before-relaunch gate in the supervisor; wiring or decommissioning
+  the existing Dolt conflict-recovery ladder; routing persona-proposed bead
+  creation through the shared id allocator instead of direct creation;
+  requiring machine-checkable dedup evidence before a new bead is created;
+  adding the deploy-required permissions allowlist; and provisioning a
+  runner credential so the smoke-test scenario can actually complete.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $37.2433.
+Remaining budget: unknown/unbounded.
+Pricing source: all 78 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- `auto-sprint` CLI workflow renamed to `fleet-sprint`
 
 **BREAKING (CLI surface).** apra-fleet's own product sprint workflow is now

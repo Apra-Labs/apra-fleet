@@ -237,6 +237,10 @@ async function buildSupervisorSystem(dir, fleetServer) {
     const spawner = createSpawner({
         basePort: 9200,
         isPortAvailable: async () => true,
+        // apra-fleet-ou7.1: createSpawner() now always opens a per-sprint log
+        // file -- point it at the SAME temp `dir` this test already creates
+        // and cleans up (fsp.rm below), instead of the real home dir.
+        dataDir: dir,
         spawn: (command, args) => {
             const pid = nextPid++;
             captured.push({ command, args, pid });

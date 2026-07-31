@@ -189,7 +189,27 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // deployed SHA to attest against, so the probe had no remaining consumer.
 // The new Regression Test phase adds NO new command() site -- it reuses the
 // existing probeFileExists() helper.
-const EXPECTED_COMMAND_COUNT = 40;
+// 41 -> 42 (apra-fleet-xuo.4): the Plan phase gained a new
+// `bd list --parent <parentId> --json` command() call site, dispatched once
+// per target issue after a planner round when pendingRejectedNewTasks is
+// non-empty, to reconcile the pending resurface list against beads actually
+// created under the parent since the rejection (title-independent, matched
+// on description) -- member_name: orchestratorMember confirmed present.
+// 42 -> 43 (apra-fleet-xuo.7.1): createChildBeadWithAllocatedId() gained a
+// `bd update <childId> --parent <parentId>` command() call site, dispatched
+// only on the explicit-allocated-id path immediately after the `bd create`
+// -- bd rejects `--id` and `--parent` on the same create ("cannot specify
+// both --id and --parent flags"), so the parent edge is now recorded by this
+// separate update. It passes member_name: member (the same member the create
+// itself is dispatched to), confirmed present.
+// Merge note (integ/regression split branch + fleet-sprint-stabilization
+// branch, both forked from the same 41-baseline): applying BOTH sides'
+// independent deltas -- the integ/regression split's -1 (getDeployedSha
+// removed) and fleet-sprint-stabilization's +2 (the two xuo.4/xuo.7.1 sites
+// above) -- nets to 41 - 1 + 2 = 42. Verified against the merged runner.js
+// by running this test after resolving the merge (see the actual/expected
+// mismatch it reports if this arithmetic is ever wrong).
+const EXPECTED_COMMAND_COUNT = 42;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

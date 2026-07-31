@@ -52,8 +52,12 @@ function getLegacyOldSprintsDir(env) {
     return path.join(getFleetDataDir(env), 'old_sprints');
 }
 
-/** Writes a small text response with an explicit content-length. */
-function sendPlain(res, status, text) {
+/**
+ * Writes a small text response with an explicit content-length. Exported
+ * (apra-fleet-ou7.2) so the sibling GET /sprints/:id/log route (api.mjs)
+ * reuses this SAME plain-text response helper instead of a second copy.
+ */
+export function sendPlain(res, status, text) {
     const body = Buffer.from(String(text), 'utf-8');
     res.writeHead(status, {
         'content-type': 'text/plain; charset=utf-8',

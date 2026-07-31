@@ -1945,6 +1945,154 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
 }
 
 /**
+ * apra-fleet-f34.2 -- shared MCP tool-result-to-JSON parser for the two
+ * fleet-MCP-hosted coordination clients below. Tool handlers return a JSON
+ * STRING (wrapTool wraps it in the standard content[] envelope), so both
+ * clients need the same extract-then-parse step.
+ * @param {any} result
+ * @param {string} label
+ * @returns {object}
+ */
+function parseCoordinationToolResult(result, label) {
+    let text = result;
+    if (typeof text !== 'string') {
+        text = (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string')
+            ? result.content[0].text
+            : '';
+    }
+    let payload;
+    try {
+        payload = JSON.parse(text);
+    } catch {
+        throw new Error(`${label} returned a non-JSON response: ${String(text).slice(0, 200) || '(empty)'}`);
+    }
+    if (payload && payload.error) throw new Error(`${label} error: ${payload.error}`);
+    return payload ?? {};
+}
+
+/**
+ * apra-fleet-f34.2 -- the MCP-transport counterpart to
+ * createHttpDoltPushMutexClient above, for the SUPERVISOR-LESS topology.
+ *
+ * A standalone/detached-binary CLI launch has no supervisor to reach, so
+ * `--service-url` is absent and the HTTP client cannot be built -- but cli.mjs
+ * ALWAYS holds a connected MCP client to the shared fleet HTTP singleton (it
+ * refuses to self-spawn a private stdio server), so the fleet server's own
+ * `dolt_push_mutex` tool (src/tools/dolt-push-mutex.ts) is a reachable
+ * cross-process coordination point for exactly that topology.
+ *
+ * Ticketed acquire, not long-poll: an MCP tool call cannot block indefinitely,
+ * so `acquire` waits a bounded slice per call and then RE-POLLS the same ticket.
+ * The server keeps the waiter enqueued across polls, so FIFO order is preserved
+ * (a cancel-and-retry loop would send every timed-out waiter to the back of the
+ * queue). The caller's real pid is threaded through so a crashed holder is
+ * reclaimed by the server's dead-pid probe rather than wedging the mutex.
+ *
+ * Implemented INLINE here for the same reason as the HTTP clients above:
+ * runner.js is copied verbatim next to the bundle and loaded via
+ * engine.executeFile(), so a cross-package relative import would not resolve.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, sprintId?: string, waitMs?: number, timeoutMs?: number, log?: Function }} opts
+ * @returns {{ acquire: Function, release: Function }}
+ */
+export function createMcpDoltPushMutexClient(opts = {}) {
+    const { callTool, sprintId: boundSprintId, log = () => {} } = opts;
+    if (typeof callTool !== 'function') throw new Error('createMcpDoltPushMutexClient requires a callTool function');
+    const waitMs = Number.isFinite(opts.waitMs) && opts.waitMs > 0 ? opts.waitMs : 5000;
+    // Overall ceiling on how long a single acquire may keep re-polling before
+    // giving up (a wedged peer is bounded by the server-side lease anyway).
+    const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : 15 * 60 * 1000;
+
+    async function call(args) {
+        return parseCoordinationToolResult(await callTool('dolt_push_mutex', args), '[dolt-mutex/mcp]');
+    }
+
+    return {
+        async acquire(sprintId, o = {}) {
+            const id = sprintId || boundSprintId;
+            if (!id) throw new Error('[dolt-mutex/mcp] acquire requires a sprintId');
+            const deadline = Date.now() + timeoutMs;
+            let payload = await call({ action: 'acquire', sprint_id: id, pid: o.pid ?? undefined, wait_ms: waitMs });
+            while (!payload.granted) {
+                if (Date.now() >= deadline) {
+                    try { await call({ action: 'cancel', ticket: payload.ticket }); } catch { /* best effort */ }
+                    throw new Error(`[dolt-mutex/mcp] timed out after ${timeoutMs} ms waiting for the push mutex (sprint '${id}')`);
+                }
+                log(`[dolt-mutex/mcp] waiting for the global push mutex (sprint '${id}', ticket ${payload.ticket})`);
+                payload = await call({ action: 'poll', ticket: payload.ticket, wait_ms: waitMs });
+            }
+            return { token: payload.token ?? null, sprintId: id, expiresAt: payload.expiresAt };
+        },
+        async release(token) {
+            if (token == null) return true;
+            try {
+                const payload = await call({ action: 'release', token });
+                return Boolean(payload.released);
+            } catch (err) {
+                // Non-fatal: the holder's lease expiry reclaims the mutex even
+                // if this release never lands (same posture as the HTTP client).
+                log(`[dolt-mutex/mcp] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+    };
+}
+
+/**
+ * apra-fleet-f34.2 -- the MCP-transport counterpart to
+ * createHttpChildIdAllocatorClient above, for the SUPERVISOR-LESS topology.
+ * Speaks the fleet server's own `child_id_allocator` tool
+ * (src/tools/child-id-allocator.ts); same rationale, same inline-implementation
+ * constraint, and the same { allocate, confirm, release } surface the
+ * bead-creation path already calls.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, sprintId?: string, log?: Function }} opts
+ * @returns {{ allocate: Function, confirm: Function, release: Function }}
+ */
+export function createMcpChildIdAllocatorClient(opts = {}) {
+    const { callTool, sprintId: boundSprintId, log = () => {} } = opts;
+    if (typeof callTool !== 'function') throw new Error('createMcpChildIdAllocatorClient requires a callTool function');
+
+    async function call(args) {
+        return parseCoordinationToolResult(await callTool('child_id_allocator', args), '[id-allocator/mcp]');
+    }
+
+    return {
+        async allocate(parentId, o = {}) {
+            if (!parentId) throw new Error('[id-allocator/mcp] allocate requires a parentId');
+            const payload = await call({
+                action: 'allocate',
+                parent_id: parentId,
+                pid: o.pid ?? undefined,
+                sprint_id: o.sprintId ?? boundSprintId ?? undefined,
+                floor: o.floor,
+            });
+            return { childId: payload.childId ?? null, seq: payload.seq, token: payload.token ?? null, expiresAt: payload.expiresAt };
+        },
+        async confirm(token) {
+            if (token == null) return true;
+            try {
+                const payload = await call({ action: 'confirm', token });
+                return Boolean(payload.confirmed);
+            } catch (err) {
+                log(`[id-allocator/mcp] confirm failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+        async release(token) {
+            if (token == null) return true;
+            try {
+                const payload = await call({ action: 'release', token });
+                return Boolean(payload.released);
+            } catch (err) {
+                log(`[id-allocator/mcp] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+    };
+}
+
+/**
  * apra-fleet-eft.26.1 (Reservation interop gap, Hole 1) -- reserves and
  * releases every sprint member against the fleet server's OWN per-member
  * reservation record (`member_reservation` tool, apra-fleet-eft.10.1/10.2),
@@ -2407,9 +2555,28 @@ async function stageCommandBodyMemberSide({ command, member, content, label }) {
  * Sequence (mirrors the allocator's reserve -> confirm/release contract):
  *   1. allocate() reserves the next distinct child id under the shared parent.
  *   2. `bd create` runs with `--id <childId>` (or, under the null client where
- *      childId is null and there is no second sprint, lets bd derive the id).
- *   3. confirm() on success (the id is now durably used) or release() on failure
+ *      childId is null and there is no second sprint, lets bd derive the id
+ *      from `--parent`).
+ *   3. On the explicit-id path only, a follow-up `bd update <childId> --parent
+ *      <parentId>` establishes the real parent edge (see the apra-fleet-xuo.7
+ *      note on the create command shape below).
+ *   4. confirm() on success (the id is now durably used) or release() on failure
  *      (the reserved id returns to the pool so it is never a permanent gap).
+ *
+ * apra-fleet-xuo.7.1 -- `bd create` REJECTS `--id` and `--parent` together
+ * ("Error: cannot specify both --id and --parent flags", exit 1). This used to
+ * be issued as one command carrying both flags, so EVERY allocator-minted
+ * reviewer newTask failed its create, degraded through persistNewTaskBestEffort
+ * into parent-bead notes, and left zero child beads under the shared parent
+ * while both concurrent sprints still finished green (the apra-fleet-xuo.7
+ * symptom). The allocator's childId is always `${parentId}.${seq}`, so on the
+ * explicit-id path the hierarchy is already encoded in the id itself and
+ * `--parent` must be dropped from the create; the separate `bd update
+ * --parent` that follows is what records the EXPLICIT parent edge (`bd show`'s
+ * PARENT block), which a dotted id alone does NOT create -- `bd list --parent`
+ * would match it on the id prefix regardless, so that link step is deliberately
+ * NOT best-effort: a failure throws, releases the reservation, and degrades
+ * loudly rather than silently leaving an edgeless child.
  *
  * @param {{
  *   command: Function, allocator: { allocate: Function, confirm: Function, release: Function },
@@ -2455,7 +2622,22 @@ export async function computeChildFloor({ command, member, parentId }) {
 export async function createChildBeadWithAllocatedId(opts) {
     const { command, allocator, member, title, description, priority, parentId, sprintId, floor, label, log = () => {} } = opts;
     const grant = await allocator.allocate(parentId, { pid: process.pid, sprintId, floor });
-    const idFlag = grant.childId ? ` --id ${grant.childId}` : '';
+    // The explicit-id path relies on the allocator's `${parentId}.${seq}` id
+    // shape to carry the hierarchy that `--parent` can no longer carry
+    // alongside `--id` (see the doc comment above). Fail loudly rather than
+    // create a child whose id does not place it under this parent at all.
+    if (grant.childId && !String(grant.childId).startsWith(`${parentId}.`)) {
+        await allocator.release(grant.token);
+        throw new Error(
+            `[id-allocator] allocated child id '${grant.childId}' is not a child of parent '${parentId}' ` +
+            '(expected the `<parentId>.<seq>` shape); released the reservation rather than creating an unparented bead',
+        );
+    }
+    // `bd create` refuses `--id` together with `--parent` (apra-fleet-xuo.7.1):
+    // carry EITHER the allocator-minted explicit id (hierarchy encoded in the
+    // id, parent edge linked immediately after the create) OR `--parent` and
+    // let bd derive the id (null-allocator path).
+    const parentageFlags = grant.childId ? `--id ${grant.childId}` : `--parent ${parentId}`;
     // apra-fleet-eft.56.1 / eft.73.1: the description is reviewer-authored
     // free text (LLM output whose own context includes the diff under review)
     // -- stage it to a MEMBER-LOCAL temp file (see stageCommandBodyMemberSide)
@@ -2470,9 +2652,17 @@ export async function createChildBeadWithAllocatedId(opts) {
             label: `Stage newTask description for '${title}'`,
         });
         await command(
-            `bd create "${title}" --body-file "${descriptionFile}" -p "${priority}" --parent ${parentId}${idFlag} --silent`,
+            `bd create "${title}" --body-file "${descriptionFile}" -p "${priority}" ${parentageFlags} --silent`,
             { member_name: member, silent: true, label: label ?? `Create follow-up task: ${title}` }
         );
+        // Explicit-id path only: record the real parent edge that `--parent`
+        // would have recorded, had bd allowed it on the same create.
+        if (grant.childId) {
+            await command(
+                `bd update ${grant.childId} --parent ${parentId}`,
+                { member_name: member, silent: true, label: `Link follow-up task ${grant.childId} under ${parentId}` }
+            );
+        }
     } catch (err) {
         // The create did NOT land -- return the reserved id to the pool so the
         // next allocation reuses it (no permanent gap), then re-throw.
@@ -2788,10 +2978,11 @@ export function validateArgs(args) {
  *   requirementsContent: string|null,
  *   feedback: string|null,
  *   replanScope?: string[]|null,
+ *   rejectedNewTasksToResubmit?: Array<{title: string, description: string, reason: string, cycle: number|string}>,
  * }} opts
  * @returns {string}
  */
-function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null }) {
+export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [] }) {
     const lines = [];
 
     // apra-fleet-eft.68.1: SCOPED in-cycle replan clause. When a reviewer flags
@@ -2889,6 +3080,17 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
         lines.push(requirementsContent);
     } else if (requirementsFile && !requirementsContent) {
         lines.push(`Note: a requirementsFile ('${requirementsFile}') was configured for this sprint but could not be read; proceed without it.`);
+    }
+
+    // apra-fleet-19o.2: rejected reviewer-proposed newTasks (validateNewTask()
+    // failures from an earlier Develop/Review cycle) resurface HERE -- the
+    // very next planning-phase dispatch -- instead of dead-ending only in
+    // root-bead notes (appendRejectedFindingToParentNotes still writes the
+    // note too, for auditability). See buildRejectedNewTaskResurfaceLines()
+    // above.
+    const resurfaceLines = buildRejectedNewTaskResurfaceLines(rejectedNewTasksToResubmit);
+    if (resurfaceLines.length > 0) {
+        lines.push(resurfaceLines.join('\n\n'));
     }
 
     if (feedback) {
@@ -4096,7 +4298,7 @@ export function extractContestedBeadIds(verdict) {
 // SAFE_DESCRIPTION_RE only enforces the repo's own ASCII-only convention
 // (plus non-empty) -- legitimate technical characters ('=', '&', '+', '"',
 // backticks-as-text, '%', '#', '[', ']', etc.) are allowed again.
-const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/-]+$/;
+const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/\[\]-]+$/;
 const SAFE_DESCRIPTION_RE = /^[\t\n\r\x20-\x7E]+$/;
 const SAFE_PRIORITY_RE = /^P[0-4]$/;
 
@@ -4242,6 +4444,130 @@ export async function appendRejectedFindingToParentNotes({ command, member, pare
         log(`[newTask notes-fallback] FAILED to append rejected finding to '${parentId}' notes: ${err.message}`);
         throw err;
     }
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-19o.2 -- resurface rejected newTasks into the NEXT planning
+// dispatch instead of dead-ending in root-bead notes
+// ---------------------------------------------------------------------------
+//
+// appendRejectedFindingToParentNotes() above is useful for a human
+// archaeologist reading a bead's notes, but useless to the next planning
+// dispatch: the planner has no memory of this run (apra-fleet-unw.3's
+// `resume: false` default) and never reads bead notes as part of its
+// prompt, so a rejected finding dead-ended there and never fed back into a
+// concrete "please fix and resubmit" instruction. These three pure/
+// immutable helpers track the CURRENT set of not-yet-resubmitted rejected
+// newTasks in run state (the caller holds the array; these never mutate it
+// in place) so buildPlannerPrompt() below can inject them verbatim as
+// explicit "previously rejected, fix and resubmit" items on the very next
+// planning-phase dispatch, and drop an item once it has been successfully
+// resubmitted so the list never accumulates forever.
+
+/**
+ * Records a newly-rejected newTask into the pending resurface list, keyed by
+ * title -- a newTask rejected twice under the same title keeps only the
+ * LATEST rejection reason/cycle (dedup by title), so a repeatedly-resubmitted-
+ * and-repeatedly-rejected item cannot grow the list unboundedly.
+ * @param {Array<{title: string, description: string, reason: string, cycle: number|string}>} pending
+ * @param {{title: unknown, description: unknown, reason: string, cycle: number|string}} rejected
+ * @returns {Array<{title: string, description: string, reason: string, cycle: number|string}>} a NEW array
+ */
+export function trackRejectedNewTaskForResurfacing(pending, rejected) {
+    const title = String((rejected && rejected.title) || '(untitled)');
+    const description = String((rejected && rejected.description) || '');
+    const entry = { title, description, reason: String(rejected && rejected.reason), cycle: rejected && rejected.cycle };
+    const withoutDup = (Array.isArray(pending) ? pending : []).filter((p) => p.title !== title);
+    return [...withoutDup, entry];
+}
+
+/**
+ * Drops any pending rejected-newTask entries that match a newTask which has
+ * now been successfully created -- "cleared once resubmitted successfully"
+ * per apra-fleet-19o.2's acceptance criteria.
+ *
+ * apra-fleet-xuo.4: title-only matching missed the common case where the
+ * resurfaced prompt explicitly instructs the planner to correct the stated
+ * defect -- which usually means changing the title (e.g. '[test] foo' ->
+ * 'test: foo') -- leaving the corrected item stuck in the pending list
+ * forever. `resubmitted` may be a bare title string (legacy call shape,
+ * title-only match, preserved for backward compatibility) or an
+ * `{title, description}` object, in which case a match on EITHER the title
+ * OR the description (when non-empty) clears the entry, so a
+ * title-corrected-but-description-preserved resubmission still clears.
+ * @param {Array<{title: string, description?: string}>} pending
+ * @param {string|{title?: string, description?: string}} resubmitted
+ * @returns {Array<{title: string}>} a NEW array
+ */
+export function clearResubmittedNewTask(pending, resubmitted) {
+    const list = Array.isArray(pending) ? pending : [];
+    const title = typeof resubmitted === 'string' ? resubmitted : String((resubmitted && resubmitted.title) || '');
+    const description = (resubmitted && typeof resubmitted === 'object' && resubmitted.description)
+        ? String(resubmitted.description) : '';
+    return list.filter((p) => {
+        const titleMatches = p.title === title;
+        const descriptionMatches = description.length > 0 && String((p && p.description) || '') === description;
+        return !(titleMatches || descriptionMatches);
+    });
+}
+
+/**
+ * apra-fleet-xuo.4: reconciles the pending resurface list against whatever
+ * ACTUALLY exists as a child of the parent bead right now, matching purely
+ * on description (title-independent). This exists because the planner --
+ * unlike the reviewer-newTask create sites -- never calls
+ * persistNewTaskBestEffort/clearResubmittedNewTask at all: it resubmits a
+ * corrected finding directly via `bd create` as an ordinary planning-phase
+ * bead creation. clearResubmittedNewTask() above can only ever fire from
+ * its own call sites, so a planner resubmission (title corrected per the
+ * resurfaced prompt's explicit instruction, per apra-fleet-xuo.4) would
+ * otherwise never be cleared and would keep reappearing in every subsequent
+ * planning prompt for the rest of the run. Call this after any phase that
+ * may have created new children under the parent (chiefly the Plan phase)
+ * with the current live child list (e.g. from `bd list --parent <id>
+ * --json`) to drop any pending entry whose description now matches a real
+ * child, regardless of what title that child ended up with.
+ * @param {Array<{title: string, description?: string}>} pending
+ * @param {Array<{description?: string}>} currentChildren
+ * @returns {Array<{title: string, description?: string}>} a NEW array
+ */
+export function reconcilePendingRejectedNewTasks(pending, currentChildren) {
+    const list = Array.isArray(pending) ? pending : [];
+    if (list.length === 0) return list;
+    const children = Array.isArray(currentChildren) ? currentChildren : [];
+    const childDescriptions = new Set(
+        children
+            .map((c) => String((c && c.description) || '').trim())
+            .filter((d) => d.length > 0)
+    );
+    if (childDescriptions.size === 0) return list;
+    return list.filter((p) => {
+        const description = String((p && p.description) || '').trim();
+        return description.length === 0 || !childDescriptions.has(description);
+    });
+}
+
+/**
+ * Formats the pending rejected-newTask items (see
+ * trackRejectedNewTaskForResurfacing above) as explicit "previously
+ * rejected, fix and resubmit" prompt lines -- consumed by buildPlannerPrompt
+ * below. Returns `[]` when nothing is pending (byte-identical prompt to
+ * before apra-fleet-19o.2 landed in that case).
+ * @param {Array<{title: string, description: string, reason: string, cycle: number|string}>} pending
+ * @returns {string[]}
+ */
+export function buildRejectedNewTaskResurfaceLines(pending) {
+    if (!Array.isArray(pending) || pending.length === 0) return [];
+    const lines = [
+        `${pending.length} previously REJECTED newTask(s) from an earlier round must be fixed and ` +
+        're-submitted this planning pass. Verbatim title/description below, plus why each was ' +
+        'rejected -- correct the stated defect (do not just resend the item unchanged), then create ' +
+        'it via bd create as normal:',
+    ];
+    pending.forEach((r, i) => {
+        lines.push(`${i + 1}. Title: "${r.title}"\nDescription: ${r.description}\nRejected because: ${r.reason} (cycle ${r.cycle})`);
+    });
+    return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -5056,18 +5382,31 @@ async function runSprintCycle(context) {
     //      HTTP-backed client that acquires/releases against the always-on
     //      supervisor's mutex routes, so two independently-detached sprint
     //      children genuinely serialize their pushes through one supervisor.
-    //   3. neither -- a no-op client: a lone sprint (single-process/dev/test)
-    //      has, by definition, no second sprint to conflict with, so the push
-    //      is safely unguarded and the D-push call sites stay uniform (they
-    //      always acquire/release; only the wiring differs).
-    const doltPushMutex = context.doltPushMutex ?? (
-        (args && args.serviceUrl)
-            ? createHttpDoltPushMutexClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log })
-            : {
-                async acquire() { return { token: null }; },
-                async release() { return true; },
-            }
-    );
+    //   3. `args.callTool` present (apra-fleet-f34.2) -- the SUPERVISOR-LESS
+    //      path: a standalone/detached-binary CLI launch has no supervisor to
+    //      reach, but it always holds a connected MCP client to the SHARED
+    //      fleet HTTP singleton, so the fleet server's own `dolt_push_mutex`
+    //      tool coordinates that topology.
+    //   4. none of the above -- a no-op client: a lone sprint
+    //      (single-process/dev/test) has, by definition, no second sprint to
+    //      conflict with, so the push is unguarded and the D-push call sites
+    //      stay uniform (they always acquire/release; only the wiring differs).
+    //      This is a real DEGRADATION whenever a second sprint could exist, so
+    //      it is logged rather than taken silently.
+    const doltPushMutex = context.doltPushMutex ?? (() => {
+        if (args && args.serviceUrl) {
+            return createHttpDoltPushMutexClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log });
+        }
+        if (args && typeof args.callTool === 'function') {
+            log(`[dolt-mutex] no supervisor serviceUrl; coordinating the global push mutex through the fleet MCP server's dolt_push_mutex tool (sprint '${sprintMutexId}').`);
+            return createMcpDoltPushMutexClient({ callTool: args.callTool, sprintId: sprintMutexId, log });
+        }
+        log('[dolt-mutex] DEGRADED: no supervisor serviceUrl and no fleet MCP connection -- falling back to an UNGUARDED no-op push mutex. Concurrent sprints could push dolt at the same time and hard-conflict (PoC constraints C.2/C.3).');
+        return {
+            async acquire() { return { token: null }; },
+            async release() { return true; },
+        };
+    })();
 
     // apra-fleet-eft.9.3 (Plan 3.4): the supervisor-owned global child-id
     // allocator client. Every reviewer-proposed newTask create below mints its
@@ -5080,18 +5419,29 @@ async function runSprintCycle(context) {
     //      client that allocates/confirms against the always-on supervisor's
     //      allocator routes, so two detached sprint children genuinely serialize
     //      their id minting through one supervisor authority.
-    //   3. neither -- a no-op client: a lone sprint has, by definition, no second
-    //      sprint that could mint a colliding id, so bd derives the id itself
-    //      (childId null -> no `--id` flag). The create call sites stay uniform.
-    const childIdAllocator = context.idAllocator ?? (
-        (args && args.serviceUrl)
-            ? createHttpChildIdAllocatorClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log })
-            : {
-                async allocate() { return { childId: null, token: null }; },
-                async confirm() { return true; },
-                async release() { return true; },
-            }
-    );
+    //   3. `args.callTool` present (apra-fleet-f34.2) -- the SUPERVISOR-LESS
+    //      path: the fleet server's own `child_id_allocator` tool, reached over
+    //      the MCP connection every standalone CLI launch already holds.
+    //   4. none of the above -- a no-op client: a lone sprint has, by
+    //      definition, no second sprint that could mint a colliding id, so bd
+    //      derives the id itself (childId null -> no `--id` flag). The create
+    //      call sites stay uniform. Logged, not silent: it is a real
+    //      degradation whenever a second sprint could exist.
+    const childIdAllocator = context.idAllocator ?? (() => {
+        if (args && args.serviceUrl) {
+            return createHttpChildIdAllocatorClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log });
+        }
+        if (args && typeof args.callTool === 'function') {
+            log(`[id-allocator] no supervisor serviceUrl; minting child ids through the fleet MCP server's child_id_allocator tool (sprint '${sprintMutexId}').`);
+            return createMcpChildIdAllocatorClient({ callTool: args.callTool, sprintId: sprintMutexId, log });
+        }
+        log('[id-allocator] DEGRADED: no supervisor serviceUrl and no fleet MCP connection -- falling back to a no-op allocator; bd derives child ids locally, so two concurrent sprints under the same parent could mint the SAME child id (PoC constraint C.4).');
+        return {
+            async allocate() { return { childId: null, token: null }; },
+            async confirm() { return true; },
+            async release() { return true; },
+        };
+    })();
 
     // apra-fleet-eft.75.1: guards every resume re-dispatch below against
     // spawning a second concurrent session on top of a prior one that is
@@ -6424,8 +6774,21 @@ async function runSprintCycle(context) {
     // N3: reviewer newTasks rejected by validateNewTask() before ever
     // reaching `command()` -- threaded into the Final Review's evidence-
     // based prompt below so a rejection is visible to a human, not silently
-    // dropped. Rejection is non-fatal: the sprint continues.
+    // dropped. Rejection is non-fatal: the sprint continues. This is a
+    // cumulative AUDIT TRAIL (every rejection ever seen this run, never
+    // cleared) -- distinct from pendingRejectedNewTasks below, which tracks
+    // only the currently-unresolved ones.
     const rejectedNewTasks = [];
+
+    // apra-fleet-19o.2: the CURRENT set of not-yet-resubmitted rejected
+    // newTasks, resurfaced verbatim into the next planning-phase dispatch
+    // (buildPlannerPrompt's rejectedNewTasksToResubmit) instead of dead-
+    // ending only in root-bead notes. Reassigned (never mutated in place) via
+    // the pure trackRejectedNewTaskForResurfacing()/clearResubmittedNewTask()
+    // helpers above, so its whole history stays easy to reason about. Unlike
+    // `rejectedNewTasks` above, an entry is DROPPED once its title is
+    // successfully resubmitted -- it must not accumulate forever.
+    let pendingRejectedNewTasks = [];
 
     // Populated with the last Develop/Review loop's reviewer verdict for
     // each cycle (A5 work item 3: goal-priority completion requires BOTH
@@ -6504,6 +6867,7 @@ async function runSprintCycle(context) {
                 requirementsFile: validated.requirementsFile,
                 requirementsContent,
                 feedback: plannerFeedback,
+                rejectedNewTasksToResubmit: pendingRejectedNewTasks,
             });
             // apra-fleet-eft.8.2: planner is a read-side role (pushCode:
             // false) -- G-pull before, no-op G-push after; each retried
@@ -6717,6 +7081,31 @@ async function runSprintCycle(context) {
             }
             if (plannerErr) {
                 throw plannerErr;
+            }
+            // apra-fleet-xuo.4: the planner resubmits a corrected rejected
+            // finding directly via `bd create` -- it never goes through
+            // persistNewTaskBestEffort/clearResubmittedNewTask, so a
+            // title-corrected resubmission (the resurfaced prompt explicitly
+            // instructs the planner to "correct the stated defect", which
+            // usually means changing the title) would otherwise stay stuck
+            // in pendingRejectedNewTasks and keep reappearing in every later
+            // planning prompt this run. Reconcile against whatever now
+            // actually exists as a child of each target parent, matching on
+            // description (title-independent) -- see
+            // reconcilePendingRejectedNewTasks()'s doc comment. Best-effort:
+            // a listing failure just leaves the pending list as-is (worst
+            // case the item resurfaces once more, never a sprint abort).
+            if (pendingRejectedNewTasks.length > 0) {
+                for (const parentId of targetIssues) {
+                    try {
+                        const label = `bd list --parent ${parentId} --json`;
+                        const raw = await command(label, { member_name: orchestratorMember, silent: true });
+                        const children = parseBdJson(raw, label);
+                        pendingRejectedNewTasks = reconcilePendingRejectedNewTasks(pendingRejectedNewTasks, children);
+                    } catch (err) {
+                        log(`[fleet-sprint] pending-rejected-newTask reconciliation against '${parentId}' children FAILED (non-fatal, list stays as-is): ${err.message}`);
+                    }
+                }
             }
             // apra-fleet-eft.69.1: deliberately NO separate log() dump of
             // `plannerRes` here -- this is the exact duplicate-row bug the
@@ -7070,6 +7459,12 @@ async function runSprintCycle(context) {
                                 requirementsContent,
                                 feedback: null,
                                 replanScope: replanScopeIds,
+                                // apra-fleet-xuo.5: the scoped in-cycle replan
+                                // pass is a real planner dispatch just like the
+                                // main Plan phase above -- a rejected newTask
+                                // pending resurface must not skip this dispatch
+                                // just because it happens to be scoped.
+                                rejectedNewTasksToResubmit: pendingRejectedNewTasks,
                             }),
                             {
                                 member_name: getMemberForRole('planner'),
@@ -8086,6 +8481,13 @@ async function runSprintCycle(context) {
                 if (!validation.ok) {
                     log(`Reviewer newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
+                    // apra-fleet-19o.2: track it for resurfacing into the
+                    // NEXT planning-phase dispatch too -- see
+                    // trackRejectedNewTaskForResurfacing()'s doc comment.
+                    pendingRejectedNewTasks = trackRejectedNewTaskForResurfacing(pendingRejectedNewTasks, {
+                        title: newTask && newTask.title, description: newTask && newTask.description,
+                        reason: validation.reason, cycle,
+                    });
                     // apra-fleet-eft.56.1: a rejected finding must never
                     // simply vanish -- persist it verbatim to the parent
                     // bead's notes as a fallback (itself non-fatal: a notes
@@ -8109,7 +8511,7 @@ async function runSprintCycle(context) {
                 // follow-up work under the SAME parent never derive the same
                 // child id (constraint C.4). Under the null client (lone sprint)
                 // childId is null and bd derives the id as before.
-                await persistNewTaskBestEffort({
+                const persisted = await persistNewTaskBestEffort({
                     command, member: orchestratorMember, parentId: targetIssues[0],
                     newTask, cycle, log, stage: 'develop-review',
                     createFn: async () => {
@@ -8122,6 +8524,16 @@ async function runSprintCycle(context) {
                         });
                     },
                 });
+                // apra-fleet-19o.2: this title just successfully landed as a
+                // real bead -- if it was a resubmission of an earlier
+                // rejected item, drop it from the pending resurface list so
+                // it stops reappearing in future planning prompts.
+                // apra-fleet-xuo.4: pass title+description (not just title)
+                // so a resubmission that also corrected its title still
+                // clears via its unchanged description.
+                if (persisted) {
+                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
+                }
             }
 
             // apra-fleet-eft.9.1 (Plan 3.3): the orchestrator just MUTATED
@@ -8564,6 +8976,13 @@ async function runSprintCycle(context) {
                 if (!validation.ok) {
                     log(`Re-review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
+                    // apra-fleet-19o.2: track it for resurfacing into the
+                    // NEXT planning-phase dispatch too -- see
+                    // trackRejectedNewTaskForResurfacing()'s doc comment.
+                    pendingRejectedNewTasks = trackRejectedNewTaskForResurfacing(pendingRejectedNewTasks, {
+                        title: newTask && newTask.title, description: newTask && newTask.description,
+                        reason: validation.reason, cycle,
+                    });
                     // apra-fleet-eft.56.1: never let a rejected finding
                     // vanish -- persist it verbatim to the parent bead's
                     // notes as a fallback (non-fatal; degrades to run log).
@@ -8588,7 +9007,7 @@ async function runSprintCycle(context) {
                 // as the Develop/Review newTasks site above -- concurrent
                 // sprints must never mint the same child id under a shared
                 // parent (constraint C.4).
-                await persistNewTaskBestEffort({
+                const persisted = await persistNewTaskBestEffort({
                     command, member: orchestratorMember, parentId: targetIssues[0],
                     newTask, cycle, log, stage: 're-review',
                     createFn: async () => {
@@ -8601,6 +9020,13 @@ async function runSprintCycle(context) {
                         });
                     },
                 });
+                // apra-fleet-19o.2: same resurface-list bookkeeping as the
+                // Develop/Review newTasks site above.
+                // apra-fleet-xuo.4: title+description, see the matching
+                // comment on the Develop/Review newTasks site above.
+                if (persisted) {
+                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
+                }
             }
 
             // apra-fleet-eft.9.1 (Plan 3.3): D-push the orchestrator's applied
@@ -9299,6 +9725,79 @@ export function installFatalDiagnosticsGuard(deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// apra-fleet-k7b.4: classify an unmergeable Dolt conflict as its own
+// terminal state (BEADS_SYNC_CONFLICT), not the generic wrapper/UNKNOWN
+// bucket -- and best-effort carry forward the raw conflict diagnostics an
+// operator would otherwise have to re-derive by hand.
+// ---------------------------------------------------------------------------
+
+/**
+ * Walks a thrown error's `.cause` chain (bounded, so a pathological circular
+ * cause can never loop forever) looking for a DoltDivergedError -- either
+ * the error itself, or wrapped one level down inside a PostDispatchSyncError
+ * (withGitSync's post-dispatch D-push bracket wraps a diverged sync failure
+ * this way; see PostDispatchSyncError's own doc comment in errors.mjs). A
+ * plain `bd dolt pull` divergence (preflightBeadsHealthGate / doltPullBefore,
+ * before any dispatch ever ran) throws DoltDivergedError directly, with no
+ * wrapper -- also matched here.
+ * @param {unknown} err
+ * @returns {import('./errors.mjs').DoltDivergedError|null}
+ */
+export function findDoltDivergedCause(err) {
+    let cur = err;
+    for (let depth = 0; cur && depth < 5; depth += 1) {
+        if (cur instanceof DoltDivergedError) return cur;
+        cur = cur.cause;
+    }
+    return null;
+}
+
+/**
+ * apra-fleet-k7b.4: the terminal-state `terminalReason` main()'s typed-abort
+ * catch persists. A genuinely unmergeable Dolt conflict -- surfaced either
+ * directly (a pre-dispatch `bd dolt pull` divergence) or wrapped inside a
+ * PostDispatchSyncError (a D-push divergence discovered AFTER a dispatch
+ * already completed, apra-fleet-bnb's live POST_DISPATCH_SYNC_FAILED
+ * incident) -- is reported as the distinct 'BEADS_SYNC_CONFLICT', so the
+ * supervisor/dashboard shows "beads sync conflict, needs operator
+ * resolution" instead of collapsing it into the same generic bucket as
+ * every other termination reason. Every other error keeps today's
+ * `err.code || err.name || 'UNKNOWN_ABORT'` behavior, unchanged.
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function resolveTerminalReason(err) {
+    if (findDoltDivergedCause(err)) return 'BEADS_SYNC_CONFLICT';
+    return (err && (err.code || err.name)) || 'UNKNOWN_ABORT';
+}
+
+/**
+ * apra-fleet-k7b.4: best-effort diagnostics for a BEADS_SYNC_CONFLICT
+ * terminal state -- the raw `bd dolt pull`/`bd dolt push` stderr
+ * (DoltDivergedError.doltOutput) that proved the divergence, captured at the
+ * moment `runDoltStep()` observed the failure (i.e. BEFORE any later `bd`
+ * invocation's own safe-abort/cleanup could discard whatever state it was
+ * describing) and carried on the error object ever since. This is pure
+ * plumbing of already-captured data through to the terminal state -- no new
+ * `bd`/SQL command is issued here -- so a human resolving the conflict later
+ * starts with the actual rejection text in hand instead of having to
+ * reproduce it by re-running `bd dolt pull`/`dolt merge --no-commit`
+ * themselves. Returns `null` (never throws) when `err` carries no
+ * DoltDivergedError cause.
+ * @param {unknown} err
+ * @returns {{ member: string|null, operation: string|null, doltOutput: string|null }|null}
+ */
+export function captureDoltConflictDump(err) {
+    const diverged = findDoltDivergedCause(err);
+    if (!diverged) return null;
+    return {
+        member: diverged.member ?? null,
+        operation: diverged.operation ?? null,
+        doltOutput: diverged.doltOutput ?? null,
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Engine entry point + typed-abort routing (apra-fleet-eft.1.2)
 // ---------------------------------------------------------------------------
 //
@@ -9397,15 +9896,24 @@ export async function main(context) {
         // unresolvable-branch abort (only the PR itself is conditional on
         // there being real work to publish).
         if (typeof publishState === 'function') {
+            // apra-fleet-k7b.4: an unmergeable Dolt conflict is reported as
+            // its own distinct BEADS_SYNC_CONFLICT terminal state (not the
+            // generic wrapper/UNKNOWN bucket), with the raw conflict
+            // diagnostics already captured on the error carried alongside it
+            // so an operator resolving it starts with the actual rejection
+            // text in hand -- see resolveTerminalReason()/
+            // captureDoltConflictDump()'s own doc comments above.
+            const conflictDump = captureDoltConflictDump(err);
             publishState('terminal', {
                 verdict: 'ABORTED',
-                terminalReason: (err && (err.code || err.name)) || 'UNKNOWN_ABORT',
+                terminalReason: resolveTerminalReason(err),
                 message: (err && err.message) || null,
                 branch,
                 baseBranch,
                 prUrl: abortResult.prUrl,
                 pushed: abortResult.pushed,
                 commitCount: abortResult.commitCount,
+                ...(conflictDump ? { conflictDump } : {}),
             });
         }
 

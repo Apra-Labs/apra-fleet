@@ -51,6 +51,7 @@
 
 import { readJsonBody, sendJson } from './server.mjs';
 import { HISTORY_EVENTS } from './history.mjs';
+import { withTimestamps } from './log-timestamp.mjs';
 
 /**
  * Default liveness probe: signal 0 tests for the process's existence without
@@ -140,7 +141,8 @@ export function createReconciler(deps = {}) {
     // an accidental default.
     const kill = deps.killPid ?? (() => false);
     const now = deps.now ?? (() => new Date().toISOString());
-    const logger = deps.logger ?? console;
+    // apra-fleet-k7b.2: ISO-timestamp-prefix every log line from this module.
+    const logger = withTimestamps(deps.logger ?? console);
     const log = (...a) => logger.log?.(...a);
 
     /**

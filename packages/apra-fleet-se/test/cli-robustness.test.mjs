@@ -344,6 +344,74 @@ describe('--budget flag (f: CLI budget ceiling)', () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// apra-fleet-f34.1: --service-url threads from a supervisor-spawned child's
+// argv into runner.js's validated args (args.serviceUrl), which is what
+// actually switches runner.js onto the HTTP-backed dolt-mutex/id-allocator
+// clients instead of the source-3 no-op fallback. Absent --service-url the
+// flag/args.serviceUrl are simply omitted -- unchanged fallback behavior.
+// ---------------------------------------------------------------------------
+
+describe('--service-url flag (apra-fleet-f34.1)', () => {
+    test('parseCliArgs accepts --service-url', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--service-url', 'http://localhost:8787']);
+        assert.strictEqual(values['service-url'], 'http://localhost:8787');
+    });
+
+    test('buildRunnerArgs threads --service-url through as args.serviceUrl', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+            serviceUrl: 'http://localhost:8787',
+        });
+        assert.strictEqual(args.serviceUrl, 'http://localhost:8787');
+
+        // Round-trips through runner.js's own validateArgs without throwing.
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.serviceUrl, 'http://localhost:8787');
+    });
+
+    test('buildRunnerArgs omits args.serviceUrl entirely when --service-url is not passed (unchanged fallback behavior)', () => {
+        const args = buildRunnerArgs({
+            targetIssues: ['bd-1'], members: ['local'], branch: 'auto-sprint/x', baseBranch: 'main',
+            goal: 'P1/P2', maxCycles: 5, requirementsFile: undefined, roleMap: undefined, budget: undefined,
+            serviceUrl: undefined,
+        });
+        assert.strictEqual('serviceUrl' in args, false);
+
+        const validated = validateArgs(args);
+        assert.strictEqual(validated.serviceUrl, undefined);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-k7b.1: --run-id (this launch's incarnation-unique identity,
+// forwarded by the supervisor spawner as its own ledger sprintId) is what
+// cli.mjs's `runId` (createDashboardViewer opt, see main()'s effectiveRunId)
+// prefers over branchName -- unit-tested here as parseCliArgs coverage plus
+// the fallback expression itself, since main()'s own createDashboardViewer
+// call isn't independently exported/pure like buildRunnerArgs.
+// ---------------------------------------------------------------------------
+
+describe('--run-id flag (apra-fleet-k7b.1)', () => {
+    test('parseCliArgs accepts --run-id', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--run-id', 'bd-1-abc123']);
+        assert.strictEqual(values['run-id'], 'bd-1-abc123');
+    });
+
+    test('effectiveRunId prefers --run-id over the branch name (mirrors main()\'s fallback expression)', () => {
+        const { values } = parseCliArgs([...BASE_ARGV, '--run-id', 'bd-1-abc123']);
+        const effectiveRunId = values['run-id'] || values.branch;
+        assert.strictEqual(effectiveRunId, 'bd-1-abc123');
+    });
+
+    test('effectiveRunId falls back to the branch name when --run-id is absent (direct/standalone launch)', () => {
+        const { values } = parseCliArgs(BASE_ARGV);
+        const effectiveRunId = values['run-id'] || values.branch;
+        assert.strictEqual(effectiveRunId, 'auto-sprint/x');
+    });
+});
+
 describe('formatViewerListenError / attachViewerErrorHandler (e: viewer port)', () => {
     test('formats an actionable message for EADDRINUSE', () => {
         const err = Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' });

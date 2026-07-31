@@ -71,9 +71,15 @@ export const LEDGER_FILENAME = 'reservations.json';
  * @property {string|null} branch    apra-fleet-3i3.2: the launch's `--branch`
  *                                   argv value, persisted so a Restart can
  *                                   reconstruct the original POST /api/sprints
- *                                   request without operator re-entry. Null for
- *                                   pre-existing on-disk entries written before
- *                                   this field existed (backward compatible).
+ *                                   request without operator re-entry. Also
+ *                                   (apra-fleet-k7b.2) the watchdog's
+ *                                   hasTerminalState() fallback lookup key for
+ *                                   a reservation claimed BEFORE k7b.1 shipped,
+ *                                   whose terminal state (if any) was persisted
+ *                                   under the pre-fix branch-keyed old_runs/
+ *                                   filename, not this reservation's sprintId.
+ *                                   Null for pre-existing on-disk entries
+ *                                   written before this field existed.
  * @property {string|null} base      apra-fleet-3i3.2: the launch's `--base`
  *                                   argv value. Same null-for-legacy-entries
  *                                   contract as branch above.
@@ -81,6 +87,23 @@ export const LEDGER_FILENAME = 'reservations.json';
  *                                   argv value (undefined/omitted at launch
  *                                   normalizes to null, same as a legacy entry
  *                                   that predates this field).
+ * @property {number|null} exitCode  apra-fleet-k7b.3: the detached child's own
+ *                                   process 'exit' code, recorded by
+ *                                   recordExit() the moment the SAME-instance
+ *                                   spawner observes it exit; null until then
+ *                                   (or forever, for an entry re-adopted after
+ *                                   a restart with no in-memory exit listener).
+ * @property {string|null} signal    apra-fleet-k7b.3: the signal that killed
+ *                                   the child (e.g. 'SIGKILL'), or null if it
+ *                                   exited normally / is unknown.
+ * @property {string|null} exitedAt  apra-fleet-k7b.3: ISO-8601 timestamp of
+ *                                   the recorded exit, or null until known.
+ * @property {string|null} logPath   apra-fleet-ou7.1: path to this sprint's
+ *                                   raw stdout/stderr log file (spawner.mjs's
+ *                                   resolveSprintLogPath()), recorded at the
+ *                                   SAME claim() call that sets childPid;
+ *                                   null only for a reservation claimed
+ *                                   before this field existed.
  *
  * @typedef {object} LedgerDocument
  * @property {number} version                              Equals LEDGER_VERSION.
@@ -107,14 +130,25 @@ export const LEDGER_SCHEMA = Object.freeze({
                     issueRoots: { type: 'array', items: { type: 'string' } },
                     childPid: { type: ['integer', 'null'] },
                     reservedAt: { type: 'string' },
-                    // apra-fleet-3i3.2: optional launch metadata, persisted so
-                    // a Restart can reconstruct the original POST /api/sprints
-                    // request. NOT in `required` -- a pre-existing on-disk
-                    // entry written before this field existed must still load
+                    // apra-fleet-3i3.2 / apra-fleet-k7b.2: optional launch
+                    // metadata, persisted so a Restart can reconstruct the
+                    // original POST /api/sprints request, and so the watchdog
+                    // has a fallback branch-keyed lookup key. NOT in
+                    // `required` -- a pre-existing on-disk entry written
+                    // before this field existed must still load
                     // (normalizeReservation() below defaults each to null).
                     branch: { type: ['string', 'null'] },
                     base: { type: ['string', 'null'] },
                     goal: { type: ['string', 'null'] },
+                    // apra-fleet-k7b.3: optional (not in `required`) so a
+                    // ledger file persisted before this field existed still
+                    // loads -- normalizeReservation() below defaults every
+                    // one of these to null when absent.
+                    exitCode: { type: ['integer', 'null'] },
+                    signal: { type: ['string', 'null'] },
+                    exitedAt: { type: ['string', 'null'] },
+                    // apra-fleet-ou7.1: same optional/null-defaulted convention.
+                    logPath: { type: ['string', 'null'] },
                 },
             },
         },
@@ -169,11 +203,15 @@ function normalizeReservation(input, now) {
     }
     const reservedAt = typeof input.reservedAt === 'string' ? input.reservedAt : now();
 
-    // apra-fleet-3i3.2: optional launch metadata. `undefined`/`null` both
-    // normalize to `null` -- this is what makes a pre-existing on-disk entry
-    // (written before these fields existed, so `input.branch` etc. are
-    // `undefined`) load without error, identically to a fresh launch that
-    // simply omitted `goal`.
+    // apra-fleet-3i3.2 / apra-fleet-k7b.2: optional launch metadata.
+    // `undefined`/`null` both normalize to `null` -- this is what makes a
+    // pre-existing on-disk entry (written before these fields existed, so
+    // `input.branch` etc. are `undefined`) load without error, identically
+    // to a fresh launch that simply omitted `goal`. `branch` doubles as the
+    // watchdog's hasTerminalState() fallback lookup key for a reservation
+    // claimed BEFORE k7b.1 shipped, whose terminal state (if any) was
+    // persisted under the pre-fix branch-keyed old_runs/ filename, not under
+    // this reservation's own sprintId.
     const toNullableString = (v, label) => {
         if (v === undefined || v === null) return null;
         if (typeof v !== 'string') throw new TypeError(`${label} must be a string or null`);
@@ -183,7 +221,35 @@ function normalizeReservation(input, now) {
     const base = toNullableString(input.base, 'base');
     const goal = toNullableString(input.goal, 'goal');
 
-    return { members, issueRoots, childPid, reservedAt, branch, base, goal };
+    // apra-fleet-k7b.3: exitCode/signal/exitedAt default to null (unknown --
+    // the child hasn't exited, or this reservation predates the field/was
+    // re-adopted after a restart with no in-memory exit listener), exactly
+    // like childPid's own null-until-known convention above.
+    let exitCode = input.exitCode;
+    if (exitCode === undefined) exitCode = null;
+    if (exitCode !== null && !Number.isInteger(exitCode)) {
+        throw new TypeError('exitCode must be an integer or null');
+    }
+    let signal = input.signal;
+    if (signal === undefined) signal = null;
+    if (signal !== null && typeof signal !== 'string') {
+        throw new TypeError('signal must be a string or null');
+    }
+    let exitedAt = input.exitedAt;
+    if (exitedAt === undefined) exitedAt = null;
+    if (exitedAt !== null && typeof exitedAt !== 'string') {
+        throw new TypeError('exitedAt must be a string or null');
+    }
+
+    // apra-fleet-ou7.1: logPath defaults to null (unknown -- a reservation
+    // predating this field), same convention as above.
+    let logPath = input.logPath;
+    if (logPath === undefined) logPath = null;
+    if (logPath !== null && typeof logPath !== 'string') {
+        throw new TypeError('logPath must be a string or null');
+    }
+
+    return { members, issueRoots, childPid, reservedAt, branch, base, goal, exitCode, signal, exitedAt, logPath };
 }
 
 /** Deep-clone a reservation so callers can never mutate ledger-internal state. */
@@ -196,6 +262,10 @@ function cloneReservation(r) {
         branch: r.branch ?? null,
         base: r.base ?? null,
         goal: r.goal ?? null,
+        exitCode: r.exitCode ?? null,
+        signal: r.signal ?? null,
+        logPath: r.logPath ?? null,
+        exitedAt: r.exitedAt ?? null,
     };
 }
 
@@ -431,6 +501,38 @@ export function createLedger(deps = {}) {
                     throw new Error(`cannot set childPid: sprint ${sprintId} holds no reservation`);
                 }
                 r.childPid = childPid;
+                updated = r;
+            });
+            return cloneReservation(updated);
+        },
+
+        /**
+         * apra-fleet-k7b.3: record the detached child's own process exit
+         * (code/signal/timestamp) onto its still-held reservation -- called by
+         * the spawner's SAME-INSTANCE `child.once('exit', ...)` listener via
+         * bin/serve.mjs's wiring, the moment the child actually exits. This
+         * does NOT release the reservation (that stays reconcile.mjs's job on
+         * restart, or an operator force-release); it only annotates it so the
+         * watchdog can report e.g. "exited 1 at 2026-07-30T21:25:50.000Z"
+         * instead of a bare "pid gone" for any sprint whose exit this SAME
+         * supervisor instance actually witnessed.
+         * @param {string} sprintId
+         * @param {{ exitCode?: number|null, signal?: string|null, at?: string }} info
+         * @returns {Promise<Reservation>}
+         */
+        async recordExit(sprintId, info = {}) {
+            if (typeof sprintId !== 'string' || sprintId.length === 0) {
+                throw new TypeError('recordExit() requires a non-empty sprintId');
+            }
+            let updated;
+            await transact((draft) => {
+                const r = draft.get(sprintId);
+                if (!r) {
+                    throw new Error(`cannot record exit: sprint ${sprintId} holds no reservation`);
+                }
+                r.exitCode = info.exitCode === undefined ? null : info.exitCode;
+                r.signal = info.signal === undefined ? null : info.signal;
+                r.exitedAt = typeof info.at === 'string' ? info.at : now();
                 updated = r;
             });
             return cloneReservation(updated);

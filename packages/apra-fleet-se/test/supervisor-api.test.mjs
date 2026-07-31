@@ -40,12 +40,23 @@ async function stores(dir) {
  * A spawner built on the REAL createSpawner, with an injected spawn that never
  * launches a process but records the exact argv it was handed -- so goal
  * forwarding can be asserted on the true child argv.
+ *
+ * apra-fleet-ou7.1: also injects a fake dataDir/fs so createSpawner's
+ * per-sprint log file open/close (mkdirSync/openSync/closeSync) never
+ * touches the real filesystem in this hermetic unit test file.
  */
 function recordingSpawner(captured) {
     let nextPid = 5000;
+    let nextFd = 100;
     return createSpawner({
         basePort: 9100,
         isPortAvailable: async () => true, // deterministic port allocation
+        dataDir: 'fake-data-dir',
+        fs: {
+            mkdirSync() {},
+            openSync() { return nextFd++; },
+            closeSync() {},
+        },
         spawn: (command, args) => {
             const pid = nextPid++;
             captured.push({ command, args, pid });
@@ -107,6 +118,62 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         // And it was recorded on the ledger reservation.
         assert.equal(result.goal, 'P1/P2');
         assert.deepEqual(result.issueRoots, ['PROJ-1']);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-ou7.1: proves the FULL spawner -> api.launch() -> ledger.claim()
+    // seam, not just spawnSprint()'s own return value or ledger.claim()'s own
+    // storage in isolation -- a regression that stopped api.mjs from forwarding
+    // spawned.logPath into claim() would fail HERE even though spawner.test.mjs
+    // and supervisor-ledger.test.mjs would both stay green.
+    test('the spawned child\'s real logPath is recorded on the ledger reservation, keyed by the SAME sprintId', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+        });
+
+        assert.ok(typeof result.logPath === 'string' && result.logPath.length > 0);
+        const reservation = ledger.get(result.sprintId);
+        assert.ok(reservation, 'the ledger must hold a reservation for this sprintId');
+        assert.equal(reservation.logPath, result.logPath);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-k7b.1: the sprintId is now generated BEFORE spawning (not
+    // after) so it can be forwarded into the child's own argv as --run-id --
+    // asserting here that the child's --run-id argv value is the EXACT SAME
+    // id the caller gets back as result.sprintId (and that the ledger claims
+    // that same id), not some independently-generated value.
+    test('forwards the ledger sprintId into the child argv as --run-id', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice', 'bob'], branch: 'feat/x', base: 'main',
+        });
+
+        assert.equal(captured.length, 1);
+        const args = captured[0].args;
+        const ri = args.indexOf('--run-id');
+        assert.ok(ri >= 0, 'child argv must contain --run-id');
+        assert.equal(args[ri + 1], result.sprintId);
         assert.ok(ledger.get(result.sprintId));
 
         await fsp.rm(dir, { recursive: true, force: true });

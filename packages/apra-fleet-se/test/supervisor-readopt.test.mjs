@@ -131,7 +131,10 @@ describe('readopt -- restart re-adoption', () => {
         // The spawner now tracks the re-adopted pid exactly like a freshly
         // spawned child -- this is what makes GET /api/sprints' default
         // resolvePort(pid) and the watchdog's HTTP probe work post-restart.
-        assert.deepEqual(spawner.getLiveEntry(111), { port: 8321, child: null });
+        // apra-fleet-ou7.1: adopt() sets logPath: null (not recovered from a
+        // re-adopted child's command line; consumers read it from the
+        // ledger's own persisted reservation instead).
+        assert.deepEqual(spawner.getLiveEntry(111), { port: 8321, child: null, logPath: null });
         assert.ok(spawner.livePorts.has(8321));
 
         // Dead sprint reservation gone, marked aborted-by-restart (eft.5.4 behavior, driven via this module).

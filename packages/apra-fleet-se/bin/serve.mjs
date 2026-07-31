@@ -21,12 +21,13 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
-import { createHistory } from '../src/supervisor/history.mjs';
+import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
+import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 // eft.4.8.1: the operator-facing surface -- PID-liveness watchdog (eft.4.3),
@@ -95,7 +96,56 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // collaborators so a restarted supervisor reconciles against on-disk state.
     const ledger = createLedger();
     const history = createHistory();
-    const spawner = createSpawner();
+    // apra-fleet-f34.1: pass this supervisor's OWN listening address so every
+    // spawned sprint child's cli.mjs receives --service-url and threads it
+    // into runner.js's HTTP-backed dolt-mutex/id-allocator clients (see
+    // spawner.mjs's buildSprintArgv/createSpawner doc comments).
+    //
+    // apra-fleet-k7b.3: onChildExit is this SAME-INSTANCE spawner's own
+    // 'exit' listener notification (Node's own exit code/signal, keyed by
+    // the launch's runId -- the SAME sprintId createSprintController claims
+    // in the ledger BEFORE spawning, apra-fleet-k7b.1). Persist it two
+    // places: (1) history records a CHILD_EXITED audit event so the exit is
+    // still visible after the reservation is eventually released; (2)
+    // ledger.recordExit() annotates the still-held reservation in place (does
+    // not release it) so the watchdog/dashboard can report e.g. "exited 1 at
+    // ..." instead of a bare "pid gone". Both are independently best-effort --
+    // a missing/already-released reservation (e.g. a force-release raced the
+    // child's own exit) must never crash this listener.
+    //
+    // apra-fleet-xuo.6.1 -- ORDER IS LOAD-BEARING, history FIRST, ledger
+    // SECOND. Both ledger.mjs and history.mjs commit their in-memory view only
+    // after their atomic persist (tmp write + rename), and every observer (the
+    // dashboard/log-view, and the ou7.3/k7b.7 integration tests) polls the
+    // LEDGER's exitCode as the "this child has exited" readiness signal and
+    // then immediately reads history. Recording the ledger first opened a
+    // window one whole history-persist wide in which the ledger already showed
+    // an exitCode while history still had zero CHILD_EXITED events for that
+    // sprint -- the ledger/history mismatch of apra-fleet-xuo.6. Writing
+    // history first makes "the ledger shows an exitCode" imply "history
+    // already carries CHILD_EXITED" for every reader. Do not swap these back.
+    //
+    // apra-fleet-ou7.1: onChildExit also carries logPath (spawner.mjs's own
+    // per-sprint raw stdout/stderr log file) through into the CHILD_EXITED
+    // history event -- the ledger already has it (recorded at claim() time,
+    // see createSprintController's launch()), but history's own copy stays
+    // discoverable even after the reservation is eventually released.
+    const spawner = createSpawner({
+        serviceUrl: `http://localhost:${port}`,
+        onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
+            if (!runId) return;
+            try {
+                await history.record({ sprintId: runId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at, logPath });
+            } catch (err) {
+                console.error(`[spawner] history.record(CHILD_EXITED) failed for '${runId}':`, err);
+            }
+            try {
+                await ledger.recordExit(runId, { exitCode, signal, at });
+            } catch (err) {
+                console.error(`[spawner] ledger.recordExit failed for '${runId}':`, err);
+            }
+        },
+    });
     // apra-fleet-3i3.1: the real kill-signal implementation is only wired in
     // HERE -- createReconciler()'s own default is a safe no-op (see
     // reconcile.mjs's module doc) so nothing outside this production entry
@@ -135,7 +185,11 @@ export async function serveMain(argv = process.argv.slice(2)) {
         if (!entry || entry.childPid == null) return undefined;
         return spawner.getLiveEntry ? spawner.getLiveEntry(entry.childPid)?.port : undefined;
     };
-    const watchdog = createWatchdog({ ledger, resolvePort: resolveSprintPort });
+    // apra-fleet-k7b.2: `history` lets the watchdog append a durable
+    // FINISHED event (terminalReason/verdict) to sprint-history.json the
+    // first time it observes a PID-gone sprint's persisted terminal state,
+    // the same collaborator the spawner's CHILD_EXITED wiring above uses.
+    const watchdog = createWatchdog({ ledger, resolvePort: resolveSprintPort, history });
 
     // eft.6.2: the Backlog-last tree (full tracker minus every active
     // sprint's live-expanded scope). Reused both as the dashboard page's
@@ -203,6 +257,14 @@ export async function serveMain(argv = process.argv.slice(2)) {
     const liveProxy = createLiveProxy({ ledger, spawner, renderHistory: (sprintId) => historyView.renderForSprint(sprintId) });
     registerLiveRoutes(supervisor, liveProxy);
     registerHistoryViewRoutes(supervisor, historyView);
+
+    // apra-fleet-ou7.2: raw per-sprint stdout/stderr log, present for a live
+    // sprint AND for an ended one (finished/crashed) -- exactly where the
+    // live SSE viewer above is gone. Looks the sprint's recorded logPath up
+    // by id (ledger first, then history for a released reservation); never
+    // builds a path from the request's :id itself.
+    const logView = createLogView({ ledger, history });
+    registerLogViewRoutes(supervisor, logView);
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.

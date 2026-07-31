@@ -226,8 +226,8 @@ export function proxyChildStop(port, opts = {}) {
  *     claim: (id: string, r: object) => Promise<object>,
  *   },
  *   spawner: {
- *     spawnSprint: (opts: object) => Promise<{ pid: number, port: number, args?: string[] }>,
- *     getLiveEntry?: (pid: number) => { port: number }|undefined,
+ *     spawnSprint: (opts: object) => Promise<{ pid: number, port: number, args?: string[], logPath?: string }>,
+ *     getLiveEntry?: (pid: number) => { port: number, logPath?: string }|undefined,
  *   },
  *   history?: { latestFor: (id: string) => object|undefined, forSprint: (id: string) => object[] },
  *   listMembers: () => Promise<object|object[]>|object|object[],
@@ -334,6 +334,14 @@ export function createSprintController(deps = {}) {
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
         await beforeLaunch({ members: union, issueRoots });
 
+        // apra-fleet-k7b.1: generate the sprintId BEFORE spawning (not after,
+        // as before) so it can be forwarded into the child's own argv as
+        // --run-id (buildSprintArgv) -- the SAME incarnation-unique id this
+        // ledger reservation uses, so the engine's run-state and the ledger
+        // agree on one identity for this launch instead of the child falling
+        // back to reusing the (relaunch-shared) branch name.
+        const sprintId = generateSprintId(issue);
+
         // Forward the per-request goal straight into the child argv (buildSprintArgv
         // pushes `--goal <goal>` when goal !== undefined).
         const spawnOpts = {
@@ -347,9 +355,9 @@ export function createSprintController(deps = {}) {
             requirementsFile: body.requirementsFile,
             roleMap,
             budget: body.budget,
+            runId: sprintId,
         };
         const spawned = await spawner.spawnSprint(spawnOpts);
-        const sprintId = generateSprintId(issue);
         // apra-fleet-3i3.2: persist enough launch metadata (branch/base/goal,
         // alongside the two reservation axes already claimed here) that a
         // future Restart control can reconstruct this exact POST /api/sprints
@@ -357,10 +365,18 @@ export function createSprintController(deps = {}) {
         // (the "no goal supplied" case validateLaunchRequest/buildSprintArgv
         // already treat as omitted) to `null`, matching how the ledger treats
         // a pre-existing entry that predates this field.
+        // apra-fleet-ou7.1: spawner.spawnSprint() always opens a per-sprint
+        // raw stdout/stderr log file before spawning -- record its path on
+        // the SAME claim() call that sets childPid, so a dashboard/consumer
+        // reading the ledger can find it for a live OR crashed sprint alike.
+        // apra-fleet-k7b.2: also record the launch branch on the reservation --
+        // hasTerminalState()'s legacy fallback needs it as a lookup key for
+        // reservations claimed before k7b.1's run-id plumbing shipped.
         await ledger.claim(sprintId, {
             members: union,
             issueRoots,
             childPid: spawned.pid,
+            logPath: spawned.logPath,
             branch,
             base,
             goal: body.goal ?? null,
@@ -370,6 +386,7 @@ export function createSprintController(deps = {}) {
             sprintId,
             pid: spawned.pid,
             port: spawned.port,
+            logPath: spawned.logPath,
             issueRoots,
             members: union,
             goal: body.goal ?? null,

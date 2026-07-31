@@ -3,6 +3,8 @@ import assert from 'node:assert';
 import { EventEmitter } from 'node:events';
 import { spawn as realSpawn } from 'node:child_process';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -65,6 +67,27 @@ function firstLine(stream) {
     });
 }
 
+// apra-fleet-ou7.1: bounded poll (never a single long sleep) for a log
+// file's content to include `marker` -- the child writes it asynchronously
+// after spawn, so a single immediate read can race it.
+async function waitForFileContent(filePath, marker, { timeoutMs = 3000, intervalMs = 25 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        let content = '';
+        try {
+            content = fs.readFileSync(filePath, 'utf-8');
+        } catch {
+            // file not created/flushed yet
+        }
+        if (content.includes(marker)) return content;
+        if (Date.now() >= deadline) {
+            throw new Error(`timed out waiting for '${marker}' in '${filePath}'; last content: ${JSON.stringify(content)}`);
+        }
+        // eslint-disable-next-line no-await-in-loop -- intentional bounded poll
+        await sleep(intervalMs);
+    }
+}
+
 /** Whether a pid is currently alive, via the standard signal-0 probe. */
 function isAlive(pid) {
     try {
@@ -93,6 +116,37 @@ function makeFakeSpawn(pids) {
     };
     return { spawnFn, calls, children };
 }
+
+// apra-fleet-ou7.1 -- an in-memory fake fs so the "fake spawn" unit tests
+// below never touch the real filesystem (spawnSprint() now always
+// mkdirSync/openSync/closeSync's a per-sprint log file). Fabricated fds are
+// plain incrementing integers -- good enough to assert "a numeric fd, not
+// the string 'ignore'" and to pair each openSync with its later closeSync.
+function makeFakeFs() {
+    let nextFd = 100;
+    const mkdirCalls = [];
+    const opened = []; // { path, flags, fd }
+    const closed = []; // fd
+    return {
+        fs: {
+            mkdirSync(dir, opts) { mkdirCalls.push({ dir, opts }); },
+            openSync(p, flags) {
+                const fd = nextFd++;
+                opened.push({ path: p, flags, fd });
+                return fd;
+            },
+            closeSync(fd) { closed.push(fd); },
+        },
+        mkdirCalls,
+        opened,
+        closed,
+    };
+}
+
+/** A dataDir + fs pair good enough for any fake-spawn test that does not
+ * itself care about log-file behavior -- still fully hermetic (no real
+ * filesystem access). */
+const FAKE_DATA_DIR = path.join('fake-data-dir'); // relative -- never actually written to (fake fs)
 
 describe('buildSprintArgv', () => {
     test('builds the full cli.mjs flag set including --viewer-port', () => {
@@ -129,6 +183,44 @@ describe('buildSprintArgv', () => {
     test('omits optional flags entirely when not provided', () => {
         const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
         assert.deepEqual(args, ['--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main', '--viewer-port', '8080']);
+    });
+
+    // apra-fleet-f34.1: --service-url is forwarded to the spawned cli.mjs
+    // child so runner.js takes the HTTP-backed dolt-mutex/id-allocator
+    // clients instead of the source-3 no-op fallback.
+    test('appends --service-url when serviceUrl is provided', () => {
+        const args = buildSprintArgv({
+            issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080,
+            serviceUrl: 'http://localhost:8787',
+        });
+        assert.deepEqual(args, [
+            '--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main',
+            '--viewer-port', '8080', '--service-url', 'http://localhost:8787',
+        ]);
+    });
+
+    test('omits --service-url entirely when serviceUrl is not provided (unchanged fallback behavior)', () => {
+        const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
+        assert.ok(!args.includes('--service-url'));
+    });
+
+    // apra-fleet-k7b.1: --run-id forwards the supervisor's own sprintId so the
+    // spawned cli.mjs child's engine run-state and dashboard viewer identity
+    // are keyed by an incarnation-unique id, not the (relaunch-shared) branch.
+    test('appends --run-id when runId is provided', () => {
+        const args = buildSprintArgv({
+            issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080,
+            runId: 'PROJ-1-abc123',
+        });
+        assert.deepEqual(args, [
+            '--issue', 'i', '--members', 'm', '--branch', 'b', '--base', 'main',
+            '--viewer-port', '8080', '--run-id', 'PROJ-1-abc123',
+        ]);
+    });
+
+    test('omits --run-id entirely when runId is not provided (falls back to --branch in cli.mjs)', () => {
+        const args = buildSprintArgv({ issue: 'i', members: 'm', branch: 'b', base: 'main', viewerPort: 8080 });
+        assert.ok(!args.includes('--run-id'));
     });
 
     test('throws when a required flag is missing', () => {
@@ -193,14 +285,17 @@ describe('defaultCliPath / DEFAULT_SPAWNER_BASE_PORT', () => {
 });
 
 describe('createSpawner -- unit behavior (fake spawn)', () => {
-    test('spawnSprint launches detached+ignored-stdio, unrefs, and returns pid+port', async () => {
+    test('spawnSprint launches detached with stdout/stderr teed to a log file fd (not "ignore"), unrefs, and returns pid+port+logPath', async () => {
         const { spawnFn, calls, children } = makeFakeSpawn([111]);
+        const fakeFs = makeFakeFs();
         const spawner = createSpawner({
             spawn: spawnFn,
             command: '/usr/bin/node',
             cliPath: '/repo/bin/cli.mjs',
             basePort: 9000,
             isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
         });
 
         const result = await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
@@ -209,18 +304,198 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
         assert.equal(result.port, 9000);
         assert.equal(result.command, '/usr/bin/node');
         assert.deepEqual(result.args.slice(0, 2), ['/repo/bin/cli.mjs', '--issue']);
+        assert.ok(typeof result.logPath === 'string' && result.logPath.length > 0);
 
         assert.equal(calls.length, 1);
         assert.equal(calls[0].opts.detached, true);
-        assert.equal(calls[0].opts.stdio, 'ignore');
+        // apra-fleet-ou7.1 acceptance criterion: spawn() must be called with
+        // file descriptors for stdout/stderr, not the string 'ignore'.
+        assert.ok(Array.isArray(calls[0].opts.stdio), 'stdio must be an array, not the string "ignore"');
+        assert.equal(calls[0].opts.stdio[0], 'ignore'); // stdin unchanged
+        assert.equal(typeof calls[0].opts.stdio[1], 'number');
+        assert.equal(typeof calls[0].opts.stdio[2], 'number');
+        assert.equal(calls[0].opts.stdio[1], calls[0].opts.stdio[2], 'stdout and stderr share the SAME fd (teed to one file)');
+        assert.notEqual(calls[0].opts.stdio[1], 'ignore');
+
         assert.equal(children[0].unrefCalled, true);
         assert.equal(spawner.liveCount, 1);
         assert.deepEqual(spawner.livePorts, new Set([9000]));
+
+        // The log file was opened (mkdir'd first) at the returned logPath.
+        assert.equal(fakeFs.mkdirCalls.length, 1);
+        assert.deepEqual(fakeFs.mkdirCalls[0].opts, { recursive: true });
+        assert.equal(fakeFs.opened.length, 1);
+        assert.equal(fakeFs.opened[0].path, result.logPath);
+        assert.equal(fakeFs.opened[0].fd, calls[0].opts.stdio[1]);
+        // Not yet closed -- the child hasn't exited.
+        assert.equal(fakeFs.closed.length, 0);
+
+        // Closed exactly once, the moment the child exits.
+        children[0].emit('exit', 0, null);
+        assert.deepEqual(fakeFs.closed, [fakeFs.opened[0].fd]);
+    });
+
+    // apra-fleet-f34.1: createSpawner's own deps.serviceUrl (the supervisor's
+    // listening address, as wired by bin/serve.mjs) is forwarded into every
+    // spawnSprint() call's argv via buildSprintArgv, without the caller
+    // needing to pass serviceUrl itself on each spawnSprint() call.
+    test('spawnSprint threads deps.serviceUrl through to the child argv as --service-url', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([222]);
+        const spawner = createSpawner({
+            spawn: spawnFn,
+            basePort: 9050,
+            isPortAvailable: async () => true,
+            serviceUrl: 'http://localhost:8787',
+            dataDir: FAKE_DATA_DIR,
+            fs: makeFakeFs().fs,
+        });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.ok(calls[0].args.includes('--service-url'));
+        assert.equal(calls[0].args[calls[0].args.indexOf('--service-url') + 1], 'http://localhost:8787');
+    });
+
+    test('spawnSprint omits --service-url when neither deps.serviceUrl nor opts.serviceUrl is set', async () => {
+        const { spawnFn, calls } = makeFakeSpawn([223]);
+        const spawner = createSpawner({ spawn: spawnFn, basePort: 9060, isPortAvailable: async () => true, dataDir: FAKE_DATA_DIR, fs: makeFakeFs().fs });
+
+        await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+
+        assert.ok(!calls[0].args.includes('--service-url'));
+    });
+
+    // apra-fleet-k7b.3: the optional onChildExit callback is invoked with the
+    // Node 'exit' event's own (code, signal) args, this launch's runId, and
+    // an injectable clock -- so bin/serve.mjs's wiring can persist them into
+    // the ledger/history without the spawner owning that persistence itself.
+    describe('onChildExit (apra-fleet-k7b.3)', () => {
+        test('is called with pid, runId, exitCode, signal, and the injected clock on a nonzero exit', async () => {
+            const { spawnFn, children } = makeFakeSpawn([777]);
+            const calls = [];
+            const spawner = createSpawner({
+                spawn: spawnFn,
+                basePort: 9070,
+                isPortAvailable: async () => true,
+                onChildExit: (info) => calls.push(info),
+                now: () => '2026-07-30T21:25:50.000Z',
+                dataDir: FAKE_DATA_DIR,
+                fs: makeFakeFs().fs,
+            });
+
+            const result = await spawner.spawnSprint({
+                issue: 'i1', members: 'm1', branch: 'b1', base: 'main', runId: 'PROJ-1-abc123',
+            });
+            children[0].emit('exit', 1, null);
+
+            assert.equal(calls.length, 1);
+            assert.deepEqual(calls[0], {
+                pid: result.pid,
+                runId: 'PROJ-1-abc123',
+                exitCode: 1,
+                signal: null,
+                at: '2026-07-30T21:25:50.000Z',
+                // apra-fleet-ou7.1: the same logPath returned by spawnSprint().
+                logPath: result.logPath,
+            });
+        });
+
+        test('reports a null exitCode and the killing signal when the child was killed by a signal', async () => {
+            const { spawnFn, children } = makeFakeSpawn([778]);
+            const calls = [];
+            const spawner = createSpawner({
+                spawn: spawnFn,
+                basePort: 9071,
+                isPortAvailable: async () => true,
+                onChildExit: (info) => calls.push(info),
+                dataDir: FAKE_DATA_DIR,
+                fs: makeFakeFs().fs,
+            });
+
+            await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main', runId: 'PROJ-1-xyz' });
+            children[0].emit('exit', null, 'SIGKILL');
+
+            assert.equal(calls.length, 1);
+            assert.equal(calls[0].exitCode, null);
+            assert.equal(calls[0].signal, 'SIGKILL');
+            assert.equal(calls[0].runId, 'PROJ-1-xyz');
+        });
+
+        test('reports runId: null when the launch had no opts.runId (e.g. a direct/standalone call)', async () => {
+            const { spawnFn, children } = makeFakeSpawn([779]);
+            const calls = [];
+            const spawner = createSpawner({
+                spawn: spawnFn, basePort: 9072, isPortAvailable: async () => true,
+                onChildExit: (info) => calls.push(info),
+                dataDir: FAKE_DATA_DIR,
+                fs: makeFakeFs().fs,
+            });
+
+            await spawner.spawnSprint({ issue: 'i1', members: 'm1', branch: 'b1', base: 'main' });
+            children[0].emit('exit', 0, null);
+
+            assert.equal(calls[0].runId, null);
+        });
+
+        test('a throwing onChildExit callback never blocks the port/pid bookkeeping cleanup', async () => {
+            const { spawnFn, children } = makeFakeSpawn([780, 781]);
+            const spawner = createSpawner({
+                spawn: spawnFn, basePort: 9073, isPortAvailable: async () => true,
+                dataDir: FAKE_DATA_DIR,
+                fs: makeFakeFs().fs,
+                onChildExit: () => { throw new Error('boom'); },
+                logger: { error: () => {} }, // swallow the logged error for a clean test
+            });
+
+            await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
+            assert.equal(spawner.liveCount, 1);
+            children[0].emit('exit', 1, null);
+            // Bookkeeping cleanup (live.delete) still ran despite the callback throwing.
+            assert.equal(spawner.liveCount, 0);
+
+            // And the spawner is still fully usable afterward.
+            const b = await spawner.spawnSprint({ issue: 'b', members: 'm', branch: 'bb', base: 'main' });
+            assert.ok(Number.isInteger(b.port));
+        });
+
+        test('an onChildExit callback that returns a REJECTED promise (the real async wiring in serve.mjs) never surfaces as an unhandled rejection', async () => {
+            const { spawnFn, children } = makeFakeSpawn([783, 784]);
+            const spawner = createSpawner({
+                spawn: spawnFn, basePort: 9075, isPortAvailable: async () => true,
+                dataDir: FAKE_DATA_DIR,
+                fs: makeFakeFs().fs,
+                onChildExit: async () => { throw new Error('async boom'); },
+                logger: { error: () => {} },
+            });
+
+            const unhandled = [];
+            const onUnhandled = (err) => unhandled.push(err);
+            process.on('unhandledRejection', onUnhandled);
+            try {
+                await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
+                children[0].emit('exit', 1, null);
+                // Let the callback's rejected promise's microtask/catch settle.
+                await new Promise((resolve) => setImmediate(resolve));
+                assert.equal(unhandled.length, 0, 'the async callback rejection must be caught, never surfaced as unhandledRejection');
+                assert.equal(spawner.liveCount, 0);
+            } finally {
+                process.removeListener('unhandledRejection', onUnhandled);
+            }
+        });
+
+        test('spawnSprint works exactly as before when no onChildExit is injected', async () => {
+            const { spawnFn, children } = makeFakeSpawn([782]);
+            const spawner = createSpawner({ spawn: spawnFn, basePort: 9074, isPortAvailable: async () => true, dataDir: FAKE_DATA_DIR, fs: makeFakeFs().fs });
+
+            await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
+            assert.doesNotThrow(() => children[0].emit('exit', 0, null));
+            assert.equal(spawner.liveCount, 0);
+        });
     });
 
     test('two concurrent sprints never receive the same port', async () => {
         const { spawnFn } = makeFakeSpawn([1, 2]);
-        const spawner = createSpawner({ spawn: spawnFn, basePort: 9100, isPortAvailable: async () => true });
+        const spawner = createSpawner({ spawn: spawnFn, basePort: 9100, isPortAvailable: async () => true, dataDir: FAKE_DATA_DIR, fs: makeFakeFs().fs });
 
         const a = await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
         const b = await spawner.spawnSprint({ issue: 'b', members: 'm', branch: 'bb', base: 'main' });
@@ -231,7 +506,7 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
 
     test('a port frees for reuse once its sprint exits, and not before', async () => {
         const { spawnFn, children } = makeFakeSpawn([1, 2, 3, 4]);
-        const spawner = createSpawner({ spawn: spawnFn, basePort: 9200, isPortAvailable: async () => true });
+        const spawner = createSpawner({ spawn: spawnFn, basePort: 9200, isPortAvailable: async () => true, dataDir: FAKE_DATA_DIR, fs: makeFakeFs().fs });
 
         const a = await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
         const b = await spawner.spawnSprint({ issue: 'b', members: 'm', branch: 'bb', base: 'main' });
@@ -253,7 +528,7 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
 
     test('killing/exiting one sprint never affects bookkeeping for a sibling', async () => {
         const { spawnFn, children } = makeFakeSpawn([1, 2]);
-        const spawner = createSpawner({ spawn: spawnFn, basePort: 9300, isPortAvailable: async () => true });
+        const spawner = createSpawner({ spawn: spawnFn, basePort: 9300, isPortAvailable: async () => true, dataDir: FAKE_DATA_DIR, fs: makeFakeFs().fs });
 
         await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
         const b = await spawner.spawnSprint({ issue: 'b', members: 'm', branch: 'bb', base: 'main' });
@@ -267,7 +542,7 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
     test('stop() clears local bookkeeping but never kills a live child', async () => {
         const { spawnFn, children } = makeFakeSpawn([1]);
         let killed = false;
-        const spawner = createSpawner({ spawn: spawnFn, basePort: 9400, isPortAvailable: async () => true });
+        const spawner = createSpawner({ spawn: spawnFn, basePort: 9400, isPortAvailable: async () => true, dataDir: FAKE_DATA_DIR, fs: makeFakeFs().fs });
         await spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' });
         children[0].kill = () => { killed = true; };
 
@@ -277,32 +552,51 @@ describe('createSpawner -- unit behavior (fake spawn)', () => {
         assert.equal(killed, false);
     });
 
-    test('spawnSprint rejects when spawn() returns no pid', async () => {
+    test('spawnSprint rejects when spawn() returns no pid, and still closes the log fd it had already opened', async () => {
+        const fakeFs = makeFakeFs();
         const spawner = createSpawner({
             spawn: () => ({ once() {}, unref() {} }),
             basePort: 9500,
             isPortAvailable: async () => true,
+            dataDir: FAKE_DATA_DIR,
+            fs: fakeFs.fs,
         });
         await assert.rejects(
             () => spawner.spawnSprint({ issue: 'a', members: 'm', branch: 'ba', base: 'main' }),
             /failed to launch/,
         );
+
+        // apra-fleet-ou7.1: the log file WAS opened (before the pid check
+        // failed) and must still be closed -- a failed launch must never
+        // leak the fd.
+        assert.equal(fakeFs.opened.length, 1);
+        assert.deepEqual(fakeFs.closed, [fakeFs.opened[0].fd]);
     });
 });
 
 describe('createSpawner -- real detached child process (orphan survival)', () => {
     test('killing the spawner\'s process (SIGKILL) leaves the spawned child running', async () => {
         const basePort = 18100 + Math.floor(Math.random() * 200);
+        // apra-fleet-ou7.1: harness.mjs's own createSpawner() now always opens a
+        // real per-sprint log file -- point FLEET_SE_DATA_DIR at an isolated
+        // temp dir so this test never writes under the real ~/.apra-fleet-se.
+        const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-spawner-harness-'));
         const harness = realSpawn(process.execPath, [path.join(fixturesDir, 'harness.mjs')], {
             stdio: ['ignore', 'pipe', 'inherit'],
-            env: { ...process.env, SPAWNER_TEST_BASE_PORT: String(basePort), SPAWNER_TEST_SPRINT_COUNT: '1' },
+            env: { ...process.env, SPAWNER_TEST_BASE_PORT: String(basePort), SPAWNER_TEST_SPRINT_COUNT: '1', FLEET_SE_DATA_DIR: dataDir },
         });
 
         try {
             const line = await firstLine(harness.stdout);
-            const [{ pid }] = JSON.parse(line);
+            const [{ pid, logPath }] = JSON.parse(line);
             assert.ok(Number.isInteger(pid));
             assert.equal(isAlive(pid), true, 'sprint child should be alive right after spawn');
+
+            // apra-fleet-ou7.1 acceptance criterion: a REAL, non-empty log file
+            // on disk, at the path this SAME real spawnSprint() call recorded --
+            // the actual OS-level detached + integer-fd tee, not a mock.
+            assert.ok(typeof logPath === 'string' && logPath.length > 0);
+            await waitForFileContent(logPath, 'SPRINT CHILD STARTED');
 
             // Kill the "supervisor" harness process hard.
             harness.kill('SIGKILL');
@@ -316,16 +610,28 @@ describe('createSpawner -- real detached child process (orphan survival)', () =>
             process.kill(pid, 'SIGKILL');
             await sleep(100);
             assert.equal(isAlive(pid), false, 'sanity check: our own cleanup kill worked');
+
+            // apra-fleet-ou7.1 acceptance criterion: the log file survives the
+            // crash/kill (it was never owned by the now-dead child's lifetime --
+            // this process's own copy of the fd was already closed at 'exit'
+            // inside harness.mjs's spawnSprint(), and the file itself persists
+            // on disk regardless of either process's state).
+            assert.ok(fs.readFileSync(logPath, 'utf-8').includes('SPRINT CHILD STARTED'));
         } finally {
             if (!harness.killed) harness.kill('SIGKILL');
+            // The sprint child (killed above) has released its log fd by now;
+            // safe to remove the isolated temp data dir it was pointed at.
+            try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* best effort */ }
         }
     });
 
     test('two sibling sprints get distinct real ports; killing one leaves the other alive', async () => {
         const basePort = 18300 + Math.floor(Math.random() * 200);
+        // apra-fleet-ou7.1: see the previous test's comment -- isolate the log dir.
+        const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-spawner-harness-'));
         const harness = realSpawn(process.execPath, [path.join(fixturesDir, 'harness.mjs')], {
             stdio: ['ignore', 'pipe', 'inherit'],
-            env: { ...process.env, SPAWNER_TEST_BASE_PORT: String(basePort), SPAWNER_TEST_SPRINT_COUNT: '2' },
+            env: { ...process.env, SPAWNER_TEST_BASE_PORT: String(basePort), SPAWNER_TEST_SPRINT_COUNT: '2', FLEET_SE_DATA_DIR: dataDir },
         });
 
         let pids = [];
@@ -334,10 +640,15 @@ describe('createSpawner -- real detached child process (orphan survival)', () =>
             const results = JSON.parse(line);
             pids = results.map((r) => r.pid);
             const ports = results.map((r) => r.port);
+            const logPaths = results.map((r) => r.logPath);
 
             assert.equal(new Set(ports).size, 2, 'sibling sprints must get distinct viewer ports');
             assert.equal(isAlive(pids[0]), true);
             assert.equal(isAlive(pids[1]), true);
+
+            // apra-fleet-ou7.1: each sibling gets its OWN real, non-empty log file.
+            assert.equal(new Set(logPaths).size, 2, 'sibling sprints must get distinct log files');
+            await Promise.all(logPaths.map((p) => waitForFileContent(p, 'SPRINT CHILD STARTED')));
 
             process.kill(pids[0], 'SIGKILL');
             await sleep(300);
@@ -349,6 +660,8 @@ describe('createSpawner -- real detached child process (orphan survival)', () =>
                 if (isAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
             }
             if (!harness.killed) harness.kill('SIGKILL');
+            await sleep(100); // let the OS release the just-killed children's log fds
+            try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* best effort */ }
         }
     });
 });

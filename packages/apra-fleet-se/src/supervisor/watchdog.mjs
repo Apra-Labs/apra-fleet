@@ -43,6 +43,8 @@ import { spawnSync } from 'node:child_process';
 import { isPidAlive } from './reconcile.mjs';
 import { getTerminalRunStatePath, getRunningRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { writeJsonFileAtomic } from '@apralabs/apra-fleet-workflow/viewer/debounced-writer';
+import { withTimestamps } from './log-timestamp.mjs';
+import { HISTORY_EVENTS } from './history.mjs';
 
 /** The four -- and only four -- statuses the classifier may return. */
 export const WATCHDOG_STATUS = Object.freeze({
@@ -215,6 +217,147 @@ export function probeChildHttp(port, opts = {}) {
 }
 
 /**
+ * apra-fleet-k7b.3: formats a human-readable exit-detail string for a
+ * PID-gone sprint from whatever the ledger's recordExit() (spawner's own
+ * SAME-INSTANCE 'exit' listener, see spawner.mjs/bin/serve.mjs's wiring)
+ * annotated onto its reservation -- e.g. "exited 1 at
+ * 2026-07-30T21:25:50.000Z" or "killed by signal SIGKILL at ...". Falls back
+ * to the previous bare "pid gone" when nothing was ever recorded (a restart
+ * severed the in-memory 'exit' listener before this instance ever observed
+ * the child exit -- see this module's own file-level doc comment).
+ * @param {{ exitCode?: number|null, signal?: string|null, exitedAt?: string|null }} [info]
+ * @returns {string}
+ */
+export function formatExitDetail(info = {}) {
+    const { exitCode, signal, exitedAt } = info;
+    if (exitCode == null && !signal) return 'pid gone';
+    const at = exitedAt ? ` at ${exitedAt}` : '';
+    if (exitCode != null) {
+        return signal ? `exited ${exitCode} (signal ${signal})${at}` : `exited ${exitCode}${at}`;
+    }
+    return `killed by signal ${signal}${at}`;
+}
+
+/**
+ * apra-fleet-k7b.2: reads and parses a persisted terminal run-state file
+ * (old_runs/, or the legacy old_sprints/ directory) at `path`. Returns the
+ * parsed object, or `null` when the file does not exist or is not valid
+ * JSON -- a reader-side concern only, never thrown: a missing/corrupt
+ * terminal-state file must never take the watchdog's classification down
+ * with it.
+ * @param {string} path
+ * @returns {object|null}
+ */
+function readTerminalRunState(path) {
+    try {
+        return JSON.parse(fs.readFileSync(path, 'utf-8'));
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * apra-fleet-k7b.2: resolves whether a PID-gone sprint actually FINISHED, by
+ * run-id first and -- ONLY as a fallback for a reservation claimed before
+ * apra-fleet-k7b.1's run-id plumbing shipped -- by the sprint's launch
+ * branch. Returns the PARSED terminal-state object (not a boolean) so the
+ * watchdog log line / sprint-history.json event / History view can copy the
+ * engine's own `terminalReason` / `extensions.terminal.verdict` verbatim,
+ * instead of a generic message. Returns `null` when no terminal state is
+ * found under either key.
+ *
+ * The legacy branch-key fallback exists because a reservation claimed
+ * BEFORE k7b.1 has a sprintId (branch-derived, pre-run-id) that may not
+ * match the run-id the engine itself used to write its terminal state; a
+ * reservation's OWN recorded `branch` (ledger.mjs's Reservation.branch) is
+ * the only other identity available to look that pre-fix terminal state up
+ * by. A reservation claimed AFTER k7b.1 always resolves by run-id alone
+ * (branch is never consulted once the run-id lookup succeeds).
+ * @param {string} sprintId
+ * @param {string|null|undefined} branch
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {object|null}
+ */
+export function defaultHasTerminalState(sprintId, branch, env = process.env) {
+    try {
+        const byRunId = getTerminalRunStatePath(sprintId, env);
+        if (fs.existsSync(byRunId)) {
+            return readTerminalRunState(byRunId);
+        }
+    } catch {
+        // fall through to the branch fallback below
+    }
+    if (typeof branch === 'string' && branch.length > 0 && branch !== sprintId) {
+        try {
+            const byBranch = getTerminalRunStatePath(branch, env);
+            if (fs.existsSync(byBranch)) {
+                return readTerminalRunState(byBranch);
+            }
+        } catch {
+            // no legacy terminal state under the branch key either
+        }
+    }
+    return null;
+}
+
+/**
+ * apra-fleet-k7b.2: formats a human-readable FINISHED detail string from a
+ * persisted terminal run-state, copying the engine's own `terminalReason`
+ * and `extensions.terminal.verdict` VERBATIM (never paraphrased/relabeled)
+ * -- e.g. "terminalReason=SPRINT_STALLED verdict=needs-changes". Falls back
+ * to a bare "finished" when the state carries neither field (or is not an
+ * object -- e.g. a truthy-but-non-object test double), so this never throws
+ * on an unexpected shape.
+ * @param {unknown} state
+ * @returns {string}
+ */
+export function formatFinishedDetail(state) {
+    if (!state || typeof state !== 'object') return 'finished';
+    const terminalReason = state.terminalReason ?? null;
+    const verdict = state?.extensions?.terminal?.verdict ?? null;
+    const parts = [];
+    if (terminalReason) parts.push(`terminalReason=${terminalReason}`);
+    if (verdict) parts.push(`verdict=${verdict}`);
+    return parts.length > 0 ? parts.join(' ') : 'finished';
+}
+
+/**
+ * apra-fleet-k7b.2: default FINISHED recorder, invoked the FIRST time a
+ * sprint is observed transitioning into FINISHED (PID gone, terminal state
+ * found). Mirrors apra-fleet-eft.20.3's defaultRecordTerminalError below,
+ * but for the "actually finished" case instead of "crashed": logs an
+ * explicit, greppable watchdog line copying the engine's own
+ * terminalReason/verdict verbatim (replacing the generic CRASHED-sounding
+ * language a mis-resolved terminal-state lookup used to fall through to),
+ * and -- when a `history` collaborator is injected -- appends a durable
+ * FINISHED event to sprint-history.json carrying the same fields.
+ * @param {{ sprintId: string, state: object|null, env: NodeJS.ProcessEnv, logger: { log?: Function, error?: Function }, history?: { record: (entry: object) => Promise<object> } }} info
+ */
+export function defaultRecordFinished({ sprintId, state, logger, history }) {
+    const log = (logger && (logger.log ?? logger.error)) ?? (() => {});
+    const detail = formatFinishedDetail(state);
+    log(`[watchdog] FINISHED: Sprint '${sprintId}' finished (${detail}).`);
+    if (!history || typeof history.record !== 'function') return;
+    const terminalReason = (state && typeof state === 'object' && state.terminalReason) || null;
+    const verdict = (state && typeof state === 'object' && state?.extensions?.terminal?.verdict) || null;
+    try {
+        const result = history.record({ sprintId, event: HISTORY_EVENTS.FINISHED, terminalReason, verdict });
+        // history.record() is async; a rejection must never take the
+        // classifier down with it (same discipline as recordTerminalError
+        // below), so it is observed but not awaited by the caller.
+        if (result && typeof result.catch === 'function') {
+            result.catch((err) => {
+                const logErr = (logger && (logger.error ?? logger.log)) ?? (() => {});
+                logErr(`[watchdog] history.record(FINISHED) failed for '${sprintId}':`, err);
+            });
+        }
+    } catch (err) {
+        const logErr = (logger && (logger.error ?? logger.log)) ?? (() => {});
+        logErr(`[watchdog] history.record(FINISHED) failed for '${sprintId}':`, err);
+    }
+}
+
+/**
  * apra-fleet-eft.20.3: default terminal-error recorder, invoked the FIRST
  * time a sprint is observed transitioning into CRASHED. The apra-fleet-eft.20
  * smoke-test symptom this fixes: a doer sub-session died mid-Develop and the
@@ -235,11 +378,18 @@ export function probeChildHttp(port, opts = {}) {
  *       declared crashed stays classified crashed on every later tick, it
  *       never silently becomes "finished" just because this recorder
  *       touched its file.
- * @param {{ sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: { log?: Function, error?: Function } }} info
+ * apra-fleet-k7b.3: `detail` (formatExitDetail() above) reports the child's
+ * OWN recorded exit code/signal/time when this instance's spawner witnessed
+ * it (e.g. "exited 1 at 2026-07-30T21:25:50.000Z"), replacing the previously
+ * unconditional bare "pid gone" -- unchanged fallback when nothing was
+ * recorded (a restart severed the in-memory exit listener, see this
+ * module's file-level doc comment).
+ * @param {{ sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: { log?: Function, error?: Function }, detail?: string }} info
  */
-export function defaultRecordTerminalError({ sprintId, childPid, env, logger }) {
+export function defaultRecordTerminalError({ sprintId, childPid, env, logger, detail }) {
     const log = (logger && (logger.error ?? logger.log)) ?? (() => {});
-    const message = `Sprint '${sprintId}' (pid ${childPid ?? 'unknown'}) is no longer alive and never recorded a terminal state -- classified CRASHED by the PID-liveness watchdog.`;
+    const exitDetail = detail ?? 'pid gone';
+    const message = `Sprint '${sprintId}' (pid ${childPid ?? 'unknown'}) is no longer alive (${exitDetail}) and never recorded a terminal state -- classified CRASHED by the PID-liveness watchdog.`;
     log(`[watchdog] TERMINAL ERROR: ${message}`);
     try {
         const statePath = getRunningRunStatePath(sprintId, env);
@@ -255,7 +405,7 @@ export function defaultRecordTerminalError({ sprintId, childPid, env, logger }) 
         writeJsonFileAtomic(statePath, {
             ...existing,
             status: 'failed',
-            terminalReason: existing.terminalReason || 'watchdog: crashed (pid gone, no terminal state ever persisted)',
+            terminalReason: existing.terminalReason || `watchdog: crashed (${exitDetail}, no terminal state ever persisted)`,
             lastError: {
                 message,
                 sprintId,
@@ -278,8 +428,10 @@ export function defaultRecordTerminalError({ sprintId, childPid, env, logger }) 
  *   resolvePort?: (sprintId: string) => number|undefined,
  *   isChildAlive?: (pid: number, marker?: string|number|null) => boolean,
  *   probeHttp?: (port: number) => Promise<boolean>|boolean,
- *   hasTerminalState?: (sprintId: string) => boolean,
+ *   hasTerminalState?: (sprintId: string, branch?: string|null) => object|boolean|null,
  *   recordTerminalError?: (info: { sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: object }) => void,
+ *   recordFinished?: (info: { sprintId: string, state: object|null, env: NodeJS.ProcessEnv, logger: object, history: object|null }) => void,
+ *   history?: { record: (entry: object) => Promise<object> },
  *   intervalMs?: number,
  *   env?: NodeJS.ProcessEnv,
  *   setIntervalFn?: typeof setInterval,
@@ -305,28 +457,38 @@ export function createWatchdog(deps = {}) {
     const resolvePort = deps.resolvePort ?? (() => undefined);
     const isChildAlive = deps.isChildAlive ?? makeChildPidProbe();
     const probeHttp = deps.probeHttp ?? probeChildHttp;
+    // apra-fleet-k7b.2: resolves by run-id first, falling back to the
+    // reservation's own recorded `branch` (ledger.mjs's Reservation.branch,
+    // legacy pre-run-id lookup key) ONLY when the run-id lookup misses; see
+    // defaultHasTerminalState()'s doc comment. Returns the PARSED terminal
+    // state (or `null`), not a boolean, so classifySprint() below can copy
+    // terminalReason/verdict verbatim -- injected test doubles that return a
+    // plain boolean keep working since only truthiness is checked before
+    // this value is passed on for (best-effort) field reads.
     const hasTerminalState = deps.hasTerminalState
-        ?? ((sprintId) => {
-            try {
-                // getTerminalRunStatePath resolves old_runs/ first, falling back
-                // to the legacy old_sprints/ (apra-fleet-eft.37.1), so a sprint
-                // that finished before the rename is still classified FINISHED.
-                return fs.existsSync(getTerminalRunStatePath(sprintId, env));
-            } catch {
-                return false;
-            }
-        });
+        ?? ((sprintId, branch) => defaultHasTerminalState(sprintId, branch, env));
     // apra-fleet-eft.20.3: the CRASHED-transition recorder (log line + a
     // persisted failed/lastError in the sprint's running/ state file, see
     // defaultRecordTerminalError above). Injectable so a test can assert on a
     // spy instead of the real fs/logger.
     const recordTerminalError = deps.recordTerminalError ?? defaultRecordTerminalError;
+    // apra-fleet-k7b.2: the FINISHED-transition recorder (log line + optional
+    // sprint-history.json FINISHED event, see defaultRecordFinished above).
+    // Same injectable-for-tests discipline as recordTerminalError.
+    const recordFinished = deps.recordFinished ?? defaultRecordFinished;
+    // apra-fleet-k7b.2: optional durable history log (bin/serve.mjs wires the
+    // real createHistory() instance in); when absent, defaultRecordFinished
+    // still logs the watchdog line, it just skips the sprint-history.json
+    // event -- classification itself must never depend on history being
+    // wired.
+    const history = deps.history ?? null;
     const intervalMs = Number.isInteger(deps.intervalMs) && deps.intervalMs > 0
         ? deps.intervalMs
         : WATCHDOG_DEFAULT_INTERVAL_MS;
     const setIntervalFn = deps.setIntervalFn ?? setInterval;
     const clearIntervalFn = deps.clearIntervalFn ?? clearInterval;
-    const logger = deps.logger ?? console;
+    // apra-fleet-k7b.2: ISO-timestamp-prefix every log line from this module.
+    const logger = withTimestamps(deps.logger ?? console);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
 
     /** Latest classification snapshot, refreshed each interval tick. */
@@ -341,6 +503,12 @@ export function createWatchdog(deps = {}) {
     // running/ state file already carries the persisted failed/lastError
     // from before the restart, so there is nothing to re-report.
     const recordedCrashes = new Set();
+    // apra-fleet-k7b.2: same one-shot-per-sprint-per-instance discipline as
+    // recordedCrashes above, but for the FINISHED transition -- without this
+    // guard classifySprint() running on every interval tick would append a
+    // fresh FINISHED event to sprint-history.json every tick for as long as
+    // the ledger keeps listing that (still-reserved-until-released) sprint.
+    const recordedFinishes = new Set();
 
     /**
      * Classify a SINGLE ledger entry into exactly one of the four statuses.
@@ -384,7 +552,21 @@ export function createWatchdog(deps = {}) {
         // PID gone: a persisted terminal state in old_runs/ (or legacy
         // old_sprints/) means it FINISHED; its absence means it CRASHED (died
         // without recording a terminal state).
-        const finished = hasTerminalState(sprintId);
+        //
+        // apra-fleet-k7b.3: `detail` reports whatever this SAME instance's
+        // spawner actually witnessed (ledger.recordExit(), see spawner.mjs/
+        // bin/serve.mjs's wiring) -- e.g. "exited 1 at ..." -- falling back to
+        // the previous bare "pid gone" when nothing was recorded (a restart
+        // severed the in-memory exit listener before this instance ever saw
+        // the child exit; see this module's file-level doc comment).
+        const detail = formatExitDetail(entry);
+        // apra-fleet-k7b.2: resolves by run-id first, falling back to this
+        // reservation's own recorded `branch` for a pre-k7b.1 reservation
+        // (see defaultHasTerminalState()'s doc comment). Returns the parsed
+        // terminal state object (or `null`/falsy for an injected boolean
+        // test double), never just a boolean.
+        const terminalState = hasTerminalState(sprintId, entry.branch ?? null);
+        const finished = Boolean(terminalState);
         if (!finished) {
             // apra-fleet-eft.20.3: this is the silent-death case the
             // apra-fleet-eft.20 smoke test exposed -- a doer/orchestrator
@@ -395,13 +577,26 @@ export function createWatchdog(deps = {}) {
             if (!recordedCrashes.has(sprintId)) {
                 recordedCrashes.add(sprintId);
                 try {
-                    recordTerminalError({ sprintId, childPid, env, logger });
+                    recordTerminalError({ sprintId, childPid, env, logger, detail });
                 } catch (err) {
                     // The recorder itself must never take the classifier down
                     // with it -- classification (the watchdog's core contract)
                     // must keep proceeding even if diagnostics reporting fails.
                     logError(`[watchdog] recordTerminalError threw for '${sprintId}':`, err);
                 }
+            }
+        } else if (!recordedFinishes.has(sprintId)) {
+            // apra-fleet-k7b.2: the FIRST time this sprint is classified
+            // FINISHED, log + (best-effort) record the engine's own
+            // terminalReason/verdict verbatim -- gated exactly like
+            // recordedCrashes above so a still-reserved (until released)
+            // finished sprint does not append a fresh history event on every
+            // subsequent interval tick.
+            recordedFinishes.add(sprintId);
+            try {
+                recordFinished({ sprintId, state: terminalState, env, logger, history });
+            } catch (err) {
+                logError(`[watchdog] recordFinished threw for '${sprintId}':`, err);
             }
         }
         return {
@@ -411,6 +606,12 @@ export function createWatchdog(deps = {}) {
             httpOk: false,
             childPid,
             port,
+            detail,
+            // apra-fleet-k7b.2: only populated when finished === true;
+            // undefined (not null) for CRASHED so existing assertions on the
+            // classifier's return shape for the crashed/running paths are
+            // unaffected.
+            ...(finished ? { terminalState } : {}),
         };
     }
 
