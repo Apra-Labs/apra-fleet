@@ -155,6 +155,49 @@ describe('dolt mutex lease / dead-pid reclaim', () => {
     expect((await ticketed.poll(b.ticket, { waitMs: 50 })).granted).toBe(true);
     mutex.stop();
   });
+
+  it('drops the reclaimed holder ticket map entry on dead-pid reclaim (no unbounded growth)', async () => {
+    let alive = true;
+    const mutex = createDoltMutex({
+      leaseMs: 60_000,
+      isPidAlive: () => alive,
+      logger: { log: () => {} },
+    });
+    const ticketed = createTicketedMutex(mutex);
+
+    const priorSize = ticketed.ticketCount();
+
+    const a = await ticketed.acquire('sprint-a', { pid: 5001, waitMs: 50 });
+    expect(a.granted).toBe(true);
+    expect(ticketed.ticketCount()).toBe(priorSize + 1);
+
+    // A "crashes" without ever releasing or cancelling its ticket.
+    alive = false;
+    expect(mutex.reclaimExpired()).toBe(true);
+
+    // The dangling ticket map entry for the reclaimed grant must be dropped,
+    // not left to accumulate on the always-on fleet server.
+    expect(ticketed.ticketCount()).toBe(priorSize);
+    mutex.stop();
+  });
+
+  it('drops the reclaimed holder ticket map entry on lease-expiry reclaim (no unbounded growth)', async () => {
+    let clock = 1_000;
+    const mutex = createDoltMutex({ leaseMs: 100, now: () => clock, logger: { log: () => {} } });
+    const ticketed = createTicketedMutex(mutex);
+
+    const priorSize = ticketed.ticketCount();
+
+    const a = await ticketed.acquire('sprint-a', { waitMs: 20 });
+    expect(a.granted).toBe(true);
+    expect(ticketed.ticketCount()).toBe(priorSize + 1);
+
+    clock += 1_000;
+    expect(mutex.reclaimExpired()).toBe(true);
+
+    expect(ticketed.ticketCount()).toBe(priorSize);
+    mutex.stop();
+  });
 });
 
 describe('child_id_allocator tool', () => {

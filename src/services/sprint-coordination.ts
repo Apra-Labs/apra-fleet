@@ -143,6 +143,17 @@ export interface DoltMutex {
   };
   start(): void;
   stop(): void;
+  /**
+   * Subscribe to holder reclaim events (lease expiry or dead-pid probe, see
+   * `reclaimExpired()`). Fired with the reclaimed holder's token BEFORE the
+   * next waiter is granted. Used by `createTicketedMutex` to drop the ticket
+   * map entry for a grant that was reclaimed out from under it instead of
+   * released through the normal `release(token)` path -- otherwise that
+   * entry (and its `byToken` mapping) would never be cleaned up and would
+   * accumulate for the lifetime of the always-on fleet server. Returns an
+   * unsubscribe function.
+   */
+  onReclaim(cb: (token: string) => void): () => void;
   readonly leaseMs: number;
 }
 
@@ -161,6 +172,7 @@ export function createDoltMutex(deps: MutexDeps = {}): DoltMutex {
   let holder: Holder | null = null;
   const waiters: Waiter[] = [];
   let sweepTimer: NodeJS.Timeout | null = null;
+  const reclaimListeners = new Set<(token: string) => void>();
 
   function grant(waiter: Waiter): void {
     const at = now();
@@ -188,7 +200,9 @@ export function createDoltMutex(deps: MutexDeps = {}): DoltMutex {
     const pidDead = holder.pid != null && !probe(holder.pid);
     if (!leaseExpired && !pidDead) return false;
     log(`[dolt-mutex] reclaiming ${leaseExpired ? 'expired' : 'dead-pid'} holder '${holder.sprintId}' (pid ${holder.pid ?? 'n/a'}); ${waiters.length} waiter(s) queued`);
+    const reclaimedToken = holder.token;
     holder = null;
+    for (const cb of reclaimListeners) cb(reclaimedToken);
     pump();
     return true;
   }
@@ -265,6 +279,10 @@ export function createDoltMutex(deps: MutexDeps = {}): DoltMutex {
         w.reject(new Error('dolt mutex is shutting down'));
       }
     },
+    onReclaim(cb: (token: string) => void): () => void {
+      reclaimListeners.add(cb);
+      return () => { reclaimListeners.delete(cb); };
+    },
     get leaseMs() { return leaseMs; },
   };
 }
@@ -301,6 +319,20 @@ export interface TicketedMutex {
 export function createTicketedMutex(mutex: DoltMutex): TicketedMutex {
   const tickets = new Map<string, Ticket>();
   const byToken = new Map<string, string>();
+
+  // A granted ticket's underlying mutex holder can be reclaimed (lease
+  // expiry or dead-pid probe, see DoltMutex#reclaimExpired) without ever
+  // going through this class's own `release(token)`/`cancel(ticket)` paths.
+  // Left unhandled, that ticket (and its byToken entry) would sit in the map
+  // forever -- on the always-on fleet server these accumulate monotonically.
+  // Drop it the moment the underlying grant is reclaimed.
+  mutex.onReclaim((token) => {
+    const ticketId = byToken.get(token);
+    if (ticketId) {
+      byToken.delete(token);
+      tickets.delete(ticketId);
+    }
+  });
 
   function boundedWait(ms: number | undefined): number {
     const raw = Number.isFinite(ms) ? (ms as number) : DEFAULT_WAIT_MS;
