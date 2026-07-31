@@ -568,15 +568,14 @@ serialization primitives existed, or an operational failure):
 
 ## Run identity: truthful termination classification
 
-Before this sprint's stabilization work, the supervisor watchdog inferred a
-sprint's outcome from process-liveness signals alone (PID gone -> assume
-crashed unless a terminal state file happened to exist). That collapsed two
-genuinely different situations -- "the engine finished and recorded why" and
-"something killed the process before it could record anything" -- into the
-same generic CRASHED-sounding classification whenever the terminal-state
-read raced the process exit, or the two disagreed for any other reason.
-
-The fix threads one **run-id** from the supervisor into the sprint child's
+Process-liveness signals alone cannot distinguish two genuinely different
+situations: "the engine finished and recorded why" versus "something killed
+the process before it could record anything." Inferring a sprint's outcome
+from PID-liveness alone (PID gone -> assume crashed unless a terminal state
+file happened to exist) collapses both into the same generic
+CRASHED-sounding classification whenever the terminal-state read races the
+process exit, or the two disagree for any other reason -- which is why the
+supervisor instead threads one **run-id** from itself into the sprint child's
 own engine run-state at spawn time, so the watchdog/dashboard/history layer
 can key its own state to the same identity the engine uses internally
 across consecutive supervisor-launched sprints (rather than the supervisor
@@ -616,9 +615,9 @@ reaches a point where it can report anything structured back to the
 supervisor (e.g. it dies before its first heartbeat) -- previously that
 output was only visible if an operator happened to be attached to the
 child's own process at the time. A non-zero-exit child is required to still
-leave a traceable log/ledger entry rather than vanishing silently; this was
-verified end-to-end (not just at the unit level) as part of this sprint's
-integration pass.
+leave a traceable log/ledger entry rather than vanishing silently; this
+invariant is verified end-to-end (not just at the unit level) by the
+integration suite.
 
 ## newTask allowlist and rejected-task resurfacing
 

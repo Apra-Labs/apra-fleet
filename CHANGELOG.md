@@ -35,11 +35,12 @@ What shipped and is genuinely solid:
 - Reviewer newTask title allowlist now accepts square brackets (reconciling
   with the `[test]` verification-task convention), and a rejected newTask is
   resurfaced into the next planning dispatch rather than silently dropped.
-- Fixed a class of Windows entrypoint-guard scripts whose
-  `import.meta.url === \`file://${process.argv[1]}\`` comparison never
-  matches on Windows (a native path vs. a properly-encoded URL), so the
-  affected verification scripts previously exited 0 having verified
-  nothing -- a false-pass, not a crash. Also fixed a Windows `bd` invocation
+- Fixed a class of Windows entrypoint-guard scripts whose "is this the
+  directly-run script" check compared `import.meta.url` against a
+  hand-built `file://` string, which never matches on Windows (a native
+  path vs. a properly-encoded URL), so the affected verification scripts
+  previously exited 0 having verified nothing -- a false-pass, not a crash.
+  Also fixed a Windows `bd` invocation
   path that threw ENOENT when spawned without a shell, without reintroducing
   the shell-injection surface a naive `{ shell: true }` fix would have
   opened.
@@ -68,7 +69,6 @@ Why the sprint still failed:
   adding the deploy-required permissions allowlist; and provisioning a
   runner credential so the smoke-test scenario can actually complete.
 
-<!-- cost-analysis:fix-fleet-sprint-stabilization -->
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
 Tracked spend (priced dispatches only): $37.2433.
 Remaining budget: unknown/unbounded.
