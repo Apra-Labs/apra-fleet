@@ -20,18 +20,22 @@ import { spawnSync } from 'node:child_process';
 // failure path.
 //
 // Verification that this suite actually discriminates the fix (criterion 3):
-// the pre-fix guard read
-//   if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) { main(); }
+// the pre-fix guard read (per git show 4f2fe43, no `process.argv[1] &&`
+// guard clause)
+//   if (import.meta.url === `file://${process.argv[1]}`) { main(); }
 // Temporarily reverting scripts/check-watchdog-isolation.mjs to that exact
 // line (restoring the malformed-file-URL string comparison) and re-running
 // `npx vitest run tests/check-watchdog-isolation-integ.test.ts` on this
-// Windows machine made every test in this file fail: the "PASS" test failed
-// because stdout was empty and status was 0 (not the expected budget-report
-// lines), and the "failure path" test's stdout assertion failed the same
-// way (empty stdout) even though its exit code happened to still be
-// nonzero via a different mechanism. Restoring the real pathToFileURL guard
-// (git checkout -- scripts/check-watchdog-isolation.mjs) made the suite
-// pass again. No code changes were left behind from that manual check.
+// Windows machine made all three tests in this file fail, because under the
+// pre-fix guard main() never runs for EITHER a genuine status file or a
+// nonexistent one: both spawns exit 0 with empty stdout/stderr. Concretely:
+// the "PASS" test failed on its stdout assertions (empty output, no
+// budget-report lines); the "nonexistent status file" test failed at
+// `expect(status).not.toBe(0)` (status was 0, not nonzero); and the
+// "over-budget/not-passed" test failed at `expect(status).toBe(1)` (status
+// was 0, not 1). Restoring the real pathToFileURL guard (git checkout --
+// scripts/check-watchdog-isolation.mjs) made the suite pass again. No code
+// changes were left behind from that manual check.
 
 const SCRIPT_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
