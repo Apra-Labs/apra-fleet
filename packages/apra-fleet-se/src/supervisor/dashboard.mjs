@@ -104,6 +104,11 @@ export function renderSprintSection(view) {
     // Supervisor-relative path ONLY -- never a bare child port (Plan Part 2.3:
     // bare child-port links leak port allocation and break across hosts).
     const liveHref = '/sprints/' + encodeURIComponent(view.sprintId) + '/live';
+    // apra-fleet-ou7.2: the raw stdout/stderr log link -- present for EVERY
+    // row this stack renders, including a CRASHED sprint (the live SSE
+    // viewer above is gone/unresponsive for that status; the raw log is the
+    // one remaining way to see what the child actually printed).
+    const logHref = '/sprints/' + encodeURIComponent(view.sprintId) + '/log';
 
     return (
         '<section data-sprint-id="' + sprintId + '" style="border: 1px solid rgba(255,255,255,0.1); ' +
@@ -112,6 +117,7 @@ export function renderSprintSection(view) {
         '<strong style="font-size: 14px;">' + sprintId + '</strong>' +
         statusBadge(view.status) +
         '<a href="' + liveHref + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">Open live view</a>' +
+        '<a href="' + logHref + '" target="_blank" rel="noopener" style="font-size: 12px;">Raw log</a>' +
         '</div>' +
         '<div style="margin-top: 8px; font-size: 13px; color: #d4d4d8;">' +
         '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + '</div>' +

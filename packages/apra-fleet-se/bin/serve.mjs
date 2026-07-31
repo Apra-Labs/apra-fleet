@@ -27,6 +27,7 @@ import { createReconciler, registerReservationRoutes } from '../src/supervisor/r
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
+import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 // eft.4.8.1: the operator-facing surface -- PID-liveness watchdog (eft.4.3),
@@ -239,6 +240,14 @@ export async function serveMain(argv = process.argv.slice(2)) {
     const liveProxy = createLiveProxy({ ledger, spawner, renderHistory: (sprintId) => historyView.renderForSprint(sprintId) });
     registerLiveRoutes(supervisor, liveProxy);
     registerHistoryViewRoutes(supervisor, historyView);
+
+    // apra-fleet-ou7.2: raw per-sprint stdout/stderr log, present for a live
+    // sprint AND for an ended one (finished/crashed) -- exactly where the
+    // live SSE viewer above is gone. Looks the sprint's recorded logPath up
+    // by id (ledger first, then history for a released reservation); never
+    // builds a path from the request's :id itself.
+    const logView = createLogView({ ledger, history });
+    registerLogViewRoutes(supervisor, logView);
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.
