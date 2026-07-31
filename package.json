@@ -20,8 +20,7 @@
   ],
   "main": "dist/index.js",
   "bin": {
-    "apra-fleet": "dist/index.js",
-    "fleet-sprint": "dist/fleet-sprint.mjs"
+    "apra-fleet": "dist/index.js"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -55,7 +54,6 @@
     "build:sea-config": "node scripts/gen-sea-config.mjs",
     "build:sea-package": "node scripts/package-sea.mjs",
     "build:binary": "npm run build && npm run build:sea && npm run build:sea-config && npm run build:sea-package",
-    "build:se": "node scripts/bundle-se.mjs",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "pretest": "npm run build:contract",
@@ -65,7 +63,7 @@
     "integration": "tsc && npx tsx tests/integration.test.ts",
     "prepare": "node scripts/install-hooks.mjs",
     "sync-agent-docs": "node scripts/sync-agent-docs.mjs",
-    "prepublishOnly": "npm run dist-pm && npm run build && npm run build:se"
+    "prepublishOnly": "npm run dist-pm && npm run build"
   },
   "keywords": [
     "ai-agent",
