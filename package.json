@@ -33,6 +33,7 @@
     "scripts/agy-transcript-reader.js",
     "skills/",
     "version.json",
+    "packages/apra-fleet-se/workflow.json",
     "packages/apra-fleet-se/fleet-sprint/",
     "packages/apra-fleet-se/bin/",
     "packages/apra-fleet-se/apra-pm/agents/",

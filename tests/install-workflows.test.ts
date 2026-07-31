@@ -684,3 +684,73 @@ describe('buildDevManifest resolves hoisted node_modules deps (regression for ap
     }
   });
 });
+
+// apra-fleet-kuh.4 -- regression coverage for a live install-time crash found
+// during the real npm-pack verification this bead required: a genuine `npm
+// pack` + tarball install + `apra-fleet workflow fleet-sprint --help` (not a
+// workspace symlink) failed with "workflow \"fleet-sprint\" has no
+// workflow.json and none of main.mjs, index.mjs, runner.js in
+// <...>/workflows/fleet-sprint" -- NOT the older 'workflow subsystem assets'
+// error kuh.3 already reworded, a different, previously-unseen failure. Root
+// cause: packages/apra-fleet-se/workflow.json (the file that names this
+// built-in workflow and points at its bin/cli.mjs entry point -- see
+// collectPackageTree()'s `fleetSprintDir` call above) was never added to root
+// package.json's `files` allowlist alongside the fleet-sprint/, bin/, and
+// apra-pm/ subtrees kuh.1 added, so a real `npm pack` silently dropped it: a
+// dev checkout (where the file simply exists on disk regardless of `files`)
+// never observed the bug, only a genuine tarball install did. Fixed by adding
+// "packages/apra-fleet-se/workflow.json" to package.json's `files` array.
+describe('buildDevManifest ships packages/apra-fleet-se/workflow.json (regression for apra-fleet-kuh.4)', () => {
+  afterEach(() => {
+    vi.doMock('node:fs');
+    vi.doMock('node:child_process');
+  });
+
+  it('builtinWorkflows includes fleet-sprint/workflow.json, pointing at a real, parseable workflow.json whose OWN entry file is also a manifest entry', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const real = await vi.importActual<typeof import('../src/cli/install.js')>('../src/cli/install.js');
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+
+    const testDir = pathReal.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = pathReal.resolve(testDir, '..');
+
+    const manifest = real._buildDevManifestForTest(projectRoot);
+    expect(manifest.builtinWorkflows).toBeDefined();
+    const builtin = manifest.builtinWorkflows!;
+
+    expect(builtin['fleet-sprint/workflow.json']).toBe('packages/apra-fleet-se/workflow.json');
+    const workflowJsonDisk = pathReal.join(projectRoot, builtin['fleet-sprint/workflow.json']);
+    expect(fsReal.existsSync(workflowJsonDisk)).toBe(true);
+    const parsed = JSON.parse(fsReal.readFileSync(workflowJsonDisk, 'utf-8'));
+    expect(parsed.name).toBe('fleet-sprint');
+    expect(typeof parsed.entry).toBe('string');
+    expect(parsed.entry.length).toBeGreaterThan(0);
+
+    // Shipping the pointer without its target is equally broken (this is
+    // exactly what the pre-fix state did NOT have -- bin/cli.mjs WAS already
+    // a manifest entry, only workflow.json itself was missing).
+    const entryKey = `fleet-sprint/${parsed.entry}`;
+    expect(builtin[entryKey], `builtinWorkflows must also carry '${entryKey}' (workflow.json's own entry field)`).toBeDefined();
+    expect(fsReal.existsSync(pathReal.join(projectRoot, builtin[entryKey]))).toBe(true);
+  });
+
+  it('the root package.json "files" allowlist ships packages/apra-fleet-se/workflow.json, not just its fleet-sprint/ and bin/ subtrees', async () => {
+    vi.resetModules();
+    vi.doUnmock('node:fs');
+    vi.doUnmock('node:child_process');
+
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+
+    const testDir = pathReal.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = pathReal.resolve(testDir, '..');
+    const pkg = JSON.parse(fsReal.readFileSync(pathReal.join(projectRoot, 'package.json'), 'utf-8')) as { files?: string[] };
+
+    expect(Array.isArray(pkg.files)).toBe(true);
+    expect(pkg.files).toContain('packages/apra-fleet-se/workflow.json');
+  });
+});
