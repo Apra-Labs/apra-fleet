@@ -138,6 +138,112 @@ function runScript(repoPath: string, sandboxPath?: string): { status: number; st
   return { status: res.status ?? -1, stdout: res.stdout, stderr: res.stderr };
 }
 
+describe('check-sandbox-sync-remote.mjs entrypoint guard actually runs main() when spawned directly as a real CLI (apra-fleet-xuo.8.2)', () => {
+  // apra-fleet-xuo.8: the pre-fix entrypoint guard (`file://${process.argv[1]}`
+  // string comparison) never matched on Windows, so `node scripts/check-
+  // sandbox-sync-remote.mjs <path>` silently exited 0 with NO output -- main()
+  // never ran. apra-fleet-xuo.8.1 fixed the guard to use pathToFileURL(). The
+  // suite above (and tests/check-sandbox-sync-remote.test.ts,
+  // check-sandbox-sync-remote-fetch-integ.test.ts) all import/call the
+  // module's exported functions directly (or, in the harness case above,
+  // deliberately route AROUND the real entrypoint guard because it used to be
+  // broken) -- none of them ever actually spawn the real script file as a
+  // child process, so none of them would have caught the guard bug, or would
+  // catch a regression of it. This describe block closes that coverage gap:
+  // every test here spawns 'node scripts/check-sandbox-sync-remote.mjs' for
+  // real, never importing main().
+  let outerDir: string;
+  let sandboxRoot: string;
+  let realOriginDir: string;
+  let toyRepo: string;
+
+  beforeEach(() => {
+    outerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sync-remote-guard-spawn-'));
+    sandboxRoot = path.join(outerDir, 'home');
+    fs.mkdirSync(sandboxRoot, { recursive: true });
+
+    realOriginDir = path.join(outerDir, 'fleet-e2e-toy.git');
+    fs.mkdirSync(realOriginDir, { recursive: true });
+    git(realOriginDir, ['init', '--bare', '-b', 'main']);
+
+    const seedDir = path.join(outerDir, 'seed');
+    fs.mkdirSync(seedDir, { recursive: true });
+    git(seedDir, ['init', '-b', 'main']);
+    git(seedDir, ['config', 'user.email', 'test@example.com']);
+    git(seedDir, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(seedDir, 'README.md'), 'toy repo\n', 'utf-8');
+    git(seedDir, ['add', 'README.md']);
+    git(seedDir, ['commit', '-m', 'seed commit']);
+    git(seedDir, ['push', realOriginDir, 'main']);
+
+    toyRepo = path.join(sandboxRoot, 'toy-repo');
+    git(sandboxRoot, ['clone', realOriginDir, toyRepo]);
+    git(toyRepo, ['config', 'user.email', 'test@example.com']);
+    git(toyRepo, ['config', 'user.name', 'Test']);
+
+    // Documented `## Setup` wire-before-init steps, verbatim.
+    const gitMirror = path.join(sandboxRoot, '.apra-fleet-toy-origin.git');
+    git(sandboxRoot, ['clone', '--bare', toyRepo, gitMirror]);
+    git(toyRepo, ['remote', 'set-url', 'origin', `file://${gitMirror}`]);
+
+    const doltRemote = path.join(sandboxRoot, '.apra-fleet-toy-dolt-remote');
+    fs.mkdirSync(path.join(toyRepo, '.beads'), { recursive: true });
+    fs.writeFileSync(path.join(toyRepo, '.beads', 'config.yaml'), `sync:\n  remote: "file://${doltRemote}"\n`, 'utf-8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(outerDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Spawns the REAL script file directly (never the harness above, never an
+   * import of main()) via 'node scripts/check-sandbox-sync-remote.mjs <args>'
+   * -- the exact command integ-test-playbook.md's `## Setup` documents.
+   */
+  function spawnRealScript(args: string[]): { status: number; stdout: string; stderr: string } {
+    const res = spawnSync(process.execPath, [SCRIPT_PATH, ...args], { encoding: 'utf-8' });
+    return { status: res.status ?? -1, stdout: res.stdout, stderr: res.stderr };
+  }
+
+  it("spawning 'node scripts/check-sandbox-sync-remote.mjs <repo>' for real prints all four check lines and exits 0, proving main() ran", () => {
+    const { status, stdout, stderr } = spawnRealScript([toyRepo, sandboxRoot]);
+
+    // Before apra-fleet-xuo.8.1's fix, this spawn would exit 0 with EMPTY
+    // stdout/stderr on Windows -- main() never ran, and none of the four
+    // check lines below would ever be printed. Asserting on all four proves
+    // main() genuinely executed, not just that the process happened to exit
+    // cleanly.
+    expect(status, `stdout: ${stdout}\nstderr: ${stderr}`).toBe(0);
+    expect(stdout).toContain('[check-sandbox-sync-remote] OK: active sync.remote');
+    expect(stdout).toMatch(/\[check-sandbox-sync-remote\] OK: sandbox clone at/);
+    expect(stdout).toMatch(/\[check-sandbox-sync-remote\] OK:.*(remote list|remote\(s\)|unavailable)/);
+    expect(stdout).toContain("[check-sandbox-sync-remote] OK: git 'origin' remote");
+    expect(stdout).toContain('[check-sandbox-sync-remote] OK: sandbox is isolated from the real fleet-e2e-toy Dolt remote.');
+  });
+
+  it("spawning 'node scripts/check-sandbox-sync-remote.mjs <bogus-non-isolated-path>' exits non-zero with a diagnostic line -- silent exit 0 is impossible", () => {
+    // A bogus, non-isolated repo path: it exists on disk (so the
+    // repoPath-does-not-exist early-exit(2) path is not what is being
+    // exercised here) but is a plain empty directory with no .beads,
+    // no git origin wired to the sandbox mirror -- i.e. real check
+    // failures main() itself must surface, never a silent pass-through.
+    const bogusRepo = path.join(outerDir, 'bogus-non-isolated-repo');
+    fs.mkdirSync(bogusRepo, { recursive: true });
+    git(bogusRepo, ['init', '-b', 'main']);
+    git(bogusRepo, ['config', 'user.email', 'test@example.com']);
+    git(bogusRepo, ['config', 'user.name', 'Test']);
+    git(bogusRepo, ['remote', 'add', 'origin', realOriginDir]);
+
+    const { status, stdout, stderr } = spawnRealScript([bogusRepo, sandboxRoot]);
+
+    expect(status).not.toBe(0);
+    // A genuine diagnostic FAIL line was printed, not a silent exit.
+    expect(stdout).toMatch(/\[check-sandbox-sync-remote\] FAIL:/);
+    expect(stdout).not.toContain('OK: sandbox is isolated from the real fleet-e2e-toy Dolt remote.');
+    void stderr;
+  });
+});
+
 describe('check-sandbox-sync-remote.mjs (subprocess) -- all four checks against the eft.18.5 wire-before-init Setup flow (apra-fleet-eft.18.7 retarget of apra-fleet-eft.39.2)', () => {
   let outerDir: string; // scratch root for this test only
   let sandboxRoot: string; // stand-in for "$HOME" -- outerDir/home
