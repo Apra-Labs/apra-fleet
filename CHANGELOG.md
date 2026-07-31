@@ -69,6 +69,7 @@ Why the sprint still failed:
   adding the deploy-required permissions allowlist; and provisioning a
   runner credential so the smoke-test scenario can actually complete.
 
+#### Sprint cost analysis
 Budget ceiling: not set (no --budget flag) -- unlimited for this run.
 Tracked spend (priced dispatches only): $37.2433.
 Remaining budget: unknown/unbounded.
