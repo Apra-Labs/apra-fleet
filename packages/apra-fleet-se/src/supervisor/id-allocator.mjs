@@ -423,7 +423,11 @@ export function createIdAllocator(deps = {}) {
  *
  *   POST /api/child-id-allocator/:parentId/allocate  body { pid?, sprintId?, floor? }
  *       -> 200 { childId, seq, token, expiresAt }. The child then runs
- *          `bd create --id <childId> --parent <parentId>`.
+ *          `bd create --id <childId>` followed by `bd update <childId>
+ *          --parent <parentId>` -- NOT one create carrying both flags, which
+ *          bd rejects outright ("cannot specify both --id and --parent
+ *          flags"); see createChildBeadWithAllocatedId in fleet-sprint/
+ *          runner.js and the apra-fleet-xuo.7 note.
  *   POST /api/child-id-allocator/confirm             body { token }
  *       -> 200 { confirmed: boolean }. Called after a successful create.
  *   POST /api/child-id-allocator/release             body { token }

@@ -383,8 +383,19 @@ describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-al
                 // created under the shared epic (by either concurrent sprint's
                 // reviewer newTask) must have a distinct id -- this is the
                 // apra-fleet-04g.1 incident shape.
-                const finalChildren = JSON.parse((await runCmd(`bd list --parent ${epicBead.id} --json`, tempDir)).stdout || '[]');
-                const childIds = finalChildren.map((b) => b.id);
+                // apra-fleet-xuo.7.1: `--all` because a follow-up newTask
+                // created by an early Review round is picked up and CLOSED by a
+                // later Develop round of the same cycle, and `bd list` hides
+                // closed beads by default -- without it this read saw only
+                // whichever follow-up happened to still be open. The
+                // `${epicBead.id}.` filter is what keeps the floor assertion
+                // below honest: setupMinimal()'s own four task children are
+                // parented under this same epic but carry FLAT ids, so counting
+                // them would let the floor pass on zero reviewer newTasks.
+                // Only the allocator-minted `<parentId>.<seq>` ids (see
+                // createChildBeadWithAllocatedId) are reviewer follow-ups.
+                const finalChildren = JSON.parse((await runCmd(`bd list --parent ${epicBead.id} --json --all`, tempDir)).stdout || '[]');
+                const childIds = finalChildren.map((b) => b.id).filter((id) => id.startsWith(`${epicBead.id}.`));
                 // apra-fleet-04g.1 collision claim is only non-trivial if both
                 // concurrent sprints' reviewers actually landed a child under
                 // the shared parent -- assert a floor so this cannot pass
@@ -490,8 +501,13 @@ describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-al
                 assert.ok(releaseCalls.length >= 2, `expected at least one release per concurrent sprint, got ${JSON.stringify(mcpCalls)}`);
                 assert.ok(allocateCalls.length >= 1, `expected at least one child_id_allocator allocate call, got ${JSON.stringify(mcpCalls)}`);
 
-                const finalChildren = JSON.parse((await runCmd(`bd list --parent ${epicBead.id} --json`, tempDir)).stdout || '[]');
-                const childIds = finalChildren.map((b) => b.id);
+                // Same read as the HTTP topology above (apra-fleet-xuo.7.1):
+                // `--all` so follow-ups already closed by a later Develop round
+                // still count, and the `<parentId>.` filter so setupMinimal()'s
+                // own flat-id task children never stand in for a reviewer
+                // newTask.
+                const finalChildren = JSON.parse((await runCmd(`bd list --parent ${epicBead.id} --json --all`, tempDir)).stdout || '[]');
+                const childIds = finalChildren.map((b) => b.id).filter((id) => id.startsWith(`${epicBead.id}.`));
                 assert.equal(new Set(childIds).size, childIds.length, `expected no duplicate child ids under the shared parent, got ${JSON.stringify(childIds)}`);
             } finally {
                 if (tempDir) await teardown(tempDir);

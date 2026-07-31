@@ -2446,9 +2446,28 @@ async function stageCommandBodyMemberSide({ command, member, content, label }) {
  * Sequence (mirrors the allocator's reserve -> confirm/release contract):
  *   1. allocate() reserves the next distinct child id under the shared parent.
  *   2. `bd create` runs with `--id <childId>` (or, under the null client where
- *      childId is null and there is no second sprint, lets bd derive the id).
- *   3. confirm() on success (the id is now durably used) or release() on failure
+ *      childId is null and there is no second sprint, lets bd derive the id
+ *      from `--parent`).
+ *   3. On the explicit-id path only, a follow-up `bd update <childId> --parent
+ *      <parentId>` establishes the real parent edge (see the apra-fleet-xuo.7
+ *      note on the create command shape below).
+ *   4. confirm() on success (the id is now durably used) or release() on failure
  *      (the reserved id returns to the pool so it is never a permanent gap).
+ *
+ * apra-fleet-xuo.7.1 -- `bd create` REJECTS `--id` and `--parent` together
+ * ("Error: cannot specify both --id and --parent flags", exit 1). This used to
+ * be issued as one command carrying both flags, so EVERY allocator-minted
+ * reviewer newTask failed its create, degraded through persistNewTaskBestEffort
+ * into parent-bead notes, and left zero child beads under the shared parent
+ * while both concurrent sprints still finished green (the apra-fleet-xuo.7
+ * symptom). The allocator's childId is always `${parentId}.${seq}`, so on the
+ * explicit-id path the hierarchy is already encoded in the id itself and
+ * `--parent` must be dropped from the create; the separate `bd update
+ * --parent` that follows is what records the EXPLICIT parent edge (`bd show`'s
+ * PARENT block), which a dotted id alone does NOT create -- `bd list --parent`
+ * would match it on the id prefix regardless, so that link step is deliberately
+ * NOT best-effort: a failure throws, releases the reservation, and degrades
+ * loudly rather than silently leaving an edgeless child.
  *
  * @param {{
  *   command: Function, allocator: { allocate: Function, confirm: Function, release: Function },
@@ -2494,7 +2513,22 @@ export async function computeChildFloor({ command, member, parentId }) {
 export async function createChildBeadWithAllocatedId(opts) {
     const { command, allocator, member, title, description, priority, parentId, sprintId, floor, label, log = () => {} } = opts;
     const grant = await allocator.allocate(parentId, { pid: process.pid, sprintId, floor });
-    const idFlag = grant.childId ? ` --id ${grant.childId}` : '';
+    // The explicit-id path relies on the allocator's `${parentId}.${seq}` id
+    // shape to carry the hierarchy that `--parent` can no longer carry
+    // alongside `--id` (see the doc comment above). Fail loudly rather than
+    // create a child whose id does not place it under this parent at all.
+    if (grant.childId && !String(grant.childId).startsWith(`${parentId}.`)) {
+        await allocator.release(grant.token);
+        throw new Error(
+            `[id-allocator] allocated child id '${grant.childId}' is not a child of parent '${parentId}' ` +
+            '(expected the `<parentId>.<seq>` shape); released the reservation rather than creating an unparented bead',
+        );
+    }
+    // `bd create` refuses `--id` together with `--parent` (apra-fleet-xuo.7.1):
+    // carry EITHER the allocator-minted explicit id (hierarchy encoded in the
+    // id, parent edge linked immediately after the create) OR `--parent` and
+    // let bd derive the id (null-allocator path).
+    const parentageFlags = grant.childId ? `--id ${grant.childId}` : `--parent ${parentId}`;
     // apra-fleet-eft.56.1 / eft.73.1: the description is reviewer-authored
     // free text (LLM output whose own context includes the diff under review)
     // -- stage it to a MEMBER-LOCAL temp file (see stageCommandBodyMemberSide)
@@ -2509,9 +2543,17 @@ export async function createChildBeadWithAllocatedId(opts) {
             label: `Stage newTask description for '${title}'`,
         });
         await command(
-            `bd create "${title}" --body-file "${descriptionFile}" -p "${priority}" --parent ${parentId}${idFlag} --silent`,
+            `bd create "${title}" --body-file "${descriptionFile}" -p "${priority}" ${parentageFlags} --silent`,
             { member_name: member, silent: true, label: label ?? `Create follow-up task: ${title}` }
         );
+        // Explicit-id path only: record the real parent edge that `--parent`
+        // would have recorded, had bd allowed it on the same create.
+        if (grant.childId) {
+            await command(
+                `bd update ${grant.childId} --parent ${parentId}`,
+                { member_name: member, silent: true, label: `Link follow-up task ${grant.childId} under ${parentId}` }
+            );
+        }
     } catch (err) {
         // The create did NOT land -- return the reserved id to the pool so the
         // next allocation reuses it (no permanent gap), then re-throw.
