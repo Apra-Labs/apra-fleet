@@ -42,3 +42,50 @@ scenario's fixture, pass its test file through:
 A new test scenario added via the harness (`setup()` / `setupMinimal()` /
 `runDevelopLoopScenario()` with a fresh unique tag) gets its fixture the
 same way: run its file once in record mode with `bd` installed.
+
+## Recording a fixture when you author a new bd-touching test
+
+If you write a NEW test that shells out to `bd` (directly or via a scenario
+helper), you must record its fixture at authoring time, in the same commit
+as the test -- do not defer this to the sprint's once-per-sprint
+integration pass. An unrecorded scenario either fails loudly in replay mode
+(see the `[bd-replay] No bd recording found for scenario ...` error above)
+or, if it happens to share a scenario key with an existing fixture, is
+silently served someone else's recorded output.
+
+1. Make sure a real `bd` binary is installed and on PATH (record mode
+   spawns the real CLI).
+2. Record just your new test file (fastest, and avoids touching every other
+   fixture):
+
+       node scripts/run-tests.mjs record test/<your-new-test-file>.test.mjs
+
+   Or record the whole suite (equivalent, but slower, and will refresh
+   every fixture, not just yours):
+
+       npm run test:record --workspace=@apralabs/apra-fleet-se
+
+   Both ultimately set `APRA_FLEET_BD_MOCK=record` (see `scripts/run-tests.mjs`)
+   and run the real test file, capturing every `bd` invocation it issues.
+3. Where it lands: one file per scenario at
+   `test/fixtures/bd-recordings/<scenario-key>.jsonl`, where `<scenario-key>`
+   is derived from the scenario's temp-directory basename with its trailing
+   `-<millis>-<pid>` suffix stripped (see `scenarioKeyFromCwd` in
+   `test/helpers/bd-replay.mjs`). In practice this means whatever unique tag
+   you pass to `setup()` / `setupMinimal()` / `runDevelopLoopScenario()`
+   becomes (prefixed by the harness) the fixture's filename -- follow the
+   existing naming pattern in this directory, e.g.
+   `apra-fleet-mock-sprint-<your-tag>.jsonl` or
+   `apra-fleet-golden-<your-tag>.jsonl`.
+4. Commit the new `.jsonl` fixture alongside the test that produced it, in
+   the same commit -- a test that shells out to `bd` with no committed
+   fixture will fail for every other developer/CI running the default
+   replay-mode suite (`npm test` / `npm run test:unit`), not just for you.
+5. Re-recording when bd's output shape changes: fixtures are tied to the
+   exact `bd` CLI version they were recorded against. If the installed
+   `bd` version differs from the one a fixture was recorded with (a bd
+   upgrade, a changed flag/output format), re-record rather than
+   hand-editing the JSONL (hand-edits are rejected by
+   `test/bd-recordings-fidelity.test.mjs` and will drift from what `bd`
+   actually returns). Re-record with the same `record` mode command as
+   above, then commit the refreshed fixture.
