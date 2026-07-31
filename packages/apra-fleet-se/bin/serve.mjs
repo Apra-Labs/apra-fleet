@@ -105,13 +105,26 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // 'exit' listener notification (Node's own exit code/signal, keyed by
     // the launch's runId -- the SAME sprintId createSprintController claims
     // in the ledger BEFORE spawning, apra-fleet-k7b.1). Persist it two
-    // places: (1) ledger.recordExit() annotates the still-held reservation
-    // in place (does not release it) so the watchdog/dashboard can report
-    // e.g. "exited 1 at ..." instead of a bare "pid gone"; (2) history
-    // records a CHILD_EXITED audit event so the exit is still visible after
-    // the reservation is eventually released. Both are independently best-
-    // effort -- a missing/already-released reservation (e.g. a force-release
-    // raced the child's own exit) must never crash this listener.
+    // places: (1) history records a CHILD_EXITED audit event so the exit is
+    // still visible after the reservation is eventually released; (2)
+    // ledger.recordExit() annotates the still-held reservation in place (does
+    // not release it) so the watchdog/dashboard can report e.g. "exited 1 at
+    // ..." instead of a bare "pid gone". Both are independently best-effort --
+    // a missing/already-released reservation (e.g. a force-release raced the
+    // child's own exit) must never crash this listener.
+    //
+    // apra-fleet-xuo.6.1 -- ORDER IS LOAD-BEARING, history FIRST, ledger
+    // SECOND. Both ledger.mjs and history.mjs commit their in-memory view only
+    // after their atomic persist (tmp write + rename), and every observer (the
+    // dashboard/log-view, and the ou7.3/k7b.7 integration tests) polls the
+    // LEDGER's exitCode as the "this child has exited" readiness signal and
+    // then immediately reads history. Recording the ledger first opened a
+    // window one whole history-persist wide in which the ledger already showed
+    // an exitCode while history still had zero CHILD_EXITED events for that
+    // sprint -- the ledger/history mismatch of apra-fleet-xuo.6. Writing
+    // history first makes "the ledger shows an exitCode" imply "history
+    // already carries CHILD_EXITED" for every reader. Do not swap these back.
+    //
     // apra-fleet-ou7.1: onChildExit also carries logPath (spawner.mjs's own
     // per-sprint raw stdout/stderr log file) through into the CHILD_EXITED
     // history event -- the ledger already has it (recorded at claim() time,
@@ -122,14 +135,14 @@ export async function serveMain(argv = process.argv.slice(2)) {
         onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
             if (!runId) return;
             try {
-                await ledger.recordExit(runId, { exitCode, signal, at });
-            } catch (err) {
-                console.error(`[spawner] ledger.recordExit failed for '${runId}':`, err);
-            }
-            try {
                 await history.record({ sprintId: runId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at, logPath });
             } catch (err) {
                 console.error(`[spawner] history.record(CHILD_EXITED) failed for '${runId}':`, err);
+            }
+            try {
+                await ledger.recordExit(runId, { exitCode, signal, at });
+            } catch (err) {
+                console.error(`[spawner] ledger.recordExit failed for '${runId}':`, err);
             }
         },
     });

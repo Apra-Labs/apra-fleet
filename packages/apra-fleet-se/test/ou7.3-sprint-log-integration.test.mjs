@@ -82,18 +82,41 @@ describe('apra-fleet-ou7.3: every sprint has a traceable stdout/stderr log reach
     let dir;
     let sup;
     let port;
+    let ledger;
+    let history;
     const runId = `ou7-3-run-${process.pid}-${Date.now()}`;
 
+    // apra-fleet-xuo.6.1: cleanup must never fail the hook, and must never
+    // race an in-flight persist. If the test body above threw partway, `sup`
+    // (and even `ledger`/`history`) may be unset, and the ledger/history
+    // transaction chains may still have an atomic tmp-write + rename in
+    // flight -- deleting `dir` underneath that used to blow up here (ENOENT
+    // on sprint-history.json.tmp) and cascade a real assertion failure into a
+    // second, unrelated "failed running after hook" failure. Drain both seams
+    // (stop() is `await txChain`) before removing the dir, and treat every
+    // cleanup step as best-effort.
     after(async () => {
-        if (sup) await sup.stop('test');
-        if (dir) await fsp.rm(dir, { recursive: true, force: true });
+        for (const step of [
+            () => sup?.stop('test'),
+            () => ledger?.stop(),
+            () => history?.stop(),
+            () => (dir ? fsp.rm(dir, { recursive: true, force: true }) : undefined),
+        ]) {
+            try {
+                // eslint-disable-next-line no-await-in-loop -- cleanup is intentionally sequential
+                await step();
+            } catch (err) {
+                // eslint-disable-next-line no-console -- surfaced as TAP diagnostics, never a hook failure
+                console.error('[ou7.3 cleanup] non-fatal:', err && err.message);
+            }
+        }
     });
 
     test('a real child that writes stdout+stderr and exits nonzero leaves a log file on disk, recorded in the ledger and history', async () => {
         dir = await tmpDir('ou7-3-');
-        const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME) });
+        ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME) });
         await ledger.start();
-        const history = createHistory({ filePath: path.join(dir, HISTORY_FILENAME) });
+        history = createHistory({ filePath: path.join(dir, HISTORY_FILENAME) });
         await history.start();
 
         const spawner = createSpawner({
@@ -101,10 +124,17 @@ describe('apra-fleet-ou7.3: every sprint has a traceable stdout/stderr log reach
             cliPath: fixturePath,
             basePort: 19281,
             dataDir: dir,
+            // apra-fleet-xuo.6.1: history FIRST, ledger SECOND -- mirroring
+            // bin/serve.mjs's own (now likewise ordered) wiring. Both seams
+            // commit in memory only after their atomic persist, and the
+            // readiness poll below watches the LEDGER, so recording the ledger
+            // first left a window one history-persist wide where the ledger
+            // already showed an exitCode but history had no CHILD_EXITED event
+            // yet -- the ledger/history mismatch of apra-fleet-xuo.6.
             onChildExit: async ({ runId: exitedRunId, exitCode, signal, at, logPath }) => {
                 if (!exitedRunId) return;
-                await ledger.recordExit(exitedRunId, { exitCode, signal, at });
                 await history.record({ sprintId: exitedRunId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at, logPath });
+                await ledger.recordExit(exitedRunId, { exitCode, signal, at });
             },
         });
 

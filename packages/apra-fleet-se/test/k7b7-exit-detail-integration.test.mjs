@@ -22,8 +22,8 @@ import { createWatchdog, WATCHDOG_STATUS, formatExitDetail } from '../src/superv
 //      that exits nonzero almost immediately.
 //   2. The spawner's real 'exit' listener fires onChildExit({ runId,
 //      exitCode, signal, at, logPath }) -- wired exactly as bin/serve.mjs
-//      wires it: ledger.recordExit() annotates the still-held reservation,
-//      history.record(CHILD_EXITED) writes the durable audit event.
+//      wires it: history.record(CHILD_EXITED) writes the durable audit event,
+//      then ledger.recordExit() annotates the still-held reservation.
 //   3. Assert the ledger reservation and the history event both carry
 //      { exitCode, signal, exitedAt/at }.
 //   4. The watchdog's classifySprint() (real makeChildPidProbe(), no PID
@@ -72,10 +72,15 @@ describe('apra-fleet-k7b.7: spawner exit code/signal/time recorded in ledger and
                 command: process.execPath,
                 cliPath: exitNonzeroPath,
                 basePort: 19081,
+                // apra-fleet-xuo.6.1: history FIRST, ledger SECOND, mirroring
+                // bin/serve.mjs. The ledger annotation is the readiness signal
+                // this test polls, so it must be the LAST of the two to become
+                // observable or history.list() can still be empty when the
+                // CHILD_EXITED assertions below run.
                 onChildExit: async ({ runId: exitedRunId, exitCode, signal, at, logPath }) => {
                     if (!exitedRunId) return;
-                    await ledger.recordExit(exitedRunId, { exitCode, signal, at });
                     await history.record({ sprintId: exitedRunId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at, logPath });
+                    await ledger.recordExit(exitedRunId, { exitCode, signal, at });
                 },
             });
 
