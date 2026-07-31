@@ -396,12 +396,38 @@ describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-al
                 // createChildBeadWithAllocatedId) are reviewer follow-ups.
                 const finalChildren = JSON.parse((await runCmd(`bd list --parent ${epicBead.id} --json --all`, tempDir)).stdout || '[]');
                 const childIds = finalChildren.map((b) => b.id).filter((id) => id.startsWith(`${epicBead.id}.`));
+                // apra-fleet-xuo.7.2: a silent-empty "got []" here used to give
+                // no clue whether the run degraded, whether the allocator was
+                // ever reached, or what each concurrent sprint actually did --
+                // dump the full raw child-bead list (not just the filtered
+                // ids), both runs' DEGRADED status, and each run's in-process
+                // log lines (this suite has no real per-process log FILE --
+                // launchSprint() drives runner.js in-process via
+                // WorkflowEngine.executeFile -- so `run.logs` is the per-sprint
+                // trace equivalent to a log path) so a future failure here is
+                // diagnosable from this message alone, without re-running.
+                // Built (not just defined) unconditionally -- on a PASSING run
+                // too -- so a change that broke JSON.stringify-ability of this
+                // payload (e.g. a circular ref sneaking into runner.js's
+                // mcpCalls/logs shape) would itself surface as a real test
+                // failure here, rather than only being discovered the first
+                // time the diagnostic path is actually needed.
+                const diagnosticsStr = JSON.stringify({
+                    finalChildrenRaw: finalChildren,
+                    filteredChildIds: childIds,
+                    runADegraded: runA.logs.some((m) => m.includes(DEGRADED_MARKER)),
+                    runBDegraded: runB.logs.some((m) => m.includes(DEGRADED_MARKER)),
+                    runALogs: runA.logs,
+                    runBLogs: runB.logs,
+                    acquireCallUrls: proxyRecord.filter((r) => /\/acquire$/.test(r.url)).map((r) => r.url),
+                    allocateCallUrls: proxyRecord.filter((r) => /\/allocate$/.test(r.url)).map((r) => r.url),
+                });
                 // apra-fleet-04g.1 collision claim is only non-trivial if both
                 // concurrent sprints' reviewers actually landed a child under
                 // the shared parent -- assert a floor so this cannot pass
                 // vacuously on zero created children.
-                assert.ok(childIds.length >= 2, `expected at least 2 child beads created under the shared parent (one per concurrent sprint's reviewer newTask), got ${JSON.stringify(childIds)}`);
-                assert.equal(new Set(childIds).size, childIds.length, `expected no duplicate child ids under the shared parent, got ${JSON.stringify(childIds)}`);
+                assert.ok(childIds.length >= 2, `expected at least 2 child beads created under the shared parent (one per concurrent sprint's reviewer newTask), got ${JSON.stringify(childIds)}; diagnostics: ${diagnosticsStr}`);
+                assert.equal(new Set(childIds).size, childIds.length, `expected no duplicate child ids under the shared parent, got ${JSON.stringify(childIds)}; diagnostics: ${diagnosticsStr}`);
             } finally {
                 await stopRealSupervisor(supervisor);
                 proxy.server.close();
@@ -508,7 +534,24 @@ describe('apra-fleet-f34.3: real concurrent launches engage the HTTP mutex/id-al
                 // newTask.
                 const finalChildren = JSON.parse((await runCmd(`bd list --parent ${epicBead.id} --json --all`, tempDir)).stdout || '[]');
                 const childIds = finalChildren.map((b) => b.id).filter((id) => id.startsWith(`${epicBead.id}.`));
-                assert.equal(new Set(childIds).size, childIds.length, `expected no duplicate child ids under the shared parent, got ${JSON.stringify(childIds)}`);
+                // apra-fleet-xuo.7.2: same diagnosability improvement as the
+                // HTTP topology subtest above -- dump the raw child-bead list,
+                // each run's DEGRADED status, and each run's in-process log
+                // lines (the per-sprint "log path" equivalent for this
+                // in-process-driven suite) so a failure here is diagnosable
+                // without re-running.
+                // Built unconditionally (not just on failure) -- see the HTTP
+                // topology subtest's identical comment above.
+                const diagnosticsStr = JSON.stringify({
+                    finalChildrenRaw: finalChildren,
+                    filteredChildIds: childIds,
+                    runADegraded: runA.logs.some((m) => m.includes(DEGRADED_MARKER)),
+                    runBDegraded: runB.logs.some((m) => m.includes(DEGRADED_MARKER)),
+                    runALogs: runA.logs,
+                    runBLogs: runB.logs,
+                    mcpCalls,
+                });
+                assert.equal(new Set(childIds).size, childIds.length, `expected no duplicate child ids under the shared parent, got ${JSON.stringify(childIds)}; diagnostics: ${diagnosticsStr}`);
             } finally {
                 if (tempDir) await teardown(tempDir);
                 await fs.rm(allocatorDataDir, { recursive: true, force: true }).catch(() => {});
