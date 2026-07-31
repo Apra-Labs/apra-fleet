@@ -6,17 +6,15 @@ for the current cycle's features lives in `integ-test-playbook.md` instead.
 (The `deployer` agent is a different role: it follows `deploy.md` to install
 the software on a target. It does not run this file.)
 
-The playbook has two parts, and a full regression pass runs BOTH:
+Run BOTH parts for a full regression pass:
 
-1. **Real functional tests** (`## Run the apra-fleet-se suite against real
-   bd`): the full `apra-fleet-se` test suite, unmocked, against the real
-   `bd` CLI, run against branch HEAD. These are the real functional tests,
-   and they grow over time.
-2. **Smoke test** (`## Setup` / `## Reset` / `## Teardown` +
-   `## Test scenario`): one tiny toy sprint end to end in a throwaway
-   sandbox that it provisions fresh for itself, proving every basic usage
-   of apra-fleet-se works -- install, server boot, member registration,
-   sprint, harvest.
+- **Part 1 -- real functional tests.** Section `## Run the apra-fleet-se
+  suite against real bd`. The full `apra-fleet-se` test suite, unmocked,
+  against the real `bd` CLI, at branch HEAD.
+- **Part 2 -- smoke test.** Sections `## Setup`, `## Test scenario`,
+  `## Reset`, `## Teardown`. One toy sprint end to end in a throwaway
+  sandbox it provisions fresh for itself: install, server boot, member
+  registration, sprint, harvest.
 
 The smoke test's sandbox never touches the real `~/.apra-fleet`
 (production) install or its credentials/registry. It lives at a fixed,
@@ -226,26 +224,13 @@ git clean -fdx
 node "<repo-root>/scripts/sandbox-seed-beads.mjs" --sandbox-root "$HOME" --toy-repo "$HOME/toy-repo" --mode reset
 ```
 
-The `--mode reset` form performs the re-seed that used to be inlined here
-(clear the local Dolt state, `bd init --from-jsonl` with the auto-derived
-sandbox-local remote) behind the same `[sandbox-seed guard]` path
-assertions as `## Setup` -- see the Setup section: the guarded script is
-the ONLY sanctioned entry point for beads seeding/rewiring in this
-playbook.
-
-`rm -rf .beads/embeddeddolt` (plus `.local_version`, so `bd` never tries to
-forward-migrate a stale schema marker) throws away the local Dolt DB
-entirely; `bd init --from-jsonl` re-seeds it fresh from the git-tracked
-`.beads/issues.jsonl` the `git reset --hard` above just restored -- the same
-JSONL-only seed `## Setup` uses, so the hardcoded canary `gh-toy-4ef` (see
-`## Test scenario` step 2) reappears automatically with no separate
-re-provisioning step. `bd init` here auto-derives a fresh Dolt remote from
-git `origin` (the sandbox-local `$GIT_MIRROR`) the same way the first
-`bd init` in `## Setup` did; since nothing is ever pushed into
-`$GIT_MIRROR` itself (`## Setup`'s one throwaway push always targets the
-separate `$DOLT_REMOTE` directory instead), that auto-derived remote never
-accumulates real Dolt history, so this plain re-init succeeds every time
-without needing `--discard-remote`.
+`--mode reset` re-seeds through the same `[sandbox-seed guard]` path
+assertions as `## Setup` -- it is the ONLY sanctioned entry point for beads
+seeding/rewiring in this playbook. It wipes the local Dolt DB and re-inits
+it from the git-tracked `.beads/issues.jsonl` the `git reset --hard` above
+just restored, so the canary `gh-toy-4ef` (`## Test scenario` step 2)
+reappears with no separate re-provisioning step, and the re-init succeeds
+every time with no `--discard-remote` needed.
 
 ## Teardown
 
@@ -275,20 +260,13 @@ scenario.
    `HOME`/`APRA_FLEET_PORT` from Setup, via the `register-member` CLI
    subcommand (Bash, not the `register_member` MCP tool).
 
-   ORDER MATTERS: run step 3a's BONUS credential FILE write BEFORE this
+   ORDER MATTERS: run step 3a's credential FILE write BEFORE this
    registration. `register-member` launches the member's live interactive
-   claude session immediately (inheriting the fleet server process's own
-   ambient env/credentials file -- it does not read the registry
-   `encryptedEnvVars` step 3b provisions below), and a session launched
-   before credentials exist comes up "Not logged in" and stays that way --
-   fixing the credentials file afterward does not heal the already-running
-   process, so every interactive dispatch routed to it silently burns its
-   full timeout. Step 3b (the PRIMARY env-var provisioning) targets a
-   different, non-interactive dispatch path instead (`LocalStrategy`'s
-   clean-env exec, used for every `workflow fleet-sprint` Planner dispatch)
-   and needs the member to already be registered (it looks the member up by
-   name), so it necessarily runs AFTER this step. (Steps stay numbered as
-   written so cross-references hold; execute them 3a -> 1 -> 2 -> 3b -> 4...)
+   claude session immediately; if credentials do not exist yet, that
+   session comes up "Not logged in" and stays that way -- writing the
+   credentials file afterward does not heal it. Step 3b (member-scoped
+   provisioning) requires the member to already be registered, so it runs
+   after this step. Execute in this order: 3a -> 1 -> 2 -> 3b -> 4.
 
    ```bash
    node dist/index.js register-member --type local --name toy-doer \
@@ -308,13 +286,9 @@ scenario.
 
    If this fails (issue missing, or not open), the seeded fixture itself
    is broken -- fail loud per step 5/6 below rather than silently self-
-   provisioning a replacement. The canary is deliberately the SIMPLEST
-   possible issue -- the same scope-containment trick the e2e suite uses
-   with this same toy repo (its sprint script pins exactly one minimal
-   issue, "Add --version flag to CLI"). A concrete, tiny deliverable keeps
-   the toy sprint's planner from inventing scope: there is exactly one
-   obvious task, one obvious change, and one objectively checkable
-   outcome.
+   provisioning a replacement. The canary is deliberately the simplest
+   possible issue: one obvious task, one obvious change, one objectively
+   checkable outcome, so the toy sprint's planner has no scope to invent.
 3. Provision LLM credentials for the `toy-doer` member -- without this,
    step 4's Planner dispatch fails auth. Use the CLI auth path documented
    in `docs/tools-infrastructure.md` ("apra-fleet auth (CLI)"), not the
@@ -377,17 +351,12 @@ scenario.
    node "<repo-root>/scripts/check-toy-doer-credentials.mjs" toy-doer "$SANDBOX"
    ```
 4. Run `apra-fleet workflow fleet-sprint` against the canary issue with
-   `--max-cycles 1` and `--dispatch-timeout-s 900`. The timeout bound
-   means a hung dispatch (member process alive but silent) costs at most
-   15 minutes instead of the default hour -- right-sized for the canary's
-   tiny scope. Dolt-remote isolation needs no flag: with the sandbox's
-   `sync.remote` neutralized per `## Reset`, the engine's D-push pre-gate
-   refuses to issue any `bd dolt push` at all (there is no
-   `skip_dolt_push` arg -- an earlier revision of this playbook named one
-   that never existed). The canary's tiny fixed scope (one flag, one
-   file, one assertion) is what keeps this step inside the time budget --
-   if the sprint plans more than a couple of tasks for it, that is itself
-   suspicious and worth a bug bead.
+   `--max-cycles 1` and `--dispatch-timeout-s 900` (bounds a hung dispatch
+   to 15 minutes instead of the default hour). No `--skip-dolt-push` flag
+   needed: with the sandbox's `sync.remote` neutralized per `## Reset`,
+   the engine's D-push pre-gate refuses to issue any `bd dolt push`. If
+   the sprint plans more than a couple of tasks for the canary's
+   single-flag scope, that is itself suspicious and worth a bug bead.
 5. Assert the canary issue is now closed and the toy repo's sprint branch
    has a commit. Because the canary's deliverable is concrete, also
    verify it functionally when the canary is the "--version flag" issue:
@@ -396,11 +365,6 @@ scenario.
    loud: file a bug bead per "Reporting failures" below. Do not silently
    reset and move on -- this repo treats sprint-run surprises as signal.
 6. Hand off to Teardown regardless of the assertion's outcome.
-
-One ~10-minute pass exercises fresh install, server boot, member
-registration, git topology checks, planner/doer/reviewer dispatch, and
-harvest -- the same layers a real sprint depends on -- without touching
-production state.
 
 ## Reporting failures
 
