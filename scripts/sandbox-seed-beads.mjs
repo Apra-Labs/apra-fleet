@@ -113,6 +113,7 @@ function main() {
         execFileSync('bd', ['init', '--from-jsonl', '--prefix', args.prefix, '--non-interactive'], {
             cwd: repo,
             stdio: 'inherit',
+            shell: true,
         });
         console.log(`[sandbox-seed] OK (reset): re-seeded '${repo}' from its committed JSONL (no remote rewiring)`);
         return;
@@ -123,8 +124,9 @@ function main() {
     execFileSync('bd', ['init', '--from-jsonl', '--prefix', args.prefix, '--remote', remoteUrl, '--non-interactive'], {
         cwd: repo,
         stdio: 'inherit',
+        shell: true,
     });
-    execFileSync('bd', ['dolt', 'push'], { cwd: repo, stdio: 'inherit' });
+    execFileSync('bd', ['dolt', 'push'], { cwd: repo, stdio: 'inherit', shell: true });
     console.log(`[sandbox-seed] OK: seeded '${repo}' with sync.remote '${remoteUrl}' (all paths inside the sandbox root)`);
 }
 
