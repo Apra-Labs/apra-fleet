@@ -7352,6 +7352,12 @@ async function runSprintCycle(context) {
                                 requirementsContent,
                                 feedback: null,
                                 replanScope: replanScopeIds,
+                                // apra-fleet-xuo.5: the scoped in-cycle replan
+                                // pass is a real planner dispatch just like the
+                                // main Plan phase above -- a rejected newTask
+                                // pending resurface must not skip this dispatch
+                                // just because it happens to be scoped.
+                                rejectedNewTasksToResubmit: pendingRejectedNewTasks,
                             }),
                             {
                                 member_name: getMemberForRole('planner'),

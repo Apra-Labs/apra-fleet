@@ -1,5 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import {
     trackRejectedNewTaskForResurfacing,
     clearResubmittedNewTask,
@@ -7,6 +10,10 @@ import {
     buildRejectedNewTaskResurfaceLines,
     buildPlannerPrompt,
 } from '../fleet-sprint/runner.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const RUNNER_SOURCE = fs.readFileSync(path.join(__dirname, '../fleet-sprint/runner.js'), 'utf8');
 
 // apra-fleet-19o.2: a rejected reviewer-proposed newTask (validateNewTask()
 // failure) used to dead-end ONLY in the parent bead's notes
@@ -259,5 +266,34 @@ describe('buildPlannerPrompt: rejectedNewTasksToResubmit surfacing (apra-fleet-1
         });
         assert.ok(prompt.includes('SCOPED IN-CYCLE REPLAN'));
         assert.ok(prompt.includes('Resurfaced during scoped replan'));
+    });
+
+    // apra-fleet-xuo.5: buildPlannerPrompt() honoring rejectedNewTasksToResubmit
+    // in its scoped-replan SHAPE (the test above) is necessary but not
+    // sufficient -- it proves nothing about whether the actual scoped
+    // in-cycle replan CALL SITE in runner.js (the `agent(buildPlannerPrompt(
+    // {..., replanScope: replanScopeIds}))` dispatch inside the "Scoped
+    // Replan Plan (interactive)" block) actually passes
+    // `rejectedNewTasksToResubmit` through. It previously did not, so a
+    // pending rejected newTask was silently skipped on every scoped replan
+    // dispatch even though it was correctly resurfaced on the main Plan
+    // phase's call site. This is a real (source-level) wiring assertion,
+    // not just a builder-shape assertion: it isolates the scoped-replan
+    // call-site text (bounded by two source landmarks unique to that block)
+    // and asserts the call actually forwards `rejectedNewTasksToResubmit`.
+    test('the scoped in-cycle replan CALL SITE in runner.js actually forwards rejectedNewTasksToResubmit (not just the builder shape)', () => {
+        const startMarker = 'const SCOPED_REPLAN_PLANNER_MAX_TURNS';
+        const endMarker = "label: 'Scoped Replan Plan (interactive)'";
+        const startIdx = RUNNER_SOURCE.indexOf(startMarker);
+        const endIdx = RUNNER_SOURCE.indexOf(endMarker, startIdx);
+        assert.ok(startIdx !== -1, 'expected to find the scoped in-cycle replan block start marker in runner.js');
+        assert.ok(endIdx !== -1, 'expected to find the scoped in-cycle replan block end marker in runner.js');
+        const callSiteSource = RUNNER_SOURCE.slice(startIdx, endIdx);
+        assert.ok(
+            callSiteSource.includes('rejectedNewTasksToResubmit'),
+            'the scoped in-cycle replan buildPlannerPrompt() call site must pass rejectedNewTasksToResubmit ' +
+            '(previously unwired -- see apra-fleet-xuo.5) so a pending rejected newTask is resurfaced into this ' +
+            'dispatch too, not only into the next cycle\'s main Plan phase'
+        );
     });
 });
