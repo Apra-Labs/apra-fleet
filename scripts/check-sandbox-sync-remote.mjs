@@ -345,12 +345,17 @@ export function parseDoltRemoteList(output) {
  * @returns {{ok: boolean, message: string}}
  */
 export function checkDoltRemoteAbsent(repoPath, sandboxPath = defaultSandboxPath(repoPath), deps = {}) {
-  // apra-fleet-2cc.1: routed through the shared execBdSync helper (always
-  // `{ shell: true }`) so this resolves on Windows, where the npm-installed
-  // `bd` is a POSIX shim `execFileSync` cannot exec directly without a shell.
-  // `deps.execFileSync` (test injection) is forwarded through unchanged --
-  // existing tests that stub it with a fake `(cmd, args, opts) => output`
-  // function are unaffected by the added `shell: true` in real opts.
+  // apra-fleet-2cc.1: routed through the shared execBdSync helper, which
+  // resolves on Windows via the real `.../bin/bd.js` script the npm `bd`
+  // shim wraps (invoked directly via `process.execPath`, no shell) rather
+  // than `{ shell: true }` -- see scripts/lib/exec-bd.mjs's module doc for
+  // why (a real `{ shell: true }` shell-metacharacter-injection risk was
+  // found and closed here). Every arg on this call is a static literal
+  // (never caller-controlled), so this call site was never exposed either
+  // way, but it shares the one safe helper rather than a second bespoke
+  // invocation. `deps.execFileSync` (test injection) is forwarded through
+  // unchanged -- existing tests that stub it with a fake
+  // `(cmd, args, opts) => output` function are unaffected.
   let output;
   try {
     output = execBdSync(['dolt', 'remote', 'list', '--json'], {

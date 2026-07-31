@@ -6,49 +6,139 @@
 // directly, so `execFileSync('bd', [...])` (no `{ shell: true }`) throws
 // `spawnSync bd ENOENT` even though the exact same invocation works fine
 // interactively (the interactive shell resolves the PATHEXT-eligible
-// `bd.cmd`/`bd.ps1` shim itself). Routing every `bd` invocation through the
-// platform shell (`shell: true`) is the same fix already applied to
-// `packages/apra-fleet-se/src/supervisor/backlog.mjs` and
-// `scope-overlap.mjs`'s `execFileAsync('bd', ..., { shell: true })` calls --
-// this module is the single shared helper so `scripts/sandbox-seed-beads.mjs`
-// and `scripts/check-sandbox-sync-remote.mjs` do not each hand-roll their own
-// copy of the same platform quirk.
+// `bd.cmd`/`bd.ps1` shim itself).
 //
-// Safety: every caller passes `args` as an array, never a pre-built shell
-// string -- this helper never concatenates caller-supplied values into a
-// shell command line itself. However, Node does NOT safely quote array args
-// for `cmd.exe` when `shell: true` is set (verified empirically -- `&`, `;`,
-// `$()`, and `()` inside an argument value all reach the shell as separate
-// tokens/commands on Windows even though args are passed as an array), so
-// `execBdAsync` below (apra-fleet-xuo.2) additionally validates every arg
-// against an allowlist charset before the shell ever sees it.
-
-// See also: `execBdAsync` (apra-fleet-xuo.2), the async counterpart to
-// `execBdSync` used by `packages/apra-fleet-se/src/supervisor/backlog.mjs`
-// and `scope-overlap.mjs`, which previously each hand-rolled their own
-// `execFileAsync('bd', ..., { shell: true })` call.
+// SAFETY (apra-fleet-2cc.1 review fix): `execBdSync` below does NOT route
+// through `{ shell: true }` on Windows. A 2026-07-30 review found that
+// `{ shell: true }` makes Node join `bd` + every arg into ONE shell command
+// line WITHOUT quoting -- verified empirically that `&`, `;`, `$()` etc.
+// inside an array-passed arg reach cmd.exe as separate tokens/commands, a
+// real injection surface for `scripts/sandbox-seed-beads.mjs`'s
+// caller-controlled `--prefix` and `pathToFileURL(...)`-derived `--remote`
+// values (neither of which `pathToFileURL` percent-encodes). Instead, on
+// win32, `resolveWindowsBdScript()` locates the npm-generated `bd.cmd` shim
+// on PATH and parses out the underlying `.../bin/bd.js` script it wraps
+// (every npm Windows shim, regardless of whether it finds its own bundled
+// `node.exe`, ends in `"<js path>" %*` -- see that function's doc comment),
+// and `execBdSync` invokes THAT script directly via
+// `execFileSync(process.execPath, [scriptPath, ...args])` -- a normal
+// argv-array child-process spawn, no shell involved at all, so no shell
+// metacharacter in any arg can ever be reinterpreted. This is strictly safer
+// than quoting for cmd.exe (notoriously easy to get subtly wrong) and avoids
+// Windows' CreateProcess-cannot-exec-a-shebang-script problem at the same
+// time, since we bypass the `.cmd` file (and its shebang/PATHEXT dance)
+// entirely. On non-Windows platforms `resolveWindowsBdScript()` always
+// returns `null` (a real `bd` binary/symlink there already execs fine via a
+// plain, shell-less `execFileSync('bd', args)`), so POSIX behavior/safety is
+// unchanged from before this fix -- no `{ shell: true }` there either now,
+// closing the same injection surface on POSIX too.
+//
+// If `bd.cmd` cannot be found on PATH or its content does not match the
+// expected npm-shim shape (e.g. a future npm shim-generator format change),
+// `execBdSync` falls back to the pre-fix `{ shell: true }` invocation so a
+// legitimately-installed `bd` still runs rather than hard-failing -- this
+// fallback is the ONLY place this module still carries the shell-quoting
+// risk described above, and is expected to be rare in practice.
+//
+// See also: `execBdAsync` (apra-fleet-xuo.2), the async counterpart used by
+// `packages/apra-fleet-se/src/supervisor/backlog.mjs` and `scope-
+// overlap.mjs`, which additionally validates every arg against an allowlist
+// charset (`assertSafeArgs` below) before its own `{ shell: true }` fallback
+// path could ever see it -- appropriate there because both of ITS callers
+// only ever pass structured bd subcommands/flags/issue-ids, never the kind
+// of free-text values (URLs, operator-supplied prefixes) `execBdSync`'s
+// callers legitimately need to pass through untouched.
 
 import { execFileSync as nodeExecFileSync, execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 
 const nodeExecFileAsync = promisify(nodeExecFile);
 
 /**
- * Runs `bd <args>` via `execFileSync`, always with `{ shell: true }` so the
- * invocation resolves correctly on Windows (see module doc above) and is
- * unchanged in behavior on Linux/macOS (a real `bd` binary/symlink there
- * already execs fine either way).
+ * Locates the npm-generated `bd.cmd` shim on PATH and extracts the
+ * underlying `bin/bd.js` script path it wraps, so callers can invoke that
+ * script directly (`execFileSync(process.execPath, [scriptPath, ...args])`)
+ * instead of the `.cmd` file itself -- no shell required at all. Returns
+ * `null` (never throws) when: not on win32, `bd.cmd` is not found on any
+ * PATH entry, or its content does not match npm's shim shape -- callers
+ * treat `null` as "fall back to the pre-fix `{ shell: true }` invocation".
+ *
+ * npm's Windows shim for a bin script always ends with a line invoking the
+ * wrapped script via a DOUBLE-QUOTED path ending in `.js`, immediately
+ * followed by `%*` (forward every argv on to the script) -- e.g.:
+ *   "%_prog%"  "%dp0%\node_modules\@beads\bd\bin\bd.js" %*
+ * regardless of which of the shim's own two branches picked `_prog` (its
+ * bundled `node.exe` if present, else a bare `node` on PATH) -- so matching
+ * on that trailing `"<...>.js"` immediately before `%*` is stable across
+ * both branches and does not depend on `_prog`'s value at all.
+ *
+ * @param {{
+ *   env?: NodeJS.ProcessEnv,
+ *   platform?: NodeJS.Platform,
+ *   existsFn?: (p: string) => boolean,
+ *   readFileFn?: (p: string, enc: string) => string,
+ * }} [deps] - injectable for tests, so this is testable on any host platform
+ *   without depending on a real `bd` install.
+ * @returns {string|null}
+ */
+export function resolveWindowsBdScript(deps = {}) {
+    const env = deps.env ?? process.env;
+    const platform = deps.platform ?? process.platform;
+    const existsFn = deps.existsFn ?? existsSync;
+    const readFileFn = deps.readFileFn ?? readFileSync;
+    if (platform !== 'win32') return null;
+
+    const pathDirs = String(env.PATH ?? env.Path ?? '').split(path.delimiter).filter(Boolean);
+    for (const dir of pathDirs) {
+        const cmdPath = path.join(dir, 'bd.cmd');
+        if (!existsFn(cmdPath)) continue;
+        let content;
+        try {
+            content = readFileFn(cmdPath, 'utf-8');
+        } catch {
+            continue;
+        }
+        const match = content.match(/"%dp0%\\([^"]+\.js)"\s*%\*/);
+        if (!match) continue;
+        return path.join(dir, match[1]);
+    }
+    return null;
+}
+
+/**
+ * Runs `bd <args>`, safely and cross-platform (see module doc above for the
+ * full rationale):
+ *   - win32: resolves the real `.../bin/bd.js` script `bd.cmd` wraps
+ *     (`resolveWindowsBdScript()`) and invokes it directly via
+ *     `execFileSync(process.execPath, [scriptPath, ...args])` -- no shell.
+ *   - everywhere else, or if that resolution fails: `execFileSync('bd', args)`
+ *     directly (POSIX) / with `{ shell: true }` (the pre-fix Windows
+ *     fallback, only reached if `bd.cmd` could not be resolved).
  *
  * @param {string[]} args - argv passed to `bd` (e.g. ['dolt', 'remote', 'list', '--json'])
- * @param {import('node:child_process').ExecFileSyncOptions} [options] - forwarded as-is (cwd, encoding, stdio, ...); `shell` is always forced to `true` regardless of what is passed here.
+ * @param {import('node:child_process').ExecFileSyncOptions} [options] - forwarded as-is (cwd, encoding, stdio, ...).
  * @param {typeof nodeExecFileSync} [execFileSyncImpl] - injectable for tests (same signature as `node:child_process`'s `execFileSync`); defaults to the real one.
+ * @param {typeof resolveWindowsBdScript} [resolveWindowsBd] - injectable for tests, so the win32-only resolution path is exercisable/deterministic on any host platform.
  * @returns {Buffer|string}
  */
-export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSync) {
+export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSync, resolveWindowsBd = resolveWindowsBdScript) {
     if (!Array.isArray(args)) {
         throw new TypeError('execBdSync requires args to be an array of strings');
     }
-    return execFileSyncImpl('bd', args, { ...options, shell: true });
+    const scriptPath = resolveWindowsBd();
+    if (scriptPath) {
+        return execFileSyncImpl(process.execPath, [scriptPath, ...args], { ...options, shell: false });
+    }
+    // Fallback: pre-fix behavior. On POSIX this is what already worked (a
+    // real `bd` binary/symlink execs fine without a shell); on win32 this
+    // path is only reached when `bd.cmd` could not be resolved above, and
+    // still needs `{ shell: true }` to get past Windows' cannot-exec-a-
+    // shebang-script limitation -- see the module doc's fallback note for
+    // why this one remaining path still carries the quoting risk.
+    const needsShell = (process.platform === 'win32');
+    return execFileSyncImpl('bd', args, { ...options, shell: needsShell });
 }
 
 // execBdAsync's two current callers (backlog.mjs's fetchAllBeadsRaw(),
