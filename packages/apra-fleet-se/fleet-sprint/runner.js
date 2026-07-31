@@ -100,6 +100,7 @@ const ROLE_ORCHESTRATOR = 'orchestrator';
 //   reviewer           -> 'premium'  (both per-round AND final review; vendor contract: "always use model: premium")
 //   deployer           -> 'standard' (mostly mechanical: follow deploy.md)
 //   integ-test-runner  -> 'standard' (mostly mechanical: follow integ-test-playbook.md)
+//   regression-test-runner -> 'standard' (mostly mechanical: follow regression-test-playbook.md)
 //   harvester          -> 'standard' (docs/CHANGELOG synthesis, not code-critical)
 // These tier keywords ('cheap' | 'standard' | 'premium') are resolved to a
 // concrete model PER MEMBER, server-side, by execute-prompt.ts's
@@ -118,6 +119,7 @@ const FIXED_ROLE_TIER = {
     reviewer: 'premium',
     deployer: 'standard',
     'integ-test-runner': 'standard',
+    'regression-test-runner': 'standard',
     harvester: 'standard',
     // Streak Assignment (runner.js's own ad-hoc "group these ready bead ids"
     // call, no vendored persona -- see the streakAssignment schema comment
