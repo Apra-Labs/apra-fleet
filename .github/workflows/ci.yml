@@ -48,9 +48,6 @@ jobs:
       - name: Verify build output
         run: node -e "require('fs').existsSync('dist/index.js') || (console.error('Build output dist/index.js not found'), process.exit(1))"
 
-      - name: Run tests
-        run: npm test
-
       # apra-fleet-se's test/advanced-mock-runner-test.mjs shells out to a
       # real `bd` (beads) CLI binary via child_process -- it was never
       # available in CI because apra-fleet-3ns.3's step below is the first
@@ -72,7 +69,14 @@ jobs:
       # to empty string for just this step (via the step-level `env:` block)
       # makes `!process.env.CI` true again, so postinstall actually runs its
       # download instead of silently no-op'ing.
-      - name: Install bd CLI (required by apra-fleet-se tests)
+      #
+      # Runs BEFORE "Run tests": apra-fleet-2cc.1/.3's tests/exec-bd.test.ts
+      # and tests/2cc-win-bd-invocation-integ.test.ts (picked up by the root
+      # `npm test` / vitest run below, not the workspace node:test step) spawn
+      # a REAL `bd --version`/`bd list`/etc via scripts/lib/exec-bd.mjs, with
+      # no CI-skip guard -- they need `bd` on PATH by the time "Run tests"
+      # starts, not just by the later workspace-tests step.
+      - name: Install bd CLI (required by apra-fleet-se tests and tests/exec-bd.test.ts)
         env:
           CI: ''
         run: |
@@ -92,6 +96,9 @@ jobs:
       # auto-detects the git-tracked JSONL to import from.
       - name: Bootstrap this repo's own beads DB (required by dashboard/backlog integration tests)
         run: bd bootstrap --yes
+
+      - name: Run tests
+        run: npm test
 
       # apra-fleet-3ns.3: apra-fleet-se, apra-fleet-workflow, and
       # apra-fleet-client each keep their tests in test/ (singular) as

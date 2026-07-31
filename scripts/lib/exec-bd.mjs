@@ -90,9 +90,21 @@ export function resolveWindowsBdScript(deps = {}) {
     const readFileFn = deps.readFileFn ?? readFileSync;
     if (platform !== 'win32') return null;
 
-    const pathDirs = String(env.PATH ?? env.Path ?? '').split(path.delimiter).filter(Boolean);
+    // Deliberately path.win32, not the bare `path` import: this function
+    // models Windows PATH/path semantics (';'-delimited, '\'-separated) even
+    // when `platform: 'win32'` is injected on a host actually running
+    // POSIX (e.g. these unit tests on macOS/ubuntu CI runners) -- the bare
+    // `path` module's `.delimiter`/`.join` follow process.platform, NOT the
+    // injected `platform` param, so using it here silently breaks PATH
+    // splitting (a Windows PATH entry's drive-letter colon, e.g. 'C:\Users\
+    // ...', gets misread as a second POSIX PATH entry split on ':') and path
+    // joining (POSIX '/' separators) on any non-Windows host -- exactly the
+    // failure this comment fixed (apra-fleet CI regression: 'expected null'
+    // on macos-latest/ubuntu-latest, where resolveWindowsBdScript is only
+    // ever exercised via this injectable-platform test path).
+    const pathDirs = String(env.PATH ?? env.Path ?? '').split(path.win32.delimiter).filter(Boolean);
     for (const dir of pathDirs) {
-        const cmdPath = path.join(dir, 'bd.cmd');
+        const cmdPath = path.win32.join(dir, 'bd.cmd');
         if (!existsFn(cmdPath)) continue;
         let content;
         try {
@@ -102,7 +114,7 @@ export function resolveWindowsBdScript(deps = {}) {
         }
         const match = content.match(/"%dp0%\\([^"]+\.js)"\s*%\*/);
         if (!match) continue;
-        return path.join(dir, match[1]);
+        return path.win32.join(dir, match[1]);
     }
     return null;
 }
