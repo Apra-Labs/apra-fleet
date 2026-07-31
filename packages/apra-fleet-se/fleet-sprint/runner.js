@@ -2827,10 +2827,11 @@ export function validateArgs(args) {
  *   requirementsContent: string|null,
  *   feedback: string|null,
  *   replanScope?: string[]|null,
+ *   rejectedNewTasksToResubmit?: Array<{title: string, description: string, reason: string, cycle: number|string}>,
  * }} opts
  * @returns {string}
  */
-function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null }) {
+export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [] }) {
     const lines = [];
 
     // apra-fleet-eft.68.1: SCOPED in-cycle replan clause. When a reviewer flags
@@ -2928,6 +2929,17 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
         lines.push(requirementsContent);
     } else if (requirementsFile && !requirementsContent) {
         lines.push(`Note: a requirementsFile ('${requirementsFile}') was configured for this sprint but could not be read; proceed without it.`);
+    }
+
+    // apra-fleet-19o.2: rejected reviewer-proposed newTasks (validateNewTask()
+    // failures from an earlier Develop/Review cycle) resurface HERE -- the
+    // very next planning-phase dispatch -- instead of dead-ending only in
+    // root-bead notes (appendRejectedFindingToParentNotes still writes the
+    // note too, for auditability). See buildRejectedNewTaskResurfaceLines()
+    // above.
+    const resurfaceLines = buildRejectedNewTaskResurfaceLines(rejectedNewTasksToResubmit);
+    if (resurfaceLines.length > 0) {
+        lines.push(resurfaceLines.join('\n\n'));
     }
 
     if (feedback) {
@@ -4281,6 +4293,76 @@ export async function appendRejectedFindingToParentNotes({ command, member, pare
         log(`[newTask notes-fallback] FAILED to append rejected finding to '${parentId}' notes: ${err.message}`);
         throw err;
     }
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-19o.2 -- resurface rejected newTasks into the NEXT planning
+// dispatch instead of dead-ending in root-bead notes
+// ---------------------------------------------------------------------------
+//
+// appendRejectedFindingToParentNotes() above is useful for a human
+// archaeologist reading a bead's notes, but useless to the next planning
+// dispatch: the planner has no memory of this run (apra-fleet-unw.3's
+// `resume: false` default) and never reads bead notes as part of its
+// prompt, so a rejected finding dead-ended there and never fed back into a
+// concrete "please fix and resubmit" instruction. These three pure/
+// immutable helpers track the CURRENT set of not-yet-resubmitted rejected
+// newTasks in run state (the caller holds the array; these never mutate it
+// in place) so buildPlannerPrompt() below can inject them verbatim as
+// explicit "previously rejected, fix and resubmit" items on the very next
+// planning-phase dispatch, and drop an item once it has been successfully
+// resubmitted so the list never accumulates forever.
+
+/**
+ * Records a newly-rejected newTask into the pending resurface list, keyed by
+ * title -- a newTask rejected twice under the same title keeps only the
+ * LATEST rejection reason/cycle (dedup by title), so a repeatedly-resubmitted-
+ * and-repeatedly-rejected item cannot grow the list unboundedly.
+ * @param {Array<{title: string, description: string, reason: string, cycle: number|string}>} pending
+ * @param {{title: unknown, description: unknown, reason: string, cycle: number|string}} rejected
+ * @returns {Array<{title: string, description: string, reason: string, cycle: number|string}>} a NEW array
+ */
+export function trackRejectedNewTaskForResurfacing(pending, rejected) {
+    const title = String((rejected && rejected.title) || '(untitled)');
+    const description = String((rejected && rejected.description) || '');
+    const entry = { title, description, reason: String(rejected && rejected.reason), cycle: rejected && rejected.cycle };
+    const withoutDup = (Array.isArray(pending) ? pending : []).filter((p) => p.title !== title);
+    return [...withoutDup, entry];
+}
+
+/**
+ * Drops any pending rejected-newTask entries whose title matches a
+ * newTask that has now been successfully created -- "cleared once
+ * resubmitted successfully" per apra-fleet-19o.2's acceptance criteria.
+ * @param {Array<{title: string}>} pending
+ * @param {string} resubmittedTitle
+ * @returns {Array<{title: string}>} a NEW array
+ */
+export function clearResubmittedNewTask(pending, resubmittedTitle) {
+    return (Array.isArray(pending) ? pending : []).filter((p) => p.title !== resubmittedTitle);
+}
+
+/**
+ * Formats the pending rejected-newTask items (see
+ * trackRejectedNewTaskForResurfacing above) as explicit "previously
+ * rejected, fix and resubmit" prompt lines -- consumed by buildPlannerPrompt
+ * below. Returns `[]` when nothing is pending (byte-identical prompt to
+ * before apra-fleet-19o.2 landed in that case).
+ * @param {Array<{title: string, description: string, reason: string, cycle: number|string}>} pending
+ * @returns {string[]}
+ */
+export function buildRejectedNewTaskResurfaceLines(pending) {
+    if (!Array.isArray(pending) || pending.length === 0) return [];
+    const lines = [
+        `${pending.length} previously REJECTED newTask(s) from an earlier round must be fixed and ` +
+        're-submitted this planning pass. Verbatim title/description below, plus why each was ' +
+        'rejected -- correct the stated defect (do not just resend the item unchanged), then create ' +
+        'it via bd create as normal:',
+    ];
+    pending.forEach((r, i) => {
+        lines.push(`${i + 1}. Title: "${r.title}"\nDescription: ${r.description}\nRejected because: ${r.reason} (cycle ${r.cycle})`);
+    });
+    return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -6531,8 +6613,21 @@ async function runSprintCycle(context) {
     // N3: reviewer newTasks rejected by validateNewTask() before ever
     // reaching `command()` -- threaded into the Final Review's evidence-
     // based prompt below so a rejection is visible to a human, not silently
-    // dropped. Rejection is non-fatal: the sprint continues.
+    // dropped. Rejection is non-fatal: the sprint continues. This is a
+    // cumulative AUDIT TRAIL (every rejection ever seen this run, never
+    // cleared) -- distinct from pendingRejectedNewTasks below, which tracks
+    // only the currently-unresolved ones.
     const rejectedNewTasks = [];
+
+    // apra-fleet-19o.2: the CURRENT set of not-yet-resubmitted rejected
+    // newTasks, resurfaced verbatim into the next planning-phase dispatch
+    // (buildPlannerPrompt's rejectedNewTasksToResubmit) instead of dead-
+    // ending only in root-bead notes. Reassigned (never mutated in place) via
+    // the pure trackRejectedNewTaskForResurfacing()/clearResubmittedNewTask()
+    // helpers above, so its whole history stays easy to reason about. Unlike
+    // `rejectedNewTasks` above, an entry is DROPPED once its title is
+    // successfully resubmitted -- it must not accumulate forever.
+    let pendingRejectedNewTasks = [];
 
     // Populated with the last Develop/Review loop's reviewer verdict for
     // each cycle (A5 work item 3: goal-priority completion requires BOTH
@@ -6611,6 +6706,7 @@ async function runSprintCycle(context) {
                 requirementsFile: validated.requirementsFile,
                 requirementsContent,
                 feedback: plannerFeedback,
+                rejectedNewTasksToResubmit: pendingRejectedNewTasks,
             });
             // apra-fleet-eft.8.2: planner is a read-side role (pushCode:
             // false) -- G-pull before, no-op G-push after; each retried
@@ -8193,6 +8289,13 @@ async function runSprintCycle(context) {
                 if (!validation.ok) {
                     log(`Reviewer newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
+                    // apra-fleet-19o.2: track it for resurfacing into the
+                    // NEXT planning-phase dispatch too -- see
+                    // trackRejectedNewTaskForResurfacing()'s doc comment.
+                    pendingRejectedNewTasks = trackRejectedNewTaskForResurfacing(pendingRejectedNewTasks, {
+                        title: newTask && newTask.title, description: newTask && newTask.description,
+                        reason: validation.reason, cycle,
+                    });
                     // apra-fleet-eft.56.1: a rejected finding must never
                     // simply vanish -- persist it verbatim to the parent
                     // bead's notes as a fallback (itself non-fatal: a notes
@@ -8216,7 +8319,7 @@ async function runSprintCycle(context) {
                 // follow-up work under the SAME parent never derive the same
                 // child id (constraint C.4). Under the null client (lone sprint)
                 // childId is null and bd derives the id as before.
-                await persistNewTaskBestEffort({
+                const persisted = await persistNewTaskBestEffort({
                     command, member: orchestratorMember, parentId: targetIssues[0],
                     newTask, cycle, log, stage: 'develop-review',
                     createFn: async () => {
@@ -8229,6 +8332,13 @@ async function runSprintCycle(context) {
                         });
                     },
                 });
+                // apra-fleet-19o.2: this title just successfully landed as a
+                // real bead -- if it was a resubmission of an earlier
+                // rejected item, drop it from the pending resurface list so
+                // it stops reappearing in future planning prompts.
+                if (persisted) {
+                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, title);
+                }
             }
 
             // apra-fleet-eft.9.1 (Plan 3.3): the orchestrator just MUTATED
@@ -8706,6 +8816,13 @@ async function runSprintCycle(context) {
                 if (!validation.ok) {
                     log(`Re-review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
+                    // apra-fleet-19o.2: track it for resurfacing into the
+                    // NEXT planning-phase dispatch too -- see
+                    // trackRejectedNewTaskForResurfacing()'s doc comment.
+                    pendingRejectedNewTasks = trackRejectedNewTaskForResurfacing(pendingRejectedNewTasks, {
+                        title: newTask && newTask.title, description: newTask && newTask.description,
+                        reason: validation.reason, cycle,
+                    });
                     // apra-fleet-eft.56.1: never let a rejected finding
                     // vanish -- persist it verbatim to the parent bead's
                     // notes as a fallback (non-fatal; degrades to run log).
@@ -8730,7 +8847,7 @@ async function runSprintCycle(context) {
                 // as the Develop/Review newTasks site above -- concurrent
                 // sprints must never mint the same child id under a shared
                 // parent (constraint C.4).
-                await persistNewTaskBestEffort({
+                const persisted = await persistNewTaskBestEffort({
                     command, member: orchestratorMember, parentId: targetIssues[0],
                     newTask, cycle, log, stage: 're-review',
                     createFn: async () => {
@@ -8743,6 +8860,11 @@ async function runSprintCycle(context) {
                         });
                     },
                 });
+                // apra-fleet-19o.2: same resurface-list bookkeeping as the
+                // Develop/Review newTasks site above.
+                if (persisted) {
+                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, title);
+                }
             }
 
             // apra-fleet-eft.9.1 (Plan 3.3): D-push the orchestrator's applied
