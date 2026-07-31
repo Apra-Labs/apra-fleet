@@ -181,7 +181,13 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // data-loss incident where a successful fetch was wrongly treated as always
 // safe to reset over. Both new sites pass member_name: member, confirmed
 // present.
-const EXPECTED_COMMAND_COUNT = 41;
+// 41 -> 42 (apra-fleet-xuo.4): the Plan phase gained a new
+// `bd list --parent <parentId> --json` command() call site, dispatched once
+// per target issue after a planner round when pendingRejectedNewTasks is
+// non-empty, to reconcile the pending resurface list against beads actually
+// created under the parent since the rejection (title-independent, matched
+// on description) -- member_name: orchestratorMember confirmed present.
+const EXPECTED_COMMAND_COUNT = 42;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

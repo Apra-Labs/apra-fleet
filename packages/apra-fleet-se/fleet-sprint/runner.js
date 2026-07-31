@@ -4331,15 +4331,69 @@ export function trackRejectedNewTaskForResurfacing(pending, rejected) {
 }
 
 /**
- * Drops any pending rejected-newTask entries whose title matches a
- * newTask that has now been successfully created -- "cleared once
- * resubmitted successfully" per apra-fleet-19o.2's acceptance criteria.
- * @param {Array<{title: string}>} pending
- * @param {string} resubmittedTitle
+ * Drops any pending rejected-newTask entries that match a newTask which has
+ * now been successfully created -- "cleared once resubmitted successfully"
+ * per apra-fleet-19o.2's acceptance criteria.
+ *
+ * apra-fleet-xuo.4: title-only matching missed the common case where the
+ * resurfaced prompt explicitly instructs the planner to correct the stated
+ * defect -- which usually means changing the title (e.g. '[test] foo' ->
+ * 'test: foo') -- leaving the corrected item stuck in the pending list
+ * forever. `resubmitted` may be a bare title string (legacy call shape,
+ * title-only match, preserved for backward compatibility) or an
+ * `{title, description}` object, in which case a match on EITHER the title
+ * OR the description (when non-empty) clears the entry, so a
+ * title-corrected-but-description-preserved resubmission still clears.
+ * @param {Array<{title: string, description?: string}>} pending
+ * @param {string|{title?: string, description?: string}} resubmitted
  * @returns {Array<{title: string}>} a NEW array
  */
-export function clearResubmittedNewTask(pending, resubmittedTitle) {
-    return (Array.isArray(pending) ? pending : []).filter((p) => p.title !== resubmittedTitle);
+export function clearResubmittedNewTask(pending, resubmitted) {
+    const list = Array.isArray(pending) ? pending : [];
+    const title = typeof resubmitted === 'string' ? resubmitted : String((resubmitted && resubmitted.title) || '');
+    const description = (resubmitted && typeof resubmitted === 'object' && resubmitted.description)
+        ? String(resubmitted.description) : '';
+    return list.filter((p) => {
+        const titleMatches = p.title === title;
+        const descriptionMatches = description.length > 0 && String((p && p.description) || '') === description;
+        return !(titleMatches || descriptionMatches);
+    });
+}
+
+/**
+ * apra-fleet-xuo.4: reconciles the pending resurface list against whatever
+ * ACTUALLY exists as a child of the parent bead right now, matching purely
+ * on description (title-independent). This exists because the planner --
+ * unlike the reviewer-newTask create sites -- never calls
+ * persistNewTaskBestEffort/clearResubmittedNewTask at all: it resubmits a
+ * corrected finding directly via `bd create` as an ordinary planning-phase
+ * bead creation. clearResubmittedNewTask() above can only ever fire from
+ * its own call sites, so a planner resubmission (title corrected per the
+ * resurfaced prompt's explicit instruction, per apra-fleet-xuo.4) would
+ * otherwise never be cleared and would keep reappearing in every subsequent
+ * planning prompt for the rest of the run. Call this after any phase that
+ * may have created new children under the parent (chiefly the Plan phase)
+ * with the current live child list (e.g. from `bd list --parent <id>
+ * --json`) to drop any pending entry whose description now matches a real
+ * child, regardless of what title that child ended up with.
+ * @param {Array<{title: string, description?: string}>} pending
+ * @param {Array<{description?: string}>} currentChildren
+ * @returns {Array<{title: string, description?: string}>} a NEW array
+ */
+export function reconcilePendingRejectedNewTasks(pending, currentChildren) {
+    const list = Array.isArray(pending) ? pending : [];
+    if (list.length === 0) return list;
+    const children = Array.isArray(currentChildren) ? currentChildren : [];
+    const childDescriptions = new Set(
+        children
+            .map((c) => String((c && c.description) || '').trim())
+            .filter((d) => d.length > 0)
+    );
+    if (childDescriptions.size === 0) return list;
+    return list.filter((p) => {
+        const description = String((p && p.description) || '').trim();
+        return description.length === 0 || !childDescriptions.has(description);
+    });
 }
 
 /**
@@ -6921,6 +6975,31 @@ async function runSprintCycle(context) {
             if (plannerErr) {
                 throw plannerErr;
             }
+            // apra-fleet-xuo.4: the planner resubmits a corrected rejected
+            // finding directly via `bd create` -- it never goes through
+            // persistNewTaskBestEffort/clearResubmittedNewTask, so a
+            // title-corrected resubmission (the resurfaced prompt explicitly
+            // instructs the planner to "correct the stated defect", which
+            // usually means changing the title) would otherwise stay stuck
+            // in pendingRejectedNewTasks and keep reappearing in every later
+            // planning prompt this run. Reconcile against whatever now
+            // actually exists as a child of each target parent, matching on
+            // description (title-independent) -- see
+            // reconcilePendingRejectedNewTasks()'s doc comment. Best-effort:
+            // a listing failure just leaves the pending list as-is (worst
+            // case the item resurfaces once more, never a sprint abort).
+            if (pendingRejectedNewTasks.length > 0) {
+                for (const parentId of targetIssues) {
+                    try {
+                        const label = `bd list --parent ${parentId} --json`;
+                        const raw = await command(label, { member_name: orchestratorMember, silent: true });
+                        const children = parseBdJson(raw, label);
+                        pendingRejectedNewTasks = reconcilePendingRejectedNewTasks(pendingRejectedNewTasks, children);
+                    } catch (err) {
+                        log(`[fleet-sprint] pending-rejected-newTask reconciliation against '${parentId}' children FAILED (non-fatal, list stays as-is): ${err.message}`);
+                    }
+                }
+            }
             // apra-fleet-eft.69.1: deliberately NO separate log() dump of
             // `plannerRes` here -- this is the exact duplicate-row bug the
             // user reported (apra-fleet-eft.69 bug item 1, "a second row
@@ -8336,8 +8415,11 @@ async function runSprintCycle(context) {
                 // real bead -- if it was a resubmission of an earlier
                 // rejected item, drop it from the pending resurface list so
                 // it stops reappearing in future planning prompts.
+                // apra-fleet-xuo.4: pass title+description (not just title)
+                // so a resubmission that also corrected its title still
+                // clears via its unchanged description.
                 if (persisted) {
-                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, title);
+                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
                 }
             }
 
@@ -8862,8 +8944,10 @@ async function runSprintCycle(context) {
                 });
                 // apra-fleet-19o.2: same resurface-list bookkeeping as the
                 // Develop/Review newTasks site above.
+                // apra-fleet-xuo.4: title+description, see the matching
+                // comment on the Develop/Review newTasks site above.
                 if (persisted) {
-                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, title);
+                    pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
                 }
             }
 

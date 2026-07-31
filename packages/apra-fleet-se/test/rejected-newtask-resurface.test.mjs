@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import {
     trackRejectedNewTaskForResurfacing,
     clearResubmittedNewTask,
+    reconcilePendingRejectedNewTasks,
     buildRejectedNewTaskResurfaceLines,
     buildPlannerPrompt,
 } from '../fleet-sprint/runner.js';
@@ -83,6 +84,78 @@ describe('clearResubmittedNewTask', () => {
     test('handles a non-array input gracefully (no throw)', () => {
         assert.doesNotThrow(() => clearResubmittedNewTask(undefined, 'x'));
         assert.deepStrictEqual(clearResubmittedNewTask(undefined, 'x'), []);
+    });
+
+    // apra-fleet-xuo.4: the resurfaced prompt explicitly instructs the
+    // planner to correct the stated defect, which usually means changing
+    // the title -- title-only matching left the corrected item stuck in the
+    // pending list forever. Passing an {title, description} object matches
+    // on EITHER field so a title-corrected-but-description-preserved
+    // resubmission still clears.
+    test('clears by description even when the resubmitted title differs from the rejected title', () => {
+        let pending = trackRejectedNewTaskForResurfacing([], {
+            title: '[test] foo', description: 'Fix the flaky retry loop.', reason: 'title fails allowlist', cycle: 1,
+        });
+        const cleared = clearResubmittedNewTask(pending, { title: 'test: foo', description: 'Fix the flaky retry loop.' });
+        assert.strictEqual(cleared.length, 0, 'a title-corrected resubmission with the same description must still clear');
+    });
+
+    test('object form still matches on title alone when description is absent/blank', () => {
+        let pending = trackRejectedNewTaskForResurfacing([], { title: 'Fix X', description: 'd', reason: 'r', cycle: 1 });
+        const cleared = clearResubmittedNewTask(pending, { title: 'Fix X' });
+        assert.strictEqual(cleared.length, 0);
+    });
+
+    test('object form does not clear an unrelated entry whose title AND description both differ', () => {
+        let pending = trackRejectedNewTaskForResurfacing([], { title: 'Fix X', description: 'd', reason: 'r', cycle: 1 });
+        const cleared = clearResubmittedNewTask(pending, { title: 'Totally different', description: 'also different' });
+        assert.strictEqual(cleared.length, 1);
+    });
+});
+
+describe('reconcilePendingRejectedNewTasks (apra-fleet-xuo.4)', () => {
+    // The planner resubmits a corrected finding directly via `bd create`,
+    // never through persistNewTaskBestEffort/clearResubmittedNewTask -- so
+    // this reconciliation, run against the parent's LIVE child list, is the
+    // only place a planner resubmission with a corrected title ever gets
+    // cleared from the pending resurface list.
+    test('drops a pending entry whose description now matches a real child bead, even with a different title', () => {
+        let pending = trackRejectedNewTaskForResurfacing([], {
+            title: '[test] foo', description: 'Fix the flaky retry loop.', reason: 'title fails allowlist', cycle: 1,
+        });
+        const currentChildren = [
+            { id: 'apra-fleet-abc.1', title: 'test: foo', description: 'Fix the flaky retry loop.' },
+        ];
+        const reconciled = reconcilePendingRejectedNewTasks(pending, currentChildren);
+        assert.strictEqual(reconciled.length, 0);
+    });
+
+    test('leaves a pending entry alone when no current child matches its description', () => {
+        let pending = trackRejectedNewTaskForResurfacing([], {
+            title: 'Fix X', description: 'Unresolved defect.', reason: 'r', cycle: 1,
+        });
+        const currentChildren = [
+            { id: 'apra-fleet-abc.1', title: 'Unrelated task', description: 'Something else entirely.' },
+        ];
+        const reconciled = reconcilePendingRejectedNewTasks(pending, currentChildren);
+        assert.strictEqual(reconciled.length, 1);
+    });
+
+    test('does not mutate the input pending array (pure/immutable)', () => {
+        const pending = trackRejectedNewTaskForResurfacing([], { title: 'Fix X', description: 'd', reason: 'r', cycle: 1 });
+        const reconciled = reconcilePendingRejectedNewTasks(pending, [{ description: 'd' }]);
+        assert.strictEqual(pending.length, 1, 'the original array must be untouched');
+        assert.strictEqual(reconciled.length, 0);
+    });
+
+    test('handles non-array pending/currentChildren gracefully (no throw)', () => {
+        assert.doesNotThrow(() => reconcilePendingRejectedNewTasks(undefined, undefined));
+        assert.deepStrictEqual(reconcilePendingRejectedNewTasks(undefined, undefined), []);
+        assert.doesNotThrow(() => reconcilePendingRejectedNewTasks([{ title: 'A', description: 'd' }], undefined));
+    });
+
+    test('is a no-op when nothing is pending', () => {
+        assert.deepStrictEqual(reconcilePendingRejectedNewTasks([], [{ description: 'd' }]), []);
     });
 });
 
