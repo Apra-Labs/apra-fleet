@@ -191,7 +191,7 @@ describe('id-allocator -- lives in the supervisor (end-to-end over HTTP routes)'
     test('two independent HTTP clients under one parent get distinct ids', async () => {
         const alloc = createIdAllocator({ dataDir: dir, leaseMs: 100_000 });
         await alloc.start();
-        const supervisor = createSupervisor({ idAllocator: alloc });
+        const supervisor = createSupervisor({ port: 0, idAllocator: alloc });
         registerIdAllocatorRoutes(supervisor, alloc, { readJsonBody, sendJson });
         await supervisor.start();
         const { port } = supervisor;

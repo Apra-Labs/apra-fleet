@@ -60,16 +60,29 @@ export function defaultCliPath(deps = {}) {
  * it (not just consulting in-memory bookkeeping) -- so allocation reflects
  * real OS-level availability, not just what this supervisor process itself
  * has handed out.
+ *
+ * Defaults the probe bind to the wildcard address (no host, matching how the
+ * real viewer's `server.listen(port, cb)` binds every interface -- see
+ * apra-fleet-workflow/src/viewer/index.mjs) rather than '127.0.0.1'. On
+ * Windows, a loopback-only bind and a pre-existing wildcard bind on the same
+ * port can coexist without either side erroring, so probing '127.0.0.1' can
+ * report a port "free" when a real viewer already owns it via a wildcard
+ * bind -- allocateFreePort would then hand that port to a second process,
+ * and inbound connections silently split between the two. Probing the
+ * wildcard address instead fails to bind whenever ANY process already holds
+ * the port on ANY interface, which is what "free" actually needs to mean.
  * @param {number} port
  * @param {string} [host]
  * @returns {Promise<boolean>}
  */
-export function isPortAvailable(port, host = '127.0.0.1') {
+export function isPortAvailable(port, host) {
     return new Promise((resolve) => {
         const tester = net.createServer();
         tester.unref();
         tester.once('error', () => resolve(false));
-        tester.listen({ port, host, exclusive: true }, () => {
+        const listenOpts = { port, exclusive: true };
+        if (host) listenOpts.host = host;
+        tester.listen(listenOpts, () => {
             tester.close(() => resolve(true));
         });
     });
