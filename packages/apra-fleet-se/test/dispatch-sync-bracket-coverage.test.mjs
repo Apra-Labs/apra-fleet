@@ -75,8 +75,13 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // read-side (pushCode:false) withGitSync(...) bracket. The scoped planner's
 // bracket additionally carries pushBeads:true (it re-scopes/mutates the
 // flagged subtree); neither writes code, so pushCode:true stays at 4.
-const EXPECTED_AGENT_COUNT = 20;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 18;
+// 20 -> 22 agent()/18 -> 20 withGitSync (integ/regression split): the new
+// once-per-sprint Regression Test phase adds its dispatch plus a
+// max_turns-exhaustion resume, each in its own read-side (pushCode:false,
+// pushBeads:true -- it files carry-over bug beads but never writes code)
+// withGitSync(...) bracket. pushCode:true stays at 4.
+const EXPECTED_AGENT_COUNT = 22;
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 20;
 const STREAK_ASSIGNMENT_MARKERS = [
     "label: 'Streak Assignment'",
     "label: 'Streak Assignment (semantic repair)'",

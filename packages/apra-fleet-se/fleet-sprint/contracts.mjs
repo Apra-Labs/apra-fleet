@@ -4,7 +4,7 @@
 // owning them.
 //
 // This module is the single source of truth (application-side) for:
-//   1. The eight sprint-role name strings (lowercase, matching the
+//   1. The nine sprint-role name strings (lowercase, matching the
 //      `name:` frontmatter of packages/apra-fleet-se/apra-pm/agents/*.md exactly).
 //   2. An ajv-compatible JSON schema for every role's structured verdict --
 //      as of apra-fleet-unw.22, LOADED from packages/apra-fleet-se/apra-pm/agents/schemas/
@@ -49,8 +49,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Exact lowercase strings, one per `name:` frontmatter field in
 // packages/apra-fleet-se/apra-pm/agents/*.md. Order matches the SKILL.md taxonomy:
 // sprint-core roles first (planner, plan-reviewer, doer, reviewer), then
-// lifecycle-support roles (deployer, integ-test-runner, ci-watcher,
-// harvester).
+// lifecycle-support roles (deployer, integ-test-runner, regression-test-runner,
+// ci-watcher, harvester). regression-test-runner (once-per-sprint informational
+// regression pass, see agents/regression-test-runner.md) sits right after
+// integ-test-runner (per-cycle feature closure) since the two split what used
+// to be a single "Integ Test" phase.
 export const ROLES = Object.freeze([
     'planner',
     'plan-reviewer',
@@ -58,6 +61,7 @@ export const ROLES = Object.freeze([
     'reviewer',
     'deployer',
     'integ-test-runner',
+    'regression-test-runner',
     'ci-watcher',
     'harvester',
 ]);
@@ -451,10 +455,14 @@ const FALLBACK_deployerReport = {
 
 // Fallback for role "integ-test-runner". Canonical source:
 // packages/apra-fleet-se/apra-pm/agents/schemas/integ-test-runner-output.json.
-// apra-fleet-eft.66.1: `deployedSha` added (optional) alongside the vendor/
-// apra-pm bump to commit 844112e -- validatePart2Evidence (runner.js) reads
-// it as the primary part-2 SHA-freshness evidence source, falling back to
-// the legacy PART2_SHA summary marker only when this field is absent.
+// `deployedSha` (optional) is a VESTIGIAL field, kept only to mirror the
+// vendored integ-test-runner-output.json, which keeps it for backward
+// compatibility with pre-split agent builds that still emit it. Nothing
+// reads it any more: the eft.66.1 engine-side consumer
+// (validatePart2Evidence) was removed with the integ/regression split, since
+// the per-cycle Integ Test phase no longer runs the part-2 smoke test whose
+// freshness it attested. Do not add new consumers -- if a phase needs deploy
+// provenance, model it explicitly rather than reviving this field.
 const FALLBACK_integReport = {
     $id: 'integReport',
     type: 'object',
@@ -470,6 +478,31 @@ const FALLBACK_integReport = {
         },
     },
     required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary'],
+};
+
+// Fallback for role "regression-test-runner". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/regression-test-runner-output.json.
+// This result is informational (never gates the current sprint's PASS/FAIL
+// verdict) -- see agents/regression-test-runner.md.
+const FALLBACK_regressionReport = {
+    $id: 'regressionReport',
+    type: 'object',
+    properties: {
+        passed: { type: 'boolean' },
+        suitePassed: { type: 'boolean' },
+        smokePassed: { type: 'boolean' },
+        bugsFiled: { type: 'array', items: { type: 'string' } },
+        summary: { type: 'string' },
+        smokeEvidence: {
+            type: 'object',
+            properties: {
+                versionStdout: { type: 'string' },
+                canaryStatus: { type: 'string' },
+                toyRepoHeadSha: { type: 'string' },
+            },
+        },
+    },
+    required: ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary'],
 };
 
 // Fallback for role "ci-watcher". Canonical source:
@@ -545,6 +578,7 @@ export const reviewerVerdict = resolveOutputSchema('reviewer', OUTPUT_SCHEMA_MAJ
 export const doerReport = resolveOutputSchema('doer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_doerReport);
 export const deployerReport = resolveOutputSchema('deployer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_deployerReport);
 export const integReport = resolveOutputSchema('integ-test-runner', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_integReport);
+export const regressionReport = resolveOutputSchema('regression-test-runner', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_regressionReport);
 export const ciReport = resolveOutputSchema('ci-watcher', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_ciReport);
 export const harvesterReport = resolveOutputSchema('harvester', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_harvesterReport);
 
@@ -559,6 +593,7 @@ export const FALLBACK_SCHEMAS = Object.freeze({
     doerReport: FALLBACK_doerReport,
     deployerReport: FALLBACK_deployerReport,
     integReport: FALLBACK_integReport,
+    regressionReport: FALLBACK_regressionReport,
     ciReport: FALLBACK_ciReport,
     harvesterReport: FALLBACK_harvesterReport,
 });
@@ -572,6 +607,7 @@ export const ROLE_FOR_SCHEMA_NAME = Object.freeze({
     doerReport: 'doer',
     deployerReport: 'deployer',
     integReport: 'integ-test-runner',
+    regressionReport: 'regression-test-runner',
     ciReport: 'ci-watcher',
     harvesterReport: 'harvester',
 });
@@ -586,6 +622,7 @@ export const SCHEMAS = Object.freeze({
     streakAssignment,
     deployerReport,
     integReport,
+    regressionReport,
     ciReport,
     harvesterReport,
     finalVerdict,
@@ -678,6 +715,7 @@ const INPUT_SCHEMA_MAJOR_VERSIONS = Object.freeze({
     reviewer: 2,
     deployer: 1,
     'integ-test-runner': 2,
+    'regression-test-runner': 1,
     'ci-watcher': 2,
     harvester: 1,
 });

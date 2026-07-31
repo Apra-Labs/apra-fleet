@@ -39,7 +39,7 @@ test('Test phase computes the scoped feature list and passes it to the integ dis
   assert.ok(integIdx >= 0, 'integ dispatch must exist');
   const region = src.slice(Math.max(0, integIdx - 2400), integIdx);
   assert.match(region, /getSprintOpenFeatures\(rootIds\)/, 'must compute sprint-scoped features');
-  assert.match(region, /Integration-test ONLY these open features from THIS sprint/,
+  assert.match(region, /Test ONLY these open features from THIS sprint/,
     'prompt must restrict testing to the scoped list');
 });
 

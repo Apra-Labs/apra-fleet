@@ -9,7 +9,7 @@ export const meta = {
   ],
 };
 
-// Multi-cycle sprint workflow. Drives 8 agents against a beads backlog until a
+// Multi-cycle sprint workflow. Drives 9 agents against a beads backlog until a
 // priority-based quality goal is met or the cycle ceiling is reached.
 //
 // Agent roster:
@@ -18,8 +18,11 @@ export const meta = {
 //   doer              -- works bd-ready tasks (impl and test-dev), VERIFY checkpoint
 //   reviewer          -- reviews doer output, can reopen tasks
 //   deployer          -- follows deploy.md ONLY (deploy + smoke test); never the playbook
-//   integ-test-runner -- owns integ-test-playbook.md end to end (setup/reset/teardown),
-//                        executes tests, closes features, files bugs/enhancements
+//   integ-test-runner -- per-cycle feature closure via integ-test-playbook.md: runs each
+//                        handed feature's [test] tasks, closes on pass, files [integ] bugs
+//   regression-test-runner -- ONCE PER SPRINT owner of regression-test-playbook.md (real-bd
+//                        suite + toy-sprint smoke test, sandbox setup/reset/teardown);
+//                        informational only, files parent-less [regression][carry-over] bugs
 //   ci-watcher        -- polls CI; creates beads task if not configured
 //   harvester         -- docs, CHANGELOG, token summary, PR
 //
@@ -142,12 +145,13 @@ const SHELL_OUTPUTS_SCHEMA = {
 };
 
 const SETUP_SCHEMA = {
-  type: 'object', required: ['repo', 'branch', 'deployMdExists', 'playbookExists', 'startedAt'],
+  type: 'object', required: ['repo', 'branch', 'deployMdExists', 'playbookExists', 'regressionPlaybookExists', 'startedAt'],
   properties: {
     repo:           { type: 'string' },
     branch:         { type: 'string' },
     deployMdExists: { type: 'boolean' },
     playbookExists: { type: 'boolean' },
+    regressionPlaybookExists: { type: 'boolean', description: 'regression-test-playbook.md exists -- gates the once-per-sprint regression pass' },
     startedAt:      { type: 'string', description: 'yyyymmdd_hhmmss from date +%Y%m%d_%H%M%S' },
     calibrationRaw: { type: 'string' },  // verbatim stdout of cat calibration.json; JS parses it
     transcriptDir:  { type: 'string', description: 'Directory where subagent JSONL conversation logs are written (best-effort; may be empty string if not resolvable)' },
@@ -227,6 +231,7 @@ const DEFAULT_CALIBRATION = {
     'plan-reviewer':     TIER_STANDARD,
     'deployer':          TIER_STANDARD,
     'integ-test-runner': TIER_STANDARD,
+    'regression-test-runner': TIER_STANDARD,
     'ci-watcher':        TIER_CHEAP,
     'harvester':         TIER_STANDARD,
     'log-flush':         TIER_CHEAP,
@@ -261,6 +266,16 @@ const DEFAULT_CALIBRATION = {
     planner:            2000,
     plan_reviewer:      1500,
     harvester:          3000,
+    // regression-test-runner runs ONCE PER SPRINT (Finalization, after Final Review),
+    // so it belongs here rather than in the per-cycle costing. integ-test-runner has no
+    // entry here on purpose -- it runs every cycle, not once per sprint.
+    // NOTE: this key is joined to actuals by computeSprintAnalysis's roleOf(), which
+    // derives the role from the DISPATCH LABEL. The regression dispatch below must
+    // therefore keep label: 'regression-test-runner' -- underscores here, dashes there.
+    // An earlier cut labelled it 'regression-runner', which mapped to a nonexistent
+    // 'regression_runner' key and silently dropped this role from the calibration
+    // outlier/suggestion pass.
+    regression_test_runner: 3000,
     ci_watcher:          300,
     log_flush_per_cycle: 100,
   },
@@ -1127,6 +1142,7 @@ function assertCalibrationComplete(calibration, defaults) {
     'fixed_overhead_tokens.planner',
     'fixed_overhead_tokens.plan_reviewer',
     'fixed_overhead_tokens.harvester',
+    'fixed_overhead_tokens.regression_test_runner',
     'fixed_overhead_tokens.ci_watcher',
     'fixed_overhead_tokens.log_flush_per_cycle',
     'input_cost_multiplier.value',
@@ -1474,6 +1490,63 @@ const INTEG_RUN_SCHEMA = {
     }
   }
 };
+const REGRESSION_RUN_SCHEMA = {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/regression-test-runner-output@1",
+  "title": "regression-test-runner output",
+  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads.",
+  "type": "object",
+  "required": [
+    "passed",
+    "suitePassed",
+    "smokePassed",
+    "bugsFiled",
+    "summary"
+  ],
+  "properties": {
+    "passed": {
+      "type": "boolean",
+      "description": "True only if BOTH suitePassed and smokePassed are true AND no carry-over bug was filed this run."
+    },
+    "suitePassed": {
+      "type": "boolean",
+      "description": "Result of playbook Part 1 -- the real-bd functional suite."
+    },
+    "smokePassed": {
+      "type": "boolean",
+      "description": "Result of playbook Part 2 -- the toy-sprint smoke test."
+    },
+    "bugsFiled": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Ids of the standalone, parent-less [regression][carry-over] beads created this run (empty array if none)."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One paragraph describing what was tested, what passed, what failed, and reiterating that the result is informational."
+    },
+    "smokeEvidence": {
+      "type": "object",
+      "description": "Optional structured evidence from Part 2 (the toy-sprint smoke test), so the result is machine-checkable instead of self-reported prose.",
+      "properties": {
+        "versionStdout": {
+          "type": "string",
+          "description": "Verbatim stdout of running the toy CLI's --version on the sprint branch."
+        },
+        "canaryStatus": {
+          "type": "string",
+          "description": "The status field from `bd show gh-toy-4ef` (e.g. \"closed\")."
+        },
+        "toyRepoHeadSha": {
+          "type": "string",
+          "description": "The toy repo's head commit SHA after the toy sprint."
+        }
+      }
+    }
+  }
+};
 const CI_SCHEMA = {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "apra-pm/ci-watcher-output@1",
@@ -1793,7 +1866,7 @@ phase('Plan');
 // Phase 1: deterministic setup steps -- run via dispatchShell so each command
 // executes exactly once with a bounded turn cap (no LLM looping on simple checks).
 //
-// Fixed output indices (always 8 elements regardless of branch/no-branch):
+// Fixed output indices (always 9 elements regardless of branch/no-branch):
 //   0: repo root (git rev-parse --show-toplevel)
 //   1: fetch result (FETCHED / FETCH_FAIL) -- run BEFORE checkout so a new sprint
 //      branch is cut from the freshest origin/<base_branch> (guards stale-main branching).
@@ -1805,12 +1878,14 @@ phase('Plan');
 //   4: startedAt timestamp (date +%Y%m%d_%H%M%S)
 //   5: deploy.md exists (YES/NO)
 //   6: integ-test-playbook.md exists (YES/NO)
-//   7: newline-joined list of permission entries declared in deploy.md /
-//      integ-test-playbook.md's "## Permissions" sections that are NOT yet
-//      in .claude/settings.json's permissions.allow (empty string if none --
-//      computed deterministically here so Step 5's prompt to the agent never
-//      has to say "you may grant yourself permissions" when there's nothing
-//      to grant).
+//   7: regression-test-playbook.md exists (YES/NO) -- gates the once-per-sprint
+//      regression pass (regression-test-runner) in the Finalization stage
+//   8: newline-joined list of permission entries declared in deploy.md /
+//      integ-test-playbook.md / regression-test-playbook.md's "## Permissions"
+//      sections that are NOT yet in .claude/settings.json's permissions.allow
+//      (empty string if none -- computed deterministically here so Step 5's
+//      prompt to the agent never has to say "you may grant yourself
+//      permissions" when there's nothing to grant).
 const setupShellCmds = [
   `git rev-parse --show-toplevel`,
   // Fetch first so branch creation below can base a NEW sprint branch on the freshest
@@ -1833,6 +1908,7 @@ const setupShellCmds = [
   `date +%Y%m%d_%H%M%S`,
   `test -f deploy.md && echo YES || echo NO`,
   `test -f integ-test-playbook.md && echo YES || echo NO`,
+  `test -f regression-test-playbook.md && echo YES || echo NO`,
   `node -e "` +
     `const fs=require('fs');` +
     `function permsFrom(file){` +
@@ -1847,7 +1923,7 @@ const setupShellCmds = [
       `return(section.match(/^[ \\t]*[-*]?[ \\t]*[A-Za-z_][A-Za-z0-9_]*\\([^\\n]*\\)[ \\t]*$/gm)||[])` +
         `.map(s=>s.replace(/^[ \\t]*[-*]?[ \\t]*/,'').trim());` +
     `}` +
-    `const declared=[...new Set([...permsFrom('deploy.md'),...permsFrom('integ-test-playbook.md')])];` +
+    `const declared=[...new Set([...permsFrom('deploy.md'),...permsFrom('integ-test-playbook.md'),...permsFrom('regression-test-playbook.md')])];` +
     `let existing=[];` +
     `try{existing=(JSON.parse(fs.readFileSync('.claude/settings.json','utf8')).permissions||{}).allow||[];}catch(e){}` +
     `const missing=declared.filter(p=>!existing.includes(p));` +
@@ -1866,7 +1942,8 @@ const _detectedBranch  = (_outs[3] || '').trim();
 const _detectedTs      = (_outs[4] || '').trim();
 const _deployExists    = (_outs[5] || '').trim() === 'YES';
 const _playbookExists  = (_outs[6] || '').trim() === 'YES';
-const _missingPerms    = (_outs[7] || '').trim().split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+const _regressionPlaybookExists = (_outs[7] || '').trim() === 'YES';
+const _missingPerms    = (_outs[8] || '').trim().split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
 if (!_detectedRepo || !_detectedBranch) {
   log('ERROR: setup-shell failed -- could not detect repo root or branch');
@@ -1889,8 +1966,9 @@ const step5Block = _missingPerms.length > 0
     `  nothing else, and do not remove or modify anything else in the file:\n` +
     _missingPerms.map(p => `    - ${p}`).join('\n') + `\n\n`
   )
-  : `Step 5: Already satisfied -- every permission declared in deploy.md / integ-test-playbook.md\n` +
-    `  is already present in .claude/settings.json. Do nothing for this step.\n\n`;
+  : `Step 5: Already satisfied -- every permission declared in deploy.md /\n` +
+    `  integ-test-playbook.md / regression-test-playbook.md is already present in\n` +
+    `  .claude/settings.json. Do nothing for this step.\n\n`;
 const setup = await dispatch(
   `Sprint workspace setup (Phase 2 -- deterministic steps already done).\n\n` +
   `Pre-known values (do NOT re-run these commands):\n` +
@@ -1898,7 +1976,8 @@ const setup = await dispatch(
   `  branch:         ${_detectedBranch}\n` +
   `  startedAt:      ${_detectedTs}\n` +
   `  deployMdExists: ${_deployExists}\n` +
-  `  playbookExists: ${_playbookExists}\n\n` +
+  `  playbookExists: ${_playbookExists}\n` +
+  `  regressionPlaybookExists: ${_regressionPlaybookExists}\n\n` +
   `Your job is only Steps 5-7 below. Return ALL fields in your schema response,\n` +
   `including the pre-known values above.\n\n` +
   step5Block +
@@ -1919,7 +1998,7 @@ const setup = await dispatch(
   `  Run: ls "$HOME/.claude/projects/" 2>/dev/null\n` +
   `  Find the entry whose slug matches the repo path (e.g. repo=/c/foo/bar -> C--foo-bar).\n` +
   `  If found, return the full path as transcriptDir. If not found, return an empty string.\n\n` +
-  `Return repo (absolute path), branch (confirmed), deployMdExists, playbookExists, startedAt, calibrationRaw, transcriptDir.`,
+  `Return repo (absolute path), branch (confirmed), deployMdExists, playbookExists, regressionPlaybookExists, startedAt, calibrationRaw, transcriptDir.`,
   { model: MODEL_HAIKU, label: 'setup', phase: 'Plan', schema: SETUP_SCHEMA, maxTurns: 20 }
 );
 
@@ -2025,6 +2104,10 @@ let taskAssignments = [];
 const sprintLogBranch = branch.replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'default';
 const sprintLogFile = `sprint-logs/${sprintLogBranch}-${effectiveStartedAt}.jsonl`;
 const integTestEnabled = setup.deployMdExists && setup.playbookExists;
+// The once-per-sprint regression pass is independent of the per-cycle Test phase: it needs
+// only its own playbook (it provisions its own sandbox and runs against branch HEAD), so it
+// is NOT gated on deploy.md or on integTestEnabled.
+const regressionTestEnabled = !!setup.regressionPlaybookExists;
 // startedAt "20260622_020952" -> ISO "2026-06-22T02:09:52Z" (pure string, no Date.now())
 const sprintTs = effectiveStartedAt.replace(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/, '$1-$2-$3T$4:$5:$6Z');
 let flushedCount = 0;  // how many dispatchLedger entries have been appended to sprintLogFile
@@ -2070,10 +2153,11 @@ async function appendNewEntries(label, phase) {
 }
 
 log(`Repo: ${repo} | Branch: ${setup.branch}`);
-log(`deploy.md: ${setup.deployMdExists} | integ-test-playbook.md: ${setup.playbookExists}`);
+log(`deploy.md: ${setup.deployMdExists} | integ-test-playbook.md: ${setup.playbookExists} | regression-test-playbook.md: ${setup.regressionPlaybookExists}`);
 if (!setup.deployMdExists) log('WARNING: deploy.md not found -- integration test phase will be skipped');
 if (!setup.playbookExists) log('WARNING: integ-test-playbook.md not found -- integration test phase will be skipped');
 if (!integTestEnabled) log('Integration testing disabled for this sprint. Harvest will run after Develop.');
+if (!regressionTestEnabled) log('WARNING: regression-test-playbook.md not found -- the once-per-sprint regression pass will be skipped');
 
 const rootSummary = rootIds.join(', ');
 log(`Sprint goals: ${rootSummary} | Goal: ${goal} (P<=${threshold}) | Max cycles: ${maxCycles}`);
@@ -2756,15 +2840,18 @@ while (cycleCount < maxCycles) {
 
     // -- Deploy --
     // Role split (agents/deployer.md, agents/integ-test-runner.md): the deployer follows
-    // deploy.md ONLY (deploy + smoke test) -- the playbook's Setup/Reset/Teardown belong
-    // to integ-test-runner, which owns integ-test-playbook.md end to end. The deployer
-    // refuses playbook operations by contract, so never dispatch them to it.
+    // deploy.md ONLY (deploy + smoke test). The sandbox lifecycle (Setup/Reset/Teardown)
+    // lives in regression-test-playbook.md and belongs to regression-test-runner, which
+    // runs once per sprint in Finalization -- not to the deployer and not to this cycle's
+    // integ-test-runner. The deployer refuses playbook operations by contract, so never
+    // dispatch them to it.
     const deployLabel = `deployer-c${cycleCount}`;
     const deployResult = await dispatch(
       `Repo: ${repo}\nBranch: ${branch}\nCycle: ${cycleCount}\n` +
       `operation: deploy\n\n` +
       `Follow your runbook (agents/deployer.md) -- deploy.md ONLY; you do not touch\n` +
-      `integ-test-playbook.md (its Setup/Reset/Teardown belong to integ-test-runner):\n` +
+      `integ-test-playbook.md or regression-test-playbook.md (the sandbox lifecycle --\n` +
+      `## Setup / ## Reset / ## Teardown -- belongs to regression-test-runner):\n` +
       `1. Read deploy.md (Deploy, Smoke test, and CI sections).\n` +
       `2. Execute every command in the '## Deploy' section in order.\n` +
       `3. Run the command in '## Smoke test'.\n` +
@@ -2777,39 +2864,43 @@ while (cycleCount < maxCycles) {
     if (!deployResult || !deployResult.deployed) {
       const msg = (deployResult && deployResult.notes) || 'no details';
       log(`Deploy failed on cycle ${cycleCount}: ${msg.slice(0, 200)}`);
-      log('Skipping integration tests this cycle -- the test sandbox was never brought up (integ-test-runner owns it), nothing to tear down');
+      log('Skipping feature-closure tests this cycle -- the deploy failed, so there is nothing verified to test against');
     } else {
-      // -- Integration test run (scoped to THIS sprint's open features) --
+      // -- Feature-closure test run (scoped to THIS sprint's open features) --
       // Scope the tester to the sprint subtree's open features. Do NOT let it `bd list
       // --type=feature --status=open` (every open feature in the whole DB) -- that would
       // test/close/file-bugs against unrelated features from other epics/sprints.
-      // An EMPTY feature list still dispatches the runner: the playbook's two parts are
-      // the sprint's standing confidence check (integ-test-runner.md Step 1).
+      // An EMPTY feature list is simply a normal no-op cycle (nothing to close); the
+      // runner is still dispatched and reports zero closed. The sprint's standing
+      // confidence check lives in the once-per-sprint regression pass, not here.
       const _sprintFeatures = await getSprintOpenFeatures(rootIds);
       const integLabel = `integ-runner-c${cycleCount}`;
       const _featList = _sprintFeatures.length > 0
         ? _sprintFeatures.map(f => `  ${f.id} -- ${f.title}`).join('\n')
-        : `  (none -- zero open features this cycle; a normal outcome, run the playbook parts only)`;
+        : `  (none -- zero open features this cycle; a normal no-op outcome, report zero closed)`;
       log(`Integration scope: ${_sprintFeatures.length} sprint feature(s)${_sprintFeatures.length ? ` [${labelTaskIds(_sprintFeatures.map(f => f.id))}]` : ''}`);
 
       const integResult = await dispatch(
         `Repo: ${repo}\nBranch: ${branch}\nCycle: ${cycleCount}\n` +
         `Sprint goals: ${rootSummary}\n\n` +
-        `Follow your runbook (agents/integ-test-runner.md). You own integ-test-playbook.md\n` +
-        `end to end: run part 1 (the real functional suite), bring the sandbox up with the\n` +
-        `playbook's ${cycleCount === 1 ? '## Setup' : '## Reset'} section, run the smoke scenario and the per-feature\n` +
-        `tests inside it, and ALWAYS run the playbook's ## Teardown before returning --\n` +
-        `pass or fail. The product deploy (deploy.md) has already been done by the deployer.\n\n` +
-        `Integration-test ONLY these open features from THIS sprint. Do NOT list, test, close, ` +
+        `Follow your runbook (agents/integ-test-runner.md) and integ-test-playbook.md.\n` +
+        `This phase is FEATURE CLOSURE ONLY: repo-local, per-feature test execution against\n` +
+        `the sprint branch working tree. There is no sandbox, no ## Setup / ## Reset /\n` +
+        `## Teardown, and no full suite here -- those live in regression-test-playbook.md and\n` +
+        `run once per sprint under a different role. The product deploy (deploy.md) has\n` +
+        `already been done by the deployer.\n\n` +
+        `Test ONLY these open features from THIS sprint. Do NOT list, test, close, ` +
         `or file bugs against any beads issue that is not in this list (do NOT run ` +
         `"bd list --type=feature"):\n${_featList}\n\n` +
-        `Per-feature testing (bd show -> run its tests -> bd close on pass, keep open on ` +
-        `failure/inconclusive), [integ] bug filing, priority rules, and duplicate checks ` +
-        `(bd search "[integ]") are all in your runbook -- follow it. Parent every new ` +
-        `[integ] bug under sprint root ${rootIds[0]} (the scope for this dispatch).\n\n` +
+        `For each feature: bd show <feature> to read its acceptance criteria, bd dep list ` +
+        `<feature> to find its [test] task(s), run exactly those tests, then bd close on a ` +
+        `full pass; on failure leave it open and file an [integ] bug; if the result is ` +
+        `inconclusive leave it open and record a note saying why. Priority rules and ` +
+        `duplicate checks (bd search "[integ]") are in your runbook -- follow it. Parent ` +
+        `every new [integ] bug under sprint root ${rootIds[0]} (the scope for this dispatch).\n\n` +
         `Return the full contract: featuresClosed (count), issuesCreated (count), ` +
         `passed (boolean), bugsFiled (array of created bug ids, [] if none), ` +
-        `summary (one paragraph, including the part 1 result line).`,
+        `summary (one paragraph).`,
         { model: MODEL_SONNET, label: integLabel, phase: 'Test', schema: INTEG_RUN_SCHEMA, agentType: 'integ-test-runner' }
       );
       if (integResult) {
@@ -2818,8 +2909,8 @@ while (cycleCount < maxCycles) {
       }
 
       // JIT flush: append test-phase entries (deployer, integ-runner) immediately.
-      // No separate teardown dispatch: the runner runs the playbook's Teardown itself,
-      // always, before returning (agents/integ-test-runner.md Step 4).
+      // Nothing to tear down here: feature closure is repo-local and provisions no
+      // sandbox (agents/integ-test-runner.md).
       await appendNewEntries(`test-c${cycleCount}`, 'Test');
     }
   }
@@ -2930,6 +3021,69 @@ if (!approved(finalReview)) {
   return { cycles: cycleCount, goalMet, goal, abortReason: abortReason || 'final review rejected', finalReviewNotes: notes };
 }
 
+// ------------------------------------------------------------------ REGRESSION TEST (once per sprint)
+// Placed deliberately AFTER the final-review verdict is decided (and after its early
+// return) and BEFORE harvest: the verdict is already computed, so a regression result
+// structurally CANNOT perturb the sprint's PASS/FAIL, and running it before harvest lets
+// the harvester mention it in the CHANGELOG. This is the ONLY dispatch of this role in a
+// sprint -- the per-cycle Test phase does feature closure only.
+//
+// SOFT FAIL, ALWAYS: a null / failed / schema-invalid / thrown result is logged and
+// swallowed. It never aborts, never touches goalMet, never changes the return value, and
+// never blocks harvest. Failures the runner finds are filed by IT as standalone,
+// parent-less [regression][carry-over] beads, which the sprint's parent-edge-walking
+// completion gate cannot see -- that is what makes them carry over to a future sprint.
+let regressionSummaryLine = '(not run)';
+if (regressionTestEnabled) {
+  let regressionResult = null;
+  try {
+    regressionResult = await dispatch(
+      `Repo: ${repo}\nBranch: ${branch}\nCycles completed: ${cycleCount}\n` +
+      `Sprint goals: ${rootSummary}\n\n` +
+      `Follow your runbook (agents/regression-test-runner.md) and regression-test-playbook.md.\n` +
+      `This is the ONCE-PER-SPRINT regression pass. Run BOTH parts:\n` +
+      `  Part 1: the full functional suite against the real bd CLI, at branch HEAD.\n` +
+      `  Part 2: the toy-sprint smoke test -- bring the sandbox up with the playbook's\n` +
+      `          ## Setup section, run its ## Test scenario, and ALWAYS run the playbook's\n` +
+      `          ## Teardown before returning, pass or fail.\n\n` +
+      `File EVERY failure from either part as a STANDALONE bead: "bd create" with NO\n` +
+      `--parent flag, and do NOT "bd dep add" it to sprint root ${rootIds[0]}, to any\n` +
+      `feature, or to any other bead in this sprint. Title each one\n` +
+      `"[regression][carry-over] <short description>". The parent-less shape is the point:\n` +
+      `this sprint's completion gate walks parent edges, so a bead with no parent edge is\n` +
+      `structurally invisible to it and carries over to a FUTURE sprint instead of blocking\n` +
+      `this one. Dedupe first with: bd search "[carry-over]" -- update an existing\n` +
+      `carry-over bug rather than filing a second one for the same failure.\n\n` +
+      `This sprint's verdict is ALREADY DECIDED (final review: APPROVED). Your result is\n` +
+      `INFORMATIONAL and does not gate it -- do not present it as a gate.\n\n` +
+      `Return the full contract: passed (boolean), suitePassed (boolean), smokePassed\n` +
+      `(boolean), bugsFiled (array of the parent-less carry-over bead ids, [] if none),\n` +
+      `summary (one paragraph).`,
+      { model: MODEL_SONNET, label: 'regression-test-runner', phase: 'Harvest',
+        schema: REGRESSION_RUN_SCHEMA, agentType: 'regression-test-runner' }
+    );
+  } catch (e) {
+    // Swallowed on purpose -- see SOFT FAIL above.
+    log(`Regression pass threw and was ignored (informational only): ${String(e && e.message || e).slice(0, 200)}`);
+    regressionResult = null;
+  }
+  if (regressionResult && typeof regressionResult.passed === 'boolean') {
+    const _bugs = Array.isArray(regressionResult.bugsFiled) ? regressionResult.bugsFiled : [];
+    log(`Regression: suitePassed=${regressionResult.suitePassed}, smokePassed=${regressionResult.smokePassed}, passed=${regressionResult.passed}, carry-over bugs filed: ${_bugs.length}${_bugs.length ? ` [${_bugs.join(', ')}]` : ''}`);
+    log(`Regression summary: ${regressionResult.summary}`);
+    regressionSummaryLine =
+      `passed=${regressionResult.passed} (suite=${regressionResult.suitePassed}, smoke=${regressionResult.smokePassed})` +
+      `${_bugs.length ? `; carry-over beads filed: ${_bugs.join(', ')}` : '; no carry-over beads filed'}`;
+  } else {
+    log('Regression pass returned no usable result -- ignored (informational only; the sprint is unaffected)');
+    regressionSummaryLine = '(not run -- the regression dispatch returned no usable result)';
+  }
+  await appendNewEntries('regression', 'Harvest');
+} else {
+  log('Regression pass skipped -- no regression-test-playbook.md in the repo root');
+  regressionSummaryLine = '(skipped -- no regression-test-playbook.md)';
+}
+
 // ------------------------------------------------------------------ HARVEST
 
 const logEntries = dispatchLedger;
@@ -2970,6 +3124,8 @@ const harvestResult = await dispatch(
   `${sprintAnalysis.analysisText}\n` +
   `Final review notes to include in CHANGELOG:\n` +
   `${(finalReview && finalReview.notes) || '(none)'}\n\n` +
+  `Regression pass (once-per-sprint, informational -- does not gate this sprint):\n` +
+  `${regressionSummaryLine}\n\n` +
   `Return status "OK" if successful, "FAILED" with notes otherwise.`,
   { model: MODEL_SONNET, label: harvestLabel, phase: 'Harvest', schema: HARVEST_SCHEMA, agentType: 'harvester' }
 );

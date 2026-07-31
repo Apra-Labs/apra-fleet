@@ -812,7 +812,12 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // withGitSync(...) brackets in the develop loop -- the scoped planner
     // dispatch (mutating: pushBeads:true) and the scoped plan-review dispatch
     // (read-side: no pushBeads).
-    assert.equal(sites.length, 18, `expected 18 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 18 -> 20 (integ/regression split): the new once-per-sprint Regression
+    // Test phase added two withGitSync(...) brackets -- its dispatch and its
+    // max_turns resume -- both read-side (pushCode:false) but BOTH mutating
+    // (pushBeads:true): the runner files parent-less
+    // `[regression][carry-over]` bug beads that must reach the shared remote.
+    assert.equal(sites.length, 20, `expected 20 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
@@ -828,16 +833,21 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // apra-fleet-eft.68.1: the in-cycle SCOPED replan's planner dispatch is a
     // ninth pushBeads:true bracket (it mutates beads by re-scoping the flagged
     // subtree); the paired scoped plan-review is read-side (no pushBeads).
+    // 9 -> 11 (integ/regression split): the once-per-sprint
+    // regression-test-runner is a fifth beads-mutating role (it files
+    // parent-less carry-over bug beads), and like the doer/integ runner it
+    // has TWO pushBeads:true sites -- dispatch and same-session resume.
     assert.equal(
         pushBeadsSites.length,
-        9,
-        `expected exactly 9 withGitSync(...) brackets with pushBeads:true (planner+resume, doer+resume, integ+resume, harvester+resume, scoped-replan planner), found ${pushBeadsSites.length}`,
+        11,
+        `expected exactly 11 withGitSync(...) brackets with pushBeads:true (planner+resume, doer+resume, integ+resume, regression+resume, harvester+resume, scoped-replan planner), found ${pushBeadsSites.length}`,
     );
 
     const roleMarkers = [
         { name: 'planner', re: /getMemberForRole\('planner'\)|agentType:\s*'planner'/ },
         { name: 'doer', re: /agentType:\s*'doer'/ },
         { name: 'integ-test-runner', re: /getMemberForRole\('integ-test-runner'\)|agentType:\s*'integ-test-runner'/ },
+        { name: 'regression-test-runner', re: /getMemberForRole\('regression-test-runner'\)|agentType:\s*'regression-test-runner'/ },
         { name: 'harvester', re: /getMemberForRole\('harvester'\)|agentType:\s*'harvester'/ },
     ];
     for (const { name, re } of roleMarkers) {

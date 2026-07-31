@@ -206,3 +206,8 @@ or as prose if you are answering a human directly.
   ambiguity, missing acceptance criteria/context, or a missing secret)
 - After every commit: run fast/unit tests; fix before moving to the next assigned bead id
 - No PLAN.md, no progress.json -- beads is the only work tracker
+- If you write a NEW test that shells out to `bd`, and this repo replays `bd` from
+  recorded fixtures, you MUST record that test's fixture at authoring time and commit
+  it in the same commit as the test -- do not defer it to a later integration pass.
+  Read the fixture directory's own README (`test/fixtures/bd-recordings/README.md`
+  under the package that owns the tests) for the exact record command.
