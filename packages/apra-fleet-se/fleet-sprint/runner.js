@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 
 // Backoff for retrying ONLY the post-dispatch sync step of a bracket whose
 // dispatch already completed. Short and bounded: this is a git/dolt push round
@@ -5937,61 +5937,82 @@ async function runSprintCycle(context) {
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: PLAN_REVIEWER_MAX_TURNS,
             };
-            try {
+            // Mirrors dispatchReview()'s reviewAttempt ladder: an
+            // infrastructure dispatch failure (schema-repair exhaustion, a
+            // dropped transport) gets exactly one extra attempt WITHIN this
+            // same planning round -- it does not consume a second round out
+            // of the 3-round planningRounds cap -- before the round is
+            // recorded as a dispatch-level failure. Every synthesized
+            // fallback verdict below carries `dispatchFailed: true` so the
+            // plan-cap exhaustion check after this loop can tell "the
+            // plan-reviewer's dispatch channel never came back" apart from
+            // "the reviewer genuinely rejected the plan" and throw the
+            // correctly-flavored error for each (apra-fleet-9ta.4).
+            for (let planReviewAttempt = 1; planReviewAttempt <= 2; planReviewAttempt++) {
                 try {
-                    verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
-                        buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts }),
-                        { ...planReviewerDispatchOpts, member_name: getMemberForRole('plan-reviewer') }
-                    ));
-                } catch (err) {
-                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        log(`Plan Reviewer exhausted its turn limit (max_turns=${PLAN_REVIEWER_MAX_TURNS}) -- resuming the same session with max_turns=${PLAN_REVIEWER_MAX_TURNS * 2}.`);
-                        await memberSessionGuard.killIfAlive(getMemberForRole('plan-reviewer'));
+                    try {
                         verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
-                            'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
-                            {
-                                ...planReviewerDispatchOpts,
-                                member_name: getMemberForRole('plan-reviewer'),
-                                label: `Plan Review (resume, max_turns=${PLAN_REVIEWER_MAX_TURNS * 2})`,
-                                resume: true,
-                                max_turns: PLAN_REVIEWER_MAX_TURNS * 2,
-                            }
+                            buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts }),
+                            { ...planReviewerDispatchOpts, member_name: getMemberForRole('plan-reviewer') }
                         ));
+                    } catch (err) {
+                        if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                            log(`Plan Reviewer exhausted its turn limit (max_turns=${PLAN_REVIEWER_MAX_TURNS}) -- resuming the same session with max_turns=${PLAN_REVIEWER_MAX_TURNS * 2}.`);
+                            await memberSessionGuard.killIfAlive(getMemberForRole('plan-reviewer'));
+                            verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
+                                'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
+                                {
+                                    ...planReviewerDispatchOpts,
+                                    member_name: getMemberForRole('plan-reviewer'),
+                                    label: `Plan Review (resume, max_turns=${PLAN_REVIEWER_MAX_TURNS * 2})`,
+                                    resume: true,
+                                    max_turns: PLAN_REVIEWER_MAX_TURNS * 2,
+                                }
+                            ));
+                        } else {
+                            throw err;
+                        }
+                    }
+                } catch (err) {
+                    // An unhealed LLM-auth failure here reproduces identically on
+                    // every remaining planning round. One self-heal attempt gives
+                    // the next round a real chance to succeed.
+                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                        await onLlmAuthFailure({ member: getMemberForRole('plan-reviewer'), label: 'Plan Reviewer dispatch', error: err.message });
+                    }
+                    // Persistent non-JSON/non-schema-compliant output, or a failed
+                    // dispatch, both FAIL this plan round -- neither must ever be
+                    // treated as an approval, and both are marked dispatchFailed
+                    // so they are never mistaken for a genuine reviewer rejection.
+                    if (err instanceof AgentOutputError) {
+                        log(`Plan Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
+                        verdict = {
+                            verdict: 'CHANGES_NEEDED',
+                            notes: `Plan reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                            taskAssignments: [],
+                            dispatchFailed: true,
+                        };
+                    } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                        // A transport-level failure (e.g. a connection dropped
+                        // mid-schema-repair-retry) is exactly as transient and
+                        // non-schema as an AgentDispatchError -- neither may
+                        // propagate and abort the whole sprint.
+                        log(`Plan Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
+                        verdict = {
+                            verdict: 'CHANGES_NEEDED',
+                            notes: `Plan reviewer dispatch failed: ${err.message}`,
+                            taskAssignments: [],
+                            dispatchFailed: true,
+                        };
                     } else {
                         throw err;
                     }
                 }
-            } catch (err) {
-                // An unhealed LLM-auth failure here reproduces identically on
-                // every remaining planning round. One self-heal attempt gives
-                // the next round a real chance to succeed.
-                if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                    await onLlmAuthFailure({ member: getMemberForRole('plan-reviewer'), label: 'Plan Reviewer dispatch', error: err.message });
+                if (verdict.dispatchFailed && planReviewAttempt < 2) {
+                    log(`Plan Reviewer: dispatch-level failure on attempt ${planReviewAttempt} of 2 -- retrying the plan review once before recording this round as a dispatch failure.`);
+                    continue;
                 }
-                // Persistent non-JSON/non-schema-compliant output, or a failed
-                // dispatch, both FAIL this plan round -- neither must ever be
-                // treated as an approval.
-                if (err instanceof AgentOutputError) {
-                    log(`Plan Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
-                    verdict = {
-                        verdict: 'CHANGES_NEEDED',
-                        notes: `Plan reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
-                        taskAssignments: [],
-                    };
-                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // A transport-level failure (e.g. a connection dropped
-                    // mid-schema-repair-retry) is exactly as transient and
-                    // non-schema as an AgentDispatchError -- neither may
-                    // propagate and abort the whole sprint.
-                    log(`Plan Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
-                    verdict = {
-                        verdict: 'CHANGES_NEEDED',
-                        notes: `Plan reviewer dispatch failed: ${err.message}`,
-                        taskAssignments: [],
-                    };
-                } else {
-                    throw err;
-                }
+                break;
             }
             lastVerdict = verdict;
             // No duplicate log() dump -- see dispatchReview() for why.
@@ -6027,6 +6048,25 @@ async function runSprintCycle(context) {
                 || contestedIds.length >= allTaskIds.length;
 
             if (wholePlanContested) {
+                // apra-fleet-9ta.4: a `dispatchFailed` last verdict means the
+                // plan-reviewer's dispatch channel never came back with a real
+                // verdict (schema-repair exhaustion / transport failure, even
+                // after the one same-round retry above) -- the plan was never
+                // actually reviewed, so this must NOT be misreported as
+                // SprintPlanRejectedError (which asserts a genuine rejection).
+                if (lastVerdict && lastVerdict.dispatchFailed) {
+                    throw new PlanReviewDispatchFailedError(
+                        `Plan phase for cycle ${cycle} exhausted ${planningRounds} plan round(s) without a usable ` +
+                        'plan-reviewer verdict -- the last round\'s verdict was synthesized from a dispatch failure, ' +
+                        'not a genuine review. The plan was never actually reviewed; re-run the sprint once the ' +
+                        'plan-reviewer dispatch channel recovers.',
+                        {
+                            notes: lastVerdict ? lastVerdict.notes : null,
+                            cycle,
+                            planningRounds,
+                        }
+                    );
+                }
                 throw new SprintPlanRejectedError(
                     `Plan phase for cycle ${cycle} was not approved after ${planningRounds} round(s). ` +
                     'Refusing to proceed to Develop with an unapproved plan.',
