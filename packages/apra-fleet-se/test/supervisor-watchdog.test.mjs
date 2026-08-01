@@ -489,8 +489,12 @@ describe('watchdog + REAL ledger integration (apra-fleet-k7b.3)', () => {
         try {
             const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME) });
             await ledger.start();
-            await ledger.claim('sprint-real', { members: ['alice'], issueRoots: ['apra-fleet-x'], childPid: 4321 });
-            await ledger.recordExit('sprint-real', { exitCode: 1, signal: null, at: '2026-07-30T21:25:50.000Z' });
+            // apra-fleet-gey.1: set reservedAt to the same time as the exit
+            // to avoid triggering launch-failed detection (which requires the
+            // exit to be WITHIN the launch window, not before the reservation).
+            const exitTime = '2026-07-30T21:25:50.000Z';
+            await ledger.claim('sprint-real', { members: ['alice'], issueRoots: ['apra-fleet-x'], childPid: 4321, reservedAt: exitTime });
+            await ledger.recordExit('sprint-real', { exitCode: 1, signal: null, at: exitTime });
 
             const wd = createWatchdog({
                 ledger,

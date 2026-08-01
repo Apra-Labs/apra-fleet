@@ -12,19 +12,22 @@
 // This module is that probe. On a short, CONFIGURABLE interval it PID-probes
 // every ledger-listed sprint and combines two independent signals -- PID
 // liveness and child HTTP reachability (the child's own `/state` endpoint on
-// its --viewer-port) -- into EXACTLY FOUR statuses:
+// its --viewer-port) -- into EXACTLY FIVE statuses:
 //
 //   running-healthy      PID alive (and plausibly OUR child) AND HTTP answering
 //   running-unresponsive PID alive but HTTP silent. This is an OPERATOR-ATTENTION
 //                        signal, NOT a death sentence: a wedged/slow child is
 //                        never auto-declared crashed and is never killed here.
 //   crashed              PID gone, and NO terminal state persisted in old_runs/
-//                        (or the legacy old_sprints/, apra-fleet-eft.37.1)
+//                        (or the legacy old_sprints/, apra-fleet-eft.37.1),
+//                        and NOT within the launch-failed window.
 //   finished             PID gone, and a terminal state IS persisted in old_runs/
 //                        (or the legacy old_sprints/, apra-fleet-eft.37.1)
+//   launch-failed        PID gone within the configurable launch window (default 60s),
+//                        NO terminal state, a symptom of immediate child exit
 //
 // CRITICAL invariants (acceptance criteria):
-//   * The classifier returns EXACTLY ONE of the four statuses per sprint.
+//   * The classifier returns EXACTLY ONE of the five statuses per sprint.
 //   * A hung child (PID alive, HTTP not answering) is running-unresponsive --
 //     never crashed, never killed.
 //   * PID-gone WITH an old_runs/ (or legacy old_sprints/) terminal state =>
@@ -46,12 +49,13 @@ import { writeJsonFileAtomic } from '@apralabs/apra-fleet-workflow/viewer/deboun
 import { withTimestamps } from './log-timestamp.mjs';
 import { HISTORY_EVENTS } from './history.mjs';
 
-/** The four -- and only four -- statuses the classifier may return. */
+/** The five statuses the classifier may return. */
 export const WATCHDOG_STATUS = Object.freeze({
     RUNNING_HEALTHY: 'running-healthy',
     RUNNING_UNRESPONSIVE: 'running-unresponsive',
     CRASHED: 'crashed',
     FINISHED: 'finished',
+    LAUNCH_FAILED: 'launch-failed',
 });
 
 /** Default watchdog probe interval (ms). Overridable via createWatchdog opts. */
@@ -59,6 +63,10 @@ export const WATCHDOG_DEFAULT_INTERVAL_MS = 5000;
 
 /** Default timeout (ms) for a single child HTTP reachability probe. */
 export const WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS = 1500;
+
+/** Default launch-failed window (ms, i.e. 60 seconds). A child exiting within
+ * this window from its reservedAt timestamp is classified launch-failed. */
+export const WATCHDOG_DEFAULT_LAUNCH_FAILED_WINDOW_MS = 60000;
 
 /**
  * `ps`-based command-line reader for POSIX platforms with no `/proc` (macOS,
@@ -485,6 +493,9 @@ export function createWatchdog(deps = {}) {
     const intervalMs = Number.isInteger(deps.intervalMs) && deps.intervalMs > 0
         ? deps.intervalMs
         : WATCHDOG_DEFAULT_INTERVAL_MS;
+    const launchFailedWindowMs = Number.isInteger(deps.launchFailedWindowMs) && deps.launchFailedWindowMs > 0
+        ? deps.launchFailedWindowMs
+        : WATCHDOG_DEFAULT_LAUNCH_FAILED_WINDOW_MS;
     const setIntervalFn = deps.setIntervalFn ?? setInterval;
     const clearIntervalFn = deps.clearIntervalFn ?? clearInterval;
     // apra-fleet-k7b.2: ISO-timestamp-prefix every log line from this module.
@@ -510,6 +521,34 @@ export function createWatchdog(deps = {}) {
     // fresh FINISHED event to sprint-history.json every tick for as long as
     // the ledger keeps listing that (still-reserved-until-released) sprint.
     const recordedFinishes = new Set();
+    // apra-fleet-gey.1: sprint ids for which we've recorded a launch-failed
+    // event, using the same one-shot discipline as recordedCrashes/recordedFinishes
+    // to avoid duplicate history entries on repeat ticks.
+    const recordedLaunchFailures = new Set();
+
+    /**
+     * apra-fleet-gey.1: detects if a sprint exited within the launch-failed window
+     * (i.e., very quickly after being reserved, with no terminal state recorded).
+     * Returns true only if we have reliable evidence that the child exited
+     * within the window AND that the child actually ran for a non-zero time.
+     * @param {object} entry - the ledger entry
+     * @returns {boolean}
+     */
+    function isLaunchFailed(entry) {
+        // Must have exit info recorded (in-memory listener was not severed by restart)
+        if (!entry.exitedAt) return false;
+        // Must have reservation claim time
+        if (!entry.reservedAt) return false;
+        // Calculate how long the sprint ran
+        const exitedMs = new Date(entry.exitedAt).getTime();
+        const reservedMs = new Date(entry.reservedAt).getTime();
+        if (!Number.isFinite(exitedMs) || !Number.isFinite(reservedMs)) return false;
+        const runTimeMs = Math.max(0, exitedMs - reservedMs);
+        // True if the child exited within the launch window AND ran for at least
+        // 1ms (to distinguish real fast exits from test artifacts where
+        // reservedAt == exitedAt)
+        return runTimeMs > 0 && runTimeMs < launchFailedWindowMs;
+    }
 
     /**
      * apra-fleet-0j1 / apra-fleet-cvb.1: release a still-held reservation the
@@ -617,8 +656,8 @@ export function createWatchdog(deps = {}) {
         }
 
         // PID gone: a persisted terminal state in old_runs/ (or legacy
-        // old_sprints/) means it FINISHED; its absence means it CRASHED (died
-        // without recording a terminal state).
+        // old_sprints/) means it FINISHED; its absence means either CRASHED
+        // or LAUNCH_FAILED (both died without recording a terminal state).
         //
         // apra-fleet-k7b.3: `detail` reports whatever this SAME instance's
         // spawner actually witnessed (ledger.recordExit(), see spawner.mjs/
@@ -634,22 +673,53 @@ export function createWatchdog(deps = {}) {
         // test double), never just a boolean.
         const terminalState = hasTerminalState(sprintId, entry.branch ?? null);
         const finished = Boolean(terminalState);
+
+        // apra-fleet-gey.1: determine if this is a launch-failed sprint
+        // (exited within the launch window with no terminal state).
+        const launchFailed = !finished && isLaunchFailed(entry);
+        const classifiedStatus = finished ? WATCHDOG_STATUS.FINISHED : (launchFailed ? WATCHDOG_STATUS.LAUNCH_FAILED : WATCHDOG_STATUS.CRASHED);
+
         if (!finished) {
-            // apra-fleet-eft.20.3: this is the silent-death case the
-            // apra-fleet-eft.20 smoke test exposed -- a doer/orchestrator
-            // child died mid-Develop with zero diagnostic signal anywhere.
-            // Make it observable the FIRST time this sprint is classified
-            // CRASHED: an explicit log line, plus a persisted failed/lastError
-            // written into its own running/ state file.
-            if (!recordedCrashes.has(sprintId)) {
-                recordedCrashes.add(sprintId);
-                try {
-                    recordTerminalError({ sprintId, childPid, env, logger, detail });
-                } catch (err) {
-                    // The recorder itself must never take the classifier down
-                    // with it -- classification (the watchdog's core contract)
-                    // must keep proceeding even if diagnostics reporting fails.
-                    logError(`[watchdog] recordTerminalError threw for '${sprintId}':`, err);
+            if (launchFailed) {
+                // apra-fleet-gey.1: record the launch-failed event once per sprint
+                if (!recordedLaunchFailures.has(sprintId)) {
+                    recordedLaunchFailures.add(sprintId);
+                    if (history && typeof history.record === 'function') {
+                        try {
+                            const result = history.record({
+                                sprintId,
+                                event: HISTORY_EVENTS.LAUNCH_FAILED,
+                                reason: `watchdog: child exited within launch window (${detail})`,
+                            });
+                            // history.record() is async; rejection must never take
+                            // classification down with it, same discipline as other
+                            // history recorders.
+                            if (result && typeof result.catch === 'function') {
+                                result.catch((err) => logError(`[watchdog] history.record(LAUNCH_FAILED) failed for '${sprintId}':`, err));
+                            }
+                        } catch (err) {
+                            logError(`[watchdog] history.record(LAUNCH_FAILED) threw for '${sprintId}':`, err);
+                        }
+                    }
+                    log(`[watchdog] LAUNCH_FAILED: Sprint '${sprintId}' exited within launch window (${detail}).`);
+                }
+            } else {
+                // apra-fleet-eft.20.3: this is the silent-death case the
+                // apra-fleet-eft.20 smoke test exposed -- a doer/orchestrator
+                // child died mid-Develop with zero diagnostic signal anywhere.
+                // Make it observable the FIRST time this sprint is classified
+                // CRASHED: an explicit log line, plus a persisted failed/lastError
+                // written into its own running/ state file.
+                if (!recordedCrashes.has(sprintId)) {
+                    recordedCrashes.add(sprintId);
+                    try {
+                        recordTerminalError({ sprintId, childPid, env, logger, detail });
+                    } catch (err) {
+                        // The recorder itself must never take the classifier down
+                        // with it -- classification (the watchdog's core contract)
+                        // must keep proceeding even if diagnostics reporting fails.
+                        logError(`[watchdog] recordTerminalError threw for '${sprintId}':`, err);
+                    }
                 }
             }
         } else if (!recordedFinishes.has(sprintId)) {
@@ -667,28 +737,29 @@ export function createWatchdog(deps = {}) {
             }
         }
         // apra-fleet-0j1 / apra-fleet-cvb.1: act on the classification just
-        // made (CRASHED or FINISHED, either way a still-reserved sprint's
-        // reservation is stale) -- run on EVERY tick, not gated by
-        // recordedCrashes/recordedFinishes above, since ledger.release() is
-        // itself idempotent (a no-op once released) and this is what makes a
-        // sprint's reservation clear within one watchdog poll interval of it
-        // going CRASHED/FINISHED, with no operator action or restart needed.
+        // made (CRASHED or FINISHED or LAUNCH_FAILED, any terminal state
+        // classification means a still-reserved sprint's reservation is stale)
+        // -- run on EVERY tick, not gated by recordedCrashes/recordedFinishes
+        // above, since ledger.release() is itself idempotent (a no-op once
+        // released) and this is what makes a sprint's reservation clear within
+        // one watchdog poll interval of it going CRASHED/FINISHED/LAUNCH_FAILED,
+        // with no operator action or restart needed.
         try {
-            await releaseTerminalReservation(sprintId, finished ? WATCHDOG_STATUS.FINISHED : WATCHDOG_STATUS.CRASHED, detail);
+            await releaseTerminalReservation(sprintId, classifiedStatus, detail);
         } catch (err) {
             logError(`[watchdog] releaseTerminalReservation threw for '${sprintId}':`, err);
         }
         return {
             sprintId,
-            status: finished ? WATCHDOG_STATUS.FINISHED : WATCHDOG_STATUS.CRASHED,
+            status: classifiedStatus,
             pidAlive: false,
             httpOk: false,
             childPid,
             port,
             detail,
             // apra-fleet-k7b.2: only populated when finished === true;
-            // undefined (not null) for CRASHED so existing assertions on the
-            // classifier's return shape for the crashed/running paths are
+            // undefined (not null) for CRASHED/LAUNCH_FAILED so existing assertions
+            // on the classifier's return shape for the crashed/running paths are
             // unaffected.
             ...(finished ? { terminalState } : {}),
         };

@@ -50,6 +50,12 @@ export const HISTORY_EVENTS = Object.freeze({
     // and forceRelease()'s FORCE_RELEASED (operator-initiated) events, but
     // for the AUTOMATIC, continuous, mid-run case neither of those covers.
     AUTO_RELEASED: 'auto-released',
+    // apra-fleet-gey.1: the watchdog observed a sprint whose child exited
+    // within the configurable launch-failed window (default 60s) with no
+    // terminal state recorded -- a symptom of immediate child failure (e.g.
+    // a missing dependency, a hard-crash before first dispatch). Distinct
+    // from CRASHED to surface this diagnostic signal separately.
+    LAUNCH_FAILED: 'launch-failed',
 });
 
 /** An empty, well-formed history document. */

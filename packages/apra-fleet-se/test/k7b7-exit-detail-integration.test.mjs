@@ -91,7 +91,11 @@ describe('apra-fleet-k7b.7: spawner exit code/signal/time recorded in ledger and
             // api.mjs's createSprintController.launch(), which generates the
             // sprintId before spawning (apra-fleet-k7b.1) and claims/sets
             // childPid once the spawned pid is known.
-            await ledger.claim(runId, { members: ['alice'], issueRoots: ['apra-fleet-k7b'] });
+            // apra-fleet-gey.1: set reservedAt to a time well in the past (>60s ago)
+            // so that the child's quick exit is after the launch-failed window
+            // and classifies as CRASHED (not launch-failed).
+            const pastTime = new Date(Date.now() - 120000).toISOString(); // 2 minutes ago
+            await ledger.claim(runId, { members: ['alice'], issueRoots: ['apra-fleet-k7b'], reservedAt: pastTime });
 
             const { pid } = await spawner.spawnSprint({
                 issue: 'apra-fleet-k7b.7', members: 'alice', branch: 'b1', base: 'main', runId,
