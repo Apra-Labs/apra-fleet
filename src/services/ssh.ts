@@ -49,6 +49,8 @@ export function getSSHConfig(agent: Agent): ConnectConfig {
     port: agent.port,
     username: agent.username,
     readyTimeout: 15000,
+    keepaliveInterval: 15000,
+    keepaliveCountMax: 3,
     hostVerifier: (key: Buffer) => {
       return verifyHostKey(agent.host!, agent.port!, key);
     },
