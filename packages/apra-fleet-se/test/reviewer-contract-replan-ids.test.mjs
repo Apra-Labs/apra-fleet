@@ -82,9 +82,13 @@ test('buildReviewerPrompt: output mentions replanIds and states its semantics', 
 // End-to-end: a CHANGES_NEEDED verdict carrying replanIds for a bead that was
 // never dispatched/reopened this round at all (so reopenIds AND newTasks are
 // both empty) must NOT abort the sprint as ReviewerContractViolationError --
-// the exact "still-ready bead" shape the runner.js comments describe
-// replanIds as covering, and the exact shape the fixed predicate now exempts
-// from the contract-violation guard.
+// isReviewerContractViolation() exempts this shape by design (see its doc
+// comment). But per buildReviewerPrompt's instruction, replanIds is only
+// ACTED ON (fed into the scoped-replan machinery) for ids ALSO named in
+// reopenIds this round; an id named in replanIds alone is dropped -- logged,
+// not silently discarded -- rather than treated as a "not yet worked" replan
+// target, since the consuming loop (runner.js ~7163) has no reopened bead to
+// gate a scoped replan against.
 //
 // Setup: task W blocks task V (bd dep add V W), so only W is ready in round
 // 1. The doer closes W, which unblocks V. Round 1's review (scoped to W)
@@ -94,7 +98,8 @@ test('buildReviewerPrompt: output mentions replanIds and states its semantics', 
 // replanIds entirely and this shape was retried once then thrown as a
 // self-contradictory ReviewerContractViolationError, aborting the sprint.
 // After the fix the round is treated as ordinary CHANGES_NEEDED (not a
-// contract violation) and the sprint proceeds to dispatch V normally in the
+// contract violation): V is NOT scoped-replanned (it was never reopened, so
+// the drop is logged), and the sprint proceeds to dispatch V normally in the
 // next round instead of aborting.
 test('mock sprint: replanIds alone (no reopenIds, no newTasks) does not abort the sprint as a contract violation', async () => {
     await withScenarioMarkers('replanIds-only (no reopenIds) does not abort', async () => {
@@ -154,6 +159,16 @@ test('mock sprint: replanIds alone (no reopenIds, no newTasks) does not abort th
         const wId = sc.tasks.find((t) => t.title === 'Task: Replan-only target W').id;
         const vId = sc.tasks.find((t) => t.title === 'Task: Second still-ready task V').id;
 
+        // buildReviewerPrompt now tells reviewers replanIds must be a subset
+        // of reopenIds; this scenario deliberately violates that (replanIds
+        // names V, reopenIds is empty) to prove the drop is LOGGED rather than
+        // silent -- the gap the previous round of this bead left unaddressed.
+        check(
+            sc.logs.some((l) => l.includes('replanIds: DROPPED') && l.includes(vId)),
+            `Expected a 'replanIds: DROPPED' log line naming ${vId} (replanIds without a matching reopenIds entry ` +
+            `must be visibly dropped, not silently ignored), logs: ${JSON.stringify(sc.logs.filter((l) => l.includes('replanIds')))}`
+        );
+
         const wFinal = sc.finalBeadsById.get(wId);
         const vFinal = sc.finalBeadsById.get(vId);
         check(
@@ -162,7 +177,8 @@ test('mock sprint: replanIds alone (no reopenIds, no newTasks) does not abort th
         );
         check(
             vFinal && vFinal.status === 'closed',
-            `Expected ${vId} to end up closed (dispatched normally once ready, since replanIds without reopenIds does not trigger the scoped-replan machinery -- only that it must not abort the sprint), got: ${vFinal ? vFinal.status : '(bead not found)'}`
+            `Expected ${vId} to end up closed (dispatched normally once ready: replanIds without a matching reopenIds ` +
+            `entry is BY DESIGN dropped -- see the 'replanIds: DROPPED' assertion above -- not merely tolerated), got: ${vFinal ? vFinal.status : '(bead not found)'}`
         );
     });
 });

@@ -3559,8 +3559,11 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
-        '`bd create`. Optionally include `replanIds`: still-ready bead ids (not yet worked) ' +
-        'whose plan should be reconsidered before the next dispatch, scoped to this cycle. ' +
+        '`bd create`. Optionally include `replanIds`: a SUBSET of the ids you also named in ' +
+        '`reopenIds` above whose acceptance criteria are themselves defective (not fixable by ' +
+        're-development) and need a planner pass before the next dispatch, scoped to this ' +
+        'cycle. An id you did not also name in `reopenIds` is dropped and never reaches the ' +
+        'scoped-replan machinery, so only list ids you are reopening. ' +
         'Return ONLY your structured verdict (verdict, notes, reopenIds, replanIds, ' +
         'newTasks) strictly as the required JSON schema; never touch beads yourself.',
     ].join('\n\n');
@@ -3572,9 +3575,13 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
  * to reopen, proposing no follow-up work, AND naming no scoped-replan targets
  * is schema-legal but self-contradictory -- the orchestrator has nothing to
  * act on, so the sprint cannot make progress off of it. A non-empty
- * `replanIds` gives the scoped-replan machinery something concrete to
- * consume, so that case is NOT a contract violation even with empty
- * reopenIds/newTasks.
+ * `replanIds` exempts the verdict from that hard abort even with empty
+ * reopenIds/newTasks -- NOT because the field is guaranteed to be consumed
+ * (the scoped-replan machinery below only acts on replanIds entries ALSO
+ * named in reopenIds this round; see buildReviewerPrompt and the fold-in
+ * loop around the `replanIds: DROPPED` log line), but because a verdict that
+ * names a genuine replan intent in `notes` still represents real reviewer
+ * signal worth an ordinary next-round retry rather than a hard sprint abort.
  * @param {{ verdict: string, reopenIds?: string[], replanIds?: string[], newTasks?: object[] }} verdict
  * @returns {boolean}
  */
@@ -7148,7 +7155,11 @@ async function runSprintCycle(context) {
             // verdicts that do not use it, so a no-op then) into the cycle's
             // running union, consulted at the top of the next iteration's
             // currentReady computation above. Only ids that were ACTUALLY
-            // reopened this round are tracked.
+            // reopened this round are tracked -- an id the reviewer named in
+            // replanIds without ALSO naming it in reopenIds (contrary to the
+            // buildReviewerPrompt instruction above) is dropped rather than
+            // silently ignored: logged here so the drop is visible in the run
+            // log instead of vanishing with no trace.
             // This is the replan loop guard's single enforcement point. A bead
             // that has ALREADY been through one in-cycle scoped replan this cycle
             // (replannedThisCycle) is refused a SECOND: it stays reopened (real
@@ -7158,7 +7169,14 @@ async function runSprintCycle(context) {
             // This is what makes "max one scoped replan per bead per cycle" hold
             // regardless of the round budget.
             for (const id of (verdict.replanIds || [])) {
-                if (!reopenedIds.has(id)) continue;
+                if (!reopenedIds.has(id)) {
+                    log(
+                        `[fleet-sprint] replanIds: DROPPED '${id}' -- not also named in this round's reopenIds ` +
+                        `(reviewer prompt requires replanIds to be a subset of reopenIds), so it never reaches the ` +
+                        `scoped-replan machinery.`
+                    );
+                    continue;
+                }
                 if (replannedThisCycle.has(id)) {
                     log(
                         `[fleet-sprint] replan loop guard: bead ${id} was already scoped-replanned once this cycle ` +
