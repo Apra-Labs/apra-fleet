@@ -63,6 +63,54 @@ export function emptyHistoryDocument() {
     return { version: HISTORY_VERSION, events: [] };
 }
 
+// apra-fleet-gey.2: the relaunch gate (api.mjs's launch()) needs "what was
+// the prior incarnation of THIS issueRoot's terminal outcome" -- but only
+// the RELEASE events (AUTO_RELEASED / FORCE_RELEASED / ABORTED_BY_RESTART,
+// and CHILD_EXITED) carry `issueRoots` today (watchdog.mjs/reconcile.mjs
+// always pass it through from the ledger entry being released/observed);
+// the DETAIL events (FINISHED with its terminalReason/verdict, LAUNCH_FAILED
+// with its reason) do not -- see defaultRecordFinished()/classifySprint()'s
+// history.record() calls in watchdog.mjs. Both event shapes are always
+// recorded under the SAME `sprintId` (the run-id, apra-fleet-k7b.1/.2) for
+// one incarnation, so `latestForIssueRoot()` below correlates them by that
+// shared key: find the most recent issueRoots-carrying event to identify
+// WHICH sprintId was this root's last incarnation, then pull the actual
+// terminal detail (FINISHED > LAUNCH_FAILED > the anchor event itself) from
+// that sprintId's own event history.
+
+/** Recognized terminal-event kinds latestForIssueRoot() reads its terminal-record shape's `event` from. */
+const TERMINAL_DETAIL_EVENTS = Object.freeze([HISTORY_EVENTS.FINISHED, HISTORY_EVENTS.LAUNCH_FAILED]);
+
+/**
+ * Terminal reasons the engine itself flags as "must not be retried blindly"
+ * (fleet-sprint/runner.js's resolveTerminalReason()/findDoltDivergedCause()):
+ * an unmergeable Dolt/beads sync conflict is the concrete case that motivated
+ * this gate (the apra-fleet-bnb-de118180 incident). Extend this set as more
+ * such reasons are identified elsewhere in the engine; an unlisted reason
+ * simply does not gate a relaunch (a false negative here only skips a
+ * warning -- it never blocks a legitimate relaunch).
+ */
+export const DETERMINISTIC_TERMINAL_REASONS = Object.freeze(new Set(['BEADS_SYNC_CONFLICT']));
+
+/**
+ * True when a `latestForIssueRoot()` terminal record represents a reason
+ * that will almost certainly recur on an identical relaunch unless something
+ * about the request/environment changes first -- either:
+ *   - a LAUNCH_FAILED incarnation (apra-fleet-gey.1: the child exited within
+ *     the launch window before any dispatch ever ran -- e.g. an Arg Contract
+ *     violation, a missing member beads DB -- always reproducible from the
+ *     SAME request), or
+ *   - a FINISHED incarnation whose terminalReason the engine flagged as
+ *     must-not-be-retried-blindly (DETERMINISTIC_TERMINAL_REASONS above).
+ * @param {{ event?: string|null, terminalReason?: string|null }|null|undefined} record
+ * @returns {boolean}
+ */
+export function isDeterministicTerminalReason(record) {
+    if (!record) return false;
+    if (record.event === HISTORY_EVENTS.LAUNCH_FAILED) return true;
+    return typeof record.terminalReason === 'string' && DETERMINISTIC_TERMINAL_REASONS.has(record.terminalReason);
+}
+
 /** The default service data directory (mirrors ledger.defaultDataDir()). */
 export function defaultDataDir() {
     return process.env.FLEET_SE_DATA_DIR
@@ -218,6 +266,46 @@ export function createHistory(deps = {}) {
                 if (events[i].sprintId === sprintId) return cloneEvent(events[i]);
             }
             return undefined;
+        },
+
+        /**
+         * apra-fleet-gey.2: the most recent terminal record for one
+         * issueRoot -- used by the relaunch gate (api.mjs's launch()) to
+         * decide whether a same-root relaunch should be refused/warned. See
+         * this module's file-level "gey.2" doc comment above for why this
+         * correlates two different event shapes by their shared sprintId
+         * rather than reading a single event directly.
+         *
+         * Returns `undefined` when this issueRoot has no issueRoots-carrying
+         * event at all -- a true first launch (or one whose only prior
+         * incarnations are still live/running-unresponsive with nothing
+         * terminal yet) -- callers must treat that as "nothing to gate on".
+         * @param {string} issue
+         * @returns {{ sprintId: string, event: string|null, reason: string|null, terminalReason: string|null, verdict: string|null, at: string }|undefined}
+         */
+        latestForIssueRoot(issue) {
+            if (typeof issue !== 'string' || issue.length === 0) return undefined;
+            let anchor;
+            for (let i = events.length - 1; i >= 0; i--) {
+                if ((events[i].issueRoots ?? []).includes(issue)) { anchor = events[i]; break; }
+            }
+            if (!anchor) return undefined;
+            let detail = anchor;
+            for (const kind of TERMINAL_DETAIL_EVENTS) {
+                let hit;
+                for (let i = events.length - 1; i >= 0; i--) {
+                    if (events[i].sprintId === anchor.sprintId && events[i].event === kind) { hit = events[i]; break; }
+                }
+                if (hit) { detail = hit; break; }
+            }
+            return {
+                sprintId: anchor.sprintId,
+                event: detail.event ?? null,
+                reason: detail.reason ?? null,
+                terminalReason: detail.terminalReason ?? null,
+                verdict: detail.verdict ?? null,
+                at: anchor.at,
+            };
         },
 
         get size() { return events.length; },

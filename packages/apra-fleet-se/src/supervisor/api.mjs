@@ -34,10 +34,16 @@
 
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
 import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
+import { isDeterministicTerminalReason } from './history.mjs';
+
+/** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
+const API_MODULE_PATH = fileURLToPath(import.meta.url);
 
 /** A controller error carrying an HTTP status and (optionally) the bad field. */
 export class ApiError extends Error {
@@ -216,6 +222,31 @@ export function proxyChildStop(port, opts = {}) {
 }
 
 /**
+ * apra-fleet-gey.2: default build-version stamp -- this module's own on-disk
+ * mtime. This package runs directly from source (no separate compiled
+ * artifact, no reliable package.json version bump per fix), and api.mjs IS
+ * where the launch/relaunch logic this gate protects lives, so its mtime is
+ * a fast, dependency-free proxy for "has the code changed since this process
+ * started". Deliberately fs.statSync(), NOT a subprocess (e.g. `git
+ * rev-parse HEAD`) -- this runs on every controller creation AND every
+ * launch(), and a spawned subprocess there measurably added contention under
+ * concurrent test/supervisor boots. Called ONCE at controller creation
+ * (captures what this RUNNING process was started from) and again on every
+ * launch() (reads what's on disk RIGHT NOW) -- see createSprintController()'s
+ * `stampedBuildVersion` below. Returns `null` (never throws) when the file is
+ * unreadable, so a stamp failure only skips the stale-build warning, it never
+ * blocks a launch.
+ * @returns {string|null}
+ */
+export function defaultBuildVersion() {
+    try {
+        return `${statSync(API_MODULE_PATH).mtimeMs}`;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Create the supervisor sprint/member/backlog controller. All collaborators are
  * injected.
  *
@@ -229,7 +260,11 @@ export function proxyChildStop(port, opts = {}) {
  *     spawnSprint: (opts: object) => Promise<{ pid: number, port: number, args?: string[], logPath?: string }>,
  *     getLiveEntry?: (pid: number) => { port: number, logPath?: string }|undefined,
  *   },
- *   history?: { latestFor: (id: string) => object|undefined, forSprint: (id: string) => object[] },
+ *   history?: {
+ *     latestFor: (id: string) => object|undefined,
+ *     forSprint: (id: string) => object[],
+ *     latestForIssueRoot?: (issue: string) => object|undefined,
+ *   },
  *   listMembers: () => Promise<object|object[]>|object|object[],
  *   getBacklog: () => Promise<any>|any,
  *   proxyState?: (port: number) => Promise<object>,
@@ -241,6 +276,11 @@ export function proxyChildStop(port, opts = {}) {
  *     override or compose (e.g. with the eft.5.3 issue-scope guard).
  *   generateSprintId?: (issue: string) => string,
  *   resolveRoleMap?: (raw: string|undefined) => Promise<object|undefined>,
+ *   getBuildVersion?: () => string|null,
+ *     apra-fleet-gey.2: defaults to defaultBuildVersion() (`git rev-parse
+ *     HEAD`). Called once at controller creation to stamp what this process
+ *     is running, and again on every launch() to read what's on disk now --
+ *     see launch()'s buildVersionWarning below.
  * }} deps
  */
 export function createSprintController(deps = {}) {
@@ -251,7 +291,7 @@ export function createSprintController(deps = {}) {
     if (!spawner || typeof spawner.spawnSprint !== 'function') {
         throw new TypeError('createSprintController requires a spawner with spawnSprint()');
     }
-    const history = deps.history ?? { latestFor: () => undefined, forSprint: () => [] };
+    const history = deps.history ?? { latestFor: () => undefined, forSprint: () => [], latestForIssueRoot: () => undefined };
     const listMembers = deps.listMembers ?? (() => ({ members: [] }));
     const getBacklog = deps.getBacklog ?? (() => ({ tasks: [] }));
     const proxyState = deps.proxyState ?? proxyChildState;
@@ -265,6 +305,12 @@ export function createSprintController(deps = {}) {
     const generateSprintId = deps.generateSprintId ?? ((issue) => `${issue}-${randomUUID()}`);
     const resolvePort = deps.resolvePort
         ?? ((pid) => (pid != null && spawner.getLiveEntry ? spawner.getLiveEntry(pid)?.port : undefined));
+    const getBuildVersion = deps.getBuildVersion ?? defaultBuildVersion;
+    // apra-fleet-gey.2: stamped ONCE, at controller creation (supervisor
+    // startup) -- deliberately never re-read afterward, so this stays "what
+    // code this running process was actually started from", distinct from
+    // launch()'s own re-read of getBuildVersion() for "what's on disk now".
+    const stampedBuildVersion = getBuildVersion();
 
     /** Validate a launch request against the SHARED runner.js helpers. */
     function validateLaunchRequest(body) {
@@ -331,6 +377,28 @@ export function createSprintController(deps = {}) {
         const union = memberUnion(members, roleMap);
         const issueRoots = [issue];
 
+        // apra-fleet-gey.2: gate this relaunch on the prior incarnation's
+        // terminal record, BEFORE the member-overlap guard/spawn -- a
+        // deterministic, unaddressed prior failure (e.g. the engine's own
+        // BEADS_SYNC_CONFLICT, or a gey.1 LAUNCH_FAILED fast-exit) will
+        // almost certainly recur on an identical relaunch, so there is no
+        // reason to burn a spawn/reservation attempt re-hitting it. The
+        // request's `overrideRelaunchGate: true` is the documented,
+        // explicit escape hatch -- never a silent bypass.
+        const priorTerminal = typeof history.latestForIssueRoot === 'function'
+            ? history.latestForIssueRoot(issue)
+            : undefined;
+        if (priorTerminal && isDeterministicTerminalReason(priorTerminal) && body.overrideRelaunchGate !== true) {
+            const namedReason = priorTerminal.terminalReason ?? priorTerminal.reason ?? priorTerminal.event;
+            throw new ApiError(
+                409,
+                `relaunch of '${issue}' refused: its prior incarnation ('${priorTerminal.sprintId}') ended with ` +
+                `'${namedReason}', which is treated as deterministic and unaddressed -- pass ` +
+                `overrideRelaunchGate: true to relaunch anyway.`,
+                'issue',
+            );
+        }
+
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
         await beforeLaunch({ members: union, issueRoots });
 
@@ -358,6 +426,18 @@ export function createSprintController(deps = {}) {
             runId: sprintId,
         };
         const spawned = await spawner.spawnSprint(spawnOpts);
+        // apra-fleet-gey.2: best-effort stale-process detection -- compare
+        // the build this supervisor process STAMPED at startup against
+        // what's on disk RIGHT NOW. A mismatch means code changed after this
+        // process started (the apra-fleet-bnb-e828ded6 incident: a relaunch
+        // re-hit an already-fixed-on-disk bug because it ran against the
+        // stale pre-fix process) -- reported here, never blocking, since the
+        // launch itself is not wrong, only worth a supervisor restart first.
+        const currentBuildVersion = getBuildVersion();
+        const buildVersionWarning = (stampedBuildVersion != null && currentBuildVersion != null && stampedBuildVersion !== currentBuildVersion)
+            ? `running supervisor build (${stampedBuildVersion}) differs from the on-disk build (${currentBuildVersion}) -- ` +
+              `if code changed after this process started, restart the supervisor before relying on this relaunch.`
+            : null;
         // apra-fleet-3i3.2: persist enough launch metadata (branch/base/goal,
         // alongside the two reservation axes already claimed here) that a
         // future Restart control can reconstruct this exact POST /api/sprints
@@ -390,6 +470,7 @@ export function createSprintController(deps = {}) {
             issueRoots,
             members: union,
             goal: body.goal ?? null,
+            buildVersionWarning,
         };
     }
 

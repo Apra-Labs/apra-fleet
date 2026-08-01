@@ -72,6 +72,7 @@ export const FORM_ROLE_OPTIONS = Object.freeze([...ROLES, ORCHESTRATOR_ROLE]);
  *   goal: string,
  *   branch: string,
  *   base: string,
+ *   overrideRelaunchGate?: boolean,
  * }} input
  * @returns {{ ok: true, body: object }|{ ok: false, error: string }}
  */
@@ -105,6 +106,14 @@ export function buildLaunchRequestBody(input) {
     const body = { issue: roots[0], members, branch, base, goal: opts.goal };
     if (opts.roleMap && typeof opts.roleMap === 'object' && Object.keys(opts.roleMap).length > 0) {
         body.roleMap = opts.roleMap;
+    }
+    // apra-fleet-gey.2: only sent when explicitly checked -- the server-side
+    // relaunch gate (api.mjs's launch()) treats ANY other value (undefined,
+    // false) as "no override", so omitting it here when unchecked changes
+    // nothing about the request the server sees versus before this gate
+    // existed.
+    if (opts.overrideRelaunchGate === true) {
+        body.overrideRelaunchGate = true;
     }
     return { ok: true, body };
 }
@@ -310,6 +319,7 @@ function clientScriptSource() {
             var goal = document.getElementById('launch-goal').value;
             var branch = document.getElementById('launch-branch').value;
             var base = document.getElementById('launch-base').value;
+            var overrideGateEl = document.getElementById('launch-override-gate');
             var result = buildLaunchRequestBody({
                 selectedRoots: selectedRoots,
                 members: members,
@@ -317,6 +327,7 @@ function clientScriptSource() {
                 goal: goal,
                 branch: branch,
                 base: base,
+                overrideRelaunchGate: overrideGateEl ? overrideGateEl.checked : false,
             });
             if (!result.ok) {
                 resultEl.style.color = '#ef4444';
@@ -334,7 +345,8 @@ function clientScriptSource() {
             }).then(function (r) {
                 if (r.status === 201) {
                     resultEl.style.color = '#22c55e';
-                    resultEl.textContent = 'Launched sprint ' + r.json.sprintId + '.';
+                    resultEl.textContent = 'Launched sprint ' + r.json.sprintId + '.'
+                        + (r.json.buildVersionWarning ? ' Warning: ' + r.json.buildVersionWarning : '');
                     selectedRoots = [];
                     renderSelectedIssues();
                     document.querySelectorAll('#backlog tr[data-bead-id]').forEach(function (tr) {
@@ -375,6 +387,8 @@ export function renderLaunchFormHtml() {
         '<div style="margin-bottom:8px;"><label>Goal: <select id="launch-goal">' + goalOptionsHtml + '</select></label></div>' +
         '<div style="margin-bottom:8px;"><label>Branch: <input id="launch-branch" type="text" placeholder="feat/my-topic"/></label></div>' +
         '<div style="margin-bottom:8px;"><label>Base branch: <input id="launch-base" type="text" placeholder="main" value="main"/></label></div>' +
+        '<div style="margin-bottom:8px;"><label><input id="launch-override-gate" type="checkbox"/> ' +
+        'Override relaunch gate (the prior incarnation of this issue ended in a reason flagged as unsafe to retry blindly)</label></div>' +
         '<button type="submit">Launch Sprint</button>' +
         '</form>' +
         '<div id="launch-result" style="margin-top: 8px; font-size: 13px;"></div>' +
