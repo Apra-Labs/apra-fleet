@@ -40,7 +40,7 @@ import { isMaxTurnsResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'stalled';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -676,6 +676,15 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
   let clearedByStall = false;
+  // apra-fleet-3c9.1: a CONFIRMED stall must not only kill the remote pid but
+  // also cancel the in-flight strategy.execCommand() promise. Before this, the
+  // client kept waiting out its full deriveTimeoutMs deadline after the
+  // server-side work had already died (the 60.5-min hung dispatch in
+  // apra-fleet-3c9). onStall aborts this controller; its signal is merged into
+  // the signal handed to every execCommand below (see dispatchSignal), so a
+  // confirmed stall settles the pending dispatch immediately and surfaces a
+  // typed 'stalled' error instead of hanging.
+  const stallAbortController = new AbortController();
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
@@ -701,6 +710,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // Best-effort and never awaited: onStall is a fire-and-forget callback
       // from the poll loop, and tryKillPid already swallows its own errors.
       void tryKillPid(agent, strategy, cmds).catch(() => {});
+      // apra-fleet-3c9.1: killing the remote pid alone left the pending
+      // execCommand promise still awaiting its full deadline. Abort it now so
+      // the dispatch settles promptly and returns a typed 'stalled' error.
+      try { stallAbortController.abort(); } catch { /* best-effort */ }
     },
   });
 
@@ -944,6 +957,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   };
   extra?.signal?.addEventListener('abort', abortHandler);
 
+  // apra-fleet-3c9.1: the signal handed to execCommand fires on EITHER the MCP
+  // client's cancellation OR a confirmed stall (stallAbortController). Merging
+  // them means a stall aborts the pending dispatch exactly as a client cancel
+  // would, while a live (non-stalled) dispatch -- whose controller is never
+  // aborted -- is left completely untouched.
+  const dispatchSignal = extra?.signal
+    ? AbortSignal.any([extra.signal, stallAbortController.signal])
+    : stallAbortController.signal;
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
@@ -955,7 +976,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   try {
     let result;
     try {
-      result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+      result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
     } catch (dispatchErr: any) {
       // apra-fleet-02s.1: a genuine command-execution exception (e.g. an
       // inactivity timeout, or any other error strategy.execCommand throws)
@@ -967,6 +988,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // itself cancelled the request -- there is nothing to recover from a
       // deliberate cancellation.
       if (extra?.signal?.aborted) throw dispatchErr;
+      // apra-fleet-3c9.1: a stall-triggered abort is terminal. onStall already
+      // killed the remote process and its session is gone, so retrying in a
+      // fresh session would just re-dispatch onto a member we just tore down.
+      // Let the exception surface to the outer catch, which classifies it as a
+      // typed 'stalled' error instead of retrying or hanging.
+      if (stallAbortController.signal.aborted) throw dispatchErr;
       // apra-fleet-eft.78.1: an explicit-id resume must NOT retry in a fresh
       // session (that would run a context-dependent delta prompt with no
       // context). Let the exception surface as dispatch_failed instead.
@@ -975,7 +1002,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
     }
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
@@ -1004,7 +1031,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
       parsed = provider.parseResponse(result);
       if (parsed.usage) _epUsage = parsed.usage;
     }
@@ -1018,7 +1045,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
       parsed = provider.parseResponse(result);
       if (parsed.usage) _epUsage = parsed.usage;
     }
@@ -1175,6 +1202,17 @@ session: ${parsed.sessionId}`;
       },
     };
   } catch (err: any) {
+    // apra-fleet-3c9.1: a confirmed stall aborted the in-flight execCommand (and
+    // NOT the MCP client). Surface it as a typed 'stalled' error so the dispatch
+    // settles here -- well under the client hard timeout -- instead of being
+    // mislabeled dispatch_failed or waiting out the full deadline.
+    if (stallAbortController.signal.aborted && !extra?.signal?.aborted) {
+      _epError = 'dispatch aborted by confirmed stall';
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.`,
+        structuredContent: { isError: true, reason: 'stalled' },
+      };
+    }
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
     _epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
     _epError = err.message;
