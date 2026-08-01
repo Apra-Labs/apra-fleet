@@ -36,8 +36,14 @@ bug in its own right, not just a slow test.
 
 ## Permissions
 
-Commands below require these prefixes in `.claude/settings.json` under
-`permissions.allow`:
+Commands below require coverage for these prefixes by SOME entry in
+`permissions.allow` of EITHER `.claude/settings.json` OR
+`.claude/settings.local.json` (where the fleet's compose_permissions tool
+delivers). A broader prefix entry counts as coverage -- e.g. `Bash(node:*)`
+covers `node dist/index.js`, `Bash(git:*)` covers `git clone`, and
+`Bash(bd:*)` covers `bd`. Only report a permissions block if a prefix has
+no covering entry in either file, or a command is actually denied at
+runtime:
 - `Bash(mkdir *)`
 - `Bash(rm -rf ~/temp/.apra-fleet-tests*)`
 - `Bash(node dist/index.js *)`

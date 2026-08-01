@@ -20,12 +20,20 @@ deploy the software onto the target; it does not run this file.)
 
 ## Permissions
 
-Commands below require these prefixes in `.claude/settings.json` under
-`permissions.allow` (verify each is present before running anything):
-- `Bash(npm test*)`
-- `Bash(npm run *)`
-- `Bash(npx vitest *)`
-- `Bash(bd *)`
+Commands below require the ability to run these command families:
+- `npm test ...` (e.g. `Bash(npm test*)`)
+- `npm run ...` (e.g. `Bash(npm run *)`)
+- `npx vitest ...` (e.g. `Bash(npx vitest *)`)
+- `bd ...` (e.g. `Bash(bd *)`)
+
+Before running anything, verify each family is covered by SOME entry in
+`permissions.allow` of EITHER `.claude/settings.json` OR
+`.claude/settings.local.json` (the fleet's compose_permissions tool
+delivers to the latter). A broader prefix entry counts as coverage --
+e.g. `Bash(npm:*)` covers `npm test`/`npm run`, `Bash(npx:*)` covers
+`npx vitest`, and `Bash(bd:*)` covers `bd`. Only stop and report a
+permissions block if a required family has no covering entry in either
+file, or a command is actually denied at runtime.
 
 ## Inputs
 
