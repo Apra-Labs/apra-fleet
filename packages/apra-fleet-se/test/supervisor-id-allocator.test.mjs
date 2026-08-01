@@ -235,6 +235,95 @@ describe('id-allocator -- lives in the supervisor (end-to-end over HTTP routes)'
     });
 });
 
+describe('id-allocator -- persist() rename retries transient EPERM/EBUSY (apra-fleet-cvb.5)', () => {
+    /** A fake fs.rename() that fails N times with `code`, then delegates to the real rename. */
+    function flakyRenameFs(realFs, code, failCount) {
+        let calls = 0;
+        return {
+            mkdir: realFs.mkdir.bind(realFs),
+            readFile: realFs.readFile.bind(realFs),
+            writeFile: realFs.writeFile.bind(realFs),
+            async rename(src, dst) {
+                calls += 1;
+                if (calls <= failCount) {
+                    const err = new Error(`simulated ${code}`);
+                    err.code = code;
+                    throw err;
+                }
+                return realFs.rename(src, dst);
+            },
+            get renameCalls() { return calls; },
+        };
+    }
+
+    test('retry-then-succeed: a transient EPERM on rename() does not drop the allocation', async () => {
+        const realFs = await import('node:fs/promises');
+        const fakeFs = flakyRenameFs(realFs, 'EPERM', 2);
+        const sleeps = [];
+        const alloc = createIdAllocator({
+            dataDir: dir,
+            leaseMs: 100_000,
+            fs: fakeFs,
+            renameRetry: { sleep: async (ms) => { sleeps.push(ms); } },
+        });
+        await alloc.start();
+
+        const parent = 'apra-fleet-eft.9';
+        const g = await alloc.allocate(parent, { pid: process.pid });
+        assert.equal(seqOf(g.childId, parent), 1, 'allocation must succeed despite the transient rename failures');
+        assert.equal(fakeFs.renameCalls, 3, 'rename must be retried until it succeeds (1 + 2 retries)');
+        assert.equal(sleeps.length, 2, 'a bounded backoff sleep is injected between retries, never a real wall-clock wait');
+
+        // The snapshot including this allocation must actually be durable on disk
+        // -- confirming the audit is not lost, mirroring history.mjs/ledger.mjs coverage.
+        const raw = JSON.parse(await realFs.readFile(path.join(dir, ID_ALLOCATOR_FILENAME), 'utf-8'));
+        assert.equal(raw.parents[parent].highWater, 1);
+
+        await alloc.stop();
+    });
+
+    test('retry-then-succeed: a transient EBUSY on rename() does not drop the allocation', async () => {
+        const realFs = await import('node:fs/promises');
+        const fakeFs = flakyRenameFs(realFs, 'EBUSY', 1);
+        const alloc = createIdAllocator({
+            dataDir: dir,
+            leaseMs: 100_000,
+            fs: fakeFs,
+            renameRetry: { sleep: async () => {} },
+        });
+        await alloc.start();
+
+        const parent = 'p';
+        const g = await alloc.allocate(parent, { pid: process.pid });
+        assert.equal(seqOf(g.childId, parent), 1);
+        assert.equal(fakeFs.renameCalls, 2, 'rename must be retried after a single transient EBUSY');
+
+        await alloc.stop();
+    });
+
+    test('non-retryable passthrough: a non-EPERM/EBUSY rename error rejects immediately without retry', async () => {
+        const realFs = await import('node:fs/promises');
+        const fakeFs = flakyRenameFs(realFs, 'ENOSPC', 5);
+        const alloc = createIdAllocator({
+            dataDir: dir,
+            leaseMs: 100_000,
+            fs: fakeFs,
+            renameRetry: { sleep: async () => { throw new Error('must not sleep/retry for a non-transient error'); } },
+        });
+        await alloc.start();
+
+        const parent = 'p';
+        await assert.rejects(
+            () => alloc.allocate(parent, { pid: process.pid }),
+            (err) => err.code === 'ENOSPC',
+            'a non-retryable rename error must propagate to the allocate() caller',
+        );
+        assert.equal(fakeFs.renameCalls, 1, 'a non-transient error must not be retried');
+
+        await alloc.stop();
+    });
+});
+
 describe('id-allocator -- null client keeps create call sites uniform', () => {
     test('nullChildIdAllocatorClient returns childId null and no-op confirm/release', async () => {
         const client = nullChildIdAllocatorClient();
