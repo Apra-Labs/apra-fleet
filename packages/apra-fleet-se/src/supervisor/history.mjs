@@ -20,6 +20,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
+import { renameWithRetry } from './rename-with-retry.mjs';
+
 /** On-disk schema version for the persisted history document. */
 export const HISTORY_VERSION = 1;
 
@@ -163,6 +165,15 @@ function cloneEvent(e) {
  *     rename: typeof import('node:fs/promises').rename,
  *   },
  *   logger?: { log?: Function, error?: Function },
+ *   renameRetry?: {
+ *     maxAttempts?: number,
+ *     baseDelayMs?: number,
+ *     sleep?: (ms: number) => Promise<void>,
+ *   },
+ *     apra-fleet-ed4.1: bounded EPERM/EBUSY retry options for the persist()
+ *     rename step (see rename-with-retry.mjs) -- injectable so a test can
+ *     drive a fake clock with no real sleeps. Defaults to
+ *     renameWithRetry()'s own defaults (5 attempts, ~10ms escalating).
  * }} [deps]
  */
 export function createHistory(deps = {}) {
@@ -171,6 +182,7 @@ export function createHistory(deps = {}) {
     const tmpPath = `${filePath}.tmp`;
     const now = deps.now ?? (() => new Date().toISOString());
     const fs = deps.fs ?? fsp;
+    const renameRetryOpts = deps.renameRetry ?? {};
 
     /** @type {Array<object>} authoritative in-memory log, committed after persist. */
     let events = [];
@@ -182,7 +194,10 @@ export function createHistory(deps = {}) {
         const doc = { version: HISTORY_VERSION, events: list };
         const body = `${JSON.stringify(doc, null, 2)}\n`;
         await fs.writeFile(tmpPath, body, 'utf-8');
-        await fs.rename(tmpPath, filePath);
+        // apra-fleet-ed4.1: bounded EPERM/EBUSY retry -- on Windows this
+        // rename can transiently fail while the destination is momentarily
+        // locked/open elsewhere, which used to silently drop this event.
+        await renameWithRetry(fs, tmpPath, filePath, renameRetryOpts);
     }
 
     async function load() {

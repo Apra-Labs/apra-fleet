@@ -50,6 +50,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
+import { renameWithRetry } from './rename-with-retry.mjs';
+
 /** On-disk schema version for the persisted ledger document. */
 export const LEDGER_VERSION = 1;
 
@@ -289,6 +291,15 @@ function cloneReservation(r) {
  *     reserve: (memberId: string, sprintId: string) => Promise<any>|any,
  *     release: (memberId: string, sprintId: string) => Promise<any>|any,
  *   },
+ *   renameRetry?: {
+ *     maxAttempts?: number,
+ *     baseDelayMs?: number,
+ *     sleep?: (ms: number) => Promise<void>,
+ *   },
+ *     apra-fleet-ed4.1: bounded EPERM/EBUSY retry options for the persist()
+ *     rename step (see rename-with-retry.mjs) -- injectable so a test can
+ *     drive a fake clock with no real sleeps. Defaults to
+ *     renameWithRetry()'s own defaults (5 attempts, ~10ms escalating).
  * }} [deps]
  *
  * apra-fleet-eft.10.3: when a `reservationClient` is injected, the ledger
@@ -308,6 +319,7 @@ export function createLedger(deps = {}) {
     const logger = deps.logger ?? console;
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
     const reservationClient = deps.reservationClient ?? null;
+    const renameRetryOpts = deps.renameRetry ?? {};
 
     /**
      * Drive the server reservation op for every member in a reservation. Best
@@ -359,7 +371,10 @@ export function createLedger(deps = {}) {
         await fs.mkdir(path.dirname(filePath), { recursive: true });
         const body = `${JSON.stringify(doc, null, 2)}\n`;
         await fs.writeFile(tmpPath, body, 'utf-8');
-        await fs.rename(tmpPath, filePath);
+        // apra-fleet-ed4.1: bounded EPERM/EBUSY retry -- on Windows this
+        // rename can transiently fail while the destination is momentarily
+        // locked/open elsewhere, which used to silently drop this write.
+        await renameWithRetry(fs, tmpPath, filePath, renameRetryOpts);
     }
 
     /**
