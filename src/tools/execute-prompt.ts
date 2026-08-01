@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, touchAgent } from '../utils/agent-helpers.js';
+import { getAgentOS, touchAgent, getStoredPid } from '../utils/agent-helpers.js';
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -20,9 +20,9 @@ import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
-import { recoverOrphanedDispatch } from '../services/orphan-recovery.js';
+import { recoverOrphanedDispatch, isRemoteProcessAlive } from '../services/orphan-recovery.js';
 import { durableOutputPath } from '../os/linux.js';
-import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { LogScope, maskSecrets, truncateForLog, logWarn } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import { sessionRegistry } from '../services/session-registry.js';
@@ -300,6 +300,57 @@ async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
 // (f) server overload retry -> retried after delay; finally clears on success or failure
 // (g) early returns before inFlightAgents.add: busy state never entered
 
+/**
+ * apra-fleet-idb: liveness probe for a busy-locked member's backing process.
+ * An inFlightAgents entry can outlive the process it was guarding -- a child
+ * reaped without its 'close'/'error' handler ever firing (e.g. a hung SSH
+ * channel that never signals exit, so clearStoredPid never runs), or an
+ * interactive member's underlying claude process dying/disconnecting after
+ * its session was registered -- permanently wedging the member: every future
+ * dispatch would keep returning busy even though fleet_status's own
+ * independent live-process check (src/tools/check-status.ts's
+ * fleetProcessCheck) would report idle. Returns the confirmed-dead pid (used
+ * only for the release warning) when the lock should self-heal, or undefined
+ * when the member is genuinely busy.
+ *
+ * Conservative on ambiguity, deliberately: NO captured pid at all (neither an
+ * interactive session pid nor a subprocess pid) is treated as still busy, not
+ * as evidence of staleness -- a dispatch that has not reached its pid-capture
+ * step yet must never be raced by a concurrent "self-heal" attempt. Only a
+ * DEFINITIVE dead-pid reading releases the lock.
+ */
+async function findDeadLockPid(agent: Agent, workspaceId: string): Promise<number | undefined> {
+  // Interactive sessions are always local (register_member's interactive
+  // bootstrap is gated to isLocal members) -- the same local
+  // process.kill(pid, 0) probe the eft.28.1 dead-session guard uses further
+  // below applies directly here. Falls back to the durable lastKnownPid
+  // anchor exactly like that guard does, so a disconnected-then-reconnected
+  // session (pid lost on the live SessionState) is still checkable.
+  const session = sessionRegistry.get(workspaceId, agent.id);
+  const interactivePid = session?.pid ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
+  if (interactivePid !== undefined && !isPidAlive(interactivePid)) {
+    return interactivePid;
+  }
+
+  // Subprocess dispatch pid (local strategy or remote-over-SSH/relay). A
+  // remote pid lives in a DIFFERENT machine's pid namespace -- process.kill()
+  // -based isPidAlive is meaningless there (it would almost always read back
+  // ESRCH for a pid that simply does not exist on THIS machine, wrongly
+  // declaring a genuinely-alive remote session dead and racing a duplicate
+  // dispatch onto it). Probe it the same way orphan-recovery's lease-of-life
+  // gate does instead: a fresh, independent SSH round trip, never the
+  // (possibly wedged) channel that produced the stale lock.
+  const subprocessPid = getStoredPid(agent.id);
+  if (subprocessPid !== undefined) {
+    const alive = agent.agentType === 'local'
+      ? isPidAlive(subprocessPid)
+      : await isRemoteProcessAlive(getStrategy(agent), subprocessPid);
+    if (!alive) return subprocessPid;
+  }
+
+  return undefined;
+}
+
 // apra-fleet-eft.28.1: how often the interactive wait re-checks that the
 // target member's claude process is still alive. This is the dispatch-level
 // liveness/no-progress bound -- the member's process can die AFTER the
@@ -489,10 +540,24 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   }
 
   if (inFlightAgents.has(agent.id)) {
-    return {
-      text: `[FAIL] execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`,
-      structuredContent: { isError: true, reason: 'busy' },
-    };
+    // apra-fleet-idb: before honoring the busy rejection, verify the locked
+    // session actually still has a live backing process -- see
+    // findDeadLockPid's docstring for the full rationale. This is what keeps
+    // fleet_status (which decides busy/idle from its own independent live
+    // process check) and this dispatch gate from ever disagreeing: a stale
+    // lock self-heals here instead of permanently wedging the member.
+    const staleLockPid = await findDeadLockPid(agent, getTokenIssuer().workspaceId());
+    if (staleLockPid !== undefined) {
+      logWarn('busy_lock', `orphaned busy-lock for "${agent.friendlyName}" -- locked pid=${staleLockPid} is confirmed dead; releasing the stale lock and proceeding with this dispatch instead of rejecting it as busy`, agent);
+      inFlightAgents.delete(agent.id);
+      getStallDetector().remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+    } else {
+      return {
+        text: `[FAIL] execute_prompt is already running for "${agent.friendlyName}". Wait for the current call to finish before sending another.`,
+        structuredContent: { isError: true, reason: 'busy' },
+      };
+    }
   }
 
   // No-LLM members (apra-fleet-us9.14) are plain command executors -- neither
