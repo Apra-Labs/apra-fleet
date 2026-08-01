@@ -22,6 +22,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const { setupGitAppSchema, setupGitApp } = await import('../tools/setup-git-app.js');
   const { provisionVcsAuthSchema, provisionVcsAuth } = await import('../tools/provision-vcs-auth.js');
   const { revokeVcsAuthSchema, revokeVcsAuth } = await import('../tools/revoke-vcs-auth.js');
+  const { createPullRequestSchema, createPullRequest } = await import('../tools/create-pull-request.js');
   const { fleetStatusSchema, fleetStatus } = await import('../tools/check-status.js');
   const { memberDetailSchema, memberDetail } = await import('../tools/member-detail.js');
   const { updateAgentCliSchema, updateAgentCli } = await import('../tools/update-agent-cli.js');
@@ -119,6 +120,9 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   server.tool('setup_git_app', "One-time setup: register a GitHub App for git token minting. Requires a GitHub App ID, private key (.pem) file path, and installation ID. The app must already be created at github.com/organizations/{org}/settings/apps.", setupGitAppSchema.shape, wrapTool('setup_git_app', (input) => setupGitApp(input as any)));
   server.tool('provision_vcs_auth', 'Set up git access credentials on a member. Supports GitHub, Bitbucket, and Azure DevOps. Tests connectivity after setup.', provisionVcsAuthSchema.shape, wrapTool('provision_vcs_auth', (input) => provisionVcsAuth(input as any)));
   server.tool('revoke_vcs_auth', 'Remove VCS credentials from a member. Specify the provider (github, bitbucket, or azure-devops) to revoke.', revokeVcsAuthSchema.shape, wrapTool('revoke_vcs_auth', (input) => revokeVcsAuth(input as any)));
+
+  // Pull Requests
+  server.tool('create_pull_request', 'Open a GitHub pull request WITHOUT depending on a member-side `gh` login. The fleet server mints its own short-lived GitHub App installation token (scoped to the target repo, pull_requests:write) and calls the GitHub REST API directly. An already-open PR for the same head branch is reported as an idempotent success containing "already exists"; a failure is returned as text starting with "ERROR:" so callers can fall back.', createPullRequestSchema.shape, wrapTool('create_pull_request', (input) => createPullRequest(input as any)));
 
   // Status & Monitoring
   server.tool('fleet_status', 'Get status of all fleet members. Use json format for structured data.', fleetStatusSchema.shape, wrapTool('fleet_status', (input) => fleetStatus(input as any)));

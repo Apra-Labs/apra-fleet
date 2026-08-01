@@ -145,6 +145,16 @@
  */
 
 /**
+ * @typedef {Object} CreatePullRequestOptions
+ * @property {string} repo - Target repository as "owner/name" (e.g. "Apra-Labs/apra-fleet")
+ * @property {string} base - Branch the PR merges INTO (e.g. "main")
+ * @property {string} head - Branch containing the changes; must already be pushed
+ * @property {string} title - Pull request title
+ * @property {string} [body] - Pull request body (markdown)
+ * @property {boolean} [draft] - Open the PR as a draft. Defaults to false.
+ */
+
+/**
  * @typedef {Object} ComposePermissionsOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -307,6 +317,27 @@ export class ApraFleet {
      */
     async provisionVcsAuth(options) {
         return this.mcpClient.callTool('provision_vcs_auth', options);
+    }
+
+    /**
+     * Open a GitHub pull request server-side (src/tools/create-pull-request.ts,
+     * apra-fleet-6bu). The fleet server mints its own short-lived GitHub App
+     * installation token scoped to `repo` with pull_requests:write and calls
+     * the GitHub REST API directly, so PR creation does NOT depend on a
+     * member-side `gh auth login` (which can never accept the `ghs_`
+     * installation tokens provision_vcs_auth deploys).
+     *
+     * Result text contract: "Created pull request #<n> ..." on success, a
+     * message containing "already exists" when a PR for the same head branch
+     * is already open (idempotent success), or text starting with "ERROR:"
+     * when the call could not be made (no GitHub App configured, mint
+     * failure, API rejection) -- callers should fall back to their own PR
+     * path on that marker.
+     *
+     * @param {CreatePullRequestOptions} options
+     */
+    async createPullRequest(options) {
+        return this.mcpClient.callTool('create_pull_request', options);
     }
 
     /**
