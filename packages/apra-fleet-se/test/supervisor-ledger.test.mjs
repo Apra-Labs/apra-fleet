@@ -548,3 +548,86 @@ describe('ledger -- server reservation client (apra-fleet-eft.10.3)', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 });
+
+// apra-fleet-ed4.1: persist()'s tmp-write-then-rename step now routes through
+// the shared renameWithRetry() helper (rename-with-retry.mjs), injectable via
+// deps.renameRetry -- same fake-fs/fake-sleep pattern as
+// supervisor-id-allocator.test.mjs's apra-fleet-cvb.5 coverage, proving THIS
+// call site (not just the helper in isolation) is wired up.
+describe('ledger -- persist() rename retries transient EPERM/EBUSY (apra-fleet-ed4.1)', () => {
+    /** A fake fs.rename() that fails N times with `code`, then delegates to the real rename. */
+    function flakyRenameFs(realFs, code, failCount) {
+        let calls = 0;
+        return {
+            mkdir: realFs.mkdir.bind(realFs),
+            readFile: realFs.readFile.bind(realFs),
+            writeFile: realFs.writeFile.bind(realFs),
+            async rename(src, dst) {
+                calls += 1;
+                if (calls <= failCount) {
+                    const err = new Error(`simulated ${code}`);
+                    err.code = code;
+                    throw err;
+                }
+                return realFs.rename(src, dst);
+            },
+            get renameCalls() { return calls; },
+        };
+    }
+
+    test('retry-then-succeed: a transient EPERM on rename() does not drop the claimed reservation', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const fakeFs = flakyRenameFs(fsp, 'EPERM', 2);
+        const sleeps = [];
+        const ledger = createLedger({
+            filePath, fs: fakeFs, renameRetry: { sleep: async (ms) => { sleeps.push(ms); } },
+        });
+        await ledger.start();
+
+        const r = await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+        assert.deepEqual(r.members, ['alice']);
+        assert.equal(fakeFs.renameCalls, 3, 'rename must be retried until it succeeds (1 + 2 retries)');
+        assert.equal(sleeps.length, 2, 'a bounded backoff sleep is injected between retries, never a real wall-clock wait');
+
+        // The reservation is actually durable on disk, not just in memory.
+        const onDisk = JSON.parse(await fsp.readFile(filePath, 'utf-8'));
+        assert.deepEqual(onDisk.reservations['sprint-a'].members, ['alice']);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('retry-then-succeed: a transient EBUSY on rename() does not drop the claimed reservation', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const fakeFs = flakyRenameFs(fsp, 'EBUSY', 1);
+        const ledger = createLedger({ filePath, fs: fakeFs, renameRetry: { sleep: async () => {} } });
+        await ledger.start();
+
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+        assert.equal(fakeFs.renameCalls, 2, 'rename must be retried after a single transient EBUSY');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('non-retryable passthrough: a non-EPERM/EBUSY rename error rejects claim() immediately without retry', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const fakeFs = flakyRenameFs(fsp, 'ENOSPC', 5);
+        const ledger = createLedger({
+            filePath, fs: fakeFs,
+            renameRetry: { sleep: async () => { throw new Error('must not sleep/retry for a non-transient error'); } },
+        });
+        await ledger.start();
+
+        await assert.rejects(
+            () => ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] }),
+            (err) => err.code === 'ENOSPC',
+        );
+        assert.equal(fakeFs.renameCalls, 1, 'a non-transient error must not be retried');
+        // No half-claim -- the reservation never committed to memory either.
+        assert.equal(ledger.get('sprint-a'), undefined);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
