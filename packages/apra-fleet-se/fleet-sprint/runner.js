@@ -475,13 +475,11 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
             mode,
             identities,
             message:
-                '[Topology] Refusing to start the multi-member sprint: the configured members disagree on their identity ' +
-                'signal, so they are NOT operating on a shared workspace. This runner has no cross-member bd/git sync layer ' +
-                'this round, so the orchestrator-side beads DB and the sprint git branch would not be visible to the other ' +
-                'members (their `bd close`/commits would silently diverge). Per-member signals: ' +
+                '[Topology] Refusing to start the multi-member sprint in legacy mode: the configured members disagree on ' +
+                'their identity signals (are on differing HEADs). Re-run with --sync to enable cross-member sync mode, which ' +
+                'tolerates differing HEADs and uses orchestrator-bracketed git sync to reconcile them. Per-member signals: ' +
                 identities.map((i) => `${i.member}=${i.signal}`).join(', ') +
-                '. Supported modes: single-member, or a verified shared-workspace fleet (all members resolve to the same ' +
-                'checkout/DB). See docs/architecture.md "Multi-member topology (fleet-sprint)".',
+                '. See docs/architecture.md "Multi-member topology (fleet-sprint)" for details.',
         };
     }
 
