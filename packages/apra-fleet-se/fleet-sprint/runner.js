@@ -4160,17 +4160,69 @@ export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysi
 //     ReviewerContractViolationError (errors.mjs), which this runner throws
 //     itself, plus BudgetExceededError, which the workflow package throws on
 //     its behalf;
+//   - GitDivergedError and DoltDivergedError, the state-integrity divergences.
+//     A divergence means the single-writer invariant this engine relies on is
+//     already violated (or the shared beads DB genuinely cannot be
+//     fast-forwarded), so no retry or later phase can recover the run -- it
+//     must terminate with an operator-visible record. A DoltDivergedError also
+//     arrives WRAPPED one level down inside a PostDispatchSyncError (the D-push
+//     bracket's shape), so membership is decided by findDoltDivergedCause()
+//     walking the cause chain rather than by the outermost class. That the
+//     divergences belong in this set is not an inference: main()'s typed-abort
+//     catch below already calls resolveTerminalReason()/captureDoltConflictDump()
+//     precisely to report them as the distinct BEADS_SYNC_CONFLICT terminal
+//     state, which is dead code unless they reach it;
 //   - the plain `Error` pre-sprint validation failures, which are not
 //     WorkflowError subclasses and are identified by the stable
 //     'Pre-sprint validation failed:' message prefix every such throw site
 //     uses.
-// CancelledError is deliberately excluded: a cooperative cancellation is a
-// requested shutdown, not an aborted sprint, and must keep flowing through its
-// own 'cancelled' status path.
+//
+// Everything else is deliberately EXCLUDED, and the check is an explicit class
+// list rather than the blanket `instanceof WorkflowError` it used to be --
+// which swept in every routine, non-terminal failure and turned it into a
+// spurious `verdict: 'ABORTED'`:
+//   - CancelledError: a cooperative cancellation is a requested shutdown, not
+//     an aborted sprint, and must keep flowing through its own 'cancelled'
+//     status path;
+//   - AgentOutputError, AgentDispatchError, FleetTransportError, CommandError:
+//     dispatch-level failures each phase's own retry/soft-fail policy owns;
+//   - GitSyncError, DoltSyncError, and a PostDispatchSyncError whose cause
+//     chain carries NO divergence: transient sync failures that are retried in
+//     place and, if they still surface, are ordinary run failures rather than
+//     sprint aborts;
+//   - SprintLockHeldError: structurally unreachable here. acquireSprintLock()
+//     runs in main() BEFORE its try block, so a held lock never reaches this
+//     predicate; there is also no sprint of our own to finalize when another
+//     engine already owns the branch.
 export function isTypedAbortError(err) {
     if (!err || err instanceof CancelledError) return false;
-    if (err instanceof WorkflowError) return true;
+    if (err instanceof StalledSprintError) return true;
+    if (err instanceof SprintPlanRejectedError) return true;
+    if (err instanceof ReviewerContractViolationError) return true;
+    if (err instanceof BudgetExceededError) return true;
+    if (err instanceof GitDivergedError) return true;
+    // Bare DoltDivergedError, or one wrapped inside a PostDispatchSyncError.
+    if (findDoltDivergedCause(err)) return true;
     return typeof err.message === 'string' && err.message.startsWith('Pre-sprint validation failed:');
+}
+
+// Deliberately BROADER than isTypedAbortError(): every terminal WorkflowError
+// except a cooperative cancellation. The two predicates answer two different
+// questions in main()'s catch and must not be collapsed:
+//   - isTerminalSprintFailure() gates the terminal run-state record, which
+//     exists so the supervisor watchdog can classify a run whose PID is gone as
+//     FINISHED-with-a-reason rather than CRASHED. EVERY terminal typed failure
+//     needs that, not just the aborts -- e.g. a Planner AgentDispatchError from
+//     a dead interactive session must surface a reason, not look like a crash.
+//   - isTypedAbortError() gates finalizeAbort()'s branch push + [ABORTED] PR,
+//     which is only worth doing where there is a genuine sprint abort whose
+//     partial work a human should look at.
+// An untyped throw (a plain Error/TypeError -- i.e. a real bug) is deliberately
+// NOT terminal here: it keeps flowing to the CLI's top-level catch with no
+// record, so the watchdog still reports it as CRASHED.
+export function isTerminalSprintFailure(err) {
+    if (!err || err instanceof CancelledError) return false;
+    return err instanceof WorkflowError || isTypedAbortError(err);
 }
 
 // True when a thrown dispatch error means the dispatch delivered no usable
@@ -7892,8 +7944,10 @@ async function runSprintCycle(context) {
             // DoltDivergedError / PostDispatchSyncError -- and this is the ONE
             // phase whose whole job is mutating beads (filing carry-over bugs),
             // so a D-push failure here is a routine outcome, not an exotic one.
-            // Every one of those classes extends WorkflowError, so
-            // isTypedAbortError() returns true for them and the top-level handler
+            // The divergence classes among them (GitDivergedError, and a
+            // DoltDivergedError bare or wrapped in a PostDispatchSyncError) are
+            // typed sprint aborts -- isTypedAbortError() returns true for them --
+            // so without this catch-all the top-level handler
             // in this file's exported entry point would turn the throw into a
             // terminal `verdict: 'ABORTED'` record -- skipping Harvest AND
             // Publish PR, and discarding the already-computed
@@ -8306,18 +8360,22 @@ export function captureDoltConflictDump(err) {
 // Engine entry point + typed-abort routing
 // ---------------------------------------------------------------------------
 //
-// `main()` is the WorkflowEngine entry point: it runs the sprint and, on a
-// typed sprint-abort error (isTypedAbortError()), routes it through
-// finalizeAbort() (push + idempotent [ABORTED] PR iff the branch carries
-// real work beyond base) and always writes a terminal history record before
-// re-throwing. Re-throwing (rather than swallowing) is deliberate: it keeps
+// `main()` is the WorkflowEngine entry point: it runs the sprint and routes a
+// failure through TWO independent decisions (see isTerminalSprintFailure() vs
+// isTypedAbortError() above for why they are not the same question):
+//   - isTerminalSprintFailure(): write a terminal history record, so the
+//     supervisor watchdog reports the run as FINISHED-with-a-reason rather
+//     than CRASHED;
+//   - isTypedAbortError(): additionally route through finalizeAbort() (push +
+//     idempotent [ABORTED] PR iff the branch carries real work beyond base).
+// Re-throwing (rather than swallowing) is deliberate: it keeps
 // bin/cli.mjs's top-level catch -- console.error, exit code 1, and the
 // dashboard grace window -- unchanged; this function only adds work that
 // happens BEFORE the error reaches that catch.
 //
-// An untyped error (isTypedAbortError() === false, e.g. CancelledError from
-// a cooperative /stop) is re-thrown immediately with no
-// finalizeAbort()/history-record side effects.
+// A non-terminal error (isTerminalSprintFailure() === false: CancelledError
+// from a cooperative /stop, or an untyped Error/TypeError -- a real bug) is
+// re-thrown immediately with no finalizeAbort()/history-record side effects.
 export async function main(context) {
     const { command, log = () => {}, publishState, phase: rawPhase, args } = context;
 
@@ -8348,7 +8406,7 @@ export async function main(context) {
     try {
         return await runSprintCycle(runContext);
     } catch (err) {
-        if (!isTypedAbortError(err)) {
+        if (!isTerminalSprintFailure(err)) {
             throw err;
         }
 
@@ -8358,16 +8416,27 @@ export async function main(context) {
         const branch = validatedForLock.branch;
         const baseBranch = validatedForLock.baseBranch;
         let abortResult = { prUrl: null, pushed: false, commitCount: 0 };
-        try {
-            const member = (validatedForLock.roleMap && validatedForLock.roleMap[ROLE_ORCHESTRATOR] && validatedForLock.roleMap[ROLE_ORCHESTRATOR].length > 0)
-                ? validatedForLock.roleMap[ROLE_ORCHESTRATOR][0]
-                : validatedForLock.members[0];
-            abortResult = await finalizeAbort({ error: err, branch, baseBranch, member, command, log });
-        } catch (finalizeErr) {
-            log(
-                `[Terminal History] finalizeAbort() failed for this abort ` +
-                `(${finalizeErr.message}); writing the terminal history record with no PR lookup.`
-            );
+        // Only a typed sprint ABORT earns the branch push + [ABORTED] PR. The
+        // discriminator is RECOVERABILITY, not whether there is work to show
+        // (finalizeAbort already publishes nothing at zero commits beyond
+        // base): a dispatch failure or a sync failure that outlived its retries
+        // is fixed by re-running the sprint, which pushes any local work then,
+        // whereas a stall / budget / reviewer-contract / unmergeable-divergence
+        // abort will never self-resolve, so the [ABORTED] PR is the only
+        // artifact a human gets. Both still get the terminal record below --
+        // the watchdog needs a reason either way.
+        if (isTypedAbortError(err)) {
+            try {
+                const member = (validatedForLock.roleMap && validatedForLock.roleMap[ROLE_ORCHESTRATOR] && validatedForLock.roleMap[ROLE_ORCHESTRATOR].length > 0)
+                    ? validatedForLock.roleMap[ROLE_ORCHESTRATOR][0]
+                    : validatedForLock.members[0];
+                abortResult = await finalizeAbort({ error: err, branch, baseBranch, member, command, log });
+            } catch (finalizeErr) {
+                log(
+                    `[Terminal History] finalizeAbort() failed for this abort ` +
+                    `(${finalizeErr.message}); writing the terminal history record with no PR lookup.`
+                );
+            }
         }
 
         // Always write a terminal history record, even for a zero-commit
