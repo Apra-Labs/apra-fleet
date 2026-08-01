@@ -111,9 +111,9 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 
 ---
 
-### 7. Transcript-Mtime Cross-Check (apra-fleet-iuc.2)
+### 7. Transcript-Mtime Cross-Check
 
-**Scenario:** The content-based timestamp extraction (edge cases 1-6 above) depends on the transcript's JSONL shape parsing correctly. Two prior incidents (apra-fleet-6z8.2, apra-fleet-979) each shipped because that shape assumption was subtly wrong for a real transcript, and a content-parsing gap silently degrades to "no activity ever seen" -- indistinguishable from a genuinely dead session. Conversely, `apra-fleet-ekm` showed the opposite failure mode: a session that WAS dead (hit `max_turns_reached` and stopped) sat unkilled for 38.5 minutes because the only backstop was the 3630s hard dispatch ceiling.
+**Scenario:** The content-based timestamp extraction (edge cases 1-6 above) depends on the transcript's JSONL shape parsing correctly. Prior incidents shipped because that shape assumption was subtly wrong for a real transcript, and a content-parsing gap silently degrades to "no activity ever seen" -- indistinguishable from a genuinely dead session. Conversely, a session that WAS dead (hit `max_turns_reached` and stopped, but whose terminal-event detection missed the signal -- see the terminal-signal detection note in the provider abstraction docs) sat unkilled for tens of minutes because the only backstop was the multi-thousand-second hard dispatch ceiling.
 
 **Decision:** Every poll also fetches the transcript file's own OS last-modified time (`mtimeMs`), independent of and in addition to the content scan, and the two signals are cross-checked before the poll loop commits to either "activity happened" or "no activity happened":
 - `pollLogFile()` (`stall-poller.ts`) issues a `stat -c %Y`/`stat -f %m` (Unix) or PowerShell `LastWriteTimeUtc` (Windows) read of the transcript file alongside the existing tail read, and returns it as `mtimeMs` (epoch ms). Any failure to obtain it (file missing, stat unsupported, non-numeric output) yields `null` -- treated as "no additional signal," never as "confirmed no activity."
@@ -123,7 +123,7 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 
 **Configuration:** `STALL_THRESHOLD_MS` (default 120000 = 2 minutes) is the single configurable inactivity window used for both the content-based and mtime-based signals -- there is no separate mtime threshold. `STALL_POLL_INTERVAL_MS` (default 30000) governs how often both signals are re-checked.
 
-**Rationale:** Content parsing and OS mtime are two independent observations of the same underlying fact ("did this file change"). Requiring stall-only-if-neither-agrees strictly reduces false positives versus content-parsing alone (it is a superset check), while requiring an mtime-confirmed freeze before treating a missing/unparseable terminal signal (e.g. a missed `max_turns_reached` event) as fatal is exactly the defense-in-depth apra-fleet-ekm asked for: even if the terminal-event detection is wrong again, a genuinely dead session (frozen mtime) still dies within the configured window rather than the 60-minute ceiling.
+**Rationale:** Content parsing and OS mtime are two independent observations of the same underlying fact ("did this file change"). Requiring stall-only-if-neither-agrees strictly reduces false positives versus content-parsing alone (it is a superset check), while requiring an mtime-confirmed freeze before treating a missing/unparseable terminal signal (e.g. a missed `max_turns_reached` event) as fatal is exactly the defense-in-depth this design needs: even if the terminal-event detection is wrong again, a genuinely dead session (frozen mtime) still dies within the configured window rather than the multi-thousand-second ceiling.
 
 ---
 

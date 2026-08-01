@@ -73,6 +73,8 @@ Runs an LLM prompt on a member. This is the primary tool for doing actual work a
 **Error handling:**
 - If the prompt fails due to an authentication issue, returns actionable guidance (`provision_llm_auth`) instead of raw error output.
 - Automatically retries once with a 5-second backoff on transient server errors.
+- A `busy` rejection is not taken at face value: before rejecting, the tool verifies the locked session's backing process is actually still alive (local pid signal check, fresh remote liveness round trip, or session-registry last-known pid for interactive sessions). If the process is confirmed dead, the stale lock self-heals -- released with a warning -- and the dispatch proceeds instead of being rejected. This keeps `fleet_status`'s busy/idle view consistent with the dispatch gate's, even after a lock-holding process is reaped without its cleanup path running.
+- A Claude session that terminates because it hit the turn limit always classifies as `max_turns_exhausted`, regardless of which transcript channel the CLI used to signal it (result-event field, result-event subtype, a standalone terminal event, or a truncated stream with no result event at all) -- see "Terminal-Signal and Dead-Session Detection Invariants" in `docs/architecture.md`.
 
 **Token accumulation:**
 After each successful prompt response, the server automatically accumulates `input_tokens` and `output_tokens` from the provider's usage metadata onto the member record. Running totals are accessible via `member_detail` and `fleet_status`. No manual token reporting is needed from agents or the PM.
