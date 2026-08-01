@@ -2,6 +2,83 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint runner error-classification correctness
+
+Sprint goal: fix a cluster of error-classification defects in the
+`fleet-sprint` runner so that abort handling, terminal-record reporting,
+post-dispatch teardown skipping, and reviewer contract enforcement each ask
+the narrow question they are actually meant to answer, instead of a single
+blanket "is this a `WorkflowError`" check sweeping routine, non-terminal
+failures into a false aborted-sprint verdict. **Goal met -- sprint verdict is
+PASS.**
+
+What shipped:
+
+- The runner's abort classification is now a curated, explicit list of
+  typed error classes (stalled sprint, plan rejection, reviewer contract
+  violation, budget exceeded, git/dolt divergence, pre-sprint validation
+  failure) rather than every `WorkflowError` subclass -- so ordinary
+  dispatch/sync failures each phase already retries or soft-fails on no
+  longer masquerade as a full sprint abort with a spurious push and
+  `[ABORTED]` PR.
+- Terminal-record reporting (so the supervisor watchdog can classify a
+  finished run as FINISHED-with-a-reason instead of CRASHED) was split out
+  as its own, deliberately broader check from the narrower abort-worthy
+  check, since every typed failure needs a terminal record but only a
+  genuine abort needs the push-and-PR treatment.
+- Post-dispatch sync teardown is no longer skipped for a dispatch failure
+  where the agent provably ran (turn-limit exhaustion, or a local dispatch
+  watchdog abandoning an in-flight call whose remote member kept running) --
+  only genuinely no-mutation dispatch failures skip teardown now.
+- A reviewer verdict's `replanIds` are now required to be a subset of its
+  `reopenIds`; a `replanIds` entry that silently falls outside that set is
+  both flagged as a reviewer contract violation and logged explicitly
+  instead of being silently dropped.
+- The Final Review LLM-auth self-heal path now short-circuits on success
+  instead of falling through into a redundant second dispatch, and a
+  heal-retry that itself throws degrades through the same generic failure
+  ladder as every other Final Review failure.
+- Plan-reviewer dispatch failures are now marked and retried distinctly from
+  a genuine plan rejection, so a transport/infra failure while soliciting a
+  plan-reviewer verdict is never misreported as the plan itself having been
+  rejected.
+- Publish's branch push is now fail-soft with a bounded retry; a push that
+  still fails after retries is logged and skips PR creation and target-issue
+  closure, but the sprint's already-computed PASS/FAIL verdict is still
+  returned rather than being downgraded into a run failure -- so a caller
+  reading the run's status can no longer assume a successful sprint verdict
+  implies its branch was actually pushed or a PR was raised; `pushed:false`
+  now distinguishes that case.
+- A table-driven contract test enumerates every error class against both
+  classification predicates (including wrapped-divergence and
+  null/undefined edge cases), plus end-to-end harness assertions for each of
+  the four routing outcomes (abort record, rethrow-with-no-record,
+  teardown-skip, teardown-run), so future edits to this area have a single
+  place to pin new rows rather than relying on scattered individual
+  assertions.
+
+Carried forward to a future sprint:
+
+- One open task to update two pre-existing exit-classification tests for a
+  concurrently-landed watchdog "launch failed" reclassification (a fast
+  child exit within a configurable window of reservation now classifies
+  differently than a plain crash); this runner-error-classification sprint's
+  own file footprint did not need to touch those two files.
+- Four regression findings surfaced by this sprint's end-of-sprint
+  regression pass (informational; did not gate this sprint's verdict): a
+  bd-replay recording drift in a stalled-planner-session test; a shared,
+  non-exclusive smoke-test sandbox path that let two concurrent regression
+  runs collide and destroy each other's in-progress state; a growing list of
+  real-bd integration-suite files exceeding their single-file time budget;
+  and a single real-bd suite timeout in the publish-push-failure test.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $9.4498.
+Remaining budget: unknown/unbounded.
+Pricing source: all 13 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-sprint stabilization: run identity, dolt coordination, Windows fixes
 
 Sprint goal: stabilize the always-on multi-sprint supervisor by fixing the

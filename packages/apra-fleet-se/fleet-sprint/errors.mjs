@@ -398,6 +398,47 @@ export class SprintLockHeldError extends WorkflowError {
     }
 }
 
+/**
+ * apra-fleet-9ta.4 -- thrown when the Plan phase exhausts its planning
+ * rounds and the LAST round's plan-reviewer verdict was itself synthesized
+ * from an infrastructure dispatch failure (schema-repair exhaustion, a
+ * dropped transport, etc -- see `dispatchFailed` on the synthesized
+ * CHANGES_NEEDED verdict), never a genuine LLM verdict.
+ *
+ * Before this error existed, that same exhaustion threw
+ * SprintPlanRejectedError -- indistinguishable from a REAL plan rejection by
+ * the reviewer -- which misdiagnoses "the plan-reviewer's dispatch channel
+ * never came back" as "the reviewer looked at the plan and rejected it".
+ * The plan was never actually reviewed, so this is a distinct, infra-flavored
+ * failure a human/CI should treat as "retry the sprint", not "fix the plan".
+ *
+ * Deliberately NOT one of isTypedAbortError()'s curated abort classes (see
+ * runner.js): a dispatch-channel/transport blip is recoverable by simply
+ * re-running the sprint, unlike a genuine stall/budget/reviewer-contract
+ * abort or an unmergeable divergence, so it earns a terminal record (via
+ * isTerminalSprintFailure()'s blanket WorkflowError match) but not the
+ * push + [ABORTED] PR a real abort gets.
+ *
+ * @property {string|null} notes - the last plan-reviewer verdict's `notes`
+ *   field (the synthesized dispatch-failure message), carried through for a
+ *   human/CI reading the failure
+ */
+export class PlanReviewDispatchFailedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ notes?: string|null, cycle?: number, planningRounds?: number, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { notes = null, cycle, planningRounds, details, cause } = opts;
+        super(message, {
+            code: 'PLAN_REVIEW_DISPATCH_FAILED',
+            details: { notes, cycle, planningRounds, ...details },
+            cause,
+        });
+        this.notes = notes;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // apra-fleet-6z8.3 -- post-dispatch sync failure (NOT a dispatch failure)
 // ---------------------------------------------------------------------------

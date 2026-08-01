@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 
 // Backoff for retrying ONLY the post-dispatch sync step of a bracket whose
 // dispatch already completed. Short and bounded: this is a git/dolt push round
@@ -3539,7 +3539,7 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
  * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string, goal?: string }} opts
  * @returns {string}
  */
-function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal }) {
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal }) {
     return [
         `Review the work just done for the following bead id(s): ${beadIds.join(', ')}.`,
         'Full task detail (including acceptance criteria), from `bd show --json`:',
@@ -3559,7 +3559,12 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
-        '`bd create`. Return ONLY your structured verdict (verdict, notes, reopenIds, ' +
+        '`bd create`. Optionally include `replanIds`: a SUBSET of the ids you also named in ' +
+        '`reopenIds` above whose acceptance criteria are themselves defective (not fixable by ' +
+        're-development) and need a planner pass before the next dispatch, scoped to this ' +
+        'cycle. An id you did not also name in `reopenIds` is dropped and never reaches the ' +
+        'scoped-replan machinery, so only list ids you are reopening. ' +
+        'Return ONLY your structured verdict (verdict, notes, reopenIds, replanIds, ' +
         'newTasks) strictly as the required JSON schema; never touch beads yourself.',
     ].join('\n\n');
 }
@@ -3567,16 +3572,24 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
 /**
  * Detects the reviewer contract violation described on
  * `ReviewerContractViolationError`: a `CHANGES_NEEDED` verdict naming nothing
- * to reopen and proposing no follow-up work is schema-legal but
- * self-contradictory -- the orchestrator has nothing to act on, so the sprint
- * cannot make progress off of it.
- * @param {{ verdict: string, reopenIds?: string[], newTasks?: object[] }} verdict
+ * to reopen, proposing no follow-up work, AND naming no scoped-replan targets
+ * is schema-legal but self-contradictory -- the orchestrator has nothing to
+ * act on, so the sprint cannot make progress off of it. A non-empty
+ * `replanIds` exempts the verdict from that hard abort even with empty
+ * reopenIds/newTasks -- NOT because the field is guaranteed to be consumed
+ * (the scoped-replan machinery below only acts on replanIds entries ALSO
+ * named in reopenIds this round; see buildReviewerPrompt and the fold-in
+ * loop around the `replanIds: DROPPED` log line), but because a verdict that
+ * names a genuine replan intent in `notes` still represents real reviewer
+ * signal worth an ordinary next-round retry rather than a hard sprint abort.
+ * @param {{ verdict: string, reopenIds?: string[], replanIds?: string[], newTasks?: object[] }} verdict
  * @returns {boolean}
  */
-function isReviewerContractViolation(verdict) {
+export function isReviewerContractViolation(verdict) {
     return verdict.verdict === 'CHANGES_NEEDED'
         && (!verdict.reopenIds || verdict.reopenIds.length === 0)
-        && (!verdict.newTasks || verdict.newTasks.length === 0);
+        && (!verdict.newTasks || verdict.newTasks.length === 0)
+        && (!verdict.replanIds || verdict.replanIds.length === 0);
 }
 
 /**
@@ -4160,36 +4173,116 @@ export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysi
 //     ReviewerContractViolationError (errors.mjs), which this runner throws
 //     itself, plus BudgetExceededError, which the workflow package throws on
 //     its behalf;
+//   - GitDivergedError and DoltDivergedError, the state-integrity divergences.
+//     A divergence means the single-writer invariant this engine relies on is
+//     already violated (or the shared beads DB genuinely cannot be
+//     fast-forwarded), so no retry or later phase can recover the run -- it
+//     must terminate with an operator-visible record. A DoltDivergedError also
+//     arrives WRAPPED one level down inside a PostDispatchSyncError (the D-push
+//     bracket's shape), so membership is decided by findDoltDivergedCause()
+//     walking the cause chain rather than by the outermost class. That the
+//     divergences belong in this set is not an inference: main()'s typed-abort
+//     catch below already calls resolveTerminalReason()/captureDoltConflictDump()
+//     precisely to report them as the distinct BEADS_SYNC_CONFLICT terminal
+//     state, which is dead code unless they reach it;
 //   - the plain `Error` pre-sprint validation failures, which are not
 //     WorkflowError subclasses and are identified by the stable
 //     'Pre-sprint validation failed:' message prefix every such throw site
 //     uses.
-// CancelledError is deliberately excluded: a cooperative cancellation is a
-// requested shutdown, not an aborted sprint, and must keep flowing through its
-// own 'cancelled' status path.
+//
+// Everything else is deliberately EXCLUDED, and the check is an explicit class
+// list rather than the blanket `instanceof WorkflowError` it used to be --
+// which swept in every routine, non-terminal failure and turned it into a
+// spurious `verdict: 'ABORTED'`:
+//   - CancelledError: a cooperative cancellation is a requested shutdown, not
+//     an aborted sprint, and must keep flowing through its own 'cancelled'
+//     status path;
+//   - AgentOutputError, AgentDispatchError, FleetTransportError, CommandError:
+//     dispatch-level failures each phase's own retry/soft-fail policy owns;
+//   - GitSyncError, DoltSyncError, and a PostDispatchSyncError whose cause
+//     chain carries NO divergence: transient sync failures that are retried in
+//     place and, if they still surface, are ordinary run failures rather than
+//     sprint aborts;
+//   - SprintLockHeldError: structurally unreachable here. acquireSprintLock()
+//     runs in main() BEFORE its try block, so a held lock never reaches this
+//     predicate; there is also no sprint of our own to finalize when another
+//     engine already owns the branch.
 export function isTypedAbortError(err) {
     if (!err || err instanceof CancelledError) return false;
-    if (err instanceof WorkflowError) return true;
+    if (err instanceof StalledSprintError) return true;
+    if (err instanceof SprintPlanRejectedError) return true;
+    if (err instanceof ReviewerContractViolationError) return true;
+    if (err instanceof BudgetExceededError) return true;
+    if (err instanceof GitDivergedError) return true;
+    // Bare DoltDivergedError, or one wrapped inside a PostDispatchSyncError.
+    if (findDoltDivergedCause(err)) return true;
     return typeof err.message === 'string' && err.message.startsWith('Pre-sprint validation failed:');
 }
 
+// Deliberately BROADER than isTypedAbortError(): every terminal WorkflowError
+// except a cooperative cancellation. The two predicates answer two different
+// questions in main()'s catch and must not be collapsed:
+//   - isTerminalSprintFailure() gates the terminal run-state record, which
+//     exists so the supervisor watchdog can classify a run whose PID is gone as
+//     FINISHED-with-a-reason rather than CRASHED. EVERY terminal typed failure
+//     needs that, not just the aborts -- e.g. a Planner AgentDispatchError from
+//     a dead interactive session must surface a reason, not look like a crash.
+//   - isTypedAbortError() gates finalizeAbort()'s branch push + [ABORTED] PR,
+//     which is only worth doing where there is a genuine sprint abort whose
+//     partial work a human should look at.
+// An untyped throw (a plain Error/TypeError -- i.e. a real bug) is deliberately
+// NOT terminal here: it keeps flowing to the CLI's top-level catch with no
+// record, so the watchdog still reports it as CRASHED.
+export function isTerminalSprintFailure(err) {
+    if (!err || err instanceof CancelledError) return false;
+    return err instanceof WorkflowError || isTypedAbortError(err);
+}
+
+// AgentDispatchError reasons that mean the agent PROVABLY RAN before the
+// dispatch failed, so its (possibly partial) code/beads work still has to be
+// published and its teardown must run normally:
+//   - 'max_turns_exhausted': the resumable partial-work case -- the agent hit
+//     its turn ceiling after doing real work;
+//   - 'watchdog_timeout': withDispatchWatchdog() fired locally on an
+//     already-in-flight dispatch. The prompt was DELIVERED and the member is
+//     alive-but-silent, so the turn may have run to completion (a stalled
+//     planner can have created the whole DAG) with only the RESULT lost. The
+//     watchdog abandons the dispatch promise, not the member's work.
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+
 // True when a thrown dispatch error means the dispatch delivered no usable
 // result and therefore produced no code/beads mutation to publish: a failed
-// agent dispatch (AgentDispatchError), a dispatch-channel transport failure
-// (FleetTransportError), or any typed sprint-abort error. The orchestrator's
-// post-dispatch sync teardown is then wasted work and is skipped (see
-// withGitSync's finally).
+// agent dispatch (AgentDispatchError, minus the AGENT_RAN_DISPATCH_REASONS
+// above), a dispatch-channel transport failure (FleetTransportError), or a
+// PRE-dispatch typed sprint abort. The orchestrator's post-dispatch sync
+// teardown is then wasted work and is skipped (see withGitSync).
 //
-// An AgentDispatchError with reason 'max_turns_exhausted' is deliberately
-// EXCLUDED: the agent ran and may have committed real code or beads before
-// running out of turns, so that work still needs syncing and its teardown must
-// run normally.
+// Deliberately EXCLUDED:
+//   - AgentOutputError: the LLM RESPONDED and only its output was
+//     empty/unparseable/schema-invalid. A schema-invalid response routinely
+//     follows real committed work (the agent did the job, then botched the
+//     report), so its teardown must run. This is the status quo -- the class
+//     was never named here and, post-apra-fleet-9ta.1, isTypedAbortError() is
+//     false for it -- pinned explicitly so a future edit cannot silently
+//     re-sweep it in;
+//   - every POST-dispatch typed abort. The predicate used to fold in the whole
+//     of isTypedAbortError(), but only errors thrown from INSIDE withGitSync's
+//     `dispatchFn` can ever reach it, and the curated abort set is dominated by
+//     aborts the runner raises AFTER a dispatch already returned and mutated
+//     beads (SprintPlanRejectedError, ReviewerContractViolationError,
+//     StalledSprintError) or by divergences the SYNC brackets themselves throw
+//     (GitDivergedError/DoltDivergedError), none of which are reachable here.
+//     BudgetExceededError is the one genuinely pre-dispatch member: agent()/
+//     command() throw it from inside the dispatch closure BEFORE any dispatch
+//     is issued (packages/apra-fleet-workflow/src/workflow/errors.mjs), so it
+//     alone provably mutated nothing.
 export function isNoMutationDispatchFailure(err) {
     if (!err) return false;
-    if (err instanceof AgentDispatchError && err.details && err.details.reason === 'max_turns_exhausted') {
+    if (err instanceof AgentOutputError) return false;
+    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
         return false;
     }
-    return err instanceof AgentDispatchError || err instanceof FleetTransportError || isTypedAbortError(err);
+    return err instanceof AgentDispatchError || err instanceof FleetTransportError || err instanceof BudgetExceededError;
 }
 
 // ---------------------------------------------------------------------------
@@ -4767,9 +4860,10 @@ async function runSprintCycle(context) {
             // On a TERMINAL dispatch failure the agent never delivered a usable
             // result, so there is provably nothing new to publish -- skip the
             // G-push/D-push teardown entirely. This deliberately EXCLUDES
-            // max_turns_exhausted: that is a resumable partial-work case where
-            // the agent DID run and may have committed code/beads that still
-            // must be published.
+            // every case where the agent DID run and may have committed code/
+            // beads that still must be published: max_turns_exhausted and
+            // watchdog_timeout dispatch failures, and an AgentOutputError
+            // (the LLM answered, only its output was unusable).
             if (dispatchThrew && isNoMutationDispatchFailure(dispatchThrew)) {
                 log(`[Sync] Skipping post-dispatch G-push/D-push for member '${member}' after a terminal dispatch failure (nothing to publish): ${dispatchThrew.message}`);
             } else {
@@ -5879,61 +5973,82 @@ async function runSprintCycle(context) {
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: PLAN_REVIEWER_MAX_TURNS,
             };
-            try {
+            // Mirrors dispatchReview()'s reviewAttempt ladder: an
+            // infrastructure dispatch failure (schema-repair exhaustion, a
+            // dropped transport) gets exactly one extra attempt WITHIN this
+            // same planning round -- it does not consume a second round out
+            // of the 3-round planningRounds cap -- before the round is
+            // recorded as a dispatch-level failure. Every synthesized
+            // fallback verdict below carries `dispatchFailed: true` so the
+            // plan-cap exhaustion check after this loop can tell "the
+            // plan-reviewer's dispatch channel never came back" apart from
+            // "the reviewer genuinely rejected the plan" and throw the
+            // correctly-flavored error for each (apra-fleet-9ta.4).
+            for (let planReviewAttempt = 1; planReviewAttempt <= 2; planReviewAttempt++) {
                 try {
-                    verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
-                        buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts }),
-                        { ...planReviewerDispatchOpts, member_name: getMemberForRole('plan-reviewer') }
-                    ));
-                } catch (err) {
-                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        log(`Plan Reviewer exhausted its turn limit (max_turns=${PLAN_REVIEWER_MAX_TURNS}) -- resuming the same session with max_turns=${PLAN_REVIEWER_MAX_TURNS * 2}.`);
-                        await memberSessionGuard.killIfAlive(getMemberForRole('plan-reviewer'));
+                    try {
                         verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
-                            'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
-                            {
-                                ...planReviewerDispatchOpts,
-                                member_name: getMemberForRole('plan-reviewer'),
-                                label: `Plan Review (resume, max_turns=${PLAN_REVIEWER_MAX_TURNS * 2})`,
-                                resume: true,
-                                max_turns: PLAN_REVIEWER_MAX_TURNS * 2,
-                            }
+                            buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts }),
+                            { ...planReviewerDispatchOpts, member_name: getMemberForRole('plan-reviewer') }
                         ));
+                    } catch (err) {
+                        if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                            log(`Plan Reviewer exhausted its turn limit (max_turns=${PLAN_REVIEWER_MAX_TURNS}) -- resuming the same session with max_turns=${PLAN_REVIEWER_MAX_TURNS * 2}.`);
+                            await memberSessionGuard.killIfAlive(getMemberForRole('plan-reviewer'));
+                            verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
+                                'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
+                                {
+                                    ...planReviewerDispatchOpts,
+                                    member_name: getMemberForRole('plan-reviewer'),
+                                    label: `Plan Review (resume, max_turns=${PLAN_REVIEWER_MAX_TURNS * 2})`,
+                                    resume: true,
+                                    max_turns: PLAN_REVIEWER_MAX_TURNS * 2,
+                                }
+                            ));
+                        } else {
+                            throw err;
+                        }
+                    }
+                } catch (err) {
+                    // An unhealed LLM-auth failure here reproduces identically on
+                    // every remaining planning round. One self-heal attempt gives
+                    // the next round a real chance to succeed.
+                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                        await onLlmAuthFailure({ member: getMemberForRole('plan-reviewer'), label: 'Plan Reviewer dispatch', error: err.message });
+                    }
+                    // Persistent non-JSON/non-schema-compliant output, or a failed
+                    // dispatch, both FAIL this plan round -- neither must ever be
+                    // treated as an approval, and both are marked dispatchFailed
+                    // so they are never mistaken for a genuine reviewer rejection.
+                    if (err instanceof AgentOutputError) {
+                        log(`Plan Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
+                        verdict = {
+                            verdict: 'CHANGES_NEEDED',
+                            notes: `Plan reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
+                            taskAssignments: [],
+                            dispatchFailed: true,
+                        };
+                    } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                        // A transport-level failure (e.g. a connection dropped
+                        // mid-schema-repair-retry) is exactly as transient and
+                        // non-schema as an AgentDispatchError -- neither may
+                        // propagate and abort the whole sprint.
+                        log(`Plan Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
+                        verdict = {
+                            verdict: 'CHANGES_NEEDED',
+                            notes: `Plan reviewer dispatch failed: ${err.message}`,
+                            taskAssignments: [],
+                            dispatchFailed: true,
+                        };
                     } else {
                         throw err;
                     }
                 }
-            } catch (err) {
-                // An unhealed LLM-auth failure here reproduces identically on
-                // every remaining planning round. One self-heal attempt gives
-                // the next round a real chance to succeed.
-                if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                    await onLlmAuthFailure({ member: getMemberForRole('plan-reviewer'), label: 'Plan Reviewer dispatch', error: err.message });
+                if (verdict.dispatchFailed && planReviewAttempt < 2) {
+                    log(`Plan Reviewer: dispatch-level failure on attempt ${planReviewAttempt} of 2 -- retrying the plan review once before recording this round as a dispatch failure.`);
+                    continue;
                 }
-                // Persistent non-JSON/non-schema-compliant output, or a failed
-                // dispatch, both FAIL this plan round -- neither must ever be
-                // treated as an approval.
-                if (err instanceof AgentOutputError) {
-                    log(`Plan Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
-                    verdict = {
-                        verdict: 'CHANGES_NEEDED',
-                        notes: `Plan reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
-                        taskAssignments: [],
-                    };
-                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // A transport-level failure (e.g. a connection dropped
-                    // mid-schema-repair-retry) is exactly as transient and
-                    // non-schema as an AgentDispatchError -- neither may
-                    // propagate and abort the whole sprint.
-                    log(`Plan Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
-                    verdict = {
-                        verdict: 'CHANGES_NEEDED',
-                        notes: `Plan reviewer dispatch failed: ${err.message}`,
-                        taskAssignments: [],
-                    };
-                } else {
-                    throw err;
-                }
+                break;
             }
             lastVerdict = verdict;
             // No duplicate log() dump -- see dispatchReview() for why.
@@ -5969,6 +6084,25 @@ async function runSprintCycle(context) {
                 || contestedIds.length >= allTaskIds.length;
 
             if (wholePlanContested) {
+                // apra-fleet-9ta.4: a `dispatchFailed` last verdict means the
+                // plan-reviewer's dispatch channel never came back with a real
+                // verdict (schema-repair exhaustion / transport failure, even
+                // after the one same-round retry above) -- the plan was never
+                // actually reviewed, so this must NOT be misreported as
+                // SprintPlanRejectedError (which asserts a genuine rejection).
+                if (lastVerdict && lastVerdict.dispatchFailed) {
+                    throw new PlanReviewDispatchFailedError(
+                        `Plan phase for cycle ${cycle} exhausted ${planningRounds} plan round(s) without a usable ` +
+                        'plan-reviewer verdict -- the last round\'s verdict was synthesized from a dispatch failure, ' +
+                        'not a genuine review. The plan was never actually reviewed; re-run the sprint once the ' +
+                        'plan-reviewer dispatch channel recovers.',
+                        {
+                            notes: lastVerdict ? lastVerdict.notes : null,
+                            cycle,
+                            planningRounds,
+                        }
+                    );
+                }
                 throw new SprintPlanRejectedError(
                     `Plan phase for cycle ${cycle} was not approved after ${planningRounds} round(s). ` +
                     'Refusing to proceed to Develop with an unapproved plan.',
@@ -7050,7 +7184,11 @@ async function runSprintCycle(context) {
             // verdicts that do not use it, so a no-op then) into the cycle's
             // running union, consulted at the top of the next iteration's
             // currentReady computation above. Only ids that were ACTUALLY
-            // reopened this round are tracked.
+            // reopened this round are tracked -- an id the reviewer named in
+            // replanIds without ALSO naming it in reopenIds (contrary to the
+            // buildReviewerPrompt instruction above) is dropped rather than
+            // silently ignored: logged here so the drop is visible in the run
+            // log instead of vanishing with no trace.
             // This is the replan loop guard's single enforcement point. A bead
             // that has ALREADY been through one in-cycle scoped replan this cycle
             // (replannedThisCycle) is refused a SECOND: it stays reopened (real
@@ -7060,7 +7198,14 @@ async function runSprintCycle(context) {
             // This is what makes "max one scoped replan per bead per cycle" hold
             // regardless of the round budget.
             for (const id of (verdict.replanIds || [])) {
-                if (!reopenedIds.has(id)) continue;
+                if (!reopenedIds.has(id)) {
+                    log(
+                        `[fleet-sprint] replanIds: DROPPED '${id}' -- not also named in this round's reopenIds ` +
+                        `(reviewer prompt requires replanIds to be a subset of reopenIds), so it never reaches the ` +
+                        `scoped-replan machinery.`
+                    );
+                    continue;
+                }
                 if (replannedThisCycle.has(id)) {
                     log(
                         `[fleet-sprint] replan loop guard: bead ${id} was already scoped-replanned once this cycle ` +
@@ -7686,38 +7831,63 @@ async function runSprintCycle(context) {
     try {
         finalVerdictResult = await runFinalReviewAttempt();
     } catch (err) {
+        // Auth/trust failures are deterministic -- the generic retry-once
+        // ladder below would only reproduce them. LLM-auth failures instead
+        // get exactly ONE self-heal attempt: on success the healed verdict is
+        // authoritative and MUST short-circuit here -- falling through to the
+        // generic ladder below would fire a SECOND full Final Review (the
+        // most expensive dispatch in the sprint), silently discarding the
+        // healed verdict (a PASS could become a FAIL) and doubling cost. If
+        // the heal itself succeeds but the heal-retry dispatch throws, that
+        // throw is caught here too and degraded through the same FAIL
+        // fallback as an ordinary retry failure below -- it must never escape
+        // this catch and abort the whole sprint.
+        let handledByAuthSelfHeal = false;
         if (isNonRetryableDispatchError(err)) {
-            // Auth/trust failures are deterministic -- the retry below would
-            // only reproduce them. LLM-auth failures get one self-heal attempt.
             let healedByLlmAuthSelfHeal = false;
             if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                 const healed = await onLlmAuthFailure({ member: getMemberForRole('reviewer'), label: 'Final Review dispatch', error: err.message });
                 if (healed) {
                     log(`Final Review: LLM auth self-heal succeeded -- retrying once.`);
-                    finalVerdictResult = await runFinalReviewAttempt();
+                    try {
+                        finalVerdictResult = await runFinalReviewAttempt();
+                    } catch (healRetryErr) {
+                        if (healRetryErr instanceof AgentOutputError) {
+                            log(`Final Review: heal-retry schema-repair exhausted, treating as FAIL: ${healRetryErr.message}`);
+                            finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after an LLM-auth self-heal retry: ${healRetryErr.message}` };
+                        } else if (healRetryErr instanceof AgentDispatchError || healRetryErr instanceof FleetTransportError) {
+                            log(`Final Review: heal-retry agent dispatch failed, treating as FAIL: ${healRetryErr.message}`);
+                            finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after an LLM-auth self-heal retry: ${healRetryErr.message}` };
+                        } else {
+                            throw healRetryErr;
+                        }
+                    }
                     healedByLlmAuthSelfHeal = true;
                 }
             }
             if (!healedByLlmAuthSelfHeal) throw err;
+            handledByAuthSelfHeal = true;
         }
-        if (err instanceof AgentOutputError) {
-            log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
-        } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-            log(`Final Review: dispatch failed (agent dispatch error: ${err.message}). Retrying once.`);
-        } else {
-            throw err;
-        }
-        try {
-            finalVerdictResult = await runFinalReviewAttempt();
-        } catch (retryErr) {
-            if (retryErr instanceof AgentOutputError) {
-                log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
-                finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
-            } else if (retryErr instanceof AgentDispatchError || retryErr instanceof FleetTransportError) {
-                log(`Final Review: agent dispatch failed after retry, treating as FAIL: ${retryErr.message}`);
-                finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after repair attempts (including one retry): ${retryErr.message}` };
+        if (!handledByAuthSelfHeal) {
+            if (err instanceof AgentOutputError) {
+                log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
+            } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                log(`Final Review: dispatch failed (agent dispatch error: ${err.message}). Retrying once.`);
             } else {
-                throw retryErr;
+                throw err;
+            }
+            try {
+                finalVerdictResult = await runFinalReviewAttempt();
+            } catch (retryErr) {
+                if (retryErr instanceof AgentOutputError) {
+                    log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
+                    finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
+                } else if (retryErr instanceof AgentDispatchError || retryErr instanceof FleetTransportError) {
+                    log(`Final Review: agent dispatch failed after retry, treating as FAIL: ${retryErr.message}`);
+                    finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after repair attempts (including one retry): ${retryErr.message}` };
+                } else {
+                    throw retryErr;
+                }
             }
         }
     }
@@ -7892,8 +8062,10 @@ async function runSprintCycle(context) {
             // DoltDivergedError / PostDispatchSyncError -- and this is the ONE
             // phase whose whole job is mutating beads (filing carry-over bugs),
             // so a D-push failure here is a routine outcome, not an exotic one.
-            // Every one of those classes extends WorkflowError, so
-            // isTypedAbortError() returns true for them and the top-level handler
+            // The divergence classes among them (GitDivergedError, and a
+            // DoltDivergedError bare or wrapped in a PostDispatchSyncError) are
+            // typed sprint aborts -- isTypedAbortError() returns true for them --
+            // so without this catch-all the top-level handler
             // in this file's exported entry point would turn the throw into a
             // terminal `verdict: 'ABORTED'` record -- skipping Harvest AND
             // Publish PR, and discarding the already-computed
@@ -8047,14 +8219,61 @@ async function runSprintCycle(context) {
     // opens the PR -- a human (or a later, explicitly-scoped issue) must
     // review and merge it.
     phase(`Publish PR C${finalCycleLabel}`);
-    await command(
-        `git push -u origin ${validated.branch}`,
-        {
-            member_name: orchestratorMember,
-            silent: true,
-            label: `Push sprint branch '${validated.branch}'`,
+    // The branch push is the LAST step of a sprint that has already done all of
+    // its work and computed a final verdict. A transient push failure (a racing
+    // writer, a momentarily unreachable remote, a credential refresh in flight)
+    // used to throw a CommandError from here, which converted a computed PASS
+    // into `verdict: 'ABORTED'` and discarded the whole run's conclusion over a
+    // network hiccup at the very end. So: failSoft plus the same short, bounded
+    // sync backoff every other push round trip uses, and -- if it STILL will not
+    // go through -- log loudly and return the COMPUTED verdict with
+    // `pushed: false` rather than destroying it.
+    //
+    // A persistent failure also skips everything downstream of the push (PR
+    // creation on a hosted remote; direct target-issue closure + D-push on a
+    // non-hosted one). None of that may run against a branch whose commits
+    // never reached the remote: a PR cannot be raised for unpushed work, and
+    // closing the sprint's target issue would advertise a completion nobody can
+    // see. This is the deliberately MINIMAL hardening -- the pluggable-publish
+    // restructure is apra-fleet-647.2, which supersedes it.
+    let pushed = false;
+    let lastPushError = '';
+    for (let attempt = 0; attempt < POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length; attempt++) {
+        if (POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt] > 0) {
+            log(`Publish PR: pushing sprint branch '${validated.branch}' failed; retrying in ${POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt] / 1000}s (attempt ${attempt + 1}/${POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length}): ${lastPushError}`);
+            if (!mockInstantRetryBackoff()) {
+                await new Promise((resolve) => setTimeout(resolve, POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt]));
+            }
         }
-    );
+        const pushRes = await command(
+            `git push -u origin ${validated.branch}`,
+            {
+                member_name: orchestratorMember,
+                silent: true,
+                failSoft: true,
+                label: `Push sprint branch '${validated.branch}'`,
+            }
+        );
+        if (pushRes.ok) {
+            pushed = true;
+            break;
+        }
+        lastPushError = pushRes.error;
+    }
+    if (!pushed) {
+        log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin after ${POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length} attempts -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
+        endGroup();
+        return {
+            status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
+            verdict: finalVerdictResult.verdict,
+            notes: finalVerdictResult.notes,
+            branch: validated.branch,
+            baseBranch: validated.baseBranch,
+            goal: validated.goal,
+            maxCycles: validated.maxCycles,
+            pushed: false,
+        };
+    }
     // The final verdict is surfaced directly in the PR title and body -- a
     // human reviewer must never have to dig through sprint logs to learn
     // whether the run's own review gate passed. A FAIL verdict still publishes
@@ -8170,6 +8389,7 @@ async function runSprintCycle(context) {
         baseBranch: validated.baseBranch,
         goal: validated.goal,
         maxCycles: validated.maxCycles,
+        pushed: true,
     };
 }
 
@@ -8306,18 +8526,22 @@ export function captureDoltConflictDump(err) {
 // Engine entry point + typed-abort routing
 // ---------------------------------------------------------------------------
 //
-// `main()` is the WorkflowEngine entry point: it runs the sprint and, on a
-// typed sprint-abort error (isTypedAbortError()), routes it through
-// finalizeAbort() (push + idempotent [ABORTED] PR iff the branch carries
-// real work beyond base) and always writes a terminal history record before
-// re-throwing. Re-throwing (rather than swallowing) is deliberate: it keeps
+// `main()` is the WorkflowEngine entry point: it runs the sprint and routes a
+// failure through TWO independent decisions (see isTerminalSprintFailure() vs
+// isTypedAbortError() above for why they are not the same question):
+//   - isTerminalSprintFailure(): write a terminal history record, so the
+//     supervisor watchdog reports the run as FINISHED-with-a-reason rather
+//     than CRASHED;
+//   - isTypedAbortError(): additionally route through finalizeAbort() (push +
+//     idempotent [ABORTED] PR iff the branch carries real work beyond base).
+// Re-throwing (rather than swallowing) is deliberate: it keeps
 // bin/cli.mjs's top-level catch -- console.error, exit code 1, and the
 // dashboard grace window -- unchanged; this function only adds work that
 // happens BEFORE the error reaches that catch.
 //
-// An untyped error (isTypedAbortError() === false, e.g. CancelledError from
-// a cooperative /stop) is re-thrown immediately with no
-// finalizeAbort()/history-record side effects.
+// A non-terminal error (isTerminalSprintFailure() === false: CancelledError
+// from a cooperative /stop, or an untyped Error/TypeError -- a real bug) is
+// re-thrown immediately with no finalizeAbort()/history-record side effects.
 export async function main(context) {
     const { command, log = () => {}, publishState, phase: rawPhase, args } = context;
 
@@ -8348,7 +8572,7 @@ export async function main(context) {
     try {
         return await runSprintCycle(runContext);
     } catch (err) {
-        if (!isTypedAbortError(err)) {
+        if (!isTerminalSprintFailure(err)) {
             throw err;
         }
 
@@ -8358,16 +8582,27 @@ export async function main(context) {
         const branch = validatedForLock.branch;
         const baseBranch = validatedForLock.baseBranch;
         let abortResult = { prUrl: null, pushed: false, commitCount: 0 };
-        try {
-            const member = (validatedForLock.roleMap && validatedForLock.roleMap[ROLE_ORCHESTRATOR] && validatedForLock.roleMap[ROLE_ORCHESTRATOR].length > 0)
-                ? validatedForLock.roleMap[ROLE_ORCHESTRATOR][0]
-                : validatedForLock.members[0];
-            abortResult = await finalizeAbort({ error: err, branch, baseBranch, member, command, log });
-        } catch (finalizeErr) {
-            log(
-                `[Terminal History] finalizeAbort() failed for this abort ` +
-                `(${finalizeErr.message}); writing the terminal history record with no PR lookup.`
-            );
+        // Only a typed sprint ABORT earns the branch push + [ABORTED] PR. The
+        // discriminator is RECOVERABILITY, not whether there is work to show
+        // (finalizeAbort already publishes nothing at zero commits beyond
+        // base): a dispatch failure or a sync failure that outlived its retries
+        // is fixed by re-running the sprint, which pushes any local work then,
+        // whereas a stall / budget / reviewer-contract / unmergeable-divergence
+        // abort will never self-resolve, so the [ABORTED] PR is the only
+        // artifact a human gets. Both still get the terminal record below --
+        // the watchdog needs a reason either way.
+        if (isTypedAbortError(err)) {
+            try {
+                const member = (validatedForLock.roleMap && validatedForLock.roleMap[ROLE_ORCHESTRATOR] && validatedForLock.roleMap[ROLE_ORCHESTRATOR].length > 0)
+                    ? validatedForLock.roleMap[ROLE_ORCHESTRATOR][0]
+                    : validatedForLock.members[0];
+                abortResult = await finalizeAbort({ error: err, branch, baseBranch, member, command, log });
+            } catch (finalizeErr) {
+                log(
+                    `[Terminal History] finalizeAbort() failed for this abort ` +
+                    `(${finalizeErr.message}); writing the terminal history record with no PR lookup.`
+                );
+            }
         }
 
         // Always write a terminal history record, even for a zero-commit
