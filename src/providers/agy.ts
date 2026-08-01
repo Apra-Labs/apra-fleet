@@ -115,9 +115,21 @@ export class AgyProvider implements ProviderAdapter {
       const section = raw.substring(startIdx + startMarker.length, endIdx);
       const lines = section.split('\n').map(l => l.trim()).filter(Boolean);
       let lastResponse = '';
+      // apra-fleet-qmb: the transcript's conversation id (the same id the
+      // agy-transcript-reader.js folder-based lookup resolved via
+      // last_conversations.json) is the closest thing agy exposes to a
+      // fleet-facing session id -- captured here, when present, so a resumed
+      // dispatch can pass it back via --conversation instead of always
+      // minting/ignoring one. Not every transcript entry carries it (only
+      // seen on the session-establishing entry in practice), so keep the
+      // FIRST value seen rather than letting a later entry without it clear it.
+      let sessionId: string | undefined;
       for (const line of lines) {
         try {
-          const entry = JSON.parse(line) as { type?: string; status?: string; content?: string };
+          const entry = JSON.parse(line) as { type?: string; status?: string; content?: string; conversation_id?: string };
+          if (sessionId === undefined && typeof entry.conversation_id === 'string' && entry.conversation_id.trim()) {
+            sessionId = entry.conversation_id.trim();
+          }
           if (
             entry.type === 'PLANNER_RESPONSE' &&
             entry.status === 'DONE' &&
@@ -131,7 +143,7 @@ export class AgyProvider implements ProviderAdapter {
       if (lastResponse) {
         return {
           result: lastResponse,
-          sessionId: undefined,
+          sessionId,
           isError: result.code !== 0,
           raw,
           usage: undefined,
