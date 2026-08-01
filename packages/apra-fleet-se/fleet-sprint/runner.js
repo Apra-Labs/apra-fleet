@@ -7744,38 +7744,63 @@ async function runSprintCycle(context) {
     try {
         finalVerdictResult = await runFinalReviewAttempt();
     } catch (err) {
+        // Auth/trust failures are deterministic -- the generic retry-once
+        // ladder below would only reproduce them. LLM-auth failures instead
+        // get exactly ONE self-heal attempt: on success the healed verdict is
+        // authoritative and MUST short-circuit here -- falling through to the
+        // generic ladder below would fire a SECOND full Final Review (the
+        // most expensive dispatch in the sprint), silently discarding the
+        // healed verdict (a PASS could become a FAIL) and doubling cost. If
+        // the heal itself succeeds but the heal-retry dispatch throws, that
+        // throw is caught here too and degraded through the same FAIL
+        // fallback as an ordinary retry failure below -- it must never escape
+        // this catch and abort the whole sprint.
+        let handledByAuthSelfHeal = false;
         if (isNonRetryableDispatchError(err)) {
-            // Auth/trust failures are deterministic -- the retry below would
-            // only reproduce them. LLM-auth failures get one self-heal attempt.
             let healedByLlmAuthSelfHeal = false;
             if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                 const healed = await onLlmAuthFailure({ member: getMemberForRole('reviewer'), label: 'Final Review dispatch', error: err.message });
                 if (healed) {
                     log(`Final Review: LLM auth self-heal succeeded -- retrying once.`);
-                    finalVerdictResult = await runFinalReviewAttempt();
+                    try {
+                        finalVerdictResult = await runFinalReviewAttempt();
+                    } catch (healRetryErr) {
+                        if (healRetryErr instanceof AgentOutputError) {
+                            log(`Final Review: heal-retry schema-repair exhausted, treating as FAIL: ${healRetryErr.message}`);
+                            finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after an LLM-auth self-heal retry: ${healRetryErr.message}` };
+                        } else if (healRetryErr instanceof AgentDispatchError || healRetryErr instanceof FleetTransportError) {
+                            log(`Final Review: heal-retry agent dispatch failed, treating as FAIL: ${healRetryErr.message}`);
+                            finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after an LLM-auth self-heal retry: ${healRetryErr.message}` };
+                        } else {
+                            throw healRetryErr;
+                        }
+                    }
                     healedByLlmAuthSelfHeal = true;
                 }
             }
             if (!healedByLlmAuthSelfHeal) throw err;
+            handledByAuthSelfHeal = true;
         }
-        if (err instanceof AgentOutputError) {
-            log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
-        } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-            log(`Final Review: dispatch failed (agent dispatch error: ${err.message}). Retrying once.`);
-        } else {
-            throw err;
-        }
-        try {
-            finalVerdictResult = await runFinalReviewAttempt();
-        } catch (retryErr) {
-            if (retryErr instanceof AgentOutputError) {
-                log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
-                finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
-            } else if (retryErr instanceof AgentDispatchError || retryErr instanceof FleetTransportError) {
-                log(`Final Review: agent dispatch failed after retry, treating as FAIL: ${retryErr.message}`);
-                finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after repair attempts (including one retry): ${retryErr.message}` };
+        if (!handledByAuthSelfHeal) {
+            if (err instanceof AgentOutputError) {
+                log(`Final Review: dispatch failed (schema-repair exhausted: ${err.message}). Retrying once.`);
+            } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                log(`Final Review: dispatch failed (agent dispatch error: ${err.message}). Retrying once.`);
             } else {
-                throw retryErr;
+                throw err;
+            }
+            try {
+                finalVerdictResult = await runFinalReviewAttempt();
+            } catch (retryErr) {
+                if (retryErr instanceof AgentOutputError) {
+                    log(`Final Review: schema-repair exhausted after retry, treating as FAIL: ${retryErr.message}`);
+                    finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer failed to return a schema-valid verdict after repair attempts (including one retry): ${retryErr.message}` };
+                } else if (retryErr instanceof AgentDispatchError || retryErr instanceof FleetTransportError) {
+                    log(`Final Review: agent dispatch failed after retry, treating as FAIL: ${retryErr.message}`);
+                    finalVerdictResult = { verdict: 'FAIL', notes: `Final reviewer dispatch failed after repair attempts (including one retry): ${retryErr.message}` };
+                } else {
+                    throw retryErr;
+                }
             }
         }
     }
