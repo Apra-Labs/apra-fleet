@@ -3539,7 +3539,7 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
  * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string, goal?: string }} opts
  * @returns {string}
  */
-function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal }) {
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal }) {
     return [
         `Review the work just done for the following bead id(s): ${beadIds.join(', ')}.`,
         'Full task detail (including acceptance criteria), from `bd show --json`:',
@@ -3559,7 +3559,9 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
-        '`bd create`. Return ONLY your structured verdict (verdict, notes, reopenIds, ' +
+        '`bd create`. Optionally include `replanIds`: still-ready bead ids (not yet worked) ' +
+        'whose plan should be reconsidered before the next dispatch, scoped to this cycle. ' +
+        'Return ONLY your structured verdict (verdict, notes, reopenIds, replanIds, ' +
         'newTasks) strictly as the required JSON schema; never touch beads yourself.',
     ].join('\n\n');
 }
@@ -3567,16 +3569,20 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
 /**
  * Detects the reviewer contract violation described on
  * `ReviewerContractViolationError`: a `CHANGES_NEEDED` verdict naming nothing
- * to reopen and proposing no follow-up work is schema-legal but
- * self-contradictory -- the orchestrator has nothing to act on, so the sprint
- * cannot make progress off of it.
- * @param {{ verdict: string, reopenIds?: string[], newTasks?: object[] }} verdict
+ * to reopen, proposing no follow-up work, AND naming no scoped-replan targets
+ * is schema-legal but self-contradictory -- the orchestrator has nothing to
+ * act on, so the sprint cannot make progress off of it. A non-empty
+ * `replanIds` gives the scoped-replan machinery something concrete to
+ * consume, so that case is NOT a contract violation even with empty
+ * reopenIds/newTasks.
+ * @param {{ verdict: string, reopenIds?: string[], replanIds?: string[], newTasks?: object[] }} verdict
  * @returns {boolean}
  */
-function isReviewerContractViolation(verdict) {
+export function isReviewerContractViolation(verdict) {
     return verdict.verdict === 'CHANGES_NEEDED'
         && (!verdict.reopenIds || verdict.reopenIds.length === 0)
-        && (!verdict.newTasks || verdict.newTasks.length === 0);
+        && (!verdict.newTasks || verdict.newTasks.length === 0)
+        && (!verdict.replanIds || verdict.replanIds.length === 0);
 }
 
 /**
