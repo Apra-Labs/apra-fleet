@@ -2,6 +2,68 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Dispatch-layer reliability: max_turns detection, busy-lock self-heal, AGY output capture
+
+Sprint goal: make `execute_prompt`'s terminal-signal handling truthful and
+self-healing, closing three independent dispatch-layer reliability gaps.
+**Goal met -- sprint verdict is PASS.**
+
+What shipped:
+
+- **Reliable max-turns detection.** A Claude CLI can signal "hit the turn
+  limit" through more than one transcript channel depending on version and
+  stream shape -- a result event's `terminal_reason` field, that event's
+  `subtype`, a distinct standalone terminal event (which can arrive instead
+  of any result event when a hard-timeout kill truncates the stream first),
+  or a plain-text fallback with no result event at all. Detection now
+  recognizes every one of these channels and normalizes them through a
+  single shared classifier used by every call site, so a turn-limit
+  termination always surfaces the existing `max_turns_exhausted` reason
+  promptly instead of occasionally falling through to a generic exit-code
+  classification and sitting dead until the hard dispatch ceiling.
+- **Stall detector cross-checks OS mtime against content parsing.** The
+  transcript-freshness poll now also reads the transcript file's own
+  filesystem last-modified time as an independent signal alongside its
+  existing content-timestamp scan, and only calls a session stalled when
+  *both* signals agree the transcript is frozen -- a strict superset of the
+  prior content-only check that can only convert a would-be false stall
+  into recognized activity, never the reverse, while still catching a
+  genuinely dead session within the configured inactivity window (a couple
+  of minutes by default) instead of the much longer hard ceiling. Threshold
+  is configurable and documented.
+- **Busy-lock self-heal.** `execute_prompt`'s in-flight lock can outlive the
+  process it was guarding (a reaped child whose cleanup handler never fires,
+  or an interactive session's process dying post-registration), which used
+  to wedge a member permanently -- every dispatch kept returning `busy`
+  even though the member was actually idle. A busy rejection now first
+  verifies the locked session's process is actually alive (local signal
+  check, a fresh independent remote liveness round trip, or the session
+  registry's last-known pid for interactive sessions) and self-heals
+  (releases the lock, warns, proceeds) only on a definitive dead-pid
+  reading -- any ambiguity is conservatively still treated as busy, so a
+  dispatch that hasn't finished starting up can never be raced.
+- **AGY (Antigravity) provider captures real response output.** Previously
+  an AGY dispatch always returned an empty result. The provider now
+  extracts both the reply text and, when the CLI's transcript exposes one,
+  a session id -- pinned against a recorded-shape CLI output fixture, no
+  live AGY dispatch involved in the test.
+- All four fixes are covered by deterministic, fixture/mock-based regression
+  tests (no real CLI or credentials). No MCP tool schema, response contract,
+  or reason-enum values changed.
+
+Carried forward: a pre-existing Node/undici incompatibility
+(`webidl.util.markAsUncloneable is not a function`) that crashes a chunk of
+the real (non-mocked) integration suite and the sandbox smoke test's CLI
+startup was confirmed present on the base branch as well (not a regression
+from this sprint) and filed as a standalone follow-up for a future sprint.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $9.5894.
+Remaining budget: unknown/unbounded.
+Pricing source: all 16 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-sprint stabilization: run identity, dolt coordination, Windows fixes
 
 Sprint goal: stabilize the always-on multi-sprint supervisor by fixing the
