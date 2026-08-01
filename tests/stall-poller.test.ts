@@ -291,4 +291,66 @@ describe('pollLogFile', () => {
       expect(result.error).toContain('SSH timeout');
     });
   });
+
+  // apra-fleet-iuc.2: the transcript file's own OS mtime, fetched independently
+  // of the content-based read above, so a content-parsing gap never has to be
+  // the sole determinant of "is this session dead."
+  describe('mtime cross-check (apra-fleet-iuc.2)', () => {
+    it('parses mtimeMs from unix `stat -c %Y` output (seconds -> ms)', async () => {
+      mockExecCommand.mockImplementation(async (cmd: string) => {
+        if (cmd.includes('stat -c')) {
+          return { stdout: '1700000000\n', stderr: '', code: 0 };
+        }
+        return { stdout: '', stderr: '', code: 0 };
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.mtimeMs).toBe(1_700_000_000_000);
+    });
+
+    it('parses mtimeMs from the PowerShell LastWriteTimeUtc command on Windows (already ms)', async () => {
+      mockGetAgentOS.mockReturnValue('windows');
+      mockExecCommand.mockImplementation(async (cmd: string) => {
+        if (cmd.includes('LastWriteTimeUtc')) {
+          return { stdout: '1700000000000\n', stderr: '', code: 0 };
+        }
+        return { stdout: '', stderr: '', code: 0 };
+      });
+
+      const result = await pollLogFile('member-1', 'C:\\logs\\log.jsonl');
+      expect(result.mtimeMs).toBe(1_700_000_000_000);
+    });
+
+    it('is null (not an error) when the file does not exist yet', async () => {
+      mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.mtimeMs).toBeNull();
+      expect(result.error).toBeUndefined();
+    });
+
+    it('is null (never throws) when the stat command itself throws', async () => {
+      mockExecCommand.mockImplementation(async (cmd: string) => {
+        if (cmd.includes('stat -c')) throw new Error('ssh dropped mid-stat');
+        const stdout = jsonLines({ type: 'user', timestamp: '2026-05-05T10:00:00.000Z' });
+        return { stdout, stderr: '', code: 0 };
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      // The content-based read is unaffected by the stat failure.
+      expect(result.lastTimestamp).toBe('2026-05-05T10:00:00.000Z');
+      expect(result.mtimeMs).toBeNull();
+      expect(result.error).toBeUndefined();
+    });
+
+    it('is null for non-finite/non-positive stat output rather than a bogus timestamp', async () => {
+      mockExecCommand.mockImplementation(async (cmd: string) => {
+        if (cmd.includes('stat -c')) return { stdout: 'not-a-number\n', stderr: '', code: 0 };
+        return { stdout: '', stderr: '', code: 0 };
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.mtimeMs).toBeNull();
+    });
+  });
 });

@@ -114,7 +114,7 @@ export class StallDetector {
         lastActivityAt: entry.lastActivityAt,
       }));
 
-      const { lastTimestamp, error } = await pollLogFile(memberId, entry.logFilePath);
+      const { lastTimestamp, mtimeMs, error } = await pollLogFile(memberId, entry.logFilePath);
 
       if (error) {
         const newFailures = entry.consecutiveReadFailures + 1;
@@ -126,26 +126,59 @@ export class StallDetector {
         continue;
       }
 
+      // apra-fleet-iuc.2: the file's own OS mtime is a format-agnostic
+      // corroborating signal for "did this transcript advance," independent
+      // of whether the content scan above could parse a timestamp out of it.
+      // `mtimeMs` is `undefined`/`null` for every existing caller that mocks
+      // pollLogFile without it, so this is a pure superset of the prior
+      // behavior -- it can only turn a would-be false stall into recognized
+      // activity, never the reverse.
+      const mtimeAdvancedTo = (mtimeMs !== undefined && mtimeMs !== null && mtimeMs > entry.lastActivityAt)
+        ? mtimeMs
+        : null;
+
       if (lastTimestamp === null) {
-        // File not yet created — do NOT count as stall cycle per resilience decision
+        if (mtimeAdvancedTo !== null) {
+          // apra-fleet-iuc.2: content parsing found nothing usable (unknown
+          // format, mid-write truncation, etc.) but the file was genuinely
+          // rewritten since our baseline -- that IS activity. Backstops
+          // exactly the class of content-parsing gap fixed twice before
+          // (apra-fleet-6z8.2, apra-fleet-979) without waiting for a third.
+          this.update(memberId, {
+            lastActivityAt: mtimeAdvancedTo,
+            consecutiveIdleCycles: 0,
+            consecutiveReadFailures: 0,
+            stallReported: false,
+          });
+          writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - mtimeAdvancedTo)})`]]));
+        }
+        // Otherwise: file not yet created / no signal at all — do NOT count as stall cycle
         continue;
       }
 
       const ts = new Date(lastTimestamp).getTime();
-      if (!isNaN(ts) && ts > entry.lastActivityAt) {
+      const contentAdvancedTo = (!isNaN(ts) && ts > entry.lastActivityAt) ? ts : null;
+      if (contentAdvancedTo !== null || mtimeAdvancedTo !== null) {
         // Activity advanced — update and reset counters, then reflect fresh elapsed in statusline
+        const advancedTo = Math.max(contentAdvancedTo ?? 0, mtimeAdvancedTo ?? 0);
         this.update(memberId, {
-          lastActivityAt: ts,
+          lastActivityAt: advancedTo,
           consecutiveIdleCycles: 0,
           consecutiveReadFailures: 0,
           stallReported: false,
         });
-        updateAgent(memberId, { lastLlmActivityAt: lastTimestamp });
-        writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - ts)})`]]));
+        if (contentAdvancedTo !== null) {
+          updateAgent(memberId, { lastLlmActivityAt: lastTimestamp });
+        }
+        writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - advancedTo)})`]]));
         continue;
       }
 
-      // No new activity — increment idle cycle counter and check stall threshold
+      // No new activity per EITHER signal — increment idle cycle counter and
+      // check stall threshold. Requiring both the content scan and the
+      // filesystem's own mtime to agree the transcript is frozen is what
+      // makes this threshold check genuinely mtime-corroborated, not just a
+      // content-parsing artifact.
       const newIdleCycles = entry.consecutiveIdleCycles + 1;
       this.update(memberId, {
         consecutiveIdleCycles: newIdleCycles,

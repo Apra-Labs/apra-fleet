@@ -10,6 +10,29 @@ import { escapeDoubleQuoted } from '../os/os-commands.js';
 
 const execFileAsync = promisify(execFile);
 
+// apra-fleet-iuc.1 / apra-fleet-ekm: reliable max_turns detection in the CLI
+// transcript. A max_turns-terminated session must ALWAYS classify as max_turns,
+// but the Claude Code CLI signals it INCONSISTENTLY across versions/streams:
+//   - the `type:result` event's `subtype` is `error_max_turns`, and/or
+//   - that same event carries `terminal_reason: "max_turns"`, and/or
+//   - a distinct transcript event of `type: "max_turns_reached"` is emitted
+//     (with no result-event terminal_reason at all).
+// The old parser recorded ONLY `terminal_reason`, so a transcript that carried
+// the signal solely via `subtype`/the standalone event was silently missed --
+// the ekm forensics show one such session run to a 38.5-min hard timeout + cold
+// restart because it was never classified. Detect ANY of these signals on ANY
+// transcript event so the result the parser returns always normalizes to
+// terminalReason 'max_turns' when the session was turn-limit terminated.
+export function isMaxTurnsSignal(obj: any): boolean {
+  if (!obj || typeof obj !== 'object') return false;
+  return (
+    obj.terminal_reason === 'max_turns' ||
+    obj.subtype === 'error_max_turns' ||
+    obj.type === 'max_turns_reached' ||
+    obj.stop_reason === 'max_turns'
+  );
+}
+
 export class ClaudeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'claude';
   readonly processName = 'claude';
@@ -126,8 +149,13 @@ export class ClaudeProvider implements ProviderAdapter {
         .join('');
     };
 
-    const fromEvent = (obj: any, assistantFallback: string): ParsedResponse | null => {
+    const fromEvent = (obj: any, assistantFallback: string, maxTurnsSeen: boolean): ParsedResponse | null => {
       if (obj.type !== 'result') return null;
+      // Normalize terminalReason to 'max_turns' whenever the transcript carried
+      // the turn-limit signal via ANY channel (this event's terminal_reason,
+      // this or a preceding event's subtype/standalone max_turns_reached event)
+      // so downstream classification (execute-prompt) is version-independent.
+      const maxTurns = maxTurnsSeen || isMaxTurnsSignal(obj);
       return {
         // Prefer the event's own result text; only when it is missing OR blank
         // do we substitute the harvested assistant text. The final `?? raw`
@@ -139,7 +167,7 @@ export class ClaudeProvider implements ProviderAdapter {
         raw,
         usage: extractUsage(obj.usage),
         subtype: obj.subtype,
-        terminalReason: obj.terminal_reason,
+        terminalReason: obj.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
       };
     };
 
@@ -148,13 +176,16 @@ export class ClaudeProvider implements ProviderAdapter {
       if (Array.isArray(parsed)) {
         // JSON array of events (some Claude Code versions collect JSONL into an array)
         let assistantText = '';
+        let maxTurnsSeen = false;
         for (const obj of parsed) {
           assistantText += assistantTextOf(obj);
-          const r = fromEvent(obj, assistantText);
+          maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
+          const r = fromEvent(obj, assistantText, maxTurnsSeen);
           if (r) return r;
         }
       } else {
         // Single object - old Claude Code format
+        const maxTurns = isMaxTurnsSignal(parsed);
         return {
           result: parsed.result ?? parsed.response ?? raw,
           sessionId: parsed.session_id,
@@ -162,26 +193,37 @@ export class ClaudeProvider implements ProviderAdapter {
           raw,
           usage: extractUsage(parsed.usage),
           subtype: parsed.subtype,
-          terminalReason: parsed.terminal_reason,
+          terminalReason: parsed.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
         };
       }
     } catch { /* not valid JSON - try line-by-line JSONL below */ }
 
     // JSONL format (Claude Code 2.1.113+): one JSON object per line
     let assistantText = '';
+    let maxTurnsSeen = false;
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
         const obj = JSON.parse(trimmed);
         assistantText += assistantTextOf(obj);
-        const r = fromEvent(obj, assistantText);
+        maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
+        const r = fromEvent(obj, assistantText, maxTurnsSeen);
         if (r) return r;
       } catch { /* skip non-JSON lines */ }
     }
 
-    // Fallback: plain text output
-    return { result: raw, sessionId: undefined, isError: result.code !== 0, raw, usage: undefined };
+    // Fallback: plain text output. A stream that emitted a standalone
+    // max_turns_reached event but no terminating `type:result` event still
+    // reaches here -- preserve the turn-limit signal so it is never lost.
+    return {
+      result: raw,
+      sessionId: undefined,
+      isError: result.code !== 0,
+      raw,
+      usage: undefined,
+      terminalReason: maxTurnsSeen ? 'max_turns' : undefined,
+    };
   }
 
   supportsResume(): boolean {

@@ -5,7 +5,8 @@ import { CodexProvider } from '../src/providers/codex.js';
 import { CopilotProvider } from '../src/providers/copilot.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { getProvider } from '../src/providers/index.js';
-import { buildResumeFlag, buildSessionIdFlag } from '../src/providers/provider.js';
+import { buildResumeFlag, buildSessionIdFlag, isMaxTurnsResponse } from '../src/providers/provider.js';
+import { isMaxTurnsSignal } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -174,6 +175,79 @@ describe('ClaudeProvider', () => {
     const resp = p.parseResponse(makeResult(JSON.stringify({ result: 'done', session_id: 'sid-1' })));
     expect(resp.subtype).toBeUndefined();
     expect(resp.terminalReason).toBeUndefined();
+  });
+
+  // apra-fleet-iuc.1 / apra-fleet-ekm: the CLI signals max_turns inconsistently.
+  // A result event carrying ONLY `subtype: error_max_turns` (no terminal_reason)
+  // must still normalize to terminalReason 'max_turns', or the session is missed
+  // and run to a hard timeout + cold restart.
+  it('normalizes terminalReason to max_turns when only subtype=error_max_turns is present (no terminal_reason)', () => {
+    const payload = JSON.stringify({
+      type: 'result',
+      subtype: 'error_max_turns',
+      result: 'stopped after max turns',
+      session_id: 'sid-mt-sub',
+    });
+    const resp = p.parseResponse(makeResult(payload, 1));
+    expect(resp.subtype).toBe('error_max_turns');
+    expect(resp.terminalReason).toBe('max_turns');
+    expect(isMaxTurnsResponse(resp)).toBe(true);
+  });
+
+  // A standalone `type: max_turns_reached` transcript event that PRECEDES the
+  // terminating result event (which itself has neither subtype nor terminal_reason)
+  // must still be caught -- this is the exact ekm forensic miss.
+  it('catches a standalone max_turns_reached JSONL event that precedes a bare result event', () => {
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-mt-evt' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'working...' }] } }),
+      JSON.stringify({ type: 'max_turns_reached' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'partial', session_id: 'sid-mt-evt' }),
+    ].join('\n');
+    const resp = p.parseResponse(makeResult(stream, 1));
+    expect(resp.terminalReason).toBe('max_turns');
+    expect(isMaxTurnsResponse(resp)).toBe(true);
+  });
+
+  // JSON-array transcript form with subtype-only signal normalizes too.
+  it('normalizes terminalReason to max_turns for a JSON-array transcript with subtype-only signal', () => {
+    const events = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'thinking' }] } },
+      { type: 'result', subtype: 'error_max_turns', result: 'stopped', session_id: 'sid-mt-arr' },
+    ];
+    const resp = p.parseResponse(makeResult(JSON.stringify(events), 1));
+    expect(resp.terminalReason).toBe('max_turns');
+    expect(isMaxTurnsResponse(resp)).toBe(true);
+  });
+
+  // A standalone max_turns_reached event with NO terminating result event at all
+  // (transcript truncated by a hard-timeout kill) must not lose the signal.
+  it('preserves max_turns in the plain-text fallback when no result event terminates the stream', () => {
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-mt-trunc' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'still going' }] } }),
+      JSON.stringify({ type: 'max_turns_reached' }),
+    ].join('\n');
+    const resp = p.parseResponse(makeResult(stream, 143));
+    expect(resp.terminalReason).toBe('max_turns');
+    expect(isMaxTurnsResponse(resp)).toBe(true);
+  });
+
+  it('isMaxTurnsSignal recognizes each turn-limit channel and rejects unrelated events', () => {
+    expect(isMaxTurnsSignal({ terminal_reason: 'max_turns' })).toBe(true);
+    expect(isMaxTurnsSignal({ subtype: 'error_max_turns' })).toBe(true);
+    expect(isMaxTurnsSignal({ type: 'max_turns_reached' })).toBe(true);
+    expect(isMaxTurnsSignal({ stop_reason: 'max_turns' })).toBe(true);
+    expect(isMaxTurnsSignal({ type: 'result', subtype: 'success' })).toBe(false);
+    expect(isMaxTurnsSignal(null)).toBe(false);
+    expect(isMaxTurnsSignal(undefined)).toBe(false);
+  });
+
+  it('isMaxTurnsResponse keys off either normalized terminalReason or raw subtype', () => {
+    expect(isMaxTurnsResponse({ result: '', isError: true, raw: '', terminalReason: 'max_turns' })).toBe(true);
+    expect(isMaxTurnsResponse({ result: '', isError: true, raw: '', subtype: 'error_max_turns' })).toBe(true);
+    expect(isMaxTurnsResponse({ result: 'ok', isError: false, raw: '', subtype: 'success' })).toBe(false);
+    expect(isMaxTurnsResponse(undefined)).toBe(false);
   });
 
   // apra-fleet-eft.28.6: server-side output-extraction loss. The final
