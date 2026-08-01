@@ -1,11 +1,56 @@
 import { getAgent } from '../registry.js';
-import { getStrategy } from '../strategy.js';
+import { getStrategy, type AgentStrategy } from '../strategy.js';
 import { getAgentOS } from '../../utils/agent-helpers.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
 
 export interface PollResult {
   lastTimestamp: string | null;
   error?: string;
+  /**
+   * apra-fleet-iuc.2: the transcript file's OS last-modified time (epoch ms),
+   * fetched independently of the content-timestamp parsing above. This is a
+   * format-agnostic, provider-agnostic ground truth for "did anything get
+   * written to this file" -- it does not depend on the JSONL shape parsing
+   * correctly, so it backstops exactly the class of bug fixed twice already
+   * (apra-fleet-6z8.2, apra-fleet-979): a transcript format quirk making the
+   * content scan come up empty must not by itself manufacture a false stall,
+   * and conversely a frozen file (mtime genuinely not advancing) is the
+   * defense-in-depth signal that a session is truly dead even if a terminal
+   * event (e.g. max_turns_reached) was itself missed in the content scan.
+   * `undefined` only when the stat itself could not be attempted (should not
+   * happen); `null` when the file could not be stat'd (not created yet,
+   * permission error, etc.) -- treated the same as "no signal" by callers.
+   */
+  mtimeMs?: number | null;
+}
+
+/**
+ * apra-fleet-iuc.2: fetch the transcript file's own OS mtime, independent of
+ * (and in addition to) the content-based timestamp extraction below. Never
+ * throws -- any failure (file missing, stat unsupported, parse failure)
+ * yields `null`, which callers treat as "no additional signal" rather than
+ * "confirmed no activity" (see stall-detector.ts's mtime cross-check).
+ */
+async function fetchMtimeMs(
+  strategy: AgentStrategy,
+  logFilePath: string,
+  isWindows: boolean
+): Promise<number | null> {
+  const cmd = isWindows
+    ? `powershell -c "$i = Get-Item -LiteralPath '${logFilePath}' -ErrorAction SilentlyContinue; if ($i) { [DateTimeOffset]::new($i.LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds() }"`
+    // GNU stat (`-c %Y`) first; BSD/macOS stat (`-f %m`) as a fallback -- both report whole seconds.
+    : `stat -c %Y "${logFilePath}" 2>/dev/null || stat -f %m "${logFilePath}" 2>/dev/null`;
+
+  try {
+    const result = await strategy.execCommand(cmd, 5000);
+    const trimmed = result.stdout.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return isWindows ? n : n * 1000;
+  } catch {
+    return null;
+  }
 }
 
 /** How many trailing transcript lines each poll samples (apra-fleet-6z8.2). */
@@ -51,22 +96,27 @@ export async function pollLogFile(memberId: string, logFilePath: string): Promis
 
   try {
     const strategy = getStrategy(agent);
+    // apra-fleet-iuc.2: fetch the file's own mtime independently of the
+    // content-based read below. Never throws and never affects the
+    // content-read's own error handling -- it is purely additive signal that
+    // stall-detector.ts cross-checks against the content timestamp.
+    const mtimeMs = await fetchMtimeMs(strategy, logFilePath, isWindows);
     const result = await strategy.execCommand(cmd, 5000);
 
     if (result.code !== 0) {
       if (/No such file|cannot access|not recognized|does not exist|ItemNotFoundException/i.test(result.stderr)) {
-        return { lastTimestamp: null };
+        return { lastTimestamp: null, mtimeMs };
       }
       logWarn('stall_log_read', `pollLogFile failed for ${memberId}: code=${result.code} stderr=${result.stderr}`);
-      return { lastTimestamp: null, error: `Command failed (code ${result.code}): ${result.stderr}` };
+      return { lastTimestamp: null, error: `Command failed (code ${result.code}): ${result.stderr}`, mtimeMs };
     }
 
     const lines = result.stdout.split('\n').filter(l => l.trim());
 
-    if (provider === 'gemini') {
-      return extractGeminiTimestamp(memberId, lines);
-    }
-    return extractClaudeTimestamp(memberId, lines, result.stdout);
+    const extracted = provider === 'gemini'
+      ? extractGeminiTimestamp(memberId, lines)
+      : extractClaudeTimestamp(memberId, lines, result.stdout);
+    return { ...extracted, mtimeMs };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { lastTimestamp: null, error: msg };
