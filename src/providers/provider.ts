@@ -51,6 +51,16 @@ export interface ParsedResponse {
   terminalReason?: string;
 }
 
+// apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a
+// parsed response as turn-limit terminated. The claude provider normalizes
+// terminalReason to 'max_turns' when the transcript carried the signal via any
+// channel, but we also accept the raw `error_max_turns` subtype directly so
+// callers cannot regress by keying off only one field.
+export function isMaxTurnsResponse(parsed: ParsedResponse | undefined | null): boolean {
+  if (!parsed) return false;
+  return parsed.terminalReason === 'max_turns' || parsed.subtype === 'error_max_turns';
+}
+
 export interface RegisterMcpEndpointOptions {
   /** e.g. http://<host>:<port>/mcp?member=<member-uuid> */
   url: string;

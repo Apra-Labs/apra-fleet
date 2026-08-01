@@ -36,6 +36,7 @@ import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
 import type { ParsedResponse } from '../providers/provider.js';
+import { isMaxTurnsResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
@@ -135,7 +136,7 @@ function buildFailureMessage(agentName: string, result: SSHExecResult, provider:
   // stderr/stdout regex scan -- a max_turns-exhausted transcript can still
   // have auth-like noise in stderr (a stale warning, an unrelated retry
   // message, etc.) that would otherwise misclassify it as an auth failure.
-  const category: PromptErrorCategory = parsed?.terminalReason === 'max_turns' ? 'max_turns' : provider.classifyError(output);
+  const category: PromptErrorCategory = isMaxTurnsResponse(parsed) ? 'max_turns' : provider.classifyError(output);
   if (category === 'max_turns') {
     return `[FAIL] Prompt on "${agentName}" was stopped after exhausting its turn limit (max_turns), not a genuine failure -- the model ran out of turns before finishing:
 ${output}`;
@@ -964,7 +965,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // isAuthDispatchError -- can key off it directly instead of regexing
       // the message string. Overloading 'nonzero_exit' for this case was
       // what made auth self-heal impossible to wire reliably upstream.
-      const failureCategory: PromptErrorCategory = parsed.terminalReason === 'max_turns'
+      const failureCategory: PromptErrorCategory = isMaxTurnsResponse(parsed)
         ? 'max_turns'
         : provider.classifyError(result.stderr || result.stdout);
       return {
