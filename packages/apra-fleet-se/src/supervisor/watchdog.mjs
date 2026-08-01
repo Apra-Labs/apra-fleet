@@ -490,6 +490,7 @@ export function createWatchdog(deps = {}) {
     // apra-fleet-k7b.2: ISO-timestamp-prefix every log line from this module.
     const logger = withTimestamps(deps.logger ?? console);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
+    const log = (...a) => (logger.log ?? logger.error)?.(...a);
 
     /** Latest classification snapshot, refreshed each interval tick. */
     let snapshot = [];
@@ -509,6 +510,72 @@ export function createWatchdog(deps = {}) {
     // fresh FINISHED event to sprint-history.json every tick for as long as
     // the ledger keeps listing that (still-reserved-until-released) sprint.
     const recordedFinishes = new Set();
+
+    /**
+     * apra-fleet-0j1 / apra-fleet-cvb.1: release a still-held reservation the
+     * moment its sprint is classified CRASHED or FINISHED, mirroring what
+     * reconcile()'s restart-time sweep and forceRelease()'s operator-initiated
+     * teardown already do (src/supervisor/reconcile.mjs) -- same
+     * `ledger.release(sprintId)` call, just invoked continuously from this
+     * loop instead of once at startup / on-demand. This does NOT touch
+     * classification itself: it only runs AFTER classifySprint() has already
+     * decided CRASHED/FINISHED below.
+     *
+     * Idempotent by construction: `ledger.release()` deletes the whole entry
+     * and returns `false` (a no-op) when nothing is held, so calling this on
+     * every interval tick for a sprint that reconcile(), an operator's
+     * force-release, or this SAME function on a prior tick already released
+     * is always safe -- the audit log line / history event below fire only
+     * on the tick that ACTUALLY performs the release.
+     *
+     * A `ledger` collaborator without a `release()` method (e.g. a minimal
+     * test double exposing only `list()`, as most of this module's existing
+     * tests inject) is treated as "release not supported here" and silently
+     * skipped -- never an error, since createWatchdog()'s own required
+     * interface has always been `list()` alone; requiring more of every
+     * existing injected fake would be an (out-of-scope) breaking change to
+     * this module's test seam.
+     * @param {string} sprintId
+     * @param {'crashed'|'finished'} status
+     * @param {string} detail
+     */
+    async function releaseTerminalReservation(sprintId, status, detail) {
+        if (typeof ledger.release !== 'function') return;
+        const entry = typeof ledger.get === 'function' ? ledger.get(sprintId) : undefined;
+        const members = entry?.members ?? [];
+        const issueRoots = entry?.issueRoots ?? [];
+        let released = false;
+        try {
+            released = await ledger.release(sprintId);
+        } catch (err) {
+            logError(`[watchdog] ledger.release failed for '${sprintId}':`, err);
+            return;
+        }
+        if (!released) return; // already released (reconcile, force-release, or a prior tick) -- nothing to report
+        // Same "[<module>] <what happened>" shape reconcile()'s own restart
+        // audit line uses ("[reconcile] restart: released N dead, retained M
+        // live"), so an operator watching the log sees WHY a reservation
+        // cleared regardless of which of the three release paths did it.
+        log(`[watchdog] auto-released reservation for '${sprintId}' (status=${status}, ${detail})`);
+        if (!history || typeof history.record !== 'function') return;
+        try {
+            const result = history.record({
+                sprintId,
+                event: HISTORY_EVENTS.AUTO_RELEASED,
+                reason: `watchdog: classified ${status} (${detail})`,
+                members,
+                issueRoots,
+            });
+            // history.record() is async; a rejection must never take the
+            // classifier down with it, same discipline as recordFinished's
+            // history call above.
+            if (result && typeof result.catch === 'function') {
+                result.catch((err) => logError(`[watchdog] history.record(AUTO_RELEASED) failed for '${sprintId}':`, err));
+            }
+        } catch (err) {
+            logError(`[watchdog] history.record(AUTO_RELEASED) failed for '${sprintId}':`, err);
+        }
+    }
 
     /**
      * Classify a SINGLE ledger entry into exactly one of the four statuses.
@@ -598,6 +665,18 @@ export function createWatchdog(deps = {}) {
             } catch (err) {
                 logError(`[watchdog] recordFinished threw for '${sprintId}':`, err);
             }
+        }
+        // apra-fleet-0j1 / apra-fleet-cvb.1: act on the classification just
+        // made (CRASHED or FINISHED, either way a still-reserved sprint's
+        // reservation is stale) -- run on EVERY tick, not gated by
+        // recordedCrashes/recordedFinishes above, since ledger.release() is
+        // itself idempotent (a no-op once released) and this is what makes a
+        // sprint's reservation clear within one watchdog poll interval of it
+        // going CRASHED/FINISHED, with no operator action or restart needed.
+        try {
+            await releaseTerminalReservation(sprintId, finished ? WATCHDOG_STATUS.FINISHED : WATCHDOG_STATUS.CRASHED, detail);
+        } catch (err) {
+            logError(`[watchdog] releaseTerminalReservation threw for '${sprintId}':`, err);
         }
         return {
             sprintId,

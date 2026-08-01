@@ -44,6 +44,12 @@ export const HISTORY_EVENTS = Object.freeze({
     // sprint FINISHED (see watchdog.mjs's `recordedFinishes` guard), same
     // once-per-sprint discipline as apra-fleet-eft.20.3's CRASHED recorder.
     FINISHED: 'finished',
+    // apra-fleet-0j1 / apra-fleet-cvb.1: the watchdog itself released a
+    // still-held reservation the moment it classified the sprint CRASHED or
+    // FINISHED -- mirroring reconcile()'s ABORTED_BY_RESTART (restart-time)
+    // and forceRelease()'s FORCE_RELEASED (operator-initiated) events, but
+    // for the AUTOMATIC, continuous, mid-run case neither of those covers.
+    AUTO_RELEASED: 'auto-released',
 });
 
 /** An empty, well-formed history document. */
