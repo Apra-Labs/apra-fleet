@@ -7,42 +7,32 @@ import {
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 
-// apra-fleet-6z8.3: backoff for retrying ONLY the post-dispatch sync step of a
-// bracket whose dispatch already completed. Short and bounded -- this is a
-// git/dolt push round trip, not an LLM turn, and the alternative (letting the
-// failure escape the bracket) is what used to redispatch the whole turn.
+// Backoff for retrying ONLY the post-dispatch sync step of a bracket whose
+// dispatch already completed. Short and bounded: this is a git/dolt push round
+// trip, not an LLM turn, and letting the failure escape the bracket would
+// redispatch the whole turn.
 const POST_DISPATCH_SYNC_RETRY_DELAYS_MS = [0, 5000, 15000];
 
 /** True when the hermetic mock harness has opted into zero-wait backoffs
  *  (APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF=1, set by mock-sprint-harness.mjs).
- *  Production behavior -- real timed sleeps, unchanged delays -- is untouched. */
+ *  Production behavior -- real timed sleeps -- is unaffected. */
 const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 
-// apra-fleet-eft.8.12: parseUnmergedPaths is re-exported here (rather than
-// only living in conflict-ladder.mjs) so existing imports of it from
-// runner.js -- e.g. test/mock-sprint-git-sync-brackets.test.mjs -- keep
-// working unchanged; conflict-ladder.mjs is the single source of truth for
-// its implementation.
+// Re-exported so importers of parseUnmergedPaths from runner.js keep working;
+// conflict-ladder.mjs is the single source of truth for its implementation.
 export { parseUnmergedPaths };
 
 // ---------------------------------------------------------------------------
-// Canonical role-name constants for the Develop/Review loop (apra-fleet-unw.16)
+// Canonical role-name constants for the Develop/Review loop
 // ---------------------------------------------------------------------------
 //
-// Root-cause fix for the A2 "Doer/doer casing" pool-collapse bug: before
-// this issue, `getMembersForRole` special-cased the CAPITALIZED strings
-// 'Doer'/'Reviewer' while every call site below passed the lowercase
-// 'doer'/'reviewer' -- so the special case never matched and the doer pool
-// silently collapsed to a single member (`[physicalMembers[0]]`), and the
-// "multiple members work in parallel" feature the sprint runner advertises
-// never actually happened. `roleConst()` below pulls the value straight out
-// of `contracts.ROLES` (the single canonical, lowercase role enum) and
-// throws at module-load time if it's ever not a member of that enum, so a
-// future rename of the enum can't silently reintroduce a casing/typo
-// mismatch here.
+// Role names must come from `contracts.ROLES` (the single canonical, lowercase
+// role enum) rather than string literals: roleConst() throws at module-load
+// time if a name is not a member of that enum, so a rename or casing/typo
+// mismatch cannot silently collapse a role's member pool at runtime.
 function roleConst(name) {
     if (!ROLES.includes(name)) {
         throw new Error(`[Role Contract] '${name}' is not a member of contracts.ROLES: ${ROLES.join(', ')}`);
@@ -53,48 +43,35 @@ const ROLE_DOER = roleConst('doer');
 const ROLE_REVIEWER = roleConst('reviewer');
 
 // ---------------------------------------------------------------------------
-// 'orchestrator' pseudo-role (apra-fleet-unw2.11, N15)
+// 'orchestrator' pseudo-role
 // ---------------------------------------------------------------------------
 //
 // 'orchestrator' is deliberately NOT a member of `contracts.ROLES` and must
 // never be added to it: that enum is vendored (it mirrors the `name:`
-// frontmatter of packages/apra-fleet-se/apra-pm/agents/*.md 1:1) and this repo must not
-// diverge from it. 'orchestrator' has no packages/apra-fleet-se/apra-pm/agents/*.md
-// definition, no output/input schema, and is never passed to `agent()` --
-// it is never dispatched as a fleet agent at all. It exists purely as an
-// APPLICATION-LEVEL pseudo-role: a `roleMap` key a caller can use to pin
-// which physical fleet member the orchestrating PROCESS ITSELF (this file,
-// issuing `bd`/`git` commands directly -- see `orchestratorMember` below and
-// the SUPPORTED-TOPOLOGY NOTE) should act as. Because it is not a vendored
-// role, it is intentionally NOT passed through `roleConst()`/`ROLES`
-// membership checks (doing so would throw) and must never be used as a key
-// into a `bd show`-derived model-metadata lookup or any vendored schema
-// table. Always reference it via this constant (the canonical lowercase
-// form) rather than a literal -- this is the fix for the N15 finding, where
-// a stray `getMemberForRole('Orchestrator')` (capitalized) call site meant a
-// roleMap author who wrote the natural lowercase `'orchestrator'` key
-// silently fell back to `physicalMembers[0]` instead of being honored.
+// frontmatter of packages/apra-fleet-se/apra-pm/agents/*.md 1:1) and this repo
+// must not diverge from it. 'orchestrator' has no agent definition, no
+// input/output schema, and is never passed to `agent()` -- it is never
+// dispatched as a fleet agent at all. It is an APPLICATION-LEVEL pseudo-role:
+// a `roleMap` key pinning which physical fleet member the orchestrating
+// PROCESS ITSELF (this file, issuing `bd`/`git` commands directly) acts as.
+// Being non-vendored, it must not be passed through `roleConst()`/`ROLES`
+// membership checks (that would throw), and must never be used as a key into
+// a `bd show`-derived model-metadata lookup or any vendored schema table.
+// Always reference it via this constant (the canonical lowercase form) rather
+// than a literal, so a roleMap author's lowercase key is always honored.
 const ROLE_ORCHESTRATOR = 'orchestrator';
 
 // ---------------------------------------------------------------------------
-// N10 (apra-fleet-unw2.8) / apra-fleet-dv5.1: fixed-role tier defaults
+// Fixed-role tier defaults
 // ---------------------------------------------------------------------------
 //
-// Doer dispatches price themselves off the PER-BEAD model tier recorded in
-// beads metadata by the planner (N1, apra-fleet-unw2.1's `--metadata
-// '{"model": ...}'` convention) -- see the streak model resolution near the
-// Develop/Review loop below. The other six roles this runner dispatches
-// (planner, plan-reviewer, reviewer, deployer, integ-test-runner,
-// harvester) are NOT per-bead: they each run once per cycle/run and have no
-// single bead of their own to read a tier from. Per the vendored
-// agents/planner.md Step 3 ("Reviewer dispatches always use model: premium
-// regardless of the task tier -- this is not configurable by the
-// planner"), these roles use a FIXED tier chosen for the nature of the
-// work rather than any bead's declared tier. This table is that fixed
-// assignment, made explicit (previously these dispatches passed no `model`
-// at all, so FleetWorkflow silently used its 'default' bucket, which never
-// matches an entry in pricing.mjs and is therefore NEVER priced -- see N10
-// in packages/apra-fleet-workflow/docs/feedback-reassessment.md):
+// Doer dispatches price themselves off the PER-BEAD model tier the planner
+// records in beads metadata (see the streak model resolution near the
+// Develop/Review loop below). The other roles this runner dispatches each run
+// once per cycle/run and have no bead of their own to read a tier from, so
+// they use a FIXED tier chosen for the nature of the work. Passing no `model`
+// is not an option: FleetWorkflow would fall back to a 'default' bucket that
+// matches no entry in pricing.mjs and is therefore never priced.
 //   planner            -> 'premium'  (drafts/redrafts the whole task DAG; highest-stakes single dispatch of a cycle)
 //   plan-reviewer      -> 'premium'  (adversarial DAG review; vendor contract treats reviewer-class work as premium-tier)
 //   reviewer           -> 'premium'  (both per-round AND final review; vendor contract: "always use model: premium")
@@ -104,14 +81,12 @@ const ROLE_ORCHESTRATOR = 'orchestrator';
 //   harvester          -> 'standard' (docs/CHANGELOG synthesis, not code-critical)
 // These tier keywords ('cheap' | 'standard' | 'premium') are resolved to a
 // concrete model PER MEMBER, server-side, by execute-prompt.ts's
-// resolveModelForTier() (via each member's registered model_tiers) -- this
-// is what makes a mixed-provider fleet (Claude, Gemini, Codex, Copilot,
-// OpenCode, ...) work: a fixed 'premium' dispatch resolves to whatever each
-// target member's own premium tier is configured to, instead of a
-// Claude-specific literal ('opus') being passed through verbatim to a
-// non-Claude member where it means nothing. Real per-member cost lookup
-// (rather than a tier-band estimate) is available via the
-// get_member_model_pricing MCP tool -- see apra-fleet-dv5.5/dv5.6 and
+// resolveModelForTier() (via each member's registered model_tiers). That is
+// what makes a mixed-provider fleet work: a fixed 'premium' dispatch resolves
+// to whatever each target member's own premium tier is configured to, instead
+// of a provider-specific model literal being passed verbatim to a member where
+// it means nothing. Real per-member cost lookup (rather than a tier-band
+// estimate) is available via the get_member_model_pricing MCP tool; see
 // pricing.mjs.
 const FIXED_ROLE_TIER = {
     planner: 'premium',
@@ -121,31 +96,24 @@ const FIXED_ROLE_TIER = {
     'integ-test-runner': 'standard',
     'regression-test-runner': 'standard',
     harvester: 'standard',
-    // Streak Assignment (runner.js's own ad-hoc "group these ready bead ids"
-    // call, no vendored persona -- see the streakAssignment schema comment
-    // in contracts.mjs) is a small, fully-specified classification task with
-    // no exploration or judgment call beyond what's already in the prompt.
-    // It has no business running on the same premium tier as real sprint
-    // planning; it previously inherited FIXED_ROLE_TIER.planner only because
-    // it borrows the planner MEMBER for routing convenience.
+    // Streak Assignment is this runner's own ad-hoc "group these ready bead
+    // ids" call (no vendored persona): a small, fully-specified classification
+    // task with no exploration or judgment beyond what the prompt already
+    // states, so it gets 'cheap' even though it borrows the planner MEMBER for
+    // routing convenience.
     streakAssignment: 'cheap',
 };
 
 export const meta = { name: 'fleet-sprint-runner' };
 
 // ---------------------------------------------------------------------------
-// bd JSON-parse helper (apra-fleet-unw.17, A5 work item 3)
+// bd JSON-parse helper
 // ---------------------------------------------------------------------------
 //
-// Before this issue, every `bd list ... --json` call site did a bare
-// `JSON.parse(res || '[]')`. Any noise on stdout ahead of the JSON payload
-// (a stray warning line, a deprecation notice, etc. -- anything that isn't
-// itself valid JSON) produced a bare `SyntaxError: Unexpected token ...`
-// with no indication of which `bd` command produced it, deep inside a
-// multi-cycle sprint run. This helper names the offending command and
-// includes a snippet of the raw output in the thrown error so a human/CI
-// reading the failure can immediately tell what went wrong and why, instead
-// of just seeing "SyntaxError" and having to bisect the whole run.
+// All `bd ... --json` output must be parsed through this rather than a bare
+// JSON.parse: non-JSON noise on stdout (a warning or deprecation line) would
+// otherwise raise an anonymous SyntaxError deep inside a multi-cycle run. This
+// names the offending command and includes a snippet of the raw output.
 /**
  * @param {string} raw - the raw text returned by `command()`
  * @param {string} commandLabel - the `bd` command that produced `raw`, for diagnostics
@@ -165,17 +133,16 @@ export function parseBdJson(raw, commandLabel) {
 }
 
 // ---------------------------------------------------------------------------
-// Goal-priority helpers (apra-fleet-unw.17, A5 work item 3)
+// Goal-priority helpers
 // ---------------------------------------------------------------------------
 //
-// `validated.goal` is a slash-separated list of priorities (e.g. 'P1',
-// 'P1/P2', 'P1/P2/P3'), already validated against GOAL_PATTERN above. The
-// sprint's real completion/exit condition (as opposed to "is there ready
-// work to dispatch RIGHT NOW", which `--ready` still answers correctly for
-// within-cycle dispatch purposes) is: are there any NOT-YET-CLOSED beads in
-// scope at or above (numerically <=) the worst priority named in the goal?
-// `bd list --priority-max=Pn` is inclusive of Pn, so the "worst" (highest
-// numeric) priority in the goal is exactly the right `--priority-max` value.
+// `validated.goal` is a slash-separated priority list (e.g. 'P1', 'P1/P2'),
+// already validated against GOAL_PATTERN above. The sprint's exit condition
+// (distinct from "is there work dispatchable right now", which `--ready`
+// answers) is: are there any NOT-YET-CLOSED beads in scope at or above
+// (numerically <=) the worst priority named in the goal? `bd list
+// --priority-max=Pn` is inclusive of Pn, so the worst (highest numeric)
+// priority in the goal is exactly the right `--priority-max` value.
 /**
  * @param {string} goal - e.g. 'P1', 'P1/P2', 'P1/P2/P3'
  * @returns {string} the lowest-priority (highest 'Pn' number) tier named in `goal`, e.g. 'P2'
@@ -187,64 +154,49 @@ export function goalPriorityMax(goal) {
 }
 
 // Every status that means "not yet done" for exit-condition purposes --
-// deliberately NOT `--ready`, which only reflects "dispatchable right now"
-// and silently excludes blocked/orphaned in_progress beads (the exact A5
-// bug: `bd list --ready == []` used to be misread as "the sprint is done"
-// even when a bead was stuck blocked or left in_progress with no doer ever
-// finishing it).
-// Quoted (not a bare comma list): on Windows, commands dispatch via
-// `spawn(command, { shell: 'powershell.exe' })` -- PowerShell's own parser
-// treats an unquoted comma-separated value as an array literal and
-// re-stringifies it space-joined ($OFS) before invoking the native `bd`
-// command, silently turning `--status=open,in_progress,blocked,deferred`
-// into `--status=open in_progress blocked deferred`, which `bd` then
-// rejects as an invalid status. Confirmed via a direct spawn() repro
-// against the real bd.cmd shim. MUST be double quotes, not single: this
-// same string is also fed to real `bd` via plain `child_process.exec()`
-// (cmd.exe as the default shell, e.g. in test mocks) -- cmd.exe has no
-// concept of single-quote quoting, so single quotes would pass through
-// literally into argv (`invalid status "'open"`); double quotes are
-// stripped as real quoting by both PowerShell and cmd.exe, and are a
-// harmless no-op under POSIX shells too.
+// deliberately NOT `--ready`, which only reflects "dispatchable right now" and
+// silently excludes blocked and orphaned in_progress beads, so an empty
+// `--ready` list must never be read as "the sprint is done".
+// The value is quoted, not a bare comma list: on Windows commands dispatch via
+// `spawn(command, { shell: 'powershell.exe' })`, and PowerShell's parser treats
+// an unquoted comma-separated value as an array literal, re-stringifying it
+// space-joined ($OFS) so `bd` receives an invalid status. The quotes MUST be
+// double, not single: the same string also reaches `bd` through
+// `child_process.exec()` under cmd.exe, which has no single-quote quoting and
+// would pass them literally into argv. Double quotes are stripped as real
+// quoting by PowerShell and cmd.exe alike, and are a harmless no-op under POSIX
+// shells.
 const NOT_DONE_STATUSES = '"open,in_progress,blocked,deferred"';
 
-// Backlog panel (dashboard "Backlog" section): beads the sprint certainly
-// will NOT be addressing this run. Excludes 'closed' (done, not backlog)
-// and 'in_progress' (actively being worked -- possibly by something else
-// entirely, e.g. a concurrent sprint -- a meaningfully different state
-// from idle backlog, not lumped in here). 'blocked' IS included: a bead
-// gated on an unresolved dependency is just as certainly "not being
-// addressed this run" as an untouched 'open' or 'deferred' one. Deliberately
-// project-wide (no --parent filter) -- this can and should include beads
-// with no relation at all to the current sprint's target epic, so the
-// user sees the true state of unplanned/idle work.
-// Quoted -- see NOT_DONE_STATUSES above for why (PowerShell comma-array
-// mangling on Windows; must be double quotes, not single, so cmd.exe-based
-// dispatch strips them correctly too).
+// Backlog panel (dashboard "Backlog" section): beads the sprint certainly will
+// NOT be addressing this run. Excludes 'closed' (done, not backlog) and
+// 'in_progress' (actively being worked, possibly by a concurrent sprint -- a
+// meaningfully different state from idle backlog). 'blocked' IS included: a
+// bead gated on an unresolved dependency is as certainly "not being addressed
+// this run" as an untouched 'open' or 'deferred' one. Deliberately
+// project-wide (no --parent filter) so the user sees the true state of
+// unplanned/idle work, including beads unrelated to the target epic.
+// Quoted for the same reason as NOT_DONE_STATUSES above.
 const BACKLOG_STATUSES = '"open,deferred,blocked"';
 
-// We can import standard node modules in workflows if needed, or pass them in context.
-// For now, we'll assume we check runbooks via command() since we are in the workflow engine.
-
 // ---------------------------------------------------------------------------
-// CLI -> runner argument contract (apra-fleet-unw.14)
+// CLI -> runner argument contract
 // ---------------------------------------------------------------------------
 //
-// This is the canonical, validated shape of `args` (the `context.args`
-// object WorkflowEngine.executeFile()/runWithContext() hands to main()).
-// bin/cli.mjs is required to produce args matching this contract; unknown
-// keys and missing required keys are both rejected loudly here so a
-// CLI/runner drift (a flag added on one side and forgotten on the other)
-// fails fast instead of silently no-oping.
+// The canonical, validated shape of `args` (the `context.args` object
+// WorkflowEngine.executeFile()/runWithContext() hands to main()). bin/cli.mjs
+// must produce args matching this contract; unknown keys and missing required
+// keys are both rejected loudly here so CLI/runner drift (a flag added on one
+// side and forgotten on the other) fails fast instead of silently no-oping.
 //
-// Also serves as the A7 defense-in-depth layer: `target_issues`/
-// `target_issue`, `branch`, and `base_branch` are all validated against
-// shell-injection-safe patterns here, in addition to bin/cli.mjs's own
-// validation (which imports validateIssueId/validateBranchName from this
-// module -- single source of truth), so a malicious id/branch name can
-// never reach a command() interpolation even if the CLI layer is somehow
-// bypassed. Validation runs before ANY agent()/command() dispatch below,
-// so a rejected arg produces zero fleet dispatches.
+// Defense in depth: `target_issues`/`target_issue`, `branch`, and
+// `base_branch` are validated against deliberately restrictive
+// shell-injection-safe patterns here as well as in bin/cli.mjs (which imports
+// validateIssueId/validateBranchName from this module -- single source of
+// truth), so a malicious id or branch name can never reach a command()
+// interpolation even if the CLI layer is bypassed. Validation runs before ANY
+// agent()/command() dispatch, so a rejected arg produces zero fleet
+// dispatches.
 
 const ISSUE_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const BRANCH_NAME_PATTERN = /^[A-Za-z0-9._/-]+$/;
@@ -253,57 +205,55 @@ const GOAL_PATTERN = /^P[1-3](\/P[1-3]){0,2}$/;
 const KNOWN_ARG_KEYS = new Set([
     'target_issues', 'target_issue', 'members', 'branch', 'base_branch',
     'goal', 'max_cycles', 'requirementsFile', 'roleMap', 'budget',
-    // Stabilization Issue 32: per-dispatch time budget (timeout_s ==
-    // max_total_s at every dispatch site; integ ceiling = 2x). Lets small
-    // runs (sandbox canary sprints) bound the cost of a hung dispatch.
+    // Per-dispatch time budget (timeout_s == max_total_s at every dispatch
+    // site; integ ceiling = 2x), bounding the cost of a hung dispatch.
     'dispatch_timeout_s',
-    // apra-fleet-eft.9.2 / eft.9.3 / eft.9.7: the always-on supervisor's base
-    // HTTP URL (e.g. http://127.0.0.1:8787). Set by bin/cli.mjs from the
-    // FLEET_SE_SERVICE_URL env var the supervisor's spawner injects into each
-    // detached child; absent for supervisor-less (single-process/dev/test)
-    // runs. When present it enables the cross-sprint coordination layers: the
-    // global dolt push mutex (9.2), the child-id allocator (9.3), and the
-    // per-bead work-claiming (9.7). All three are no-ops without it -- a lone
+    // The always-on supervisor's base HTTP URL (e.g. http://127.0.0.1:8787).
+    // Set by bin/cli.mjs from the FLEET_SE_SERVICE_URL env var the supervisor's
+    // spawner injects into each detached child; absent for supervisor-less
+    // (single-process/dev/test) runs. When present it enables the cross-sprint
+    // coordination layers: the global dolt push mutex, the child-id allocator,
+    // and per-bead work-claiming. All three are no-ops without it -- a lone
     // sprint has no sibling to coordinate with.
     'serviceUrl',
-    // apra-fleet-eft.9.7: the assignee identity this sprint claims beads as and
-    // filters ready work by (`bd update --claim` / `bd ready --assignee`).
-    // Optional; when omitted the per-bead work-claiming prevention layer stays
-    // dormant and bead selection uses the legacy unassigned `bd list --ready`.
+    // The assignee identity this sprint claims beads as and filters ready work
+    // by (`bd update --claim` / `bd ready --assignee`). Nothing sets this
+    // today; the claiming layer stays dormant and bead selection uses the
+    // unassigned `bd list --ready`.
     'assignee',
-    // apra-fleet-eft.79: multi-streak worklist dispatch mode when a develop
-    // round has more ready streaks than doers. 'resume' (default): per-streak
-    // dispatches that resume the SAME doer session by explicit session id
-    // (warm-context carryover, every engine checkpoint kept between streaks).
-    // 'batch' (config-gated, overhead-dominated scenarios): one dispatch
-    // carries a doer's whole ordered worklist (tier-homogeneous REQUIRED).
+    // Multi-streak worklist dispatch mode when a develop round has more ready
+    // streaks than doers. 'resume' (default): per-streak dispatches that resume
+    // the SAME doer session by explicit session id (warm-context carryover,
+    // every engine checkpoint kept between streaks). 'batch' (config-gated,
+    // overhead-dominated scenarios): one dispatch carries a doer's whole
+    // ordered worklist, which REQUIRES a tier-homogeneous worklist.
+    // No CLI flag sets this today; only test/programmatic callers pass it.
     'doer_worklist_mode',
-    // apra-fleet-eft.79: capability opt-in -- the doer pool's provider
-    // supports changing model on a RESUMED session (execute_prompt's `model`
-    // param applies to resumed sessions for Claude). Only then may a resumed
-    // -sequence worklist carry mixed tiers, each streak dispatching at its
-    // own tier; default false = safe fallback to tier-homogeneous grouping.
-    // See resolveWorklistTierPolicy() for the capability-check seam.
+    // Capability opt-in: the doer pool's provider supports changing model on a
+    // RESUMED session. Only then may a resumed-sequence worklist carry mixed
+    // tiers, each streak dispatching at its own tier; default false falls back
+    // to tier-homogeneous grouping. See resolveWorklistTierPolicy() for the
+    // capability-check seam.
+    // No CLI flag sets this today; only test/programmatic callers pass it.
     'resume_model_switch',
-    // apra-fleet-eft.79: per-doer effort-point budget for worklist packing
-    // (planner.md effort formula units). Default DEFAULT_EFFORT_THRESHOLD.
+    // Per-doer effort-point budget for worklist packing (planner.md effort
+    // formula units). Default DEFAULT_EFFORT_THRESHOLD.
+    // No CLI flag sets this today; only test/programmatic callers pass it.
     'worklist_effort_budget',
-    // apra-fleet-eft.75.1: an optional live `(name, args) => Promise<any>`
-    // MCP tool-call function, wired by bin/cli.mjs from its already-connected
-    // `mcpClient.callTool` (see the call site there). Consumed by
-    // createMemberSessionGuard() (this file) to call the fleet's own
+    // An optional live `(name, args) => Promise<any>` MCP tool-call function,
+    // wired by bin/cli.mjs from its already-connected `mcpClient.callTool`.
+    // Consumed by createMemberSessionGuard() to call the fleet's own
     // `stop_prompt` tool before a resume re-dispatch. This is a live function
     // reference, not a JSON-serializable value -- safe only because
     // WorkflowEngine.executeFile() runs runner.js in-process (dynamic
-    // `import()`, never a subprocess boundary). Absent for direct
-    // runSprintCycle()/main() test calls, where the guard is a no-op (see
-    // createMemberSessionGuard's doc comment).
+    // `import()`, never across a subprocess boundary). Absent for direct
+    // runSprintCycle()/main() test calls, where the guard is a no-op.
     'callTool',
 ]);
 
 /**
- * Validates a single issue id against the shell-injection-safe pattern
- * (feedback.md A7). Throws with a clear message on rejection.
+ * Validates a single issue id against the shell-injection-safe pattern.
+ * Throws with a clear message on rejection.
  * @param {unknown} id
  * @returns {string}
  */
@@ -330,53 +280,34 @@ export function validateBranchName(name, label) {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-member topology precondition (apra-fleet-unw2.4 / N4)
+// Multi-member topology precondition
 // ---------------------------------------------------------------------------
 //
-// This runner has NO cross-member bd/git sync layer this round (deferred --
-// see docs/plan.md section 5 and docs/architecture.md "Multi-member
-// topology"). Every `bd` command the orchestrator issues in main() runs
-// against the ORCHESTRATOR member's beads DB, while each doer's own
-// `bd close` runs against ITS member's DB; and the sprint git branch is only
-// meaningful if every member operates on the same working state. That whole
-// design only coheres when all configured members resolve to the same
-// workspace/DB (a "shared-workspace" fleet) -- or when there is a single
-// member. On any other topology, non-orchestrator members would silently
-// work against a beads DB / git checkout the orchestrator never touches.
+// A sprint stands up under one of two topology contracts, and this function is
+// the gate that refuses to start when the fleet does not satisfy the one the
+// caller named. Mode selection is EXPLICIT (`opts.mode`), never inferred: an
+// unknown mode is a hard refusal, not a silent fallback.
 //
-// So the ONLY currently-supported real-fleet mode is single-member, or a
-// verified shared-workspace setup. This function is the enforcement gate for
-// that contract: it compares an identity signal (bin/cli.mjs wires it to
-// `git rev-parse HEAD`) across every configured member and refuses to start
-// when they disagree -- rather than proceeding onto the unsupported,
-// silently-diverging path.
+// LEGACY (shared-workspace): there is no cross-member sync layer, so every
+// member must resolve to the same checkout/DB. The orchestrator's `bd`
+// commands run against ITS member's beads DB while each doer's `bd close`
+// runs against its own, and the sprint git branch is only meaningful if all
+// members share working state. Enforced by comparing an identity signal
+// (cli.mjs wires it to `git rev-parse HEAD`) across members. Matching HEADs
+// at start is a best-effort heuristic, not a guarantee of ongoing shared
+// state: two independent checkouts sitting on the same commit would pass.
 //
-// Pure/inject-driven (no direct I/O of its own): `getIdentity` is supplied
-// by the caller, so cli.mjs can wire it to a live fleet command while the
-// mock test supplies per-member signals directly. Single-member trivially
-// passes (nothing to compare). For 2+ members, a member whose signal cannot
-// be obtained (getIdentity throws) is treated as a REFUSAL -- we cannot
-// prove shared state, so we do not silently continue.
+// SYNCED: the orchestrator-bracketed G-pull/G-push layer reconciles members by
+// fast-forward pull/push, so differing HEADs between brackets are EXPECTED and
+// a shared workspace is not required. The precondition instead becomes: every
+// member reports the SAME `git remote get-url origin` (they push/pull the same
+// remote branch) AND passes a `bd dolt pull` probe (their beads DB can sync).
 //
-// Honest limitation (documented, not oversold): matching HEADs at start is a
-// best-effort shared-workspace heuristic, NOT a guarantee of ongoing shared
-// state -- two independent checkouts that merely happen to sit on the same
-// commit right now would pass. Fully validating (and reconciling) per-member
-// state across a running sprint needs the deferred cross-member sync layer.
-//
-// apra-fleet-eft.8.5 (Plan 3.3) -- SYNCED mode. The orchestrator-bracketed git
-// sync layer (eft.8.1's G-pull/G-push) removes the "all members must sit on
-// the same HEAD" requirement: with per-dispatch sync brackets, members are
-// EXPECTED to have different HEADs between brackets and are reconciled by
-// fast-forward pull/push, so a shared single workspace is no longer required.
-// In synced mode the precondition instead becomes: every member reports the
-// SAME `git remote get-url origin` (they push/pull the same remote branch) AND
-// passes a working `bd dolt pull` probe (their beads DB can actually sync).
-// Legacy shared-workspace mode keeps the same-HEAD identity check unchanged.
-//
-// Mode selection is EXPLICIT (`opts.mode`), never inferred silently: the
-// caller must state which contract it is standing the sprint up under. An
-// unknown mode is a hard refusal rather than a silent fallback.
+// Inject-driven, with no direct I/O of its own, so cli.mjs can wire the probes
+// to live fleet commands while tests supply per-member signals directly. A
+// single member trivially passes. For 2+ members, a member whose signal cannot
+// be obtained is a REFUSAL: shared state cannot be proven, so the sprint must
+// not silently continue.
 /**
  * @param {{
  *   members: string[],
@@ -412,8 +343,8 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
     }
 
     // -----------------------------------------------------------------------
-    // SYNCED mode (apra-fleet-eft.8.5): same-origin + dolt-probe precondition.
-    // HEADs are ALLOWED to differ -- reconciliation is the sync layer's job.
+    // SYNCED mode: same-origin + dolt-probe precondition. HEADs are ALLOWED to
+    // differ -- reconciliation is the sync layer's job.
     // -----------------------------------------------------------------------
     if (mode === 'synced') {
         if (typeof getOriginUrl !== 'function' || typeof doltProbe !== 'function') {
@@ -498,7 +429,7 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
     }
 
     // -----------------------------------------------------------------------
-    // LEGACY mode: shared-workspace same-HEAD identity check (unchanged).
+    // LEGACY mode: shared-workspace same-HEAD identity check.
     // -----------------------------------------------------------------------
     if (typeof getIdentity !== 'function') {
         return {
@@ -564,7 +495,7 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator-bracketed git sync helpers (apra-fleet-eft.8.1, Plan 3.1/3.3)
+// Orchestrator-bracketed git sync helpers
 // ---------------------------------------------------------------------------
 //
 // Stance: SINGLE-WRITER TOKEN PASSING. The writer pushes, then the next reader
@@ -573,18 +504,17 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
 // invariant is already broken, so it is a HARD, TYPED error
 // (GitDivergedError), never auto-resolved.
 //
-// risk 2 in the plan: every bracket must fail-soft-with-retry in a way that
-// DISTINGUISHES transient-retry (network unreachable, an index/ref lock) from
-// diverged-abort (non-FF, unmerged/conflicted paths). A diverged state must
-// NEVER be retried blindly. classifyGitFailure() below is that classifier; the
-// two failure classes surface as two distinct WorkflowError subclasses
-// (GitSyncError vs GitDivergedError) so callers/tests can assert them apart.
+// Every bracket must fail-soft-with-retry in a way that DISTINGUISHES
+// transient-retry (network unreachable, an index/ref lock) from diverged-abort
+// (non-FF, unmerged/conflicted paths). A diverged state must NEVER be retried
+// blindly. classifyGitFailure() below is that classifier; the two failure
+// classes surface as two distinct WorkflowError subclasses (GitSyncError vs
+// GitDivergedError) so callers and tests can assert them apart.
 //
-// (3.2) Every git command is issued via the injected command() with an
-// explicit `member_name` -- agents never run sync themselves; the
-// orchestrator brackets each dispatch. `command` is dependency-injected (like
-// finalizeAbort) so unit tests can drive these helpers with a mock command()
-// and no live fleet.
+// Every git command is issued via the injected command() with an explicit
+// `member_name` -- agents never run sync themselves; the orchestrator brackets
+// each dispatch. `command` is dependency-injected so unit tests can drive these
+// helpers with a mock command() and no live fleet.
 
 // Substrings that mark a git failure as a DIVERGENCE (non-FF / unmerged /
 // conflict). Never retried -- see the single-writer stance above.
@@ -603,17 +533,12 @@ const GIT_DIVERGED_PATTERNS = [
     /have diverged/i,
 ];
 
-// apra-fleet-fmu: substrings that mark a git failure as an AUTH (credential)
-// failure -- the member's provisioned VCS token/credential has expired or is
-// otherwise rejected by the remote. Live-observed root cause (2026-07-26/27,
-// apra-fleet-eft sprint, member fleet-mac): both a Dolt push and a later git
-// push failed repeatedly with "fatal: could not read Username for
-// 'https://github.com': Device not configured" after the member's GitHub App
-// token expired -- the orchestrator had to manually call provision_vcs_auth
-// via MCP to unblock. Distinct from 'transient' (network/lock blips a plain
-// retry can resolve): blindly retrying an auth failure without re-provisioning
-// credentials first is pointless and reproduces the exact live incident, so
-// it is checked BEFORE 'transient' in classifyGitFailure() below -- but AFTER
+// Substrings that mark a git failure as an AUTH (credential) failure -- the
+// member's provisioned VCS token/credential has expired or is otherwise
+// rejected by the remote. Distinct from 'transient' (network/lock blips a plain
+// retry can resolve): retrying an auth failure without re-provisioning
+// credentials first can never succeed. Auth is therefore classified BEFORE
+// 'transient', so an auth failure is never blindly retried -- but AFTER
 // 'diverged', which must never be misclassified.
 const GIT_AUTH_PATTERNS = [
     /could not read Username for/i,
@@ -643,25 +568,22 @@ const GIT_TRANSIENT_PATTERNS = [
     /unable to create '.*lock'/i,
     /cannot lock ref/i,
     /ssh_exchange_identification/i,
-    // Stabilization log Issue 13: a failSoft command() resolves a
-    // FleetTransportError (client <-> fleet-server connection blip, e.g.
-    // undici 'fetch failed' on a dead pooled socket) into its error string.
-    // That is a transient infrastructure failure of the DISPATCH CHANNEL,
-    // not a git failure at all -- retrying is exactly right, and 'unknown'
-    // (never retried, observed sprint-fatal live in run 8) is exactly wrong.
+    // A failSoft command() resolves a FleetTransportError (client <->
+    // fleet-server connection blip, e.g. undici 'fetch failed' on a dead
+    // pooled socket) into its error string. That is a transient failure of the
+    // DISPATCH CHANNEL, not a git failure, and must be retried rather than
+    // classified 'unknown' (which is never retried, and is sprint-fatal here).
     /transport failure while executing command/i,
     /fetch failed/i,
 ];
 
 /**
  * Classify a failed git command's output into the failure classes the sync
- * brackets must route differently (plan risk 2; apra-fleet-fmu adds 'auth').
- * Divergence is checked FIRST: a non-FF/unmerged state must never be misread
- * as transient/auth and retried blindly, even if its message happens to also
- * contain a lock/network/credential word. 'auth' is checked NEXT, before
- * 'transient': a credential failure is not a network/lock blip and blindly
- * retrying it without re-provisioning credentials first is pointless (see
- * GIT_AUTH_PATTERNS' doc comment for the live incident this closes).
+ * brackets route differently. Divergence is checked FIRST: a non-FF/unmerged
+ * state must never be misread as transient/auth and retried blindly, even if
+ * its message also contains a lock/network/credential word. 'auth' is checked
+ * NEXT, before 'transient': a credential failure is not a network/lock blip,
+ * and retrying it without re-provisioning credentials first cannot succeed.
  *
  * @param {string} output - the raw git stderr/stdout of the failed command
  * @returns {'diverged'|'auth'|'transient'|'unknown'}
@@ -674,30 +596,20 @@ export function classifyGitFailure(output) {
     return 'unknown';
 }
 
-// apra-fleet-eft.8.12: parseUnmergedPaths and the Tier 1 scripted
-// detect-and-abort helper (detectAndAbortRebaseConflict) now live in
-// ./conflict-ladder.mjs, alongside the new Tier 2 (agent-with-runbook)
-// escalation -- see that module's header comment for the full ladder. Both
-// are imported at the top of this file; parseUnmergedPaths is re-exported
-// there for backward compatibility.
-
 /**
  * Run a single git command via the injected command() with failSoft, retrying
  * ONLY transient failures up to `maxTransientRetries` times. A diverged (or
  * unknown) failure is returned immediately, never retried.
  *
- * apra-fleet-fmu: an optional injected `onAuthFailure` async callback adds a
- * DISTINCT, bounded one-shot self-heal path -- deliberately NOT folded into
- * the `maxTransientRetries` loop above, so it stays easy to reason about and
- * test in isolation. When a command fails with an 'auth' classification (see
- * classifyGitFailure) and `onAuthFailure` is provided, it is called EXACTLY
- * ONCE (never in a loop, even if the retry below fails with 'auth' again);
- * if it resolves without throwing, the SAME command is retried exactly once
- * more. If `onAuthFailure` throws, or is not provided at all, this falls
- * through to the exact pre-existing behavior: the failed result is returned
- * as-is for the caller to turn into its typed GitSyncError/GitDivergedError.
- * Every existing caller that does not pass `onAuthFailure` sees ZERO
- * behavior change.
+ * An optional injected `onAuthFailure` async callback adds a DISTINCT, bounded
+ * one-shot self-heal path, deliberately NOT folded into the
+ * `maxTransientRetries` loop. When a command fails with an 'auth'
+ * classification (see classifyGitFailure) and `onAuthFailure` is provided, it
+ * is called EXACTLY ONCE (never in a loop, even if the retry fails with 'auth'
+ * again); if it resolves without throwing, the SAME command is retried exactly
+ * once more. If `onAuthFailure` throws, or is omitted, the failed result is
+ * returned as-is for the caller to turn into its typed
+ * GitSyncError/GitDivergedError.
  *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'unknown' }>}
  */
@@ -732,29 +644,27 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
 }
 
 /**
- * G-pull (Plan 3.1): bring `member` up to the shared branch tip before it does
- * any work -- `git fetch` then `git merge --ff-only`. Because of single-writer
- * token passing this merge is fast-forward by construction; a non-FF result is
- * a distinct typed GitDivergedError (NOT a generic failure), never
- * auto-merged. Transient (network/lock) failures are retried up to
- * `maxTransientRetries`; divergence is never retried.
+ * G-pull: bring `member` up to the shared branch tip before it does any work --
+ * `git fetch` then `git merge --ff-only`. Because of single-writer token
+ * passing this merge is fast-forward by construction; a non-FF result is a
+ * distinct typed GitDivergedError (NOT a generic failure), never auto-merged.
+ * Transient (network/lock) failures are retried up to `maxTransientRetries`;
+ * divergence is never retried.
  *
  * Every git command is issued via the injected command() with an explicit
- * member_name (3.2).
+ * member_name.
  *
- * apra-fleet-fmu: an optional injected `onAuthFailure` is threaded straight
- * through to runGitStep's bounded one-shot self-heal (a stale token can just
- * as easily break a pull as a push) -- omitting it preserves the exact
- * pre-existing behavior, same convention as the `agent` param on
- * syncMemberAfter.
+ * An optional injected `onAuthFailure` is threaded through to runGitStep's
+ * bounded one-shot self-heal, since a stale token can break a pull as easily as
+ * a push.
  *
- * apra-fleet-eft.87.1: an optional `resetToRemoteTip` (default false) changes
- * the pull half from `git merge --ff-only` to a `git reset --hard <remote>/
- * <branch>` so a RETRIED doer dispatch resumes on the published tip instead of
- * failing on (or re-committing over) a divergence its own prior attempt left
- * behind. Only set on a retry that may have mutated (withGitSync's
- * resumeOntoRemoteTip); omitting it preserves the exact prior ff-only-merge
- * behaviour for every first attempt / happy-path caller.
+ * An optional `resetToRemoteTip` (default false) changes the pull half from
+ * `git merge --ff-only` to `git reset --hard <remote>/<branch>` so a RETRIED
+ * doer dispatch resumes on the published tip instead of failing on (or
+ * re-committing over) a divergence its own prior attempt left behind. It must
+ * only be set on a retry that may have mutated state (withGitSync's
+ * resumeOntoRemoteTip); omitting it keeps the ff-only-merge behaviour for every
+ * first attempt.
  *
  * @param {string} member
  * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string, onAuthFailure?: Function, resetToRemoteTip?: boolean }} opts
@@ -772,16 +682,12 @@ export async function syncMemberBefore(member, opts = {}) {
         label: `G-pull fetch for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!fetch.ok) {
-        // A brand-new sprint branch that has not been pushed to the remote
-        // yet (created locally from base by Ensure Sprint Branch; first
-        // G-push hasn't happened) makes this fetch fail with "couldn't find
-        // remote ref <branch>". That is a benign, expected state -- there is
-        // nothing on the remote to pull, so the bracket's pull half is a
-        // no-op, NOT an error (observed as a real sprint-killing failure in
-        // mock-sprint-ensure-branch-fetch-failure before this guard; same
-        // exact-match rationale as Ensure Sprint Branch's own fetch
-        // fallback: only this precise git message may be treated as
-        // branch-doesn't-exist, anything else still surfaces).
+        // A brand-new sprint branch created locally from base, before its
+        // first G-push, makes this fetch fail with "couldn't find remote ref
+        // <branch>". That is a benign, expected state: there is nothing on the
+        // remote to pull, so the bracket's pull half is a no-op, not an error.
+        // Only this precise git message may be treated as
+        // branch-doesn't-exist; anything else must still surface.
         if (/couldn't find remote ref/i.test(fetch.error || '')) {
             log(`[Sync] G-pull for member '${member}': branch '${branch}' does not exist on '${remote}' yet (not pushed); skipping pull (nothing to sync down).`);
             return { ok: true, member };
@@ -794,23 +700,19 @@ export async function syncMemberBefore(member, opts = {}) {
         );
     }
 
-    // apra-fleet-eft.87.1: on a RETRIED doer dispatch whose prior attempt was
-    // NOT provably a no-mutation failure (it may have committed and/or pushed
-    // its single-task streak), a plain `git merge --ff-only` is the wrong
-    // recovery. If the prior attempt pushed and the local tip then diverged (a
-    // re-implemented duplicate commit vs the already-published one), the ff-only
-    // merge raises GitDivergedError and the streak can NEVER resume -- every
-    // subsequent `git push`/`git merge --ff-only` fails non-fast-forward (the
-    // eft.87 smoke-test symptom, `git rev-list --left-right` = '2 1'). When
-    // `resetToRemoteTip` is set (only ever on a retry that may have mutated --
-    // see withGitSync's resumeOntoRemoteTip), HARD-RESET the local branch onto
-    // the freshly fetched remote tip so the retry resumes ON TOP of already-
-    // published work rather than re-committing it. Only the code checkout is
-    // touched (beads live in a separate Dolt clone); a local commit that was
+    // On a RETRIED dispatch whose prior attempt was not provably a no-mutation
+    // failure (it may have committed and/or pushed its streak), `git merge
+    // --ff-only` is the wrong recovery: if the prior attempt pushed and the
+    // local tip then diverged with a re-implemented duplicate commit, the
+    // ff-only merge raises GitDivergedError and the streak can NEVER resume,
+    // because every subsequent push/merge fails non-fast-forward. Hard-resetting
+    // onto the freshly fetched remote tip makes the retry resume ON TOP of
+    // already-published work instead of re-committing it. Only the code checkout
+    // is touched (beads live in a separate Dolt clone); a local commit that was
     // never published is intentionally dropped and simply re-done by the retry,
-    // which is exactly what prevents the divergent duplicate commit. Requires a
-    // concrete branch to name a remote tip; without one it falls through to the
-    // normal ff-only merge below (unchanged behaviour).
+    // which is what prevents the divergent duplicate commit. A concrete branch
+    // is required to name a remote tip; without one this falls through to the
+    // ff-only merge below.
     if (resetToRemoteTip && branch) {
         const resetTarget = `${remote}/${branch}`;
         const reset = await runGitStep({
@@ -823,7 +725,7 @@ export async function syncMemberBefore(member, opts = {}) {
                 { member, gitOutput: reset.error },
             );
         }
-        log(`[Sync] G-pull for member '${member}': hard-reset local branch onto '${resetTarget}' so a retried dispatch resumes on the published tip instead of re-committing (apra-fleet-eft.87.1).`);
+        log(`[Sync] G-pull for member '${member}': hard-reset local branch onto '${resetTarget}' so a retried dispatch resumes on the published tip instead of re-committing.`);
         return { ok: true, member };
     }
 
@@ -849,8 +751,8 @@ export async function syncMemberBefore(member, opts = {}) {
 }
 
 /**
- * G-push (Plan 3.3): publish `member`'s committed work to the shared branch
- * after a dispatch -- `git push` with ONE bounded pull-rebase retry. If the
+ * G-push: publish `member`'s committed work to the shared branch after a
+ * dispatch -- `git push` with ONE bounded pull-rebase retry. If the
  * push is rejected as non-FF (another writer got there first), do a single
  * `git pull --rebase` and re-push exactly once; if it is STILL rejected, raise
  * a typed GitDivergedError -- the single-writer invariant is violated and the
@@ -860,26 +762,20 @@ export async function syncMemberBefore(member, opts = {}) {
  *
  * `pushCode: false` makes this a no-op (a read-only bracket has nothing to
  * publish). Every git command is issued via the injected command() with an
- * explicit member_name (3.2).
+ * explicit member_name.
  *
- * apra-fleet-eft.8.12 (Tier 2 of the git conflict ladder): when the pull-
- * rebase retry above hits a REAL content conflict (unmerged paths, not just
- * a plain non-FF race), an optional injected `agent()` gets exactly ONE
- * bounded Tier 2 attempt -- a conflict-resolution-runbook dispatch -- before
- * this function gives up and throws the typed GitDivergedError. The agent's
- * own claim of success is never trusted: this function mechanically
- * re-checks `git status --porcelain` for a clean tree and then attempts one
- * real re-push; only that observed outcome decides whether Tier 2 actually
- * resolved the conflict. Omitting `agent` (the default) preserves the exact
- * pre-8.12 Tier-1-only behavior -- every existing caller/test that does not
- * pass `agent` sees the same throws as before.
+ * Tier 2 of the git conflict ladder: when the pull-rebase retry hits a REAL
+ * content conflict (unmerged paths, not just a plain non-FF race), an optional
+ * injected `agent()` gets exactly ONE bounded conflict-resolution-runbook
+ * dispatch before this function gives up and throws the typed
+ * GitDivergedError. The agent's own claim of success is never trusted: this
+ * function mechanically re-checks `git status --porcelain` for a clean tree and
+ * then attempts one real re-push; only that observed outcome decides whether
+ * Tier 2 resolved the conflict. Omitting `agent` leaves Tier 1 only.
  *
- * apra-fleet-fmu: an optional injected `onAuthFailure` (same injection
- * pattern as `agent` above) is threaded through to every runGitStep call
- * below for a bounded one-shot self-heal (call it once, retry the same
- * command once) whenever a step is classified 'auth'. Omitting it preserves
- * the exact pre-existing behavior -- every existing caller/test that does not
- * pass `onAuthFailure` sees ZERO behavior change.
+ * An optional injected `onAuthFailure` is threaded through to every runGitStep
+ * call below for a bounded one-shot self-heal (call it once, retry the same
+ * command once) whenever a step is classified 'auth'.
  *
  * @param {string} member
  * @param {{
@@ -929,23 +825,20 @@ export async function syncMemberAfter(member, opts = {}) {
         label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!rebase.ok) {
-        // apra-fleet-eft.8.6 (Tier 1 scripted detection): confirm from git's
-        // own porcelain status -- not just this failing command's exit
-        // code/message classification -- whether the rebase actually left
-        // unmerged paths, and if so restore a clean tree via
-        // `git rebase --abort` BEFORE the typed divergence error below
-        // propagates. See detectAndAbortRebaseConflict()'s own doc comment
-        // for why this is the single Tier 1 -> Tier 2 escalation point.
+        // Tier 1 scripted detection: confirm from git's own porcelain status --
+        // not from this failing command's exit code/message classification --
+        // whether the rebase actually left unmerged paths, and if so restore a
+        // clean tree via `git rebase --abort` BEFORE the typed divergence error
+        // below propagates. This is the single Tier 1 -> Tier 2 escalation
+        // point.
         const unmergedPaths = await detectAndAbortRebaseConflict({ command, member, log, maxTransientRetries, runGitStep });
 
-        // apra-fleet-eft.8.12 (Tier 2): unmergedPaths.length > 0 is exactly
-        // the ladder's documented escalation point -- a real content
-        // conflict, not just a non-FF race. Attempt exactly ONE bounded
-        // Tier 2 agent-with-runbook dispatch (when an agent() was injected)
-        // before falling back to the typed GitDivergedError below. Every
-        // outcome (agent throws, agent returns, or agent unavailable) is
-        // mechanically re-verified against real git state -- never the
-        // agent's own claim.
+        // Tier 2: unmergedPaths.length > 0 means a real content conflict, not
+        // just a non-FF race. Attempt exactly ONE bounded agent-with-runbook
+        // dispatch (when an agent() was injected) before falling back to the
+        // typed GitDivergedError below. Every outcome (agent throws, agent
+        // returns, or agent unavailable) is mechanically re-verified against
+        // real git state -- never the agent's own claim.
         if (unmergedPaths.length > 0 && typeof agent === 'function') {
             try {
                 await dispatchConflictResolutionAgent({
@@ -1001,62 +894,59 @@ export async function syncMemberAfter(member, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// apra-fleet-eft.9.1 (Plan Part 3.3) -- Dolt sync brackets: D-pull / D-push
+// Dolt sync brackets: D-pull / D-push
 // ---------------------------------------------------------------------------
 //
 // The beads database is a Dolt database that every member syncs through a
 // shared remote, orthogonally to the git code branch. Where the git brackets
-// (8.1) keep each member's *code checkout* current, these keep each member's
-// *beads clone* current: a D-pull before every dispatch/read that consumes
-// beads state, and a D-push after every step that mutates it.
+// keep each member's *code checkout* current, these keep each member's *beads
+// clone* current: a D-pull before every dispatch/read that consumes beads
+// state, and a D-push after every step that mutates it.
 //
-// THE single most divergence-sensitive read in this whole file is the
-// orchestrator's post-streak `bd show` verification (see verifyDoerStreakClosed
-// below): a remote doer closes its beads in ITS OWN clone and D-pushes them;
-// without an orchestrator-side D-pull immediately before that read, the
-// orchestrator reads its own stale (still-open) copy and falsely marks every
-// remote doer streak FAILED. That D-pull is the reason this task exists.
+// The most divergence-sensitive read in this file is the orchestrator's
+// post-streak `bd show` verification (see verifyDoerStreakClosed below): a
+// remote doer closes its beads in ITS OWN clone and D-pushes them, so without
+// an orchestrator-side D-pull immediately before that read the orchestrator
+// reads its own stale (still-open) copy and falsely marks every remote doer
+// streak FAILED.
 //
-// Conflict policy (deliberately NOT per-conflict judgment): D-push is
-// first-successful-pusher-wins. The first member to push wins; a member whose
-// push is rejected is the loser and reconciles MECHANICALLY -- it D-pulls the
-// winner's state (ours/theirs fixed by which clone is resolving, never a
-// human/LLM decision) then re-pushes exactly once. A divergence that outlives
-// that one bounded reconcile is a hard DoltDivergedError, never retried
-// blindly -- the exact mirror of the git single-writer stance.
+// Conflict policy, deliberately NOT per-conflict judgment: D-push is
+// first-successful-pusher-wins. A member whose push is rejected is the loser
+// and reconciles MECHANICALLY -- it D-pulls the winner's state (ours/theirs
+// fixed by which clone is resolving, never a human/LLM decision) then re-pushes
+// exactly once. A divergence that outlives that one bounded reconcile is a hard
+// DoltDivergedError, never retried blindly -- the mirror of the git
+// single-writer stance.
 //
-// (3.2) Every `bd dolt` command is issued via the injected command() with an
-// explicit member_name -- agents never sync beads themselves; the orchestrator
-// brackets each dispatch. `command` is dependency-injected so unit tests can
-// drive these helpers with a mock command() and no live Dolt server.
+// Every `bd dolt` command is issued via the injected command() with an explicit
+// member_name -- agents never sync beads themselves; the orchestrator brackets
+// each dispatch. `command` is dependency-injected so unit tests can drive these
+// helpers with a mock command() and no live Dolt server.
 
-// Substrings that mark a `bd dolt` failure as NO-REMOTE (apra-fleet-eft.16.1):
-// this local beads clone has no configured dolt remote at all (e.g. a temp
-// fixture repo with no 'origin'), so there is nothing to pull or push. This is
-// a benign, non-error condition -- distinct from both a genuine divergence and
-// a transient network/server hiccup -- and must be checked FIRST so its text
-// (which does not collide with the diverged/transient patterns below) always
-// wins. A remote that IS configured but unreachable/diverged/auth-failing
-// never matches these patterns and still falls through to the existing
-// diverged/transient/unknown classification.
+// Substrings that mark a `bd dolt` failure as NO-REMOTE: this local beads clone
+// has no configured dolt remote at all (e.g. a temp fixture repo with no
+// 'origin'), so there is nothing to pull or push. This is a benign, non-error
+// condition -- distinct from both a genuine divergence and a transient
+// network/server hiccup -- and is checked FIRST so its text always wins. A
+// remote that IS configured but unreachable/diverged/auth-failing never matches
+// these patterns and still falls through to the diverged/transient/unknown
+// classification.
 const DOLT_NO_REMOTE_PATTERNS = [
     /error 1105.*no remote/i,
     /\bno remote\b/i,
 ];
 
-// Substrings that mark a `bd dolt pull` failure as an EMPTY-REMOTE
-// (apra-fleet-eft.63): the sync.remote IS configured (unlike no-remote above)
-// but has genuinely never had anything pushed into it -- e.g. the playbook's
-// ## Reset fast-path re-derives sync.remote from a bare git-only mirror that
-// Dolt itself has never pushed a branch into. This is distinct from BOTH
-// no-remote (nothing configured at all) and a genuine divergence/conflict
-// (something IS there, but it disagrees with the local clone): a remote with
-// zero branches has nothing to reconcile, so pulling it is a benign no-op,
-// not a fatal DOLT_SYNC_FAILED. Matched on Dolt's own specific Error 1105
-// wording so this can never accidentally swallow a real pull failure that
-// merely happens to mention "remote" -- checked FIRST, before the diverged/
-// transient patterns below, same reasoning as DOLT_NO_REMOTE_PATTERNS: this
-// text does not collide with either, so order only matters for clarity.
+// Substrings that mark a `bd dolt pull` failure as an EMPTY-REMOTE: the
+// sync.remote IS configured (unlike no-remote above) but has never had anything
+// pushed into it -- e.g. a sync.remote derived from a bare git-only mirror that
+// Dolt itself has never pushed a branch into. Distinct from BOTH no-remote
+// (nothing configured at all) and a genuine divergence/conflict (something IS
+// there, but disagrees with the local clone): a remote with zero branches has
+// nothing to reconcile, so pulling it is a benign no-op, not a fatal sync
+// failure. Matched on Dolt's specific Error 1105 wording so it can never
+// swallow a real pull failure that merely mentions "remote", and checked before
+// the diverged/transient patterns for the same reason as
+// DOLT_NO_REMOTE_PATTERNS.
 const DOLT_EMPTY_REMOTE_PATTERNS = [
     /error 1105.*no branches found in remote/i,
     /no branches found in remote/i,
@@ -1082,14 +972,12 @@ const DOLT_DIVERGED_PATTERNS = [
     /working set (is )?not clean/i,
 ];
 
-// apra-fleet-fmu: substrings that mark a `bd dolt` failure as an AUTH
-// (credential) failure -- mirrors GIT_AUTH_PATTERNS above. `bd dolt push`
-// shells out to git under the hood, so it can surface the SAME "could not
-// read Username for 'https://github.com'" text a plain git push does (this
-// exact class was live-observed on a D-push, not just a G-push, in the
-// apra-fleet-eft sprint incident this bead closes). Checked after 'diverged'
-// (never misclassified) but before 'transient' (retrying without
-// re-provisioning credentials first is pointless).
+// Substrings that mark a `bd dolt` failure as an AUTH (credential) failure --
+// mirrors GIT_AUTH_PATTERNS above. `bd dolt push` shells out to git under the
+// hood, so it surfaces the same credential-prompt text a plain git push does.
+// Checked after 'diverged' (which must never be misclassified) but before
+// 'transient', so an auth failure is never blindly retried without
+// re-provisioning credentials first.
 const DOLT_AUTH_PATTERNS = [
     /could not read Username for/i,
     /could not read Password for/i,
@@ -1122,13 +1010,13 @@ const DOLT_TRANSIENT_PATTERNS = [
     /lock/i,
 ];
 
-// Run-24 abort root cause: substrings that mark a `bd dolt` failure as
-// REMOTE-UNREACHABLE -- the configured sync remote itself cannot be opened
-// (deleted directory behind a file:// remote, dead path, missing remote db).
-// Distinct from 'transient' (retrying cannot help: the target is gone, not
-// busy) and from 'no-remote' (here a remote IS configured -- it just points
-// at nothing). Checked before 'diverged'/'transient' so a stat/open failure
-// is never misread as a conflict or retried blindly.
+// Substrings that mark a `bd dolt` failure as REMOTE-UNREACHABLE: the
+// configured sync remote itself cannot be opened (deleted directory behind a
+// file:// remote, dead path, missing remote db). Distinct from 'transient'
+// (retrying cannot help: the target is gone, not busy) and from 'no-remote'
+// (here a remote IS configured, it just points at nothing). Checked before
+// 'diverged'/'transient' so a stat/open failure is never misread as a conflict
+// or retried blindly.
 const DOLT_REMOTE_UNREACHABLE_PATTERNS = [
     /could not be accessed/i,
     /failed to get remote db/i,
@@ -1154,22 +1042,17 @@ export function extractDoltRemoteUrl(output) {
 
 /**
  * Classify a failed `bd dolt` command's output into the failure classes the
- * Dolt brackets route differently. no-remote is checked FIRST (apra-fleet-
- * eft.16.1): a local clone with no configured dolt remote has nothing to
- * pull/push, which is a benign skip, never a divergence or a retryable
- * transient failure. Divergence is checked next: a remote-moved/conflict
- * state must never be misread as transient and retried blindly, even if its
- * message also happens to contain a lock/network word.
- *
- * apra-fleet-eft.63: empty-remote (a configured sync.remote with genuinely
- * zero branches ever pushed into it -- distinct from no-remote, where
- * nothing is configured at all) is also checked before diverged/transient,
- * for the same reason: its text ("no branches found in remote") must never
- * be misread as a real divergence/conflict.
- *
- * apra-fleet-fmu: 'auth' is checked after 'diverged' but before 'transient',
- * same ordering rationale as classifyGitFailure -- a credential failure must
- * never be misread as a conflict, and blindly retrying it is pointless.
+ * Dolt brackets route differently. no-remote is checked FIRST: a local clone
+ * with no configured dolt remote has nothing to pull/push, which is a benign
+ * skip, never a divergence or a retryable transient failure. empty-remote (a
+ * configured sync.remote with zero branches ever pushed into it) and
+ * remote-unreachable (a configured remote that cannot be opened at all) are
+ * checked next, for the same reason. Divergence follows: a remote-moved/conflict state
+ * must never be misread as transient and retried blindly, even if its message
+ * also contains a lock/network word. 'auth' is checked after 'diverged' but
+ * before 'transient', same ordering rationale as classifyGitFailure -- a
+ * credential failure must never be misread as a conflict, and retrying it
+ * without re-provisioning credentials cannot succeed.
  *
  * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
  * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown'}
@@ -1186,36 +1069,28 @@ export function classifyDoltFailure(output) {
 }
 
 /**
- * apra-fleet-eft.30.2 (defense-in-depth, independent of eft.30.1): query
- * whether `member`'s bd-level `sync.remote` setting -- the exact YAML key
- * the eft.25.1 neutralize step comments out -- is currently configured.
+ * Query whether `member`'s bd-level `sync.remote` setting is currently
+ * configured.
  *
- * This is deliberately independent of Dolt's raw remote wiring /
- * classifyDoltFailure's stderr pattern matching: apra-fleet-eft.30 showed a
- * (mis)wired Dolt-level remote can still make a real `bd dolt push` attempt
- * and fail with a credentials error ('could not read Username for
- * https://github.com') that classifyDoltFailure now recognizes as 'auth'
- * (apra-fleet-fmu) rather than 'no-remote' -- even though the sprint's
- * bd-level sync.remote for this clone IS neutralized and nothing is
- * supposed to be pushed. Consulting the bd-level setting directly closes
- * that gap regardless of what Dolt's own remote list says.
+ * Deliberately independent of Dolt's raw remote wiring and of
+ * classifyDoltFailure's stderr pattern matching: a miswired Dolt-level remote
+ * can still make a real `bd dolt push` attempt and fail with a credentials
+ * error that classifies as 'auth' rather than 'no-remote', even when the
+ * bd-level sync.remote for this clone is neutralized and nothing is supposed to
+ * be pushed. Consulting the bd-level setting directly closes that gap
+ * regardless of what Dolt's own remote list says.
  *
- * Uses `bd config get sync.remote --json` (via the injected command(), with
- * an explicit member_name per 3.2) rather than reading config.yaml off disk
- * directly, since `command()` is the only member-scoped I/O this runner has
- * -- a member's clone is not assumed to be locally readable.
+ * Uses `bd config get sync.remote --json` via the injected command() with an
+ * explicit member_name, rather than reading config.yaml off disk, because
+ * command() is the only member-scoped I/O this runner has -- a member's clone
+ * is not assumed to be locally readable.
  *
- * Fail-safe by default: a failed command(), a failSoft error result, or
- * output that cannot be positively parsed as `{ value: '' }` is all treated
- * as CONFIGURED (returns true) -- i.e. this only ever reports "not
- * configured" when it can positively confirm an empty `value` from a clean
- * JSON parse. This deliberately does NOT mirror checkSyncRemoteInert's
- * vacuous pass on a missing config.yaml: unlike that read-only sandbox
- * guard, a false positive here (wrongly reporting "not configured") would
- * silently swallow a genuine D-push failure on a real, actively-synced
- * clone -- the exact eft.16.1 regression this must not reintroduce -- so an
- * inconclusive read must fail closed (assume configured, keep throwing),
- * not fail open.
+ * Fails CLOSED: a failed command(), a failSoft error result, or output that
+ * cannot be positively parsed as `{ value: '' }` is all treated as CONFIGURED
+ * (returns true). "Not configured" is only ever reported on a positively
+ * confirmed empty `value` from a clean JSON parse, because a false positive
+ * here would silently swallow a genuine D-push failure on a real,
+ * actively-synced clone.
  *
  * @param {string} member
  * @param {{ command: Function, log?: Function }} opts
@@ -1236,9 +1111,9 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
     }
     const output = res && typeof res === 'object' ? res.output : res;
     if (!output) {
-        // No output to positively parse (e.g. a no-op/unmocked command()) --
-        // fail-safe: cannot confirm sync.remote is absent, so do not treat
-        // it as neutralized.
+        // No output to positively parse (e.g. a no-op/unmocked command()):
+        // sync.remote cannot be confirmed absent, so do not treat it as
+        // neutralized.
         return true;
     }
     try {
@@ -1255,14 +1130,13 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
  * retrying ONLY transient failures up to `maxTransientRetries` times. A
  * diverged (or unknown) failure is returned immediately, never retried.
  *
- * apra-fleet-fmu: mirrors runGitStep's optional `onAuthFailure` self-heal --
- * a DISTINCT, bounded one-shot path (never folded into the
- * `maxTransientRetries` loop). On an 'auth' classification (see
- * classifyDoltFailure), if `onAuthFailure` is provided it is called EXACTLY
- * ONCE, and if it resolves without throwing the same `bd dolt` command is
- * retried exactly once more. If `onAuthFailure` throws, or is not provided,
- * this falls through to the exact pre-existing behavior. Every existing
- * caller that does not pass `onAuthFailure` sees ZERO behavior change.
+ * AUTH SELF-HEAL CONTRACT (the optional `onAuthFailure` param, threaded
+ * through by every caller below): a DISTINCT, bounded one-shot path, never
+ * folded into the `maxTransientRetries` loop. On an 'auth' classification (see
+ * classifyDoltFailure), `onAuthFailure` is called at most ONCE, and if it
+ * resolves without throwing the same `bd dolt` command is retried exactly once
+ * more. If `onAuthFailure` throws, or is omitted, the failed result is
+ * returned to the caller as-is.
  *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown' }>}
  */
@@ -1297,64 +1171,40 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
 }
 
 /**
- * D-pull (Plan 3.3): bring `member`'s beads clone up to the shared remote
- * before it reads or is dispatched -- `bd dolt pull`. Transient (network /
- * server / lock) failures are retried up to `maxTransientRetries`; a
- * divergence (a conflict that a plain pull cannot fast-forward) is a distinct
- * typed DoltDivergedError, never retried blindly.
+ * D-pull: bring `member`'s beads clone up to the shared remote before it reads
+ * or is dispatched -- `bd dolt pull`. Transient (network / server / lock)
+ * failures are retried up to `maxTransientRetries`; a divergence (a conflict
+ * that a plain pull cannot fast-forward) is a distinct typed
+ * DoltDivergedError, never retried blindly. Every command is issued via the
+ * injected command() with an explicit member_name.
  *
- * Every command is issued via the injected command() with an explicit
- * member_name (3.2).
+ * The pull is PRE-GATED on the member's own bd-level `sync.remote`: a clone
+ * whose sync.remote is positively confirmed absent issues no `bd dolt`
+ * command at all, because bd auto-provisions a Dolt-level remote from git's
+ * own origin as a side effect of any `bd dolt` invocation that needs one --
+ * an ungated pull would therefore re-arm a remote a sandbox had deliberately
+ * neutralized. The gate fails CLOSED (isMemberSyncRemoteConfigured reports
+ * "not configured" only on a positively-confirmed empty value; any
+ * inconclusive read lets the pull proceed), so a real, actively-synced clone
+ * is never suppressed. Override the check with
+ * `opts.checkSyncRemoteConfigured` (same test hook doltPushAfter exposes).
  *
- * apra-fleet-eft.16.1: a local clone with no configured dolt remote (the
- * 'no-remote' classification) has nothing to pull -- this is a benign no-op
- * skip, not an error, so it returns `{ ok: true, skipped: true, reason:
- * 'no-remote' }` instead of throwing DoltSyncError.
+ * Two distinct benign no-op skips return `{ ok: true, skipped: true }` rather
+ * than throwing: `reason: 'no-remote'` (no dolt remote configured -- nothing
+ * to pull) and `reason: 'empty-remote'` (a configured remote that has never
+ * had anything pushed into it, i.e. Dolt's "no branches found in remote"
+ * Error 1105 -- nothing to reconcile). `skipPull: true` skips the actual `bd
+ * dolt pull` spawn while still running the sync.remote pre-gate probe, and
+ * returns `reason: 'already-fresh'`; callers may only set it where the
+ * clone's freshness is already established, since it trades a redundant (and,
+ * against a slow or unreachable remote, hang-prone) pull for that assumption.
  *
- * apra-fleet-eft.35 (residual after eft.30.1-3): gate the pull BEFORE
- * issuing it, mirroring doltPushAfter's own pre-gate (apra-fleet-eft.30,
- * stabilization log Issue 31). CONFIRMED ROOT CAUSE, candidate (b) from the
- * bug's own diagnosis list: this function previously ran `bd dolt pull`
- * UNCONDITIONALLY on every withGitSync bracket (i.e. before every single
- * role dispatch, every cycle) with no pre-gate at all -- unlike
- * doltPushAfter, which eft.30 already gated. bd auto-provisions a Dolt-level
- * remote from git's own origin as a side effect of a 'bd dolt' invocation
- * that needs one (the same mechanism eft.30's own commit message documents
- * for the push case: "bd auto-provisions a Dolt remote from git origin on
- * the push attempt itself") -- so this UNGATED pull could re-arm the very
- * Dolt-level remote eft.30.1's one-time upfront sandbox disarm had just
- * cleared, on the FIRST dispatch bracket of the sprint, well before any
- * D-push is ever attempted. That re-arming is what let a LATER, correctly
- * pre-gated `doltPushAfter()` call observe a live Dolt-level remote wired to
- * the real fleet-e2e-toy origin and actually attempt `bd dolt push` against
- * it (live recurrence, integ cycle 6: blocked only by missing GitHub
- * credentials, not by design). A one-time upfront disarm (eft.30.1, run
- * once in the playbook's `## Setup`, external to this runner) cannot hold
- * across many per-cycle 'bd dolt' invocations if any of them can silently
- * re-provision the remote -- every 'bd dolt' call site needs the SAME
- * fail-closed gate, not just the push one. Same fail-safe-by-default
- * semantics as doltPushAfter's gate (isMemberSyncRemoteConfigured only ever
- * reports "not configured" on a positively-confirmed empty value; any
- * inconclusive read still fails closed and lets the pull proceed), so a
- * real, actively-synced clone is unaffected -- no eft.16.1 regression.
- * Override the check with `opts.checkSyncRemoteConfigured` (same test hook
- * doltPushAfter exposes).
- *
- * apra-fleet-eft.63: distinct from the no-remote skip above, a `sync.remote`
- * that IS configured but has genuinely never had anything pushed into it
- * (Dolt's own "no branches found in remote" Error 1105) is ALSO a benign
- * no-op skip -- `{ ok: true, skipped: true, reason: 'empty-remote' }` --
- * since there is nothing to reconcile. A real divergence/conflict pull
- * failure still throws DoltDivergedError, unchanged.
- *
- * apra-fleet-fmu: an optional injected `onAuthFailure` is threaded through to
- * runDoltStep's bounded one-shot self-heal (a stale token can just as easily
- * break a pull as a push). Omitting it preserves the exact pre-existing
- * behavior.
+ * `onAuthFailure` is threaded through to runDoltStep -- see its AUTH SELF-HEAL
+ * CONTRACT.
  *
  * @param {string} member
- * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote' }>}
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, skipPull?: boolean, onAuthFailure?: Function }} opts
+ * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh' }>}
  */
 export async function doltPullBefore(member, opts = {}) {
     const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure } = opts;
@@ -1362,31 +1212,17 @@ export async function doltPullBefore(member, opts = {}) {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
 
-    // apra-fleet-eft.35: gate BEFORE issuing, same fail-closed check as
-    // doltPushAfter's pre-gate -- see this function's own doc comment above
-    // for the confirmed root cause this closes.
+    // Gate BEFORE issuing, so a neutralized clone never lets `bd dolt` re-arm
+    // a Dolt-level remote as a side effect (see the doc comment above).
     const preGateCheckFn = checkSyncRemoteConfigured || isMemberSyncRemoteConfigured;
     if (!(await preGateCheckFn(member, { command, log }))) {
         log(`[Dolt] D-pull for member '${member}' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no pull command issued`);
         return { ok: true, member, skipped: true, reason: 'no-remote' };
     }
 
-    // apra-fleet-eft.54.6: skipPull runs the sync.remote pre-gate probe above
-    // (so the command sequence and its .54.5 per-clone probe cache are
-    // untouched -- a `sync.remote`-absent clone, i.e. every hermetic bd-init
-    // scratch clone and the golden-transcript snapshot, issues the EXACT same
-    // commands with or without this flag, since it never reaches a real `bd
-    // dolt pull` either way) but deliberately skips the actual `bd dolt pull`
-    // SPAWN even when a remote IS configured. This is the residual real-bd
-    // Dolt sync bracket the terminal auth-abort path was hanging on (eft.54):
-    // on a live/integ clone with a configured sync.remote, the sprint's FIRST
-    // Planner pre-dispatch pull re-pulls a clone the orchestrator's own
-    // pre-sprint-validation doltPullBefore just freshened with nothing mutated
-    // since -- so it is pure redundant latency (and, against a slow/unreachable
-    // remote, an outright hang) on the very bracket a non-retryable auth abort
-    // then fails on. The caller only sets this where that freshness is proven
-    // (see withGitSync's skipPreDispatchDoltPull and the first-Planner-dispatch
-    // gate); every other D-pull keeps the real pull.
+    // skipPull suppresses only the `bd dolt pull` SPAWN; the pre-gate probe
+    // above still runs, so a sync.remote-absent clone issues an identical
+    // command sequence with or without this flag.
     if (skipPull) {
         log(`[Dolt] D-pull for member '${member}': skipping the 'bd dolt pull' spawn (beads clone already freshened by the orchestrator's pre-sprint D-pull, nothing mutated since -- first Planner dispatch).`);
         return { ok: true, member, skipped: true, reason: 'already-fresh' };
@@ -1402,13 +1238,10 @@ export async function doltPullBefore(member, opts = {}) {
             return { ok: true, member, skipped: true, reason: 'no-remote' };
         }
         if (pull.kind === 'empty-remote') {
-            // apra-fleet-eft.63: sync.remote IS configured but has never had
-            // anything pushed into it (e.g. the playbook's ## Reset fast-path
-            // re-derives sync.remote from a bare mirror Dolt has never pushed
-            // to) -- there is nothing to reconcile, so this is a benign no-op,
-            // not a divergence/conflict. Genuine divergence/conflict pulls
-            // still fall through to the DoltDivergedError branch below,
-            // unchanged.
+            // sync.remote IS configured but has never had anything pushed
+            // into it -- nothing to reconcile, so this is a benign no-op, not
+            // a divergence. Genuine conflicts still fall through to the
+            // DoltDivergedError branch below.
             log(`[Dolt] D-pull for member '${member}' skipped: dolt remote has zero branches (nothing pushed yet, nothing to pull)`);
             return { ok: true, member, skipped: true, reason: 'empty-remote' };
         }
@@ -1435,16 +1268,14 @@ export async function doltPullBefore(member, opts = {}) {
 }
 
 /**
- * apra-fleet-eft.58.1: best-effort extraction of the beads/dolt table name(s)
- * implicated in a diverged `bd dolt pull`'s raw output, for the pre-flight
- * beads-health gate's one-line cause below (preflightBeadsHealthGate()).
- * Dolt's own conflict text is not one single stable grammar (it varies with
- * the exact conflict kind -- schema vs data, pull vs merge), so this matches
- * the handful of shapes it is actually observed to use (`table <name>`,
- * `` `<name>` table``, `conflict in <name>`) rather than assuming a single
- * canonical format. Never throws; an output with no recognizable table name
- * returns `[]` so the caller can fall back to an explicit 'unknown' in its
- * message rather than silently omitting the field.
+ * Best-effort extraction of the beads/dolt table name(s) implicated in a
+ * diverged `bd dolt pull`'s raw output, for preflightBeadsHealthGate()'s
+ * one-line cause. Dolt's conflict text has no single stable grammar (it
+ * varies with the conflict kind -- schema vs data, pull vs merge), so this
+ * matches several shapes (`table <name>`, `` `<name>` table``, `conflict in
+ * <name>`) rather than assuming a canonical format. Never throws; an output
+ * with no recognizable table name returns `[]` so the caller can say
+ * 'unknown' explicitly rather than silently omit the field.
  *
  * @param {string|null|undefined} doltOutput
  * @returns {string[]}
@@ -1467,43 +1298,25 @@ export function extractConflictingTables(doltOutput) {
 }
 
 /**
- * apra-fleet-eft.58.1 -- Pre-flight beads-health gate.
- *
- * Problem (run 20): a diverged local beads DB vs the shared Dolt remote
- * already aborted correctly via doltPullBefore()'s typed DoltDivergedError,
- * but that D-pull only ran (the eft.34 call site further below in
- * runSprintCycle, immediately before the first `bd list --all` pre-sprint-
- * validation read) AFTER Sprint Setup's branch-ensure loop had already
- * issued its own `git fetch`/`git checkout -B` mutations -- so an operator
- * saw a raw dolt stack in stderr, a main log that jumped straight to
- * 'Sprint FAILED' with no reason line, and setup mutations that had already
- * begun before the abort. This gate runs the SAME D-pull probe, but called
- * from the very top of runSprintCycle's Sprint Setup section -- strictly
- * BEFORE the branch-ensure loop's first git command and before any PR
- * command -- so a divergence is caught before any of that.
+ * Pre-flight beads-health gate: the same D-pull probe as doltPullBefore(),
+ * run before a sprint issues any mutating git or PR command, so a diverged
+ * beads clone aborts the run before setup has changed anything.
  *
  * On divergence it composes and logs a single actionable line matching
- * /beads DB diverged/ that names: the workspace path (a best-effort `pwd`
- * probe on `member`, falling back to the member id if that probe itself
- * fails -- diagnostics must never block the abort or throw a second,
- * different error), the conflicting table(s) parsed from the raw dolt
- * output (extractConflictingTables(), falling back to 'unknown' if none are
- * recognizable), and the fixed remediation text. That composed string
- * becomes the re-thrown DoltDivergedError's `.message` -- which main()'s
- * typed-abort catch (isTypedAbortError() -- DoltDivergedError extends
- * WorkflowError) already persists verbatim into the terminal run-state's
- * `message` field via publishState('terminal', ...), so the SAME string
- * reaches both the main log and the dashboard with no separate plumbing.
+ * /beads DB diverged/ naming the workspace path (a best-effort `pwd` probe on
+ * `member`, falling back to the member id -- diagnostics must never block the
+ * abort or throw a second, different error), the conflicting table(s) from
+ * extractConflictingTables() (or 'unknown'), and the remediation text. That
+ * composed string becomes the re-thrown DoltDivergedError's `.message`, which
+ * the typed-abort handling persists verbatim, so one string reaches both the
+ * main log and the dashboard.
  *
- * A non-divergence D-pull failure (DoltSyncError -- transient/unknown, or
- * the benign no-remote/empty-remote skip -- apra-fleet-eft.63) is NOT
- * rewritten here: it already carries its own actionable message from
- * doltPullBefore(), and is not the bug this gate targets, so it is
- * re-thrown/returned unchanged.
+ * Any non-divergence outcome (DoltSyncError, or a benign skip) is passed
+ * through unchanged -- it already carries doltPullBefore()'s own message.
  *
  * @param {string} member
  * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote' }>}
+ * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh' }>}
  */
 export async function preflightBeadsHealthGate(member, opts = {}) {
     const { command, log = () => {} } = opts;
@@ -1539,52 +1352,41 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
 }
 
 /**
- * D-push (Plan 3.3): publish `member`'s committed beads changes to the shared
- * remote after a beads-mutating step -- `bd dolt push` with the mechanical,
+ * D-push: publish `member`'s committed beads changes to the shared remote
+ * after a beads-mutating step -- `bd dolt push` with a mechanical,
  * first-successful-pusher-wins reconcile. If the push is rejected because the
- * remote moved first (another writer won the race), do EXACTLY ONE `bd dolt
- * pull` (which reconciles ours/theirs mechanically by which clone resolves --
- * never per-conflict judgment) and re-push once; if it is STILL rejected,
- * raise a typed DoltDivergedError. Transient (network / server / lock)
- * failures are retried up to `maxTransientRetries`; divergence is never
- * retried beyond the one bounded reconcile.
+ * remote moved first, do EXACTLY ONE `bd dolt pull` (reconciling ours/theirs
+ * by which clone resolves -- never per-conflict judgment) and re-push once; if
+ * that is still rejected, raise a typed DoltDivergedError. Transient (network
+ * / server / lock) failures are retried up to `maxTransientRetries`; a
+ * divergence is never retried beyond the one bounded reconcile.
  *
- * `pushBeads: false` makes this a no-op (a read-only bracket -- reviewer,
- * plan-reviewer, deployer -- has nothing to publish). Every command is issued
- * via the injected command() with an explicit member_name (3.2).
+ * `pushBeads: false` makes this a no-op (a read-only bracket has nothing to
+ * publish). Every command is issued via the injected command() with an
+ * explicit member_name.
  *
- * apra-fleet-eft.9.2 (Plan 3.4): the ACTUAL dolt push is serialized through the
- * supervisor-owned global push mutex. Constraints C.2 (row-level conflicts) and
- * C.3 (one unresolved conflict wedges the entire clone sync) make this a
- * load-bearing v1 requirement: two sprints must NEVER execute a dolt push at the
- * same time. `opts.mutex` is a client with acquire()/release() (see
- * dolt-mutex.mjs nullDoltPushMutexClient for the no-supervisor default). The
- * mutex is acquired before the first push attempt and released in a `finally` on
- * EVERY terminal path -- success, transient-exhaustion, and divergence -- so a
- * failed push can never leak the mutex. A crashed holder is separately reclaimed
- * by the mutex's own lease expiry, so this bracket does not need to.
+ * The actual push is serialized behind a GLOBAL push mutex because two
+ * concurrent dolt pushes can produce row-level conflicts, and a single
+ * unresolved conflict wedges an entire clone's sync. `opts.mutex` is a client
+ * with acquire()/release(); it is acquired before the first push attempt and
+ * released in a `finally` on EVERY terminal path -- success, transient
+ * exhaustion, and divergence -- so a failed push can never leak it. A crashed
+ * holder is reclaimed by the mutex's own lease expiry, not by this bracket.
  *
- * apra-fleet-eft.16.1: a local clone with no configured dolt remote (the
- * 'no-remote' classification) has nothing to push -- this is a benign no-op
- * skip, not an error, so it returns `{ ok: true, pushed: false, reconciled:
- * false, skipped: true, reason: 'no-remote' }` instead of throwing
- * DoltSyncError.
+ * Two paths return the benign `{ ok: true, pushed: false, reconciled: false,
+ * skipped: true, reason: 'no-remote' }` instead of throwing: a 'no-remote'
+ * classification, and -- defense in depth -- any non-diverged failure
+ * classifyDoltFailure cannot recognize as 'no-remote' from stderr alone (e.g.
+ * a credentials error from a mis-wired Dolt-level remote) when `member`'s
+ * bd-level sync.remote is itself absent/neutralized, since nothing is
+ * supposed to leave such a clone. A clone with an actively configured
+ * sync.remote still throws DoltSyncError on that failure. Override the check
+ * with `opts.checkSyncRemoteConfigured` (same `(member, {command, log}) =>
+ * Promise<boolean>` shape) in tests.
  *
- * apra-fleet-eft.30.2 (defense-in-depth, independent of eft.30.1): a
- * non-diverged push failure that classifyDoltFailure cannot recognize as
- * 'no-remote' from stderr text alone (e.g. a credentials error from a
- * mis-wired Dolt-level remote) is ALSO treated as this same benign
- * no-remote skip -- rather than the fatal DoltSyncError below -- when
- * `member`'s bd-level sync.remote is itself absent/neutralized (see
- * isMemberSyncRemoteConfigured). A clone with an actively configured
- * sync.remote still throws DoltSyncError on such a failure, unchanged from
- * eft.16.1. Override the check with `opts.checkSyncRemoteConfigured` (same
- * `(member, {command, log}) => Promise<boolean>` shape) in tests.
- *
- * apra-fleet-fmu: an optional injected `onAuthFailure` is threaded through to
- * every runDoltStep call below (including doltPushGuarded's reconcile/re-push
- * retries) for a bounded one-shot self-heal on an 'auth' classification.
- * Omitting it preserves the exact pre-existing behavior.
+ * `onAuthFailure` is threaded through to every runDoltStep call below
+ * (including the reconcile/re-push) -- see runDoltStep's AUTH SELF-HEAL
+ * CONTRACT.
  *
  * @param {string} member
  * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function }} opts
@@ -1600,29 +1402,21 @@ export async function doltPushAfter(member, opts = {}) {
         return { ok: true, member, pushed: false, reconciled: false };
     }
 
-    // apra-fleet-eft.30 (stabilization log Issue 31): gate the push BEFORE
-    // issuing it. The eft.30.2 failure-path downgrade below stopped the
-    // sprint-abort but still let `bd dolt push` be ATTEMPTED -- and bd
-    // auto-provisions a Dolt-level remote from git's own origin on that
-    // attempt, so on a clone with valid credentials the push would SUCCEED
-    // against the real shared remote even though bd-level sync.remote is
-    // neutralized (observed live, integ C4/C5: a sandbox reached the real
-    // fleet-e2e-toy remote and was blocked only by missing credentials).
-    // When the member's own sync.remote is positively confirmed absent,
-    // nothing is supposed to leave this clone: skip without issuing any
-    // push command at all. isMemberSyncRemoteConfigured fails CLOSED (any
-    // inconclusive read reports configured), so a real, actively-synced
-    // clone always still pushes -- this gate can only ever suppress a push
-    // the eft.25 neutralize step already declared must not happen. The
-    // failure-path downgrade below stays as defense-in-depth.
+    // Gate BEFORE issuing: bd auto-provisions a Dolt-level remote from git's
+    // own origin on the push attempt itself, so merely ATTEMPTING the push on
+    // a clone with valid credentials can succeed against the real shared
+    // remote even though bd-level sync.remote is neutralized. The check fails
+    // CLOSED (any inconclusive read reports configured), so it can only ever
+    // suppress a push that was already declared must not happen. The
+    // failure-path downgrade below stays as defense in depth.
     const preGateCheckFn = checkSyncRemoteConfigured || isMemberSyncRemoteConfigured;
     if (!(await preGateCheckFn(member, { command, log }))) {
         log(`[Dolt] D-push for member '${member}' skipped pre-attempt: bd-level sync.remote neutralized/absent -- no push command issued`);
         return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };
     }
 
-    // apra-fleet-eft.9.2: serialize this push behind the global mutex. Acquire
-    // (waiting our FIFO turn) before touching the remote; release on every exit.
+    // Serialize this push behind the global mutex: acquire (waiting our FIFO
+    // turn) before touching the remote; release on every exit.
     let grant = null;
     if (mutex && typeof mutex.acquire === 'function') {
         grant = await mutex.acquire(sprintId || member, { pid: process.pid });
@@ -1655,16 +1449,12 @@ export async function doltPushAfter(member, opts = {}) {
 
     if (push.kind !== 'diverged') {
         // Transient-exhausted or unknown failure -- not a divergence, so no
-        // reconcile. apra-fleet-eft.30.2: before surfacing this as a fatal
-        // sync error, consult the member's OWN bd-level sync.remote setting
-        // -- independent of Dolt's raw remote wiring / classifyDoltFailure's
-        // stderr pattern matching, which apra-fleet-eft.30 showed can both
-        // still misclassify a neutralized-sandbox push failure (e.g. a
-        // credentials error) as 'unknown' rather than 'no-remote'. A
-        // neutralized/absent sync.remote means nothing is supposed to be
-        // pushed from this clone, so treat the failure as the same benign
-        // no-remote skip; an actively configured sync.remote still throws
-        // DoltSyncError here, unchanged from eft.16.1.
+        // reconcile. Before surfacing it as fatal, consult the member's OWN
+        // bd-level sync.remote, independent of Dolt's raw remote wiring and
+        // of classifyDoltFailure's stderr pattern matching (which can
+        // misclassify a neutralized-sandbox failure as 'unknown'). An
+        // absent sync.remote means nothing is supposed to be pushed from this
+        // clone, so the failure is the same benign no-remote skip.
         const checkFn = checkSyncRemoteConfigured || isMemberSyncRemoteConfigured;
         const syncRemoteConfigured = await checkFn(member, { command, log });
         if (!syncRemoteConfigured) {
@@ -1713,7 +1503,7 @@ export async function doltPushAfter(member, opts = {}) {
         return { ok: true, member, pushed: true, reconciled: true };
     }
 
-    // Still rejected after the one bounded reconcile -- diverged, never retried further.
+    // Still rejected after the one bounded reconcile.
     throw new DoltDivergedError(
         `[Dolt] D-push for member '${member}' still rejected after one reconcile pull -- refusing to retry further: ${push.error}`,
         { member, doltOutput: push.error, operation: 'push' },
@@ -1722,34 +1512,22 @@ export async function doltPushAfter(member, opts = {}) {
 }
 
 /**
- * apra-fleet-eft.8.4 (Plan 3.3 push ordering) -- the ordered post-dispatch
- * sync step every withGitSync() bracket's `finally` runs: G-push (code)
- * BEFORE D-push (beads).
+ * The ordered post-dispatch sync step every withGitSync() bracket's `finally`
+ * runs: G-push (code) BEFORE D-push (beads).
  *
- * For the code-writing roles (pushCode:true -- doer, harvester ONLY), G-push
- * MUST succeed before D-push is ever attempted. If G-push cannot be resolved
- * (a typed GitSyncError/GitDivergedError, or any other thrown error),
- * D-push is skipped ENTIRELY and the G-push error is rethrown (never
- * swallowed) -- closing a bead in dolt while the code that justifies that
- * close never left this member's checkout would advertise an UNREACHABLE
- * CLOSE: a reviewer, or the next streak's G-pull, would see the bead as done
- * and find no matching commit on the shared branch. This is exactly the
- * failure this ordering rule prevents.
+ * For code-writing roles (pushCode:true), G-push MUST succeed before D-push is
+ * attempted. If G-push throws at all, D-push is skipped ENTIRELY and the error
+ * is rethrown, never swallowed -- closing a bead in dolt while the code that
+ * justifies the close never left this member's checkout would advertise an
+ * UNREACHABLE CLOSE: a reviewer, or the next streak's G-pull, would see the
+ * bead done and find no matching commit on the shared branch.
  *
- * For non-code-writing roles (pushCode:false), syncMemberAfter is a
- * documented no-op that never touches git and cannot throw (see its own
- * pushCode guard), so D-push always still runs unaffected by this ordering
- * rule.
+ * With pushCode:false, syncMemberAfter never touches git and cannot throw, so
+ * D-push always still runs.
  *
- * apra-fleet-eft.8.12: `agent`/`resolveConflictModel` (both optional) are
- * threaded straight through to syncMemberAfter's Tier 2 conflict-resolution
- * escalation -- see that function's own doc comment. Omitting `agent`
- * preserves the exact pre-8.12 behavior.
- *
- * apra-fleet-fmu: `onAuthFailure` (optional) is threaded through to BOTH
- * syncMemberAfter (G-push) and doltPushAfter (D-push) for their respective
- * bounded one-shot self-heal on an 'auth' classification. Omitting it
- * preserves the exact pre-fmu behavior.
+ * `agent`/`resolveConflictModel` are threaded through to syncMemberAfter's
+ * conflict-resolution escalation; `onAuthFailure` is threaded through to BOTH
+ * syncMemberAfter and doltPushAfter for their bounded one-shot self-heal.
  *
  * @param {string} member
  * @param {{
@@ -1781,27 +1559,24 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
 }
 
 /**
- * apra-fleet-eft.9.2 (Plan 3.4) -- the child-side HTTP client for the
- * supervisor-owned global dolt push mutex (src/supervisor/dolt-mutex.mjs).
- *
- * This is the missing wire that makes the mutex LOAD-BEARING end to end: the
- * mutex object itself lives in the always-on supervisor process, but each
- * detached sprint child runs in its OWN process and can only reach it over
- * HTTP. This client speaks the exact routes registerDoltMutexRoutes() exposes:
+ * Child-side HTTP client for the supervisor-owned global dolt push mutex
+ * (src/supervisor/dolt-mutex.mjs). The mutex object lives in the always-on
+ * supervisor process, but each detached sprint child runs in its OWN process
+ * and can only reach it over HTTP. Speaks the routes
+ * registerDoltMutexRoutes() exposes:
  *
  *   POST {serviceUrl}/api/dolt-push-mutex/{sprintId}/acquire  body { pid }
  *   POST {serviceUrl}/api/dolt-push-mutex/{sprintId}/release  body { token }
  *
  * The acquire route long-polls -- it does not answer until this sprint
  * genuinely owns the mutex (FIFO after every earlier waiter) -- so a resolved
- * acquire() means this child now holds it and no sibling sprint is pushing.
+ * acquire() means this child holds it and no sibling sprint is pushing.
  *
- * It is deliberately implemented INLINE here (not imported from
- * src/supervisor/dolt-mutex.mjs) because runner.js is copied verbatim next to
- * the bundle (scripts/bundle-se.mjs) and loaded via engine.executeFile(), never
- * bundled -- a cross-package relative import would not resolve in the shipped
- * layout. The surface it exposes ({ acquire, release }) is exactly what
- * doltPushAfter() calls.
+ * Implemented INLINE rather than imported from src/supervisor/dolt-mutex.mjs
+ * because runner.js is copied verbatim next to the bundle and loaded via
+ * engine.executeFile(), never bundled -- a cross-package relative import would
+ * not resolve in the shipped layout. The { acquire, release } surface is
+ * exactly what doltPushAfter() calls.
  *
  * @param {{ serviceUrl: string, sprintId: string, fetch?: typeof fetch, log?: Function }} opts
  * @returns {{ acquire: (sprintId: string, o?: { pid?: number|null }) => Promise<{ token: string|null }>, release: (token: string|null) => Promise<boolean> }}
@@ -1856,31 +1631,21 @@ export function createHttpDoltPushMutexClient(opts = {}) {
 }
 
 /**
- * apra-fleet-eft.9.3 (Plan Part 3.4) -- the child-id allocator HTTP client the
- * orchestrator's bead-creation path uses to reach the supervisor-owned global
- * allocator (src/supervisor/id-allocator.mjs).
- *
- * This is the missing wire that makes the allocator LOAD-BEARING end to end: the
- * allocator lives in the always-on supervisor process, but each detached sprint
- * child runs in its OWN dolt clone and can only reach it over HTTP. Without it,
- * two sprints that each `bd create --parent X` in their own clone independently
- * derive the SAME next child id (PoC constraint C.4) and their D-pushes then
- * hard-conflict. With it, one authority mints an EXPLICIT distinct id per
- * creator, passed to `bd create --id <childId>`, so the two creates target
- * different rows and never collide.
- *
- * This client speaks the exact routes registerIdAllocatorRoutes() exposes:
+ * Child-side HTTP client for the supervisor-owned global child-id allocator
+ * (src/supervisor/id-allocator.mjs), used by the orchestrator's bead-creation
+ * path. Without a single minting authority, two sprints that each `bd create
+ * --parent X` in their own dolt clone independently derive the SAME next child
+ * id and their D-pushes hard-conflict; with it, each creator gets an EXPLICIT
+ * distinct id passed to `bd create --id <childId>`, so the creates target
+ * different rows. Speaks the routes registerIdAllocatorRoutes() exposes:
  *
  *   POST {serviceUrl}/api/child-id-allocator/{parentId}/allocate  body { pid, sprintId, floor }
  *   POST {serviceUrl}/api/child-id-allocator/confirm              body { token }
  *   POST {serviceUrl}/api/child-id-allocator/release              body { token }
  *
- * It is deliberately implemented INLINE here (not imported from
- * src/supervisor/id-allocator.mjs) for the same reason as the dolt push mutex
- * client above: runner.js is copied verbatim next to the bundle and loaded via
- * engine.executeFile(), never bundled -- a cross-package relative import would
- * not resolve in the shipped layout. The surface it exposes
- * ({ allocate, confirm, release }) is exactly what the bead-creation path calls.
+ * Implemented INLINE for the same shipped-layout reason as the dolt push mutex
+ * client above. The { allocate, confirm, release } surface is exactly what the
+ * bead-creation path calls.
  *
  * @param {{ serviceUrl: string, sprintId?: string, fetch?: typeof fetch, log?: Function }} opts
  * @returns {{ allocate: Function, confirm: Function, release: Function }}
@@ -1945,10 +1710,10 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
 }
 
 /**
- * apra-fleet-f34.2 -- shared MCP tool-result-to-JSON parser for the two
- * fleet-MCP-hosted coordination clients below. Tool handlers return a JSON
- * STRING (wrapTool wraps it in the standard content[] envelope), so both
- * clients need the same extract-then-parse step.
+ * Shared MCP tool-result-to-JSON parser for the two fleet-MCP-hosted
+ * coordination clients below. Tool handlers return a JSON STRING wrapped in
+ * the standard content[] envelope, so both clients need the same
+ * extract-then-parse step.
  * @param {any} result
  * @param {string} label
  * @returns {object}
@@ -1971,26 +1736,22 @@ function parseCoordinationToolResult(result, label) {
 }
 
 /**
- * apra-fleet-f34.2 -- the MCP-transport counterpart to
- * createHttpDoltPushMutexClient above, for the SUPERVISOR-LESS topology.
- *
- * A standalone/detached-binary CLI launch has no supervisor to reach, so
- * `--service-url` is absent and the HTTP client cannot be built -- but cli.mjs
- * ALWAYS holds a connected MCP client to the shared fleet HTTP singleton (it
- * refuses to self-spawn a private stdio server), so the fleet server's own
- * `dolt_push_mutex` tool (src/tools/dolt-push-mutex.ts) is a reachable
- * cross-process coordination point for exactly that topology.
+ * MCP-transport counterpart to createHttpDoltPushMutexClient above, for the
+ * SUPERVISOR-LESS topology: a standalone/detached-binary CLI launch has no
+ * supervisor to reach, so `--service-url` is absent and the HTTP client cannot
+ * be built, but the launcher always holds a connected MCP client to the shared
+ * fleet HTTP singleton, making the fleet server's own `dolt_push_mutex` tool
+ * (src/tools/dolt-push-mutex.ts) the reachable coordination point.
  *
  * Ticketed acquire, not long-poll: an MCP tool call cannot block indefinitely,
- * so `acquire` waits a bounded slice per call and then RE-POLLS the same ticket.
- * The server keeps the waiter enqueued across polls, so FIFO order is preserved
- * (a cancel-and-retry loop would send every timed-out waiter to the back of the
- * queue). The caller's real pid is threaded through so a crashed holder is
- * reclaimed by the server's dead-pid probe rather than wedging the mutex.
+ * so `acquire` waits a bounded slice per call and then RE-POLLS the same
+ * ticket. The server keeps the waiter enqueued across polls, preserving FIFO
+ * order (a cancel-and-retry loop would send every timed-out waiter to the back
+ * of the queue). The caller's real pid is threaded through so a crashed holder
+ * is reclaimed by the server's dead-pid probe rather than wedging the mutex.
  *
- * Implemented INLINE here for the same reason as the HTTP clients above:
- * runner.js is copied verbatim next to the bundle and loaded via
- * engine.executeFile(), so a cross-package relative import would not resolve.
+ * Implemented INLINE for the same shipped-layout reason as the HTTP clients
+ * above.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, sprintId?: string, waitMs?: number, timeoutMs?: number, log?: Function }} opts
  * @returns {{ acquire: Function, release: Function }}
@@ -2039,12 +1800,11 @@ export function createMcpDoltPushMutexClient(opts = {}) {
 }
 
 /**
- * apra-fleet-f34.2 -- the MCP-transport counterpart to
- * createHttpChildIdAllocatorClient above, for the SUPERVISOR-LESS topology.
- * Speaks the fleet server's own `child_id_allocator` tool
- * (src/tools/child-id-allocator.ts); same rationale, same inline-implementation
- * constraint, and the same { allocate, confirm, release } surface the
- * bead-creation path already calls.
+ * MCP-transport counterpart to createHttpChildIdAllocatorClient above, for the
+ * SUPERVISOR-LESS topology. Speaks the fleet server's own
+ * `child_id_allocator` tool (src/tools/child-id-allocator.ts); same rationale,
+ * same inline-implementation constraint, and the same { allocate, confirm,
+ * release } surface the bead-creation path already calls.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, sprintId?: string, log?: Function }} opts
  * @returns {{ allocate: Function, confirm: Function, release: Function }}
@@ -2093,37 +1853,29 @@ export function createMcpChildIdAllocatorClient(opts = {}) {
 }
 
 /**
- * apra-fleet-eft.26.1 (Reservation interop gap, Hole 1) -- reserves and
- * releases every sprint member against the fleet server's OWN per-member
- * reservation record (`member_reservation` tool, apra-fleet-eft.10.1/10.2),
- * so a sprint launched directly via `apra-fleet workflow fleet-sprint` / this
- * package's bin/cli.mjs (never routed through the supervisor's
- * POST /api/sprints, and so never seen by src/supervisor/ledger.mjs) still
- * becomes visible to the enforcement every launch path already shares:
- * execute_prompt's dispatch-time reservedBy check (src/tools/execute-prompt.ts,
- * eft.10.3) and, for supervisor-routed launches, the eft.26.2 overlap guard
- * that now also reads this same server-side record.
+ * Reserves and releases every sprint member against the fleet server's OWN
+ * per-member reservation record (the `member_reservation` tool), so that a
+ * sprint launched directly from the CLI -- never routed through the
+ * supervisor, and so absent from its ledger -- is still visible to
+ * execute_prompt's dispatch-time reservedBy check and to the supervisor's
+ * overlap guard.
  *
- * `callTool` is injected (the caller's MCP client, e.g.
- * `fleetApi.mcpClient.callTool`) so this stays transport-agnostic and
- * unit-testable without a live fleet server. This is deliberately NOT built
- * on the supervisor's own HTTP routes (unlike the dolt-mutex/id-allocator
- * clients above): `member_reservation` lives on the fleet MCP server every
- * launch path already connects to, not the (optional, not wired for direct
- * CLI launches) apra-fleet-se supervisor.
+ * `callTool` is injected (the caller's MCP client) so this stays
+ * transport-agnostic and unit-testable without a live fleet server.
+ * Deliberately NOT built on the supervisor's HTTP routes, unlike the
+ * dolt-mutex/id-allocator clients above: `member_reservation` lives on the
+ * fleet MCP server every launch path already connects to, whereas the
+ * supervisor is optional and unwired for direct CLI launches.
  *
- * `sprintId` should be the SAME opaque identity already used for the dolt
- * push mutex / child-id allocator (see `sprintMutexId` in runSprintCycle,
- * currently the sprint's branch name) -- opaque and target-agnostic, no
- * assumption about which repo the sprint develops.
+ * `sprintId` should be the SAME opaque identity used for the dolt push mutex
+ * and child-id allocator -- opaque and target-agnostic, with no assumption
+ * about which repo the sprint develops.
  *
  * Reserve/release are BEST-EFFORT per member: a failure (transport error, or
  * the tool's own "already reserved by X" rejection) is logged and does NOT
- * throw -- matching the release()-is-non-fatal precedent set by the
- * dolt-mutex / id-allocator clients above. This is safe because
- * execute_prompt (eft.10.3) independently rejects any dispatch to a member
- * this sprint failed to actually reserve, so an unreserved member fails
- * loudly at its first dispatch rather than silently interleaving with
+ * throw. That is safe because execute_prompt independently rejects any
+ * dispatch to a member this sprint failed to reserve, so an unreserved member
+ * fails loudly at its first dispatch rather than silently interleaving with
  * another sprint.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, members?: string[], sprintId?: string, log?: Function }} opts
@@ -2166,43 +1918,27 @@ export function createMemberReservationClient(opts = {}) {
 }
 
 /**
- * apra-fleet-eft.75.1 -- guards every "resume" re-dispatch below (every
- * `dispatch*Resume()` / inline resume call, all triggered when a prior
- * attempt threw `AgentDispatchError` reason `'max_turns_exhausted'`) against
- * spawning a second concurrent session on a member whose PRIOR process for
- * that same logical dispatch is presumed dead/timed out but may actually
- * still be alive.
+ * Guards every "resume" re-dispatch below against spawning a second
+ * concurrent session on a member whose PRIOR process for that same logical
+ * dispatch is presumed dead or timed out but may still be alive -- two live
+ * sessions for one dispatch duplicate whatever side effects the orphaned one
+ * performs.
  *
- * Root incident (apra-fleet-eft.75, run 23 integ C1): the engine's resume of
- * the integ-test-runner re-dispatched to the same member without first
- * confirming the prior attempt's process had actually exited -- both stayed
- * alive concurrently for 50+ minutes, and the orphaned first session's own
- * side effect (it had launched a smoke-test sprint) was duplicated by the
- * second.
+ * Before firing a resume, call the fleet's own `stop_prompt` tool
+ * (src/tools/stop-prompt.ts) for that member: it kills whatever process is
+ * still on record and is a no-op when nothing is running, so pid liveness is
+ * never reimplemented here.
  *
- * Fix: before firing a resume, call the fleet's own `stop_prompt` tool
- * (src/tools/stop-prompt.ts) for that member. `stop_prompt` already reuses
- * the shared pid-liveness helpers (`isPidAlive`/`tryKillPid`,
- * src/utils/pid-helpers.ts) to kill whatever process is still on record for
- * that member and is a no-op when nothing is running -- so this file does
- * not reimplement pid liveness, it just makes sure that existing tool is
- * called before every resume re-dispatch.
+ * `callTool` is injected (the caller's MCP client), so this stays
+ * transport-agnostic and unit-testable without a live fleet server. When it
+ * is omitted, `killIfAlive()` is a no-op -- there is no live fleet connection
+ * to guard against, matching every other best-effort client in this file when
+ * its transport is absent.
  *
- * `callTool` is injected exactly like `createMemberReservationClient`'s
- * (the caller's MCP client, e.g. `mcpClient.callTool`), so this stays
- * transport-agnostic and unit-testable without a live fleet server.
- * Omitted (e.g. a direct `runSprintCycle()`/`main()` unit test call that
- * never wires one): `killIfAlive()` is a no-op -- there is no live fleet
- * connection to guard against, matching every other best-effort client in
- * this file (dolt-mutex, id-allocator, member-reservation) when its
- * transport is absent.
- *
- * Best-effort by design: a `stop_prompt` failure (transport error, member
- * not found, etc.) is logged and swallowed rather than blocking the resume
- * -- the resume itself is what the sprint actually needs to make progress;
- * this guard's job is to REDUCE (not gate) the chance of a duplicate
- * concurrent session, mirroring the non-fatal posture of every other
- * best-effort client already in this file.
+ * Best-effort by design: a `stop_prompt` failure is logged and swallowed
+ * rather than blocking the resume -- the resume is what the sprint needs to
+ * make progress, and this guard REDUCES rather than gates the chance of a
+ * duplicate concurrent session.
  *
  * @param {{ callTool?: (name: string, args: object) => Promise<any>, log?: Function }} opts
  * @returns {{ killIfAlive: (member: string) => Promise<void> }}
@@ -2233,15 +1969,13 @@ export function createMemberSessionGuard(opts = {}) {
 }
 
 /**
- * apra-fleet-fmu -- best-effort, GENERIC extraction of an "owner/repo" string
- * from a git remote URL (https, scp-like git@host:owner/repo(.git), or
- * ssh://). Deliberately target-agnostic (auto-sprint-product-vs-dogfood
- * convention): fleet-sprint is a general-purpose product used to develop many
- * different repos, so the `repos` argument passed to provision_vcs_auth must
- * be DERIVED at runtime from the member's own git remote, never hardcoded to
- * a literal repo name. Returns null on anything unrecognized so the caller
- * can fall back to omitting `repos` (the field is optional server-side)
- * rather than guessing.
+ * Best-effort, GENERIC extraction of an "owner/repo" string from a git remote
+ * URL (https, scp-like git@host:owner/repo(.git), or ssh://). Deliberately
+ * target-agnostic: fleet-sprint develops many different repos, so the `repos`
+ * argument passed to provision_vcs_auth must be DERIVED at runtime from the
+ * member's own git remote, never hardcoded to a literal repo name. Returns
+ * null on anything unrecognized so the caller can omit `repos` (optional
+ * server-side) rather than guess.
  *
  * @param {string|null|undefined} url
  * @returns {string|null}
@@ -2259,33 +1993,11 @@ export function parseOwnerRepoFromRemoteUrl(url) {
     return null;
 }
 
-/**
- * apra-fleet-fmu -- builds the real end-to-end `onAuthFailure` self-heal
- * callback runGitStep/runDoltStep call on an 'auth' classification: resolves
- * the failing member's `owner/repo` generically from its own `git remote
- * get-url origin` (see parseOwnerRepoFromRemoteUrl -- never hardcoded), then
- * calls the new ApraFleet.provisionVcsAuth() client method
- * (packages/apra-fleet-client) to re-provision GitHub App credentials for
- * that member. Uses `git_access: 'push'` and the default `github_mode:
- * 'github-app'` -- the same credential shape the live incident this bead
- * closes needed re-provisioned. Logs both the attempt and its outcome so the
- * self-heal is visible in sprint logs, never silent. Any failure (resolving
- * the remote, or the provision_vcs_auth call itself) propagates as a thrown
- * error so runGitStep/runDoltStep's bounded one-shot self-heal correctly
- * treats it as "self-heal failed" and does not retry further.
- *
- * `callTool` is injected exactly like createMemberSessionGuard's (the
- * caller's MCP client, e.g. `mcpClient.callTool`), so this stays
- * transport-agnostic and unit-testable without a live fleet server.
- *
- * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
- * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
- */
-// apra-fleet-391: shared MCP tool-result-to-text extractor (mirrors the
-// identically-named local helpers already duplicated at
-// createMemberReservationClient/createMemberSessionGuard) -- both self-heal
-// callbacks below need it to detect provision_* failure strings, which are
-// returned as a leading-emoji string ('OK'/'warning'/'error'), never thrown.
+// Shared MCP tool-result-to-text extractor for the self-heal callbacks below.
+// The provision_* tools do not throw on failure: they return plain
+// human-readable text with a leading status emoji (check mark = success,
+// warning sign = warning, cross mark = failure), and some failure strings
+// carry no prefix at all -- so the callbacks must inspect the text.
 function selfHealResultText(result) {
     if (typeof result === 'string') return result;
     if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
@@ -2294,19 +2006,15 @@ function selfHealResultText(result) {
     return '';
 }
 
-// apra-fleet-glv.1: shared provisioning core used by BOTH the REACTIVE
-// onAuthFailure self-heal (createVcsAuthSelfHealCallback, unchanged
-// behavior/log lines below) and the new PROACTIVE preflight
-// (createVcsAuthPreflightCallback, further down) -- one call shape, one
-// owner/repo derivation, one success/failure text-parsing rule, so the two
-// paths can never drift on what "provisioned" means. This is a NEW CALL
-// SITE for the existing ApraFleet.provisionVcsAuth() machinery, not new
-// plumbing: no new MCP tool, no new client method, no schema change.
+// Shared provisioning core used by BOTH the REACTIVE onAuthFailure self-heal
+// (createVcsAuthSelfHealCallback) and the PROACTIVE preflight
+// (createVcsAuthPreflightCallback) -- one call shape, one owner/repo
+// derivation, one success/failure text-parsing rule, so the two paths can
+// never drift on what "provisioned" means.
 //
 // Returns the newly-provisioned credential's `expiresAt` (a Date, or null
-// when the response carries no expiry metadata -- PAT-mode credentials, see
-// src/services/vcs/github.ts's deployPat(), never expire) so a caller can
-// cache it and skip a future redundant call.
+// when the response carries no expiry metadata -- PAT-mode credentials never
+// expire) so a caller can cache it and skip a future redundant call.
 // @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
 // @returns {Promise<{ expiresAt: Date|null }>}
 async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix }) {
@@ -2324,15 +2032,8 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
     }
 
-    // apra-fleet-391: TODO -- this still hardcodes provider:'github',
-    // github_mode:'github-app' rather than reading the member's own
-    // persisted agent.vcsProvider (src/tools/provision-vcs-auth.ts:167-
-    // 170, now surfaced on member_detail's json output). Deliberately
-    // NOT wired here yet -- doing so cleanly needs its own dedicated
-    // mock plumbing in this file's test suite (vcs-auth-self-heal.test.mjs
-    // asserts an exact single-call provision_vcs_auth args shape per
-    // scenario); tracked as follow-up under this same bead rather than
-    // risking those tests to land the higher-priority fix below.
+    // TODO: derive provider/github_mode from the member's persisted
+    // vcsProvider instead of hardcoding GitHub App mode.
     const provisionRes = await fleetApi.provisionVcsAuth({
         member_name: member,
         provider: 'github',
@@ -2341,10 +2042,10 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         ...(repos ? { repos } : {}),
     });
     const provisionText = selfHealResultText(provisionRes);
-    // apra-fleet-391: provision_vcs_auth NEVER throws on failure -- it
-    // returns a string starting with the failure emoji. Without this
-    // check, a failed re-provision was silently logged as "succeeded"
-    // and burned the one-shot self-heal for nothing.
+    // provision_vcs_auth NEVER throws on failure -- it returns a string
+    // starting with the failure emoji. A failed provision must never be
+    // allowed to report success: doing so burns the one-shot self-heal and
+    // logs a lie.
     if ((provisionRes && provisionRes.isError) || /^❌/.test(provisionText.trim())) {
         throw new Error(`provision_vcs_auth failed for member '${member}': ${provisionText || '(no detail)'}`);
     }
@@ -2352,15 +2053,12 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     return { expiresAt: parseExpiresAtFromProvisionText(provisionText) };
 }
 
-// apra-fleet-glv.1: provision_vcs_auth returns plain, human-readable text
-// (src/tools/provision-vcs-auth.ts has no structured/JSON response shape) --
-// there is no field to read directly. The GitHub App path always renders its
-// metadata as one '  <key>: <value>' line per entry (src/services/vcs/
-// github.ts's deployAppToken()'s `metadata.expiresAt`), so this extracts
-// THAT line. PAT-mode credentials carry no expiry metadata line at all, so
-// this returns null for them -- treated the SAME as "no expiry tracked ->
-// OK" everywhere else in this codebase (see checkVcsTokenExpiry,
-// src/utils/agent-helpers.ts).
+// provision_vcs_auth returns plain human-readable text with no structured
+// response shape, so there is no field to read directly. The GitHub App path
+// renders its metadata as one '  <key>: <value>' line per entry, so this
+// extracts the `expiresAt` line. PAT-mode credentials carry no expiry line,
+// and null here means "no expiry tracked -> OK", the same reading applied
+// server-side by checkVcsTokenExpiry.
 // @param {string} text
 // @returns {Date|null}
 function parseExpiresAtFromProvisionText(text) {
@@ -2370,6 +2068,21 @@ function parseExpiresAtFromProvisionText(text) {
     return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * Builds the REACTIVE `onAuthFailure` self-heal callback runGitStep and
+ * runDoltStep invoke on an 'auth' classification: re-provisions the failing
+ * member's VCS credentials via provisionVcsAuthForMember (whose owner/repo is
+ * derived from the member's own git remote, never hardcoded). Logs both the
+ * attempt and its outcome, so a self-heal is never silent. Any failure
+ * propagates as a thrown error, which is how runGitStep/runDoltStep recognize
+ * "self-heal failed" and stop retrying.
+ *
+ * `callTool` is injected (the caller's MCP client), so this stays
+ * transport-agnostic and unit-testable without a live fleet server.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
+ * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
+ */
 export function createVcsAuthSelfHealCallback(opts = {}) {
     const { callTool, command, log = () => {} } = opts;
     const fleetApi = new ApraFleet({ callTool });
@@ -2383,43 +2096,34 @@ export function createVcsAuthSelfHealCallback(opts = {}) {
     };
 }
 
-// apra-fleet-glv.1: how far ahead of a credential's known expiry the
-// preflight treats it as "expiring soon" and re-provisions early, rather
-// than waiting for it to actually lapse mid-dispatch. Mirrors the server's
-// own EXPIRY_WARNING_MS threshold (src/utils/agent-helpers.ts's
-// checkVcsTokenExpiry) so the two "is this credential about to expire?"
-// judgments never disagree.
+// How far ahead of a credential's known expiry the preflight treats it as
+// "expiring soon" and re-provisions early, rather than letting it lapse
+// mid-dispatch. Mirrors the server's own EXPIRY_WARNING_MS threshold
+// (checkVcsTokenExpiry) so the two "about to expire?" judgments never
+// disagree.
 const VCS_AUTH_EXPIRY_PREFLIGHT_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
- * apra-fleet-glv.1: proactive VCS-auth PREFLIGHT. Unlike
- * createVcsAuthSelfHealCallback above (REACTIVE: only ever fires after a
- * git/dolt command has already failed with an 'auth' classification), this
- * is called BEFORE every pushCode:true dispatch's pre-dispatch G-pull (see
- * withGitSync below) and only calls provision_vcs_auth when this member's
- * last-known credential is missing, unknown, or expiring within
- * VCS_AUTH_EXPIRY_PREFLIGHT_MS. This is what closes the gap the reactive
- * self-heal alone leaves open: a credential that lapses BETWEEN dispatches
- * (no failed git command yet to react to) now gets refreshed before the
- * NEXT dispatch's git commands run, instead of waiting for one of them to
- * fail first.
+ * Proactive VCS-auth PREFLIGHT. Unlike createVcsAuthSelfHealCallback above,
+ * which is REACTIVE (it fires only after a git/dolt command has already failed
+ * with an 'auth' classification), this runs BEFORE a dispatch's git commands
+ * and calls provision_vcs_auth only when this member's last-known credential
+ * is missing, unknown, or expiring within VCS_AUTH_EXPIRY_PREFLIGHT_MS. It
+ * closes the gap a reactive self-heal alone leaves: a credential that lapses
+ * BETWEEN dispatches is refreshed before the next dispatch instead of after a
+ * command fails.
  *
- * The freshness cache is scoped to the callback instance returned here (one
- * instance per run, same lifetime/three-source-precedence wiring as
- * onAuthFailure -- see its call site in runSprintCycle). A fresh run always
- * re-provisions each member's FIRST pushCode:true dispatch (no cache entry
- * yet), then skips the call for that member until the cached expiry
- * approaches. A response that carries no expiry at all (PAT mode, which
- * never expires) is cached as "known-good, never needs refresh" -- the SAME
- * "no expiry tracked -> OK" semantics checkVcsTokenExpiry already applies
- * server-side.
+ * The freshness cache is scoped to the callback instance returned here, so
+ * each member's first call always provisions (no cache entry yet) and later
+ * calls are skipped until the cached expiry approaches. A response carrying no
+ * expiry (PAT mode, which never expires) is cached as "known-good, never needs
+ * refresh".
  *
  * NEVER throws: a preflight failure (fleet unreachable, provision_vcs_auth
  * itself failing) is logged and swallowed so it can never abort a dispatch
- * that might otherwise have succeeded fine on its still-valid existing
- * credential. fmu's REACTIVE self-heal (onAuthFailure, still wired
- * unchanged into every runGitStep/runDoltStep call) remains the actual
- * safety net if the credential turns out to genuinely be stale.
+ * that would have succeeded on its still-valid existing credential. The
+ * reactive self-heal remains the actual safety net if the credential is
+ * genuinely stale.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function, now?: () => number }} opts
  * @returns {(member: string) => Promise<void>}
@@ -2434,9 +2138,9 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         if (knownGoodUntil.has(member)) {
             const expiresAt = knownGoodUntil.get(member);
             if (expiresAt === null || expiresAt.getTime() - now() > VCS_AUTH_EXPIRY_PREFLIGHT_MS) {
-                // Still fresh (or a no-expiry credential type) -- skip the
-                // call entirely so this is NOT an unconditional GitHub API
-                // call on every dispatch.
+                // Still fresh (or a no-expiry credential type) -- skip, so
+                // this is not an unconditional provisioning call on every
+                // dispatch.
                 return;
             }
         }
@@ -2452,15 +2156,14 @@ export function createVcsAuthPreflightCallback(opts = {}) {
 }
 
 /**
- * apra-fleet-391 -- LLM-auth counterpart to createVcsAuthSelfHealCallback.
- * Called exactly once by a dispatch-site catch handler when
- * isAuthDispatchError(err) is true: re-provisions LLM credentials for the
- * failing member via provision_llm_auth, then the caller retries its own
- * dispatch once. Skips (does not throw, returns false = "do not retry")
- * for local members, since provision_llm_auth is a documented no-op for
- * them -- local members share the operator's own host credentials, and
- * only an interactive `/login` on this machine can fix an expired local
- * session (see the `local member auth expiry recovery` operating note).
+ * LLM-auth counterpart to createVcsAuthSelfHealCallback, invoked by a
+ * dispatch-site catch handler on an auth dispatch error: re-provisions LLM
+ * credentials for the failing member via provision_llm_auth, after which the
+ * caller retries its own dispatch once. Never throws -- every failure path
+ * returns false ("do not retry"). A local member returns false without
+ * retrying, because provision_llm_auth is a no-op for local members: they
+ * share the operator's host credentials, and only an interactive `/login` on
+ * that machine can fix an expired local session.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, log?: Function }} opts
  * @returns {(info: { member: string, label: string, error: string }) => Promise<boolean>} resolves true if healed (retry), false if not (do not retry)
@@ -2483,8 +2186,8 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
         const text = selfHealResultText(provisionRes).trim();
 
         if (/^⏭/.test(text)) {
-            // "skip" (local member) -- provision_llm_auth is a documented
-            // no-op here; retrying would just reproduce the same failure.
+            // Skip marker (local member): provision_llm_auth is a no-op here,
+            // so retrying would just reproduce the same failure.
             log(`[Dispatch] self-heal: provision_llm_auth skipped for local member '${member}': ${text || '(no detail)'}. This member's credentials can only be refreshed via an interactive /login on this machine.`);
             return false;
         }
@@ -2500,30 +2203,23 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
 }
 
 /**
- * apra-fleet-eft.73.1 -- stage `content` to a fresh temp file ON THE MEMBER
- * that will run the subsequent `bd` command, and return that MEMBER-LOCAL
- * absolute path. This replaces the old orchestrator-host-local
- * writeCommandBodyTempFile() (eft.56.1), which wrote the body to the
- * workflow-engine HOST's own os.tmpdir() and then handed that path to `bd
- * ... --body-file <hostpath>`. Run 22 (2026-07-22) aborted because in the
- * fleet-rev topology `command()` dispatches `bd` to a DIFFERENT, remote
- * member, where that host path does not exist ("reading body file: no such
- * file or directory"). Staging via `command()` (member_name: member)
- * guarantees the body file lands on the SAME filesystem `bd` reads it from,
- * whether the engine host and member share a machine or not.
+ * Stage `content` to a fresh temp file ON THE MEMBER that will run the
+ * subsequent `bd` command, and return that MEMBER-LOCAL absolute path.
+ * `command()` may dispatch `bd` to a different machine than the workflow
+ * engine runs on, so a body file written to the engine host's own tmpdir
+ * would not exist where `bd --body-file` reads it. Staging via `command()`
+ * (member_name: member) guarantees the file lands on the SAME filesystem.
  *
  * The write is performed by a member-side `node` one-liner -- `node` is
- * present on every fleet member (it runs the agent SDK) and the recipe is
- * shell-agnostic: it contains no `$`-expansion, backticks, template literals,
- * or `%`-vars, so it is inert as syntax in POSIX shells, PowerShell, and
- * cmd.exe alike. `content` is base64-encoded and passed as a SINGLE argv
- * token whose alphabet (A-Za-z0-9+/=) is likewise inert in all of those
- * shells, and node decodes it back to the exact literal bytes -- so the
- * eft.56.1 injection-safety property is preserved AND strengthened: reviewer-
- * authored free text is NEVER interpolated into the shell command string,
- * and '$(', backticks, '=' all ride across as inert base64, never evaluated.
- * The staged file is a member-side OS temp file the member's OS reaps on its
- * own (same disposition as the old cleanupCommandBodyTempFile()).
+ * present on every fleet member -- and the recipe is shell-agnostic: it
+ * contains no `$`-expansion, backticks, template literals, or `%`-vars, so it
+ * is inert as syntax in POSIX shells, PowerShell, and cmd.exe alike.
+ * `content` is base64-encoded and passed as a SINGLE argv token whose
+ * alphabet (A-Za-z0-9+/=) is likewise inert in all of those shells, and node
+ * decodes it back to the exact literal bytes. This is the injection-safety
+ * property: caller-supplied free text is NEVER interpolated into the shell
+ * command string. The staged file is a member-side OS temp file the member's
+ * OS reaps on its own.
  * @param {{ command: Function, member: string, content: string, label?: string }} opts
  * @returns {Promise<string>} the MEMBER-LOCAL temp file path
  */
@@ -2547,53 +2243,12 @@ async function stageCommandBodyMemberSide({ command, member, content, label }) {
 }
 
 /**
- * apra-fleet-eft.9.3 -- create a child bead under `parentId` using a
- * supervisor-allocated, collision-free explicit id. This is the single
- * bead-creation seam every reviewer-proposed newTask flows through so that two
- * concurrent sprints never mint the same child id.
- *
- * Sequence (mirrors the allocator's reserve -> confirm/release contract):
- *   1. allocate() reserves the next distinct child id under the shared parent.
- *   2. `bd create` runs with `--id <childId>` (or, under the null client where
- *      childId is null and there is no second sprint, lets bd derive the id
- *      from `--parent`).
- *   3. On the explicit-id path only, a follow-up `bd update <childId> --parent
- *      <parentId>` establishes the real parent edge (see the apra-fleet-xuo.7
- *      note on the create command shape below).
- *   4. confirm() on success (the id is now durably used) or release() on failure
- *      (the reserved id returns to the pool so it is never a permanent gap).
- *
- * apra-fleet-xuo.7.1 -- `bd create` REJECTS `--id` and `--parent` together
- * ("Error: cannot specify both --id and --parent flags", exit 1). This used to
- * be issued as one command carrying both flags, so EVERY allocator-minted
- * reviewer newTask failed its create, degraded through persistNewTaskBestEffort
- * into parent-bead notes, and left zero child beads under the shared parent
- * while both concurrent sprints still finished green (the apra-fleet-xuo.7
- * symptom). The allocator's childId is always `${parentId}.${seq}`, so on the
- * explicit-id path the hierarchy is already encoded in the id itself and
- * `--parent` must be dropped from the create; the separate `bd update
- * --parent` that follows is what records the EXPLICIT parent edge (`bd show`'s
- * PARENT block), which a dotted id alone does NOT create -- `bd list --parent`
- * would match it on the id prefix regardless, so that link step is deliberately
- * NOT best-effort: a failure throws, releases the reservation, and degrades
- * loudly rather than silently leaving an edgeless child.
- *
- * @param {{
- *   command: Function, allocator: { allocate: Function, confirm: Function, release: Function },
- *   member: string, title: string, description: string, priority: string,
- *   parentId: string, sprintId?: string, floor?: number, label?: string,
- *   log?: Function,
- * }} opts
- * @returns {Promise<{ childId: string|null }>}
- */
-/**
- * apra-fleet-eft.9.3 -- the count of children a parent ALREADY has, i.e. the
- * highest trailing `.N` segment across its direct children. Passed to the
- * allocator as `floor` so that on its FIRST allocation under a parent it never
- * mints an id colliding with a child created before the allocator existed (or
- * before this supervisor's persisted state was seeded). Best-effort: a failed
- * or unparseable list yields 0 (the allocator's persisted high-water still
- * guards against re-minting within a supervisor's lifetime).
+ * The count of children a parent ALREADY has, i.e. the highest trailing `.N`
+ * segment across its direct children. Passed to the allocator as `floor` so
+ * that on its FIRST allocation under a parent it never mints an id colliding
+ * with a child created before the allocator's persisted state was seeded.
+ * Best-effort: a failed or unparseable list yields 0 (the allocator's own
+ * persisted high-water still guards against re-minting after that).
  *
  * @param {{ command: Function, member: string, parentId: string }} opts
  * @returns {Promise<number>}
@@ -2619,6 +2274,37 @@ export async function computeChildFloor({ command, member, parentId }) {
     }
 }
 
+/**
+ * Create a child bead under `parentId` using an allocator-minted,
+ * collision-free explicit id. This is the single bead-creation seam every
+ * proposed newTask flows through, so that two concurrent sprints never mint
+ * the same child id.
+ *
+ * Sequence (mirrors the allocator's reserve -> confirm/release contract):
+ *   1. allocate() reserves the next distinct child id under the shared parent.
+ *   2. `bd create` runs with `--id <childId>` (or, under the null client where
+ *      childId is null, lets bd derive the id from `--parent`).
+ *   3. On the explicit-id path only, a follow-up `bd update <childId> --parent
+ *      <parentId>` establishes the real parent edge.
+ *   4. confirm() on success (the id is now durably used) or release() on
+ *      failure (the reserved id returns to the pool, never a permanent gap).
+ *
+ * `bd create` REJECTS `--id` and `--parent` together, so on the explicit-id
+ * path `--parent` must be dropped: the allocator's `${parentId}.${seq}` id
+ * shape already encodes the hierarchy. A dotted id alone does NOT record the
+ * explicit parent edge, which is what the separate `bd update --parent`
+ * supplies; that link step is deliberately NOT best-effort -- a failure
+ * throws, releases the reservation, and degrades loudly rather than leaving
+ * an edgeless child.
+ *
+ * @param {{
+ *   command: Function, allocator: { allocate: Function, confirm: Function, release: Function },
+ *   member: string, title: string, description: string, priority: string,
+ *   parentId: string, sprintId?: string, floor?: number, label?: string,
+ *   log?: Function,
+ * }} opts
+ * @returns {Promise<{ childId: string|null }>}
+ */
 export async function createChildBeadWithAllocatedId(opts) {
     const { command, allocator, member, title, description, priority, parentId, sprintId, floor, label, log = () => {} } = opts;
     const grant = await allocator.allocate(parentId, { pid: process.pid, sprintId, floor });
@@ -2633,19 +2319,16 @@ export async function createChildBeadWithAllocatedId(opts) {
             '(expected the `<parentId>.<seq>` shape); released the reservation rather than creating an unparented bead',
         );
     }
-    // `bd create` refuses `--id` together with `--parent` (apra-fleet-xuo.7.1):
-    // carry EITHER the allocator-minted explicit id (hierarchy encoded in the
-    // id, parent edge linked immediately after the create) OR `--parent` and
-    // let bd derive the id (null-allocator path).
+    // `bd create` refuses `--id` together with `--parent`: carry EITHER the
+    // allocator-minted explicit id (hierarchy encoded in the id, parent edge
+    // linked immediately after the create) OR `--parent` and let bd derive the
+    // id (null-allocator path).
     const parentageFlags = grant.childId ? `--id ${grant.childId}` : `--parent ${parentId}`;
-    // apra-fleet-eft.56.1 / eft.73.1: the description is reviewer-authored
-    // free text (LLM output whose own context includes the diff under review)
-    // -- stage it to a MEMBER-LOCAL temp file (see stageCommandBodyMemberSide)
-    // and hand THAT path to `bd create --body-file` instead of interpolating
-    // it into the shell command-line string below. Staging member-side (not on
-    // the orchestrator host) is what makes `--body-file` reachable when `bd`
-    // runs on a remote member (eft.73). Only `title` (short, still allowlist-
-    // validated by validateNewTask's SAFE_TEXT_RE) remains inline.
+    // The description is LLM-authored free text: stage it to a member-local
+    // temp file (see stageCommandBodyMemberSide) and hand THAT path to `bd
+    // create --body-file` rather than interpolating it into the shell command
+    // string. Only `title` (short, allowlist-validated by validateNewTask)
+    // remains inline.
     try {
         const descriptionFile = await stageCommandBodyMemberSide({
             command, member, content: description,
@@ -2677,16 +2360,9 @@ export async function createChildBeadWithAllocatedId(opts) {
 }
 
 /**
- * Follow-up-task persistence is bookkeeping -- it must NEVER abort the
- * sprint. Run 22 (2026-07-22) died mid-Review C1 R1 because a newTask's
- * `bd create --body-file` referenced a temp file written on the
- * workflow-engine host while the command executed on a remote orchestrator
- * member -- the file cannot exist there, the create threw, and the whole run
- * aborted over a hygiene task. eft.73.1 fixed the transport itself (the body
- * is now staged member-side via stageCommandBodyMemberSide, so `--body-file`
- * is reachable wherever `bd` runs), but this best-effort ladder stays as
- * defense in depth: every newTask persistence path still degrades instead of
- * throwing -- bd create -> parent-bead notes -> this run log, in that order.
+ * Follow-up-task persistence is bookkeeping -- it must NEVER abort the sprint.
+ * Every persistence path degrades instead of throwing: bd create ->
+ * parent-bead notes -> this run log, in that order.
  */
 export async function persistNewTaskBestEffort({ createFn, command, member, parentId, newTask, cycle, log = () => {}, stage }) {
     try {
@@ -2707,12 +2383,11 @@ export async function persistNewTaskBestEffort({ createFn, command, member, pare
 }
 
 /**
- * apra-fleet-eft.9.1 (Plan Part 3.3) -- the orchestrator's post-streak
- * verification read, with its mandatory D-pull. This is the single most
- * divergence-sensitive read in the file: a remote doer closes its assigned
- * beads in its OWN clone and D-pushes them, so the orchestrator MUST D-pull
- * its own clone here BEFORE the `bd show` -- otherwise it reads stale
- * (still-open) status and every remote doer streak is falsely reported FAILED.
+ * The orchestrator's post-streak verification read, with its mandatory
+ * D-pull. A remote doer closes its assigned beads in its OWN clone and
+ * D-pushes them, so the orchestrator MUST D-pull its own clone BEFORE the `bd
+ * show` -- otherwise it reads stale (still-open) status and falsely reports
+ * every remote doer streak as FAILED.
  *
  * Returns the ids that are NOT closed after the D-pull-then-read. An empty
  * array means the streak genuinely closed everything it was assigned.
@@ -2722,7 +2397,7 @@ export async function persistNewTaskBestEffort({ createFn, command, member, pare
  */
 export async function verifyDoerStreakClosed({ command, orchestratorMember, beadIds, log = () => {} }) {
     // D-pull FIRST so the orchestrator's clone observes the doer's just-pushed
-    // closes -- the whole reason this function (and this task) exists.
+    // closes.
     await doltPullBefore(orchestratorMember, { command, log });
     const label = `bd show ${beadIds.join(' ')} --json`;
     const showRes = await command(label, { member_name: orchestratorMember, silent: true });
@@ -2788,15 +2463,14 @@ export function validateArgs(args) {
     }
     validateBranchName(args.base_branch, 'base_branch');
 
-    // --- goal (optional, default 'P1/P2'); threaded through for
-    // apra-fleet-unw.17's exit-condition logic to consume later -- this
-    // issue only guarantees it reaches the runner and is validated/exposed.
+    // --- goal (optional, default 'P1/P2'; the priority band this sprint aims
+    // to clear, consumed by the exit-condition logic) ---
     const goal = args.goal === undefined ? 'P1/P2' : args.goal;
     if (typeof goal !== 'string' || !GOAL_PATTERN.test(goal)) {
         throw new Error(`[Arg Contract] Invalid goal "${goal}": must match ${GOAL_PATTERN} (e.g. 'P1', 'P1/P2', 'P1/P2/P3').`);
     }
 
-    // --- max_cycles (optional, default 5; replaces the old hardcoded constant) ---
+    // --- max_cycles (optional, default 5) ---
     const maxCycles = args.max_cycles === undefined ? 5 : args.max_cycles;
     if (typeof maxCycles !== 'number' || !Number.isInteger(maxCycles) || maxCycles < 1) {
         throw new Error(`[Arg Contract] Invalid max_cycles "${maxCycles}": must be a positive integer.`);
@@ -2811,23 +2485,13 @@ export function validateArgs(args) {
     if (args.roleMap !== undefined && (typeof args.roleMap !== 'object' || args.roleMap === null || Array.isArray(args.roleMap))) {
         throw new Error('[Arg Contract] Invalid roleMap: must be an object mapping role -> member[].');
     }
-    // N15 (apra-fleet-unw2.11): normalize EVERY roleMap key via
-    // contracts.normalizeRole() (trim + lowercase) HERE, at validateArgs()
-    // time -- the single normalization point for this arg. A caller-supplied
-    // key of any casing/whitespace variant (e.g. 'Doer', ' doer ', 'DOER',
-    // or the 'orchestrator' pseudo-role itself -- see ROLE_ORCHESTRATOR
-    // above) resolves identically to its canonical lowercase form, fixing
-    // the class of bug where `getMembersForRole`/`getMemberForRole` compared
-    // an un-normalized roleMap key against a canonical lowercase role
-    // constant and silently missed the match (the concrete instance being
-    // the old `getMemberForRole('Orchestrator')` call site below, which
-    // never matched a roleMap author's natural lowercase `orchestrator`
-    // key). Every downstream reader of `validated.roleMap`
-    // (getMemberForRole/getMembersForRole) can assume keys are already
-    // normalized -- neither may re-read `args.roleMap` directly. Two
-    // differently-cased input keys that normalize to the same key are
-    // rejected loudly (ambiguous authorial intent) rather than one silently
-    // clobbering the other.
+    // This is the SINGLE normalization point for roleMap keys: every key is
+    // put through normalizeRole() (trim + lowercase) here, so any casing or
+    // whitespace variant resolves to its canonical form and downstream readers
+    // (getMemberForRole/getMembersForRole) may assume normalized keys and must
+    // never re-read `args.roleMap` directly. Two differently-cased input keys
+    // that normalize to the same key are rejected loudly (ambiguous authorial
+    // intent) rather than one silently clobbering the other.
     let normalizedRoleMap;
     if (args.roleMap !== undefined) {
         normalizedRoleMap = {};
@@ -2843,22 +2507,16 @@ export function validateArgs(args) {
         }
     }
 
-    // --- budget (optional; N10, apra-fleet-unw2.8) -----------------------
+    // --- budget (optional) -----------------------------------------------
     // A USD ceiling for this run's total estimated spend. When provided,
-    // main() below sets `context.budget.total` to this value BEFORE any
-    // dispatch, so `agent()`'s existing (previously unreachable in
-    // practice -- see N10 in feedback-reassessment.md) budget-exceeded
-    // check can actually fire. Omitted (the default): `context.budget.total`
-    // stays `null` (unlimited), identical to every run before this option
-    // existed -- this is purely additive. There is currently no CLI flag
-    // that sets this (bin/cli.mjs is out of this issue's scope); a caller
-    // going through WorkflowEngine.executeFile() directly (as this
-    // package's own tests do) can pass `{ ..., budget: 1.23 }`.
+    // main() sets `context.budget.total` to this value BEFORE any dispatch, so
+    // `agent()`'s budget-exceeded check can actually fire. Omitted,
+    // `context.budget.total` stays `null` (unlimited).
     if (args.budget !== undefined && (typeof args.budget !== 'number' || !Number.isFinite(args.budget) || args.budget < 0)) {
         throw new Error(`[Arg Contract] Invalid budget "${args.budget}": must be a non-negative finite number (USD ceiling).`);
     }
 
-    // --- serviceUrl (optional; apra-fleet-eft.9.2/9.3/9.7) ----------------
+    // --- serviceUrl (optional) --------------------------------------------
     // The always-on supervisor's base HTTP URL. Validated as an http(s) URL so
     // a malformed value fails fast rather than silently disabling the
     // cross-sprint coordination layers or, worse, being interpolated somewhere
@@ -2879,7 +2537,7 @@ export function validateArgs(args) {
         }
     }
 
-    // --- assignee (optional; apra-fleet-eft.9.7) --------------------------
+    // --- assignee (optional) ----------------------------------------------
     // The work-claiming identity. Constrained to a shell-injection-safe pattern
     // because it is interpolated into `bd update --claim` / `bd ready
     // --assignee` command strings, matching the same defense-in-depth posture
@@ -2890,38 +2548,35 @@ export function validateArgs(args) {
         }
     }
 
-    // --- dispatch_timeout_s (optional, default 3600; stabilization Issue 32) --
+    // --- dispatch_timeout_s (optional, default 3600) -----------------------
     // Per-dispatch time budget in seconds, applied as BOTH timeout_s and
-    // max_total_s on every agent dispatch (Issue 12: `claude -p` is silent
-    // until the turn completes, so inactivity == total runtime and the two
-    // timers must be equal for the ceiling to be reachable); the integ-test
-    // dispatch ceiling is 2x this value (Issue 30: its real suites + smoke
-    // sprint legitimately run past one budget). Lowering it bounds the cost
-    // of a live-but-silent member hang (observed run 15 integ C5: PID alive,
-    // zero output, no timer able to distinguish hang from work) -- a small
-    // sprint (e.g. a sandbox canary) can pass 600-900 so a hang costs
-    // minutes, not an hour. Floor 60: below that even healthy dispatches
-    // cannot complete a single turn.
+    // max_total_s on every agent dispatch: `claude -p` emits nothing until the
+    // turn completes, so inactivity equals total runtime and the two timers
+    // must be equal for the ceiling to be reachable. The integ-test dispatch
+    // ceiling is 2x this value, since its suites legitimately run past one
+    // budget. Lowering it bounds the cost of a live-but-silent member hang,
+    // which no timer can otherwise distinguish from work. Floor 60: below that
+    // even healthy dispatches cannot complete a single turn.
     const dispatchTimeoutS = args.dispatch_timeout_s === undefined ? 3600 : args.dispatch_timeout_s;
     if (typeof dispatchTimeoutS !== 'number' || !Number.isInteger(dispatchTimeoutS) || dispatchTimeoutS < 60) {
         throw new Error(`[Arg Contract] Invalid dispatch_timeout_s "${dispatchTimeoutS}": must be an integer >= 60 (seconds).`);
     }
 
-    // --- doer_worklist_mode (optional, default 'resume'; apra-fleet-eft.79) --
-    // Mode (ii) RESUMED SEQUENCE is the default; mode (i) BATCH stays behind
-    // this config flag (see the KNOWN_ARG_KEYS comment above).
+    // --- doer_worklist_mode (optional, default 'resume') -------------------
+    // 'resume' walks a doer's worklist as a resumed sequence of dispatches;
+    // 'batch' hands the whole ordered worklist over in a single dispatch.
     const doerWorklistMode = args.doer_worklist_mode === undefined ? 'resume' : args.doer_worklist_mode;
     if (doerWorklistMode !== 'resume' && doerWorklistMode !== 'batch') {
         throw new Error(`[Arg Contract] Invalid doer_worklist_mode "${doerWorklistMode}": must be 'resume' (default) or 'batch'.`);
     }
 
-    // --- resume_model_switch (optional, default false; apra-fleet-eft.79) ---
+    // --- resume_model_switch (optional, default false) ---------------------
     const resumeModelSwitch = args.resume_model_switch === undefined ? false : args.resume_model_switch;
     if (typeof resumeModelSwitch !== 'boolean') {
         throw new Error(`[Arg Contract] Invalid resume_model_switch "${resumeModelSwitch}": must be a boolean.`);
     }
 
-    // --- worklist_effort_budget (optional; apra-fleet-eft.79) ---------------
+    // --- worklist_effort_budget (optional) ---------------------------------
     if (args.worklist_effort_budget !== undefined
         && (typeof args.worklist_effort_budget !== 'number'
             || !Number.isFinite(args.worklist_effort_budget)
@@ -2949,26 +2604,23 @@ export function validateArgs(args) {
 }
 
 // ---------------------------------------------------------------------------
-// Plan phase prompt builder (apra-fleet-unw.15)
+// Plan phase prompt builder
 // ---------------------------------------------------------------------------
 //
 // Builds a self-contained planner prompt per the vendored
-// packages/apra-fleet-se/apra-pm/agents/planner.md contract: the planner has no memory of
-// this conversation, so every fact it needs (which sprint root issue(s) are
-// in scope, the goal priority, the requirements file content, and -- for a
+// apra-pm/agents/planner.md contract: the planner has no memory of this
+// conversation, so every fact it needs (which sprint root issue(s) are in
+// scope, the goal priority, the requirements file content, and -- for a
 // re-planning cycle -- explicit "gaps only" framing) must be spelled out in
-// the prompt text itself rather than assumed.
+// the prompt text rather than assumed.
 //
-// Model-tier convention: the vendored agents/planner.md Step 3 is the
-// authoritative source and states the model tier is set as beads *metadata*
-// at creation time via `bd create ... --metadata '{"model": "<tier>"}'` --
-// explicitly "the ONLY location the model tier is recorded" and explicitly
-// NOT in `--notes`, a METADATA-section comment, or anywhere else. Every
-// consumer reads it back from that same metadata field (the `model` key in
-// `bd show <id>`): agents/plan-reviewer.md Step 3 reads it from beads
-// metadata (`--metadata`), and the orchestrator that dispatches doers does
-// likewise. This prompt therefore instructs the planner to use
-// `--metadata` and MUST stay aligned with planner.md Step 3.
+// Model-tier convention: planner.md Step 3 is the authoritative source and
+// makes beads *metadata* set at creation time (`bd create ... --metadata
+// '{"model": "<tier>"}'`) the ONLY location the model tier is recorded --
+// never `--notes` or a METADATA-section comment. Every consumer (the
+// plan-reviewer, and the orchestrator that dispatches doers) reads it back
+// from that same field, so this prompt's instruction MUST stay aligned with
+// planner.md Step 3.
 /**
  * @param {{
  *   isDeltaCycle: boolean,
@@ -2985,16 +2637,10 @@ export function validateArgs(args) {
 export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [] }) {
     const lines = [];
 
-    // apra-fleet-eft.68.1: SCOPED in-cycle replan clause. When a reviewer flags
-    // a bead via `replanIds` (its acceptance criteria are themselves defective
-    // and cannot be satisfied by re-development), the orchestrator now dispatches
-    // a SCOPED planner pass for exactly those beads' subtree WITHIN the same
-    // cycle -- instead of ending the cycle and deferring to the next cycle's
-    // full planner (the old eft.67.2 short-circuit). This clause is present ONLY
-    // on that scoped dispatch (absent -- byte-identical to before -- on every
-    // ordinary full-plan/re-plan dispatch, so the happy-path golden transcript
-    // is unchanged), and narrows the planner to amend only the flagged beads'
-    // acceptance criteria/decomposition without touching anything else in scope.
+    // SCOPED in-cycle replan clause: present ONLY when a reviewer flagged
+    // beads whose acceptance criteria are themselves defective, and absent
+    // from every ordinary full-plan/re-plan dispatch. It narrows the planner to
+    // amending just those beads' criteria/decomposition.
     const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
     if (hasReplanScope) {
         lines.push(
@@ -3018,20 +2664,17 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
             '"Re-planning behaviour" section of your agent contract: address GAPS ONLY. ' +
             'Do NOT re-plan or recreate issues that are already closed. Do NOT add scope ' +
             'beyond the original sprint goals and any open bugs/enhancements already in beads. ' +
-            // Stabilization log Issue 14 -- see buildPlanReviewerPrompt's matching guard.
+            // Mirrors buildPlanReviewerPrompt's matching guard.
             'A feature whose children are ALL closed is pending feature-closure ' +
             '(the integration-test phase closes verified features): leave it exactly as it ' +
             'is -- do not decompose it again and do not create tasks duplicating its closed ' +
             'children, even if review feedback appears to ask for decomposition of such a ' +
             'feature (verify with bd list --parent <feature> --all first).'
         );
-        // Stabilization log Issue 33 (run 15 C5): the pending-closure rule
-        // has a REGRESSION exception for bugs, or a regressed bug becomes
-        // unreachable by every role -- the planner refuses to re-decompose,
-        // doers refuse non-task beads, and the integ runner may only
-        // verify-and-close. Run 15 burned three full develop rounds (9 doer
-        // refusals each) on exactly this state and ended FAIL on two such
-        // bugs.
+        // The pending-closure rule needs a REGRESSION exception for bugs, or a
+        // regressed bug becomes unreachable by every role: the planner refuses
+        // to re-decompose it, doers refuse non-task beads, and the integ runner
+        // may only verify-and-close.
         lines.push(
             'REGRESSION EXCEPTION -- the leave-it-alone rule above does NOT apply to a ' +
             'regressed bug. An OPEN bug-type bead whose task children are all closed but ' +
@@ -3051,10 +2694,9 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
     lines.push(`Sprint root issue id(s) (--parent scope for this sprint): ${targetIssues.join(', ')}.`);
     lines.push(`Goal priority for this sprint: ${goal}.`);
     lines.push(
-        // Stabilization log Issue 21 -- see buildPlanReviewerPrompt's
-        // matching criterion. Doers may only claim issue_type=task, so a
-        // bug left as a childless leaf is assigned directly and skipped
-        // every round (observed run 12 C3: apra-fleet-eft.15 -> BLOCKED).
+        // Mirrors buildPlanReviewerPrompt's matching criterion. Doers may only
+        // claim issue_type=task, so a bug left as a childless leaf would be
+        // assigned directly and skipped every round.
         'Doers can only claim issue_type=task beads. Any OPEN bug-type bead in scope ' +
         'that has no task-type children yet must be decomposed during planning into ' +
         'one or more task-type children (with acceptance criteria and model metadata, ' +
@@ -3062,10 +2704,9 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
         'never dispatched directly and stays open as the parent until its children ' +
         'are done and verified.'
     );
-    // Issue 29: the old version of this pin spent a sentence warning against
-    // '-tier'-suffixed spellings; the engine now normalizes those
-    // deterministically (normalizeTierToken), so the prompt carries only the
-    // affirmative instruction -- enforce in code, not in prompt legalese.
+    // Only the affirmative instruction belongs here: '-tier'-suffixed
+    // spellings are normalized deterministically in code (normalizeTierToken),
+    // so the prompt does not need to warn against them.
     lines.push(
         'For every task: set clear acceptance criteria in its description, and set its ' +
         'model tier as beads metadata at creation time via ' +
@@ -3082,12 +2723,10 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
         lines.push(`Note: a requirementsFile ('${requirementsFile}') was configured for this sprint but could not be read; proceed without it.`);
     }
 
-    // apra-fleet-19o.2: rejected reviewer-proposed newTasks (validateNewTask()
-    // failures from an earlier Develop/Review cycle) resurface HERE -- the
-    // very next planning-phase dispatch -- instead of dead-ending only in
-    // root-bead notes (appendRejectedFindingToParentNotes still writes the
-    // note too, for auditability). See buildRejectedNewTaskResurfaceLines()
-    // above.
+    // Reviewer-proposed newTasks rejected by validateNewTask() in an earlier
+    // cycle resurface here, in the next planning dispatch, rather than
+    // dead-ending in root-bead notes (which are still written, for
+    // auditability).
     const resurfaceLines = buildRejectedNewTaskResurfaceLines(rejectedNewTasksToResubmit);
     if (resurfaceLines.length > 0) {
         lines.push(resurfaceLines.join('\n\n'));
@@ -3104,18 +2743,15 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
 // ---------------------------------------------------------------------------
 //
 // Builds the self-contained plan-reviewer dispatch prompt. The vendored
-// agents/plan-reviewer.md Inputs section requires exactly one dispatch input:
-// "The sprint root / scope to review (required)", plus an OPTIONAL second
-// input -- "Prior-round verdicts for the current review cycle, if any" --
-// present on round N>1 of a cycle's planner<->plan-reviewer loop so the
-// no-goalpost-moving rule (plan-reviewer.md) has something to bind against.
-// Its agents/schemas/plan-reviewer-input.json declares `required: ["scope"]`,
-// and plan-reviewer.md's missing-input behavior says an unscoped dispatch
-// must return verdict CHANGES_NEEDED. The plan-reviewer has no memory of this
-// conversation (apra-fleet-unw.3's `resume: false` default), so the sprint
-// root issue id(s) and goal priority that define the subtree under review are
-// spelled out here rather than assumed. Everything else (the DAG, task
-// metadata) the reviewer reads from beads itself in its Step 1.
+// agents/plan-reviewer.md requires one dispatch input, the sprint root/scope
+// to review (its schema declares `required: ["scope"]`, and an unscoped
+// dispatch must return verdict CHANGES_NEEDED), plus an OPTIONAL second input:
+// prior-round verdicts for the current review cycle, supplied on round N>1 of
+// the planner<->plan-reviewer loop so the no-goalpost-moving rule has
+// something to bind against. The plan-reviewer has no memory of this
+// conversation (dispatches default to `resume: false`), so the sprint root
+// issue id(s) and goal priority defining the subtree under review are spelled
+// out here; everything else (the DAG, task metadata) it reads from beads.
 /**
  * @param {{
  *   targetIssues: string[],
@@ -3134,11 +2770,8 @@ function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], 
         'Review only the features and tasks under this scope.',
     ];
 
-    // apra-fleet-eft.68.1: on a SCOPED in-cycle replan review, tell the
-    // plan-reviewer to focus its verdict on whether the planner's amendment
-    // actually FIXED the flagged bead(s)' acceptance criteria -- not to
-    // re-litigate the whole DAG. Present ONLY on the scoped dispatch (absent,
-    // byte-identical to before, on every ordinary plan-review dispatch).
+    // Present only on a scoped in-cycle replan; an ordinary plan-review
+    // dispatch carries no such clause.
     if (hasReplanScope) {
         lines.push(
             'SCOPED IN-CYCLE REPLAN REVIEW -- this pass follows a NARROW, targeted re-plan of ' +
@@ -3152,18 +2785,6 @@ function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], 
     }
 
     lines.push(
-        // Stabilization log Issue 14: mid-sprint, a feature whose children
-        // are ALL closed is in the pending-feature-closure state -- feature
-        // closure is the integ-test phase's job, not the planner's. Two runs
-        // (9 and 10) burned entire 3-round plan phases because a reviewer
-        // dispatch read such features as "undecomposed" (its child queries
-        // returned only OPEN children) and demanded re-decomposition, which
-        // the planner cannot sensibly satisfy without recreating closed
-        // work (observed: run 9's planner did exactly that and the NEXT
-        // review round correctly rejected the duplicates). Other dispatches
-        // of the same reviewer read the same state correctly as
-        // "eligible for closure, non-blocking" -- so pin the correct
-        // interpretation here.
         'IMPORTANT -- pending-closure features: before flagging any feature as ' +
         'undecomposed (no child tasks / no [test] task) or as missing model metadata, ' +
         'check its CLOSED children too (bd list --parent <feature> --all). A feature ' +
@@ -3172,23 +2793,14 @@ function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], 
         'must NOT fail coverage/decomposition/test-task/model-metadata criteria, and ' +
         'must NOT be re-decomposed. Mention such features as non-blocking notes only. ' +
         'Never ask the planner to create tasks that duplicate closed work.',
-        // Stabilization log Issue 21: the C3 plan of run 12 assigned a
-        // childless bug-type bead (apra-fleet-eft.15) directly and was
-        // approved -- but doers may only claim issue_type=task, so the doer
-        // skipped it as BLOCKED and the streak burned. The mirror-image of
-        // the pending-closure rule above: bugs must be decomposed before
-        // they are dispatchable.
         'DISPATCHABILITY -- doers can only claim issue_type=task beads. If any OPEN ' +
         'bug-type bead in scope is a childless leaf (no task-type children, so it ' +
         'would be dispatched to a doer directly), the plan is NOT approvable: return ' +
         'CHANGES_NEEDED asking the planner to decompose that bug into task-type ' +
         'children. This does not apply to features covered by the pending-closure ' +
         'rule above.',
-        // Stabilization log Issue 33 -- see buildPlannerPrompt's matching
-        // REGRESSION EXCEPTION. Without this criterion the reviewer reads a
-        // regressed bug (children closed, fresh repro evidence) as ordinary
-        // pending-closure and approves a plan that gives it no fix work;
-        // run 15 C5 ended FAIL on two such bugs.
+        // Mirrors buildPlannerPrompt's REGRESSION EXCEPTION clause; the two
+        // must state the same rule or planner and plan-reviewer disagree.
         'REGRESSION EXCEPTION to the pending-closure rule -- for OPEN BUG-type beads ' +
         'only: if a bug\'s task children are all closed but its own notes record the ' +
         'defect still reproducing AFTER those children closed (fresh evidence from a ' +
@@ -3201,15 +2813,10 @@ function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], 
         'post-closure recurrence stays under the pending-closure rule as before.',
     );
 
-    // apra-fleet-eft.71.2: round N>1 of this cycle's planner<->plan-reviewer
-    // loop carries every earlier round's verdict for THIS SAME scope/cycle so
-    // the plan-reviewer can honor the no-goalpost-moving rule (plan-
-    // reviewer.md) -- a resolution an earlier round explicitly accepted binds
-    // unless this round names new evidence. Absent entirely on round 1 (empty
-    // priorRoundVerdicts), matching plan-reviewer.md's "optional, absent only
-    // on round 1" contract. Each verdict's notes are the plan-reviewer's own
-    // prior free text -- untrusted content, so wrapped the same way
-    // buildPlannerPrompt wraps reviewer feedback above.
+    // Rounds after the first carry every earlier round's verdict for this same
+    // scope/cycle so the plan-reviewer can honor plan-reviewer.md's
+    // no-goalpost-moving rule. Absent on round 1. Each verdict's notes are the
+    // plan-reviewer's own free text, so they are wrapped as untrusted content.
     if (priorRoundVerdicts.length > 0) {
         lines.push(
             'Prior-round verdicts for THIS SAME review cycle (most recent last) -- per the ' +
@@ -3230,7 +2837,7 @@ function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], 
 }
 
 // ---------------------------------------------------------------------------
-// Develop/Review loop prompt builders + pure helpers (apra-fleet-unw.16)
+// Develop/Review loop prompt builders + pure helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -3247,11 +2854,6 @@ function buildStreakAssignmentPrompt({ readyBeadIds }) {
         `Ready bead ids: ${readyBeadIds.join(', ')}`,
         'Every ready bead id listed above must appear in exactly one streak -- ' +
         'no bead id may be omitted, duplicated, or invented.',
-        // Observed live (run 8, Develop C2 R1): the model returned
-        // suffix-stripped ids ("8.4" for "apra-fleet-eft.8.4"), which are
-        // rejected wholesale and silently cost the entire grouping. Bead ids
-        // from different scopes need not share any prefix, so a shortened id
-        // is not merely sloppy -- it is ambiguous and unrecoverable.
         'Return every bead id EXACTLY as listed above, character for character, ' +
         'including its full prefix. Never shorten, abbreviate, or strip a ' +
         'common-looking prefix: ids from different scopes do not necessarily ' +
@@ -3264,17 +2866,13 @@ function buildStreakAssignmentPrompt({ readyBeadIds }) {
 
 /**
  * Validates a streak-assignment agent() result against the set of currently
- * ready bead objects and returns the resolved streaks (arrays of the
- * original bead objects, not just ids). Falls back to one-bead-per-streak
- * (the previous, always-correct-by-construction behavior) whenever the
- * candidate doesn't cover every ready bead id EXACTLY once -- this is the
- * safety net called for by apra-fleet-unw.16 Work item 2(a): a real LLM
- * result is consumed when valid, but an invalid one can never drop or
- * duplicate a bead's assignment.
+ * ready bead objects and returns the resolved streaks (arrays of the original
+ * bead objects, not just ids). Falls back to one-bead-per-streak -- which is
+ * correct by construction -- whenever the candidate does not cover every ready
+ * bead id EXACTLY once, so a malformed result can never drop or duplicate a
+ * bead's assignment.
  *
- * Pure function: no I/O, no agent() calls -- easy to unit test directly and
- * to reason about independently of the schema-repair loop that produces
- * `candidate`.
+ * Pure: no I/O, no agent() calls.
  * @param {{streaks: string[][]}|null|undefined} candidate
  * @param {Array<{id: string}>} currentReady
  * @returns {{ streaks: Array<Array<{id: string}>>, usedFallback: boolean, reason: string|null }}
@@ -3320,35 +2918,29 @@ function selectStreaks(candidate, currentReady) {
 }
 
 /**
- * apra-fleet-eft.76.3 -- deterministic streak grouping from planner-emitted
- * lane metadata (`streak` / `streakOrder`, recorded by planner.md via the same
- * beads `--metadata` channel as `model`), intersected with the CURRENT
- * ready/open set. This is the fast path that retires the runtime LLM
- * "Streak Assignment" dispatch: when every ready bead already carries a
- * `streak` id, the grouping is fully determined by the plan and no agent()
+ * Deterministic streak grouping from planner-emitted lane metadata (`streak` /
+ * `streakOrder`, recorded by planner.md through the same beads `--metadata`
+ * channel as `model`), intersected with the CURRENT ready set. When every ready
+ * bead is laned the grouping is fully determined by the plan and no agent()
  * call is needed.
  *
- * Contract (mirrors selectStreaks' return shape so the two are drop-in
- * interchangeable at the call site):
- * - Returns `null` when the plan lacks lane metadata -- i.e. ANY ready bead is
- *   missing a non-empty `metadata.streak`. A partial-metadata plan (some laned,
- *   some not) is treated as "no lane metadata" so the caller falls back to the
- *   LLM assignment path unchanged (back-compat with old plans; a half-laned
- *   plan must never be grouped by a mix of two different mechanisms).
- * - Otherwise returns `{ streaks, reason: null }` where `streaks` is an array
- *   of arrays of the ORIGINAL bead objects (not ids), grouped by `streak` id.
+ * Contract (mirrors selectStreaks' return shape, so the two are interchangeable
+ * at the call site):
+ * - Returns `null` when ANY ready bead is missing a non-empty
+ *   `metadata.streak`. A partly-laned plan counts as "no lane metadata" so the
+ *   caller falls back to the LLM assignment path; a plan must never be grouped
+ *   by a mix of the two mechanisms.
+ * - Otherwise returns `{ streaks, reason: null }`, arrays of the ORIGINAL bead
+ *   objects grouped by `streak` id.
  *
- * Determinism (no run-to-run drift, the whole point of retiring the LLM call):
- * - Within a lane, beads are ordered by numeric `streakOrder` ascending
- *   (missing/non-numeric sorts last), then by `title`, then `id`. Because this
- *   set is `bd list --ready` output, every member is already mutually unblocked
- *   -- a `blocks` edge between two ready beads cannot exist (the blocked side
- *   would not be ready) -- so `streakOrder` alone honors all blocks-edge
- *   constraints; the title/id tiebreak only decides otherwise-equal peers.
- * - Lanes themselves are ordered by their minimum `streakOrder`, then by
- *   `streak` id, so the outer dispatch order is stable too.
+ * Ordering is total and stable: within a lane by numeric `streakOrder`
+ * ascending (missing/non-numeric last), then `title`, then `id`; lanes by their
+ * minimum `streakOrder`, then `streak` id. Members of a ready set are mutually
+ * unblocked by definition (a `blocks` edge would keep the blocked side out of
+ * the set), so `streakOrder` alone cannot violate a blocks edge and the
+ * title/id tiebreak only separates otherwise-equal peers.
  *
- * Pure function: no I/O, no agent() calls -- unit-testable in isolation.
+ * Pure: no I/O, no agent() calls.
  * @param {Array<{id: string, title?: string, metadata?: {streak?: string, streakOrder?: number|string}}>} currentReady
  * @returns {{ streaks: Array<Array<object>>, reason: null } | null}
  */
@@ -3393,29 +2985,16 @@ export function groupStreaksFromLaneMetadata(currentReady) {
     return { streaks: laneEntries.map((e) => e.sorted), reason: null };
 }
 
-/**
- * apra-fleet-eft.76.7 -- pure reference implementation of the planner.md
- * "effort-point splitting math" (apra-fleet-eft.76.1): planner.md documents
- * this formula as design-time math the LLM planner applies when authoring a
- * lane's `streak`/`streakOrder` metadata at bead-creation time, BEFORE any
- * bead is ever ready/dispatched -- it is not itself wired into the runtime
- * develop-round dispatch, which only ever CONSUMES already-split lane
- * metadata (see groupStreaksFromLaneMetadata above). Exported here as a
- * pure, deterministic function so the formula itself is unit-testable in
- * isolation, independent of any one LLM's arithmetic.
- *
- * Effort formula (planner.md): `effort = (sum of per-task size points) x
- * (max model weight across the lane)`. Size points: S=1, M=2, L=4. Model
- * weight: cheap=1, standard=10, premium=20.
- */
 export const SIZE_POINTS = Object.freeze({ S: 1, M: 2, L: 4 });
 export const MODEL_WEIGHT = Object.freeze({ cheap: 1, standard: 10, premium: 20 });
-// planner.md: "the effort threshold constant (default 200)".
 export const DEFAULT_EFFORT_THRESHOLD = 200;
 
 /**
- * Computes the effort-point total for a lane (or candidate sub-lane) of
- * tasks, per the planner.md formula above.
+ * Effort formula shared with planner.md: `effort = (sum of per-task size
+ * points) x (max model weight across the lane)`. planner.md documents the
+ * same formula as design-time math the planner applies when authoring lane
+ * metadata; this is the executable reference the runtime effort budget and
+ * the unit tests use.
  * @param {Array<{size: 'S'|'M'|'L', model: 'cheap'|'standard'|'premium'}>} tasks
  * @returns {number}
  */
@@ -3425,56 +3004,31 @@ export function computeLaneEffort(tasks) {
     return sizeSum * maxWeight;
 }
 
-// apra-fleet-eft.77.1 --------------------------------------------------------
-// Predicted-context-size estimator, wired in behind the SAME splitting seam
-// as the effort-point formula above (splitLaneByEffort). planner-owned-
-// streaks (apra-fleet-eft.76) split lanes by effort points as a PROXY for the
-// real limit: the doer session's context requirement. When a per-task
-// context estimate can actually be computed -- from the byte sizes of the
-// task's named files plus historical tokens-per-bucket telemetry already
-// recorded via `bd remember` (see e.g. the `*-tokens-input=...` memories) --
-// that estimate decides the split instead. The effort-point formula remains
-// the FALLBACK whenever no estimate is available for every task in the lane,
-// so existing callers/tests that never supply file sizes or telemetry keep
-// getting byte-for-byte the same effort-point-based behavior as before.
-
-// Rough bytes-per-token ratio used to convert named-file byte sizes into an
-// estimated token contribution (in the ballpark of common tokenizer
-// averages -- good enough for a splitting heuristic, not billing).
-export const BYTES_PER_TOKEN = 4;
-
-// Default ceiling, in estimated tokens, a sub-lane's predicted context
-// requirement must stay under before splitting. Plays the same role as
-// DEFAULT_EFFORT_THRESHOLD, but in token-estimate units.
+// Ceiling, in estimated tokens, above which a resumed session is treated as
+// near its context window (see createRoundSessionRegistry).
 export const DEFAULT_CONTEXT_CEILING = 150000;
 
 /**
- * apra-fleet-eft.78.3 -- per-role, per-cycle session registry that drives
- * "round resume": within ONE sprint cycle's approval loop, a role (planner,
- * reviewer, ...) resumes its OWN prior-round session across rounds
- * (planner R1->R2->R3, reviewer R1->R2->R3) via an explicit session id, so a
- * re-plan / re-review keeps the warm context it already built instead of
- * re-deriving it from scratch. The session id itself is whatever
- * execute_prompt promoted into structuredContent.sessionId
- * (apra-fleet-eft.78.1), surfaced to the engine by agent()'s onSessionId
- * callback (packages/apra-fleet-workflow).
+ * Per-role, per-cycle session registry driving "round resume": within ONE
+ * sprint cycle's approval loop a role (planner, reviewer, ...) resumes its OWN
+ * prior-round session by explicit session id, so a re-plan / re-review keeps
+ * the context it already built. The session id comes from agent()'s
+ * onSessionId callback (packages/apra-fleet-workflow).
  *
  * Guards, all enforced here so the call sites stay tiny:
- *   - NEVER resume across cycles (fresh eyes): a stored entry is keyed to the
- *     cycle it was recorded in; asking for a different cycle returns `false`
- *     (a fresh session), even before any new record overwrites it.
- *   - Fall back to a fresh session on a prior-round dispatch error/timeout:
- *     the call site invokes clear(role) in its failure branch, so the next
- *     round has nothing to resume.
- *   - Fall back to a fresh session near the context ceiling: if the recorded
- *     dispatch's reported usage is at/above `ceilingFraction` of
- *     `contextCeiling`, the entry is flagged and resumeArgFor() returns
- *     `false` -- resuming a session already near its window limit would start
- *     the next round out of room.
- *   - Capability check by CAPABILITY, not provider-name: a provider that does
- *     not support resume returns no session id, so record() is never called
- *     with one and resumeArgFor() naturally yields `false` (fresh). There is
- *     deliberately no `if (provider === 'claude')`-style name test anywhere.
+ *   - NEVER resume across cycles (fresh eyes): an entry is keyed to the cycle
+ *     it was recorded in; asking for another cycle yields a fresh session.
+ *   - A failed/timed-out round resumes nothing: its call site invokes
+ *     clear(role), so a broken partial context is never carried forward.
+ *   - An entry whose recorded usage was at/above `ceilingFraction` of
+ *     `contextCeiling` yields a fresh session, since resuming a session near
+ *     its window limit starts the next round out of room. This only bites when
+ *     the provider actually reported usage: with no usage number the entry is
+ *     never flagged near-ceiling and resume proceeds.
+ *   - Resume support is detected by CAPABILITY, not provider name: a provider
+ *     that cannot resume returns no session id, record() stores nothing, and
+ *     resumeArgFor() yields `false`. There is deliberately no
+ *     `provider === 'claude'`-style name test anywhere.
  *
  * @param {{ log?: (msg: string) => void, contextCeiling?: number, ceilingFraction?: number }} [opts]
  */
@@ -3539,36 +3093,29 @@ export function createRoundSessionRegistry(opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// apra-fleet-eft.79 -- multi-streak assignment per doer (ordered worklists)
+// Multi-streak assignment per doer (ordered worklists)
 // ---------------------------------------------------------------------------
 //
-// When a develop round's ready streak count exceeds the doer-pool size, the
-// engine used to feed each doer ONE streak per round and re-pay the full
-// fixed dispatch overhead (sync brackets, prompt assembly, cold repo
-// re-exploration) for every subsequent streak. The pure functions below
-// instead pack the round's streaks into PER-DOER ORDERED WORKLISTS so a doer
-// can work several streaks back to back, resuming its own warm session
-// between them (mode ii, default) or carrying the whole worklist in a single
-// batched dispatch (mode i, config-gated).
+// When a develop round has more ready streaks than doers, these functions pack
+// them into PER-DOER ORDERED WORKLISTS so one doer can work several streaks
+// back to back -- resuming its own session between them (mode ii, default) or
+// carrying the whole worklist in a single batched dispatch (mode i,
+// config-gated) -- instead of re-paying the fixed dispatch overhead per streak.
 //
-// Everything here is plain, deterministic, unit-testable JavaScript -- there
-// is deliberately NO LLM call anywhere in the assignment/ordering decision
-// (same character as groupStreaksFromLaneMetadata above).
+// The assignment/ordering decision is deterministic and makes no LLM call.
 
-// The model weight a streak with NO model metadata at all is treated as for
-// tier-grouping purposes: its own group key ('unspecified'), never silently
-// folded into a real tier (that would either under-run required work or
-// silently upgrade cheap work -- both forbidden by eft.79's tier rules).
+// Tier-grouping key for a streak with no model metadata at all. Such a streak
+// gets its own group rather than being folded into a real tier, which would
+// either under-run required work or silently upgrade cheap work.
 const UNSPECIFIED_TIER_KEY = 'unspecified';
 
 /**
- * apra-fleet-eft.79: a streak's REQUIRED model tier -- the maximum
- * (most-capable) tier across its member beads' `metadata.model`, per the
- * planner-streaks formula ("max model weight in the lane"). A streak must
- * never execute on a tier below this. Beads whose model metadata is missing
- * or not one of the three tier names contribute nothing; a streak where NO
- * bead names a tier returns `null` (dispatch runs unpriced/untiered exactly
- * like today's no-metadata path).
+ * A streak's REQUIRED model tier: the maximum (most-capable) tier across its
+ * member beads' `metadata.model`, per planner.md's "max model weight in the
+ * lane" formula. A streak must never execute on a tier below this. Beads whose
+ * model metadata is missing or is not one of the three tier names contribute
+ * nothing; a streak where no bead names a tier returns `null`, and the
+ * dispatch runs untiered.
  * @param {Array<{metadata?: {model?: unknown}}>} streak
  * @returns {'cheap'|'standard'|'premium'|null}
  */
@@ -3584,13 +3131,11 @@ export function streakRequiredTier(streak) {
 }
 
 /**
- * apra-fleet-eft.79 (priority-ordered worklist, operator-requested
- * 2026-07-30): a streak's priority = the MINIMUM (i.e. highest-urgency)
- * numeric priority value among its member beads (bd's `priority` field:
- * 0 = P0). Beads without a numeric priority contribute nothing; a streak
- * with no numeric priority at all returns POSITIVE_INFINITY so it sorts
- * after every priority-carrying streak and falls to the existing
- * deterministic tie-break.
+ * A streak's priority: the MINIMUM (i.e. most urgent) numeric priority among
+ * its member beads (bd's `priority` field, where 0 = P0). Beads without a
+ * numeric priority contribute nothing; a streak with none at all returns
+ * POSITIVE_INFINITY so it sorts after every priority-carrying streak and falls
+ * through to the deterministic tie-break.
  * @param {Array<{priority?: unknown}>} streak
  * @returns {number}
  */
@@ -3606,16 +3151,14 @@ export function streakMinPriority(streak) {
 }
 
 /**
- * apra-fleet-eft.79: a streak's effort-point total, REUSING the planner.md
- * effort formula (computeLaneEffort above: sum of size points x max model
- * weight) rather than inventing a new one. planner.md only mandates
- * `model`/`streak`/`streakOrder` metadata, so at runtime a bead usually has
- * no recorded size -- judgment call, documented here: a bead without a
- * usable `metadata.size` (S/M/L) defaults to 'M' (2 points), the middle of
- * the scale, and a bead without a tier-shaped model defaults to 'standard'
- * for WEIGHT purposes only (the weight term needs some value for the
- * budget arithmetic; this never affects what model the dispatch actually
- * runs on -- see streakRequiredTier for that).
+ * A streak's effort-point total, computed with the shared planner.md formula
+ * (computeLaneEffort: sum of size points x max model weight). planner.md only
+ * mandates `model`/`streak`/`streakOrder` metadata, so a bead usually carries
+ * no size: a bead without a usable `metadata.size` (S/M/L) defaults to 'M',
+ * the middle of the scale, and a bead without a tier-shaped model defaults to
+ * 'standard' for the WEIGHT term only. The defaults feed budget arithmetic and
+ * never affect which model a dispatch runs on -- streakRequiredTier decides
+ * that.
  * @param {Array<{metadata?: {size?: unknown, model?: unknown}}>} streak
  * @returns {number}
  */
@@ -3633,11 +3176,11 @@ export function streakEffortPoints(streak) {
 }
 
 /**
- * apra-fleet-eft.79: the ids a bead declares a `blocks`-type dependency on
- * (i.e. beads that must finish BEFORE it). Tolerant of the two shapes bd
- * emits (`bd show --json` dependencies are full objects carrying
- * `dependency_type`; some callers/tests hand plain id strings). Parent-child
- * dependency entries are NOT ordering constraints and are ignored.
+ * The ids a bead declares a `blocks`-type dependency on, i.e. beads that must
+ * finish BEFORE it. Accepts either shape a dependency entry can take: a full
+ * object carrying `dependency_type` (as `bd show --json` emits) or a plain id
+ * string. Entries of any other dependency type are not ordering constraints
+ * and are ignored.
  * @param {{dependencies?: Array<string|{id?: string, depends_on_id?: string, dependency_type?: string}>}} bead
  * @returns {string[]}
  */
@@ -3657,19 +3200,14 @@ export function beadBlocksDependencyIds(bead) {
 }
 
 /**
- * apra-fleet-eft.79: the tier policy for this round's worklist assignment --
- * the seam where the "provider supports model-switch-on-resume" CAPABILITY
- * check happens. Mode (i) BATCH is a single dispatch = a single model, so it
- * ALWAYS requires a tier-homogeneous worklist (a mixed batch is rejected at
- * assignment time, never resolved by running everything at max tier). Mode
- * (ii) RESUMED SEQUENCE may carry mixed tiers ONLY when the provider
- * supports changing model on a resumed session (execute_prompt's `model`
- * param applies to resumed sessions for Claude); the fleet does not yet
- * expose this capability per member, so it arrives as the
- * `resume_model_switch` config arg (default false = the SAFE fallback:
- * tier-homogeneous grouping). When a per-member capability signal lands
- * server-side, wire it in here -- this function is the single decision
- * point.
+ * The tier policy for this round's worklist assignment, and the single place
+ * the "provider supports model-switch-on-resume" capability check is made.
+ * Mode (i) BATCH is one dispatch and therefore one model, so it ALWAYS
+ * requires a tier-homogeneous worklist; a mixed batch is rejected at
+ * assignment time rather than resolved by running everything at max tier. Mode
+ * (ii) RESUMED SEQUENCE may carry mixed tiers only when the provider can
+ * change model on a resumed session, signalled by `resumeModelSwitch`, whose
+ * default of false is the safe fallback to tier-homogeneous grouping.
  * @param {{ mode: 'resume'|'batch', resumeModelSwitch?: boolean }} opts
  * @returns {{ tierHomogeneous: boolean }}
  */
@@ -3679,17 +3217,13 @@ export function resolveWorklistTierPolicy({ mode, resumeModelSwitch = false }) {
 }
 
 /**
- * apra-fleet-eft.79 (context-headroom admission, apra-fleet-eft.81 seam):
- * whether the last dispatch's reported usage leaves enough context headroom
- * to RESUME that session for the next streak. Mirrors
- * createRoundSessionRegistry's near-ceiling rule: admission fails when the
- * reported total_tokens is at/above `ceilingFraction` of `contextCeiling`.
- * Unknown usage (provider reported none) admits -- same stance as the
- * registry, which only flags nearCeiling on a REAL number. When the full
- * context-headroom-admission-control seam (apra-fleet-eft.81) lands, this
- * helper is the single call site to upgrade; the fallback on refusal is
- * always a FRESH session with the FULL prompt (never a delta prompt into a
- * fresh session -- resume-by-session-id rule, apra-fleet-eft.78).
+ * Whether the last dispatch's reported usage leaves enough context headroom to
+ * RESUME that session for the next streak. Mirrors createRoundSessionRegistry's
+ * near-ceiling rule: admission fails when the reported total_tokens is at or
+ * above `ceilingFraction` of `contextCeiling`. Unknown usage admits, the same
+ * stance the registry takes. On refusal the caller must fall back to a FRESH
+ * session carrying the FULL prompt -- never a delta prompt into a fresh
+ * session, since a delta only makes sense against a resumed session id.
  * @param {{total_tokens?: number}|null|undefined} usage
  * @param {{ contextCeiling?: number, ceilingFraction?: number }} [opts]
  * @returns {boolean}
@@ -3707,56 +3241,47 @@ export function hasContextHeadroomForResume(usage, opts = {}) {
 }
 
 /**
- * apra-fleet-eft.79 -- THE pure assignment function: packs this round's
- * streaks (as produced by groupStreaksFromLaneMetadata/selectStreaks above)
- * into per-doer ORDERED worklists.
+ * Packs this round's streaks (as produced by groupStreaksFromLaneMetadata or
+ * selectStreaks) into per-doer ORDERED worklists.
  *
- * Back-compat guarantee: when `streaks.length <= doerCount` there is nothing
- * to pack -- every doer gets exactly one streak, in the exact input order,
- * byte-identical to the pre-eft.79 one-streak-per-doer behavior (no
- * re-sorting, no budget, no tier logic).
+ * Pass-through: when `streaks.length <= doerCount` there is nothing to pack --
+ * every doer gets exactly one streak in the exact input order, with no
+ * re-sorting, no budget, and no tier logic.
  *
- * Packing path (`streaks.length > doerCount`) -- ordering rules, in strict
- * precedence order:
- *  1. `blocks`-edge-derived constraints between streaks are HARD: a streak
- *     whose beads depend on beads in another streak of this round is placed
- *     in the SAME doer's worklist AFTER that streak (co-location is the only
- *     arrangement that guarantees order under the global FIFO dispatch
- *     gate), or overflows if that is impossible. Per lane-formation rules
- *     such edges normally cannot exist between ready streaks -- but when one
- *     is present it is never violated. A streak whose in-round dependency
- *     overflowed overflows too.
- *  2. Priority (operator-requested, 2026-07-30): among streaks with no
- *     dependency relationship, sort by streakMinPriority ascending (P0
- *     first) -- a P3 streak must never occupy a doer ahead of an
- *     equally-ready P0 streak for no dependency reason.
- *  3. Existing deterministic tie-break: input index. The input order of
- *     `streaks` IS the existing tie-break (lane minOrder, then
- *     streakId/title/id for the lane-metadata path -- see
- *     groupStreaksFromLaneMetadata), so falling back to it introduces no
- *     new nondeterminism.
+ * Packing path (`streaks.length > doerCount`) orders streaks by, in strict
+ * precedence:
+ *  1. `blocks`-edge constraints between streaks, which are HARD: a streak
+ *     depending on beads in another streak of this round is placed in the SAME
+ *     worklist AFTER that streak, co-location being the only arrangement that
+ *     guarantees order under the global FIFO dispatch gate, or overflows if
+ *     that is impossible. A streak whose in-round dependency overflowed
+ *     overflows too. Lane formation normally prevents such edges between ready
+ *     streaks, but one that exists is never violated.
+ *  2. Priority: among streaks with no dependency relationship,
+ *     streakMinPriority ascending, so a P3 streak never occupies a doer ahead
+ *     of an equally-ready P0 streak.
+ *  3. Input index, which is itself already a deterministic order (lane
+ *     minOrder, then streakId/title/id on the lane-metadata path), so the
+ *     tie-break adds no nondeterminism.
  *
  * Grouping rules:
- *  - TIER-OUTLIER ISOLATION (operator-requested, 2026-07-30): streaks are
- *    PARTITIONED BY TIER FIRST, before any priority/effort-budget packing
- *    runs, and each tier partition packs independently into its own
- *    dedicated worklist slot(s). A minority-tier outlier streak is never
- *    folded into a majority-tier worklist just because effort-budget
- *    headroom would allow it. Worklist slots round-robin over the doer pool
- *    at the dispatch site, so with MORE tier partitions than doers each
- *    partition still dispatches THIS round as its own separate, tier-pure
- *    worklist on a shared doer ("separate dispatches") when the tier policy
- *    is homogeneous (mode i BATCH, or mode ii without the
- *    model-switch-on-resume capability) -- a mixed worklist is never built;
- *    when mixed tiers ARE allowed (mode ii + capability), whole partitions
- *    merge into at most doerCount worklists, each partition appended as its
- *    own CONTIGUOUS run, never interleaved among another tier's streaks.
- *  - Effort budget (opts.effortBudget, default DEFAULT_EFFORT_THRESHOLD,
- *    reusing the planner.md effort-point formula): a streak only joins a
- *    non-empty worklist if the running effort total stays within budget;
- *    otherwise it queues to the next round via `overflow`. An EMPTY worklist
- *    always accepts (a single over-budget streak must still dispatch --
- *    the planner should have split it, but starving it forever is worse).
+ *  - TIER-OUTLIER ISOLATION: streaks are PARTITIONED BY TIER FIRST, before any
+ *    priority/effort-budget packing, and each partition packs independently
+ *    into its own slot(s). A minority-tier outlier is never folded into a
+ *    majority-tier worklist just because effort-budget headroom allows it,
+ *    which is what keeps tier homogeneity from silently escalating cheaper
+ *    work to a costlier tier. Slots round-robin over the doer pool at the
+ *    dispatch site, so under a homogeneous tier policy more partitions than
+ *    doers still dispatch this round, each as its own tier-pure worklist on a
+ *    shared doer; a mixed worklist is never built. When mixed tiers are
+ *    allowed, whole partitions merge into at most doerCount worklists, each
+ *    appended as its own CONTIGUOUS run, never interleaved with another tier's
+ *    streaks.
+ *  - Effort budget (opts.effortBudget, default DEFAULT_EFFORT_THRESHOLD, in
+ *    the planner.md effort points): a streak joins a non-empty worklist only
+ *    if the running total stays within budget, otherwise it queues to the next
+ *    round via `overflow`. An EMPTY worklist always accepts, so a single
+ *    over-budget streak still dispatches rather than starving forever.
  *
  * @param {Array<Array<object>>} streaks - arrays of ORIGINAL bead objects
  * @param {number} doerCount
@@ -3805,11 +3330,9 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
     }
 
     // --- Global order: dependency (hard) -> priority -> input index --------
-    // Kahn-style topological pass that, among the currently-unblocked
-    // streaks, always picks the (priority, index)-minimal one. Dependency
-    // order therefore always wins over priority; priority only orders
-    // mutually-independent streaks; index (the existing tie-break) decides
-    // priority ties.
+    // Kahn-style topological pass that, among the currently-unblocked streaks,
+    // always picks the (priority, index)-minimal one, so dependency order wins
+    // over priority and priority only orders mutually-independent streaks.
     const order = [];
     const remaining = new Set(descs.map((d) => d.index));
     while (remaining.size > 0) {
@@ -3829,37 +3352,27 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
     }
 
     // --- Packing: TIER-OUTLIER ISOLATION (partition-first) ------------------
-    // Operator-requested (2026-07-30): partition the round's streaks by tier
-    // FIRST, before any priority/effort-budget packing runs, and pack each
-    // tier partition's worklist(s) independently. A minority-tier "outlier"
-    // streak (e.g. one premium streak amid a standard-tier majority) gets its
-    // OWN dedicated worklist slot(s) and is never folded into a majority-tier
-    // worklist just because effort-budget headroom would allow it --
-    // otherwise any "effective tier = max of everything assigned" step would
-    // silently escalate cheap/standard work to premium cost (a real
-    // cost/quality-contamination risk, and what makes the tier-homogeneity
-    // hard rule actually hold once multi-streak worklists exist). Priority
-    // ordering (the global topo+priority order above) applies WITHIN each
-    // partition; partitions themselves are claimed in order of their first
-    // appearance in the global order, so the highest-priority work claims
+    // Streaks are partitioned by tier before any priority/effort-budget
+    // packing, and each partition's slot(s) pack independently, so a
+    // minority-tier outlier is never folded into a majority-tier worklist and
+    // silently escalated to that tier's cost. The global topo+priority order
+    // applies WITHIN a partition; partitions are claimed in order of their
+    // first appearance in that order, so the highest-priority work claims
     // slots first.
     //
-    // Worklist SLOTS are not doers: the returned worklists round-robin over
-    // the doer pool at the dispatch site (worklists[i] -> doerPool[i % N]),
-    // exactly like the pre-eft.79 per-streak round-robin -- so when there are
-    // MORE tier partitions than doers, each partition still dispatches THIS
-    // round as its own separate, tier-pure worklist on a shared doer
-    // (sequentially, via the global FIFO gate) rather than deferring whole
-    // tiers to the next round. Sessions never carry across worklists, so a
-    // shared doer's second worklist starts a fresh session -- tier-pure by
+    // A SLOT is not a doer: the returned worklists round-robin over the doer
+    // pool at the dispatch site (worklists[i] -> doerPool[i % N]), so more
+    // partitions than doers still all dispatch this round, sequentially on a
+    // shared doer via the global FIFO gate. Sessions never carry across
+    // worklists, so a shared doer's second worklist is tier-pure by
     // construction.
     const overflow = [];
     const overflowed = new Set();
-    const slots = []; // { items: desc[], effort: number, tierKey: string }
+    const slots = []; // { items: desc[], effort: number }
     const slotOfDesc = new Map(); // desc.index -> slot object
 
-    const newSlot = (tierKey) => {
-        const slot = { items: [], effort: 0, tierKey };
+    const newSlot = () => {
+        const slot = { items: [], effort: 0 };
         slots.push(slot);
         return slot;
     };
@@ -3867,8 +3380,6 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
     const place = (slot, d) => {
         slot.items.push(d);
         slot.effort += d.effort;
-        if (slot.items.length === 1 || slot.tierKey === null) slot.tierKey = d.tierKey;
-        else if (slot.tierKey !== d.tierKey) slot.tierKey = 'mixed';
         slotOfDesc.set(d.index, slot);
     };
     const spill = (d) => {
@@ -3898,19 +3409,13 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
     // per-slot load (ties: earliest partition), so e.g. 4 same-tier streaks
     // over 2 doers still split 2/2. Deterministic throughout.
     if (!tierHomogeneous && partitions.length > doerCount) {
-        // Mixed tiers allowed (mode ii + model-switch-on-resume capability)
-        // and more tier partitions than doers: merge WHOLE partitions into
-        // doerCount slots, each merged partition appended as its own
-        // CONTIGUOUS run (never interleaved among another tier's streaks --
-        // contamination-avoidance ordering; each streak still dispatches at
-        // its own tier). Each partition (in order) joins the slot with the
-        // fewest streaks so far (ties: creation order).
-        // Slots start tier-less (null); the first placement stamps the real
-        // tier (place() marks 'mixed' only on a REAL mismatch).
-        for (let i = 0; i < doerCount; i++) newSlot(null);
-        // Partition -> host slot: BALANCE BY STREAK COUNT of what earlier
-        // partitions already claimed. Claims happen partition-by-partition
-        // (whole partitions), so count claimed members, not placed items.
+        // Mixed tiers allowed and more partitions than doers: merge WHOLE
+        // partitions into doerCount slots, each appended as its own contiguous
+        // run so no tier's streaks interleave with another's. Each partition
+        // joins the slot with the fewest streaks claimed so far, ties broken by
+        // creation order. Claims are whole partitions, so balance on claimed
+        // member counts rather than on items already placed.
+        for (let i = 0; i < doerCount; i++) newSlot();
         const claimedCount = new Map(slots.map((s) => [s, 0]));
         for (const p of partitions) {
             const host = slots
@@ -3921,7 +3426,7 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
         }
     } else {
         for (const p of partitions) {
-            p.slots = [newSlot(p.tierKey)];
+            p.slots = [newSlot()];
         }
         let spare = doerCount - partitions.length;
         while (spare > 0) {
@@ -3931,7 +3436,7 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
                 if (!target || load > target.members.length / target.slots.length) target = p;
             }
             if (!target) break;
-            target.slots.push(newSlot(target.tierKey));
+            target.slots.push(newSlot());
             spare--;
         }
     }
@@ -3984,155 +3489,13 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
 }
 
 /**
- * Estimates one task's predicted context-size contribution, in tokens, from:
- * - `task.files` (the task's named files) looked up in `opts.fileSizes` (a
- *   map of file path -> byte size), converted via BYTES_PER_TOKEN; and
- * - `opts.telemetry` (a map of `${size}:${model}` bucket key -> average
- *   observed tokens for that bucket, sourced from historical `bd remember`
- *   token-usage memories).
- *
- * Returns `null` -- "no estimate available" -- when neither source yields
- * anything for this task (no named files with known sizes, and no telemetry
- * entry for its size/model bucket). Callers use the `null` sentinel to
- * detect the no-estimate case and fall back to the effort-point formula
- * rather than silently treating a missing input as zero cost.
- *
- * @param {{id: string, size?: string, model?: string, files?: string[]}} task
- * @param {{ fileSizes?: Record<string, number>, telemetry?: Record<string, number> }} [opts]
- * @returns {number|null}
- */
-export function estimateTaskContextTokens(task, opts = {}) {
-    const fileSizes = opts.fileSizes || {};
-    const telemetry = opts.telemetry || {};
-
-    let fileTokens = 0;
-    let sawFileSize = false;
-    for (const f of task.files || []) {
-        const bytes = fileSizes[f];
-        if (typeof bytes === 'number' && Number.isFinite(bytes)) {
-            fileTokens += bytes / BYTES_PER_TOKEN;
-            sawFileSize = true;
-        }
-    }
-
-    const bucketKey = `${task.size}:${task.model}`;
-    const telemetryTokens = telemetry[bucketKey];
-    const sawTelemetry = typeof telemetryTokens === 'number' && Number.isFinite(telemetryTokens);
-
-    if (!sawFileSize && !sawTelemetry) return null;
-    return fileTokens + (sawTelemetry ? telemetryTokens : 0);
-}
-
-/**
- * Estimates a lane's (or candidate sub-lane's) total predicted context
- * requirement, in tokens, by summing each task's estimate (see
- * estimateTaskContextTokens). Returns `null` if ANY task in `tasks` has no
- * computable estimate, so a partial estimate is never mistaken for a
- * whole-lane one.
- * @param {Array<object>} tasks
- * @param {{ fileSizes?: Record<string, number>, telemetry?: Record<string, number> }} [opts]
- * @returns {number|null}
- */
-export function estimateLaneContextTokens(tasks, opts = {}) {
-    let total = 0;
-    for (const t of tasks) {
-        const est = estimateTaskContextTokens(t, opts);
-        if (est === null) return null;
-        total += est;
-    }
-    return total;
-}
-
-/**
- * Splits a single lane's ORDERED task list (order already consistent with
- * `blocks` edges, i.e. planner.md's `streakOrder`) into one or more
- * contiguous sub-lanes so that, where possible, no sub-lane's predicted cost
- * exceeds its limit -- UNLESS honoring that would separate two members of
- * the same mutex-resource group (e.g. the same submodule pointer, a shared
- * version/manifest field, or a committed fixture file), in which case the
- * mutex group is kept together in the SAME sub-lane even when that leaves it
- * over the limit (planner.md: "NEVER separate mutex-resource members... even
- * if honoring that leaves a streak over threshold").
- *
- * Cost model (apra-fleet-eft.77.1): when every task in `tasks` has a
- * computable predicted-context-size estimate (see estimateTaskContextTokens
- * -- i.e. `opts.fileSizes`/`opts.telemetry` yield a non-null estimate for
- * each task), the lane is split against `opts.contextCeiling` (default
- * DEFAULT_CONTEXT_CEILING) using that context estimate. Otherwise -- the
- * common case when no file-size/telemetry data is supplied -- it falls back
- * to the effort-point formula (computeLaneEffort) against `opts.threshold`
- * (default DEFAULT_EFFORT_THRESHOLD), exactly as before this estimator was
- * introduced.
- *
- * - Never reorders or drops a task: concatenating the returned sub-lanes,
- *   in order, reproduces `tasks` exactly -- each sub-lane is a contiguous
- *   prefix/suffix slice, never an arbitrary mid-lane cut (planner.md: "each
- *   resulting streak is a contiguous prefix/suffix of the dependency
- *   order").
- * - A lane that already fits under the limit is returned as a single
- *   sub-lane (no gratuitous splitting).
- * - `opts.mutexGroups`, if given, is an array of arrays of task ids that
- *   contend for the same mutex resource; every id in the same group is
- *   guaranteed to land in the same returned sub-lane.
- *
- * @param {Array<{id: string, size: 'S'|'M'|'L', model: 'cheap'|'standard'|'premium', files?: string[]}>} tasks
- * @param {{ threshold?: number, mutexGroups?: string[][], fileSizes?: Record<string, number>, telemetry?: Record<string, number>, contextCeiling?: number }} [opts]
- * @returns {Array<Array<object>>} sub-lanes, each a contiguous slice of `tasks`
- */
-export function splitLaneByEffort(tasks, opts = {}) {
-    if (!Array.isArray(tasks) || tasks.length === 0) return [];
-    const threshold = opts.threshold ?? DEFAULT_EFFORT_THRESHOLD;
-    const contextCeiling = opts.contextCeiling ?? DEFAULT_CONTEXT_CEILING;
-
-    // Only trust the context estimate when EVERY task in the lane has one;
-    // a single un-estimable task disqualifies the whole lane back to the
-    // effort-point fallback, per this function's contract above.
-    const useContextEstimate = tasks.every((t) => estimateTaskContextTokens(t, opts) !== null);
-    const costOf = useContextEstimate
-        ? (subset) => estimateLaneContextTokens(subset, opts)
-        : (subset) => computeLaneEffort(subset);
-    const limit = useContextEstimate ? contextCeiling : threshold;
-
-    const mutexGroupOf = new Map();
-    (opts.mutexGroups || []).forEach((group, idx) => {
-        group.forEach((id) => mutexGroupOf.set(id, idx));
-    });
-    const sameMutexGroup = (a, b) =>
-        mutexGroupOf.has(a.id) && mutexGroupOf.get(a.id) === mutexGroupOf.get(b.id);
-
-    const sublanes = [];
-    let current = [];
-
-    for (const task of tasks) {
-        if (current.length === 0) {
-            current.push(task);
-            continue;
-        }
-        const prev = current[current.length - 1];
-        const candidate = [...current, task];
-        if (costOf(candidate) > limit && !sameMutexGroup(prev, task)) {
-            sublanes.push(current);
-            current = [task];
-        } else {
-            current = candidate;
-        }
-    }
-    sublanes.push(current);
-    return sublanes;
-}
-
-/**
- * Builds the self-contained doer dispatch prompt for one streak. Per-bead
- * feedback (apra-fleet-unw.16 Work item 5) is routed here ONLY for the
- * bead(s) this streak actually owns -- never a blanket broadcast of the
- * entire reviewer verdict to every doer -- and is wrapped as untrusted
- * inter-agent content (feedback.md A7, contracts.mjs `wrapUntrustedBlock`).
- * The `branch` is the sprint track branch to work on -- required by the
- * vendored agents/doer.md Inputs section (and agents/schemas/doer-input.json,
- * whose only required key is "branch"). Per doer.md's missing-input behavior,
- * a doer dispatched without a branch must return status "BLOCKED" rather than
- * guessing whatever branch happens to be checked out, so it is always spelled
- * out here.
+ * Builds the self-contained doer dispatch prompt for one streak. `feedback`
+ * carries only the bead(s) this streak owns -- never a blanket broadcast of
+ * the whole reviewer verdict to every doer -- and is wrapped as untrusted
+ * inter-agent content (contracts.mjs `wrapUntrustedBlock`). `branch` is the
+ * sprint track branch and is always spelled out: doer.md requires it, and a
+ * doer dispatched without one must return "BLOCKED" rather than guess whatever
+ * branch happens to be checked out.
  * @param {{ beadIds: string[], branch: string, feedback: string|null }} opts
  * @returns {string}
  */
@@ -4144,12 +3507,8 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
         'full acceptance criteria, implement and verify the change, then `bd close <id>` ' +
         'once it is done. Return your report strictly as the required JSON schema ' +
         '(status, closedIds, notes).',
-        // apra-fleet-eft.65.2: a permission-blocked tool must be SURFACED, never
-        // routed around. The eft.65 smoke-test doer, finding its Edit/Write
-        // hard-blocked, substituted a Bash heredoc write -- the exact anti-pattern
-        // CLAUDE.md's permission-block policy forbids (and RECOVERY.md's 2026-07-02
-        // precedent). State it in the dispatch prompt so the directive travels with
-        // every doer regardless of what its agent file says.
+        // Stated in the dispatch prompt so CLAUDE.md's permission-block policy
+        // travels with every doer regardless of what its agent file says.
         'PERMISSION BLOCKS MUST BE SURFACED, NOT ROUTED AROUND: if any tool or git ' +
         'invocation (e.g. Edit/Write, git push) is blocked by the permission layer, STOP ' +
         'and report the block in your notes with status "BLOCKED" -- do NOT substitute a ' +
@@ -4169,20 +3528,15 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
 }
 
 /**
- * Builds the self-contained reviewer dispatch prompt (apra-fleet-unw.16
- * Work item 4). Self-contained per apra-fleet-unw.3's `resume: false`
- * default: the reviewer has no memory of this conversation, so the exact
- * bead ids just worked, their full `bd show` detail (acceptance criteria),
- * and the diff range are all spelled out here rather than assumed.
+ * Builds the self-contained reviewer dispatch prompt. The reviewer is
+ * dispatched without resume and so has no memory of this run: the exact bead
+ * ids just worked, their full `bd show` detail (acceptance criteria), the diff
+ * range, and the sprint goal priority are all spelled out rather than assumed.
  *
- * CRITICAL: explicitly, redundantly forbids the reviewer from mutating
- * beads itself. agents/reviewer.md's own prose (Step 5, Rules) already
- * states this same prohibition -- prose and dispatch prompt agree today --
- * but the schema alone doesn't stop the reviewer from shelling out `bd`
- * commands on the member side regardless of what either document says, so
- * the prohibition is stated here too as defense in depth, not because of
- * any known prose/code divergence.
- * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string }} opts
+ * The prohibition on the reviewer mutating beads itself is stated here as well
+ * as in reviewer.md: nothing but the prompt stops the reviewer from shelling
+ * out `bd` commands on the member side, so it is repeated as defense in depth.
+ * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string, goal?: string }} opts
  * @returns {string}
  */
 function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal }) {
@@ -4191,12 +3545,9 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
         'Full task detail (including acceptance criteria), from `bd show --json`:',
         wrapUntrustedBlock('bd show --json', acceptanceCriteriaJson),
         `Diff range to review: ${baseBranch}..${branch} (base_branch..branch).`,
-        // Stabilization log Issue 17: run 11's cycle-3 reviewer judged the
-        // whole epic diff and blocked on the DEFERRED out-of-goal P3
-        // features (eft.10/11/12) not being delivered -- work this sprint
-        // deliberately does not do. That verdict can never reach APPROVED,
-        // which starves the completion gate (zero open goal beads AND an
-        // APPROVED verdict). Scope the verdict to the sprint's goal.
+        // Without an explicit scope clause a reviewer can withhold APPROVED
+        // over below-goal work the sprint deliberately defers, which starves
+        // the completion gate (zero open goal beads AND an APPROVED verdict).
         ...(goal ? [
             `SPRINT SCOPE: this sprint's goal priority is ${goal}. Judge your verdict ` +
             `ONLY against the named bead id(s) above and other work at or above that ` +
@@ -4214,12 +3565,11 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
 }
 
 /**
- * apra-fleet-unw2.6 (N8, work item b): detects the reviewer contract
- * violation described on `ReviewerContractViolationError` -- a
- * `CHANGES_NEEDED` verdict that names nothing to reopen and proposes no new
- * follow-up work is schema-legal but self-contradictory: there is nothing
- * for the orchestrator to act on, so the sprint can never make progress off
- * of it.
+ * Detects the reviewer contract violation described on
+ * `ReviewerContractViolationError`: a `CHANGES_NEEDED` verdict naming nothing
+ * to reopen and proposing no follow-up work is schema-legal but
+ * self-contradictory -- the orchestrator has nothing to act on, so the sprint
+ * cannot make progress off of it.
  * @param {{ verdict: string, reopenIds?: string[], newTasks?: object[] }} verdict
  * @returns {boolean}
  */
@@ -4230,19 +3580,16 @@ function isReviewerContractViolation(verdict) {
 }
 
 /**
- * apra-fleet-eft.72.1: on plan-cap exhaustion (planningRounds exhausted with
- * CHANGES_NEEDED), determines whether the plan-reviewer's last verdict is
- * CONFINED to specific beads rather than spanning the whole plan. The
- * plan-reviewer contract (plan-reviewer.md Step 4) does not carry a
- * structured per-bead findings field -- `notes` is free text that "names the
- * specific beads ID and what is wrong" -- so this scans `notes` for literal
- * occurrences of each id already known to be in scope via `taskAssignments`
- * (populated on every round, including CHANGES_NEEDED -- see
- * plan-reviewer.md: "Always populate taskAssignments even on CHANGES_NEEDED").
+ * Determines whether a plan-reviewer verdict is CONFINED to specific beads
+ * rather than spanning the whole plan. plan-reviewer.md carries no structured
+ * per-bead findings field -- `notes` is free text that names the offending
+ * bead ids -- so this scans `notes` for literal occurrences of each id already
+ * known to be in scope via `taskAssignments`, which plan-reviewer.md requires
+ * to be populated on every round including CHANGES_NEEDED.
  *
- * An id is matched only at a non-identifier-character boundary (or the
- * string start/end) so e.g. 'apra-fleet-eft.50' does not false-positive
- * inside 'apra-fleet-eft.500'.
+ * An id matches only at a non-identifier-character boundary (or the string
+ * start/end), so a shorter id cannot false-positive inside a longer one that
+ * merely extends it.
  *
  * @param {{ notes?: string, taskAssignments?: Array<{ id?: string }> }} verdict
  * @returns {string[]} the subset of taskAssignments ids that notes calls out by name
@@ -4265,77 +3612,46 @@ export function extractContestedBeadIds(verdict) {
 }
 
 // ---------------------------------------------------------------------------
-// newTasks validation (apra-fleet-unw2.3 / N3, tightened by apra-fleet-56.1):
-// reviewer-authored newTasks are LLM output -- and the reviewer's own
-// context includes the diff under review, so an adversarial diff/commit
-// could try to steer the reviewer into emitting a title/description crafted
-// to break out of a shell command. `title` is still interpolated inline into
-// the double-quoted `bd create "..."` shell command in
-// createChildBeadWithAllocatedId() (backticks and `$(...)` both survive
-// inside POSIX double quotes; a trailing backslash can neutralize/escape the
-// closing quote). Because sprint members run mixed shells (POSIX vs
-// Windows), no single escaping scheme is reliably safe across all of them --
-// so title validates with an ALLOWLIST instead of trying to escape: anything
-// outside the allowlist is rejected before it ever reaches `command()`,
-// independent of whatever escaping the member shell would otherwise need.
+// newTasks validation. Reviewer-authored newTasks are LLM output, and the
+// reviewer's context includes the diff under review, so an adversarial
+// diff/commit could try to steer it into emitting text crafted to break out of
+// a shell command.
 //
-// SAFE_TEXT_RE (title only) deliberately excludes: backtick, `$`,
-// double-quote (the command's own quoting delimiter -- allowing it back in
-// would let a title close the quote early regardless of any other
-// restriction), and backslash (blocks a trailing-backslash "escape the
-// closing quote" trick as well as any other backslash-based escape
-// sequence). The allowed punctuation (`.,:;!?()'-_/` plus space) covers
-// realistic task titles while remaining inert as shell syntax in both POSIX
-// and Windows member shells.
+// SAFE_TEXT_RE is the shell-safety boundary for `title`, which
+// createChildBeadWithAllocatedId() interpolates inline into a double-quoted
+// `bd create "..."` command. Sprint members run mixed POSIX and Windows
+// shells, and no single escaping scheme is reliably safe across all of them,
+// so title is validated against an allowlist instead of escaped: anything
+// outside it is rejected before reaching `command()`.
 //
-// `description` no longer reaches this shell-interpolation risk at all
-// (apra-fleet-eft.56.1, transport hardened in eft.73.1):
-// createChildBeadWithAllocatedId() stages it to a member-local temp file
-// (base64-carried, member-side) and hands that path to `bd create
-// --body-file`, never interpolating it into a command string. That removed
-// the injection
-// surface SAFE_TEXT_RE existed to close for descriptions, so
-// SAFE_DESCRIPTION_RE only enforces the repo's own ASCII-only convention
-// (plus non-empty) -- legitimate technical characters ('=', '&', '+', '"',
-// backticks-as-text, '%', '#', '[', ']', etc.) are allowed again.
+// SAFE_TEXT_RE admits letters, digits, space, and the punctuation
+// `. , : ; ! ? ( ) ' _ / [ ] -` and nothing else. In particular it excludes
+// backtick and `$` (command substitution survives inside POSIX double
+// quotes), the double-quote itself (a title could otherwise close the
+// command's quoting early), and backslash (which could escape the closing
+// quote or start any other escape sequence). What remains covers realistic
+// task titles while staying inert as shell syntax in both shell families.
+//
+// `description` carries no such risk: createChildBeadWithAllocatedId() stages
+// it to a member-local temp file and passes that path to `bd create
+// --body-file`, never interpolating it into a command string. So
+// SAFE_DESCRIPTION_RE enforces only non-emptiness and the repo's ASCII
+// convention -- tab, newline, carriage return, and printable ASCII -- which
+// admits technical characters that SAFE_TEXT_RE rejects ('=', '&', '+', '"',
+// '%', '#', '$', backtick and backslash as text).
 const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/\[\]-]+$/;
 const SAFE_DESCRIPTION_RE = /^[\t\n\r\x20-\x7E]+$/;
 const SAFE_PRIORITY_RE = /^P[0-4]$/;
 
 /**
- * Validates one reviewer-authored newTask entry. `title` is validated
- * against SAFE_TEXT_RE because it is still interpolated inline into a `bd
- * create` command string; `description` is validated against the more
- * permissive SAFE_DESCRIPTION_RE (ASCII-printable, non-empty) because it is
- * written to a local temp file and passed via `bd create --body-file` --
- * never shell-interpolated (see createChildBeadWithAllocatedId). Returns
- * either `{ ok: true, title, description, priority }` (safe to use) or
- * `{ ok: false, reason }` (must be rejected -- logged, surfaced in the run
- * summary, appended verbatim to the parent bead's notes as a fallback, and
- * never sent to `command()` as a `bd create` interpolation; rejection is
- * non-fatal, the sprint continues).
- * @param {{ title: unknown, description: unknown, priority: unknown }} newTask
- * @returns {{ ok: true, title: string, description: string, priority: string } | { ok: false, reason: string }}
- */
-// Stabilization log Issue 29: bead model metadata arrives from MANY authors
-// (planner runs, out-of-band injections, older sprints), and the
-// '-tier'-suffixed forms of the three tier names keep appearing despite the
-// planner-prompt pin (the pin exists precisely because agents kept writing
-// them). A raw unknown token reaches execute_prompt verbatim and falls
-// through the server's tier map as a LITERAL provider model name, failing
-// the entire dispatch with a provider 404 -- observed live (run 15 C3 R3):
-// metadata {"model": "standard-tier"} -> claude --model standard-tier ->
-// api_error_status 404, streak lost. Normalize the unambiguous aliases at
-// the single engine read site; every OTHER value passes through untouched so
-// an explicit concrete model id in metadata still works deliberately.
-/**
- * Normalizes a bead-metadata model value by CONTAINMENT: if the value
- * (case-insensitive) contains exactly ONE of the three tier names --
- * 'cheap', 'standard', 'premium' -- it normalizes to that bare tier name,
- * so 'standard-tier', 'tier-standard', 'Standard (default)' all resolve to
- * 'standard'. A value containing zero tier names (explicit model ids: no
- * mainstream provider id contains these words) or MORE than one (ambiguous,
- * e.g. 'standard-or-premium') passes through unchanged.
+ * Normalizes a bead-metadata model value by CONTAINMENT: a value that
+ * (case-insensitively) contains exactly ONE of the three tier names --
+ * 'cheap', 'standard', 'premium' -- becomes that bare tier name, so
+ * 'standard-tier', 'tier-standard' and 'Standard (default)' all resolve to
+ * 'standard'. A value containing zero tier names (an explicit provider model
+ * id) or more than one (ambiguous) passes through unchanged. This is the
+ * single read site for that metadata: an un-normalized alias would reach the
+ * dispatch as a literal provider model name and fail it outright.
  * @param {unknown} raw
  * @returns {unknown}
  */
@@ -4346,29 +3662,15 @@ export function normalizeTierToken(raw) {
     return matches.length === 1 ? matches[0] : raw;
 }
 
-// apra-fleet-04g.2 -- LLM reviewers (the finalVerdict-schema agent that
-// authors newTask entries) routinely emit "smart" punctuation -- em-dash/
-// en-dash, curly quotes, horizontal ellipsis -- that a human writer would
-// consider a plain ASCII equivalent, but which falls outside
-// SAFE_DESCRIPTION_RE's \t\n\r\x20-\x7E allowlist and so gets the whole
-// newTask rejected outright (04g.2's repro: an em-dash in the description
-// silently blocked canary closure). Since description no longer carries a
-// shell-interpolation injection risk (see the block comment above
-// SAFE_DESCRIPTION_RE), the same "sanitize instead of reject" precedent used
-// for finalVerdictResult.notes (sanitizePrText, above) applies here: swap
-// this narrow set of common non-ASCII punctuation for ASCII equivalents
-// BEFORE the allowlist check, rather than rejecting the whole task over
-// characters that lose no meaningful information when normalized. Anything
-// still outside the allowlist after normalization (e.g. an emoji) remains a
-// hard rejection -- this is a small substitution table, not a general
-// Unicode stripper, so fail-closed behaviour is preserved. Scope is
-// deliberately limited to description: SAFE_TEXT_RE (title) is NOT loosened,
-// since title is still interpolated inline into a `bd create "..."` command
-// string and must stay on the tighter shell-safety allowlist.
 /**
- * Normalizes the handful of common non-ASCII punctuation characters LLM
- * reviewers routinely emit in newTask descriptions to their ASCII
- * equivalents, before SAFE_DESCRIPTION_RE validation.
+ * Rewrites the handful of common non-ASCII punctuation characters LLM
+ * reviewers routinely emit in newTask descriptions -- em/en dashes, curly
+ * quotes, ellipsis -- to ASCII equivalents before SAFE_DESCRIPTION_RE
+ * validation, so a description is not rejected wholesale over characters that
+ * lose no meaning when normalized. This is a fixed substitution table, not a
+ * general Unicode stripper: anything still outside the allowlist afterwards is
+ * still a hard rejection. Deliberately scoped to description only -- title
+ * stays on the tighter SAFE_TEXT_RE shell-safety allowlist.
  * @param {string} description
  * @returns {string}
  */
@@ -4380,6 +3682,18 @@ export function sanitizeNewTaskDescription(description) {
         .replace(/\u2026/g, '...'); // horizontal ellipsis (\u2026)
 }
 
+/**
+ * Validates one reviewer-authored newTask entry. `title` is checked against
+ * SAFE_TEXT_RE because it is interpolated inline into a `bd create` command
+ * string; `description` is checked against the more permissive
+ * SAFE_DESCRIPTION_RE because it travels via `bd create --body-file` and is
+ * never shell-interpolated (see createChildBeadWithAllocatedId). Returns
+ * either `{ ok: true, title, description, priority }` (safe to use) or
+ * `{ ok: false, reason }`. A rejected entry must never reach `command()` as a
+ * `bd create` interpolation; rejection is non-fatal and the sprint continues.
+ * @param {{ title: unknown, description: unknown, priority: unknown }} newTask
+ * @returns {{ ok: true, title: string, description: string, priority: string } | { ok: false, reason: string }}
+ */
 export function validateNewTask(newTask) {
     const priority = String(newTask && newTask.priority);
     if (!SAFE_PRIORITY_RE.test(priority)) {
@@ -4397,28 +3711,18 @@ export function validateNewTask(newTask) {
 }
 
 /**
- * apra-fleet-eft.56.1 -- a newTask that STILL fails validateNewTask() (e.g.
- * its title fails the shell-interpolation-safety allowlist, or its priority
- * is malformed) must never simply vanish: see the eft.56 bug, where 3 of 4
- * FAIL-finding follow-up tasks were silently dropped in run 19, including
- * the P1 unblock task for eft.48. This persists the raw, UNMODIFIED finding
- * (title/description/priority/rejection reason) into the parent bead's
- * notes via `bd note --file` -- the same member-side staging seam as the
- * description path above (see stageCommandBodyMemberSide, eft.73.1), never
- * interpolated into a shell string -- so a human (or the next planner) can
- * still recover it even though it was not auto-filed as its own child bead.
- * Best-effort, but apra-fleet-eft.73.2: a failure to append IS re-thrown
- * (after being logged here) -- every one of this function's 5 call sites
- * (createChildBeadWithAllocatedId's persistNewTaskBestEffort caller plus the
- * 4 direct rejected-newTask sites) wraps this call in its own try/catch that
- * exists specifically to log the raw finding VERBATIM (JSON.stringify(newTask))
- * to the run log as the final fallback rung. That verbatim rung can only ever
- * fire if this function actually propagates its failure -- swallowing it here
- * silently (the previous behavior) made every caller's verbatim-preservation
- * fallback permanently unreachable dead code, defeating the entire point of
- * the eft.56/eft.73 finding-preservation lineage on the one path (bd note
- * ALSO fails) it exists to cover. This is still non-fatal to the sprint: the
- * caller's own catch is what keeps it from aborting anything.
+ * Persists a newTask that failed validateNewTask() into the parent bead's
+ * notes, raw and unmodified (title/description/priority plus the rejection
+ * reason), so a rejected finding is still recoverable by a human or the next
+ * planner even though it was not filed as its own child bead. The note body
+ * goes through the same member-side staging seam as the description path
+ * (stageCommandBodyMemberSide) and is never interpolated into a shell string.
+ *
+ * A failure to append is logged AND re-thrown. Every call site wraps this in
+ * its own try/catch whose purpose is to log the raw finding verbatim as the
+ * last fallback rung; swallowing the failure here would make that rung
+ * unreachable on exactly the path it exists to cover. Re-throwing is still
+ * non-fatal to the sprint -- the caller's catch is what contains it.
  * @param {{ command: Function, member: string, parentId: string, newTask: unknown, reason: string, cycle?: string|number, log?: Function }} opts
  */
 export async function appendRejectedFindingToParentNotes({ command, member, parentId, newTask, reason, cycle, log = () => {} }) {
@@ -4447,22 +3751,16 @@ export async function appendRejectedFindingToParentNotes({ command, member, pare
 }
 
 // ---------------------------------------------------------------------------
-// apra-fleet-19o.2 -- resurface rejected newTasks into the NEXT planning
-// dispatch instead of dead-ending in root-bead notes
+// Resurfacing rejected newTasks into the next planning dispatch
 // ---------------------------------------------------------------------------
 //
-// appendRejectedFindingToParentNotes() above is useful for a human
-// archaeologist reading a bead's notes, but useless to the next planning
-// dispatch: the planner has no memory of this run (apra-fleet-unw.3's
-// `resume: false` default) and never reads bead notes as part of its
-// prompt, so a rejected finding dead-ended there and never fed back into a
-// concrete "please fix and resubmit" instruction. These three pure/
-// immutable helpers track the CURRENT set of not-yet-resubmitted rejected
-// newTasks in run state (the caller holds the array; these never mutate it
-// in place) so buildPlannerPrompt() below can inject them verbatim as
-// explicit "previously rejected, fix and resubmit" items on the very next
-// planning-phase dispatch, and drop an item once it has been successfully
-// resubmitted so the list never accumulates forever.
+// A note appended by appendRejectedFindingToParentNotes() is readable by a
+// human but invisible to the planner, which is dispatched without resume and
+// never reads bead notes. These helpers instead track the current set of
+// not-yet-resubmitted rejected newTasks in run state so the planner prompt can
+// carry them as explicit "previously rejected, fix and resubmit" items, and
+// drop each one once resubmitted so the list cannot grow without bound. All
+// are pure: the caller owns the array and none of these mutate it in place.
 
 /**
  * Records a newly-rejected newTask into the pending resurface list, keyed by
@@ -4482,19 +3780,15 @@ export function trackRejectedNewTaskForResurfacing(pending, rejected) {
 }
 
 /**
- * Drops any pending rejected-newTask entries that match a newTask which has
- * now been successfully created -- "cleared once resubmitted successfully"
- * per apra-fleet-19o.2's acceptance criteria.
+ * Drops any pending rejected-newTask entries matching a newTask that has now
+ * been successfully created.
  *
- * apra-fleet-xuo.4: title-only matching missed the common case where the
- * resurfaced prompt explicitly instructs the planner to correct the stated
- * defect -- which usually means changing the title (e.g. '[test] foo' ->
- * 'test: foo') -- leaving the corrected item stuck in the pending list
- * forever. `resubmitted` may be a bare title string (legacy call shape,
- * title-only match, preserved for backward compatibility) or an
- * `{title, description}` object, in which case a match on EITHER the title
- * OR the description (when non-empty) clears the entry, so a
- * title-corrected-but-description-preserved resubmission still clears.
+ * `resubmitted` may be a bare title string (title-only match) or a
+ * `{title, description}` object, in which case a match on EITHER the title OR
+ * a non-empty description clears the entry. Description matching is what
+ * clears a resubmission whose title was corrected in response to the
+ * rejection reason -- title-only matching would leave such an item pending
+ * forever.
  * @param {Array<{title: string, description?: string}>} pending
  * @param {string|{title?: string, description?: string}} resubmitted
  * @returns {Array<{title: string}>} a NEW array
@@ -4512,21 +3806,13 @@ export function clearResubmittedNewTask(pending, resubmitted) {
 }
 
 /**
- * apra-fleet-xuo.4: reconciles the pending resurface list against whatever
- * ACTUALLY exists as a child of the parent bead right now, matching purely
- * on description (title-independent). This exists because the planner --
- * unlike the reviewer-newTask create sites -- never calls
- * persistNewTaskBestEffort/clearResubmittedNewTask at all: it resubmits a
- * corrected finding directly via `bd create` as an ordinary planning-phase
- * bead creation. clearResubmittedNewTask() above can only ever fire from
- * its own call sites, so a planner resubmission (title corrected per the
- * resurfaced prompt's explicit instruction, per apra-fleet-xuo.4) would
- * otherwise never be cleared and would keep reappearing in every subsequent
- * planning prompt for the rest of the run. Call this after any phase that
- * may have created new children under the parent (chiefly the Plan phase)
- * with the current live child list (e.g. from `bd list --parent <id>
- * --json`) to drop any pending entry whose description now matches a real
- * child, regardless of what title that child ended up with.
+ * Reconciles the pending resurface list against the parent bead's CURRENT
+ * children, matching purely on description and ignoring titles. The planner
+ * resubmits a corrected finding directly via `bd create` and never calls
+ * clearResubmittedNewTask(), so without this pass a planner resubmission would
+ * stay pending and reappear in every later planning prompt of the run. Call it
+ * after any phase that may have created children under the parent (chiefly the
+ * Plan phase), passing the live child list.
  * @param {Array<{title: string, description?: string}>} pending
  * @param {Array<{description?: string}>} currentChildren
  * @returns {Array<{title: string, description?: string}>} a NEW array
@@ -4548,11 +3834,9 @@ export function reconcilePendingRejectedNewTasks(pending, currentChildren) {
 }
 
 /**
- * Formats the pending rejected-newTask items (see
- * trackRejectedNewTaskForResurfacing above) as explicit "previously
- * rejected, fix and resubmit" prompt lines -- consumed by buildPlannerPrompt
- * below. Returns `[]` when nothing is pending (byte-identical prompt to
- * before apra-fleet-19o.2 landed in that case).
+ * Formats the pending rejected-newTask items as explicit "previously rejected,
+ * fix and resubmit" prompt lines for the planner prompt. Returns `[]` when
+ * nothing is pending, so the prompt is unchanged in that case.
  * @param {Array<{title: string, description: string, reason: string, cycle: number|string}>} pending
  * @returns {string[]}
  */
@@ -4571,35 +3855,23 @@ export function buildRejectedNewTaskResurfaceLines(pending) {
 }
 
 // ---------------------------------------------------------------------------
-// PR body/title text sanitization (apra-fleet-hfs): the final reviewer's
-// verdict (finalVerdictResult, produced by the finalVerdict-schema agent
-// dispatch below) is LLM output, and its free-text `notes` field is embedded
-// directly in the PR title/body string that the Publish PR step interpolates
+// PR body/title text sanitization. The final reviewer's verdict notes are LLM
+// output embedded in the PR title/body that the Publish PR step interpolates
 // into a double-quoted `gh pr create --title "..." --body "..."` command()
-// string. That is the exact same injection class as N3 above (backtick and
-// `$(...)` command substitution both survive inside POSIX double quotes; a
-// trailing backslash can neutralize/escape the closing quote) -- just a
-// different call site, first flagged by unw2.9's adversarial reviewer and
-// tracked as apra-fleet-hfs.
+// string -- the same injection class SAFE_TEXT_RE exists to close for newTask
+// titles, at a different call site.
 //
-// Unlike validateNewTask() (N3), a rejection is not an option here: the PR
-// must still be published with the sprint's verdict visible to a human
-// reviewer even when the notes are malformed -- the "fail closed" allowlist
-// used for newTasks would mean an adversarial/malformed verdict silently
-// drops the ONE thing (verdict notes) a human reviewer most needs to see. So
-// this SANITIZES instead of rejecting: every character outside the
-// SAFE_TEXT_RE allowlist above (same allowlist, same "strip over escape"
-// reasoning -- sprint members run mixed shells and no single escaping scheme
-// is reliably safe across all of them) is replaced with a space, so the
-// notes remain readable in the PR body rather than being dropped outright,
-// while nothing that can break out of the double-quoted command string ever
-// reaches `command()`.
+// Unlike validateNewTask(), rejecting is not an option here: the PR must still
+// carry the sprint's verdict to a human even when the notes are malformed, and
+// failing closed would drop the one thing that human most needs to read. So
+// this strips instead: every character outside SAFE_TEXT_RE becomes a space,
+// keeping the notes readable while nothing that could break out of the
+// double-quoted command string reaches `command()`.
 /**
  * Sanitizes LLM-authored free text (e.g. finalVerdictResult.notes) before it
  * is interpolated into a double-quoted `gh pr create`/`git` command() string.
- * Strips (does not escape) every character outside SAFE_TEXT_RE, collapses
- * the resulting whitespace, and returns the still-readable remainder -- see
- * the comment above for why stripping is preferred over escaping here.
+ * Replaces every character outside SAFE_TEXT_RE with a space, collapses the
+ * resulting whitespace, and returns the readable remainder.
  * @param {unknown} text
  * @returns {string}
  */
@@ -4607,31 +3879,24 @@ export function sanitizePrText(text) {
     const str = String(text ?? '');
     let out = '';
     for (const ch of str) {
-        // Newlines/tabs collapse to a plain space along with every other
-        // disallowed character -- SAFE_TEXT_RE intentionally has no
-        // multi-line allowance, since a literal newline embedded in a
-        // double-quoted command-string argument is not reliably safe across
-        // the mixed POSIX/Windows shells sprint members run (see N3 above).
+        // Newlines and tabs collapse to a space along with every other
+        // disallowed character: SAFE_TEXT_RE has no multi-line allowance,
+        // because a literal newline inside a double-quoted command-string
+        // argument is not reliably safe across mixed POSIX/Windows shells.
         out += SAFE_TEXT_RE.test(ch) ? ch : ' ';
     }
     return out.replace(/\s+/g, ' ').trim();
 }
 
 // ---------------------------------------------------------------------------
-// Non-hosted git remote detection for Harvest/Publish (apra-fleet-eft.64.1)
+// Non-hosted git remote detection for Harvest/Publish
 // ---------------------------------------------------------------------------
 //
-// apra-fleet-eft.64: integ-test-playbook.md's Setup wires the toy sandbox's
-// git 'origin' to a plain `file://` bare mirror, by design, for isolation --
-// it never provisions any GitHub-hosting credential (gh auth login /
-// GH_TOKEN) for that sandbox HOME. The Harvest phase's PR-creation step
-// (`gh pr create`, below) has no fallback for a git remote with no hosting
-// API behind it, so every real smoke-test run that reaches Harvest hits a
-// hard 'gh auth login required' failure and the whole sprint ends FAILED --
-// leaving the target/canary issue open even after a fully APPROVED-quality
-// sprint. This pure classifier lets the Publish PR step (below) detect that
-// case up front and take the non-PR-gated closure path instead, with no
-// dependency on `gh` auth at all.
+// A sprint can run against an origin with no hosting API behind it -- e.g. a
+// sandbox wired to a plain `file://` bare mirror, which has no `gh` credential
+// either. `gh pr create` cannot work there, so the Publish PR step uses this
+// classifier to detect the case up front and take the non-PR-gated closure
+// path instead, rather than failing the whole sprint on `gh` auth.
 /**
  * Returns true when `remoteUrl` looks like a GitHub remote `gh pr create`
  * can actually open a PR against (an `https://github.com/...` or
@@ -4650,41 +3915,19 @@ export function isHostedGithubRemote(remoteUrl) {
     return /^(https?:\/\/([^/@\s]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url);
 }
 
+// The Regression Test phase is informational-only and must never gate the
+// sprint; packages/apra-fleet-se/test/regression-phase-never-gates.test.mjs
+// enforces that.
 // ---------------------------------------------------------------------------
-// (removed) Integ report part-2 (smoke test) SHA-freshness validation
-// ---------------------------------------------------------------------------
-//
-// The eft.55.2/eft.66.1 `extractPart2Sha` / `validatePart2Evidence` helpers
-// used to live here. They existed to prove that the per-cycle Integ Test
-// phase's part-2 (smoke test) evidence came from THIS cycle's deploy-verified
-// SHA, rather than being stale evidence inherited from a resumed session (the
-// eft.55 incident). The integ/regression split retired that whole concern:
-// part 2 moved to the once-per-sprint Regression Test phase, which provisions
-// its own throwaway sandbox and therefore has no deployed SHA to attest
-// against, and the per-cycle Integ Test phase is now feature closure only,
-// judged against the features' own `[test]` tasks in the branch working tree
-// (inherently current, nothing to go stale). `getDeployedSha()` -- the engine
-// probe that fed these -- was removed at its call site in the same change,
-// leaving these two exported but unreachable, so they are removed here too
-// rather than left as tested-but-dead code.
-//
-// If a future phase ever needs the same freshness guarantee, restore this
-// from git history (search: PART2_SHA_MARKER_RE) rather than reinventing it.
-// The anti-regression pin that the dispatch no longer threads a part-2 SHA
-// clause lives in test/regression-phase-never-gates.test.mjs.
-// ---------------------------------------------------------------------------
-// Finalization prompt builders (apra-fleet-unw.17, A6)
+// Finalization prompt builders
 // ---------------------------------------------------------------------------
 
 /**
- * Builds the self-contained Final Review prompt (finalVerdict schema). Per
- * the A6 finding, the old prompt was the literal string 'Pass or Fail?' with
- * no context at all -- the reviewer had nothing to actually evaluate, so its
- * answer was necessarily a rubber stamp. This prompt instead embeds the real
- * evidence gathered by the orchestrator over the run: the sprint scope,
- * branch/base-branch (so the reviewer can diff for itself), and the actual
- * bead-count / deploy / integ-test evidence -- so a returned PASS reflects
- * something concrete rather than being unconditionally assumed.
+ * Builds the self-contained Final Review prompt (finalVerdict schema),
+ * embedding the evidence the orchestrator gathered over the run -- sprint
+ * scope, branch and base branch so the reviewer can diff for itself, and the
+ * bead-count / deploy / integ-test outcomes -- so a returned PASS rests on
+ * something concrete instead of being a rubber stamp.
  * @param {{
  *   targetIssues: string[], branch: string, baseBranch: string, goal: string,
  *   cyclesRun: number, closedCount: number, openAtGoalCount: number,
@@ -4714,10 +3957,9 @@ function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cycle
         );
     }
     if (rejectedNewTasks.length > 0) {
-        // N3: reviewer-proposed newTasks that failed the pre-interpolation
-        // allowlist (see validateNewTask) are non-fatal to the sprint but
-        // must be visible to a human -- surfaced here in the same evidence
-        // block the final reviewer/human reads.
+        // newTasks rejected by validateNewTask are non-fatal to the sprint but
+        // must still reach a human, so they are surfaced in the same evidence
+        // block the final reviewer reads.
         lines.push(
             `${rejectedNewTasks.length} reviewer-proposed newTask(s) were REJECTED (not created via bd create) for failing input validation: ` +
             rejectedNewTasks.map((r) => `C${r.cycle}: ${r.reason}`).join(' | ')
@@ -4738,15 +3980,12 @@ function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cycle
 }
 
 /**
- * Assembles the real `analysisText` block for the Harvester dispatch (N12,
- * apra-fleet-unw2.10) from this run's actual in-memory tracking state --
- * cycle-by-cycle closed-bead progress, deploy/integration outcomes, rejected
- * reviewer newTasks, and the final verdict. Every source here already exists
- * elsewhere in this file (closedCountHistory/highWaterClosedCount from N9's
- * stall detector, deployFailures/integFailures from A4, rejectedNewTasks
- * from N3, finalVerdictResult from A6) -- this just formats them into the
- * verbatim content the harvester writes to `analysisArtifactFile`, per
- * harvester.md Step 1 ("write the analysisText verbatim").
+ * Assembles the `analysisText` block for the Harvester dispatch from this
+ * run's in-memory tracking state: cycle-by-cycle closed-bead progress,
+ * deploy/integration outcomes, rejected reviewer newTasks, the final verdict,
+ * and the regression pass. Pure formatting -- every value is computed
+ * elsewhere. harvester.md requires this content be written verbatim to
+ * `analysisArtifactFile`.
  * @param {object} opts
  * @returns {string}
  */
@@ -4757,11 +3996,10 @@ function buildAnalysisText({
     finalVerdictResult, finalClosedCount, finalOpenAtGoalCount,
     regressionResult = null,
 }) {
-    // Informational only -- the once-per-sprint Regression Test phase runs
-    // AFTER the final verdict is decided and never gates it. Its failures are
-    // filed as parent-less `[regression][carry-over]` beads, which is why
-    // they do not appear in the open-at-goal count above; they are surfaced
-    // here so the sprint analysis still tells the whole story.
+    // The once-per-sprint Regression Test phase runs after the final verdict
+    // and never gates it. Its failures are filed as parent-less carry-over
+    // beads, so they never appear in the open-at-goal count and are reported
+    // separately here.
     const regressionLines = regressionResult === null
         ? ['Regression pass: not run this sprint (no regression-test-playbook.md, or the probe failed).']
         : [
@@ -4814,13 +4052,13 @@ function buildAnalysisText({
 }
 
 /**
- * Builds the `costAnalysis` block for the Harvester dispatch (N12) from the
- * live `budget` object (wired in N10/apra-fleet-unw2.8). Reports only what
- * is actually known -- an unset ceiling or an unpriced-model spend gap is
- * stated as "not tracked"/"unlimited", never backfilled with a fabricated
- * number (per F2's honesty goal and the harvester contract's "insert
- * verbatim, do not recompute" rule).
- * @param {{ total: number|null, spent?: () => number, remaining?: () => number }} budget
+ * Builds the `costAnalysis` block for the Harvester dispatch from the live
+ * `budget` object. Reports only what is known: an unset ceiling, an absent
+ * spent() and an unpriced-model spend gap are each stated as such rather than
+ * backfilled with a fabricated number, since harvester.md inserts this block
+ * verbatim and never recomputes it. The remaining budget is derived from
+ * `total` and `spent()`, not read from the budget object.
+ * @param {{ total: number|null, spent?: () => number, pricingSummary?: () => { real: number, fallback: number } }} budget
  * @returns {string}
  */
 function buildCostAnalysis(budget) {
@@ -4839,10 +4077,9 @@ function buildCostAnalysis(budget) {
     } else {
         lines.push('Remaining budget: unknown/unbounded.');
     }
-    // apra-fleet-dv5.6: reports the SOURCE of each priced dispatch's cost --
-    // real per-member rates (get_member_model_pricing) vs. pricing.mjs's
-    // tier-band/concrete-model fallback -- so this note stays honest about
-    // precision rather than implying every number above is equally exact.
+    // Report the SOURCE of each priced dispatch's cost -- real per-member
+    // rates vs. pricing.mjs's tier-band fallback -- so the figures above are
+    // not read as uniformly exact.
     const summary = budget && typeof budget.pricingSummary === 'function' ? budget.pricingSummary() : null;
     if (summary) {
         const { real, fallback } = summary;
@@ -4865,22 +4102,15 @@ function buildCostAnalysis(budget) {
 
 /**
  * Computes the collision-resistant filesystem slug used for
- * `docs/sprint-analysis-<slug>.md` (the harvester's `analysisArtifactFile`
- * input). Exported (apra-fleet-unw2.22, N12 follow-up) purely for direct
- * unit testing, per this file's existing convention of exporting otherwise-
- * internal pure helpers (parseBdJson, validateArgs, checkMemberTopology,
- * validateNewTask) for testability.
+ * `docs/sprint-analysis-<slug>.md`, the harvester's `analysisArtifactFile`
+ * input.
  *
- * A naive `branch.replace(/[\\/]+/g, '-')` is not collision-free: two
- * differently-named branches that differ only in a `/` vs. a pre-existing
- * `-` at the same position (e.g. `feat/fleet-reorg` and `feat-fleet-reorg`)
- * would otherwise collapse to the identical slug and clobber each other's
- * analysis artifact if both sprints ever ran against the same
- * repo/worktree in overlapping windows. A short content hash of the RAW
- * (pre-replace) branch name is appended to disambiguate -- it stays
- * deterministic per branch (same idempotent-rerun/golden-transcript
- * guarantee the human-readable prefix already provided) while making slug
- * collisions cryptographically negligible.
+ * Replacing separators alone is not collision-free: two branches differing
+ * only in a `/` versus a pre-existing `-` at the same position (e.g.
+ * `feat/fleet-reorg` and `feat-fleet-reorg`) would collapse to the same slug
+ * and clobber each other's artifact. Appending a short hash of the RAW branch
+ * name disambiguates them while staying deterministic per branch, so reruns
+ * still produce the same slug.
  * @param {string} branch
  * @returns {string}
  */
@@ -4891,29 +4121,19 @@ export function computeBranchSlug(branch) {
 }
 
 /**
- * Builds the self-contained Harvester dispatch prompt, per the vendored
- * harvester.md contract's documented inputs. N12 (apra-fleet-unw2.10): this
- * runner now wires the five required inputs
- * (analysisArtifactFile/analysisText/costAnalysis/base-branch/branch) with
- * real, runner-computed values instead of instructing the harvester to
- * treat them as unavailable -- the prior version of this prompt told a
- * contract-obeying harvester to violate its own contract every sprint (see
- * N12, feedback-reassessment.md). The vendored input schema is intentionally
- * not loosened; the fix is entirely on the caller side. Exported (apra-
- * fleet-unw2.22) so tests can directly build a harvester prompt with
- * forced-blank inputs and assert the hardened mock contract check catches
- * it, without needing to reconstruct this format by hand or spin up a full
- * sprint run.
+ * Builds the self-contained Harvester dispatch prompt, wiring the five inputs
+ * harvester.md requires -- analysisArtifactFile, analysisText, costAnalysis,
+ * baseBranch and branch -- with real, runner-computed values. The vendored
+ * input schema is deliberately not loosened to accommodate missing values;
+ * supplying them is the caller's job.
  * @param {{ branch: string, baseBranch: string, targetIssues: string[], analysisArtifactFile: string, analysisText: string, costAnalysis: string }} opts
  * @returns {string}
  */
 export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysisArtifactFile, analysisText, costAnalysis }) {
-    // analysisText/costAnalysis are orchestrator-computed (this file, from
-    // real run state), not another agent's free text -- wrapUntrustedBlock's
-    // "untrusted output from another agent" framing does not apply. They
-    // still need a collision-safe fence (per-block, sized past the longest
-    // backtick run in the content) so a literal ``` line inside either
-    // block can never be mistaken for its closing fence.
+    // analysisText/costAnalysis are orchestrator-computed, not another agent's
+    // output, so wrapUntrustedBlock does not apply. Each still gets its own
+    // fence sized past the longest backtick run in that block, so a literal
+    // fence line inside the content cannot terminate it early.
     const fence = (content) => '`'.repeat(Math.max(3, (content.match(/`+/g) || []).reduce((m, r) => Math.max(m, r.length), 0) + 1));
     const analysisFence = fence(analysisText);
     const costFence = fence(costAnalysis);
@@ -4928,46 +4148,42 @@ export function buildHarvesterPrompt({ branch, baseBranch, targetIssues, analysi
 }
 
 // ---------------------------------------------------------------------------
-// Typed sprint-abort detection (apra-fleet-eft.1.2)
+// Typed sprint-abort detection
 // ---------------------------------------------------------------------------
 //
-// The single predicate that decides whether an error thrown out of
-// runSprintCycle() (renamed from main() below) is a "sprint-abort" the
-// caller should route through finalizeAbort() + a terminal history record,
-// as opposed to a genuinely unexpected/untyped failure that must keep
-// today's behavior (grace window, exit 1, no PR, no history-record write).
-// Covers:
-//   - every WorkflowError subclass this runner throws itself
-//     (StalledSprintError, SprintPlanRejectedError,
-//     ReviewerContractViolationError -- errors.mjs) or that the workflow
-//     package throws on its behalf (BudgetExceededError);
-//   - the plain `Error` pre-sprint validation failures thrown above (they
-//     predate errors.mjs and are not WorkflowError subclasses, but the
-//     plan explicitly scopes them as sprint-abort paths too) -- identified
-//     by their stable 'Pre-sprint validation failed:' message prefix, the
-//     same string every one of those throw sites already uses.
-// Deliberately excludes CancelledError: a cooperative /stop-triggered
-// cancellation is a normal, requested shutdown, not an aborted sprint, and
-// must keep flowing through its own existing 'cancelled' status path
-// untouched.
+// The single predicate deciding whether an error thrown out of
+// runSprintCycle() is a "sprint-abort" the caller routes through
+// finalizeAbort() plus a terminal history record, as opposed to an unexpected
+// failure that keeps the plain grace-window/exit-1 path with no PR and no
+// history record. The intended set is:
+//   - StalledSprintError, SprintPlanRejectedError and
+//     ReviewerContractViolationError (errors.mjs), which this runner throws
+//     itself, plus BudgetExceededError, which the workflow package throws on
+//     its behalf;
+//   - the plain `Error` pre-sprint validation failures, which are not
+//     WorkflowError subclasses and are identified by the stable
+//     'Pre-sprint validation failed:' message prefix every such throw site
+//     uses.
+// CancelledError is deliberately excluded: a cooperative cancellation is a
+// requested shutdown, not an aborted sprint, and must keep flowing through its
+// own 'cancelled' status path.
 export function isTypedAbortError(err) {
     if (!err || err instanceof CancelledError) return false;
     if (err instanceof WorkflowError) return true;
     return typeof err.message === 'string' && err.message.startsWith('Pre-sprint validation failed:');
 }
 
-// apra-fleet-eft.54.1: true when a thrown dispatch error means the agent
-// dispatch did NOT deliver a usable result and therefore produced no
-// code/beads mutation to publish -- an aborted/failed agent dispatch
-// (AgentDispatchError), a dispatch-channel transport failure
-// (FleetTransportError), or any typed sprint-abort error. In that case the
-// orchestrator's post-dispatch G-push/D-push sync teardown is pure wasted
-// real-bd work and is skipped (see withGitSync's finally).
+// True when a thrown dispatch error means the dispatch delivered no usable
+// result and therefore produced no code/beads mutation to publish: a failed
+// agent dispatch (AgentDispatchError), a dispatch-channel transport failure
+// (FleetTransportError), or any typed sprint-abort error. The orchestrator's
+// post-dispatch sync teardown is then wasted work and is skipped (see
+// withGitSync's finally).
 //
-// Deliberately EXCLUDES an AgentDispatchError whose reason is
-// 'max_turns_exhausted': that is a RESUMABLE partial-work case -- the agent
-// ran and may have committed real code/beads before running out of turns, so
-// its work still needs to be synced and its teardown must run normally.
+// An AgentDispatchError with reason 'max_turns_exhausted' is deliberately
+// EXCLUDED: the agent ran and may have committed real code or beads before
+// running out of turns, so that work still needs syncing and its teardown must
+// run normally.
 export function isNoMutationDispatchFailure(err) {
     if (!err) return false;
     if (err instanceof AgentDispatchError && err.details && err.details.reason === 'max_turns_exhausted') {
@@ -4977,39 +4193,27 @@ export function isNoMutationDispatchFailure(err) {
 }
 
 // ---------------------------------------------------------------------------
-// Abort-path PR publish (apra-fleet-eft.1 / eft.1.1)
+// Abort-path PR publish
 // ---------------------------------------------------------------------------
 //
-// Today a PR is only raised on the two "the sprint ran to a final verdict"
-// outcomes (PASS/FAIL, see the Publish PR step in main() below). A sprint
-// that instead ABORTS by throwing a typed error (StalledSprintError,
-// SprintPlanRejectedError, ReviewerContractViolationError, budget-exceeded,
-// pre-sprint validation errors -- all extend WorkflowError, see errors.mjs)
-// propagates straight to bin/cli.mjs's top-level catch today: grace window,
-// exit 1, no branch push, no PR -- so any real work a doer committed before
-// the abort is invisible to a human unless they know to go dig through the
-// sprint's git history by hand. finalizeAbort() is the fix for that: it is
-// called from the typed-abort catch site (apra-fleet-eft.1.2, a separate
-// task) with the error that caused the abort, and:
-//   1. counts commits on the sprint branch beyond base (this is what decides
-//      whether there is anything for a human to look at -- a zero-commit
-//      abort has produced no diff, so an [ABORTED] PR for it would be pure
-//      noise per the already-resolved zero-commit-abort policy decision);
-//   2. iff >=1 commit: pushes the branch and raises an idempotent
-//      'Auto-sprint [ABORTED]: <branch>' PR whose body carries the typed
-//      error's evidence (code/message/details), sanitized the exact same
-//      way the PASS/FAIL Publish PR step below sanitizes reviewer notes
-//      (sanitizePrText -- see the comment above its definition: this is
-//      LLM/error-surfaced free text landing in a double-quoted `gh pr
-//      create` command() string, the same injection class as N11/hfs);
-//   3. iff 0 commits: raises no PR at all and says so in the return value,
-//      so the caller can still write a terminal history record (eft.1.2)
-//      without a dangling/empty-diff PR.
-// `command` (and, for logging, `log`) are dependency-injected rather than
-// closed over `context` -- this function is called both from main()'s catch
-// site (where `context`'s destructured `command`/`log` are already in
-// scope) and directly from unit tests (eft.1.3) with a mock `command`, with
-// no need to spin up a full sprint run to exercise it either way.
+// The ordinary Publish PR step only runs when the sprint reaches a final
+// PASS/FAIL verdict. A sprint that instead aborts by throwing a typed error
+// would otherwise propagate straight to the CLI's top-level catch with no
+// branch push and no PR, leaving any work a doer already committed visible
+// only to someone willing to dig through git history. Called from the
+// typed-abort catch site with the causing error, finalizeAbort():
+//   1. counts commits on the sprint branch beyond base, which decides whether
+//      there is anything for a human to look at;
+//   2. with >=1 commit, pushes the branch and raises an idempotent
+//      'Auto-sprint [ABORTED]: <branch>' PR whose body carries the error's
+//      code/message/details, sanitized by sanitizePrText for the same reason
+//      the PASS/FAIL step sanitizes reviewer notes;
+//   3. with 0 commits, raises no PR -- there is no diff, so the PR would be
+//      noise -- and reports that in its return value, so the caller can still
+//      write a terminal history record.
+// `command` and `log` are dependency-injected rather than closed over
+// `context`, so this is callable both from the catch site and directly from
+// unit tests with a mock `command`.
 /**
  * @param {{
  *   error: { code?: string, message?: string, details?: unknown },
@@ -5023,20 +4227,14 @@ export function isNoMutationDispatchFailure(err) {
  */
 export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {} }) {
     // 1. How many commits (if any) does the sprint branch carry beyond base?
-    // Every command() call below passes an explicit `member_name: member` --
-    // this runner never lets a git/gh dispatch fall back to an implicit/
-    // ambient member (see the SUPPORTED-TOPOLOGY NOTE near orchestratorMember
-    // above for why that matters in a multi-member fleet).
+    // Every command() call below passes an explicit `member_name` -- this
+    // runner never lets a git/gh dispatch fall back to an ambient member.
     //
-    // `member` (the abort-path diff runner) is not necessarily the same
-    // member that ever created/checked out a LOCAL branch literally named
-    // `baseBranch` -- it may only have the sprint branch itself checked out.
-    // A bare `git rev-list base..branch` then fails with exit 128 ("unknown
-    // revision or path not in the working tree"), observed live on a real
-    // abort (apra-fleet-eft). Fetch it and diff against the remote-tracking
-    // ref instead, which is always resolvable as long as origin has the
-    // branch (true by construction -- baseBranch is the same ref the sprint
-    // branch itself was validated/created from).
+    // `member` need not be a member that ever checked out a LOCAL branch named
+    // `baseBranch`; it may only have the sprint branch. A bare
+    // `git rev-list base..branch` would then fail with "unknown revision", so
+    // fetch first and diff against the remote-tracking ref, which is always
+    // resolvable: baseBranch is the ref the sprint branch was created from.
     await command(
         `git fetch origin ${baseBranch}`,
         { member_name: member, silent: true, label: `Fetch base branch '${baseBranch}' for abort-path diff` }
@@ -5059,10 +4257,9 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     );
 
     const prTitle = `Auto-sprint [ABORTED]: ${branch}`;
-    // Same sanitization rationale as the PASS/FAIL Publish PR step below:
-    // the typed error's message/details/code can originate from agent
-    // output or other untrusted-ish sources upstream, and this text is
-    // interpolated into a double-quoted `gh pr create` command() string.
+    // The error's code/message/details can originate from agent output, and
+    // this text is interpolated into a double-quoted `gh pr create` command()
+    // string -- same sanitization rationale as the PASS/FAIL Publish PR step.
     const safeCode = sanitizePrText(error && error.code);
     const safeMessage = sanitizePrText(error && error.message);
     const safeDetails = sanitizePrText(
@@ -5090,13 +4287,10 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
 
     if (!prCreateRes.ok) {
         if (/already exists/i.test(prCreateRes.error || '')) {
-            // N11-style idempotency (see the PASS/FAIL Publish PR step
-            // below): the desired end state (a PR is open for this branch)
-            // already holds, so this is swallowed rather than thrown. The
-            // real `gh`/mock error text carries the existing PR's URL
-            // inline (e.g. "... already exists: https://.../pull/1 ...");
-            // pull it out so the caller/history record can still surface a
-            // usable link rather than just `null`.
+            // Idempotent: the desired end state -- a PR open for this branch
+            // -- already holds, so this is swallowed rather than thrown. The
+            // error text carries the existing PR's URL inline, so extract it
+            // and return a usable link rather than `null`.
             const urlMatch = /https?:\/\/\S+/.exec(prCreateRes.error || '');
             const existingUrl = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : null;
             log(`finalizeAbort: an [ABORTED] PR for branch '${branch}' already exists -- treating as idempotent success (${prCreateRes.error}).`);
@@ -5113,45 +4307,24 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
 }
 
 // ---------------------------------------------------------------------------
-// Client-side dispatch-timeout watchdog for the interactive Planner path
-// (apra-fleet-eft.28.3)
+// Client-side dispatch watchdog
 // ---------------------------------------------------------------------------
 //
-// apra-fleet-eft.28 RECURRED (integ cycle 6) despite eft.28.1's fix (dead-PID
-// fast-fail on execute_prompt's interactive-session reuse check, both at
-// pre-dispatch time and via the 5s liveness poll racing the response wait --
-// src/tools/execute-prompt.ts) and eft.28.2 (proving runner.js's own retry
-// loop surfaces that fast-fail as a bounded, logged+persisted terminal
-// failure). Both of those only fire when the member's claude PID is actually
-// DEAD. The recurrence was a member process that stayed ALIVE but produced
-// zero further output after the prompt was delivered -- a frozen-but-alive
-// interactive/elicitation session -- which no PID check can ever catch, and
-// which is exactly the failure mode `dispatch_timeout_s` exists to bound.
-// `timeout_s`/`max_total_s` are already threaded to execute_prompt on every
-// dispatch (including the Planner's, see DISPATCH_TIMEOUT_S usage below),
-// but the live symptom (state.json frozen for 2m15s+, zero further log
-// lines, no watchdog firing) means that server-side enforcement cannot be
-// trusted as the ONLY backstop for this specific pre-plan dispatch. This adds
-// a second, client-side one that does not depend on the server noticing
-// anything at all.
+// A member process can stay alive while producing no further output after a
+// prompt is delivered -- a state no liveness check detects. `timeout_s` is
+// threaded to execute_prompt on every dispatch, but server-side enforcement
+// cannot be the only guard against an alive-but-silent orchestrator, so this
+// adds a client-side backstop that depends on nothing the server does.
 //
-// withDispatchWatchdog() races an already-in-flight dispatch promise against
-// a LOCAL timer set to `timeoutS` seconds plus a small fixed grace period
-// (so the server's own timeout_s-driven rejection -- the normal, already-
-// logged/tested path -- gets first refusal at producing a clean error). If
-// the dispatch has not settled by the time the local timer fires, this
-// rejects with a typed AgentDispatchError (reason: 'watchdog_timeout')
-// instead of leaving the caller awaiting silently: the SAME typed-error
-// plumbing eft.28.2 already proved flows through runner.js's Planner retry
-// loop, isTypedAbortError()'s typed-abort routing in main(), AND (via
-// bin/cli.mjs's unconditional catch-block release) the per-sprint member
-// reservation release -- so a watchdog-timeout abort is logged, persisted to
-// sprint state as a terminal failure, and releases every reserved member,
-// exactly like every other typed dispatch failure this file already handles.
-// The abandoned underlying dispatch promise is never left dangling
-// un-awaited (Promise.race() attaches its own rejection handler to it), so a
-// late resolution/rejection after the watchdog has already fired is safely
-// dropped rather than becoming an unhandled rejection.
+// withDispatchWatchdog() races an already-in-flight dispatch promise against a
+// local timer of `timeoutS` plus this grace period, the grace existing so the
+// server's own timeout gets first refusal at producing a clean error. If the
+// dispatch has not settled by then, the race rejects with a typed
+// AgentDispatchError (reason 'watchdog_timeout') rather than leaving the caller
+// awaiting silently, and that typed error follows the same abort routing as
+// every other typed dispatch failure here. Promise.race() attaches its own
+// handler to the abandoned dispatch promise, so a late settlement after the
+// watchdog fired is dropped rather than becoming an unhandled rejection.
 const DISPATCH_WATCHDOG_GRACE_S = 30;
 
 /**
@@ -5172,82 +4345,54 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
                 { details: { reason: 'watchdog_timeout', member, timeoutS, graceS: DISPATCH_WATCHDOG_GRACE_S } }
             ));
         }, budgetMs);
-        // apra-fleet-eft.50.1: the watchdog timer is deliberately NOT unref'd.
-        // Its entire contract (see this function's doc comment) is to guarantee
-        // a stalled/dead dispatch is aborted at a bounded, logged budget rather
-        // than left "alive-but-silent" -- and an unref'd timer defeats exactly
-        // that guarantee whenever it is the ONLY work left on the event loop.
-        // A frozen dispatch (a never-settling promise, e.g. a dead persistent
-        // interactive session -- the eft.28/eft.50 hang) leaves nothing else
-        // scheduled: in production a long-lived server/MCP loop happens to keep
-        // the process alive so the unref'd timer still fired, but under
-        // node:test's replay-mode harness (no child processes during the wait)
-        // the loop drained BEFORE the unref'd timer could fire, so the abort
-        // never happened and the run hung silently ("Promise resolution is
-        // still pending but the event loop has already resolved") -- the precise
-        // silent hang this watchdog exists to prevent, dependent only on which
-        // platform/Node build happened to hold the loop open. Keeping the timer
-        // ref'd makes the watchdog self-sufficient: the loop stays alive until
-        // the abort fires (or the dispatch settles first and clearTimeout() in
-        // the finally below releases it, so a normal fast dispatch never delays
-        // a clean process exit).
+        // The timer is deliberately NOT unref'd. A never-settling dispatch can
+        // leave this timer as the only work on the event loop; an unref'd timer
+        // would then let the loop drain before it fires, so the abort would
+        // never happen and the process would hang -- exactly what this watchdog
+        // exists to prevent. Keeping it ref'd holds the loop open until the
+        // abort fires; a dispatch that settles first is released by the
+        // clearTimeout() below, so a fast dispatch never delays process exit.
     });
     return Promise.race([dispatchPromise, watchdogPromise]).finally(() => clearTimeout(timer));
 }
 
-// apra-fleet-9te.4.3: extracted, pure branch-selection decision for the
-// Ensure Sprint Branch phase (see the phase's own inline comments near
-// `phase('Ensure Sprint Branch')` below for the full auto-sprint-9 /
-// apra-fleet-9te.4.1 history) so this logic can be unit-tested directly
-// without spinning up a full mock sprint. Given the outcomes of the two
-// probes the phase already issues -- a `git fetch origin/<branch>` (soft-
-// failed) and, only when that fetch reports the ref is missing, a
-// `git rev-parse --verify --quiet refs/heads/<branch>` local-branch probe --
-// this decides what checkout command to run, or that the phase must abort
-// loudly instead of ever touching git. No I/O of its own; the caller still
-// owns issuing/awaiting the actual command() calls and logging.
+// Pure branch-selection decision for the Ensure Sprint Branch phase. Given the
+// outcomes of the probes that phase issues -- a soft-failed
+// `git fetch origin/<branch>` and, when that reports the ref is missing, a
+// local-branch existence probe -- this decides which checkout command to run,
+// or that the phase must abort rather than touch git at all. No I/O of its
+// own; the caller still issues the command() calls and does the logging.
 //
 // Returns one of:
-//   { action: 'abort', message } -- the branch fetch failed for a reason
-//     OTHER than "branch doesn't exist yet"; caller must throw and never
-//     attempt a checkout (a transient failure here must never be
-//     misdiagnosed as "new branch" and silently reset to base).
-//   { action: 'checkout', reused: true, command } -- reuse a pre-existing
-//     local-only branch as-is (plain `git checkout <branch>`, no reset),
-//     preserving any commits that only exist locally.
+//   { action: 'abort', message } -- the fetch failed for a reason other than
+//     "branch doesn't exist yet", or local and origin have diverged. The
+//     caller must throw and never attempt a checkout: a transient fetch
+//     failure misread as "new branch" would reset the branch to base and
+//     destroy pushed work.
+//   { action: 'checkout', reused: true, command } -- reuse an existing local
+//     branch as-is (plain `git checkout`, no reset), preserving commits that
+//     exist only locally.
 //   { action: 'checkout', reused: false, command, startPoint } -- normal
 //     `git checkout -B <branch> <startPoint>`, where startPoint is
-//     `origin/<branch>` when the fetch succeeded (real pushed work exists)
-//     or `origin/<baseBranch>` when the branch is genuinely new.
+//     `origin/<branch>` when the fetch succeeded and `origin/<baseBranch>`
+//     when the branch is genuinely new.
 //
-// apra-fleet-co4: when the fetch of origin/<branch> SUCCEEDS and a local
-// branch of that name already exists, the two tips can still disagree --
-// the local branch may hold commits origin doesn't (a doer committed but
-// its own push failed, or a sprint was killed/restarted before the
-// orchestrator's own push bracket ran for that commit). The prior version
-// of this function treated a successful fetch as unconditionally
-// authoritative and always reset to origin/<branch>, silently discarding
-// those local-only commits with no stash, no warning -- a confirmed live
-// data-loss incident (commit a919b53a / apra-fleet-eft.68.1). The caller
-// now also passes `localTipStatus`, the result of comparing the two tips
-// via `git merge-base --is-ancestor` in both directions, whenever the
-// fetch succeeded and a local branch exists:
-//   'behind-or-equal' -- local has nothing origin doesn't; safe to reset.
-//   'ahead'            -- local has commits origin doesn't, and origin has
-//                          nothing local doesn't (a clean fast-forward);
-//                          reuse the local branch as-is, exactly like the
-//                          missing-remote-ref case, so those commits
-//                          survive.
-//   'diverged'          -- neither tip is an ancestor of the other; abort
-//                          loudly rather than ever attempt an automatic
-//                          merge/rebase -- a human must decide.
+// When the fetch succeeds and a local branch also exists, the two tips can
+// still disagree, because a doer may have committed without its push
+// succeeding. `localTipStatus` -- the caller's comparison of the two tips via
+// `git merge-base --is-ancestor` in both directions -- resolves that:
+//   'behind-or-equal' -- local holds nothing origin does not; safe to reset.
+//   'ahead'           -- local holds commits origin does not and origin holds
+//                        none local does not; reuse the local branch so those
+//                        commits survive.
+//   'diverged'        -- neither tip is an ancestor of the other; abort rather
+//                        than attempt any automatic merge or rebase, since
+//                        either direction could discard real commits.
 export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, branchFetchError, localBranchExists, localTipStatus }) {
-    // A failed fetch is only safe to treat as "branch doesn't exist yet"
-    // when git says exactly that (`fatal: couldn't find remote ref
-    // <branch>`, exit 128) -- any other failure (network blip, auth token
-    // expiry, DNS hiccup) must NOT silently fall back to origin/<baseBranch>,
-    // or a transient error would trigger the exact destructive reset this
-    // fix exists to prevent, with nothing logged to explain why.
+    // A failed fetch is only safe to read as "branch doesn't exist yet" when
+    // git says exactly that. Any other failure -- network blip, auth expiry,
+    // DNS hiccup -- must not fall back to origin/<baseBranch>, or a transient
+    // error would silently reset the branch to base.
     if (!branchFetchOk && !/couldn't find remote ref/i.test(branchFetchError || '')) {
         return {
             action: 'abort',
@@ -5259,10 +4404,8 @@ export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, br
         };
     }
 
-    // apra-fleet-co4: the fetch succeeded (origin/<branch> exists) AND a
-    // local branch exists AND its tip has diverged from origin's in a way
-    // that is not a clean fast-forward -- never attempt an automatic
-    // merge/rebase, abort loudly and let a human investigate.
+    // Both refs exist and neither tip is an ancestor of the other: never
+    // attempt an automatic merge or rebase, abort and let a human reconcile.
     if (branchFetchOk && localBranchExists && localTipStatus === 'diverged') {
         return {
             action: 'abort',
@@ -5275,12 +4418,9 @@ export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, br
     }
 
     const startPoint = branchFetchOk ? `origin/${branch}` : `origin/${baseBranch}`;
-    // Reuse the local branch as-is (no reset) whenever:
-    //  - the remote ref is missing entirely (the pre-existing
-    //    apra-fleet-9te.4.1 case), or
-    //  - the fetch succeeded but the local branch is strictly ahead of
-    //    origin/<branch> (apra-fleet-co4) -- resetting would discard
-    //    committed-but-unpushed local work.
+    // Reuse the local branch as-is (no reset) whenever the remote ref is
+    // missing entirely, or it exists but the local branch is strictly ahead of
+    // it -- resetting would discard committed-but-unpushed local work.
     const reuseLocalBranch =
         (!branchFetchOk && !!localBranchExists) ||
         (branchFetchOk && !!localBranchExists && localTipStatus === 'ahead');
@@ -5301,44 +4441,26 @@ export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, br
     };
 }
 
-// Mechanical migration to the WorkflowEngine's ES-module entry-point contract
-// (apra-fleet-unw.7): the engine now calls `main(context)` instead of
-// injecting bare globals into an AsyncFunction scope. This destructure is the
-// only change to this file's wiring -- every name below (agent, command,
-// parallel, log, phase, group, endGroup, publishState, args) is the exact
-// same binding the old bare-global version referred to; no control-flow or
-// dispatch-order changes.
 async function runSprintCycle(context) {
     const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget } = context;
 
-    // apra-fleet-eft.70.1: shared full-DB beads snapshot, plus the two choke
-    // points (`command` and `phase` themselves) that keep it correct. Wrapping
-    // both HERE -- before any other statement in this function uses either
-    // name -- means every direct `command(...)`/`phase(...)` call below, and
-    // every helper (doltPullBefore, persistNewTaskBestEffort, withGitSync,
-    // etc.) that receives `command` via an options object built from this same
-    // closure variable, transparently goes through the wrapped version; no
-    // other call site in this file needs to change.
+    // The shared full-DB beads snapshot served by fetchAllBeadsShared(), plus
+    // the two choke points that keep it correct. Both wrappers are installed
+    // HERE, before any other statement in this function uses either name, so
+    // every direct `command(...)`/`phase(...)` call below -- and every helper
+    // (doltPullBefore, persistNewTaskBestEffort, withGitSync, ...) that
+    // receives `command` via an options object built from this closure
+    // variable -- transparently goes through the wrapped version.
     //
-    // Problem this fixes (see fetchAllBeadsShared()'s own doc comment for the
-    // pre-existing concurrent-caller coalescing, which this extends): TWO
-    // adjacent-but-not-concurrent full fetches used to each pay for their own
-    // 'bd list --all --limit 0 --json' round trip, because the prior in-flight
-    // promise had already resolved and been cleared by the time the next
-    // caller started (e.g. updateDashboard()'s `bdListScoped('')` immediately
-    // followed by `bdListScoped('--ready --json')`, or the pre-sprint
-    // updateDashboard() -> initialBeads -> notDoneBeads sequence). Caching the
-    // last snapshot fixes that, but only if it is invalidated the instant the
-    // underlying data can have changed -- so invalidation fires on BOTH:
-    //   1. every `phase()` call (a new Plan/Develop/Review/Deploy/etc. step
-    //      must never inherit a stale view from the step before it), and
-    //   2. every bd command that is not a known read (list/show/ready/
-    //      config) -- update/create/close/note/dep/dolt pull are all treated
-    //      as mutations, conservatively: an unrecognized bd subcommand is
-    //      assumed to mutate rather than assumed safe, so a stray extra full
-    //      fetch is the failure mode, never silently stale data. Non-bd
-    //      commands (git, node probes) never touch beads state and are left
-    //      alone.
+    // The snapshot MUST be invalidated the instant the underlying data can
+    // have changed, so invalidation fires on BOTH:
+    //   1. every `phase()` call -- a new step must never inherit a stale view
+    //      from the step before it, and
+    //   2. every bd command that is not a known read (list/show/ready/config).
+    //      Update/create/close/note/dep/dolt-pull are all mutations, and an
+    //      unrecognized bd subcommand is conservatively assumed to mutate: the
+    //      failure mode is a redundant full fetch, never silently stale data.
+    //      Non-bd commands (git, node probes) never touch beads state.
     let allBeadsSnapshot = null; // { beads } -- cleared by invalidateAllBeadsCache()
     function invalidateAllBeadsCache() { allBeadsSnapshot = null; }
     const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
@@ -5361,38 +4483,33 @@ async function runSprintCycle(context) {
     // is unique per concurrent sprint on the shared remote.
     const sprintMutexId = (args && args.branch) ? String(args.branch) : 'sprint';
 
-    // apra-fleet-eft.29.1: stamp every agent() dispatch below with the SAME
-    // opaque sprint-identity token (sprintMutexId) createMemberReservationClient
-    // reserves members under (bin/cli.mjs's `sprintId: branchName`), so
-    // execute_prompt's dispatch-time reservedBy check (src/tools/execute-prompt.ts)
-    // can recognize a dispatch as coming from the reservation's OWNING sprint even
-    // when the fleet server it dispatches through is a pre-existing shared HTTP
-    // singleton with no per-sprint APRA_FLEET_SPRINT_ID env of its own (root cause
-    // of apra-fleet-eft.29). A single wrapper here covers every `agent(...)` call
-    // site in this file for free; an explicit `sprintId`/`sprint_id` in an
-    // individual call's opts (none today) would still win via the spread order.
+    // Every agent() dispatch carries sprint_id -- the same opaque sprint-identity
+    // token members are reserved under (bin/cli.mjs) -- so the server can
+    // serialize cross-sprint member access and recognize a dispatch as coming
+    // from the reservation's OWNING sprint, even when it dispatches through a
+    // shared fleet HTTP singleton with no per-sprint identity of its own. One
+    // wrapper covers every call site in this file; an explicit `sprint_id` in an
+    // individual call's opts wins via the spread order.
     const agent = (prompt, opts = {}) => agentRaw(prompt, { sprint_id: sprintMutexId, ...opts });
 
-    // apra-fleet-eft.9.2 (Plan 3.4): the supervisor-owned global dolt push mutex
-    // client. Every D-push below serializes through it so two sprints never push
-    // at the same time (constraints C.2/C.3). Three sources, in precedence:
+    // The global dolt push mutex client. Every D-push below serializes through
+    // it so two sprints never push at the same time. Four sources, in
+    // precedence:
     //   1. `context.doltPushMutex` -- an explicitly-injected client (tests wire
     //      an in-process one here to prove the bracket serializes without HTTP).
-    //   2. `args.serviceUrl` present -- the REAL end-to-end path: build an
-    //      HTTP-backed client that acquires/releases against the always-on
-    //      supervisor's mutex routes, so two independently-detached sprint
-    //      children genuinely serialize their pushes through one supervisor.
-    //   3. `args.callTool` present (apra-fleet-f34.2) -- the SUPERVISOR-LESS
-    //      path: a standalone/detached-binary CLI launch has no supervisor to
-    //      reach, but it always holds a connected MCP client to the SHARED
-    //      fleet HTTP singleton, so the fleet server's own `dolt_push_mutex`
-    //      tool coordinates that topology.
-    //   4. none of the above -- a no-op client: a lone sprint
-    //      (single-process/dev/test) has, by definition, no second sprint to
-    //      conflict with, so the push is unguarded and the D-push call sites
-    //      stay uniform (they always acquire/release; only the wiring differs).
-    //      This is a real DEGRADATION whenever a second sprint could exist, so
-    //      it is logged rather than taken silently.
+    //   2. `args.serviceUrl` present -- an HTTP-backed client acquiring against
+    //      the always-on supervisor's mutex routes, so two independently-
+    //      detached sprint children serialize through one supervisor.
+    //   3. `args.callTool` present -- the SUPERVISOR-LESS path: a standalone /
+    //      detached-binary launch has no supervisor to reach but always holds a
+    //      connected MCP client to the shared fleet HTTP singleton, so that
+    //      server's own `dolt_push_mutex` tool coordinates the topology.
+    //   4. none of the above -- a no-op client: a lone sprint has, by
+    //      definition, no second sprint to conflict with, so the push is
+    //      unguarded and the D-push call sites stay uniform (they always
+    //      acquire/release; only the wiring differs). This is a real
+    //      DEGRADATION whenever a second sprint could exist, so it is logged
+    //      rather than taken silently.
     const doltPushMutex = context.doltPushMutex ?? (() => {
         if (args && args.serviceUrl) {
             return createHttpDoltPushMutexClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log });
@@ -5408,25 +4525,23 @@ async function runSprintCycle(context) {
         };
     })();
 
-    // apra-fleet-eft.9.3 (Plan 3.4): the supervisor-owned global child-id
-    // allocator client. Every reviewer-proposed newTask create below mints its
-    // id through it so two sprints creating children under the SAME parent never
-    // derive the same child id (constraint C.4). Same three-source precedence as
-    // the push mutex above:
+    // The global child-id allocator client. Every reviewer-proposed newTask
+    // create below mints its id through it so two sprints creating children
+    // under the SAME parent never derive the same child id. Same four-source
+    // precedence as the push mutex above:
     //   1. `context.idAllocator` -- an explicitly-injected client (tests wire an
     //      in-process one to prove the create path allocates without HTTP).
-    //   2. `args.serviceUrl` present -- the REAL end-to-end path: an HTTP-backed
-    //      client that allocates/confirms against the always-on supervisor's
-    //      allocator routes, so two detached sprint children genuinely serialize
-    //      their id minting through one supervisor authority.
-    //   3. `args.callTool` present (apra-fleet-f34.2) -- the SUPERVISOR-LESS
-    //      path: the fleet server's own `child_id_allocator` tool, reached over
-    //      the MCP connection every standalone CLI launch already holds.
-    //   4. none of the above -- a no-op client: a lone sprint has, by
-    //      definition, no second sprint that could mint a colliding id, so bd
-    //      derives the id itself (childId null -> no `--id` flag). The create
-    //      call sites stay uniform. Logged, not silent: it is a real
-    //      degradation whenever a second sprint could exist.
+    //   2. `args.serviceUrl` present -- an HTTP-backed client allocating and
+    //      confirming against the supervisor's allocator routes, so two
+    //      detached sprint children serialize id minting through one authority.
+    //   3. `args.callTool` present -- the SUPERVISOR-LESS path: the fleet
+    //      server's own `child_id_allocator` tool, over the MCP connection
+    //      every standalone launch already holds.
+    //   4. none of the above -- a no-op client: a lone sprint has no second
+    //      sprint that could mint a colliding id, so bd derives the id itself
+    //      (childId null -> no `--id` flag) and the create call sites stay
+    //      uniform. Logged, not silent: a real degradation whenever a second
+    //      sprint could exist.
     const childIdAllocator = context.idAllocator ?? (() => {
         if (args && args.serviceUrl) {
             return createHttpChildIdAllocatorClient({ serviceUrl: args.serviceUrl, sprintId: sprintMutexId, log });
@@ -5443,110 +4558,85 @@ async function runSprintCycle(context) {
         };
     })();
 
-    // apra-fleet-eft.75.1: guards every resume re-dispatch below against
-    // spawning a second concurrent session on top of a prior one that is
-    // presumed dead/timed out but may still be alive (see
-    // createMemberSessionGuard's doc comment for the root incident). Two-
-    // source precedence, matching the mutex/allocator clients above minus
-    // the supervisor-HTTP source (stop_prompt lives on the fleet MCP server
-    // every launch path already connects to, not the supervisor):
-    //   1. `context.memberSessionGuard` -- an explicitly-injected guard
-    //      (tests wire an in-process one here to prove the pre-resume kill
-    //      fires without a live fleet server).
-    //   2. `args.callTool` -- the REAL end-to-end path: bin/cli.mjs wires
-    //      its already-connected `mcpClient.callTool` through here so a
-    //      resume re-dispatch can call the fleet's own `stop_prompt` tool.
-    //   3. neither -- a no-op guard: nothing to call `stop_prompt` against,
-    //      so every resume proceeds exactly as it did before this guard
-    //      existed (e.g. every other existing test that calls
-    //      `runSprintCycle()`/`main()` directly without wiring `callTool`).
+    // Guards every resume re-dispatch below against spawning a second
+    // concurrent session on top of a prior one that is presumed dead/timed out
+    // but may still be alive (see createMemberSessionGuard's doc comment).
+    // There is no supervisor-HTTP source here: `stop_prompt` lives on the fleet
+    // MCP server every launch path already connects to.
+    //   1. `context.memberSessionGuard` -- an explicitly-injected guard (tests
+    //      wire an in-process one to prove the pre-resume kill fires without a
+    //      live fleet server).
+    //   2. `args.callTool` -- bin/cli.mjs's already-connected
+    //      `mcpClient.callTool`, so a resume can call `stop_prompt`.
+    //   3. neither -- a no-op guard: nothing to call `stop_prompt` against, so
+    //      every resume proceeds unguarded.
     const memberSessionGuard = context.memberSessionGuard ?? createMemberSessionGuard({
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         log,
     });
 
-    // apra-fleet-fmu: the git/dolt credential-auth self-heal callback every
-    // withGitSync bracket's syncMemberBefore/doltPullBefore (G-pull/D-pull)
-    // and syncMemberAfterOrdered (G-push/D-push) pass through as
-    // `onAuthFailure`. Same three-source precedence as memberSessionGuard
-    // immediately above:
+    // The REACTIVE git/dolt credential self-heal callback every withGitSync
+    // bracket passes to syncMemberBefore/doltPullBefore (G-pull/D-pull) and
+    // syncMemberAfterOrdered (G-push/D-push) as `onAuthFailure`. Same
+    // precedence shape as memberSessionGuard above:
     //   1. `context.onAuthFailure` -- an explicitly-injected callback (tests
-    //      wire an in-process one here to prove the self-heal fires without a
-    //      live fleet server).
-    //   2. `args.callTool` -- the REAL end-to-end path: build the real
-    //      provision_vcs_auth self-heal via the ApraFleet client
-    //      (createVcsAuthSelfHealCallback, packages/apra-fleet-client).
-    //   3. neither -- undefined: every existing caller/test that does not
-    //      wire `callTool` (and does not explicitly inject `onAuthFailure`)
-    //      sees ZERO behavior change -- an 'auth'-classified git/dolt failure
-    //      falls straight through to today's exact existing
-    //      GitSyncError/DoltSyncError throw, exactly as before this bead.
+    //      wire an in-process one to prove the self-heal fires without a live
+    //      fleet server).
+    //   2. `args.callTool` -- the real provision_vcs_auth self-heal via
+    //      createVcsAuthSelfHealCallback (packages/apra-fleet-client).
+    //   3. neither -- undefined: an 'auth'-classified git/dolt failure falls
+    //      straight through to the GitSyncError/DoltSyncError throw. Every
+    //      dispatch site therefore guards with `typeof onAuthFailure ===
+    //      'function'`.
     const onAuthFailure = context.onAuthFailure ?? (
         (args && typeof args.callTool === 'function')
             ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
             : undefined
     );
 
-    // apra-fleet-glv.1: the PROACTIVE counterpart to onAuthFailure
-    // immediately above -- same three-source precedence, but unlike
-    // onAuthFailure (undefined when neither source is wired -- every
-    // dispatch-site call site guards with `typeof onAuthFailure ===
-    // 'function'`), this defaults to a callable async no-op so
-    // withGitSync's pre-dispatch bracket below can call it unconditionally
-    // (gated only on `pushCode`, never on whether this was wired). Every
-    // existing caller/test that does not wire `callTool` (and does not
-    // explicitly inject `ensureVcsAuthFresh`) sees ZERO behavior change: the
-    // no-op default never calls provision_vcs_auth, exactly as before this
-    // bead.
+    // The PROACTIVE counterpart to onAuthFailure above. Unlike onAuthFailure,
+    // this defaults to a callable async no-op rather than undefined, so
+    // withGitSync's pre-dispatch bracket can call it unconditionally (gated
+    // only on `pushCode`, never on whether it was wired).
     //   1. `context.ensureVcsAuthFresh` -- an explicitly-injected callback
     //      (tests wire an in-process one to prove the preflight fires/skips
     //      without a live fleet server).
-    //   2. `args.callTool` -- the REAL end-to-end path
-    //      (createVcsAuthPreflightCallback, this file).
+    //   2. `args.callTool` -- createVcsAuthPreflightCallback (this file).
     //   3. neither -- a no-op: no proactive provision_vcs_auth call is ever
-    //      made; fmu's reactive onAuthFailure self-heal (unaffected by this
-    //      bead) remains the only auth-recovery path, exactly as before.
+    //      made and the reactive onAuthFailure self-heal is the only
+    //      auth-recovery path.
     const ensureVcsAuthFresh = context.ensureVcsAuthFresh ?? (
         (args && typeof args.callTool === 'function')
             ? createVcsAuthPreflightCallback({ callTool: args.callTool, command, log })
             : async () => {}
     );
 
-    // apra-fleet-391: LLM-auth counterpart to onAuthFailure immediately
-    // above -- same three-source precedence. Dispatch-site catch handlers
-    // call this (via isAuthDispatchError(err)) before deciding whether to
-    // retry a non-retryable dispatch failure; it resolves true ("healed,
-    // retry once") or false ("not healed, abort as before").
+    // LLM-auth counterpart to onAuthFailure above, same precedence shape.
+    // Dispatch-site catch handlers call this (via isAuthDispatchError(err))
+    // before deciding whether to retry an otherwise non-retryable dispatch
+    // failure; it resolves true ("healed, retry once") or false ("not healed,
+    // abort").
     const onLlmAuthFailure = context.onLlmAuthFailure ?? (
         (args && typeof args.callTool === 'function')
             ? createLlmAuthSelfHealCallback({ callTool: args.callTool, log })
             : undefined
     );
 
-    // Validate BEFORE any agent()/command() dispatch (apra-fleet-unw.14,
-    // A7 defense in depth): a rejected/malformed arg must result in zero
-    // fleet dispatches.
+    // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
+    // must result in zero fleet dispatches.
     const validated = validateArgs(args);
 
-    // Stabilization Issue 32: the per-dispatch time budget every dispatch
-    // site below uses for BOTH timeout_s and max_total_s (Issue 12: silent-
-    // until-done CLIs make inactivity == total runtime, so the two must be
-    // equal). The integ-test dispatch alone gets a 2x ceiling (Issue 30).
+    // The per-dispatch time budget used for BOTH timeout_s and max_total_s:
+    // silent-until-done CLIs make inactivity indistinguishable from total
+    // runtime, so the two must be equal. The integ-test dispatch alone gets a
+    // 2x ceiling.
     const DISPATCH_TIMEOUT_S = validated.dispatchTimeoutS;
     const INTEG_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 2;
 
-    // N10 (apra-fleet-unw2.8): apply the optional `budget` arg ceiling to
-    // THIS run's budget object. Every prior version of this runner ignored
-    // `context.budget` entirely, so `budget.total` stayed `null` (unlimited)
-    // for every run regardless of caller intent -- one of the two reasons
-    // (the other being no `opts.model` ever reaching `agent()`, fixed at
-    // the doer/fixed-role dispatch sites below) `BudgetExceededError` was
-    // unreachable in practice (see N10, feedback-reassessment.md). Setting
-    // it here, before any dispatch, is what makes the ceiling enforceable
-    // for the whole run -- `agent()` itself already checks
-    // `budget.remaining() <= 0` before every dispatch (WF/src/workflow/
-    // index.mjs), that mechanism was always correct, just never fed real
-    // inputs.
+    // Apply the optional `budget` arg ceiling to THIS run's budget object.
+    // Setting it here, before any dispatch, is what makes the ceiling
+    // enforceable for the whole run: agent() checks `budget.remaining() <= 0`
+    // before every dispatch, but a `budget.total` left null means unlimited.
     if (validated.budget !== undefined) {
         budget.total = validated.budget;
     }
@@ -5554,16 +4644,14 @@ async function runSprintCycle(context) {
     let cycle = 1;
     const MAX_CYCLES = validated.maxCycles;
 
-    // apra-fleet-eft.78.3: per-(role, cycle) session registry so a role's
-    // session is resumed across ROUNDS within one cycle (planner R1->R2->R3,
-    // reviewer R1->R2->R3) via an explicit session id, while NEVER resuming
-    // across cycles (fresh eyes) and falling back to a fresh session on a
-    // prior-round dispatch error/timeout or near the context ceiling. The
-    // session id comes from execute_prompt's structuredContent.sessionId
-    // (apra-fleet-eft.78.1), captured via agent()'s onSessionId callback; a
-    // provider that does not support resume returns none, so nothing is
-    // recorded and the next round is fresh (a capability signal, not a
-    // provider-name check). See createRoundSessionRegistry's doc comment.
+    // Per-(role, cycle) session registry: a role's session is resumed across
+    // ROUNDS within one cycle via an explicit session id, but NEVER across
+    // cycles (fresh eyes), and falls back to a fresh session on a prior-round
+    // dispatch error/timeout or near the context ceiling. The session id comes
+    // from execute_prompt's structuredContent.sessionId, captured via agent()'s
+    // onSessionId callback; a provider that does not support resume returns
+    // none, so nothing is recorded and the next round is fresh -- a capability
+    // signal, not a provider-name check. See createRoundSessionRegistry.
     const roundSessions = createRoundSessionRegistry({ log });
 
     const targetIssues = validated.targetIssues;
@@ -5582,136 +4670,92 @@ async function runSprintCycle(context) {
         if (validated.roleMap && validated.roleMap[role]) {
             return validated.roleMap[role];
         }
-        // apra-fleet-unw.16: keys here MUST be the canonical lowercase
-        // contracts.ROLES strings (ROLE_DOER/ROLE_REVIEWER, both === the
-        // exact 'doer'/'reviewer' values every call site below already
-        // passes) -- see the roleConst() comment above for why the old
-        // 'Doer'/'Reviewer' capitalized special-case never matched.
+        // Role keys MUST be the canonical lowercase contracts.ROLES strings
+        // (ROLE_DOER/ROLE_REVIEWER), which is exactly what every call site
+        // passes -- a capitalized literal here would silently never match.
         if (role === ROLE_DOER || role === ROLE_REVIEWER) {
             return physicalMembers; // All members act as Doers/Reviewers by default
         }
         return [physicalMembers[0]];
     };
 
-    // N15 (apra-fleet-unw2.11): must use the canonical lowercase
-    // ROLE_ORCHESTRATOR constant, not a literal -- see its doc comment near
-    // the top of this file for why 'orchestrator' is an application-level
-    // pseudo-role, deliberately outside contracts.ROLES.
+    // Uses the canonical ROLE_ORCHESTRATOR constant, not a literal -- see its
+    // doc comment for why 'orchestrator' is an application-level pseudo-role
+    // deliberately outside contracts.ROLES.
     const orchestratorMember = getMemberForRole(ROLE_ORCHESTRATOR);
 
-    // apra-fleet-eft.8.2 + eft.9.1 (Plan 3.3 insertion-point table): ONE shared
-    // bracket wrapping EVERY role-identified agent() dispatch below -- planner,
-    // plan-reviewer, doer, reviewer, deployer, integ-test-runner, harvester.
-    // No phase-based exemptions: a deployer or integ-test-runner running
-    // against a stale checkout/beads clone is exactly as damaging as a stale
-    // doer/reviewer diff, so every one of the seven is bracketed identically.
+    // ONE shared bracket wrapping EVERY role-identified agent() dispatch below
+    // -- planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner,
+    // harvester. No phase-based exemptions: a deployer or integ-test-runner
+    // running against a stale checkout/beads clone is exactly as damaging as a
+    // stale doer/reviewer diff. Bracket order: VCS-auth preflight gate, G-pull,
+    // D-pull, dispatch, G-push, D-push.
     //
     // Two orthogonal sync axes, each pulled before and (optionally) pushed
     // after:
-    //   - CODE (git, 8.1): `pushCode` is true ONLY for the code-writing roles
-    //     (doer, harvester); every other role is read-side (G-pull before, a
-    //     no-op G-push after -- see syncMemberAfter's short-circuit).
-    //   - BEADS (dolt, 9.1): `pushBeads` is true for every role that MUTATES
-    //     beads -- planner (creates tasks), doer (closes them),
-    //     integ-test-runner (closes features / files bugs), harvester (defers
-    //     issues). The pure read-side roles (reviewer, plan-reviewer, deployer)
-    //     D-pull before and no-op D-push after. Note integ-test-runner is
-    //     D-push WITHOUT git push (pushCode:false, pushBeads:true): it never
-    //     touches code, only beads.
+    //   - CODE (git): `pushCode` is true ONLY for the code-writing roles (doer,
+    //     harvester); every other role is read-side (G-pull before, a no-op
+    //     G-push after -- see syncMemberAfter's short-circuit).
+    //   - BEADS (dolt): `pushBeads` is true for every role that MUTATES beads
+    //     -- planner (creates tasks), doer (closes them), integ-test-runner
+    //     (closes features / files bugs), harvester (defers issues). The pure
+    //     read-side roles (reviewer, plan-reviewer, deployer) D-pull before and
+    //     no-op D-push after. integ-test-runner D-pushes WITHOUT a git push: it
+    //     never touches code, only beads.
     //
-    // The orchestrator's OWN beads mutations/reads (post-streak verification
-    // D-pull, reopen/newTask D-push, cycle-eval/final-review D-pull) are NOT
-    // dispatches and are bracketed separately at their own call sites below.
+    // The orchestrator's OWN beads mutations/reads are NOT dispatches and are
+    // bracketed separately at their own call sites below. Deliberately NOT
+    // applied to the Streak Assignment call: that dispatch carries no
+    // `agentType`/persona of its own and is not one of the seven types.
     //
-    // Deliberately NOT applied to the Streak Assignment call further below:
-    // that dispatch carries no `agentType`/persona of its own (see its own
-    // call-site comment) and is not one of the seven dispatch types this
-    // bracket covers.
+    // Option flags:
+    //   - skipPreDispatchSync: the prior attempt failed TERMINALLY with nothing
+    //     published, so the local G/D workspace is unchanged since that
+    //     attempt's pull -- skip the pre-dispatch sync entirely.
+    //   - skipPreDispatchDoltPull: skip only the `bd dolt pull` spawn while
+    //     still running doltPullBefore's sync.remote pre-gate probe and the
+    //     G-side pull; for a dispatch whose beads clone was provably just
+    //     freshened.
+    //   - resumeOntoRemoteTip: the prior attempt was NOT provably a no-mutation
+    //     failure (it may have committed and/or pushed), so run the full
+    //     pre-dispatch sync in syncMemberBefore's resetToRemoteTip mode -- fetch
+    //     and reset onto the remote tip BEFORE the doer can commit, resuming on
+    //     published work instead of re-implementing it and diverging.
+    //   skipPreDispatchSync and resumeOntoRemoteTip encode opposite assumptions
+    //   about whether the prior attempt published anything and MUST never be
+    //   passed together. Nothing in the code enforces this today.
     //
-    // apra-fleet-eft.8.12: `agent` (already in scope in this closure, from
-    // context) is passed through to syncMemberAfterOrdered so a G-push that
-    // hits a real content conflict can attempt exactly one Tier 2
-    // agent-with-runbook resolution before failing the streak -- see
-    // syncMemberAfter's own doc comment for the full ladder and its
-    // mechanical (never agent-trusted) re-verification. This is a no-op for
-    // non-code-writing roles (pushCode:false short-circuits before the
-    // conflict path is ever reached) and never fires for a plain, non-
-    // conflict divergence.
+    // Post-dispatch: when the dispatch COMPLETED, only the SYNC step is retried
+    // on failure -- the turn is never re-dispatched. A push failure is
+    // frequently transient (a racing writer, a momentarily unreachable remote,
+    // a credential refresh in flight) and re-running the sync costs nothing,
+    // whereas re-running the LLM turn costs a full dispatch and risks duplicate
+    // beads/commit mutations. `agent` is threaded to syncMemberAfterOrdered so
+    // a G-push hitting a real content conflict can attempt exactly one
+    // agent-with-runbook resolution before failing the streak (a no-op for
+    // non-code-writing roles; never fires for a plain divergence).
     async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, skipPreDispatchSync = false, skipPreDispatchDoltPull = false, resumeOntoRemoteTip = false } = {}) {
-        // apra-fleet-eft.54.1: on a retry that immediately follows a TERMINAL
-        // no-mutation dispatch failure for this same member (the Planner retry
-        // ladder's 2nd..Nth attempt after a dispatch_failed/auth abort), the
-        // prior attempt published nothing, so the local G/D workspace is
-        // unchanged since the pre-dispatch pull that already ran on that
-        // attempt -- re-issuing syncMemberBefore + doltPullBefore is pure
-        // wasted real-bd work (extra bd/dolt spawns per retry). This is the
-        // SETUP-side twin of the finally's teardown short-circuit below: under
-        // APRA_FLEET_BD_MOCK=off those redundant pre-dispatch brackets, run on
-        // every one of the 5 retry attempts, were the residual real-bd latency
-        // that pushed eft.50's regression test intermittently over its
-        // fast-abort assertion even after the teardown skip landed. Skipping
-        // them here keeps the terminal-abort path anchored to just the fixed
-        // PLANNER_DISPATCH_RETRY_DELAYS_MS backoff. The first attempt (and
-        // every non-retry / happy-path call) keeps the exact prior pre-dispatch
-        // behaviour -- skipPreDispatchSync defaults false.
-        // apra-fleet-eft.87.1: skipPreDispatchSync (the eft.54.1 optimization)
-        // and resumeOntoRemoteTip are mutually exclusive retry modes and MUST
-        // stay that way. skipPreDispatchSync short-circuits the entire pre-
-        // dispatch sync on the STRICT assumption "the prior attempt published
-        // nothing" -- it is only ever passed for a genuine TERMINAL no-mutation
-        // dispatch failure (isNoMutationDispatchFailure). resumeOntoRemoteTip is
-        // the opposite case: a retry whose prior attempt was NOT provably a no-
-        // mutation failure (it may have committed and/or pushed), so it must
-        // FETCH + reset the local branch onto the remote tip BEFORE the doer can
-        // commit, resuming on published work instead of re-implementing it and
-        // diverging. It therefore runs the full pre-dispatch sync with
-        // syncMemberBefore's resetToRemoteTip mode rather than the skip path.
         if (skipPreDispatchSync) {
             log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
         } else {
-            // apra-fleet-glv.1: proactively ensure this member's VCS
-            // credentials are fresh BEFORE the pre-dispatch G-pull, gated to
-            // code-writing (pushCode:true) roles only -- read-only roles
-            // (reviewer/plan-reviewer/deployer) never `git push`, so there is
-            // nothing to preflight for them. Skipped on the skipPreDispatchSync
-            // fast path above for the same reason that path skips G-pull/D-pull
-            // entirely: the prior attempt's preflight on this same member
-            // already ran moments ago in this same retry chain, nothing about
-            // credential freshness has changed since. ensureVcsAuthFresh
-            // itself is a no-op (skips the call) when a still-fresh credential
-            // is already cached for this member -- see its doc comment.
+            // Proactively refresh this member's VCS credentials before the
+            // G-pull, gated to code-writing roles: read-only roles never `git
+            // push`, so there is nothing to preflight. ensureVcsAuthFresh is
+            // itself a no-op when a still-fresh credential is cached.
             if (pushCode) {
                 await ensureVcsAuthFresh(member);
             }
             await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip });
-            // apra-fleet-eft.54.6: skipPreDispatchDoltPull skips ONLY the real
-            // `bd dolt pull` SPAWN (the residual real-bd Dolt sync bracket the
-            // terminal auth-abort path hung on) while STILL running
-            // doltPullBefore's sync.remote pre-gate probe and keeping the
-            // G-side syncMemberBefore above -- see doltPullBefore's skipPull
-            // doc comment. Because a sync.remote-absent clone (every hermetic
-            // scratch clone, the golden-transcript snapshot) never reaches a
-            // real pull anyway, the emitted command sequence is byte-identical
-            // there with or without this flag; only a live clone with a
-            // configured remote actually drops the redundant pull. Set only for
-            // the sprint's FIRST Planner dispatch, whose beads clone the
-            // orchestrator's own pre-sprint-validation doltPullBefore
-            // (eft.34/eft.58.1 call site) already freshened with nothing
-            // mutated since. Defaults false, so every other dispatch pulls.
             await doltPullBefore(member, { command, log, skipPull: skipPreDispatchDoltPull, onAuthFailure });
         }
-        // apra-fleet-eft.54.1: track a terminal dispatch failure so the
-        // post-dispatch sync teardown can be skipped for it (see below).
-        //
-        // apra-fleet-6z8.3: the teardown is deliberately NOT a `finally` any
-        // more. A throw out of a `finally` replaces the (successful) dispatch
-        // result and is indistinguishable, to the caller's retry ladder, from
-        // "the dispatch itself failed" -- which is exactly how a pure D-push
-        // failure (e.g. missing VCS credentials) caused a brand-new Planner LLM
-        // turn to be redispatched over work that was already committed in the
-        // member's local beads clone. Splitting the two lets the sync step be
-        // retried ON ITS OWN and, if it still fails, surfaced as a typed
-        // PostDispatchSyncError that no retry caller may answer by redispatching.
+        // The teardown is deliberately NOT a `finally`. A throw out of a
+        // `finally` replaces the (successful) dispatch result and is
+        // indistinguishable, to the caller's retry ladder, from "the dispatch
+        // itself failed" -- which would let a pure sync failure trigger a brand
+        // new LLM turn over work already committed locally. Splitting the two
+        // lets the sync be retried on its own and, if it still fails, surfaced
+        // as a typed PostDispatchSyncError no retry caller may answer by
+        // redispatching.
         let dispatchThrew = null;
         let dispatchResult;
         try {
@@ -5720,39 +4764,20 @@ async function runSprintCycle(context) {
             dispatchThrew = err;
         }
         {
-            // apra-fleet-eft.54.1: on a TERMINAL dispatch failure the agent
-            // never delivered a usable result, so there is provably nothing
-            // new to publish -- skip the real-bd G-push/D-push teardown
-            // entirely. This is the shared root cause behind eft.54
-            // (auth-failure-no-retry) and eft.50 (attempt1-clean-fail/attempt2-
-            // dead-session): under real bd this teardown otherwise runs
-            // unconditionally on every failed attempt and its sync spawns push
-            // the terminal-abort path past the test's documented fast-abort
-            // bound. Deliberately scoped to dispatch-level failures that
-            // produced no mutation (a failed/aborted agent dispatch), and
-            // deliberately EXCLUDES max_turns_exhausted -- that is a resumable
-            // partial-work case where the agent DID run and may have committed
-            // code/beads that still must be published. The happy path (no
-            // throw) and every non-terminal error keep the exact prior
-            // teardown behaviour.
+            // On a TERMINAL dispatch failure the agent never delivered a usable
+            // result, so there is provably nothing new to publish -- skip the
+            // G-push/D-push teardown entirely. This deliberately EXCLUDES
+            // max_turns_exhausted: that is a resumable partial-work case where
+            // the agent DID run and may have committed code/beads that still
+            // must be published.
             if (dispatchThrew && isNoMutationDispatchFailure(dispatchThrew)) {
                 log(`[Sync] Skipping post-dispatch G-push/D-push for member '${member}' after a terminal dispatch failure (nothing to publish): ${dispatchThrew.message}`);
             } else {
-                // apra-fleet-eft.8.4 (Plan 3.3 push ordering): G-push (code)
-                // before D-push (beads), for code-writing roles only. See
-                // syncMemberAfterOrdered()'s own doc comment for the full
-                // rationale (unreachable-close prevention) and unit tests in
-                // mock-sprint-git-sync-brackets.test.mjs for the scripted-mock
-                // coverage of this ordering.
-                //
-                // apra-fleet-6z8.3: when the dispatch COMPLETED, the sync step
-                // is retried on its own -- a push failure is frequently
-                // transient (a racing writer, a momentarily unreachable remote,
-                // a credential refresh in flight) and re-running the sync costs
-                // nothing, whereas re-running the LLM turn costs a full dispatch
-                // AND risks duplicate beads/commit mutations. When the dispatch
-                // already threw, the teardown keeps its single-attempt shape:
-                // the dispatch error is what surfaces either way.
+                // G-push (code) before D-push (beads) -- see
+                // syncMemberAfterOrdered() for the unreachable-close rationale
+                // behind that ordering. When the dispatch already threw, the
+                // teardown keeps a single-attempt shape: the dispatch error is
+                // what surfaces either way, so retrying the sync buys nothing.
                 const syncAttemptDelaysMs = dispatchThrew ? [0] : POST_DISPATCH_SYNC_RETRY_DELAYS_MS;
                 let syncErr = null;
                 for (let attempt = 0; attempt < syncAttemptDelaysMs.length; attempt++) {
@@ -5774,9 +4799,8 @@ async function runSprintCycle(context) {
                     }
                 }
                 if (syncErr) {
-                    // A dispatch error always wins: it is the more fundamental
-                    // failure, and the pre-6z8.3 code's `finally` masking it
-                    // with the teardown error was never intentional.
+                    // A dispatch error always wins over a sync error: it is the
+                    // more fundamental failure.
                     if (dispatchThrew) throw dispatchThrew;
                     throw new PostDispatchSyncError(
                         `Post-dispatch sync (G-push/D-push) failed for member '${member}' AFTER the dispatch completed successfully: ${syncErr.message}. The dispatch's work is already committed locally -- it must NOT be re-dispatched; fix the sync (credentials/remote) and re-run.`,
@@ -5789,55 +4813,29 @@ async function runSprintCycle(context) {
         return dispatchResult;
     }
 
-    // apra-fleet-xbu.C1: `bd list --parent` accepts exactly one id per
-    // invocation -- a comma-joined multi-target list (`--parent a,b`) is
-    // silently treated as one nonexistent id and returns `[]`.
+    // Scope discovery cannot be built on `bd list --parent`: it accepts exactly
+    // one id per invocation (a comma-joined list is treated as one nonexistent
+    // id and returns `[]`) and is single-level only -- direct children, never
+    // grandchildren -- so a level-3+ descendant would be invisible to the
+    // dispatch scope, not just the dashboard tree.
     //
-    // auto-sprint-3: `bd list --parent <id>` is ALSO single-level only -- it
-    // returns direct children, never grandchildren. The old implementation
-    // (one `bd list --parent <target> <restArgs>` per target issue) could
-    // therefore never see a level-3+ descendant (a feature's own task/test
-    // children), which fed straight into readyLeafBeads()'s actual dispatch
-    // scope, not just the dashboard tree -- confirmed empirically:
-    // `bd list --parent <epic>` returns only the epic's direct
-    // feature/bug children, never their own task/test children.
+    // Instead, pull the full project bead list ONCE per call (`--all` because
+    // `bd list` excludes closed issues by default, which would drop a closed
+    // node's parent link and orphan its whole subtree from discovery; `--limit
+    // 0` because the default row cap could silently truncate a larger scope),
+    // build a parent->children map locally, then BFS from every target issue in
+    // memory to find every descendant at any depth, regardless of status. This
+    // subsumes the multi-target union case without a separate code path, at the
+    // cost of fetching the whole project's beads rather than just the scope's.
     //
-    // Fix: pull the full project bead list ONCE per call (`--all` because
-    // `bd list` excludes closed issues by default, which would silently drop
-    // a closed node's parent link and orphan its whole subtree from
-    // discovery -- e.g. a closed feature with still-open children; `--limit
-    // 0` because the default 50-row cap could silently truncate a
-    // larger-than-50-bead scope), build a parent->children map locally, then
-    // BFS from every target issue in memory to find every descendant at any
-    // depth, regardless of status. This also naturally subsumes the
-    // multi-target union case (the BFS frontier simply starts with all
-    // target issues) without a separate code path.
-    //
-    // Trade-off: this fetches the whole project's beads on every call
-    // (373 beads project-wide as of 2026-07-18) rather than just this
-    // scope's ~13-60 beads. Correctness for a P1 dispatch-scope bug was
-    // judged worth the extra payload.
-    //
-    // `fetchAllBeadsShared` coalesces concurrent callers onto a single
-    // in-flight request instead of letting each fire its own `bd list --all`
-    // (the command text is always identical, so N concurrent callers would
-    // otherwise issue N indistinguishable commands -- harmless against a
-    // real `bd` CLI, but the bd-replay test shim matches recorded responses
-    // FIFO per exact command string, and concurrent callers' real
-    // completion order during recording is timing-dependent, not the same
-    // as replay's queue order. Coalescing means only one command is ever
-    // actually issued for a given overlapping window, so there is nothing
-    // for the replay queue to misorder.
-    //
-    // apra-fleet-eft.70.1: ALSO check `allBeadsSnapshot` (declared at the top
-    // of this function, alongside the `command`/`phase` wrappers that keep it
-    // fresh) before issuing a new request at all. That snapshot survives
-    // ACROSS separate (non-overlapping) calls too -- not just the in-flight
-    // window below -- so a caller that starts after a previous fetch has
-    // already resolved still gets the cached result instead of paying for
-    // its own full round trip, as long as nothing has mutated beads or
-    // started a new phase step since. See the `command`/`phase` wrapper doc
-    // comment above for exactly what invalidates it.
+    // fetchAllBeadsShared() serves that fetch from `allBeadsSnapshot` whenever
+    // one is still valid -- the snapshot survives across separate,
+    // non-overlapping calls (see the command/phase wrappers above for what
+    // invalidates it) -- and otherwise coalesces concurrent callers onto a
+    // single in-flight request. Coalescing matters beyond saving a round trip:
+    // the command text is identical for every caller, and the bd-replay test
+    // shim matches recorded responses FIFO per exact command string, so N
+    // indistinguishable concurrent commands have no reliable replay order.
     let allBeadsInFlight = null;
     async function fetchAllBeadsShared() {
         if (allBeadsSnapshot) return allBeadsSnapshot.beads;
@@ -5879,26 +4877,15 @@ async function runSprintCycle(context) {
             }
         }
 
-        // apra-fleet-eft.24.1: seed scopeIds with any target issue that has
-        // NO children of its own (a childless leaf target, e.g. a bare
-        // issue_type=task with nothing decomposed under it yet). Without
-        // this, scopeIds stayed empty for such a target -- the BFS above
-        // only ever adds descendants -- which short-circuited this function
-        // to `[]` for both the --ready and notDoneBeads queries and tripped
-        // the pre-sprint validation hard-fail before the Planner ever ran.
+        // Seed scopeIds with any target issue that has NO children of its own
+        // (a childless leaf target -- a sprint aimed at a single undecomposed
+        // issue). The BFS above only ever adds descendants, so without this the
+        // scope would be empty and every query would short-circuit to `[]`.
         // Deliberately scoped to childless targets ONLY: a target that DOES
-        // have children is left exactly as before (its own id stays out of
-        // scopeIds, only its descendants are in scope), preserving prior
-        // behaviour bit-for-bit for the already-decomposed case -- including
-        // this same pre-sprint validation's earlier '--ready'/notDoneBeads
-        // gate above, which would otherwise start counting a purely
-        // grouping node (e.g. an epic with no blocking deps of its own) as
-        // independently "ready" work even though it is not a real unit of
-        // work. See readyLeafBeads()'s decomposed-node guard below
-        // (apra-fleet-xbu.C5), which remains unaffected either way: a
-        // target WITH children already contributes its own id to
-        // `parentIds` via its children's `.parent` field regardless of
-        // whether the target itself is in scopeIds.
+        // have children keeps its own id out of scopeIds, so a pure grouping
+        // node is never counted as independently ready work. readyLeafBeads()'s
+        // decomposed-node guard is unaffected either way -- a target with
+        // children already appears in `parentIds` via its children's `.parent`.
         for (const id of targetIssues) {
             if (!childrenOf.has(id) || childrenOf.get(id).length === 0) {
                 scopeIds.add(id);
@@ -5916,10 +4903,8 @@ async function runSprintCycle(context) {
         // particular -- that a plain in-memory filter over `allBeads` cannot
         // reliably replicate. Issue a second project-wide query with those
         // flags, then intersect with the structurally-discovered scope.
-        // apra-fleet-eft.9.7: when assignee is provided, add --assignee flag
-        // to the bd command to enable per-bead work-claiming within the
-        // brackets. This prevents multiple sprints from selecting the same
-        // bead (prevention layer per plan 3.4).
+        // When an assignee is configured, `--assignee` narrows that query to
+        // this sprint's claimed beads so two sprints never select the same one.
         let filterArgs = rest;
         if (validated.assignee) {
             filterArgs = `${rest} --assignee ${validated.assignee}`;
@@ -5929,33 +4914,23 @@ async function runSprintCycle(context) {
         return parseBdJson(filterRaw, filterLabel).filter((b) => b && scopeIds.has(b.id));
     }
 
-    // apra-fleet-xbu.C5: a bead that has been decomposed into subtasks
-    // (i.e. it is itself SOMEONE ELSE's `--parent`) must never be dispatched
-    // to a doer alongside its own subtasks -- the doer would claim/attempt
-    // to close a grouping node, not a leaf unit of work, and (per
-    // GRAPH-SEMANTICS.md) that item's "done" status is meant to come from
-    // its children closing, never from being worked directly. This is a
-    // STRUCTURAL check (does this ready bead have children in scope?), not
-    // an issue_type check -- retyping a bead to change its dispatch
-    // eligibility does not work (issue_type has no effect on `--ready`
-    // inclusion) and was reverted earlier in this remediation (see Phase
-    // A2). A bead can be a leaf `type=task` OR a decomposed `type=bug`/
-    // `type=feature` parent; only the has-children structure tells them
-    // apart.
+    // Returns this scope's ready beads minus any that have been decomposed into
+    // subtasks (i.e. are themselves someone else's `--parent`). A decomposed
+    // bead is a grouping node, not a leaf unit of work: per GRAPH-SEMANTICS.md
+    // its "done" status comes from its children closing, never from being
+    // worked directly. The check is STRUCTURAL (does this ready bead have
+    // children?), not an issue_type check -- issue_type has no effect on
+    // `--ready` inclusion, and a bead can be a leaf `type=task` or a decomposed
+    // `type=bug`/`type=feature` parent, so only the has-children structure
+    // tells them apart. The child set is scope-filtered, so a child outside the
+    // sprint scope does not mark its parent as decomposed.
     async function readyLeafBeads() {
-        // Stabilization log Issue 28: the exclusion set must be built from
-        // children of ANY status, not just open ones. The previous
-        // open-only scope query had a blind spot observed live across run
-        // 15 C2: the moment a decomposed bug's task children ALL closed,
-        // they vanished from the open-beads list, the parent stopped
-        // looking like a parent, and it re-entered doer seeding as a
-        // "leaf" -- where every doer correctly refused it as non-task,
-        // wasting one full dispatch per bead per round until something
-        // closed it. Finishing the work must never re-expose the parent.
-        // bdListScoped('') is the no-extra-query path: it returns the
-        // already-fetched project-wide ANY-status dump (closed included)
-        // filtered to scope -- exactly the child set needed here, with no
-        // new bd command issued.
+        // The exclusion set must be built from children of ANY status, not just
+        // open ones: once a decomposed bead's children all close they vanish
+        // from an open-only list, the parent stops looking like a parent, and it
+        // re-enters doer seeding as a "leaf". bdListScoped('') is the
+        // no-extra-query path -- the already-fetched project-wide any-status
+        // dump filtered to scope, with no new bd command issued.
         const [ready, allAnyStatus] = await Promise.all([
             bdListScoped('--ready --json'),
             bdListScoped(''),
@@ -5965,52 +4940,43 @@ async function runSprintCycle(context) {
     }
 
     /**
-     * N8 (apra-fleet-unw2.6, work items b/c): dispatches one reviewer round
-     * and returns its schema-validated verdict, with the shared
-     * contract-violation retry/surface behavior factored out so BOTH the
-     * normal per-round Develop/Review dispatch AND the Cycle Evaluation
-     * re-review dispatch (work item c) apply the exact same rule: a
-     * `CHANGES_NEEDED` verdict with empty `reopenIds` AND empty `newTasks`
-     * is schema-legal but self-contradictory (nothing for the orchestrator
-     * to act on). The SAME dispatch is retried once; if the contradiction
-     * repeats, this throws `ReviewerContractViolationError` rather than
-     * returning a verdict that could silently accumulate toward
-     * stall-abort as if it were legitimate no-progress.
+     * Dispatches one reviewer round and returns its schema-validated verdict.
+     * Shared by the per-round Develop/Review dispatch and the Cycle Evaluation
+     * re-review so both apply the same contract rule: a `CHANGES_NEEDED`
+     * verdict with empty `reopenIds` AND empty `newTasks` is schema-legal but
+     * self-contradictory (nothing for the orchestrator to act on). The SAME
+     * dispatch is retried once; if the contradiction repeats this throws
+     * `ReviewerContractViolationError` rather than returning a verdict that
+     * would silently accumulate toward stall-abort as legitimate no-progress.
      * @param {{ beadIds: string[], acceptanceCriteriaJson: string }} opts
      * @returns {Promise<{ verdict: string, notes: string, reopenIds: string[], replanIds?: string[], newTasks: object[] }>}
      */
     async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
-        // Stabilization log Issue 9: a full-cycle review is big -- run 6's
-        // reviewer genuinely ran out of the fleet's default turn budget
-        // (num_turns=51 after ~12 minutes of legitimate review work), and a
-        // fresh retry deterministically hits the same wall. Make the budget
-        // explicit and, on max_turns exhaustion, RESUME the same session with
-        // a doubled budget (mirrors the doer's resume-and-continue rationale
-        // at dispatchDoerResume: the session already holds the full review
-        // context, so a short continue-nudge finishes the job instead of
-        // restarting it).
+        // A full-cycle review can genuinely exhaust the fleet's default turn
+        // budget, and a fresh retry deterministically hits the same wall. Make
+        // the budget explicit and, on max_turns exhaustion, RESUME the same
+        // session at a doubled budget: the session already holds the full
+        // review context, so a continue-nudge finishes the job instead of
+        // restarting it.
         const BASE_REVIEWER_MAX_TURNS = 60;
         const reviewerDispatchOpts = {
             member_name: reviewerPool[0],
             agentType: 'reviewer',
             schema: reviewerVerdict,
             model: FIXED_ROLE_TIER.reviewer,
-            // apra-fleet-aw8: reviewer inspects a real diff/branch,
-            // not a quick prompt -- same 300s-default gap as doer
-            // dispatch, observed live tripping on real review work.
+            // The reviewer inspects a real diff/branch, not a quick prompt, so
+            // it needs the sprint's dispatch budget rather than the default.
             timeout_s: DISPATCH_TIMEOUT_S,
             max_total_s: DISPATCH_TIMEOUT_S,
             max_turns: BASE_REVIEWER_MAX_TURNS,
-            // apra-fleet-eft.78.3: within THIS cycle's develop-review loop,
-            // resume the reviewer's OWN prior-round session (R1->R2->R3) via its
-            // explicit session id so a re-review of the next round's fixes keeps
-            // the diff/context it already built. `false` on R1 and on the first
-            // review of any later cycle (roundSessions never resumes across
-            // cycles); cleared on a failed round below so the next round is
-            // fresh. onSessionId captures this round's id for the next round.
-            // The max_turns-exhaustion resume (dispatchReviewerResume) still
-            // overrides this to `resume: true` (in-dispatch continuation).
+            // Within THIS cycle's develop-review loop, resume the reviewer's own
+            // prior-round session by explicit session id so a re-review of the
+            // next round's fixes keeps the diff/context it already built. False
+            // on the first round of any cycle (roundSessions never resumes
+            // across cycles) and cleared on a failed round below. The
+            // max_turns-exhaustion resume overrides this to `resume: true`,
+            // which is an in-dispatch continuation, not a cross-round one.
             resume: roundSessions.resumeArgFor('reviewer', cycle),
             onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
         };
@@ -6028,8 +4994,8 @@ async function runSprintCycle(context) {
             { ...reviewerDispatchOpts, member_name: reviewerPool[0] }
         ));
         const dispatchReviewerResume = () => withGitSync(reviewerPool[0], false, () => agent(
-            // Issue 27 (see the integ resume site): restate the review scope --
-            // a resumed dispatch replaces the delivered prompt artifact.
+            // Restate the review scope: a resumed dispatch replaces the
+            // delivered prompt artifact, so the scope must be repeated inline.
             'Continue your review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. ' +
             `Your scope, restated so a resumed dispatch never loses it: bead id(s) under review ${beadIds.join(', ')} on branch ${validated.branch} against base ${validated.baseBranch}. ` +
             'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
@@ -6044,8 +5010,6 @@ async function runSprintCycle(context) {
         let verdict;
         for (let reviewAttempt = 1; reviewAttempt <= 2; reviewAttempt++) {
             try {
-                // apra-fleet-eft.8.2: reviewer is a read-side role (pushCode:
-                // false) -- G-pull before, no-op G-push after.
                 try {
                     verdict = await dispatchReviewerOnce();
                 } catch (err) {
@@ -6058,27 +5022,22 @@ async function runSprintCycle(context) {
                     }
                 }
             } catch (err) {
-                // apra-fleet-391: this role's existing retry-once loop
-                // (reviewAttempt <= 2 below) already blind-retries an
-                // AgentDispatchError -- including an LLM-auth failure, which
-                // deterministically reproduces on an unhealed retry. Attempt
-                // one self-heal here so that retry actually has a chance to
-                // succeed; the existing loop control below is unchanged.
+                // The retry-once loop below blind-retries an AgentDispatchError,
+                // and an LLM-auth failure reproduces deterministically on an
+                // unhealed retry -- one self-heal attempt gives that retry a
+                // real chance to succeed.
                 if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                     await onLlmAuthFailure({ member: reviewerPool[0], label: 'Reviewer dispatch', error: err.message });
                 }
-                // Stabilization log Issue 9: these synthesized verdicts are
-                // INFRASTRUCTURE failures, not the reviewer contradicting
-                // itself -- mark them dispatchFailed so the contract-violation
-                // guard below never mistakes a dispatch failure for a
-                // self-contradictory LLM verdict (observed live aborting run 6:
-                // max_turns exhaustion + a client timeout were counted as two
-                // contract violations and threw ReviewerContractViolationError).
+                // The verdicts synthesized below stand for INFRASTRUCTURE
+                // failures, not the reviewer contradicting itself -- they are
+                // marked dispatchFailed so the contract-violation guard further
+                // down never mistakes a dispatch failure for a self-
+                // contradictory LLM verdict.
                 if (err instanceof AgentOutputError) {
                     log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
-                    // apra-fleet-eft.78.3: a failed round's session must not be
-                    // resumed by the next round -- drop it so the next review is
-                    // a fresh session (prior-round error/timeout guard).
+                    // A failed round's session must not be resumed by the next
+                    // round -- drop it so the next review starts fresh.
                     roundSessions.clear('reviewer');
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
@@ -6090,24 +5049,19 @@ async function runSprintCycle(context) {
                 } else if (
                     err instanceof AgentDispatchError
                     || err instanceof FleetTransportError
-                    // Stabilization log Issue 13: the review's own read-side
-                    // sync bracket can fail for the same transient
-                    // infrastructure reasons as the dispatch itself (run 8
-                    // died on a G-pull GitSyncError wrapping a client
-                    // 'fetch failed'). Degrade those identically. A REAL
-                    // divergence (GitDivergedError / DoltDivergedError --
-                    // separate classes, deliberately NOT listed here) still
-                    // propagates: that is a branch integrity problem, not a
-                    // blip.
+                    // The review's own read-side sync bracket can fail for the
+                    // same transient infrastructure reasons as the dispatch, so
+                    // it degrades identically. A REAL divergence
+                    // (GitDivergedError / DoltDivergedError -- separate classes,
+                    // deliberately NOT listed here) still propagates: that is a
+                    // branch integrity problem, not a blip.
                     || err instanceof GitSyncError
                     || err instanceof DoltSyncError
                 ) {
-                    // A transport-level failure (e.g. a dropped connection mid-dispatch)
-                    // is exactly as transient/non-schema as an AgentDispatchError -- must
-                    // not be allowed to propagate and abort the whole sprint (apra-fleet-eft).
+                    // A transport-level failure (e.g. a dropped connection
+                    // mid-dispatch) is exactly as transient and non-schema as an
+                    // AgentDispatchError; neither may abort the whole sprint.
                     log(`Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
-                    // apra-fleet-eft.78.3: prior-round dispatch/transport failure
-                    // -> the next review round starts a FRESH session.
                     roundSessions.clear('reviewer');
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
@@ -6120,23 +5074,14 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            // apra-fleet-eft.69.1: deliberately NO separate log() dump of
-            // `verdict` here. Every path above that reaches this line
-            // already produced an activity row that shows the identical
-            // content: the schema-validated success path emits it verbatim
-            // as agent()'s own `output` (JSON.stringify'd) on the standard
-            // AGENT row (the same generic row every other dispatch renders
-            // through -- see src/viewer/index.mjs), and the dispatch-failure
-            // fallback above is likewise already visible on that same
-            // dispatch's (failed) activity row plus the `log()` call right
-            // next to where `verdict` was constructed. A second log() line
-            // re-printing the exact same JSON produced a duplicate row with
-            // no distinct purpose (apra-fleet-eft.69 bug item 1) -- removed
-            // here and at every other post-dispatch site in this file
-            // (Plan Reviewer, Streak Assignment, Doer, Deployer, Integ Test
-            // Runner, Final Verdict, Harvester) for the identical reason,
-            // so every agent dispatch renders uniformly through its one
-            // AGENT row (bug item 2).
+            // Deliberately NO log() dump of `verdict` here. Every path that
+            // reaches this line already produced an activity row with the
+            // identical content: agent() emits the schema-validated output
+            // verbatim on the standard AGENT row (src/viewer/index.mjs), and
+            // each failure fallback logs next to where `verdict` is built. A
+            // second log() would render a duplicate row. The same rule holds at
+            // every post-dispatch site in this file, so every agent dispatch
+            // renders uniformly through its one AGENT row.
 
             if (verdict.dispatchFailed) {
                 if (reviewAttempt < 2) {
@@ -6173,24 +5118,20 @@ async function runSprintCycle(context) {
         return verdict;
     }
 
-    // N4 (apra-fleet-unw2.4): the sprint branch must be git-ensured on EVERY
-    // member that will operate on it, not just the orchestrator. Doers
-    // round-robin across the doer pool and the reviewer runs from the
-    // reviewer pool; on a real multi-member fleet each of those members has
-    // its own checkout, so the old "ensure on the orchestrator only" left
-    // every OTHER member working on whatever branch happened to be checked
-    // out (finding N4). Ensure on the UNION of the orchestrator, doer, and
-    // reviewer pools before the first doer round.
+    // The sprint branch must be git-ensured on EVERY member that will operate
+    // on it, not just the orchestrator: doers round-robin across the doer pool
+    // and the reviewer runs from the reviewer pool, and on a real multi-member
+    // fleet each has its own checkout. Ensure on the UNION of the orchestrator,
+    // doer, and reviewer pools before the first doer round.
     //
-    // SUPPORTED-TOPOLOGY NOTE: this runner has NO cross-member bd/git sync
-    // layer this round (deferred -- docs/plan.md section 5). Every `bd`
-    // command below runs against the orchestrator member's beads DB, and a
-    // doer's own `bd close` runs against its member's DB; that only coheres
-    // when all members share one workspace/DB (or there is a single member).
-    // bin/cli.mjs enforces exactly that via checkMemberTopology() BEFORE the
-    // sprint starts; the ensure-everywhere below is the git half of the same
-    // "every member starts from the same state" guarantee. See
-    // docs/architecture.md "Multi-member topology (fleet-sprint)".
+    // SUPPORTED-TOPOLOGY NOTE: there is no cross-member bd/git sync layer here.
+    // Every `bd` command below runs against the orchestrator member's beads DB
+    // and a doer's own `bd close` runs against its member's DB, which only
+    // coheres when all members share one workspace/DB (or there is a single
+    // member). bin/cli.mjs enforces that via checkMemberTopology() before the
+    // sprint starts; this ensure-everywhere is the git half of the same "every
+    // member starts from the same state" guarantee. See docs/architecture.md
+    // "Multi-member topology (fleet-sprint)".
     const branchEnsureMembers = [...new Set([
         orchestratorMember,
         ...getMembersForRole(ROLE_DOER),
@@ -6198,7 +5139,7 @@ async function runSprintCycle(context) {
     ])];
 
     // Read the requirementsFile (if any) once, up front, so its content can
-    // be threaded into every Plan-phase planner prompt (apra-fleet-unw.15).
+    // be threaded into every Plan-phase planner prompt.
     // A missing/unreadable file is a warning, not a fatal error -- the
     // planner prompt notes the omission and the sprint proceeds without it.
     let requirementsContent = null;
@@ -6211,15 +5152,11 @@ async function runSprintCycle(context) {
         }
     }
 
-    // apra-fleet-eft.58.1: pre-flight beads-health gate -- runs the D-pull
-    // probe BEFORE any setup mutation (the branch-ensure loop's first `git
-    // fetch`/`git checkout -B` just below, and before any PR command), so a
-    // diverged orchestrator beads clone is caught and reported -- with an
-    // actionable, one-line cause naming the workspace path, conflicting
-    // table(s), and remediation -- before the sprint has mutated anything.
-    // See preflightBeadsHealthGate()'s own doc comment (near doltPullBefore
-    // above) for the confirmed root cause (run 20) this closes. This is now
-    // genuinely the first fleet dispatch of the run.
+    // Pre-flight beads-health gate: runs the D-pull probe BEFORE any setup
+    // mutation (the branch-ensure loop's fetch/checkout just below), so a
+    // diverged orchestrator beads clone is caught and reported -- naming the
+    // workspace path, conflicting table(s), and remediation -- while the sprint
+    // has still mutated nothing. This is the first fleet dispatch of the run.
     await preflightBeadsHealthGate(orchestratorMember, { command, log });
 
     // =======================
@@ -6229,10 +5166,9 @@ async function runSprintCycle(context) {
     // the whole sprint develops on `branch`, branched from `base_branch`.
     group('Sprint Setup');
     phase('Ensure Sprint Branch');
-    // N4: dispatch the fetch + checkout -B to EVERY member in the ensure set
-    // (union of orchestrator/doer/reviewer pools), not just the orchestrator.
-    // Sequential (not parallel) so the command log stays deterministic and
-    // the very first dispatch of the run is still the branch-ensure.
+    // Dispatch the fetch + checkout to EVERY member in the ensure set, not just
+    // the orchestrator. Sequential (not parallel) so the command log stays
+    // deterministic.
     for (const member of branchEnsureMembers) {
         // Two sequential command() calls, not a single `a && b` shell string:
         // `&&` is a bash-ism that PowerShell 5.1 (Windows' default, pre-7.0)
@@ -6251,24 +5187,13 @@ async function runSprintCycle(context) {
             }
         );
 
-        // auto-sprint-9: this phase used to ALWAYS checkout -B from
-        // origin/<baseBranch>, regardless of whether origin already had a
-        // <branch> with real, pushed sprint work on it -- silently
-        // force-resetting the branch to base's tip on every single launch
-        // (old commits survive only via reflog/dangling objects, not the
-        // ref) and, since the reset start-point was a remote-tracking ref,
-        // leaving the local branch's upstream pointed at origin/<baseBranch>
-        // instead of origin/<branch>. That's a data-loss risk on every
-        // relaunch and, on any member whose local branch predates this run
-        // (e.g. a freshly-registered member that has never worked this
-        // branch before), leaves it structurally unable to ever see the
-        // sprint's own history. Fetching <branch> itself first (failSoft --
-        // a brand-new sprint branch legitimately doesn't exist on origin
-        // yet, and that must never abort the run) and adopting it as the
-        // checkout start-point when it exists fixes both: real origin
-        // history is never discarded, and `checkout -B <branch>
-        // origin/<branch>` naturally sets up correct tracking. Falls back to
-        // origin/<baseBranch> only when the branch is genuinely new.
+        // Fetch <branch> itself before deciding the checkout start-point:
+        // adopting origin/<branch> when it exists keeps real pushed sprint
+        // history from being force-reset to base's tip on a relaunch, and makes
+        // `checkout -B <branch> origin/<branch>` set up correct upstream
+        // tracking. failSoft because a brand-new sprint branch legitimately
+        // does not exist on origin yet, and that must never abort the run;
+        // origin/<baseBranch> is the fallback only when it is genuinely new.
         const branchFetch = await command(
             `git fetch origin ${validated.branch} --quiet`,
             {
@@ -6278,17 +5203,13 @@ async function runSprintCycle(context) {
                 label: `Fetch existing '${validated.branch}' (if any) on member '${member}'`,
             }
         );
-        // apra-fleet-9te.4.1: when the remote ref for <branch> is missing,
-        // the naive fallback (`checkout -B <branch> origin/<baseBranch>`)
-        // silently force-resets ANY pre-existing local <branch> to base's
-        // tip -- discarding commits from a prior --max-cycles-limited cycle
-        // that closed beads but never got pushed, leaving beads and the git
-        // tree disagreeing. Probe for a pre-existing local branch, both when
-        // the remote ref is missing (needed to decide whether to reuse it as
-        // the missing-remote-ref case) and, since apra-fleet-co4, also when
-        // the fetch succeeded -- a successful fetch alone does NOT make
-        // origin/<branch> authoritative if the local branch has committed
-        // work origin does not (see the tip-comparison probe just below).
+        // Probe for a pre-existing local branch. When the remote ref is
+        // missing, the naive fallback would force-reset that local branch to
+        // base's tip, discarding commits that closed beads but were never
+        // pushed and leaving beads and the git tree disagreeing. The probe also
+        // runs when the fetch SUCCEEDED, because a successful fetch alone does
+        // not make origin/<branch> authoritative if the local branch has
+        // committed work origin does not (see the tip comparison below).
         const localProbe = await command(
             `git rev-parse --verify --quiet refs/heads/${validated.branch}`,
             {
@@ -6300,11 +5221,10 @@ async function runSprintCycle(context) {
         );
         const localBranchExists = localProbe.ok;
 
-        // apra-fleet-co4: when both origin/<branch> and a local <branch>
-        // exist, compare their tips via two `git merge-base --is-ancestor`
-        // checks (one each direction) so decideEnsureBranchAction() never
-        // has to blindly trust that a successful fetch means "safe to
-        // reset" -- see that function's own doc comment for the full
+        // When both origin/<branch> and a local <branch> exist, compare their
+        // tips with two `git merge-base --is-ancestor` checks (one each
+        // direction) so decideEnsureBranchAction() never has to assume a
+        // successful fetch means "safe to reset" -- see that function for the
         // ahead/behind/diverged case breakdown this feeds.
         let localTipStatus;
         if (branchFetch.ok && localBranchExists) {
@@ -6337,12 +5257,10 @@ async function runSprintCycle(context) {
             }
         }
 
-        // apra-fleet-9te.4.3 / apra-fleet-co4: the fetch-outcome/local-probe-
-        // outcome/tip-comparison -> checkout-command decision itself is now
-        // the pure, independently unit-tested decideEnsureBranchAction()
-        // helper defined above (see its own doc comment for the full case
-        // breakdown) -- this call site's only remaining job is turning that
-        // decision into the actual command()/log() dispatch.
+        // The fetch-outcome / local-probe / tip-comparison -> checkout-command
+        // decision lives in the pure decideEnsureBranchAction() helper above;
+        // this call site only turns that decision into a command()/log()
+        // dispatch.
         const decision = decideEnsureBranchAction({
             branch: validated.branch,
             baseBranch: validated.baseBranch,
@@ -6376,16 +5294,13 @@ async function runSprintCycle(context) {
                 : `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (remote ref missing)`)
             : `Ensure sprint branch '${validated.branch}' from '${decision.startPoint}' on member '${member}'`;
 
-        // Stabilization log Issue 11: any infrastructure-killed dispatch
-        // (transport drop, timeout, stop_prompt) predictably leaves the
-        // member's working tree DIRTY with whatever the agent had in flight,
-        // and the checkout above then fails with "Your local changes ...
-        // would be overwritten" -- observed live killing run 7 at Setup. That
-        // orphaned WIP belongs to a bead that is still open (a future streak
-        // redoes it properly), so the right move is to PRESERVE it in a
-        // named stash and proceed -- not to abort the sprint, and never to
-        // discard it. The happy path (clean tree) is unchanged: no extra
-        // commands issued.
+        // An infrastructure-killed dispatch (transport drop, timeout,
+        // stop_prompt) leaves the member's working tree DIRTY with whatever the
+        // agent had in flight, and the checkout then fails with "Your local
+        // changes ... would be overwritten". That orphaned WIP belongs to a
+        // bead that is still open (a future streak redoes it properly), so
+        // preserve it in a named stash and proceed -- never abort the sprint
+        // over it, and never discard it. A clean tree issues no extra commands.
         const checkoutResult = await command(
             checkoutCommand,
             {
@@ -6433,21 +5348,15 @@ async function runSprintCycle(context) {
     });
     endGroup();
 
-    // N4: NON-DESTRUCTIVE re-ensure of the sprint branch on every member at
-    // the top of each subsequent cycle. Purpose: guarantee each member is
-    // still ON the sprint branch even if an agent on that member checked
-    // something else out between cycles. This deliberately uses a plain
-    // `git checkout <branch>` -- NOT the initial `checkout -B <branch>
-    // origin/<base>` -- because once doers have committed sprint work to the
-    // branch, resetting it to origin/<base> would DISCARD that work (there is
-    // no cross-member sync to recover it this round). It is `failSoft` so a
-    // member that legitimately can't re-checkout (e.g. a transient state)
-    // never kills the sprint. In the supported shared-workspace/single-member
-    // mode this is effectively a no-op, but it keeps the "every member on the
-    // sprint branch" invariant explicit across reopen/re-plan cycles rather
-    // than assumed. A truly divergent multi-member fleet is refused up front
-    // by checkMemberTopology() in bin/cli.mjs, which is what makes this cheap
-    // guard sufficient (a real reconcile would need the deferred sync layer).
+    // NON-DESTRUCTIVE re-ensure of the sprint branch on every member: an agent
+    // on any member can check something else out between cycles, so the "every
+    // member is on the sprint branch" invariant has to be re-asserted rather
+    // than assumed. Deliberately a plain `git checkout <branch>`, NOT the
+    // initial `checkout -B <branch> origin/<base>`: once doers have committed
+    // sprint work, resetting to base would discard it. failSoft, so a member
+    // that cannot re-checkout never kills the sprint. A truly divergent
+    // multi-member fleet is refused up front by checkMemberTopology() in
+    // bin/cli.mjs, which is what makes this cheap guard sufficient.
     async function reEnsureBranchOnMembers() {
         for (const member of branchEnsureMembers) {
             await command(
@@ -6462,37 +5371,33 @@ async function runSprintCycle(context) {
         }
     }
 
-    // Helper to keep the dashboard UI updated with real bd data. Publishes
-    // two independent sets -- see BACKLOG_STATUSES above:
-    //   sprintTasks: everything under this sprint's target scope (re-fetched
-    //     fresh every call, so beads added mid-run -- a planner's newTasks,
-    //     an integ-test-runner's filed bug -- appear on the very next
-    //     refresh with no separate wiring needed).
-    //   backlogTasks: open/deferred beads project-wide that are NOT already
-    //     in sprintTasks -- beads the sprint certainly is not addressing
-    //     this run, which may never have gone through a planning phase at
-    //     all and may belong to an entirely unrelated epic.
+    // Keeps the dashboard UI updated with real bd data. One publishState call
+    // carries two sets -- see BACKLOG_STATUSES above:
+    //   sprintTasks: everything under this sprint's target scope, re-fetched
+    //     fresh every call, so beads added mid-run appear on the next refresh
+    //     with no separate wiring.
+    //   backlogTasks: open/deferred beads project-wide that are NOT in
+    //     sprintTasks -- beads this run is not addressing, which may never have
+    //     gone through a planning phase and may belong to an unrelated epic.
+    // The sets are NOT published independently: a failed sprint-tree query
+    // returns early and publishes nothing at all, backlog included. Only a
+    // failed BACKLOG query degrades gracefully (an empty backlog is published
+    // alongside the sprint tree).
     async function updateDashboard() {
         let sprintTasks = [];
         try {
-            // Stabilization log Issue 16: this used to be
-            // bdListScoped('--json'), whose non-empty rest args route through
-            // a SECOND `bd list --json` query -- and plain `bd list` defaults
-            // to open/in_progress only, so CLOSED beads never reached the
-            // dashboard's sprint tree (operator-reported: progress was
-            // invisible; the viewer's CLOSED badge/grey rendering existed but
-            // never received a closed row). The no-args path returns the
-            // shared `bd list --all` fetch filtered to scope -- every status,
-            // one query fewer.
+            // The no-args path is required here: any non-empty rest args route
+            // through a second `bd list` query, and plain `bd list` defaults to
+            // open/in_progress only, so CLOSED beads would never reach the
+            // dashboard's sprint tree. No-args returns the shared `bd list
+            // --all` fetch filtered to scope -- every status, one query fewer.
             sprintTasks = await bdListScoped('');
-            // apra-fleet-xbu.C6: a bead whose stored `status` is 'open' but
-            // that is NOT in the scope's `--ready` set is blocked -- but the
-            // viewer only ever saw the stored status, so a deadlocked bead
-            // rendered identically (OPEN) to a genuinely-ready one, which
-            // was exactly the "why does the dashboard say OPEN but nothing
-            // is happening" confusion the C1/C4 incident's operator hit.
-            // Reuses `--ready` (the same signal dispatch decisions are
-            // already based on), so this is not a second source of truth.
+            // A bead whose stored `status` is 'open' but which is NOT in the
+            // scope's `--ready` set is blocked. The viewer only sees stored
+            // status, so without this flag a deadlocked bead renders
+            // identically to a genuinely-ready one. Reuses `--ready` -- the
+            // same signal dispatch decisions are based on -- rather than
+            // introducing a second source of truth.
             try {
                 const readyIds = new Set((await bdListScoped('--ready --json')).map((b) => b.id));
                 sprintTasks = sprintTasks.map((t) => ({ ...t, ready: readyIds.has(t.id) }));
@@ -6500,17 +5405,10 @@ async function runSprintCycle(context) {
                 log(`updateDashboard: failed to compute ready/blocked badge data (non-fatal, status badges fall back to stored status): ${e.message}`);
             }
         } catch (e) {
-            // apra-fleet-nkg: this used to be a bare `catch (e) {}` -- a
-            // failure here (e.g. the orchestrator member transiently
-            // unreachable, a `bd list` hiccup) left the dashboard's Beads
-            // Tasks panel silently empty/stale with ZERO visible signal
-            // anywhere (not the log stream, not the viewer), often for the
-            // entire duration of a Plan round (this is only called once per
-            // round -- see the call sites above/below). Best-effort dashboard
-            // sync must never abort the sprint over a transient blip, so
-            // this still doesn't rethrow -- but it must at least be visible
-            // so a stale/empty panel is diagnosable instead of silently
-            // "just how it looks".
+            // Best-effort dashboard sync must never abort the sprint over a
+            // transient blip, so this does not rethrow -- but it must be
+            // LOGGED, or a stale/empty Beads Tasks panel is indistinguishable
+            // from "just how it looks" for the whole round.
             log(`updateDashboard: failed to refresh sprint-tree panel (non-fatal, will retry next update): ${e.message}`);
             return; // sprintTasks fetch failed -- nothing to publish this round
         }
@@ -6532,16 +5430,11 @@ async function runSprintCycle(context) {
         }
     }
 
-    // Runbook-file probe (apra-fleet-unw.17, A4): a single, platform-
-    // agnostic probe -- one `node -e` invocation with plain, non-nested
-    // single-quoted JS string literals inside a double-quoted shell
-    // argument (no backslash-escaped-quote-inside-quote traps), dispatched
-    // via `command(..., { failSoft: true })` so a probe failure (transient
-    // error, a member-side portability quirk, etc.) can NEVER throw and
-    // kill the sprint -- it just means "skip the dependent phase", logged
-    // as a warning. A first-class fileExists fleet API is descoped
-    // (server-side change; see docs/plan.md) -- this is the client-side
-    // best-effort substitute.
+    // Platform-agnostic existence probe, standing in for a first-class
+    // fileExists fleet API. One `node -e` invocation with plain, non-nested
+    // single-quoted JS literals inside a double-quoted shell argument (no
+    // escaped-quote-inside-quote traps). failSoft, so a probe failure can never
+    // throw and kill the sprint -- it just means "skip the dependent phase".
     async function probeFileExists(filename) {
         const res = await command(
             `node -e "console.log(require('fs').existsSync('${filename}') ? 'found' : 'not found')"`,
@@ -6554,59 +5447,11 @@ async function runSprintCycle(context) {
         return res.output.trim() === 'found';
     }
 
-    // NOTE (integ/regression split): the eft.55.2 `getDeployedSha()` helper
-    // that used to live here has been removed. It resolved this cycle's
-    // deploy-verified SHA purely so the Integ Test phase could prove its
-    // part-2 (smoke test) evidence was fresh. The smoke test is no longer
-    // part of that phase -- it moved to the once-per-sprint Regression Test
-    // phase, which provisions its own throwaway sandbox and therefore has
-    // nothing to attest a deployed SHA against. The `validatePart2Evidence` /
-    // `extractPart2Sha` helpers it fed have since been removed as well -- see
-    // the "(removed) Integ report part-2 ..." note earlier in this file.
-
-    // apra-fleet-eft.34: D-pull the orchestrator's OWN beads clone before the
-    // very first bd query pre-sprint validation issues (via updateDashboard's
-    // bdListScoped('') below, then the initialBeads/notDoneBeads queries).
-    // CONFIRMED ROOT CAUSE (candidate (a) from the bug's own diagnosis list):
-    // members in this "always-on multi-sprint supervisor" fleet are
-    // persistent across sprints, so the orchestrator member's local beads
-    // clone can be stale relative to the shared Dolt remote at the exact
-    // moment a NEW sprint is dispatched -- e.g. a freshly bd-created
-    // childless canary target (created by a separate process/clone just
-    // before this sprint was launched) is genuinely invisible to
-    // fetchAllBeadsShared()'s 'bd list --all --limit 0 --json' (issued
-    // against the orchestrator member, see line ~3048) until that clone
-    // pulls it in. eft.24.1's scopeIds seed (the childless-leaf-target BFS
-    // seed a few dozen lines above bdListScoped's `if (scopeIds.size === 0)
-    // return [];`) is necessary but NOT sufficient on its own: seeding
-    // scopeIds with the target's own id only changes the outcome if that
-    // target bead is actually PRESENT in the allBeads/filtered-query result
-    // being intersected against it -- and on a stale clone it is not,
-    // regardless of scopeIds membership, so pre-sprint validation still
-    // hard-fails with 'Nothing to do.' eft.24.2's mock-sprint coverage could
-    // never catch this: its single-clone record/replay harness has no
-    // separate orchestrator-clone-vs-shared-remote drift to reproduce (no
-    // dolt remote is configured there at all), so the fix needs live-shaped
-    // coverage instead (apra-fleet-eft.36).
-    //
-    // doltPullBefore() is the same idiomatic, already-established pattern
-    // used elsewhere in this file to freshen the orchestrator's clone before
-    // an orchestrator-side beads read (see e.g. the Cycle Evaluation D-pull
-    // a few hundred lines below) -- it is a benign no-op both when the clone
-    // is already current AND when no dolt remote is configured at all (see
-    // its own doc comment), so this adds no behavioural risk to an
-    // already-decomposed target's validation path; it only ever makes the
-    // orchestrator's view of `bd list --all` MORE current, never less.
-    //
-    // apra-fleet-eft.58.1: this is no longer the FIRST D-pull of the run --
-    // preflightBeadsHealthGate() (called before Sprint Setup, above) already
-    // pulled this same orchestratorMember clone and would have aborted by
-    // now on a genuine divergence. This call is kept as a cheap, idempotent
-    // defense-in-depth re-freshen immediately before the read it exists for
-    // (a diverged clone would already be impossible to reach here, but a
-    // clone that merely fell further behind between Setup and here -- e.g. a
-    // slow branch-ensure loop across many members -- still benefits from one
-    // more pull right before the read).
+    // Defense in depth: the pre-sprint health gate above already pulled this
+    // clone, but a stale orchestrator clone here would misreport every remote
+    // doer's work, so pull again immediately before the verification read.
+    // doltPullBefore() is a benign no-op when the clone is current and when no
+    // dolt remote is configured at all.
     await doltPullBefore(orchestratorMember, { command, log });
 
     await updateDashboard();
@@ -6614,17 +5459,14 @@ async function runSprintCycle(context) {
     let initialBeads = await bdListScoped('--ready --json');
 
     if (initialBeads.length === 0) {
-        // apra-fleet-h7x: `bd --ready == []` alone used to be an unconditional
-        // hard-fail here, indistinguishable from "nothing left to do" -- even
-        // when real, unblocked work exists but is deadlocked on a bead stuck
-        // in a stale 'in_progress' state (e.g. left behind by a previously
-        // interrupted sprint run that never reached `bd close`). `bd --ready`
-        // deliberately excludes non-'open' beads, so it cannot itself tell
-        // "orphaned" from "actively being worked" -- but a bead whose own
-        // 'blocks' dependencies are ALL closed has nothing left to wait on, so
-        // a stuck 'in_progress' status is the only thing blocking it. Self-heal
-        // that one case (reclaim it back to 'open') instead of requiring a
-        // human to notice and run `bd update <id> --status open` by hand.
+        // An empty `--ready` set is not by itself "nothing left to do": real
+        // unblocked work can be deadlocked on a bead stuck in a stale
+        // 'in_progress' state left by an interrupted run that never reached `bd
+        // close`. `bd --ready` excludes non-'open' beads, so it cannot tell
+        // "orphaned" from "actively being worked" -- but a bead whose 'blocks'
+        // dependencies are ALL closed has nothing left to wait on, so its
+        // status is the only thing blocking it. Reclaim exactly that case to
+        // 'open' rather than requiring a manual `bd update`.
         const notDoneBeads = await bdListScoped(`--status=${NOT_DONE_STATUSES} --json`);
         const notDoneIds = new Set(notDoneBeads.map((b) => b.id));
 
@@ -6636,7 +5478,7 @@ async function runSprintCycle(context) {
 
         if (staleInProgress.length > 0) {
             for (const bead of staleInProgress) {
-                log(`Pre-sprint self-heal (apra-fleet-h7x): ${bead.id} is stuck 'in_progress' (started_at=${bead.started_at || 'n/a'}) with no unmet blockers -- reclaiming to 'open' so the sprint can dispatch it.`);
+                log(`Pre-sprint self-heal: ${bead.id} is stuck 'in_progress' (started_at=${bead.started_at || 'n/a'}) with no unmet blockers -- reclaiming to 'open' so the sprint can dispatch it.`);
                 await command(`bd update ${bead.id} --status open`, { member_name: orchestratorMember, silent: true });
             }
             initialBeads = await bdListScoped('--ready --json');
@@ -6647,15 +5489,13 @@ async function runSprintCycle(context) {
                 throw new Error(`Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`);
             }
 
-            // apra-fleet-xbu.C4: the specific, self-inflicted deadlock shape
-            // this incident traced back to -- a `parent-child` edge one way
-            // plus a `blocks` edge the other way between the SAME two beads
-            // (see packages/apra-fleet-se/apra-pm/agents/_shared/GRAPH-SEMANTICS.md). `bd
-            // dep cycles` does not detect this shape (it does not walk
-            // parent-child edges), so it silently reads as "everything
-            // blocked" with no actionable diagnosis. Check for it here,
-            // scoped to this sprint's own not-done beads, before falling
-            // through to the generic deadlock message below.
+            // A specific deadlock shape: a `parent-child` edge one way plus a
+            // `blocks` edge the other way between the SAME two beads (see
+            // packages/apra-fleet-se/apra-pm/agents/_shared/GRAPH-SEMANTICS.md).
+            // `bd dep cycles` does not detect it -- it does not walk
+            // parent-child edges -- so it reads as "everything blocked" with no
+            // actionable diagnosis. Check for it here, scoped to this sprint's
+            // own not-done beads, before the generic deadlock message below.
             const byId = new Map(notDoneBeads.map((b) => [b.id, b]));
             const cyclePairs = [];
             for (const bead of notDoneBeads) {
@@ -6677,16 +5517,15 @@ async function runSprintCycle(context) {
                     `ancestor/descendant, which fully blocks both beads even though 'bd dep cycles' will not ` +
                     `flag it). Fix by removing the offending 'blocks' edge(s):\n${fixCommands.join('\n')}`;
 
-                // apra-fleet-xbu.2.1: this exact shape is mechanically
-                // repairable -- the block above already computed the precise
-                // edge(s) to remove, so auto-repair (one pass, no loop, no
-                // Planner dispatch) instead of just throwing a diagnosis. If
-                // the repair itself fails, fall back to the original throw
-                // (never silently swallow a failed repair attempt).
+                // This shape is mechanically repairable -- the block above
+                // already computed the precise edge(s) to remove -- so
+                // auto-repair (one pass, no loop, no Planner dispatch) instead
+                // of only throwing a diagnosis. A failed repair falls back to
+                // the throw; it is never silently swallowed.
                 try {
                     for (const pair of cyclePairs) {
                         await command(`bd dep remove ${pair.blockedIssue} ${pair.blockedBy}`, { member_name: orchestratorMember, silent: true });
-                        log(`Pre-sprint auto-repair (apra-fleet-xbu.2.1): removed the 'blocks' edge between ${pair.blockedIssue} and ${pair.blockedBy} (parent-child + blocks cycle) -- auto-removed via bd dep remove.`);
+                        log(`Pre-sprint auto-repair: removed the 'blocks' edge between ${pair.blockedIssue} and ${pair.blockedBy} (parent-child + blocks cycle) -- auto-removed via bd dep remove.`);
                     }
                 } catch (repairErr) {
                     throw new Error(`${cycleMessage}\n\n(Auto-repair attempt itself failed: ${repairErr.message})`);
@@ -6716,45 +5555,36 @@ async function runSprintCycle(context) {
     }
 
     // =======================
-    // A5: goal-priority exit condition + stall-abort bookkeeping
+    // Goal-priority exit condition + stall-abort bookkeeping
     // =======================
     //
-    // `goalMax` is the worst ('Pn' with the highest n) priority tier named
-    // in the sprint's `goal` -- the real completion check below is "zero
+    // `goalMax` is the worst ('Pn' with the highest n) priority tier named in
+    // the sprint's `goal`. The real completion check below is "zero
     // NOT_DONE_STATUSES beads in scope at or above (numerically <=) this
-    // priority", NOT "bd list --ready returned []" (see NOT_DONE_STATUSES
-    // comment above and the Cycle Evaluation section below).
+    // priority", NOT "bd list --ready returned []".
     const goalMax = goalPriorityMax(validated.goal);
 
-    // Stall detection: per the pm skill mandate cited in the issue text,
-    // abort with a typed StalledSprintError after two consecutive cycles
-    // that made no forward progress -- rather than silently burning every
-    // remaining cycle up to max_cycles on a sprint that has stopped making
-    // forward progress (e.g. a develop/review loop that keeps reopening and
-    // re-failing the exact same bead(s)).
+    // Stall detection: abort with a typed StalledSprintError after two
+    // consecutive cycles that made no forward progress, rather than burning
+    // every remaining cycle on a develop/review loop that keeps reopening and
+    // re-failing the same bead(s).
     //
-    // N9 (apra-fleet-unw2.7): progress is a HIGH-WATER MARK on the closed
-    // count, not a cycle-over-cycle delta. A naive "did the count change
-    // since last cycle" check is defeated by an oscillation pattern (close
-    // a bead, reopen it next cycle, close it again, ...) whose closed-count
-    // sequence looks like 5,4,5,4,... -- every cycle differs from the one
-    // before it, so a delta-based check never trips, and the sprint burns
-    // all max_cycles doing net-zero work. Tracking the highest closed count
-    // ever observed this sprint instead means a cycle only counts as
-    // progress when it exceeds every prior cycle, so 5,4,5,4,... is
-    // correctly flagged as stalled after STALL_CYCLE_LIMIT non-record
-    // cycles.
+    // Progress is a HIGH-WATER MARK on the closed count, not a cycle-over-cycle
+    // delta. A delta check is defeated by an oscillation (close a bead, reopen
+    // it, close it again) whose closed-count sequence is 5,4,5,4,...: every
+    // cycle differs from the one before, so the check never trips. Requiring a
+    // cycle to exceed every prior cycle flags that correctly after
+    // STALL_CYCLE_LIMIT non-record cycles.
     const STALL_CYCLE_LIMIT = 2;
     let staleCycles = 0;
     let highWaterClosedCount = 0;
     const closedCountHistory = [];
 
-    // N9 (apra-fleet-unw2.7, work item b): per-bead reopen counts across the
-    // whole sprint. A bead reopened more than REOPEN_THRASH_LIMIT times is
-    // flagged as "thrash" -- the develop/review loop is oscillating on that
-    // specific bead rather than making progress -- and its ID is surfaced in
-    // the StalledSprintError so a human can see WHICH bead(s) are thrashing,
-    // not just that the sprint stalled.
+    // Per-bead reopen counts across the whole sprint. A bead reopened more than
+    // REOPEN_THRASH_LIMIT times is flagged as thrashing -- the develop/review
+    // loop is oscillating on that specific bead -- and its id is surfaced in
+    // the StalledSprintError so a human sees WHICH beads are thrashing, not
+    // just that the sprint stalled.
     const REOPEN_THRASH_LIMIT = 3;
     const reopenCounts = new Map();
     function recordReopen(id) {
@@ -6766,58 +5596,50 @@ async function runSprintCycle(context) {
             .map(([id]) => id);
     }
 
-    // Deploy/Integration failure evidence (A4), threaded into the Final
-    // Review's evidence-based prompt (A6) below -- never silently swallowed.
+    // Deploy/Integration failure evidence, threaded into the Final Review's
+    // evidence-based prompt below -- never silently swallowed.
     const deployFailures = [];
     const integFailures = [];
 
-    // N3: reviewer newTasks rejected by validateNewTask() before ever
-    // reaching `command()` -- threaded into the Final Review's evidence-
-    // based prompt below so a rejection is visible to a human, not silently
-    // dropped. Rejection is non-fatal: the sprint continues. This is a
-    // cumulative AUDIT TRAIL (every rejection ever seen this run, never
-    // cleared) -- distinct from pendingRejectedNewTasks below, which tracks
-    // only the currently-unresolved ones.
+    // Reviewer newTasks rejected by validateNewTask() before ever reaching
+    // `command()`, threaded into the Final Review prompt so a rejection is
+    // visible to a human rather than silently dropped. Rejection is non-fatal.
+    // This is a cumulative AUDIT TRAIL -- every rejection ever seen this run,
+    // never cleared -- distinct from pendingRejectedNewTasks below.
     const rejectedNewTasks = [];
 
-    // apra-fleet-19o.2: the CURRENT set of not-yet-resubmitted rejected
-    // newTasks, resurfaced verbatim into the next planning-phase dispatch
-    // (buildPlannerPrompt's rejectedNewTasksToResubmit) instead of dead-
-    // ending only in root-bead notes. Reassigned (never mutated in place) via
-    // the pure trackRejectedNewTaskForResurfacing()/clearResubmittedNewTask()
-    // helpers above, so its whole history stays easy to reason about. Unlike
-    // `rejectedNewTasks` above, an entry is DROPPED once its title is
-    // successfully resubmitted -- it must not accumulate forever.
+    // The CURRENT set of not-yet-resubmitted rejected newTasks, resurfaced
+    // verbatim into the next planning dispatch (buildPlannerPrompt's
+    // rejectedNewTasksToResubmit) instead of dead-ending in root-bead notes.
+    // Reassigned, never mutated in place, via the pure
+    // trackRejectedNewTaskForResurfacing()/clearResubmittedNewTask() helpers.
+    // Unlike `rejectedNewTasks`, an entry is DROPPED once resubmitted: it must
+    // not accumulate forever.
     let pendingRejectedNewTasks = [];
 
-    // Populated with the last Develop/Review loop's reviewer verdict for
-    // each cycle (A5 work item 3: goal-priority completion requires BOTH
-    // zero open goal-priority beads AND an APPROVED last reviewer verdict --
-    // a cycle where the ready-bead list happened to empty out while the
-    // last review round was still CHANGES_NEEDED must not be read as done).
+    // The last Develop/Review loop's reviewer verdict for this cycle.
+    // Goal-priority completion requires BOTH zero open goal-priority beads AND
+    // an APPROVED last verdict -- a cycle whose ready-bead list emptied out
+    // while the last review round was still CHANGES_NEEDED is not done.
     //
-    // N8 (apra-fleet-unw2.6, work item a): this MUST be reset to `null` at
-    // the top of every cycle (see below) -- previously it was declared once,
-    // here, and never reset, so an APPROVED verdict from cycle N could still
-    // read as "approved" in cycle N+1's Cycle Evaluation even when N+1's
-    // Develop/Review loop was skipped entirely (no ready beads -> no fresh
-    // review of N+1's actual state). `reviewedThisCycle` tracks whether a
-    // review genuinely ran THIS cycle, so the Cycle Evaluation section below
-    // can tell "fresh APPROVED" apart from "stale APPROVED left over from an
-    // earlier cycle" and dispatch a re-review before ever trusting the
-    // latter (work item c).
+    // Both MUST be reset at the top of every cycle: an APPROVED verdict from
+    // one cycle must never read as approved in the next, whose Develop/Review
+    // loop may have been skipped entirely (no ready beads -> no fresh review).
+    // `reviewedThisCycle` records whether a review genuinely ran THIS cycle, so
+    // Cycle Evaluation can tell a fresh APPROVED from a stale one and dispatch
+    // a re-review before trusting the latter.
     let lastReviewVerdict = null;
     let reviewedThisCycle = false;
 
     while (cycle <= MAX_CYCLES) {
         group(`Sprint Cycle ${cycle}`);
 
-        // N8 (work item a): reset per-cycle review state -- a verdict is
-        // only ever trustworthy for THE CYCLE that actually produced it.
+        // Reset per-cycle review state -- a verdict is only ever trustworthy
+        // for the cycle that actually produced it.
         lastReviewVerdict = null;
         reviewedThisCycle = false;
 
-        // N4: after the first cycle, re-ensure (non-destructively) that every
+        // After the first cycle, re-ensure (non-destructively) that every
         // member is still on the sprint branch before this cycle's doers run.
         // See reEnsureBranchOnMembers() above for why this never resets.
         if (cycle > 1) {
@@ -6827,15 +5649,13 @@ async function runSprintCycle(context) {
         // =======================
         // 1. Planning Loop
         // =======================
-        // apra-fleet-unw.15: approval is `verdict === 'APPROVED'` EXACTLY,
-        // decided from the plan-reviewer's schema-validated structured
-        // output (contracts.mjs `planReviewerVerdict`) -- no substring
-        // matching anywhere in this phase, so free text like "This can NOT
-        // be APPROVED" can never be misread as an approval. If the
-        // plan-reviewer persistently fails to return schema-valid JSON
-        // (agent()'s own bounded schema-repair loop, apra-fleet-unw.8,
-        // already retried and gave up), that is treated as a failed
-        // (CHANGES_NEEDED-equivalent) round rather than an approval.
+        // Approval is `verdict === 'APPROVED'` EXACTLY, read from the
+        // plan-reviewer's schema-validated structured output (contracts.mjs
+        // `planReviewerVerdict`). No substring matching anywhere in this phase,
+        // so free text like "This can NOT be APPROVED" can never be misread as
+        // an approval. A plan-reviewer that persistently fails to return
+        // schema-valid JSON (after agent()'s own bounded schema-repair loop) is
+        // a failed, CHANGES_NEEDED-equivalent round, never an approval.
         //
         // `cycle > 1` means this Plan phase is a RE-PLANNING pass after an
         // earlier Develop/Review cycle needed more work -- distinct from
@@ -6848,12 +5668,10 @@ async function runSprintCycle(context) {
         let planningRounds = 0;
         let plannerFeedback = null;
         let lastVerdict = null;
-        // apra-fleet-eft.71.2: every earlier round's verdict for THIS cycle's
-        // plan-review loop, oldest first -- fed to buildPlanReviewerPrompt on
-        // round N>1 so the no-goalpost-moving rule (plan-reviewer.md) has
-        // prior-round rulings to bind against. Reset per cycle (a verdict is
-        // only trustworthy for the cycle that produced it, same rationale as
-        // lastReviewVerdict above).
+        // Every earlier round's verdict for THIS cycle's plan-review loop,
+        // oldest first -- fed to buildPlanReviewerPrompt from round 2 on, so
+        // the no-goalpost-moving rule (plan-reviewer.md) has prior-round
+        // rulings to bind against. Scoped to the cycle, like lastReviewVerdict.
         const priorPlanRoundVerdicts = [];
 
         while (!planApproved && planningRounds < 3) {
@@ -6869,50 +5687,39 @@ async function runSprintCycle(context) {
                 feedback: plannerFeedback,
                 rejectedNewTasksToResubmit: pendingRejectedNewTasks,
             });
-            // apra-fleet-eft.8.2: planner is a read-side role (pushCode:
-            // false) -- G-pull before, no-op G-push after; each retried
-            // attempt gets its own bracket since a retry may follow a
-            // meaningful gap.
-            // apra-fleet-eft.9.1: planner MUTATES beads (creates the task DAG)
-            // -- pushBeads:true so its new tasks are D-pushed to the shared
-            // remote for the next dispatch/read to observe. It writes no code
-            // (pushCode:false).
-            // Stabilization log Issue 25: EVERY dispatch site answers
-            // max_turns exhaustion with a same-session resume at doubled
-            // turns (operator directive) -- the planner gets the doer-sized
-            // base since it builds the whole epic DAG.
+            // The planner writes no code but MUTATES beads (it creates the task
+            // DAG), so it is bracketed pushCode:false / pushBeads:true -- its
+            // new tasks are D-pushed for the next dispatch to observe. Each
+            // retried attempt gets its own bracket, since a retry may follow a
+            // meaningful gap. Like every dispatch site, max_turns exhaustion is
+            // answered with a same-session resume at doubled turns; the planner
+            // gets a doer-sized base because it builds the whole epic DAG.
             const PLANNER_MAX_TURNS = 100;
             const plannerDispatchOpts = {
                 member_name: getMemberForRole('planner'),
                 agentType: 'planner',
                 model: FIXED_ROLE_TIER.planner,
-                // apra-fleet-j6i: plans the entire epic DAG, comparably
-                // heavy to a doer streak -- same 300s-default gap.
+                // Planning the entire epic DAG is comparably heavy to a doer
+                // streak, so it needs the sprint budget, not the default.
                 timeout_s: DISPATCH_TIMEOUT_S,
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: PLANNER_MAX_TURNS,
-                // apra-fleet-eft.78.3: within THIS cycle's plan-review loop,
-                // resume the planner's OWN prior-round session (R1->R2->R3) via
-                // its explicit session id so a re-plan keeps warm context. This
-                // is `false` on R1 and on the first round of any LATER cycle
-                // (roundSessions never resumes across cycles). onSessionId
-                // captures the id this round returns for the next round to
-                // resume. Note: the max_turns-exhaustion resume path
-                // (dispatchPlannerResume) still overrides this to `resume: true`
-                // via spread order -- that is an in-dispatch continuation of the
-                // session just run, orthogonal to cross-round resume.
+                // Within THIS cycle's plan-review loop, resume the planner's own
+                // prior-round session by explicit session id so a re-plan keeps
+                // warm context. False on the first round of any cycle
+                // (roundSessions never resumes across cycles). The
+                // max_turns-exhaustion path overrides this to `resume: true` via
+                // spread order -- an in-dispatch continuation of the session
+                // just run, orthogonal to cross-round resume.
                 resume: roundSessions.resumeArgFor('planner', cycle),
                 onSessionId: (id, meta) => roundSessions.record('planner', cycle, id, meta),
             };
-            // apra-fleet-eft.28.3: every interactive Planner dispatch attempt
-            // (the FIRST/pre-plan one included -- withDispatchWatchdog wraps
-            // dispatchPlannerOnce() too, not just the resume path) is raced
-            // against a client-side dispatch_timeout_s watchdog so a frozen-
-            // but-alive member session can never leave this await silently
-            // hanging past its configured budget. See withDispatchWatchdog's
-            // own doc comment above for why this is needed in addition to
-            // (not instead of) the server-side timeout_s/max_total_s already
-            // passed via plannerDispatchOpts below.
+            // Every interactive Planner dispatch attempt -- the first as well as
+            // the resume -- is raced against a client-side watchdog so a
+            // frozen-but-alive member session can never leave this await
+            // silently hanging past its budget. See withDispatchWatchdog for
+            // why this is needed in addition to, not instead of, the
+            // server-side timeout_s/max_total_s passed below.
             const dispatchPlannerOnce = ({ skipPreDispatchSync = false, skipPreDispatchDoltPull = false } = {}) => withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
                 agent(plannerPrompt, { ...plannerDispatchOpts, member_name: getMemberForRole('planner') }),
                 { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Plan (interactive)', log }
@@ -6945,83 +5752,37 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             };
-            // apra-fleet-j6i: unlike every other dispatch site in this file,
-            // the Planner call had no error handling at all -- a single
-            // AgentDispatchError (e.g. a timeout) propagated uncaught all the
-            // way to main() in bin/cli.mjs, killing the whole CLI process
-            // (and its dashboard server) instead of failing just this round.
-            // Mirror the doer-streak retry-once pattern (line ~1844) as an
-            // interim mitigation; apra-fleet-j6i.2/j6i.3 cover the fuller
-            // dispatch-vs-schema-error distinction this really deserves.
-            //
-            // apra-fleet-eft: a single IMMEDIATE blind retry isn't enough for
-            // a "busy" AgentDispatchError ("execute_prompt is already running
-            // for <member>") -- observed live after a prior round's dispatch
-            // hit a transport-level failure: the fleet server's own busy-lock
-            // for that member did not clear immediately, so the immediate
-            // retry hit the exact same "busy" error with nothing to catch it,
-            // and that propagated uncaught and killed the whole sprint. Busy/
-            // transport failures are inherently transient given a short wait
-            // (unlike a genuine schema or logic error), so retry a few times
-            // with a backoff delay before finally giving up.
-            //
-            // Bumped from [0, 5000, 15000] (3 attempts, ~20s total headroom)
-            // after that budget still wasn't enough live: a real busy-lock on
-            // fleet-rev outlasted all 3 attempts and re-crashed the sprint,
-            // but `fleet_status` moments later showed the member already back
-            // to idle -- the lock was genuinely transient, just slower to
-            // clear than 20s. Give it real headroom: 5 attempts, ~110s total.
+            // A bounded backoff ladder rather than a single immediate retry: the
+            // dominant transient failure is a "busy" AgentDispatchError
+            // ("execute_prompt is already running for <member>"), and a fleet
+            // member's busy-lock can take considerably longer than a few seconds
+            // to clear. An immediate blind retry reproduces the same error and,
+            // uncaught, would kill the whole sprint. The ladder's total headroom
+            // is sized for a real busy-lock, not for a schema or logic error --
+            // those are caught by the non-retryable checks in the loop body.
             const PLANNER_DISPATCH_RETRY_DELAYS_MS = [0, 5000, 15000, 30000, 60000];
-            let plannerRes;
             let plannerErr = null;
-            // apra-fleet-eft.54.1: when the previous attempt failed terminally
-            // with no mutation to publish, its pre-dispatch G-pull/D-pull is
-            // still fresh (nothing was pushed since), so the next attempt skips
-            // re-running those real-bd brackets. See withGitSync's
-            // skipPreDispatchSync doc comment for why this is safe and why it
-            // matters for the terminal-abort fast-path budget.
+            // When the previous attempt failed terminally with nothing to
+            // publish, its pre-dispatch G-pull/D-pull is still fresh, so the next
+            // attempt skips re-running them. See withGitSync's
+            // skipPreDispatchSync.
             let skipPreDispatchSyncNext = false;
-            // apra-fleet-eft.54.6: the sprint's FIRST Planner dispatch (cycle 1,
-            // planning round 1, first attempt) reads/mutates the SAME beads clone
-            // the orchestrator's pre-sprint-validation doltPullBefore
-            // (eft.34/eft.58.1 call site above) just freshened, with only
-            // non-mutating `bd list` reads in between -- so that first attempt's
-            // own pre-dispatch `bd dolt pull` is pure redundant real-bd work.
-            // Under APRA_FLEET_BD_MOCK=off with a configured sync.remote it is
-            // the residual Dolt sync bracket the terminal auth-abort path was
-            // still hanging on (eft.54): a non-retryable auth/trust failure
-            // aborts on the very bracket this D-pull sits in. Skip ONLY that
-            // first-attempt D-pull (via withGitSync's skipPreDispatchDoltPull --
-            // the G-side syncMemberBefore and every later attempt/round/cycle are
-            // untouched), with zero correctness loss (the clone was provably just
-            // freshened). Scoped OUT (all keep the full D-pull): cycle>1 (a
-            // re-plan follows real Develop/Review beads mutation), a later
-            // planning round (round 1's Planner already mutated beads), a retry
-            // attempt (i>0), and a Planner on a DISTINCT clone from the
-            // orchestrator (its own clone was never freshened by the setup pull).
+            // The sprint's FIRST Planner dispatch reads/mutates the SAME beads
+            // clone the orchestrator's pre-sprint doltPullBefore just freshened,
+            // with only non-mutating `bd list` reads in between, so its own
+            // pre-dispatch `bd dolt pull` is redundant. Skipping it also keeps
+            // the terminal auth-abort path from hanging on that bracket. Scoped
+            // out -- all keeping the full D-pull -- are: a later cycle (a re-plan
+            // follows real beads mutation), a later planning round (round 1's
+            // planner already mutated beads), any retry attempt, and a planner on
+            // a DISTINCT clone from the orchestrator (never freshened by the
+            // setup pull).
             const plannerSharesOrchestratorClone = getMemberForRole('planner') === orchestratorMember;
-            // apra-fleet-eft.60.3: the retry backoff above (~110s total across
-            // the 5 attempts) exists purely for PRODUCTION busy-lock resilience
-            // -- a real fleet member's execute_prompt busy-lock can take up to
-            // ~110s to clear (see the delay-array rationale above). A hermetic
-            // mock-sprint run has no real busy-lock to wait out, so sleeping the
-            // full ~110s of REAL wall-clock per ladder is dead time that, stacked
-            // on the one-time real-bd setup/read overhead, is what pushes the
-            // dead-session retry-ladder regression test (mock-sprint-planner-
-            // dispatch-attempt1-clean-fail-attempt2-dead-session, eft.50.2/eft.60)
-            // up against its 180s file timeout on a slow CI host. It is NOT any
-            // per-attempt real-bd D-pull: that bracket is already skipped on
-            // retries 2..N by withGitSync's skipPreDispatchSync (eft.54.1), and
-            // its sync.remote pre-gate probe / `bd dolt pull` are cached
-            // per-clone under real bd by bd-replay's realDoltSyncCache
-            // (eft.17.1 / eft.54.5), so the D-pull already runs at most once per
-            // ladder either way. The delay VALUES and the real timed sleep are
-            // UNCHANGED for production (busy-lock resilience intact); only the
-            // hermetic mock harness opts into a zero-wait backoff (via this
-            // env flag, set by mock-sprint-harness.mjs) so it exercises the full
-            // 5-attempt ladder LOGIC without the dead wall-clock. The "waiting
-            // Ns" log line still reports the real configured delay, so the
-            // ladder's observable behavior is identical.
+            // The ladder's real timed sleeps exist purely for production
+            // busy-lock resilience; a hermetic mock run has no busy-lock to wait
+            // out, so the harness sets this flag to exercise the full ladder
+            // LOGIC with zero wall-clock. The delay values and the "waiting Ns"
+            // log line are unchanged either way, so observable behavior matches.
             const instantRetryBackoff = process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
             for (let i = 0; i < PLANNER_DISPATCH_RETRY_DELAYS_MS.length; i++) {
                 if (PLANNER_DISPATCH_RETRY_DELAYS_MS[i] > 0) {
@@ -7033,38 +5794,32 @@ async function runSprintCycle(context) {
                 try {
                     const skipPreDispatchDoltPull =
                         i === 0 && cycle === 1 && planningRounds === 1 && plannerSharesOrchestratorClone;
-                    plannerRes = await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext, skipPreDispatchDoltPull });
+                    await dispatchPlanner({ skipPreDispatchSync: skipPreDispatchSyncNext, skipPreDispatchDoltPull });
                     plannerErr = null;
                     break;
                 } catch (err) {
                     plannerErr = err;
-                    // apra-fleet-6z8.3: the Planner LLM turn ALREADY RAN and
-                    // its output is already committed in the member's local
-                    // beads clone -- only the post-dispatch git/dolt sync
-                    // failed, and withGitSync has already retried that step on
-                    // its own. Redispatching here would spawn a second Planner
-                    // session for the same phase on top of completed work (the
-                    // duplicate-dispatch class this whole bug is about), so
-                    // abort the ladder immediately and surface the sync failure.
+                    // The Planner turn ALREADY RAN and its output is committed in
+                    // the member's local beads clone -- only the post-dispatch
+                    // sync failed, and withGitSync already retried that step on
+                    // its own. Redispatching would spawn a second Planner session
+                    // for the same phase on top of completed work, so abort the
+                    // ladder and surface the sync failure.
                     if (isPostDispatchSyncFailure(err)) {
                         log(`Planner dispatch COMPLETED but its post-dispatch sync failed: ${err.message} Aborting retries WITHOUT re-dispatching -- the planning turn already ran and its beads writes are local; fix the sync and re-run.`);
                         break;
                     }
-                    // apra-fleet-eft.54.1: only a no-mutation dispatch failure
-                    // leaves the workspace provably unchanged, so only then may
-                    // the next attempt skip its pre-dispatch sync. Any other
-                    // error re-arms the full pre-dispatch sync on the next try.
+                    // Only a no-mutation dispatch failure leaves the workspace
+                    // provably unchanged, so only then may the next attempt skip
+                    // its pre-dispatch sync. Any other error re-arms it.
                     skipPreDispatchSyncNext = isNoMutationDispatchFailure(err);
-                    // Stabilization Issue 43: auth/workspace-trust failures are
-                    // deterministic -- no retry can ever succeed, so abort the
-                    // loop immediately instead of burning the remaining
-                    // attempts' dispatch budgets reproducing the same failure.
+                    // Auth/workspace-trust failures are deterministic -- no retry
+                    // can succeed -- so abort immediately rather than burning the
+                    // remaining attempts reproducing the same failure.
                     if (isNonRetryableDispatchError(err)) {
-                        // apra-fleet-391: an LLM-auth failure (as opposed to
-                        // workspace-trust, which self-heal cannot fix) gets
-                        // one self-heal attempt before this loop gives up --
-                        // mirrors runGitStep/runDoltStep's bounded one-shot
-                        // VCS self-heal.
+                        // An LLM-auth failure (unlike workspace-trust, which
+                        // self-heal cannot fix) gets one bounded self-heal
+                        // attempt before the loop gives up.
                         if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                             const healed = await onLlmAuthFailure({ member: getMemberForRole('planner'), label: 'Planner dispatch', error: err.message });
                             if (healed) {
@@ -7082,19 +5837,16 @@ async function runSprintCycle(context) {
             if (plannerErr) {
                 throw plannerErr;
             }
-            // apra-fleet-xuo.4: the planner resubmits a corrected rejected
-            // finding directly via `bd create` -- it never goes through
-            // persistNewTaskBestEffort/clearResubmittedNewTask, so a
-            // title-corrected resubmission (the resurfaced prompt explicitly
-            // instructs the planner to "correct the stated defect", which
-            // usually means changing the title) would otherwise stay stuck
-            // in pendingRejectedNewTasks and keep reappearing in every later
-            // planning prompt this run. Reconcile against whatever now
-            // actually exists as a child of each target parent, matching on
-            // description (title-independent) -- see
-            // reconcilePendingRejectedNewTasks()'s doc comment. Best-effort:
-            // a listing failure just leaves the pending list as-is (worst
-            // case the item resurfaces once more, never a sprint abort).
+            // The planner resubmits a corrected rejected finding directly via
+            // `bd create`, never through
+            // persistNewTaskBestEffort/clearResubmittedNewTask -- and correcting
+            // the stated defect usually means changing the title, so a
+            // title-keyed pending entry would stay stuck and reappear in every
+            // later planning prompt this run. Reconcile against what now exists
+            // as a child of each target parent, matching on description
+            // (title-independent); see reconcilePendingRejectedNewTasks().
+            // Best-effort: a listing failure leaves the pending list as-is, so
+            // the worst case is one more resurfacing, never a sprint abort.
             if (pendingRejectedNewTasks.length > 0) {
                 for (const parentId of targetIssues) {
                     try {
@@ -7107,35 +5859,27 @@ async function runSprintCycle(context) {
                     }
                 }
             }
-            // apra-fleet-eft.69.1: deliberately NO separate log() dump of
-            // `plannerRes` here -- this is the exact duplicate-row bug the
-            // user reported (apra-fleet-eft.69 bug item 1, "a second row
-            // like 'Planner: response from ...' which is basically a repeat
-            // print of the AGENT row's content"). dispatchPlanner()'s own
-            // agent() call already emits this same text as that dispatch's
-            // `output`, rendered via the standard AGENT activity row (with
-            // its own collapsible body / 'more...' control) -- see
-            // src/viewer/index.mjs. See the Reviewer dispatch site's
-            // comment (~line 4523) for the same reasoning applied uniformly
-            // across every other role's dispatch in this file.
+            // Deliberately no log() dump of the planner's response here: the
+            // agent() call inside dispatchPlanner() already emits it as the
+            // dispatch's own AGENT activity row, so logging it again would
+            // render a duplicate row in the viewer. The same rule applies at
+            // every role's dispatch site in this file.
 
             let verdict;
-            // Stabilization log Issue 25: same-session turn-exhaustion resume
-            // for the plan-reviewer (reviewer-sized base).
+            // Reviewer-sized turn base, with the same same-session
+            // turn-exhaustion resume every dispatch site uses.
             const PLAN_REVIEWER_MAX_TURNS = 60;
             const planReviewerDispatchOpts = {
                 member_name: getMemberForRole('plan-reviewer'),
                 agentType: 'plan-reviewer',
                 schema: planReviewerVerdict,
                 model: FIXED_ROLE_TIER['plan-reviewer'],
-                // apra-fleet-j6i: same 300s-default gap as Planner.
+                // Needs the sprint dispatch budget, like the Planner.
                 timeout_s: DISPATCH_TIMEOUT_S,
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: PLAN_REVIEWER_MAX_TURNS,
             };
             try {
-                // apra-fleet-eft.8.2: plan-reviewer is a read-side role
-                // (pushCode: false) -- G-pull before, no-op G-push after.
                 try {
                     verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
                         buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts }),
@@ -7160,10 +5904,9 @@ async function runSprintCycle(context) {
                     }
                 }
             } catch (err) {
-                // apra-fleet-391: an unhealed LLM-auth failure here would
-                // otherwise reproduce identically on every one of the
-                // (bounded, max 3) remaining planning rounds. One self-heal
-                // attempt gives the next round a real chance to succeed.
+                // An unhealed LLM-auth failure here reproduces identically on
+                // every remaining planning round. One self-heal attempt gives
+                // the next round a real chance to succeed.
                 if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                     await onLlmAuthFailure({ member: getMemberForRole('plan-reviewer'), label: 'Plan Reviewer dispatch', error: err.message });
                 }
@@ -7178,11 +5921,10 @@ async function runSprintCycle(context) {
                         taskAssignments: [],
                     };
                 } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // A transport-level failure (e.g. a dropped connection mid schema-repair
-                    // retry) is exactly as transient/non-schema as an AgentDispatchError --
-                    // must not be allowed to propagate and abort the whole sprint. Observed
-                    // live: the schema-repair loop's resumed retry hit "Transport closed"
-                    // and, uncaught here, killed the entire sprint run (apra-fleet-eft).
+                    // A transport-level failure (e.g. a connection dropped
+                    // mid-schema-repair-retry) is exactly as transient and
+                    // non-schema as an AgentDispatchError -- neither may
+                    // propagate and abort the whole sprint.
                     log(`Plan Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
@@ -7194,11 +5936,10 @@ async function runSprintCycle(context) {
                 }
             }
             lastVerdict = verdict;
-            // apra-fleet-eft.69.1: no duplicate log() dump -- see the
-            // Reviewer dispatch site above for why.
-            // apra-fleet-eft.71.2: record this round's verdict for THIS cycle
-            // AFTER using (not before) the accumulated prior rounds above, so
-            // round N's dispatch never sees its own not-yet-returned verdict.
+            // No duplicate log() dump -- see dispatchReview() for why.
+            // This round's verdict is recorded AFTER the dispatch that consumed
+            // the accumulated prior rounds, so a round never sees its own
+            // not-yet-returned verdict.
             priorPlanRoundVerdicts.push({ round: planningRounds, verdict: verdict.verdict, notes: verdict.notes });
 
             if (verdict.verdict === 'APPROVED') {
@@ -7209,18 +5950,14 @@ async function runSprintCycle(context) {
             await updateDashboard();
         }
 
-        // apra-fleet-eft.72.1: plan-cap exhaustion (3 CHANGES_NEEDED rounds,
-        // never an APPROVED) used to be an unconditional finalizeAbort of the
-        // WHOLE run regardless of how much of the plan was actually approved
-        // (observed live, run 21: one bead's bookkeeping pinned the verdict
-        // at CHANGES_NEEDED while 11 tasks across 5 bugs were otherwise
-        // clean). When the last verdict's findings name specific beads
-        // rather than the whole plan, defer just those contested beads
-        // (status=deferred + the finding attached as a note) and proceed to
-        // Develop with the remaining approved task set -- abort only when
-        // the contested set is the whole plan, or when deferring it would
-        // leave nothing ready to dispatch (checked once readyBeads is
-        // computed below).
+        // Plan-cap exhaustion (every round CHANGES_NEEDED, never an APPROVED)
+        // does not necessarily condemn the whole plan: one bead's unresolved
+        // finding can pin the verdict while the rest of the task set is clean.
+        // When the last verdict's findings name specific beads, defer just
+        // those (status=deferred plus the finding attached as a note) and
+        // proceed to Develop with the remaining approved set. Abort only when
+        // the contested set is the whole plan, or when deferring it would leave
+        // nothing ready to dispatch (checked once readyBeads is computed).
         let planCapDeferredIds = [];
         if (!planApproved) {
             const allTaskIds = (lastVerdict && Array.isArray(lastVerdict.taskAssignments))
@@ -7252,10 +5989,9 @@ async function runSprintCycle(context) {
                     `bd update ${id} --status=deferred`,
                     { member_name: orchestratorMember, silent: true, label: `Defer contested bead ${id} per plan-cap exhaustion` }
                 );
-                // eft.73.1: stage the deferral note member-side too -- the
-                // orchestrator member is itself remote in the fleet-rev
-                // topology, so a host-local body-file path is just as
-                // unreachable here as on the newTask path.
+                // Stage the deferral note member-side: the orchestrator member
+                // can itself be remote, so a host-local body-file path would be
+                // unreachable to `bd note`.
                 const noteFile = await stageCommandBodyMemberSide({
                     command, member: orchestratorMember,
                     content:
@@ -7275,56 +6011,41 @@ async function runSprintCycle(context) {
         // =======================
         // 2. Execution Prep
         // =======================
-        // apra-fleet-unw.19: `bd list --ready --json` does not guarantee a
-        // stable ordering. It appears to return beads by `created_at`
-        // descending, but `created_at` only has 1-SECOND resolution -- two
-        // beads created within the same second (routine for a fast
-        // planner/doer pass, and for the deterministic mock fleet used in
-        // this package's own tests) tie, and the tie-break order is not
-        // reproducible run-to-run. Bead `id` is also not a safe sort key: it
-        // carries a random per-scratch-dir suffix. `title` is the only
-        // field guaranteed both present and stable, so it is used here as a
-        // deterministic tie-break/ordering key (with `id` as a final
-        // tie-break for the (rare) case of two identical titles), so this
-        // run's dispatch order -- and, further down, which physical doer
-        // member each streak round-robins to -- never depends on incidental
-        // `bd` output ordering. Root-caused via the new golden-transcript
-        // test, which caught this exact class of drift (identical inputs,
-        // different streak-assignment prompt text between two runs) that
-        // the older agentType-only sequence comparison in
-        // test/advanced-mock-runner-test.mjs could not see.
-        // Stabilization log Issue 28 (second half): mirror the doer
-        // contract's "only claim issue_type=task" rule at SEEDING time.
-        // A non-task bead handed to a doer produces a deterministic,
-        // contract-mandated refusal -- paying a full LLM dispatch to hear
-        // "this is a bug, not a task" recited back is pure token waste
-        // (observed live: 4 of 6 streaks in one round). This deliberately
-        // does NOT touch readiness semantics or the xbu.C5 structural
-        // parent guard above -- it only mirrors, engine-side, the exact
-        // type rule the doer contract already enforces agent-side.
-        // Childless non-task beads stay in scope for the PLANNER (whose
-        // contract decomposes them into task children); they just never
-        // reach a doer streak directly.
+        // `bd list --ready --json` does not guarantee a stable ordering: it
+        // returns beads by `created_at` descending, but `created_at` has only
+        // 1-second resolution, so beads created within the same second tie with
+        // no reproducible tie-break. Bead `id` is not a safe sort key either --
+        // it carries a random per-scratch-dir suffix. `title` is the only field
+        // both guaranteed present and stable across runs, so it orders here
+        // (with `id` as a final tie-break for identical titles). Without this,
+        // dispatch order -- and which physical doer member each streak
+        // round-robins to -- would vary between two otherwise-identical runs.
         //
-        // EXEMPTION -- target issues: a childless leaf TARGET is the
-        // eft.24 sprint-on-a-single-issue case; it is deliberately seeded
-        // into scope whatever its recorded type, and if planning leaves it
-        // childless the direct dispatch is the sprint's only path to it.
-        // The filter exists to stop NON-target parents/bugs from wasting
-        // doer dispatches, never to make a sprint's own target unreachable.
+        // The type filter mirrors, engine-side, the doer contract's "only claim
+        // issue_type=task" rule at SEEDING time: a non-task bead handed to a
+        // doer produces a deterministic contract-mandated refusal, so paying a
+        // full LLM dispatch to hear it back is pure token waste. It touches
+        // neither readiness semantics nor readyLeafBeads()'s structural parent
+        // guard. Childless non-task beads stay in scope for the PLANNER, whose
+        // contract decomposes them into task children; they just never reach a
+        // doer streak directly.
+        //
+        // EXEMPTION -- target issues: a childless leaf TARGET is seeded into
+        // scope whatever its recorded type, because if planning leaves it
+        // childless, direct dispatch is the sprint's only path to it. The
+        // filter exists to stop NON-target parents/bugs from wasting doer
+        // dispatches, never to make a sprint's own target unreachable.
         const targetIssueSet = new Set(targetIssues);
         const readyBeads = (await readyLeafBeads())
             .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
             .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
-        // apra-fleet-eft.72.1: the OTHER plan-cap-deferral abort condition --
-        // deferring the contested bead(s) above must never be allowed to
-        // silently leave nothing dispatchable this cycle. A normal (non-
-        // deferral) empty readyBeads list is not itself an abort signal (the
-        // Cycle Evaluation section below is what decides sprint completion),
-        // but immediately after a plan-cap deferral it means the "approved
-        // remainder" was empty all along, so this must abort exactly like a
-        // whole-plan-contested exhaustion would have.
+        // The second plan-cap-deferral abort condition: deferring the contested
+        // beads must never silently leave nothing dispatchable. An empty
+        // readyBeads list is not normally an abort signal (Cycle Evaluation
+        // decides completion), but immediately after a deferral it means the
+        // approved remainder was empty all along, which is the same failure as
+        // a whole-plan-contested exhaustion.
         if (planCapDeferredIds.length > 0 && readyBeads.length === 0) {
             throw new SprintPlanRejectedError(
                 `Plan phase for cycle ${cycle}: after deferring contested bead(s) ` +
@@ -7338,7 +6059,7 @@ async function runSprintCycle(context) {
             );
         }
 
-        // A5: an empty `--ready` list is NOT, by itself, evidence the sprint
+        // An empty `--ready` list is NOT, by itself, evidence the sprint
         // is complete -- it only means there's nothing dispatchable to a
         // doer THIS cycle (e.g. everything is currently blocked or
         // in_progress). The real completion decision happens in the Cycle
@@ -7352,83 +6073,68 @@ async function runSprintCycle(context) {
             log('No ready beads to dispatch this cycle (may be blocked/in_progress work remaining) -- skipping Develop/Review loop for this cycle.');
         } else {
         // =======================
-        // 3. Develop & Review Loop (apra-fleet-unw.16)
+        // 3. Develop & Review Loop
         // =======================
         //
-        // Every agent() dispatch below is consumed by the orchestrator --
-        // no result is ever logged-and-discarded. Role-casing is fixed at
-        // the source (getMembersForRole above), so `doerPool` genuinely
-        // contains every configured member when more than one is
-        // registered, and each parallel() doer branch below round-robins
-        // across the full pool instead of collapsing to member #1.
+        // Every agent() dispatch below is consumed by the orchestrator -- no
+        // result is ever logged-and-discarded. `doerPool` contains every
+        // configured member, and each doer branch round-robins across the full
+        // pool rather than collapsing onto one member.
         let devRounds = 0;
         let lastStillOpenCount = 0;  // Track for round-cap detection at loop exit
 
-        // beadId -> reviewer feedback text for the NEXT round, populated
-        // only for beads actually named in a CHANGES_NEEDED verdict's
-        // `reopenIds` (Work item 5: per-bead routing, not a blanket
-        // broadcast of the whole reviewer verdict to every doer).
+        // beadId -> reviewer feedback text for the NEXT round, populated only
+        // for beads actually named in a CHANGES_NEEDED verdict's `reopenIds`:
+        // per-bead routing, not a blanket broadcast of the whole verdict to
+        // every doer.
         const perBeadFeedback = new Map();
 
-        // apra-fleet-eft.67.2: union of every bead id a reviewer verdict THIS
-        // cycle has flagged via the optional `replanIds` field (contract:
-        // apra-fleet-eft.67.1) -- the bead was reopened, but its ACCEPTANCE
-        // CRITERIA are themselves defective and can only be corrected by the
-        // next cycle's planner, not re-developed this cycle. Reset per
-        // cycle (a defect flagged in cycle N is re-scoped by cycle N's own
-        // Cycle Eval handoff, so it must not leak into cycle N+1's rounds).
-        // Populated below, after each round's reopenIds are applied; consulted
-        // at the top of the next iteration's currentReady computation.
+        // Union of every bead id a reviewer verdict THIS cycle flagged via the
+        // optional `replanIds` field: the bead was reopened, but its ACCEPTANCE
+        // CRITERIA are themselves defective and can only be corrected by a
+        // planner, not by re-development. Scoped to the cycle -- a defect
+        // flagged here is re-scoped by this cycle's own handoff and must not
+        // leak into the next. Populated after each round's reopenIds are
+        // applied; consulted at the top of the next iteration.
         const replanIds = new Set();
 
-        // apra-fleet-eft.68.1: loop guard for the in-cycle scoped replan --
-        // the set of bead ids that have ALREADY been through one scoped
-        // planner+plan-review pass THIS cycle. Enforces "max one scoped replan
-        // per bead per cycle": a bead flagged for replan a SECOND time in the
-        // same cycle is refused at the reviewer fold-in below (logged guard
-        // line) rather than re-planned again, so a defective bead can never
-        // ping-pong replan<->develop endlessly within a single cycle. Reset per
-        // cycle (same rationale as replanIds above).
+        // Loop guard for the in-cycle scoped replan: bead ids that have ALREADY
+        // been through one scoped planner+plan-review pass THIS cycle. Enforces
+        // max one scoped replan per bead per cycle -- a bead flagged a second
+        // time is refused at the reviewer fold-in below rather than re-planned,
+        // so a defective bead can never ping-pong replan<->develop endlessly
+        // within a cycle. Scoped to the cycle, like replanIds.
         const replannedThisCycle = new Set();
 
         const doerPool = getMembersForRole(ROLE_DOER);
 
         while (devRounds < 3) {
-            // apra-fleet-unw.19: same non-deterministic-ordering fix as
-            // `readyBeads` above -- this is the list that actually feeds the
-            // streak-assignment prompt and the doerPool round-robin index
-            // below, so an unstable order here was directly observable as
-            // prompt drift between two otherwise-identical runs.
-            // Stabilization log Issue 34: the Issue 28 doer-dispatchability
-            // filter must apply HERE too -- this in-loop list is the one that
-            // actually feeds the streak-assignment prompt, and a bug/feature
-            // bead created after the plan phase (reviewer newTask, out-of-band
-            // filing) otherwise lands in a doer streak and burns a dispatch on
-            // a contract-bound refusal (observed live, run 16 C1 R2: bug bead
-            // seeded into its own streak). Same target-issue exemption as the
-            // pre-loop site (eft.24 childless-leaf-target case).
+            // Same stable ordering and doer-dispatchability filter as
+            // `readyBeads` above, and both must apply HERE too: this in-loop
+            // list is the one that actually feeds the streak-assignment prompt
+            // and the doerPool round-robin index. A bug/feature bead created
+            // after the plan phase (a reviewer newTask, an out-of-band filing)
+            // would otherwise land in a doer streak and burn a dispatch on a
+            // contract-bound refusal. Same target-issue exemption as above.
             const currentReadyAll = (await readyLeafBeads())
                 .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
             if (currentReadyAll.length === 0) break;
 
-            // apra-fleet-eft.68.1: in-cycle SCOPED replan. Supersedes the old
-            // eft.67.2 "defer to the next cycle" short-circuit for the FIRST
-            // replan of a bead: when a reviewer flagged a still-ready bead via
-            // `replanIds` (its acceptance criteria are themselves defective and
-            // cannot be satisfied by re-development), dispatch a SCOPED planner
-            // pass for exactly those beads' subtree PLUS a scoped plan-review of
-            // the result WITHIN this same cycle, then resume develop rounds so
-            // the amended bead is re-dispatched to a doer this cycle -- rather
-            // than burning the rest of the cycle and waiting on the next cycle's
-            // full planner. `replannedThisCycle` (the loop guard) makes this fire
-            // at most ONCE per bead per cycle: a bead flagged for replan a second
-            // time is refused at the reviewer fold-in below and falls through to
-            // the eft.67.2 exclude/break short-circuit (deferred to the next
-            // cycle) instead of re-planning again. Round accounting: a scoped
-            // replan pass consumes one develop round (same 3-round budget), so a
-            // replan<->develop ping-pong can never outrun the cap.
+            // In-cycle SCOPED replan, taken on a bead's FIRST replan flag: when
+            // a reviewer flags a still-ready bead via `replanIds` -- its
+            // acceptance criteria are defective and cannot be satisfied by
+            // re-development -- dispatch a scoped planner pass over exactly
+            // those beads' subtree plus a scoped plan-review of the result,
+            // within this same cycle, then resume develop rounds so the amended
+            // bead is re-dispatched to a doer now rather than waiting on the
+            // next cycle's full planner. `replannedThisCycle` makes this fire at
+            // most once per bead per cycle: a second flag is refused at the
+            // reviewer fold-in and falls through to the exclude/break
+            // short-circuit below instead. A scoped replan pass consumes one
+            // develop round, so a replan<->develop ping-pong cannot outrun the
+            // round cap.
             const eligibleReplan = currentReadyAll.filter((b) => replanIds.has(b.id) && !replannedThisCycle.has(b.id));
             if (eligibleReplan.length > 0) {
                 const replanScopeIds = eligibleReplan.map((b) => b.id);
@@ -7459,11 +6165,9 @@ async function runSprintCycle(context) {
                                 requirementsContent,
                                 feedback: null,
                                 replanScope: replanScopeIds,
-                                // apra-fleet-xuo.5: the scoped in-cycle replan
-                                // pass is a real planner dispatch just like the
-                                // main Plan phase above -- a rejected newTask
-                                // pending resurface must not skip this dispatch
-                                // just because it happens to be scoped.
+                                // The scoped replan is a real planner dispatch
+                                // like the main Plan phase, so a pending
+                                // rejected newTask must resurface here too.
                                 rejectedNewTasksToResubmit: pendingRejectedNewTasks,
                             }),
                             {
@@ -7481,9 +6185,9 @@ async function runSprintCycle(context) {
                     log(`Scoped Replan Planner: ${scopedPlannerRes}`);
                 } catch (err) {
                     scopedPlannerOk = false;
-                    // apra-fleet-391: self-heal an LLM-auth failure so the
-                    // NEXT cycle's planner (which this bead gets deferred to
-                    // below) doesn't just hit the identical wall.
+                    // Self-heal an LLM-auth failure so the next cycle's planner
+                    // -- which this bead is deferred to below -- does not hit
+                    // the identical wall.
                     if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                         await onLlmAuthFailure({ member: getMemberForRole('planner'), label: 'Scoped Replan Plan dispatch', error: err.message });
                     }
@@ -7511,9 +6215,9 @@ async function runSprintCycle(context) {
                         log(`Scoped Replan Reviewer: ${JSON.stringify(scopedVerdict)}`);
                         scopedReplanApproved = scopedVerdict.verdict === 'APPROVED';
                     } catch (err) {
-                        // apra-fleet-391: same rationale as the scoped planner
-                        // catch above -- self-heal before this defers to the
-                        // next cycle's planner/plan-reviewer pass.
+                        // Same rationale as the scoped planner catch above:
+                        // self-heal before deferring to the next cycle's
+                        // planner/plan-reviewer pass.
                         if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                             await onLlmAuthFailure({ member: getMemberForRole('plan-reviewer'), label: 'Scoped Replan Review dispatch', error: err.message });
                         }
@@ -7539,32 +6243,23 @@ async function runSprintCycle(context) {
                     log(`[fleet-sprint] in-cycle scoped replan: the scoped replan of ${replanScopeIds.join(', ')} was not approved -- they stay excluded from this cycle's develop rounds (deferred to the next cycle's planner).`);
                 }
 
-                // The scoped planner just MUTATED beads in this clone -- D-push +
-                // refresh the dashboard, exactly like the develop-review reopen/
-                // newTask site below, then re-evaluate the loop top.
+                // The scoped planner just MUTATED beads in this clone -- D-push
+                // and refresh the dashboard before re-evaluating the loop top.
                 await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
                 await updateDashboard();
                 continue;
             }
 
-            // apra-fleet-eft.67.2: replan short-circuit. `replanIds` is the
-            // union of every bead id flagged by a reviewer's optional
-            // `replanIds` verdict field THIS cycle (populated below, after a
-            // round's reopenIds are applied) -- those beads are reopened but
-            // their acceptance criteria are themselves defective, so
-            // re-dispatching them to a doer this cycle is a predictably
-            // wasted round (observed live, run 21 C1: eft.60.1 burned a
-            // third develop+review round on exactly this). If EVERY
-            // still-ready bead this round is replan-flagged, skip all
-            // further develop/review rounds this cycle entirely and let
-            // Cycle Eval hand off to the next cycle's planner (which
-            // re-reads bead comments and can re-scope). A MIX of
-            // replan-flagged and normal beads still runs a round --
-            // only the flagged beads are excluded from streak assignment,
-            // so real dev work is never blocked on a defect in an unrelated
-            // bead's acceptance criteria. Absent replanIds (the `replanIds`
-            // set stays empty all cycle) makes this filter a no-op,
-            // preserving today's behavior exactly -- no new dispatch sites.
+            // Replan short-circuit for beads whose scoped replan did not land.
+            // Re-dispatching a replan-flagged bead to a doer is a predictably
+            // wasted round: it is reopened, but its acceptance criteria are
+            // defective. If EVERY still-ready bead this round is flagged, skip
+            // all further develop/review rounds this cycle and let Cycle Eval
+            // hand off to the next cycle's planner, which re-reads bead comments
+            // and can re-scope. A MIX still runs a round with only the flagged
+            // beads excluded from streak assignment, so real dev work is never
+            // blocked on a defect in an unrelated bead's criteria. An empty
+            // `replanIds` makes this a no-op.
             const currentReady = currentReadyAll.filter((b) => !replanIds.has(b.id));
             if (currentReady.length === 0) {
                 log(
@@ -7588,17 +6283,15 @@ async function runSprintCycle(context) {
             phase(`Develop C${cycle} R${devRounds}`);
 
             // --- Streak grouping ------------------------------------------
-            // apra-fleet-eft.76.3: PREFER deterministic grouping straight from
-            // the planner's lane metadata (`streak`/`streakOrder`, emitted per
-            // planner.md via the same `--metadata` channel as `model`),
-            // intersected with THIS round's ready/open set. When every ready
-            // bead carries a `streak` id, the grouping is fully determined by
-            // the plan -- so we skip the runtime "Streak Assignment" LLM
-            // dispatch entirely (deterministic, zero prompt drift, one fewer
-            // agent round-trip). The LLM assignment path below is retained
-            // ONLY as a FALLBACK for plans that lack lane metadata (old plans
-            // predating eft.76, or a partially-laned plan) -- see
-            // groupStreaksFromLaneMetadata() for the "all-or-nothing" rule.
+            // PREFER deterministic grouping straight from the planner's lane
+            // metadata (`streak`/`streakOrder`, emitted per planner.md through
+            // the same `--metadata` channel as `model`), intersected with THIS
+            // round's ready set. When every ready bead carries a `streak` id the
+            // grouping is fully determined by the plan, so the runtime "Streak
+            // Assignment" LLM dispatch is skipped entirely -- deterministic,
+            // zero prompt drift, one fewer agent round-trip. The LLM path below
+            // is retained ONLY as a fallback for plans that lack lane metadata;
+            // see groupStreaksFromLaneMetadata() for the all-or-nothing rule.
             let streaks, usedFallback, reason;
             const laneGrouping = groupStreaksFromLaneMetadata(currentReady);
             if (laneGrouping) {
@@ -7609,13 +6302,13 @@ async function runSprintCycle(context) {
                     `no Streak Assignment dispatch (${laneGrouping.streaks.map((s) => `[${s.map((b) => b.id).join(', ')}]`).join(' ')}).`
                 );
             } else {
-            // --- Streak assignment (FALLBACK): consumed for real (Work item 2a) --
+            // --- Streak assignment (FALLBACK) ---------------------------------
             // Reached only when the plan lacks lane metadata (see above).
-            // Schema-validated {streaks: string[][]}; falls back to
-            // deterministic one-bead-per-streak whenever the candidate
-            // doesn't cover every ready bead id exactly once (invalid
-            // output, or agent()'s own bounded schema-repair loop was
-            // exhausted) -- see selectStreaks() above.
+            // Schema-validated {streaks: string[][]}; falls back to a
+            // deterministic one-bead-per-streak grouping whenever the candidate
+            // does not cover every ready bead id exactly once -- invalid output,
+            // or agent()'s own bounded schema-repair loop exhausted. See
+            // selectStreaks().
             log('Streak grouping: no lane metadata on this round\'s ready beads -- falling back to LLM Streak Assignment dispatch (back-compat with pre-eft.76 plans).');
             let streakCandidate = null;
             try {
@@ -7626,35 +6319,28 @@ async function runSprintCycle(context) {
                         // vendored persona of its own (see the streakAssignment
                         // schema comment in contracts.mjs) and reuses the
                         // planner MEMBER only for its model-tier routing.
-                        // Activating the full `planner` agentType/persona
-                        // (whose actual system prompt is "read open beads,
-                        // build a sprint DAG") on this narrow, fully-specified
-                        // grouping task caused the model to go exploring via
-                        // its Bash/Read/Grep tools instead of answering
-                        // directly from the prompt -- the real cause of this
-                        // dispatch intermittently running for many minutes
-                        // before the transport timeout fired.
+                        // Activating the full `planner` persona -- whose system
+                        // prompt is "read open beads, build a sprint DAG" -- on
+                        // this narrow, fully-specified grouping task makes the
+                        // model go exploring with its Bash/Read/Grep tools
+                        // instead of answering directly from the prompt, which
+                        // can run long enough to hit the transport timeout.
                         member_name: getMemberForRole('planner'),
                         label: 'Streak Assignment',
                         schema: streakAssignment,
                         model: FIXED_ROLE_TIER.streakAssignment,
                     }
                 );
-                // apra-fleet-eft.69.1: no duplicate log() dump -- see the
-                // Reviewer dispatch site's comment (~line 4523) for why.
-                // This is also what previously made Streak Assignment LOOK
-                // like it rendered differently from every other agent
-                // dispatch (bug item 2): the standard AGENT row (label
-                // 'Streak Assignment', above) already renders through the
-                // exact same generic path as Planner/Reviewer/Doer/etc; the
-                // extra raw-JSON log() line just made it visually noisier.
+                // No duplicate log() dump -- see dispatchReview() for why. The
+                // standard AGENT row (label 'Streak Assignment', above) already
+                // renders through the same generic path as every other dispatch.
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
                 } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // apra-fleet-391: self-heal now so the SAME member's next
-                    // dispatch this cycle (it reuses the planner member) isn't
-                    // walking into the identical unhealed auth failure.
+                    // Self-heal now so the SAME member's next dispatch this
+                    // cycle -- it reuses the planner member -- does not walk
+                    // into the identical unhealed auth failure.
                     if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                         await onLlmAuthFailure({ member: getMemberForRole('planner'), label: 'Streak Assignment dispatch', error: err.message });
                     }
@@ -7664,14 +6350,14 @@ async function runSprintCycle(context) {
                 }
             }
             ({ streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady));
-            // Semantic-repair re-ask (one bounded attempt): agent()'s own
-            // schema-repair only fixes JSON-shape problems -- a candidate can
-            // be schema-valid yet semantically invalid (observed live in run
-            // 8: suffix-stripped ids like "8.4", rejected wholesale). Losing
-            // the whole grouping to the one-bead-per-streak fallback silently
-            // discards sequencing intent, which on a multi-doer fleet would
-            // PARALLELIZE beads the model said must run sequentially. Re-ask
-            // once with the exact validation failure; only then fall back.
+            // Semantic-repair re-ask, one bounded attempt: agent()'s own
+            // schema-repair only fixes JSON-shape problems, so a candidate can
+            // be schema-valid yet semantically invalid (e.g. bead ids returned
+            // with their prefix stripped). Dropping the whole grouping to the
+            // one-bead-per-streak fallback silently discards sequencing intent,
+            // which on a multi-doer fleet would PARALLELIZE beads the model said
+            // must run sequentially. Re-ask once with the exact validation
+            // failure; only then fall back.
             if (usedFallback && streakCandidate) {
                 log(`Streak Assignment: candidate rejected (${reason}) -- re-asking once with the validation failure before falling back.`);
                 try {
@@ -7686,8 +6372,7 @@ async function runSprintCycle(context) {
                             model: FIXED_ROLE_TIER.streakAssignment,
                         }
                     );
-                    // apra-fleet-eft.69.1: no duplicate log() dump -- see
-                    // the Reviewer dispatch site's comment (~line 4523).
+                    // No duplicate log() dump -- see dispatchReview().
                     ({ streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady));
                 } catch (repairErr) {
                     if (repairErr instanceof AgentOutputError || repairErr instanceof AgentDispatchError || repairErr instanceof FleetTransportError) {
@@ -7700,86 +6385,49 @@ async function runSprintCycle(context) {
             if (usedFallback) {
                 log(`Streak Assignment: using one-bead-per-streak fallback (${reason}).`);
             }
-            } // end LLM-fallback branch (no lane metadata) -- apra-fleet-eft.76.3
-            // apra-fleet-unw.19: title lookup for the assignedBeadIds sort
-            // below -- streaks/doer dispatches themselves run in `parallel`,
-            // and the ORDER their outcomes are recorded in is completion-
-            // order (genuinely, correctly non-deterministic -- that's what
-            // "parallel" means). But the Review phase's `bd show` evidence
-            // command and reviewer prompt below must not inherit that race
-            // as prompt drift; see the readyBeads/currentReady sort-by-title
-            // comment above for why `title` (not `id`, not arrival order) is
-            // the only field that's both present and stable across runs.
+            } // end LLM-fallback branch (no lane metadata)
+            // Title lookup for the assignedBeadIds sort below. Doer dispatches
+            // run in `parallel`, so the order their outcomes are recorded in is
+            // completion order -- correctly non-deterministic. The Review
+            // phase's `bd show` evidence command and reviewer prompt must not
+            // inherit that race as prompt drift; see the sort-by-title comment
+            // above for why `title` is the only stable key.
             const readyTitleById = new Map(currentReady.map((b) => [b.id, b.title]));
 
-            // N10 (apra-fleet-unw2.8): beadId -> declared model tier, read
-            // straight out of the SAME `bd list --ready --json` response
-            // already fetched above to build `currentReady` -- that response
-            // is each bead's full record, metadata included, so no extra
-            // `bd show` round-trip is needed to recover the `model` key N1
-            // (apra-fleet-unw2.1) has the planner record via `--metadata`.
-            // See resolveDoerModel() below for how a streak's (possibly
-            // multi-bead) model is picked from this map, and the
-            // budget-is-estimate-based caveat there.
-            // Issue 29: normalizeTierToken() guards this single read site --
-            // see its doc comment for the live 404 this prevents.
+            // beadId -> declared model tier, read out of the SAME `bd list
+            // --ready --json` response already fetched to build `currentReady`:
+            // that response carries each bead's full record including metadata,
+            // so no extra `bd show` round-trip is needed to recover the `model`
+            // key the planner records via `--metadata`. See resolveDoerModel()
+            // for how a possibly-multi-bead streak's model is picked from this
+            // map. normalizeTierToken() guards this single read site -- see its
+            // doc comment.
             const modelByBeadId = new Map(currentReady.map((b) => [b.id, normalizeTierToken(b.metadata && b.metadata.model)]));
 
-            // --- Doer barrier: isolated failures, one retry, verified closes (Work item 3) ---
-            // continueOnError: true so one doer streak's exception can never
-            // abort sibling streaks mid-flight (the old parallel() call had
-            // no such option and one throw killed the whole cycle).
-            //
-            // Per-member serialization: `doerPool[index % doerPool.length]`
-            // round-robins streaks across the doer pool, but when there are
-            // fewer members than streaks (most visibly single-member mode,
-            // doerPool.length === 1), two or more streaks resolve to the SAME
-            // member and `parallel()` below dispatches them concurrently
-            // anyway. The fleet server allows only one in-flight
-            // execute_prompt per member (inFlightAgents guard) -- every streak
-            // but the first to arrive gets rejected instantly with a
-            // "busy"/AgentDispatchError, deterministically, every time (not a
-            // flaky race).
-            //
-            // apra-fleet-eft.8.3 (related known-bug context: apra-fleet-qv1):
-            // a PER-MEMBER lock chain alone is not enough -- the token-passing
-            // stance requires doer streak dispatch to be GLOBALLY sequential
-            // across DIFFERENT members too, because concurrent writers (even
-            // exactly two, on a heterogeneous x86 + ARM64 hand-off) break the
-            // fast-forward-by-construction invariant the git/beads sync
-            // brackets depend on. `globalDoerTurn` below is a single
-            // process-wide queue (not one per member) that every streak --
-            // regardless of which member it's assigned to -- chains onto in
-            // dispatch order, so at most one doer streak is ever in flight at
-            // a time this devRound. `parallel()` still invokes every streak's
-            // callback synchronously up to its first `await` in `streaks`
-            // order (see the streak-assignment ordering comments above), so
-            // capturing `globalDoerTurn` and immediately replacing it happens
-            // deterministically in that same order before any streak's actual
-            // work begins. Same-member serialization is trivially still held
-            // (a global gate is strictly stronger). The gate is released in
-            // the `finally` below on EVERY terminal path -- including a
-            // thrown/failed streak -- so a failure can never deadlock the
-            // next streak's turn. This is intentionally just a strict FIFO
-            // queue, not a merger/parallel-streak mechanism -- true
-            // parallel/merger dispatch is explicitly deferred to Phase 3+.
+            // --- Doer barrier: serialized turns, isolated failures ---
+            // Streak turns are strictly serialized through `globalDoerTurn`: a
+            // promise chain each turn awaits before doing any work and releases
+            // in a `finally`, so at most one doer dispatch is ever in flight and
+            // a thrown streak can never deadlock the next one. Serialization is
+            // required because concurrent writers break the
+            // fast-forward-by-construction invariant the git/beads sync brackets
+            // depend on. parallel() with continueOnError is retained only for
+            // per-worklist failure isolation and outcome accounting.
             let globalDoerTurn = Promise.resolve();
             const streakOutcomes = [];
 
-            // --- apra-fleet-eft.79: per-doer ORDERED WORKLISTS -----------------
+            // --- Per-doer ORDERED WORKLISTS -----------------------------------
             // When this round has more ready streaks than doers, pack them into
             // per-doer ordered worklists (dependency order -> priority -> the
-            // existing tie-break; tier grouping + effort budget -- see
-            // assignDoerWorklists) instead of one-streak-per-doer feeding. Each
-            // doer then works its worklist back to back: mode 'resume' (default)
-            // re-dispatches per streak, resuming the SAME doer session by
-            // explicit session id so warm context carries across streaks while
-            // every engine checkpoint (git/dolt sync bracket, per-streak failure
-            // attribution) is kept BETWEEN streaks; mode 'batch' (config-gated)
-            // sends one dispatch carrying the whole ordered worklist. When
-            // streaks <= doers, assignDoerWorklists is a pass-through and
-            // behavior is unchanged from the pre-eft.79 one-streak-per-doer
-            // path.
+            // existing tie-break, plus tier grouping and an effort budget -- see
+            // assignDoerWorklists) instead of feeding one streak per doer. Each
+            // doer then works its worklist back to back: mode 'resume' (the
+            // default) re-dispatches per streak, resuming the SAME doer session
+            // by explicit session id so warm context carries across streaks
+            // while every engine checkpoint (sync bracket, per-streak failure
+            // attribution) is kept BETWEEN streaks; mode 'batch' sends one
+            // dispatch carrying the whole ordered worklist. When streaks <=
+            // doers, assignDoerWorklists is a pass-through.
             const worklistMode = validated.doerWorklistMode || 'resume';
             const { tierHomogeneous } = resolveWorklistTierPolicy({
                 mode: worklistMode,
@@ -7793,7 +6441,7 @@ async function runSprintCycle(context) {
                 const fmtStreak = (s) => `(${s.map((b) => b.id).join(', ')})`;
                 const fmtWorklist = (wl) => `[${wl.map(fmtStreak).join(' -> ')}]`;
                 log(
-                    `Doer worklists (apra-fleet-eft.79): ${streaks.length} ready streak(s) > ${doerPool.length} doer(s) -- ` +
+                    `Doer worklists: ${streaks.length} ready streak(s) > ${doerPool.length} doer(s) -- ` +
                     `packed into per-doer ordered worklists (mode: ${worklistMode}, ` +
                     `${tierHomogeneous ? 'tier-homogeneous' : 'mixed tiers allowed (resume_model_switch)'}): ` +
                     worklistPacking.worklists.map((wl, i) => `doer '${doerPool[i % doerPool.length]}': ${fmtWorklist(wl)}`).join('; ') +
@@ -7804,77 +6452,58 @@ async function runSprintCycle(context) {
             }
 
             // One streak's full dispatch turn (claim -> dispatch -> verify ->
-            // attribute). Extracted from the old per-streak parallel() callback
-            // body so a worklist can run it once per streak; body semantics are
-            // unchanged for the single-streak (non-packed) case. MUST be called
-            // with no prior `await` in the caller so the global-gate capture
-            // below stays synchronous and deterministic in dispatch order.
+            // attribute), run once per streak of a worklist. Each call captures
+            // and replaces the global gate synchronously, before its first
+            // `await`, so the FIRST turn of each worklist enqueues in
+            // deterministic worklist order; subsequent turns of a worklist
+            // enqueue as their predecessors complete.
             // `worklistCtx` carries the doer's session id + last reported usage
             // across the streaks of ONE worklist (never across worklists/doers);
             // `batchStreaks` (mode 'batch') is the ordered list of sub-streaks a
             // single merged dispatch carries, for per-streak outcome
             // attribution.
             const runStreakTurn = async ({ streak, doerMember, worklistCtx, worklistPosition = 0, worklistLength = 1, packed = false, batchStreaks = null }) => {
-                let beadIds = streak.map((b) => b.id);
                 const priorTurn = globalDoerTurn;
                 let releaseTurn;
                 globalDoerTurn = new Promise((resolve) => { releaseTurn = resolve; });
                 await priorTurn;
                 try {
-                // Setup phase: variables for dispatch
-                let actualBeadIds = [...beadIds];  // May be reduced by claiming if assignee is set
+                let actualBeadIds = streak.map((b) => b.id);  // May be reduced by claiming if assignee is set
                 let hasClaimedBeads = false;  // Track whether we've done claiming yet
 
-                // apra-fleet base doer max_turns: made explicit (rather than
-                // relying on the fleet's own default of 50) so the
-                // max-turns-exhaustion resume path below has a known
-                // baseline to escalate from.
-                // 50 -> 100 (stabilization log iteration 4): in run 8 EVERY
-                // doer streak -- including single-bead ones -- exhausted 50
-                // turns and paid a resume round-trip (an extra dispatch plus
-                // sync brackets each time). 100 lets the common eft-scale
-                // streak finish in one dispatch; resume stays the exception
-                // (escalating 200 -> 400).
+                // Explicit base turn budget (rather than the fleet's own
+                // default) so the max-turns-exhaustion resume path below has a
+                // known baseline to escalate from. Sized so a typical streak
+                // finishes in one dispatch and resume stays the exception.
                 const BASE_DOER_MAX_TURNS = 100;
                 // Bounded resume-and-continue attempts after a max_turns
-                // exhaustion, each doubling the turn budget. A blind
-                // identical retry is pointless (the doer would
-                // deterministically run out of turns again on the SAME
-                // prompt/max_turns) -- but SESSION RESUME is not identical:
-                // it continues the SAME session (full context of what was
-                // already done) with just a short "continue" nudge and a
-                // larger turn budget, which is what actually lets a
-                // longer-than-expected streak finish instead of dying every
-                // round. Bounded (not unlimited) so a genuinely too-large
-                // streak still fails after a few escalations rather than
-                // burning unbounded budget.
+                // exhaustion, each doubling the turn budget. An identical retry
+                // is pointless (the doer would deterministically run out of
+                // turns again on the same prompt), but a SESSION RESUME
+                // continues the same context with a larger budget, which is what
+                // lets a longer-than-expected streak finish. Bounded so a
+                // genuinely too-large streak still fails after a few escalations
+                // rather than burning unbounded budget.
                 const MAX_TURN_RESUME_ATTEMPTS = 2;
 
-                // apra-fleet-eft.8.2: doer is a code-writing role (pushCode:
-                // true) -- G-pull before, G-push after every attempt
-                // (including the resume-and-continue retry below) so the
-                // shared branch always reflects this member's committed work
-                // before the next dispatch reads it.
-                // apra-fleet-eft.9.1: doer writes BOTH code and beads -- it
-                // commits+pushes code (pushCode:true) AND closes its assigned
-                // beads, which must be D-pushed (pushBeads:true) so the
-                // orchestrator's verification D-pull+bd show below sees the
-                // closes instead of falsely reporting the streak FAILED.
-                // apra-fleet-eft.9.7 (Plan 3.4): per-bead work-claiming happens
-                // INSIDE the D-pull/D-push brackets, immediately after the D-pull
-                // brings in the latest state of which beads are already claimed
-                // by other sprints. This is the prevention layer that reduces
-                // row-level conflicts (C.2) by claiming beads based on the
-                // current remote state.
-                // apra-fleet-eft.87.1: `syncOpts` lets a RETRY re-dispatch ask
-                // for resumeOntoRemoteTip so the pre-dispatch sync resets the
-                // local branch onto the streak branch's remote tip before the
-                // doer commits again -- see the retry call below. The FIRST
-                // attempt passes nothing, so its pre-dispatch sync keeps the
-                // exact prior ff-only behaviour (no reset on the happy path).
+                // The doer is a code-writing role (pushCode: true) -- G-pull
+                // before, G-push after every attempt (including the
+                // resume-and-continue retry below) so the shared branch always
+                // reflects this member's committed work before the next dispatch
+                // reads it. It also writes BEADS: it closes its assigned beads,
+                // which must be D-pushed (pushBeads: true) so the orchestrator's
+                // verification D-pull + `bd show` below sees the closes instead
+                // of falsely reporting the streak FAILED. Per-bead claiming
+                // happens INSIDE the brackets, right after the D-pull brings in
+                // which beads other sprints already claimed, so claims are made
+                // against current remote state.
+                // `syncOpts` lets a RETRY re-dispatch ask for resumeOntoRemoteTip
+                // so the pre-dispatch sync resets the local branch onto the
+                // streak branch's remote tip before the doer commits again. The
+                // FIRST attempt passes nothing and keeps plain ff-only
+                // pre-dispatch sync.
                 const dispatchDoer = (syncOpts = {}) => withGitSync(doerMember, true, async () => {
-                    // apra-fleet-eft.9.7: per-bead work-claiming inside the brackets,
-                    // after D-pull brings in the latest claim state. Only claim once.
+                    // Claim once per streak turn, after the D-pull.
                     if (!hasClaimedBeads) {
                         hasClaimedBeads = true;
                         if (validated.assignee) {
@@ -7913,33 +6542,28 @@ async function runSprintCycle(context) {
                         .filter(Boolean)
                         .join('\n\n');
 
-                    // N10: resolve the model to price this dispatch against.
-                    // Beads are normally streaked one-per-model (the planner
-                    // assigns tiers per task), but when a streak DOES span
-                    // beads with different declared models, this deterministically
-                    // picks the first (by streak/bead-id order, not dispatch
-                    // completion order) and logs the discrepancy rather than
-                    // silently averaging or guessing a blended price. A bead
-                    // with no `model` metadata at all (pre-N1 data, or a
-                    // planner that forgot the convention) resolves to
-                    // `undefined`, which FleetWorkflow treats the same as never
-                    // passing `model` -- the dispatch still runs, it is simply not
-                    // priced (calculateCost() returns null; see pricing.mjs).
-                    // CAVEAT: this is the model the PLANNER ASKED the doer to
-                    // run on -- the fleet does not currently echo back the
-                    // model it actually resolved/ran with alongside usage, so
-                    // this (and therefore budget._spent / BudgetExceededError)
-                    // is honestly an ESTIMATE, not a verified actual, until that
-                    // server-side echo lands (explicitly descoped -- see
-                    // docs/plan.md and the pricing.mjs header comment).
+                    // Resolve the model to price this dispatch against. Beads are
+                    // normally streaked one-per-model, but when a streak DOES
+                    // span beads with different declared models this
+                    // deterministically picks the first (by bead-id order, not
+                    // dispatch completion order) and logs the discrepancy rather
+                    // than guessing a blended price. A bead with no `model`
+                    // metadata resolves to `undefined`, which FleetWorkflow
+                    // treats the same as never passing `model` -- the dispatch
+                    // still runs, it is simply not priced (calculateCost()
+                    // returns null; see pricing.mjs).
+                    // CAVEAT: this is the model the PLANNER ASKED the doer to run
+                    // on. The fleet does not echo back the model it actually
+                    // resolved/ran with, so this -- and therefore budget._spent /
+                    // BudgetExceededError -- is an ESTIMATE, not a verified
+                    // actual.
                     const streakModels = [...new Set(actualBeadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
                     let doerModel = streakModels[0];
-                    // apra-fleet-eft.79: in a PACKED worklist round, a streak
-                    // must never dispatch below its REQUIRED tier (the max of
-                    // its beads' declared models, per the planner-streaks
-                    // formula) -- override the legacy first-bead pick with the
-                    // required tier. The non-packed (streaks <= doers) path
-                    // keeps the pre-eft.79 first-bead behavior byte-identically.
+                    // In a PACKED worklist round a streak must never dispatch
+                    // below its REQUIRED tier (the max of its beads' declared
+                    // models) -- override the first-bead pick with that tier. The
+                    // non-packed (streaks <= doers) path keeps the first-bead
+                    // behavior.
                     if (packed) {
                         const requiredTier = streakRequiredTier(streak);
                         if (requiredTier) doerModel = requiredTier;
@@ -7948,16 +6572,14 @@ async function runSprintCycle(context) {
                         log(`Doer streak [${actualBeadIds.join(', ')}] spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${doerModel}'.`);
                     }
 
-                    // apra-fleet-eft.79 (mode ii RESUMED SEQUENCE): resume the
-                    // doer's OWN prior-streak session by EXPLICIT session id
-                    // when one was captured for this worklist and the
-                    // context-headroom admission check (eft.81 seam --
-                    // hasContextHeadroomForResume) passes. On refusal or when
-                    // no session id exists (first streak of the worklist,
-                    // provider without resume support, prior streak failed),
-                    // fall back to a FRESH session carrying the FULL prompt --
-                    // never a delta prompt into a fresh session
-                    // (resume-by-session-id rule, apra-fleet-eft.78).
+                    // Mode (ii) RESUMED SEQUENCE: resume the doer's OWN
+                    // prior-streak session by EXPLICIT session id when one was
+                    // captured for this worklist and hasContextHeadroomForResume()
+                    // passes. On refusal, or when no session id exists (first
+                    // streak of the worklist, provider without resume support,
+                    // prior streak failed), fall back to a FRESH session carrying
+                    // the FULL prompt -- never a delta prompt into a fresh
+                    // session.
                     let worklistResumeArg = false;
                     if (worklistCtx && worklistCtx.sessionId) {
                         if (hasContextHeadroomForResume(worklistCtx.usage)) {
@@ -7993,10 +6615,10 @@ async function runSprintCycle(context) {
                             batchStreaks.map((s, i) => `streak ${i + 1}: [${s.map((b) => b.id).join(', ')}]`).join('; ') +
                             '.\n\n' + basePrompt;
                     } else if (worklistResumeArg) {
-                        // Issue 27 discipline: a resumed dispatch restates its
-                        // FULL scope (the entire buildDoerPrompt output), never
-                        // a bare "continue" delta -- the preamble only tells the
-                        // session it may reuse its warm context.
+                        // A resumed dispatch restates its FULL scope (the entire
+                        // buildDoerPrompt output), never a bare "continue" delta
+                        // -- the preamble only tells the session it may reuse its
+                        // warm context.
                         doerPrompt =
                             'WORKLIST CONTINUATION: you are the same doer session that just completed the previous ' +
                             'streak of your worklist. Your warm context (repository layout, conventions, files already ' +
@@ -8013,25 +6635,24 @@ async function runSprintCycle(context) {
                             schema: doerReport,
                             model: doerModel,
                             resume: worklistResumeArg,
-                            // apra-fleet-eft.79: capture this dispatch's session
-                            // id + usage so the NEXT streak in this worklist can
-                            // resume the same session (warm-context carryover).
-                            // A provider without resume support never reports a
-                            // session id, so the callback simply never fires and
-                            // every streak stays fresh (capability signal, not a
+                            // Capture this dispatch's session id + usage so the
+                            // NEXT streak in this worklist can resume the same
+                            // session (warm-context carryover). A provider
+                            // without resume support never reports a session id,
+                            // so the callback simply never fires and every streak
+                            // stays fresh (capability signal, not a
                             // provider-name check).
                             onSessionId: (id, meta) => {
                                 if (!worklistCtx) return;
                                 worklistCtx.sessionId = id;
                                 worklistCtx.usage = meta && meta.usage ? meta.usage : null;
                             },
-                            // apra-fleet-aw8: doer streaks run a full impl+test+commit
-                            // cycle, categorically heavier than a one-shot prompt --
-                            // the fleet generic execute_prompt default (300s) was
-                            // observed live tripping repeatedly on real work.
-                            // Inactivity == total runtime for a silent-until-done
-                            // CLI, so the inactivity timer must match the
-                            // max_total_s ceiling (stabilization log Issue 12).
+                            // Doer streaks run a full impl+test+commit cycle,
+                            // categorically heavier than a one-shot prompt, so the
+                            // generic execute_prompt timeout default is too short.
+                            // For a silent-until-done CLI inactivity equals total
+                            // runtime, so the inactivity timer must match the
+                            // max_total_s ceiling.
                             timeout_s: DISPATCH_TIMEOUT_S,
                             max_total_s: DISPATCH_TIMEOUT_S,
                             max_turns: BASE_DOER_MAX_TURNS,
@@ -8044,10 +6665,9 @@ async function runSprintCycle(context) {
                 // responsibilities), so it gets the identical git+dolt sync
                 // bracket treatment as the original dispatch above.
                 const dispatchDoerResume = (maxTurns) => withGitSync(doerMember, true, () => agent(
-                    // Issue 27 (see the integ resume site): restate the streak's
-                    // scope -- a resumed dispatch replaces the delivered prompt
-                    // artifact, and run 15 C1's resumed doer drifted onto a
-                    // previously-finished bead when its scope was not restated.
+                    // Restate the streak's scope: a resumed dispatch replaces the
+                    // delivered prompt artifact, so a bare "continue" leaves the
+                    // session with no record of what it was asked to do.
                     'Continue exactly where you left off from this same session -- do not restart, re-read from scratch, or re-plan. ' +
                     `Your scope, restated so a resumed dispatch never loses it: assigned bead id(s) ${actualBeadIds.join(', ')} on sprint branch ${validated.branch}. ` +
                     'Pick up from your last action on those bead(s) and proceed to the VERIFY checkpoint.',
@@ -8061,10 +6681,10 @@ async function runSprintCycle(context) {
                         max_total_s: DISPATCH_TIMEOUT_S,
                         resume: true,
                         max_turns: maxTurns,
-                        // apra-fleet-eft.79: a successful max-turns ladder resume
-                        // leaves the session valid for the worklist's NEXT streak
-                        // -- re-record its id + latest usage so the next streak's
-                        // headroom admission judges the CURRENT session size.
+                        // A successful max-turns ladder resume leaves the session
+                        // valid for the worklist's NEXT streak -- re-record its
+                        // id + latest usage so the next streak's headroom
+                        // admission judges the CURRENT session size.
                         onSessionId: (id, meta) => {
                             if (!worklistCtx) return;
                             worklistCtx.sessionId = id;
@@ -8079,14 +6699,14 @@ async function runSprintCycle(context) {
                 try {
                     report = await dispatchDoer();
                 } catch (err) {
-                    // apra-fleet-eft.79: a dispatch-level failure means this
-                    // worklist's captured session can no longer be trusted (the
-                    // failed attempt may have run partial turns in it) -- clear
-                    // it so every in-body retry below AND the worklist's next
-                    // streak start from a FRESH session with the full prompt,
-                    // mirroring createRoundSessionRegistry's clear-on-failure
-                    // rule. (The max-turns ladder is unaffected: it resumes the
-                    // member's last session via `resume: true`, not this id.)
+                    // A dispatch-level failure means this worklist's captured
+                    // session can no longer be trusted (the failed attempt may
+                    // have run partial turns in it) -- clear it so every in-body
+                    // retry below AND the worklist's next streak start from a
+                    // FRESH session with the full prompt, mirroring
+                    // createRoundSessionRegistry's clear-on-failure rule. (The
+                    // max-turns ladder is unaffected: it resumes the member's
+                    // last session via `resume: true`, not this id.)
                     if (worklistCtx) {
                         worklistCtx.sessionId = null;
                         worklistCtx.usage = null;
@@ -8120,21 +6740,20 @@ async function runSprintCycle(context) {
                             log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
                         }
                     } else if (isPostDispatchSyncFailure(err)) {
-                        // apra-fleet-6z8.3: the doer turn itself COMPLETED --
-                        // only its post-dispatch G-push/D-push failed, and
-                        // withGitSync already retried that step on its own.
-                        // Re-running the streak would redo an LLM turn whose
-                        // commits/bead closes already exist locally. The
-                        // per-bead attribution pass below still runs, so any
-                        // bead this streak really did close is credited.
+                        // The doer turn itself COMPLETED -- only its
+                        // post-dispatch G-push/D-push failed, and withGitSync
+                        // already retried that step on its own. Re-running the
+                        // streak would redo an LLM turn whose commits/bead closes
+                        // already exist locally. The per-bead attribution pass
+                        // below still runs, so any bead this streak really did
+                        // close is credited.
                         log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' COMPLETED but its post-dispatch sync failed: ${err.message} Not re-dispatching -- the work is already committed locally.`);
                         dispatchError = err;
                     } else if (isNonRetryableDispatchError(err)) {
-                        // Stabilization Issue 43: auth/trust failures cannot be
-                        // fixed by retrying the identical dispatch.
-                        // apra-fleet-391: an LLM-auth (not workspace-trust)
-                        // failure gets one self-heal + one bounded retry
-                        // first, mirroring the Planner's ladder above.
+                        // Auth/trust failures cannot be fixed by retrying the
+                        // identical dispatch. An LLM-auth (not workspace-trust)
+                        // failure gets one self-heal attempt plus one bounded
+                        // retry first.
                         let healedAndRetried = false;
                         if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                             const healed = await onLlmAuthFailure({ member: doerMember, label: `Doer streak [${actualBeadIds.join(', ')}]`, error: err.message });
@@ -8158,15 +6777,14 @@ async function runSprintCycle(context) {
                         log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
                         wasRetried = true;
                         try {
-                            // apra-fleet-eft.87.1: this is a RETRIED doer
-                            // dispatch whose prior attempt was NOT a provable
+                            // This retry's prior attempt was NOT a provable
                             // no-mutation failure (a generic throw -- it may have
-                            // committed and/or pushed its single-task streak
-                            // before failing). Resume onto the streak branch's
-                            // remote tip so the retry builds on any already-
-                            // published work instead of re-implementing the task
-                            // as a divergent, content-identical duplicate commit
-                            // (the eft.87 non-fast-forward-forever symptom).
+                            // committed and/or pushed its streak before failing).
+                            // Resume onto the streak branch's remote tip so the
+                            // retry builds on any already-published work instead
+                            // of re-implementing the task as a divergent,
+                            // content-identical duplicate commit that can never
+                            // fast-forward.
                             report = await dispatchDoer({ resumeOntoRemoteTip: true });
                         } catch (err2) {
                             dispatchError = err2;
@@ -8175,14 +6793,13 @@ async function runSprintCycle(context) {
                 }
 
                 if (dispatchError) {
-                    // apra-fleet-eft.76.4 (per-bead failure attribution): a
-                    // dispatch-level throw (crash, transport error, exhausted
-                    // resumes) does NOT mean none of this streak's beads
-                    // closed -- a doer can close bead 1 of 2, then error out
-                    // on bead 2. Verify via `bd show` (same D-pull-then-read
-                    // as the happy path below) rather than blindly assuming
-                    // every bead in the streak is still open, so completed
-                    // work is never discarded just because a sibling in the
+                    // Per-bead failure attribution: a dispatch-level throw
+                    // (crash, transport error, exhausted resumes) does NOT mean
+                    // none of this streak's beads closed -- a doer can close bead
+                    // 1 of 2, then error out on bead 2. Verify via `bd show`
+                    // (same D-pull-then-read as the happy path below) rather than
+                    // assuming every bead in the streak is still open, so
+                    // completed work is never discarded because a sibling in the
                     // same streak was never reached.
                     const unclosedIds = await verifyDoerStreakClosed({
                         command, orchestratorMember, beadIds: actualBeadIds, log,
@@ -8190,12 +6807,12 @@ async function runSprintCycle(context) {
                     const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
                     log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}] (dispatch error: ${dispatchError.message}).`);
                     if (batchStreaks) {
-                        // apra-fleet-eft.79 (mode i): PER-STREAK attribution for
-                        // a failed batch dispatch -- a sub-streak whose beads all
-                        // verifiably closed before the failure keeps its work
-                        // (outcome 'success', its closes stand and go to
-                        // review); only sub-streaks with still-open beads are
-                        // 'failed' and re-lane next round.
+                        // Mode (i): PER-STREAK attribution for a failed batch
+                        // dispatch -- a sub-streak whose beads all verifiably
+                        // closed before the failure keeps its work (outcome
+                        // 'success', its closes stand and go to review); only
+                        // sub-streaks with still-open beads are 'failed' and
+                        // re-lane next round.
                         for (const sub of batchStreaks) {
                             const subIds = sub.map((b) => b.id).filter((id) => actualBeadIds.includes(id));
                             if (subIds.length === 0) continue;
@@ -8221,37 +6838,32 @@ async function runSprintCycle(context) {
                     throw dispatchError;
                 }
 
-                // apra-fleet-eft.69.1: no duplicate log() dump of `report`
-                // here -- see the Reviewer dispatch site's comment
-                // (~line 4523). The doer streak's own AGENT row already
-                // carries this verbatim as its `output` (its title already
-                // includes the bead ids: label `Streak [${actualBeadIds}]`).
+                // No duplicate log() dump of `report` here -- see dispatchReview()
+                // for why. The doer streak's own AGENT row already carries this
+                // verbatim as its `output`, and its label names the bead ids.
 
-                // CRITICAL (Work item 3): never trust the doer's own
-                // success claim -- verify via `bd show` that the assigned
-                // bead ids are actually closed. A doer that returns
-                // success-looking text/report but leaves a bead open is
-                // treated as a FAILED streak regardless of what it said.
+                // CRITICAL: never trust the doer's own success claim -- verify
+                // via `bd show` that the assigned bead ids are actually closed. A
+                // doer that returns a success-looking report but leaves a bead
+                // open is treated as a FAILED streak regardless of what it said.
                 //
-                // apra-fleet-eft.9.1 (Plan 3.3): verifyDoerStreakClosed()
-                // D-pulls the orchestrator's OWN beads clone BEFORE this read.
-                // The doer closed its beads in ITS clone and D-pushed them; on
-                // a multi-member (remote) sprint the orchestrator's clone is a
-                // DIFFERENT clone, so without that D-pull this read sees stale
-                // (still-open) status and EVERY remote doer streak is falsely
-                // marked FAILED -- the single most divergence-sensitive read in
-                // the file.
+                // verifyDoerStreakClosed() D-pulls the orchestrator's OWN beads
+                // clone BEFORE this read. The doer closed its beads in ITS clone
+                // and D-pushed them; on a multi-member (remote) sprint the
+                // orchestrator's clone is a DIFFERENT clone, so without that
+                // D-pull this read sees stale (still-open) status and EVERY
+                // remote doer streak is falsely marked FAILED -- the single most
+                // divergence-sensitive read in the file.
                 const unclosedIds = await verifyDoerStreakClosed({
                     command, orchestratorMember, beadIds: actualBeadIds, log,
                 });
                 const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
 
-                // apra-fleet-eft.76.4: per-bead failure attribution -- always
-                // emitted (not only when something failed) so every streak's
-                // report leaves an audit trail of exactly which beads closed
-                // vs which stayed open. Closed beads stay closed regardless
-                // of a sibling bead in the same streak being refused; only
-                // the still-open ones are eligible for re-laning next round
+                // Per-bead attribution is emitted always (not only when something
+                // failed) so every streak leaves an audit trail of exactly which
+                // beads closed vs which stayed open. Closed beads stay closed
+                // regardless of a sibling bead in the same streak being refused;
+                // only the still-open ones are eligible for re-laning next round
                 // (the next dev round's `currentReady` query naturally omits
                 // whatever already closed here).
                 log(`Doer streak attribution [${actualBeadIds.join(', ')}]: closed=[${closedIds.join(', ')}] failed=[${unclosedIds.join(', ')}].`);
@@ -8261,10 +6873,9 @@ async function runSprintCycle(context) {
                 }
 
                 if (batchStreaks) {
-                    // apra-fleet-eft.79 (mode i): PER-STREAK outcome attribution
-                    // for the batch dispatch -- one outcome per sub-streak, so
-                    // review scope and re-laning stay per-streak exactly as in
-                    // mode (ii).
+                    // Mode (i): PER-STREAK outcome attribution for the batch
+                    // dispatch -- one outcome per sub-streak, so review scope and
+                    // re-laning stay per-streak exactly as in mode (ii).
                     for (const sub of batchStreaks) {
                         const subIds = sub.map((b) => b.id).filter((id) => actualBeadIds.includes(id));
                         if (subIds.length === 0) continue;
@@ -8291,9 +6902,9 @@ async function runSprintCycle(context) {
             await parallel(worklistPacking.worklists, async (worklist, index) => {
                 if (!worklist || worklist.length === 0) return;  // a packed round can leave a doer idle
                 const doerMember = doerPool[index % doerPool.length];
-                // Per-worklist session context (apra-fleet-eft.79): the doer's
-                // captured session id + last reported usage, carried across the
-                // streaks of THIS worklist only -- never across doers or rounds.
+                // Per-worklist session context: the doer's captured session id +
+                // last reported usage, carried across the streaks of THIS
+                // worklist only -- never across doers or rounds.
                 const worklistCtx = { sessionId: null, usage: null };
 
                 if (worklistMode === 'batch' && worklist.length > 1) {
@@ -8338,24 +6949,20 @@ async function runSprintCycle(context) {
                     }
                 }
                 // Rethrow (after ALL streaks ran) so parallel()'s
-                // continueOnError:true accounting still logs this worklist's
-                // failure exactly like the old per-streak isolation did.
+                // continueOnError:true accounting records this worklist's
+                // failure.
                 if (firstError) throw firstError;
             }, { continueOnError: true });
 
             log(`Develop C${cycle} R${devRounds} streak outcomes: ${JSON.stringify(streakOutcomes.map((o) => ({ beadIds: o.beadIds, outcome: o.outcome })))}`);
 
-            // --- Review (Work item 4): self-contained, schema-validated, orchestrator-applied ---
+            // --- Review: self-contained, schema-validated, orchestrator-applied ---
             phase(`Review C${cycle} R${devRounds}`);
-            // apra-fleet-unw.19: sort by (title, id) -- not raw completion
-            // order -- so this evidence-gathering step is deterministic even
-            // though the doer streaks it aggregates ran concurrently. See
-            // the readyTitleById comment just above.
-            // apra-fleet-wrc.1: permanently-failed streaks (outcome === 'failed')
-            // had no actual work happen to their beads -- exclude their beadIds
-            // from Review dispatch so the Reviewer isn't asked to review nothing.
-            // Those beads remain in their current still-ready state for the next
-            // Develop round to pick up.
+            // Sort by (title, id) -- not raw outcome-recording order -- so this
+            // evidence-gathering step is deterministic. See the readyTitleById
+            // comment just above.
+            // Failed streaks' beadIds are excluded from this round's review
+            // scope.
             const assignedBeadIds = streakOutcomes.filter((o) => o.outcome !== 'failed').flatMap((o) => o.beadIds)
                 .slice().sort((a, b) => {
                     const ta = readyTitleById.get(a) || a;
@@ -8366,51 +6973,46 @@ async function runSprintCycle(context) {
                 ? await command(`bd show ${assignedBeadIds.join(' ')} --json`, { member_name: orchestratorMember, silent: true })
                 : '[]';
 
-            // apra-fleet-wrc.1: empty-guard -- when EVERY streak this round
-            // failed, assignedBeadIds is [] and there is nothing for the
-            // Reviewer to look at. Skip the dispatch entirely rather than
-            // sending an empty-scope review: an empty review is prone to
-            // returning CHANGES_NEEDED with empty reopenIds+newTasks, which
-            // trips the contract-violation check below and, after the
-            // retry-once path, throws ReviewerContractViolationError -- a
-            // hard sprint abort over a round where no work happened at all.
-            // The failed-streak beads simply stay ready (their state was
-            // never touched) for the next Develop round to pick up; the
-            // `stillOpen` check just below still runs so the loop correctly
-            // continues instead of prematurely treating the cycle as
-            // organically complete.
+            // Empty-guard: when EVERY streak this round failed, assignedBeadIds
+            // is [] and there is nothing for the Reviewer to look at. Skip the
+            // dispatch entirely rather than sending an empty-scope review: an
+            // empty review is prone to returning CHANGES_NEEDED with empty
+            // reopenIds+newTasks, which trips the contract-violation check below
+            // and, after the retry-once path, throws
+            // ReviewerContractViolationError -- a hard sprint abort over a round
+            // where no work happened at all. The `stillOpen` check just below
+            // still runs, so the loop correctly continues instead of prematurely
+            // treating the cycle as organically complete.
             if (assignedBeadIds.length === 0) {
                 log(`Develop C${cycle} R${devRounds}: all streaks this round failed with no beadIds assigned -- skipping Review dispatch (nothing to review). Failed-streak beads remain ready for the next Develop round.`);
             } else {
-            // N8 (work item b): dispatchReview() applies the shared
-            // contract-violation retry-once-then-throw rule (see its own doc
-            // comment and ReviewerContractViolationError) -- a CHANGES_NEEDED
-            // verdict with both reopenIds and newTasks empty is
-            // self-contradictory and must never be treated as an ordinary
-            // "more work needed" round.
+            // dispatchReview() applies the shared contract-violation
+            // retry-once-then-throw rule (see its own doc comment and
+            // ReviewerContractViolationError) -- a CHANGES_NEEDED verdict with
+            // both reopenIds and newTasks empty is self-contradictory and must
+            // never be treated as an ordinary "more work needed" round.
             const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson });
-            // A5: the last reviewer verdict seen THIS cycle feeds the Cycle
+            // The last reviewer verdict seen THIS cycle feeds the Cycle
             // Evaluation section's completion check below -- goal-priority
             // completion requires this to be exactly 'APPROVED', not just
             // an empty ready-bead list.
             lastReviewVerdict = verdict.verdict;
-            // N8 (work item a/c): a review genuinely ran THIS cycle -- the
-            // Cycle Evaluation section below only trusts `lastReviewVerdict`
-            // when this is true (see `reviewedThisCycle` reset at the top of
-            // the cycle loop and the re-review dispatch it guards).
+            // A review genuinely ran THIS cycle -- the Cycle Evaluation section
+            // below only trusts `lastReviewVerdict` when this is true (see the
+            // `reviewedThisCycle` reset at the top of the cycle loop and the
+            // re-review dispatch it guards).
             reviewedThisCycle = true;
 
             // Orchestrator (this code) -- NOT the LLM -- applies every
             // structured transition: reopenIds via `bd update --status=open`,
             // newTasks via `bd create`. The reviewer's dispatch prompt above
             // explicitly forbade it from mutating beads itself; this is the
-            // enforcement side of that contract (V1 resolution, SKILL.md).
-            // Stabilization log Issue 17: deterministic goal-scope guard on
-            // reopenIds -- the prompt-side instruction (buildReviewerPrompt)
-            // asks the reviewer not to reopen below-goal beads, but the
-            // orchestrator enforces it: reopening a DEFERRED P3 feature in a
-            // P1/P2 sprint injects out-of-scope work and pins the verdict at
-            // CHANGES_NEEDED forever (observed live, run 11 cycle 3).
+            // enforcement side of that contract (SKILL.md).
+            // Deterministic goal-scope guard on reopenIds: the prompt-side
+            // instruction (buildReviewerPrompt) asks the reviewer not to reopen
+            // below-goal beads, but the orchestrator enforces it -- reopening a
+            // DEFERRED P3 feature in a P1/P2 sprint injects out-of-scope work and
+            // pins the verdict at CHANGES_NEEDED forever.
             let reopenAllowlist = null;
             if (verdict.reopenIds.length > 0) {
                 try {
@@ -8420,11 +7022,11 @@ async function runSprintCycle(context) {
                     reopenAllowlist = null; // lookup failed -- apply reopens unguarded rather than dropping them
                 }
             }
-            // apra-fleet-eft.67.2: ids actually reopened this round (survived
-            // the goal-scope allowlist above) -- gates which `replanIds`
-            // entries below are trusted, so a reviewer naming a replanIds id
-            // that was never really reopened (out of scope, or simply absent
-            // from reopenIds) can never short-circuit the loop.
+            // Ids actually reopened this round (survived the goal-scope
+            // allowlist above) -- gates which `replanIds` entries below are
+            // trusted, so a reviewer naming a replanIds id that was never really
+            // reopened (out of scope, or simply absent from reopenIds) can never
+            // short-circuit the loop.
             const reopenedIds = new Set();
             for (const id of verdict.reopenIds) {
                 const bead = reopenAllowlist ? reopenAllowlist.get(id) : null;
@@ -8436,28 +7038,27 @@ async function runSprintCycle(context) {
                     `bd update ${id} --status=open`,
                     { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per reviewer verdict` }
                 );
-                // N9: track per-bead reopen counts for reopen-thrash detection.
+                // Track per-bead reopen counts for reopen-thrash detection.
                 recordReopen(id);
-                // Per-bead feedback routing (Work item 5): only beads named
-                // in reopenIds carry this round's feedback into the next
-                // round's doer prompt -- never a blanket broadcast.
+                // Per-bead feedback routing: only beads named in reopenIds carry
+                // this round's feedback into the next round's doer prompt --
+                // never a blanket broadcast.
                 perBeadFeedback.set(id, verdict.notes);
                 reopenedIds.add(id);
             }
-            // apra-fleet-eft.67.2: fold this round's reviewer `replanIds`
-            // (contract: apra-fleet-eft.67.1; absent/undefined on older or
-            // unflagged verdicts, so this is a no-op then) into the cycle's
+            // Fold this round's reviewer `replanIds` (absent/undefined on
+            // verdicts that do not use it, so a no-op then) into the cycle's
             // running union, consulted at the top of the next iteration's
             // currentReady computation above. Only ids that were ACTUALLY
             // reopened this round are tracked.
-            // apra-fleet-eft.68.1: the loop guard's single enforcement point.
-            // A bead that has ALREADY been through one in-cycle scoped replan
-            // this cycle (replannedThisCycle) is refused a SECOND scoped replan:
-            // it stays reopened (real dev feedback still applies) but is NOT
-            // re-added to replanIds, so the develop loop above never dispatches
-            // a second scoped planner pass for it -- it is handed to the next
-            // cycle's planner instead. This is what makes "max one scoped replan
-            // per bead per cycle" hold regardless of the round budget.
+            // This is the replan loop guard's single enforcement point. A bead
+            // that has ALREADY been through one in-cycle scoped replan this cycle
+            // (replannedThisCycle) is refused a SECOND: it stays reopened (real
+            // dev feedback still applies) but is NOT re-added to replanIds, so
+            // the develop loop above never dispatches a second scoped planner
+            // pass for it -- it is handed to the next cycle's planner instead.
+            // This is what makes "max one scoped replan per bead per cycle" hold
+            // regardless of the round budget.
             for (const id of (verdict.replanIds || [])) {
                 if (!reopenedIds.has(id)) continue;
                 if (replannedThisCycle.has(id)) {
@@ -8472,26 +7073,25 @@ async function runSprintCycle(context) {
                 replanIds.add(id);
             }
             for (const newTask of verdict.newTasks) {
-                // N3: validate BEFORE interpolation -- see validateNewTask()
-                // above for why this is an allowlist, not escaping. A
-                // rejection is logged, recorded for the final-review
-                // evidence summary, and skipped; it must never abort the
-                // sprint over one bad newTask.
+                // Validate BEFORE interpolation -- see validateNewTask() above
+                // for why this is an allowlist, not escaping. A rejection is
+                // logged, recorded for the final-review evidence summary, and
+                // skipped; it must never abort the sprint over one bad newTask.
                 const validation = validateNewTask(newTask);
                 if (!validation.ok) {
                     log(`Reviewer newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
-                    // apra-fleet-19o.2: track it for resurfacing into the
-                    // NEXT planning-phase dispatch too -- see
-                    // trackRejectedNewTaskForResurfacing()'s doc comment.
+                    // Track it for resurfacing into the NEXT planning-phase
+                    // dispatch too -- see trackRejectedNewTaskForResurfacing()'s
+                    // doc comment.
                     pendingRejectedNewTasks = trackRejectedNewTaskForResurfacing(pendingRejectedNewTasks, {
                         title: newTask && newTask.title, description: newTask && newTask.description,
                         reason: validation.reason, cycle,
                     });
-                    // apra-fleet-eft.56.1: a rejected finding must never
-                    // simply vanish -- persist it verbatim to the parent
-                    // bead's notes as a fallback (itself non-fatal: a notes
-                    // write failure degrades to the run log, never an abort).
+                    // A rejected finding must never simply vanish -- persist it
+                    // verbatim to the parent bead's notes as a fallback (itself
+                    // non-fatal: a notes write failure degrades to the run log,
+                    // never an abort).
                     try {
                         await appendRejectedFindingToParentNotes({
                             command, member: orchestratorMember, parentId: targetIssues[0],
@@ -8506,11 +7106,10 @@ async function runSprintCycle(context) {
                 // A bead can only have one parent -- see the matching
                 // comment on the re-review newTasks site below.
                 //
-                // apra-fleet-eft.9.3 (Plan 3.4): mint the child id through the
-                // supervisor-owned allocator so two concurrent sprints creating
-                // follow-up work under the SAME parent never derive the same
-                // child id (constraint C.4). Under the null client (lone sprint)
-                // childId is null and bd derives the id as before.
+                // Mint the child id through the supervisor-owned allocator so two
+                // concurrent sprints creating follow-up work under the SAME
+                // parent never derive the same child id. Under the null client
+                // (lone sprint) childId is null and bd derives the id as before.
                 const persisted = await persistNewTaskBestEffort({
                     command, member: orchestratorMember, parentId: targetIssues[0],
                     newTask, cycle, log, stage: 'develop-review',
@@ -8524,21 +7123,20 @@ async function runSprintCycle(context) {
                         });
                     },
                 });
-                // apra-fleet-19o.2: this title just successfully landed as a
-                // real bead -- if it was a resubmission of an earlier
-                // rejected item, drop it from the pending resurface list so
-                // it stops reappearing in future planning prompts.
-                // apra-fleet-xuo.4: pass title+description (not just title)
-                // so a resubmission that also corrected its title still
-                // clears via its unchanged description.
+                // This title just landed as a real bead -- if it was a
+                // resubmission of an earlier rejected item, drop it from the
+                // pending resurface list so it stops reappearing in future
+                // planning prompts. Pass title+description (not just title) so a
+                // resubmission that also corrected its title still clears via its
+                // unchanged description.
                 if (persisted) {
                     pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
                 }
             }
 
-            // apra-fleet-eft.9.1 (Plan 3.3): the orchestrator just MUTATED
-            // beads (reopens + newTask creates) in its own clone -- D-push so
-            // members observe them on their next dispatch's D-pull.
+            // The orchestrator just MUTATED beads (reopens + newTask creates) in
+            // its own clone -- D-push so members observe them on their next
+            // dispatch's D-pull.
             await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
             } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
@@ -8562,43 +7160,41 @@ async function runSprintCycle(context) {
         } // end Develop & Review loop (skipped when readyBeads.length === 0)
 
         // =======================
-        // 4. Deploy & Integration (A4: real dispatch, honest propagation)
+        // 4. Deploy & Integration
         // =======================
         //
-        // Runbook probes (feedback.md A4): a single platform-agnostic probe
-        // helper, dispatched via `command(..., { failSoft: true })`. A probe
-        // failure (transient error, portability quirk on a given member,
-        // etc.) SKIPS the dependent phase with a logged warning -- it must
-        // never throw and kill the sprint (that was the old behavior: a
-        // transient probe hiccup took down the whole run). A first-class
-        // fileExists fleet API is descoped (server-side; see docs/plan.md).
+        // Runbook probes: a single platform-agnostic probe helper, dispatched
+        // via `command(..., { failSoft: true })`. A probe failure (transient
+        // error, portability quirk on a given member, etc.) SKIPS the dependent
+        // phase with a logged warning -- it must never throw and kill the
+        // sprint.
         const hasDeploy = await probeFileExists('deploy.md');
         const hasPlaybook = await probeFileExists('integ-test-playbook.md');
 
-        let deployedThisCycle = hasDeploy ? null : false; // null = not attempted yet
+        let deployedThisCycle = false;
 
         if (hasDeploy) {
             phase(`Deploy C${cycle}`);
             let deployResult;
-            // Stabilization log Issue 25: same-session turn-exhaustion resume
-            // for the deployer (a source-build fallback deploy runs npm ci +
-            // two builds, comfortably beyond a small default budget).
+            // Turn budget for the deployer, with the same-session
+            // turn-exhaustion resume below: a source-build fallback deploy runs
+            // npm ci plus two builds, comfortably beyond a small default budget.
             const DEPLOYER_MAX_TURNS = 60;
             const deployerDispatchOpts = {
                 member_name: getMemberForRole('deployer'),
                 agentType: 'deployer',
                 schema: deployerReport,
                 model: FIXED_ROLE_TIER.deployer,
-                // apra-fleet-j6i: runs real deploy commands per a
-                // runbook, plausibly long-running.
+                // Runs real deploy commands per a runbook, plausibly
+                // long-running.
                 timeout_s: DISPATCH_TIMEOUT_S,
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: DEPLOYER_MAX_TURNS,
             };
             try {
-                // apra-fleet-eft.8.2: deployer is a read-side role (pushCode:
-                // false) -- a deployer on a stale checkout is as damaging as
-                // a stale reviewer diff, so no phase-based exemption here.
+                // The deployer is a read-side role (pushCode: false) -- but a
+                // deployer on a stale checkout is as damaging as a stale reviewer
+                // diff, so it still gets the pre-dispatch G-pull.
                 try {
                     deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
                         'Deploy to test env using deploy.md.',
@@ -8627,9 +7223,9 @@ async function runSprintCycle(context) {
                     log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
                     deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
                 } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // apra-fleet-391: self-heal now so the next cycle's
-                    // Deployer dispatch on this same member isn't walking
-                    // into the identical unhealed auth failure.
+                    // Self-heal now so the next cycle's Deployer dispatch on this
+                    // same member isn't walking into the identical unhealed auth
+                    // failure.
                     if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                         await onLlmAuthFailure({ member: getMemberForRole('deployer'), label: 'Deployer dispatch', error: err.message });
                     }
@@ -8639,8 +7235,7 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            // apra-fleet-eft.69.1: no duplicate log() dump -- see the
-            // Reviewer dispatch site's comment (~line 4523).
+            // No duplicate log() dump -- see dispatchReview() for why.
             deployedThisCycle = deployResult.deployed === true;
             if (!deployedThisCycle) {
                 deployFailures.push({ cycle, notes: deployResult.notes });
@@ -8653,41 +7248,31 @@ async function runSprintCycle(context) {
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
             let integResult;
-            // apra-fleet-04g.6: set when the integ dispatch failed for an
-            // INFRASTRUCTURE reason (empty_response / inactivity timeout /
-            // orphan-recovery timeout) rather than producing a real pass/fail
-            // verdict -- recorded as INCONCLUSIVE below instead of a false
-            // passed:false FAIL. Carries {reason, message} for the note.
+            // Set when the integ dispatch failed for an INFRASTRUCTURE reason
+            // (empty_response / inactivity timeout / orphan-recovery timeout)
+            // rather than producing a real pass/fail verdict -- recorded as
+            // INCONCLUSIVE below instead of a false passed:false FAIL. Carries
+            // {reason, message} for the note.
             let integInfraInconclusive = null;
             try {
-                // apra-fleet-xbu.C3: integ-test-runner.md's own contract
-                // requires "an explicit list of feature ids ... already
-                // scoped for you by the orchestrator" as a required input,
-                // and explicitly forbids the agent from deriving that list
-                // itself via a bare, unscoped `bd list --type=feature`. This
-                // dispatch used to hand it nothing but a generic instruction
-                // string -- the one input its own contract says it must
-                // never guess. Fetch the scope's open features here and name
-                // them explicitly -- always dispatch (even with zero open
-                // features this cycle: deploy succeeded and a playbook
-                // exists, so this phase runs regardless, per the fixed
-                // per-cycle phase sequence every other cycle-evaluation check
-                // in this file assumes).
+                // integ-test-runner.md's contract requires "an explicit list of
+                // feature ids ... already scoped for you by the orchestrator" as
+                // a required input, and forbids the agent from deriving that list
+                // itself via a bare, unscoped `bd list --type=feature`. Fetch the
+                // scope's open features here and name them explicitly -- always
+                // dispatch, even with zero open features this cycle: deploy
+                // succeeded and a playbook exists, so this phase runs regardless,
+                // per the fixed per-cycle phase sequence every other
+                // cycle-evaluation check in this file assumes.
                 const openFeatures = await bdListScoped('--type=feature --status=open --json');
-                // Stabilization log Issue 28 (third half): pending-closure
-                // BUGS -- open bug-type beads whose task children are all
-                // closed -- previously had no closure owner at all: doers
-                // refuse them (non-task), reviewers may not close, and this
-                // prompt only ever named features. They lingered open at
-                // goal priority forever (observed live: run 14's final FAIL
-                // cited exactly such beads), re-entering doer seeding every
-                // round pre-Issue-28. The integ runner already has
-                // bead-closing authority and pushBeads:true, and has closed
-                // verified bugs before -- make it their explicit owner.
-                // bdListScoped('') = the already-fetched any-status dump
-                // filtered to scope; open bugs are derived client-side from
-                // the same list -- this whole block issues NO new bd command
-                // beyond what the phase already ran (see readyLeafBeads).
+                // Pending-closure BUGS -- open bug-type beads whose task children
+                // are all closed -- have no other closure owner: doers refuse
+                // them (non-task), reviewers may not close, and the feature
+                // prompt below only names features, so they would linger open at
+                // goal priority forever. The integ runner has bead-closing
+                // authority and pushBeads: true, so it owns them.
+                // At most one `bd list --all` is issued for this whole block; the
+                // open-bug derivation reuses the shared snapshot.
                 const allForClosure = await bdListScoped('');
                 const openBugs = allForClosure.filter((b) => b.issue_type === 'bug' && b.status === 'open');
                 const childrenByParent = new Map();
@@ -8706,15 +7291,10 @@ async function runSprintCycle(context) {
                       `your pass shows the underlying defect no longer reproduces, close it (bd close) with a ` +
                       `note naming the evidence; if it still reproduces, leave it open and say why.`
                     : '';
-                // The per-cycle Integ Test phase is FEATURE CLOSURE ONLY as
-                // of the integ/regression split: integ-test-playbook.md no
-                // longer owns a sandbox, a smoke test, or the real-bd suite
-                // (those moved to regression-test-playbook.md, dispatched
-                // once per sprint in Finalization below). With part 2 gone
-                // from this role there is nothing left whose freshness a
-                // deploy-verified SHA could attest to, so the eft.55.2
-                // `part2ShaClause` handoff and its engine-side
-                // validatePart2Evidence gate are both retired here.
+                // The per-cycle Integ Test phase is FEATURE CLOSURE ONLY:
+                // integ-test-playbook.md owns no sandbox, no smoke test, and no
+                // real-bd suite -- those belong to regression-test-playbook.md,
+                // dispatched once per sprint in Finalization below.
                 const featurePrompt = (openFeatures.length > 0
                     ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
                       `${openFeatures.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
@@ -8722,46 +7302,31 @@ async function runSprintCycle(context) {
                     : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
                       `this cycle -- report nothing to test. Add bug beads if needed, filed under ` +
                       `--parent ${targetIssues[0]}.`) + pendingClosureClause;
-                // apra-fleet-eft.8.2: integ-test-runner does NOT touch code
-                // (pushCode: false, no git push) but it DOES mutate beads --
-                // it closes passing features and files bug beads. Per Plan 3.3
-                // (apra-fleet-eft.9.1) it must therefore D-push those beads
-                // mutations to the shared remote (pushBeads: true), a D-push
-                // with no git push. G-pull before, no-op G-push after.
-                // Stabilization log Issue 24: the integ runner owns the whole
-                // sandbox lifecycle plus the real functional suites, so it is
-                // at least as turn-hungry as a doer. Give it the doer-sized
-                // budget and the same same-session resume-and-continue ladder
-                // the reviewer/final-review dispatches already have (observed
-                // live, run 13 C2: max_turns_exhausted with no resume path
-                // silently cost the cycle's entire feature-closure pass).
-                // Runs 21+23 both exhausted 100 turns before part 1 even
-                // finished: a ~75-minute real suite plus the contract's
-                // liveness-poll cadence spends ~1 turn/poll, so 100 was
-                // guaranteed-insufficient by construction (transcript audit,
-                // run 23: 50 of 96 turns were poll loop). Start at 200; the
-                // resume ladder still doubles from there if ever needed.
+                // integ-test-runner does NOT touch code (pushCode: false, no git
+                // push) but it DOES mutate beads -- it closes passing features
+                // and files bug beads -- so it must D-push those mutations
+                // (pushBeads: true), a D-push with no git push. G-pull before,
+                // no-op G-push after.
+                // The runner spends roughly one turn per liveness poll across
+                // long-running suites, so the budget has to be well above a
+                // one-shot prompt's; the resume ladder below doubles from here if
+                // that is still not enough.
                 const INTEG_TEST_MAX_TURNS = 200;
                 const integDispatchOpts = {
                     member_name: getMemberForRole('integ-test-runner'),
                     agentType: 'integ-test-runner',
                     schema: integReport,
                     model: FIXED_ROLE_TIER['integ-test-runner'],
-                    // apra-fleet-j6i: runs a full test suite, plausibly
-                    // long-running.
+                    // Runs a full test suite, plausibly long-running.
                     //
-                    // Stabilization log Issue 30: max_total_s is a HARD kill
-                    // at elapsed time regardless of activity, and a timer
-                    // kill surfaces as a plain AgentDispatchError -- the
-                    // resume ladder below only matches max_turns_exhausted,
-                    // so a killed-at-the-ceiling run becomes a FALSE
-                    // passed:false with no resume, and two such cycles trip
-                    // stall-abort. The integ phase (real suites + a full
-                    // sandbox smoke sprint) can legitimately run past 60
-                    // minutes, so give the ceiling 2h of headroom while
-                    // keeping the 1h INACTIVITY timer: a genuinely hung
-                    // runner still dies after 60 min of silence; an active
-                    // long pass is never killed mid-progress.
+                    // max_total_s is a HARD kill at elapsed time regardless of
+                    // activity, and a timer kill surfaces as a plain
+                    // AgentDispatchError -- the resume ladder below only matches
+                    // max_turns_exhausted, so a killed-at-the-ceiling run becomes
+                    // a FALSE passed:false with no resume. Give the ceiling real
+                    // headroom while keeping the shorter INACTIVITY timer: a
+                    // genuinely hung runner still dies on silence; an active long
+                    // pass is never killed mid-progress.
                     timeout_s: DISPATCH_TIMEOUT_S,
                     max_total_s: INTEG_MAX_TOTAL_S,
                     max_turns: INTEG_TEST_MAX_TURNS,
@@ -8770,14 +7335,11 @@ async function runSprintCycle(context) {
                     featurePrompt,
                     { ...integDispatchOpts, member_name: getMemberForRole('integ-test-runner') }
                 ), { pushBeads: true });
-                // Stabilization log Issue 27: a resumed dispatch DELIVERS A NEW
-                // PROMPT ARTIFACT to the member (replacing the original one, e.g.
-                // .fleet-task.md), so a bare "continue" resume erases the
-                // dispatch's scope from the artifact a contract may treat as its
-                // scope source of truth. Observed live (run 15 C1): the resumed
-                // integ runner found no feature-id list and -- correctly, per its
-                // missing-scope contract -- closed nothing. Every resume prompt
-                // that carries per-dispatch scope must therefore restate it.
+                // A resumed dispatch DELIVERS A NEW PROMPT ARTIFACT to the member
+                // (replacing the original one, e.g. .fleet-task.md), so a bare
+                // "continue" resume erases the dispatch's scope from the artifact
+                // a contract may treat as its scope source of truth. Every resume
+                // prompt that carries per-dispatch scope must restate it.
                 const dispatchIntegResume = () => withGitSync(getMemberForRole('integ-test-runner'), false, () => agent(
                     'Continue the integration test run exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining suites, close passing features / file bugs per your contract, and return your final report now. ' +
                     'Your original scope, restated so a resumed dispatch never loses it: ' + featurePrompt,
@@ -8797,19 +7359,17 @@ async function runSprintCycle(context) {
                         await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
                         integResult = await dispatchIntegResume();
                     } else if (err instanceof AgentDispatchError && isInfraDispatchFailure(err)) {
-                        // apra-fleet-04g.6: an INFRA dispatch failure
-                        // (empty_response / inactivity timeout / orphan-recovery
-                        // timeout -- the exact faults that silently sank cycles
-                        // C4 and C5) is NOT a test verdict: the runner's CLI
-                        // died mid-turn or lost its result envelope without ever
-                        // reporting pass or fail. Retry ONCE by resuming the same
-                        // session -- the run may have made real progress and
-                        // merely lost its envelope, and the resume ladder already
-                        // restates the full scope so nothing is lost. If the
-                        // resume ALSO fails for an infra reason, let it propagate
-                        // to the outer catch, which records the cycle as
+                        // An INFRA dispatch failure (empty_response / inactivity
+                        // timeout / orphan-recovery timeout) is NOT a test
+                        // verdict: the runner's CLI died mid-turn or lost its
+                        // result envelope without ever reporting pass or fail.
+                        // Retry ONCE by resuming the same session -- the run may
+                        // have made real progress and merely lost its envelope,
+                        // and the resume ladder already restates the full scope.
+                        // If the resume ALSO fails for an infra reason, let it
+                        // propagate to the outer catch, which records the cycle as
                         // INCONCLUSIVE (never a false passed:false FAIL) so the
-                        // infra fault is distinguishable from a genuine test
+                        // infra fault stays distinguishable from a genuine test
                         // failure.
                         log(`Integ Test Runner: infrastructure dispatch failure (${err.details?.reason}) -- the member CLI produced no test verdict (no result envelope). This is NOT a test failure; resuming the same session once to recover before recording anything.`);
                         await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
@@ -8823,22 +7383,21 @@ async function runSprintCycle(context) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner failed to return a schema-valid report after repair attempts: ${err.message}` };
                 } else if (err instanceof AgentDispatchError && isInfraDispatchFailure(err)) {
-                    // apra-fleet-04g.6: the dispatch failed for an INFRASTRUCTURE
-                    // reason even after the single resume retry above -- the
-                    // member CLI never delivered a test verdict (this is the
-                    // C4 empty_response / C5 inactivity-timeout family). Record
-                    // it as INCONCLUSIVE below, NOT as a genuine passed:false
-                    // FAIL: an infra fault must never masquerade as a real test
-                    // failure and block the sprint's confidence check. integResult
-                    // is stubbed only so downstream references stay defined; the
+                    // The dispatch failed for an INFRASTRUCTURE reason even after
+                    // the single resume retry above -- the member CLI never
+                    // delivered a test verdict. Record it as INCONCLUSIVE below,
+                    // NOT as a genuine passed:false FAIL: an infra fault must
+                    // never masquerade as a real test failure and block the
+                    // sprint's confidence check. integResult is stubbed only so
+                    // downstream references stay defined; the
                     // integInfraInconclusive branch below owns what gets recorded.
                     integInfraInconclusive = { reason: err.details?.reason ?? 'unknown', message: err.message };
                     log(`Integ Test Runner: infrastructure dispatch failure (${integInfraInconclusive.reason}) persisted after a resume retry -- recording INCONCLUSIVE, NOT a test FAIL: ${err.message}`);
                     integResult = { featuresClosed: 0, issuesCreated: 0, passed: false, bugsFiled: [], summary: `Integ test runner infra dispatch failure (${integInfraInconclusive.reason}): ${err.message}` };
                 } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // apra-fleet-391: self-heal now so the next cycle's Integ
-                    // Test Runner dispatch on this same member isn't walking
-                    // into the identical unhealed auth failure.
+                    // Self-heal now so the next cycle's Integ Test Runner dispatch
+                    // on this same member isn't walking into the identical
+                    // unhealed auth failure.
                     if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                         await onLlmAuthFailure({ member: getMemberForRole('integ-test-runner'), label: 'Integ Test Runner dispatch', error: err.message });
                     }
@@ -8848,33 +7407,28 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            // apra-fleet-eft.69.1: no duplicate log() dump -- see the
-            // Reviewer dispatch site's comment (~line 4523).
-            // Integ/regression split: the eft.55.2 part-2 SHA-freshness gate
-            // (validatePart2Evidence) is retired at this site. It existed to
-            // stop a resumed session presenting a STALE smoke-test result as
-            // this cycle's evidence; this phase no longer runs a smoke test
-            // at all, so there is nothing stale to guard against. Feature
-            // closure is judged against the features' own `[test]` tasks in
-            // the branch working tree, which is inherently current.
+            // No duplicate log() dump -- see dispatchReview() for why.
             //
-            // apra-fleet-04g.6 still applies here unchanged: an infra dispatch
-            // failure (empty_response / inactivity timeout / orphan-recovery
-            // timeout) produced no test verdict at all, and must be recorded
-            // INCONCLUSIVE -- tagged and worded distinctly -- so the final
-            // reviewer/harvester can tell an infra fault apart from real test
-            // evidence, and it is never counted as a genuine pass or fail.
-            // Checked BEFORE `passed` because the stubbed integResult carries
-            // no meaningful verdict.
+            // Feature closure is judged against the features' own `[test]` tasks
+            // in the branch working tree, which is inherently current, so no
+            // SHA-freshness gate is needed here.
+            //
+            // An infra dispatch failure (empty_response / inactivity timeout /
+            // orphan-recovery timeout) produced no test verdict at all, and must
+            // be recorded INCONCLUSIVE -- tagged and worded distinctly -- so the
+            // final reviewer/harvester can tell an infra fault apart from real
+            // test evidence, and it is never counted as a genuine pass or fail.
+            // Checked BEFORE `passed` because the stubbed integResult carries no
+            // meaningful verdict.
             if (integInfraInconclusive) {
                 const inconclusiveNote = `INCONCLUSIVE (infra dispatch failure -- ${integInfraInconclusive.reason}; the member CLI produced no test verdict): ${integInfraInconclusive.message}`;
                 integFailures.push({ cycle, notes: inconclusiveNote, bugsFiled: [], inconclusive: true });
                 log(`Integration tests INCONCLUSIVE this cycle (C${cycle}): infra dispatch failure (${integInfraInconclusive.reason}) -- not accepted as pass or fail evidence.`);
             } else if (integResult.passed !== true) {
-                // A4: never swallow a failure just because the agent chose
-                // to (or didn't) file bugs -- `passed` is the honest source
-                // of truth, checked explicitly and propagated below
-                // regardless of `bugsFiled.length`.
+                // Never swallow a failure just because the agent chose to (or
+                // didn't) file bugs -- `passed` is the source of truth, checked
+                // explicitly and propagated below regardless of
+                // `bugsFiled.length`.
                 integFailures.push({ cycle, notes: integResult.summary, bugsFiled: integResult.bugsFiled });
                 log(`Integration tests FAILED this cycle (C${cycle}, bugsFiled: ${integResult.bugsFiled.join(', ') || 'none'}): ${integResult.summary}`);
             }
@@ -8886,33 +7440,31 @@ async function runSprintCycle(context) {
         }
 
         // =======================
-        // 5. Cycle Evaluation (A5: goal-priority exit + stall-abort)
+        // 5. Cycle Evaluation: goal-priority exit + stall-abort
         // =======================
         //
         // Real completion is "zero NOT_DONE_STATUSES beads in scope at or
         // above the goal priority AND the last reviewer verdict this cycle
         // was APPROVED" -- deliberately NOT `bd list --ready == []`, which
         // reads a permanently-blocked or orphaned in_progress bead as
-        // success (A5 bug). See goalPriorityMax()/NOT_DONE_STATUSES above.
+        // success. See goalPriorityMax()/NOT_DONE_STATUSES above.
         //
-        // apra-fleet-eft.9.1 (Plan 3.3): D-pull the orchestrator's beads clone
-        // BEFORE the cycle-evaluation counts so the completion/stall math reads
-        // the current cross-member beads state (every member's D-pushed closes)
-        // rather than the orchestrator's stale local copy.
+        // D-pull the orchestrator's beads clone BEFORE the cycle-evaluation
+        // counts so the completion/stall math reads the current cross-member
+        // beads state (every member's D-pushed closes) rather than the
+        // orchestrator's stale local copy.
         await doltPullBefore(orchestratorMember, { command, log });
         const openAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
 
         // Stall detection: track the closed-bead count for the WHOLE sprint
-        // scope (not just goal-priority) so zero forward progress on ANY
-        // bead -- not only goal-priority ones -- is caught, per the issue
-        // text ("N consecutive iterations making no forward progress on any
-        // bead").
+        // scope (not just goal-priority) so zero forward progress on ANY bead
+        // is caught.
         const closedCount = (await bdListScoped('--status=closed --json')).length;
         closedCountHistory.push(closedCount);
-        // N9: high-water-mark progress. A cycle only counts as progress when
-        // it sets a NEW all-time high for the closed count this sprint --
-        // returning to a previously-seen value (even one different from the
-        // immediately prior cycle, e.g. 5,4,5,4,...) is not progress.
+        // High-water-mark progress. A cycle only counts as progress when it sets
+        // a NEW all-time high for the closed count this sprint -- returning to a
+        // previously-seen value (even one different from the immediately prior
+        // cycle, e.g. 5,4,5,4,...) is not progress.
         if (closedCount > highWaterClosedCount) {
             highWaterClosedCount = closedCount;
             staleCycles = 0;
@@ -8935,17 +7487,15 @@ async function runSprintCycle(context) {
             );
         }
 
-        // N8 (apra-fleet-unw2.6, work item c): the exit decision below must
-        // never rely on a verdict from an EARLIER cycle. `lastReviewVerdict`
-        // is reset to null at the top of every cycle (work item a) and only
-        // set when a review genuinely ran THIS cycle (`reviewedThisCycle`).
-        // If the goal-priority bead count already reads 0 but no review ran
-        // this cycle (e.g. the Develop/Review loop was skipped because
-        // there were no ready beads), dispatch one fresh review of the
-        // CURRENT state here, before ever deciding to exit -- rather than
-        // either (a, the pre-fix bug) silently exiting on a stale verdict
-        // nothing this cycle actually backs, or (b) looping forever with no
-        // way to ever confirm completion.
+        // The exit decision below must never rely on a verdict from an EARLIER
+        // cycle. `lastReviewVerdict` is reset to null at the top of every cycle
+        // and only set when a review genuinely ran THIS cycle
+        // (`reviewedThisCycle`). If the goal-priority bead count already reads 0
+        // but no review ran this cycle (e.g. the Develop/Review loop was skipped
+        // because there were no ready beads), dispatch one fresh review of the
+        // CURRENT state here, before ever deciding to exit -- rather than either
+        // silently exiting on a stale verdict nothing this cycle backs, or
+        // looping forever with no way to confirm completion.
         if (openAtGoal.length === 0 && !reviewedThisCycle) {
             phase(`Re-Review C${cycle}`);
             log(
@@ -8968,7 +7518,7 @@ async function runSprintCycle(context) {
                     `bd update ${id} --status=open`,
                     { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per re-review verdict` }
                 );
-                // N9: track per-bead reopen counts for reopen-thrash detection.
+                // Track per-bead reopen counts for reopen-thrash detection.
                 recordReopen(id);
             }
             for (const newTask of reReviewVerdict.newTasks) {
@@ -8976,16 +7526,16 @@ async function runSprintCycle(context) {
                 if (!validation.ok) {
                     log(`Re-review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                     rejectedNewTasks.push({ cycle, reason: validation.reason, raw: newTask });
-                    // apra-fleet-19o.2: track it for resurfacing into the
-                    // NEXT planning-phase dispatch too -- see
-                    // trackRejectedNewTaskForResurfacing()'s doc comment.
+                    // Track it for resurfacing into the NEXT planning-phase
+                    // dispatch too -- see trackRejectedNewTaskForResurfacing()'s
+                    // doc comment.
                     pendingRejectedNewTasks = trackRejectedNewTaskForResurfacing(pendingRejectedNewTasks, {
                         title: newTask && newTask.title, description: newTask && newTask.description,
                         reason: validation.reason, cycle,
                     });
-                    // apra-fleet-eft.56.1: never let a rejected finding
-                    // vanish -- persist it verbatim to the parent bead's
-                    // notes as a fallback (non-fatal; degrades to run log).
+                    // Never let a rejected finding vanish -- persist it verbatim
+                    // to the parent bead's notes as a fallback (non-fatal;
+                    // degrades to the run log).
                     try {
                         await appendRejectedFindingToParentNotes({
                             command, member: orchestratorMember, parentId: targetIssues[0],
@@ -8998,15 +7548,13 @@ async function runSprintCycle(context) {
                 }
                 const { title, description, priority } = validation;
                 // A bead can only have one parent -- when multiple sprint-root
-                // target issues are given, file follow-up work under the
-                // first one (apra-fleet-xbu.C1: --parent never accepts a
-                // comma-joined list, so `targetIssues.join(',')` here was
-                // silently creating an unparented/misparented bead).
+                // target issues are given, file follow-up work under the first
+                // one. `--parent` never accepts a comma-joined list; passing one
+                // silently creates an unparented/misparented bead.
                 //
-                // apra-fleet-eft.9.3 (Plan 3.4): same allocator-minted id path
-                // as the Develop/Review newTasks site above -- concurrent
-                // sprints must never mint the same child id under a shared
-                // parent (constraint C.4).
+                // Same allocator-minted id path as the Develop/Review newTasks
+                // site above -- concurrent sprints must never mint the same child
+                // id under a shared parent.
                 const persisted = await persistNewTaskBestEffort({
                     command, member: orchestratorMember, parentId: targetIssues[0],
                     newTask, cycle, log, stage: 're-review',
@@ -9020,18 +7568,15 @@ async function runSprintCycle(context) {
                         });
                     },
                 });
-                // apra-fleet-19o.2: same resurface-list bookkeeping as the
+                // Same resurface-list bookkeeping (title+description) as the
                 // Develop/Review newTasks site above.
-                // apra-fleet-xuo.4: title+description, see the matching
-                // comment on the Develop/Review newTasks site above.
                 if (persisted) {
                     pendingRejectedNewTasks = clearResubmittedNewTask(pendingRejectedNewTasks, { title, description });
                 }
             }
 
-            // apra-fleet-eft.9.1 (Plan 3.3): D-push the orchestrator's applied
-            // re-review reopens/newTask creates, same as the Develop/Review
-            // transition site above.
+            // D-push the orchestrator's applied re-review reopens/newTask
+            // creates, same as the Develop/Review transition site above.
             await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
         }
 
@@ -9047,49 +7592,45 @@ async function runSprintCycle(context) {
         endGroup();
     }
 
-    // A5: fix the cycle-label off-by-one -- when the loop exits because
-    // `cycle` exceeded MAX_CYCLES (rather than via an early `break`),
-    // `cycle` is MAX_CYCLES + 1 at this point; the labels below should
-    // report the last cycle actually run.
+    // When the loop exits because `cycle` exceeded MAX_CYCLES (rather than via
+    // an early `break`), `cycle` is MAX_CYCLES + 1 at this point; the labels
+    // below must report the last cycle actually run.
     const finalCycleLabel = Math.min(cycle, MAX_CYCLES);
 
     // =======================
-    // 6. Finalization (A6: evidence-based final verdict drives the return value)
+    // 6. Finalization: the evidence-based final verdict drives the return value
     // =======================
     group('Finalization');
     phase(`Final Review C${finalCycleLabel}`);
 
-    // apra-fleet-eft.9.1 (Plan 3.3): D-pull the orchestrator's beads clone
-    // BEFORE the final-review counts so the sprint's closing evidence
-    // (finalOpenAtGoal / finalClosedCount) reflects every member's D-pushed
-    // beads state, not the orchestrator's stale local copy.
+    // D-pull the orchestrator's beads clone BEFORE the final-review counts so
+    // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
+    // reflects every member's D-pushed beads state, not the orchestrator's
+    // stale local copy.
     await doltPullBefore(orchestratorMember, { command, log });
     const finalOpenAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
     const finalClosedCount = (await bdListScoped('--status=closed --json')).length;
 
     let finalVerdictResult;
-    // Stabilization log iteration 5: the Final Review covers an entire
-    // epic's worth of work -- categorically LARGER than the per-round
-    // review that already proved 50 fleet-default turns insufficient (run
-    // 6). Explicit budget + the same same-session resume-and-continue
-    // treatment as the doer and per-round reviewer; without it, a large
-    // sprint's final review deterministically dies at the default turn
-    // limit twice and flips the whole sprint to a FAIL whose notes carry
-    // no findings at all.
+    // The Final Review covers an entire epic's worth of work, categorically
+    // LARGER than a per-round review, so it gets an explicit budget plus the
+    // same same-session resume-and-continue treatment as the doer and per-round
+    // reviewer. Without it a large sprint's final review dies at the default
+    // turn limit and flips the whole sprint to a FAIL whose notes carry no
+    // findings at all.
     const FINAL_REVIEW_MAX_TURNS = 60;
-    // apra-fleet-eft.8.2: Final Review is the same 'reviewer' role as
-    // dispatchReview above (read-side, pushCode: false) -- G-pull before,
-    // no-op G-push after every attempt (including the retry below).
+    // Final Review is the same 'reviewer' role as dispatchReview above
+    // (read-side, pushCode: false) -- G-pull before, no-op G-push after every
+    // attempt (including the retry below).
     const finalReviewDispatchOpts = {
         member_name: getMemberForRole('reviewer'),
         agentType: 'reviewer',
         schema: finalVerdict,
         label: 'Final Review',
         model: FIXED_ROLE_TIER.reviewer,
-        // apra-fleet-j6i: reviews the full diff/evidence across an
-        // entire epic's worth of closed tasks -- most costly of the
-        // 300s-default gaps since a timeout here flips a whole
-        // sprint's outcome to FAIL.
+        // Reviews the full diff/evidence across an entire epic's worth of
+        // closed tasks -- a timeout here flips a whole sprint's outcome to
+        // FAIL.
         timeout_s: DISPATCH_TIMEOUT_S,
         max_total_s: DISPATCH_TIMEOUT_S,
         max_turns: FINAL_REVIEW_MAX_TURNS,
@@ -9137,23 +7678,17 @@ async function runSprintCycle(context) {
             throw err;
         }
     };
-    // apra-fleet-j6i.2: unlike every other combined-catch dispatch site in
-    // this file, Final Review is the LAST dispatch of the sprint -- a
-    // single transient AgentDispatchError/AgentOutputError here used to
-    // flip an otherwise fully-successful sprint straight to verdict:FAIL
-    // with zero retry. Mirror the Planner retry-once wrapper (~line 1717):
-    // retry once before falling back to the hardcoded FAIL verdict. The
-    // fuller AgentDispatchError-vs-AgentOutputError type distinction is
-    // apra-fleet-02s's scope; this only adds the retry.
+    // Final Review is the LAST dispatch of the sprint, so a single transient
+    // AgentDispatchError/AgentOutputError here would otherwise flip an
+    // otherwise fully-successful sprint straight to verdict:FAIL with zero
+    // retry. Mirrors dispatchPlanner()'s retry-once wrapper: retry once before
+    // falling back to the hardcoded FAIL verdict.
     try {
         finalVerdictResult = await runFinalReviewAttempt();
     } catch (err) {
         if (isNonRetryableDispatchError(err)) {
-            // Stabilization Issue 43: auth/trust failures are deterministic --
-            // the retry below would only reproduce them.
-            // apra-fleet-391: unless it's specifically an LLM-auth failure
-            // self-heal can fix -- one attempt, then fall through to the
-            // existing retry-once path below.
+            // Auth/trust failures are deterministic -- the retry below would
+            // only reproduce them. LLM-auth failures get one self-heal attempt.
             let healedByLlmAuthSelfHeal = false;
             if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                 const healed = await onLlmAuthFailure({ member: getMemberForRole('reviewer'), label: 'Final Review dispatch', error: err.message });
@@ -9186,18 +7721,17 @@ async function runSprintCycle(context) {
             }
         }
     }
-    // apra-fleet-eft.69.1: no duplicate log() dump -- see the Reviewer
-    // dispatch site's comment (~line 4523). `finalVerdictResult.verdict`
-    // also surfaces via the generic, workflow-agnostic Result strip in the
-    // dashboard header (state.result -- see src/viewer/index.mjs), a second
-    // independent reason a raw JSON re-print here would be redundant.
+    // No duplicate log() dump -- see dispatchReview() for why.
+    // `finalVerdictResult.verdict` also surfaces via the generic,
+    // workflow-agnostic Result strip in the dashboard header (state.result --
+    // see src/viewer/index.mjs), a second independent reason a raw JSON
+    // re-print here would be redundant.
 
-    // Stabilization log iteration 5: persist a FAIL's actionable findings
-    // to BEADS -- the only artifact the next sprint's planner reads (notes
-    // reach only the PR body and the analysis doc). Same orchestrator-
-    // applies contract, allowlist validation, and id-allocator path as the
-    // per-round reviewer's newTasks; a rejected finding is logged and
-    // recorded, never sprint-fatal.
+    // Persist a FAIL's actionable findings to BEADS -- the only artifact the
+    // next sprint's planner reads (notes reach only the PR body and the
+    // analysis doc). Same orchestrator-applies contract, allowlist validation,
+    // and id-allocator path as the per-round reviewer's newTasks; a rejected
+    // finding is logged and recorded, never sprint-fatal.
     const finalNewTasks = Array.isArray(finalVerdictResult.newTasks) ? finalVerdictResult.newTasks : [];
     if (finalVerdictResult.verdict === 'FAIL' && finalNewTasks.length > 0) {
         let createdCount = 0;
@@ -9206,11 +7740,11 @@ async function runSprintCycle(context) {
             if (!validation.ok) {
                 log(`Final Review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
                 rejectedNewTasks.push({ cycle: finalCycleLabel, reason: validation.reason, raw: newTask });
-                // apra-fleet-eft.56.1: never let a rejected finding vanish --
-                // persist it verbatim to the parent bead's notes as a
-                // fallback (this is Final Review's FAIL findings -- the
-                // highest-stakes site, since this is the handoff to the next
-                // sprint's planner). Non-fatal; degrades to the run log.
+                // Never let a rejected finding vanish -- persist it verbatim to
+                // the parent bead's notes as a fallback. This is the
+                // highest-stakes site of the three: Final Review's FAIL findings
+                // are the handoff to the next sprint's planner. Non-fatal;
+                // degrades to the run log.
                 try {
                     await appendRejectedFindingToParentNotes({
                         command, member: orchestratorMember, parentId: targetIssues[0],
@@ -9270,17 +7804,16 @@ async function runSprintCycle(context) {
     // happened to find it.
     //
     // No deployedSha handoff: part 1 runs against branch HEAD directly and
-    // part 2 provisions its own fresh sandbox install, so neither has ever
-    // depended on the per-cycle Deploy target.
+    // part 2 provisions its own fresh sandbox install, so neither depends on
+    // the per-cycle Deploy target.
     let regressionResult = null;
     const hasRegressionPlaybook = await probeFileExists('regression-test-playbook.md');
     if (hasRegressionPlaybook) {
         phase(`Regression Test C${finalCycleLabel}`);
-        // Same turn budget as the per-cycle integ runner used to need when it
-        // still owned both parts (the real-bd suite alone spends ~1 turn per
-        // liveness poll for the better part of an hour), and a WIDER hard
-        // ceiling: this single dispatch now carries the full suite AND the
-        // sandbox smoke sprint that used to be spread across cycles.
+        // The real functional suite alone spends roughly one turn per liveness
+        // poll for the better part of an hour, and this single dispatch carries
+        // both it and the sandbox smoke sprint -- hence the large turn budget
+        // and the wider hard ceiling.
         const REGRESSION_TEST_MAX_TURNS = 200;
         const REGRESSION_TEST_MAX_TOTAL_S = DISPATCH_TIMEOUT_S * 3;
         const regressionPrompt =
@@ -9299,11 +7832,11 @@ async function runSprintCycle(context) {
             agentType: 'regression-test-runner',
             schema: regressionReport,
             model: FIXED_ROLE_TIER['regression-test-runner'],
-            // Same shape as the integ dispatch's Issue 30 reasoning: keep the
-            // 1h INACTIVITY timer (a genuinely hung runner still dies) while
-            // giving the HARD elapsed-time ceiling real headroom, since a
-            // max_total_s kill surfaces as a plain AgentDispatchError that the
-            // max_turns resume ladder below cannot catch.
+            // Same shape as the integ dispatch: keep the shorter INACTIVITY
+            // timer (a genuinely hung runner still dies) while giving the HARD
+            // elapsed-time ceiling real headroom, since a max_total_s kill
+            // surfaces as a plain AgentDispatchError that the max_turns resume
+            // ladder below cannot catch.
             timeout_s: DISPATCH_TIMEOUT_S,
             max_total_s: REGRESSION_TEST_MAX_TOTAL_S,
             max_turns: REGRESSION_TEST_MAX_TURNS,
@@ -9320,10 +7853,10 @@ async function runSprintCycle(context) {
                 if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                     log(`Regression Test Runner exhausted its turn limit (max_turns=${REGRESSION_TEST_MAX_TURNS}) -- resuming the same session with max_turns=${REGRESSION_TEST_MAX_TURNS * 2} instead of restarting the pass.`);
                     await memberSessionGuard.killIfAlive(getMemberForRole('regression-test-runner'));
-                    // Stabilization log Issue 27: a resume DELIVERS A NEW prompt
-                    // artifact, so restate the dispatch's scope/filing rules --
-                    // a bare "continue" would lose the parent-less filing rule,
-                    // which is the whole point of this phase.
+                    // A resume DELIVERS A NEW prompt artifact, so restate the
+                    // dispatch's scope/filing rules -- a bare "continue" would
+                    // lose the parent-less filing rule, which is the whole point
+                    // of this phase.
                     regressionResult = await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
                         'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining work, run Teardown, and return your final report now. ' +
                         'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
@@ -9345,32 +7878,29 @@ async function runSprintCycle(context) {
                 log(`Regression pass PASSED (suite: ${regressionResult.suitePassed}, smoke: ${regressionResult.smokePassed}).`);
             }
         } catch (err) {
-            // Deliberately NO outer retry-once wrapper, and deliberately a
-            // CATCH-ALL: unlike Final Review -- whose failure legitimately
-            // fails the whole sprint -- ANY failure of this phase must
-            // soft-fail and log. It can never abort the run, gate the
+            // A regression-phase infrastructure failure must never abort the
+            // sprint. Hence deliberately NO outer retry-once wrapper and
+            // deliberately a CATCH-ALL: unlike Final Review -- whose failure
+            // legitimately fails the whole sprint -- ANY failure of this phase
+            // must soft-fail and log. It can never abort the run, gate the
             // verdict, or block Harvest.
             //
-            // The catch-all is load-bearing, not defensive sloppiness. An
-            // earlier cut of this block enumerated only the three dispatch
-            // error classes (AgentOutputError / AgentDispatchError /
-            // FleetTransportError) and rethrew everything else, which quietly
-            // reopened the exact hole this phase's placement was designed to
-            // close. The dispatch above is wrapped in withGitSync(...,
-            // { pushBeads: true }), whose pre-dispatch G-pull/D-pull and
-            // post-dispatch G-push/D-push can throw GitSyncError /
-            // GitDivergedError / DoltSyncError / DoltDivergedError /
-            // PostDispatchSyncError -- and this is the ONE phase whose whole
-            // job is mutating beads (filing carry-over bugs), so a D-push
-            // failure here is a routine outcome, not an exotic one. Every one
-            // of those classes extends WorkflowError, so isTypedAbortError()
-            // returns true for them and the top-level handler in this file's
-            // exported entry point turns the throw into a terminal
-            // `verdict: 'ABORTED'` record -- skipping Harvest AND Publish PR,
-            // and discarding the already-computed finalVerdictResult, which is
-            // only published after Harvest. A green sprint would be reported
-            // as ABORTED because an informational pass could not push a bug
-            // bead. Catch broadly; record the failure in the summary instead.
+            // The catch-all is load-bearing, not defensive sloppiness. The
+            // dispatch above is wrapped in withGitSync(..., { pushBeads: true }),
+            // whose pre-dispatch G-pull/D-pull and post-dispatch G-push/D-push
+            // can throw GitSyncError / GitDivergedError / DoltSyncError /
+            // DoltDivergedError / PostDispatchSyncError -- and this is the ONE
+            // phase whose whole job is mutating beads (filing carry-over bugs),
+            // so a D-push failure here is a routine outcome, not an exotic one.
+            // Every one of those classes extends WorkflowError, so
+            // isTypedAbortError() returns true for them and the top-level handler
+            // in this file's exported entry point would turn the throw into a
+            // terminal `verdict: 'ABORTED'` record -- skipping Harvest AND
+            // Publish PR, and discarding the already-computed
+            // finalVerdictResult, which is only published after Harvest. A green
+            // sprint would be reported as ABORTED because an informational pass
+            // could not push a bug bead. Catch broadly; record the failure in the
+            // summary instead.
             //
             // Two deliberate exceptions, both RUN-level control signals rather
             // than "the regression phase failed":
@@ -9410,16 +7940,15 @@ async function runSprintCycle(context) {
     }
 
     phase(`Harvest C${finalCycleLabel}`);
-    // N12 (apra-fleet-unw2.10): wire the harvester's five vendored-required
-    // inputs with real, runner-computed values -- see buildAnalysisText()/
-    // buildCostAnalysis() above. `branchSlug` (see computeBranchSlug() below)
-    // avoids embedding raw `/` characters from a branch name like
-    // `feat/fleet-reorg` in the artifact path, which would otherwise create
-    // surprise subdirectories. Note: deliberately no wall-clock timestamp in
-    // this path -- it must stay identical for two dispatches of the same
-    // branch (idempotent re-runs, and the golden-transcript determinism
-    // test), and harvester.md Step 1 already overwrites the file at this
-    // path if it exists.
+    // Wire the harvester's required inputs with real, runner-computed values --
+    // see buildAnalysisText()/buildCostAnalysis() above. `branchSlug` (see
+    // computeBranchSlug() below) avoids embedding raw `/` characters from a
+    // branch name like `feat/fleet-reorg` in the artifact path, which would
+    // otherwise create surprise subdirectories. Deliberately no wall-clock
+    // timestamp in this path: it must stay identical across two dispatches of
+    // the same branch (idempotent re-runs, and the golden-transcript
+    // determinism test), and harvester.md Step 1 already overwrites the file at
+    // this path if it exists.
     const branchSlug = computeBranchSlug(validated.branch);
     const analysisArtifactFile = `docs/sprint-analysis-${branchSlug}.md`;
     const analysisText = buildAnalysisText({
@@ -9447,27 +7976,26 @@ async function runSprintCycle(context) {
         costAnalysis,
     });
     let harvesterResult = null;
-    // Stabilization log Issue 25: same-session turn-exhaustion resume for
-    // the harvester (writes docs/changelog across the whole epic).
+    // Turn budget for the harvester, with the same-session turn-exhaustion
+    // resume below: it writes docs/changelog across the whole epic.
     const HARVESTER_MAX_TURNS = 60;
     const harvesterDispatchOpts = {
         member_name: getMemberForRole('harvester'),
         agentType: 'harvester',
         schema: harvesterReport,
         model: FIXED_ROLE_TIER.harvester,
-        // apra-fleet-j6i: writes docs/changelog/sprint-analysis
-        // across the whole epic, plausibly long-running.
+        // Writes docs/changelog/sprint-analysis across the whole epic,
+        // plausibly long-running.
         timeout_s: DISPATCH_TIMEOUT_S,
         max_total_s: DISPATCH_TIMEOUT_S,
         max_turns: HARVESTER_MAX_TURNS,
     };
     try {
-        // apra-fleet-eft.8.2: harvester is a code-writing role (pushCode:
-        // true) alongside doer -- G-pull before, G-push after so the docs/
-        // changelog/sprint-analysis commits it makes are published before
-        // anything downstream (Publish PR, below) reads the branch. It ALSO
-        // mutates beads (issue-defer of low-priority items), so per Plan 3.3
-        // (apra-fleet-eft.9.1) it must D-push those beads mutations after
+        // The harvester is a code-writing role (pushCode: true) alongside the
+        // doer -- G-pull before, G-push after so the docs/changelog/
+        // sprint-analysis commits it makes are published before anything
+        // downstream (Publish PR, below) reads the branch. It ALSO mutates beads
+        // (issue-defer of low-priority items), so it must D-push those mutations
         // (pushBeads: true) alongside its git push.
         try {
             harvesterResult = await withGitSync(getMemberForRole('harvester'), true, () => agent(
@@ -9492,8 +8020,7 @@ async function runSprintCycle(context) {
                 throw err;
             }
         }
-        // apra-fleet-eft.69.1: no duplicate log() dump -- see the Reviewer
-        // dispatch site's comment (~line 4523).
+        // No duplicate log() dump -- see dispatchReview() for why.
         if (harvesterResult.status !== 'OK') {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
         }
@@ -9501,10 +8028,9 @@ async function runSprintCycle(context) {
         if (err instanceof AgentOutputError) {
             log(`Harvester: schema-repair exhausted, proceeding without a validated harvester report: ${err.message}`);
         } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-            // apra-fleet-391: self-heal now -- harvester is the run's last
-            // dispatch, but the SAME member/credentials get reused by the
-            // next sprint cycle, so an unhealed auth failure here just
-            // reproduces there.
+            // Self-heal now: the harvester is the run's last dispatch, but the
+            // SAME member/credentials get reused by the next sprint, so an
+            // unhealed auth failure here just reproduces there.
             if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
                 await onLlmAuthFailure({ member: getMemberForRole('harvester'), label: 'Harvester dispatch', error: err.message });
             }
@@ -9529,26 +8055,21 @@ async function runSprintCycle(context) {
             label: `Push sprint branch '${validated.branch}'`,
         }
     );
-    // N11 (apra-fleet-unw2.9): the final verdict is surfaced directly in the
-    // PR title and body -- a human reviewer must never have to dig through
-    // sprint logs to learn whether the run's own review gate passed. Per
-    // plan.md's already-made decision (not re-litigated here): a FAIL
-    // verdict still publishes the PR (never suppressed), with the verdict
-    // stated plainly so the reviewer can weigh it before merging.
+    // The final verdict is surfaced directly in the PR title and body -- a
+    // human reviewer must never have to dig through sprint logs to learn
+    // whether the run's own review gate passed. A FAIL verdict still publishes
+    // the PR (never suppressed), with the verdict stated plainly so the
+    // reviewer can weigh it before merging.
     const finalVerdictLabel = finalVerdictResult.verdict === 'PASS' ? 'PASS' : 'FAIL';
 
-    // apra-fleet-eft.64.1: resolve the sprint's own git 'origin' remote and
-    // classify it (see isHostedGithubRemote() above) BEFORE ever attempting
-    // `gh pr create`. A non-hosted remote (the integ-test-playbook.md
-    // sandbox's file:// bare mirror, or any other host `gh` has no hosting
-    // API for) means PR creation can never succeed here -- attempting it
-    // anyway is exactly what previously threw a hard 'gh auth login
-    // required' CommandError and failed the whole sprint, leaving the
-    // target/canary issue open even after a fully APPROVED-quality run.
-    // Resolving the remote is itself failSoft (an unresolvable remote is
-    // just treated as non-hosted, per isHostedGithubRemote()'s fail-closed
-    // default) so a transient/portability probe hiccup here can never throw
-    // and kill the sprint the way the old unconditional `gh pr create` did.
+    // Resolve the sprint's own git 'origin' remote and classify it (see
+    // isHostedGithubRemote() above) BEFORE ever attempting `gh pr create`. A
+    // non-hosted remote (a file:// bare mirror, or any other host `gh` has no
+    // hosting API for) means PR creation can never succeed, and attempting it
+    // anyway throws a hard 'gh auth login required' CommandError that would
+    // fail the whole sprint. Resolving the remote is itself failSoft -- an
+    // unresolvable remote is treated as non-hosted, per isHostedGithubRemote()'s
+    // fail-closed default -- so a probe hiccup here can never kill the sprint.
     const originUrlRes = await command('git remote get-url origin', {
         member_name: orchestratorMember,
         silent: true,
@@ -9561,12 +8082,12 @@ async function runSprintCycle(context) {
     if (!hostedRemote) {
         log(`Publish PR: origin remote '${originUrl || '(unresolved)'}' is not a gh-hostable GitHub remote -- ` +
             'skipping PR creation entirely (no dependency on gh auth / GH_TOKEN for this path).');
-        // Closure was previously gated on the PR-creation step succeeding,
-        // which a non-hosted remote can never do -- close the target
-        // issue(s) directly instead, but only when the sprint's own final
-        // verdict actually passed (a FAIL verdict must never be masked by
-        // closing the issue anyway; it still ends the sprint 'failed' via
-        // the return value below, same as the hosted-remote path).
+        // A non-hosted remote can never complete PR creation, so target-issue
+        // closure cannot be gated on it -- close the target issue(s) directly,
+        // but only when the sprint's own final verdict actually passed. A FAIL
+        // verdict must never be masked by closing the issue anyway; it still
+        // ends the sprint 'failed' via the return value below, same as the
+        // hosted-remote path.
         if (finalVerdictResult.verdict === 'PASS') {
             for (const id of targetIssues) {
                 const closeRes = await command(`bd close ${id}`, {
@@ -9586,13 +8107,12 @@ async function runSprintCycle(context) {
             log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
         }
     } else {
-        // apra-fleet-hfs: finalVerdictResult.notes is LLM-authored free text --
-        // sanitize with sanitizePrText() (see comment above its definition)
-        // BEFORE it is ever interpolated into the double-quoted `gh pr create`
-        // command() string below. validated.goal/validated.branch need no
-        // sanitization here: both are already validated against
-        // shell-injection-safe patterns (GOAL_PATTERN/BRANCH_NAME_PATTERN) at
-        // arg-validation time, well before this point.
+        // finalVerdictResult.notes is LLM-authored free text -- sanitize with
+        // sanitizePrText() (see the comment above its definition) BEFORE it is
+        // ever interpolated into the double-quoted `gh pr create` command()
+        // string below. validated.goal/validated.branch need no sanitization
+        // here: both are already validated against shell-injection-safe patterns
+        // (GOAL_PATTERN/BRANCH_NAME_PATTERN) at arg-validation time.
         const prTitle = `Auto-sprint [${finalVerdictLabel}]: ${validated.branch}`;
         const safeNotes = sanitizePrText(finalVerdictResult.notes);
         const prBody = [
@@ -9604,7 +8124,7 @@ async function runSprintCycle(context) {
             'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
         ].filter((line) => line !== null).join('\n');
 
-        // N11: idempotent PR creation. `gh pr create` is dispatched with
+        // Idempotent PR creation. `gh pr create` is dispatched with
         // `failSoft: true` (rather than the default throw-on-isError behaviour)
         // so a re-run of finalization against a branch that ALREADY has an open
         // PR from a prior, otherwise-successful run can be told apart from a
@@ -9638,11 +8158,10 @@ async function runSprintCycle(context) {
 
     endGroup();
 
-    // A6: the final verdict -- not a blanket, unconditional 'success' --
-    // drives the return value. A downstream caller (CLI, CI, a human
-    // reading the run) can now tell a genuinely-passing sprint from one
-    // that ran to completion but left goal-priority work open, a deploy
-    // failing, or integration tests red.
+    // The final verdict -- not a blanket, unconditional 'success' -- drives the
+    // return value, so a downstream caller (CLI, CI, a human reading the run)
+    // can tell a genuinely-passing sprint from one that ran to completion but
+    // left goal-priority work open, a deploy failing, or integration tests red.
     return {
         status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
         verdict: finalVerdictResult.verdict,
@@ -9655,34 +8174,21 @@ async function runSprintCycle(context) {
 }
 
 // ---------------------------------------------------------------------------
-// Fatal-diagnostics guard for the doer-dispatch boundary (apra-fleet-eft.20.3)
+// Fatal-diagnostics guard
 // ---------------------------------------------------------------------------
 //
-// apra-fleet-eft.20 (smoke-test sandbox): a doer sub-session died mid-Develop
-// with ZERO diagnostic signal -- the fleet server log went silent after the
-// doer member's session-registration line, and both the doer and orchestrator
-// processes were later found dead with nothing further committed or logged.
-// main()'s existing try/catch around runSprintCycle() only ever sees errors
-// that propagate up an AWAITED call chain; it can never see (a) a promise
-// that rejects without ever being awaited/attached to a .catch (a genuine
-// unhandledRejection), or (b) a synchronous throw that somehow escapes every
-// awaited frame. Both crash the process by default with Node's own generic
-// (and easily-missed) diagnostics -- or, depending on the host's
-// unhandledRejection mode, may not even do that. This guard makes that
-// failure mode observable: it logs an explicit [FATAL] line (with cause and
-// the last phase this run entered) via the run's own log() -- so it lands in
-// the SAME fleet server log operators already watch -- and best-effort
-// persists the same information into the sprint state file via
-// publishState('terminal', ...), which flows through the SAME atomic writer
-// every other sprint-state write uses (apra-fleet-eft.20.1), so a reader
-// (watchdog, dashboard, or a human) sees a real lastError instead of state
-// frozen mid-Develop with no explanation.
+// main()'s try/catch around runSprintCycle() only ever sees errors that
+// propagate up an AWAITED call chain: it can never see a promise that rejects
+// with nothing awaiting it, or a synchronous throw that escapes every awaited
+// frame. Without this guard such a failure ends the run with no usable signal.
+// The guard makes it observable: an explicit [FATAL] line (cause + the last
+// phase this run entered) through the run's own log(), plus a best-effort
+// publishState('terminal', ...) so a watchdog, dashboard, or human sees a real
+// lastError instead of state frozen mid-run with no explanation.
 //
-// This deliberately does NOT attempt to recover or continue the run -- by the
-// time either process-level event fires, the process's control flow is
-// already in an unspecified state. It only guarantees the death is logged and
-// recorded before whatever happens next (Node's own crash, or the process
-// exiting via some other path).
+// It deliberately does not attempt to recover or continue -- by the time either
+// process-level event fires the process's control flow is in an unspecified
+// state.
 /**
  * @param {{ log?: (msg: string) => void, publishState?: (namespace: string, data: any) => void, phaseOf?: () => string|null }} deps
  * @returns {() => void} uninstall() -- removes both listeners.
@@ -9725,10 +8231,10 @@ export function installFatalDiagnosticsGuard(deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// apra-fleet-k7b.4: classify an unmergeable Dolt conflict as its own
-// terminal state (BEADS_SYNC_CONFLICT), not the generic wrapper/UNKNOWN
-// bucket -- and best-effort carry forward the raw conflict diagnostics an
-// operator would otherwise have to re-derive by hand.
+// Classify an unmergeable Dolt conflict as its own terminal state
+// (BEADS_SYNC_CONFLICT), not the generic wrapper/UNKNOWN bucket -- and
+// best-effort carry forward the raw conflict diagnostics an operator would
+// otherwise have to re-derive by hand.
 // ---------------------------------------------------------------------------
 
 /**
@@ -9753,16 +8259,15 @@ export function findDoltDivergedCause(err) {
 }
 
 /**
- * apra-fleet-k7b.4: the terminal-state `terminalReason` main()'s typed-abort
- * catch persists. A genuinely unmergeable Dolt conflict -- surfaced either
- * directly (a pre-dispatch `bd dolt pull` divergence) or wrapped inside a
+ * The terminal-state `terminalReason` main()'s typed-abort catch persists. A
+ * genuinely unmergeable Dolt conflict -- surfaced either directly (a
+ * pre-dispatch `bd dolt pull` divergence) or wrapped inside a
  * PostDispatchSyncError (a D-push divergence discovered AFTER a dispatch
- * already completed, apra-fleet-bnb's live POST_DISPATCH_SYNC_FAILED
- * incident) -- is reported as the distinct 'BEADS_SYNC_CONFLICT', so the
- * supervisor/dashboard shows "beads sync conflict, needs operator
- * resolution" instead of collapsing it into the same generic bucket as
- * every other termination reason. Every other error keeps today's
- * `err.code || err.name || 'UNKNOWN_ABORT'` behavior, unchanged.
+ * already completed) -- is reported as the distinct 'BEADS_SYNC_CONFLICT', so
+ * the supervisor/dashboard shows "beads sync conflict, needs operator
+ * resolution" instead of collapsing it into the same generic bucket as every
+ * other termination reason. Every other error keeps the
+ * `err.code || err.name || 'UNKNOWN_ABORT'` behavior.
  * @param {unknown} err
  * @returns {string}
  */
@@ -9772,8 +8277,8 @@ export function resolveTerminalReason(err) {
 }
 
 /**
- * apra-fleet-k7b.4: best-effort diagnostics for a BEADS_SYNC_CONFLICT
- * terminal state -- the raw `bd dolt pull`/`bd dolt push` stderr
+ * Best-effort diagnostics for a BEADS_SYNC_CONFLICT terminal state -- the raw
+ * `bd dolt pull`/`bd dolt push` stderr
  * (DoltDivergedError.doltOutput) that proved the divergence, captured at the
  * moment `runDoltStep()` observed the failure (i.e. BEFORE any later `bd`
  * invocation's own safe-abort/cleanup could discard whatever state it was
@@ -9798,63 +8303,36 @@ export function captureDoltConflictDump(err) {
 }
 
 // ---------------------------------------------------------------------------
-// Engine entry point + typed-abort routing (apra-fleet-eft.1.2)
+// Engine entry point + typed-abort routing
 // ---------------------------------------------------------------------------
 //
-// `main()` is the WorkflowEngine entry point (see the "Mechanical migration"
-// comment above runSprintCycle()): it simply runs the sprint and, on a typed
-// sprint-abort error (isTypedAbortError() -- StalledSprintError,
-// SprintPlanRejectedError, ReviewerContractViolationError,
-// BudgetExceededError, or a pre-sprint validation Error), routes it through
+// `main()` is the WorkflowEngine entry point: it runs the sprint and, on a
+// typed sprint-abort error (isTypedAbortError()), routes it through
 // finalizeAbort() (push + idempotent [ABORTED] PR iff the branch carries
 // real work beyond base) and always writes a terminal history record before
 // re-throwing. Re-throwing (rather than swallowing) is deliberate: it keeps
-// bin/cli.mjs's existing top-level catch -- console.error, exit code 1, and
-// the dashboard grace window -- completely unchanged; this function only
-// adds work that happens BEFORE the error reaches that catch, it does not
-// change how the error is ultimately handled there.
+// bin/cli.mjs's top-level catch -- console.error, exit code 1, and the
+// dashboard grace window -- unchanged; this function only adds work that
+// happens BEFORE the error reaches that catch.
 //
-// A genuinely unexpected/untyped error (isTypedAbortError() === false, e.g.
-// CancelledError from a cooperative /stop, or any error this runner did not
-// anticipate) is re-thrown immediately with no finalizeAbort()/history-record
-// side effects, preserving today's behavior for that case exactly.
-//
-// branch/baseBranch/member are re-derived here (rather than threaded out of
-// runSprintCycle(), which may throw before or after computing `validated`)
-// by calling the same pure, side-effect-free validateArgs() the sprint
-// itself already validated its args with. Some typed-abort paths (a
-// pre-sprint validation Error on e.g. an invalid branch name) mean that
-// re-validation ALSO throws -- in that case there is no usable branch to
-// push or inspect, so finalizeAbort() is skipped entirely and the terminal
-// history record is written with a null branch/baseBranch and no PR lookup;
-// this is still a "zero-commit-abort"-shaped outcome (prUrl null), just one
-// that never had a resolvable branch to count commits on in the first
-// place.
+// An untyped error (isTypedAbortError() === false, e.g. CancelledError from
+// a cooperative /stop) is re-thrown immediately with no
+// finalizeAbort()/history-record side effects.
 export async function main(context) {
     const { command, log = () => {}, publishState, phase: rawPhase, args } = context;
 
-    // apra-fleet-eft.75.2: acquire a machine-local pidfile lock keyed on
-    // (branch, members) BEFORE any dispatch (before even the fatal-diagnostics
-    // guard installs) -- a duplicate concurrent `fleet-sprint` engine start for
-    // the SAME sprint now fails fast with a distinct, named
-    // SprintLockHeldError instead of silently running two engines against the
-    // same shared git branch/beads DB. Root incident (apra-fleet-eft.75): the
-    // only thing that had stopped a duplicate concurrent runner before this
-    // was an ACCIDENTAL viewer-port-8080 collision -- itself trivially
-    // avoided by passing a different --viewer-port, so it was never a real
-    // guard. Re-validates `args` with the exact same pure, side-effect-free
-    // validateArgs() runSprintCycle() calls again below -- an invalid
-    // branch/members throws HERE with zero dispatches and zero lock ever
-    // acquired, identical to today's pre-dispatch validation behavior (just
-    // one call frame higher up).
+    // Validate args and acquire a machine-local pidfile lock keyed on
+    // (branch, members) BEFORE any dispatch -- a duplicate concurrent engine
+    // start for the SAME sprint must fail fast with a named
+    // SprintLockHeldError instead of silently running two engines against
+    // the same shared git branch/beads DB. validateArgs() is pure, so
+    // running it here ahead of runSprintCycle()'s own call changes nothing
+    // for invalid args except failing one call frame higher.
     const validatedForLock = validateArgs(args);
     const sprintLock = acquireSprintLock({ branch: validatedForLock.branch, members: validatedForLock.members });
 
-    // apra-fleet-eft.20.3: track the last phase this run entered (Plan /
-    // Develop / Review / Deploy / Test / Harvest / ...) purely by wrapping
-    // context.phase locally -- no change to FleetWorkflow's public API --
-    // so a fatal diagnostic below can say e.g. "last known phase: Develop"
-    // instead of just "somewhere".
+    // Track the last phase this run entered by wrapping context.phase, so a
+    // fatal diagnostic can name the phase instead of just "somewhere".
     let lastPhaseTitle = null;
     const phase = typeof rawPhase === 'function'
         ? (title) => { lastPhaseTitle = title; return rawPhase(title); }
@@ -9874,35 +8352,34 @@ export async function main(context) {
             throw err;
         }
 
-        let branch = null;
-        let baseBranch = null;
-        let abortResult = { prUrl: null, reason: 'unresolvable-branch', pushed: false, commitCount: 0 };
+        // Args were already validated at entry (validatedForLock), so the
+        // branch/baseBranch/member for the abort record are always
+        // resolvable; only finalizeAbort() itself can still fail here.
+        const branch = validatedForLock.branch;
+        const baseBranch = validatedForLock.baseBranch;
+        let abortResult = { prUrl: null, pushed: false, commitCount: 0 };
         try {
-            const validated = validateArgs(context.args);
-            branch = validated.branch;
-            baseBranch = validated.baseBranch;
-            const member = (validated.roleMap && validated.roleMap[ROLE_ORCHESTRATOR] && validated.roleMap[ROLE_ORCHESTRATOR].length > 0)
-                ? validated.roleMap[ROLE_ORCHESTRATOR][0]
-                : validated.members[0];
+            const member = (validatedForLock.roleMap && validatedForLock.roleMap[ROLE_ORCHESTRATOR] && validatedForLock.roleMap[ROLE_ORCHESTRATOR].length > 0)
+                ? validatedForLock.roleMap[ROLE_ORCHESTRATOR][0]
+                : validatedForLock.members[0];
             abortResult = await finalizeAbort({ error: err, branch, baseBranch, member, command, log });
-        } catch (resolveErr) {
+        } catch (finalizeErr) {
             log(
-                `[Terminal History] Could not resolve a branch/member to run finalizeAbort() for this abort ` +
-                `(${resolveErr.message}); writing the terminal history record with no PR lookup.`
+                `[Terminal History] finalizeAbort() failed for this abort ` +
+                `(${finalizeErr.message}); writing the terminal history record with no PR lookup.`
             );
         }
 
-        // Always write a terminal history record, even for a zero-commit or
-        // unresolvable-branch abort (only the PR itself is conditional on
-        // there being real work to publish).
+        // Always write a terminal history record, even for a zero-commit
+        // abort (only the PR itself is conditional on there being real work
+        // to publish).
         if (typeof publishState === 'function') {
-            // apra-fleet-k7b.4: an unmergeable Dolt conflict is reported as
-            // its own distinct BEADS_SYNC_CONFLICT terminal state (not the
-            // generic wrapper/UNKNOWN bucket), with the raw conflict
-            // diagnostics already captured on the error carried alongside it
-            // so an operator resolving it starts with the actual rejection
-            // text in hand -- see resolveTerminalReason()/
-            // captureDoltConflictDump()'s own doc comments above.
+            // An unmergeable Dolt conflict is reported as its own distinct
+            // BEADS_SYNC_CONFLICT terminal state (not the generic
+            // wrapper/UNKNOWN bucket), with the raw conflict diagnostics already
+            // captured on the error carried alongside it so an operator
+            // resolving it starts with the actual rejection text in hand -- see
+            // resolveTerminalReason()/captureDoltConflictDump() above.
             const conflictDump = captureDoltConflictDump(err);
             publishState('terminal', {
                 verdict: 'ABORTED',
@@ -9920,12 +8397,11 @@ export async function main(context) {
         throw err;
     } finally {
         uninstallFatalGuard();
-        // apra-fleet-eft.75.2: always release the sprint lock, on every exit
-        // path (success, typed abort, or an untyped re-thrown error) -- a
-        // lock never released here would falsely block every future launch
-        // of this exact sprint (branch+members) until acquireSprintLock()'s
-        // own dead-pid reclaim kicks in on a LATER attempt, which is a worse
-        // user experience than releasing promptly now.
+        // Always release the sprint lock, on every exit path (success, typed
+        // abort, or an untyped re-thrown error) -- a lock never released here
+        // would falsely block every future launch of this exact sprint
+        // (branch+members) until acquireSprintLock()'s own dead-pid reclaim
+        // kicks in on a LATER attempt.
         sprintLock.release();
     }
 }

@@ -63,7 +63,7 @@ test('mock sprint (mode i, config-gated): doer_worklist_mode=batch sends ONE dis
         const threeId = scenario.tasks.find((t) => t.title === 'Task: WLB three').id;
 
         check(
-            scenario.logs.some((m) => m.includes('Doer worklists (apra-fleet-eft.79): 3 ready streak(s) > 1 doer(s)') && m.includes('mode: batch')),
+            scenario.logs.some((m) => m.includes('Doer worklists: 3 ready streak(s) > 1 doer(s)') && m.includes('mode: batch')),
             `Expected the batch-mode packing log, got: ${JSON.stringify(scenario.logs.filter((m) => m.includes('Doer worklists')))}`
         );
 
@@ -123,7 +123,7 @@ test('mock sprint: the DEFAULT (flag omitted) remains mode (ii) -- per-streak di
         check(doerDispatches.every((d) => idsForDispatch(d).length === 1), `Each default-mode dispatch carries ONE streak, got: ${JSON.stringify(doerDispatches.map(idsForDispatch))}`);
         check(doerDispatches.every((d) => !d.prompt.includes('ORDERED MULTI-STREAK WORKLIST')), 'Default mode must never send the batch preamble');
         check(
-            scenario.logs.some((m) => m.includes('Doer worklists (apra-fleet-eft.79)') && m.includes('mode: resume')),
+            scenario.logs.some((m) => m.includes('Doer worklists:') && m.includes('mode: resume')),
             `Expected the default packing log to say mode: resume, got: ${JSON.stringify(scenario.logs.filter((m) => m.includes('Doer worklists')))}`
         );
     });

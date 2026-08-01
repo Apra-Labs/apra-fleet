@@ -79,7 +79,7 @@ test('mock sprint (mode ii): a failure in streak 2 of 3 keeps streak 1\'s closes
 
         // The round packed one 3-streak worklist for the single doer.
         check(
-            scenario.logs.some((m) => m.includes('Doer worklists (apra-fleet-eft.79): 3 ready streak(s) > 1 doer(s)')),
+            scenario.logs.some((m) => m.includes('Doer worklists: 3 ready streak(s) > 1 doer(s)')),
             `Expected the 3-streak worklist packing log, got: ${JSON.stringify(scenario.logs.filter((m) => m.includes('Doer worklists')))}`
         );
 

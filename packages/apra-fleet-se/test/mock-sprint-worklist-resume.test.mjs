@@ -152,7 +152,7 @@ test('mock sprint (mode ii): 4 streaks / 2 doers -> ordered 2-streak worklists; 
 
         // The packing log line fired and describes per-doer ordered worklists.
         check(
-            scenario.logs.some((m) => m.includes('Doer worklists (apra-fleet-eft.79): 4 ready streak(s) > 2 doer(s)') && m.includes('mode: resume')),
+            scenario.logs.some((m) => m.includes('Doer worklists: 4 ready streak(s) > 2 doer(s)') && m.includes('mode: resume')),
             `Expected the worklist packing log line, got: ${JSON.stringify(scenario.logs.filter((m) => m.includes('Doer worklists')))}`
         );
 
@@ -333,7 +333,7 @@ test('mock sprint (mode ii): without the model-switch capability, mixed tiers di
         check(doerPrompts[0].model === 'cheap' && doerPrompts[1].model === 'standard',
             `Expected per-worklist tiers cheap then standard, got ${JSON.stringify(doerPrompts.map((e) => e.model))}`);
         check(
-            scenario.logs.some((m) => m.includes('Doer worklists (apra-fleet-eft.79): 2 ready streak(s) > 1 doer(s)') && m.includes('tier-homogeneous')),
+            scenario.logs.some((m) => m.includes('Doer worklists: 2 ready streak(s) > 1 doer(s)') && m.includes('tier-homogeneous')),
             `Expected the tier-homogeneous packing log, got: ${JSON.stringify(scenario.logs.filter((m) => m.includes('Doer worklists')))}`
         );
     });
