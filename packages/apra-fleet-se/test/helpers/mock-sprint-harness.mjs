@@ -1249,14 +1249,19 @@ export async function runDevelopLoopScenario(tag, {
 // failure (the agent never ran / never came back) can be assumed to have
 // mutated nothing.
 //
-// Also excludes an AgentDispatchError whose reason is 'max_turns_exhausted':
-// that is the resumable partial-work case -- the agent DID run and may have
-// committed/closed beads before running out of turns -- so this harness's own
-// post-run bead-state read still needs to reflect real state, same exclusion
-// runner.js's own isNoMutationDispatchFailure makes.
+// Also excludes an AgentDispatchError whose reason says the agent PROVABLY RAN
+// -- 'max_turns_exhausted' (the resumable partial-work case: the agent DID run
+// and may have committed/closed beads before running out of turns) and, per
+// apra-fleet-9ta.2, 'watchdog_timeout' (the prompt was DELIVERED to an
+// alive-but-silent member; only the RESULT was lost, so the turn may have
+// created the whole DAG). In both cases this harness's own post-run bead-state
+// read still needs to reflect real state -- the same exclusion set runner.js's
+// own isNoMutationDispatchFailure makes.
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+
 export function isNoMutationTerminalDispatchError(err) {
     if (!err) return false;
-    if (err instanceof AgentDispatchError && err.details && err.details.reason === 'max_turns_exhausted') {
+    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
         return false;
     }
     return err instanceof AgentDispatchError || err instanceof FleetTransportError;

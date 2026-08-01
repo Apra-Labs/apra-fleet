@@ -4238,23 +4238,51 @@ export function isTerminalSprintFailure(err) {
     return err instanceof WorkflowError || isTypedAbortError(err);
 }
 
+// AgentDispatchError reasons that mean the agent PROVABLY RAN before the
+// dispatch failed, so its (possibly partial) code/beads work still has to be
+// published and its teardown must run normally:
+//   - 'max_turns_exhausted': the resumable partial-work case -- the agent hit
+//     its turn ceiling after doing real work;
+//   - 'watchdog_timeout': withDispatchWatchdog() fired locally on an
+//     already-in-flight dispatch. The prompt was DELIVERED and the member is
+//     alive-but-silent, so the turn may have run to completion (a stalled
+//     planner can have created the whole DAG) with only the RESULT lost. The
+//     watchdog abandons the dispatch promise, not the member's work.
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+
 // True when a thrown dispatch error means the dispatch delivered no usable
 // result and therefore produced no code/beads mutation to publish: a failed
-// agent dispatch (AgentDispatchError), a dispatch-channel transport failure
-// (FleetTransportError), or any typed sprint-abort error. The orchestrator's
-// post-dispatch sync teardown is then wasted work and is skipped (see
-// withGitSync's finally).
+// agent dispatch (AgentDispatchError, minus the AGENT_RAN_DISPATCH_REASONS
+// above), a dispatch-channel transport failure (FleetTransportError), or a
+// PRE-dispatch typed sprint abort. The orchestrator's post-dispatch sync
+// teardown is then wasted work and is skipped (see withGitSync).
 //
-// An AgentDispatchError with reason 'max_turns_exhausted' is deliberately
-// EXCLUDED: the agent ran and may have committed real code or beads before
-// running out of turns, so that work still needs syncing and its teardown must
-// run normally.
+// Deliberately EXCLUDED:
+//   - AgentOutputError: the LLM RESPONDED and only its output was
+//     empty/unparseable/schema-invalid. A schema-invalid response routinely
+//     follows real committed work (the agent did the job, then botched the
+//     report), so its teardown must run. This is the status quo -- the class
+//     was never named here and, post-apra-fleet-9ta.1, isTypedAbortError() is
+//     false for it -- pinned explicitly so a future edit cannot silently
+//     re-sweep it in;
+//   - every POST-dispatch typed abort. The predicate used to fold in the whole
+//     of isTypedAbortError(), but only errors thrown from INSIDE withGitSync's
+//     `dispatchFn` can ever reach it, and the curated abort set is dominated by
+//     aborts the runner raises AFTER a dispatch already returned and mutated
+//     beads (SprintPlanRejectedError, ReviewerContractViolationError,
+//     StalledSprintError) or by divergences the SYNC brackets themselves throw
+//     (GitDivergedError/DoltDivergedError), none of which are reachable here.
+//     BudgetExceededError is the one genuinely pre-dispatch member: agent()/
+//     command() throw it from inside the dispatch closure BEFORE any dispatch
+//     is issued (packages/apra-fleet-workflow/src/workflow/errors.mjs), so it
+//     alone provably mutated nothing.
 export function isNoMutationDispatchFailure(err) {
     if (!err) return false;
-    if (err instanceof AgentDispatchError && err.details && err.details.reason === 'max_turns_exhausted') {
+    if (err instanceof AgentOutputError) return false;
+    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
         return false;
     }
-    return err instanceof AgentDispatchError || err instanceof FleetTransportError || isTypedAbortError(err);
+    return err instanceof AgentDispatchError || err instanceof FleetTransportError || err instanceof BudgetExceededError;
 }
 
 // ---------------------------------------------------------------------------
@@ -4832,9 +4860,10 @@ async function runSprintCycle(context) {
             // On a TERMINAL dispatch failure the agent never delivered a usable
             // result, so there is provably nothing new to publish -- skip the
             // G-push/D-push teardown entirely. This deliberately EXCLUDES
-            // max_turns_exhausted: that is a resumable partial-work case where
-            // the agent DID run and may have committed code/beads that still
-            // must be published.
+            // every case where the agent DID run and may have committed code/
+            // beads that still must be published: max_turns_exhausted and
+            // watchdog_timeout dispatch failures, and an AgentOutputError
+            // (the LLM answered, only its output was unusable).
             if (dispatchThrew && isNoMutationDispatchFailure(dispatchThrew)) {
                 log(`[Sync] Skipping post-dispatch G-push/D-push for member '${member}' after a terminal dispatch failure (nothing to publish): ${dispatchThrew.message}`);
             } else {

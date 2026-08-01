@@ -163,22 +163,57 @@ describe('apra-fleet-9ta.1: isTerminalSprintFailure() -- broader than the abort 
     });
 });
 
-// The narrowing above also narrows isNoMutationDispatchFailure(), whose third
-// disjunct is isTypedAbortError(). Pinned here only where the two predicates
-// meet; the disjunct cleanup itself is apra-fleet-9ta.2's.
-describe('apra-fleet-9ta.1: isNoMutationDispatchFailure() knock-on', () => {
+// apra-fleet-9ta.1 narrowed isTypedAbortError(), which was
+// isNoMutationDispatchFailure()'s third disjunct; apra-fleet-9ta.2 then
+// replaced that disjunct outright with the single genuinely PRE-dispatch abort
+// class (BudgetExceededError) and excluded the two "the agent actually ran"
+// cases (watchdog_timeout, AgentOutputError). This is that predicate's own
+// truth table.
+describe('apra-fleet-9ta.2: isNoMutationDispatchFailure() -- TRUE only where the dispatch provably mutated nothing', () => {
     test('still true for the dispatch-channel failures it names directly', () => {
         assert.equal(isNoMutationDispatchFailure(new AgentDispatchError('dispatch failed')), true);
         assert.equal(isNoMutationDispatchFailure(new FleetTransportError('transport down')), true);
     });
 
-    test('still false for max_turns_exhausted -- the agent ran and may have committed work', () => {
+    test('true for a dispatch_failed AgentDispatchError (a dead interactive session -- the prompt never landed)', () => {
+        assert.equal(isNoMutationDispatchFailure(new AgentDispatchError('dead session', { details: { reason: 'dispatch_failed' } })), true);
+    });
+
+    test('true for BudgetExceededError -- agent()/command() throw it BEFORE issuing any dispatch', () => {
+        assert.equal(isNoMutationDispatchFailure(new BudgetExceededError('spend ceiling blown')), true);
+    });
+});
+
+describe('apra-fleet-9ta.2: isNoMutationDispatchFailure() -- FALSE wherever the agent may have committed work', () => {
+    test('false for max_turns_exhausted -- the agent ran and may have committed work', () => {
         assert.equal(isNoMutationDispatchFailure(new AgentDispatchError('out of turns', { details: { reason: 'max_turns_exhausted' } })), false);
     });
 
-    test('now false for the sync classes, so their post-dispatch teardown is no longer skipped', () => {
+    test('false for watchdog_timeout -- the prompt was delivered; only the RESULT was lost, not the turn', () => {
+        assert.equal(isNoMutationDispatchFailure(new AgentDispatchError('timed out (watchdog)', { details: { reason: 'watchdog_timeout' } })), false);
+    });
+
+    test('false for AgentOutputError -- the LLM answered, only its output was unusable', () => {
+        assert.equal(isNoMutationDispatchFailure(new AgentOutputError('schema repair exhausted')), false);
+    });
+
+    test('false for the sync classes, so their post-dispatch teardown is no longer skipped', () => {
         assert.equal(isNoMutationDispatchFailure(new GitSyncError('push failed')), false);
         assert.equal(isNoMutationDispatchFailure(new DoltSyncError('dolt push failed')), false);
         assert.equal(isNoMutationDispatchFailure(new PostDispatchSyncError('sync failed', { cause: new Error('creds') })), false);
+    });
+
+    test('false for the POST-dispatch typed aborts -- they fire only after a dispatch already ran and mutated beads', () => {
+        assert.equal(isNoMutationDispatchFailure(new SprintPlanRejectedError('plan rejected')), false);
+        assert.equal(isNoMutationDispatchFailure(new ReviewerContractViolationError('reviewer broke contract')), false);
+        assert.equal(isNoMutationDispatchFailure(new StalledSprintError('no progress')), false);
+        assert.equal(isNoMutationDispatchFailure(new GitDivergedError('branch diverged from origin')), false);
+        assert.equal(isNoMutationDispatchFailure(new DoltDivergedError('D-pull diverged', { member: 'alice', doltOutput: 'conflict', operation: 'pull' })), false);
+    });
+
+    test('false for CommandError and for null/undefined', () => {
+        assert.equal(isNoMutationDispatchFailure(new CommandError('bd list exited 1')), false);
+        assert.equal(isNoMutationDispatchFailure(null), false);
+        assert.equal(isNoMutationDispatchFailure(undefined), false);
     });
 });
