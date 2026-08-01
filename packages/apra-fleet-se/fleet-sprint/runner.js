@@ -6996,32 +6996,49 @@ async function runSprintCycle(context) {
                         worklistCtx.usage = null;
                     }
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        wasRetried = true;
-                        let currentMaxTurns = BASE_DOER_MAX_TURNS * 2;
-                        let resumeAttempt = 0;
-                        dispatchError = err;
-                        while (resumeAttempt < MAX_TURN_RESUME_ATTEMPTS) {
-                            resumeAttempt += 1;
-                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=${currentMaxTurns} (attempt ${resumeAttempt}/${MAX_TURN_RESUME_ATTEMPTS}) instead of giving up or regrouping.`);
-                            try {
-                                await memberSessionGuard.killIfAlive(doerMember);
-                                report = await dispatchDoerResume(currentMaxTurns);
-                                dispatchError = null;
-                                break;
-                            } catch (resumeErr) {
-                                dispatchError = resumeErr;
-                                if (resumeErr instanceof AgentDispatchError && resumeErr.details?.reason === 'max_turns_exhausted') {
-                                    currentMaxTurns *= 2;
-                                    continue;
+                        // Before resuming (or ultimately failing) a turn-exhausted
+                        // streak, check whether every assigned bead id is ALREADY
+                        // closed -- verifyDoerStreakClosed() does the mandatory
+                        // D-pull-then-read (see its doc comment). A doer that closes
+                        // its last bead and then keeps running past the VERIFY
+                        // checkpoint until it hits max_turns has genuinely
+                        // SUCCEEDED: resuming it wastes a dispatch on a session with
+                        // nothing left to do, and classifying it 'failed' would
+                        // falsely re-lane already-completed work.
+                        const preResumeUnclosed = await verifyDoerStreakClosed({
+                            command, orchestratorMember, beadIds: actualBeadIds, log,
+                        });
+                        if (preResumeUnclosed.length === 0) {
+                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns), but all assigned bead id(s) are already closed -- WARNING: the doer missed the VERIFY checkpoint (kept running after its last bd close instead of stopping). Treating this streak as a successful completion, not a failure; issuing NO resume dispatch.`);
+                            dispatchError = null;
+                        } else {
+                            wasRetried = true;
+                            let currentMaxTurns = BASE_DOER_MAX_TURNS * 2;
+                            let resumeAttempt = 0;
+                            dispatchError = err;
+                            while (resumeAttempt < MAX_TURN_RESUME_ATTEMPTS) {
+                                resumeAttempt += 1;
+                                log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=${currentMaxTurns} (attempt ${resumeAttempt}/${MAX_TURN_RESUME_ATTEMPTS}) instead of giving up or regrouping.`);
+                                try {
+                                    await memberSessionGuard.killIfAlive(doerMember);
+                                    report = await dispatchDoerResume(currentMaxTurns);
+                                    dispatchError = null;
+                                    break;
+                                } catch (resumeErr) {
+                                    dispatchError = resumeErr;
+                                    if (resumeErr instanceof AgentDispatchError && resumeErr.details?.reason === 'max_turns_exhausted') {
+                                        currentMaxTurns *= 2;
+                                        continue;
+                                    }
+                                    // A non-max_turns failure on resume (e.g. stale
+                                    // session, transport error) isn't something
+                                    // more turns can fix -- stop escalating.
+                                    break;
                                 }
-                                // A non-max_turns failure on resume (e.g. stale
-                                // session, transport error) isn't something
-                                // more turns can fix -- stop escalating.
-                                break;
                             }
-                        }
-                        if (dispatchError) {
-                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
+                            if (dispatchError) {
+                                log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
+                            }
                         }
                     } else if (isPostDispatchSyncFailure(err)) {
                         // The doer turn itself COMPLETED -- only its
