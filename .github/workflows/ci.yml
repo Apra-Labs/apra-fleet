@@ -651,15 +651,19 @@ jobs:
         # on `npm publish`, not `npm pack`) -- run it explicitly here so this
         # job's dry-run pack verification sees the same artifacts a real
         # publish would produce: dist/agents/schemas (scripts/dist-pm.mjs),
-        # apra-fleet-se's package-local schema copy (apra-fleet-bun),
-        # dist/index.js (tsc), and dist/fleet-sprint.mjs + dist/fleet-sprint-runner.mjs
-        # (scripts/bundle-se.mjs, apra-fleet-3ns.2).
+        # apra-fleet-se's package-local schema copy (apra-fleet-bun), and
+        # dist/index.js (tsc). apra-fleet-fyc.2: kuh.5 retired the
+        # scripts/bundle-se.mjs esbuild step (and its dist/-relative bundle
+        # output, formerly named fleet-sprint.mjs + fleet-sprint-runner.mjs)
+        # -- the unified `apra-fleet workflow fleet-sprint` entry point ships
+        # as source under packages/apra-fleet-se/ instead (package.json
+        # `files`).
         run: npm run prepublishOnly
 
       - name: Verify shebang
         run: |
           head -1 dist/index.js | grep -q '^#!/usr/bin/env node'
-          head -1 dist/fleet-sprint.mjs | grep -q '^#!/usr/bin/env node'
+          head -1 packages/apra-fleet-se/bin/cli.mjs | grep -q '^#!/usr/bin/env node'
 
       - name: Dry-run pack verification
         run: |
@@ -668,8 +672,9 @@ jobs:
           grep -q 'version.json' pack-output.txt
           grep -q 'hooks/hooks-config.json' pack-output.txt
           grep -q 'skills/pm/' pack-output.txt || grep -q 'skills/fleet/' pack-output.txt
-          grep -q 'dist/fleet-sprint.mjs' pack-output.txt
-          grep -q 'dist/fleet-sprint-runner.mjs' pack-output.txt
+          grep -q 'packages/apra-fleet-se/bin/cli.mjs' pack-output.txt
+          grep -q 'packages/apra-fleet-se/fleet-sprint/runner.js' pack-output.txt
+          grep -q 'packages/apra-fleet-se/workflow.json' pack-output.txt
           grep -q 'dist/agents/schemas/' pack-output.txt
           echo "Pack verification passed"
 
@@ -691,18 +696,67 @@ jobs:
           echo "Clean-pack guard passed"
 
       - name: Pack + install into a clean temp prefix (fleet-sprint smoke test)
-        # apra-fleet-3ns.2(f) / apra-fleet-3ns.2.2: proves a real packed
-        # tarball, extracted with no monorepo ancestor and no
-        # node_modules present, exposes a working `fleet-sprint` bin whose
-        # schema resolution finds the co-packaged dist/agents/schemas/ --
-        # not the apra-fleet-bun.1 monorepo dev-fallback (which would warn)
-        # or the last-resort hand-written literals.
+        # apra-fleet-3ns.2(f) / apra-fleet-3ns.2.2, updated by apra-fleet-
+        # fyc.2.1 for the post-kuh.5 source-shipped packaging model: proves a
+        # real packed tarball, npm-installed into a fresh non-workspace
+        # prefix (no monorepo ancestor, no pre-existing node_modules), exposes
+        # a working `apra-fleet workflow fleet-sprint` entry point whose
+        # schema resolution finds the co-packaged dist/agents/schemas/ -- not
+        # the apra-fleet-bun.1 monorepo dev-fallback (which would warn) or the
+        # last-resort hand-written literals.
+        #
+        # kuh.5 retired the esbuild bundle (scripts/bundle-se.mjs -> its
+        # retired dist/ bundle output, formerly named fleet-sprint.mjs and
+        # fleet-sprint-runner.mjs); the unified entry point now ships as
+        # source under packages/apra-fleet-se/ (named by packages/apra-fleet-
+        # se/workflow.json's "entry": bin/cli.mjs) and is reached via the
+        # `apra-fleet workflow fleet-sprint` launcher
+        # (src/cli/workflow.ts), the same command path apra-fleet-kuh.4's real
+        # npm-pack verification exercised end to end. This mirrors that exact
+        # sequence: npm pack -> npm install the tarball into a fresh prefix ->
+        # `apra-fleet install` (extracts ~/.apra-fleet/{node_modules,schemas,
+        # workflows/fleet-sprint} from the installed package's own
+        # packages/apra-fleet-se and packages/apra-fleet-workflow/apra-fleet-
+        # client trees) -> `apra-fleet workflow fleet-sprint --help`.
+        #
+        # Directly `node`-invoking packages/apra-fleet-se/bin/cli.mjs from the
+        # raw extracted tarball (without the install step) does NOT work: its
+        # bare-specifier imports ('@apralabs/apra-fleet-workflow',
+        # '@apralabs/apra-fleet-client') are not real npm dependencies of the
+        # root package (verified locally: `npm install` never places them
+        # under node_modules), they only land on disk via `apra-fleet
+        # install`'s extraction step, at a location (~/.apra-fleet/node_modules,
+        # a sibling of ~/.apra-fleet/workflows/fleet-sprint/bin/cli.mjs) that
+        # Node's module resolution walks up to find. Hence the explicit
+        # install step below is required, not optional.
+        #
+        # apra-fleet-7pm.12's separate scripts/smoke-test-runner-import.mjs
+        # (deleted by fyc.2.1) existed only because the OLD bundled entry
+        # (formerly fleet-sprint.mjs) esbuild-inlined just its OWN imports,
+        # and the OLD bundled runner (formerly fleet-sprint-runner.mjs) was a
+        # second, separately-bundled artifact never statically imported by
+        # the --help path -- only reached dynamically via
+        # engine.executeFile(), so --help alone never
+        # exercised its import graph. That split no longer exists: cli.mjs
+        # has a top-level `import '../fleet-sprint/runner.js'` (see
+        # packages/apra-fleet-se/bin/cli.mjs), and ESM resolves+evaluates a
+        # module's entire static import graph -- runner.js and everything it
+        # imports (@apralabs/apra-fleet-workflow, @apralabs/apra-fleet-client,
+        # ./errors.mjs, ./conflict-ladder.mjs, ./sprint-lock.mjs, ajv, etc) --
+        # before cli.mjs's own top-level code (including the --help
+        # short-circuit) ever runs. So the `apra-fleet workflow fleet-sprint
+        # --help` smoke test below already proves the full runtime import
+        # graph resolves; a separate engine.executeFile()-driven script would
+        # be redundant.
         run: |
           TMP_INSTALL=$(mktemp -d)
           npm pack --pack-destination "$TMP_INSTALL"
           TARBALL=$(ls "$TMP_INSTALL"/apralabs-apra-fleet-*.tgz)
-          tar -xzf "$TARBALL" -C "$TMP_INSTALL"
-          PKG_DIR="$TMP_INSTALL/package"
+
+          INSTALL_PREFIX=$(mktemp -d)
+          npm install --prefix "$INSTALL_PREFIX" "$TARBALL" --no-save --no-audit --no-fund
+          PKG_DIR="$INSTALL_PREFIX/node_modules/@apralabs/apra-fleet"
+          BIN="$INSTALL_PREFIX/node_modules/.bin/apra-fleet"
 
           test -d "$PKG_DIR/dist/agents/schemas" || { echo "::error::dist/agents/schemas/ missing from the packed tarball."; exit 1; }
           SCHEMA_COUNT=$(ls "$PKG_DIR/dist/agents/schemas/"*.json 2>/dev/null | wc -l)
@@ -711,31 +765,25 @@ jobs:
             exit 1
           fi
 
-          node "$PKG_DIR/dist/fleet-sprint.mjs" --help > "$TMP_INSTALL/se-help-stdout.txt" 2> "$TMP_INSTALL/se-help-stderr.txt"
+          FAKEHOME=$(mktemp -d)
+          export HOME="$FAKEHOME"
+          export USERPROFILE="$FAKEHOME"
+          export APRA_FLEET_DATA_DIR="$FAKEHOME/data"
+
+          "$BIN" install --skill none --workflows all --transport stdio
+
+          "$BIN" workflow fleet-sprint --help > "$TMP_INSTALL/se-help-stdout.txt" 2> "$TMP_INSTALL/se-help-stderr.txt"
           grep -q 'Usage: fleet-se sprint' "$TMP_INSTALL/se-help-stdout.txt" || {
             echo "::error::fleet-sprint --help did not produce the expected usage text."
             cat "$TMP_INSTALL/se-help-stdout.txt"
             exit 1
           }
           if grep -q 'Using the local apra-pm copy' "$TMP_INSTALL/se-help-stderr.txt"; then
-            echo "::error::dist/fleet-sprint.mjs fell back to the local apra-pm dev path instead of resolving the packaged dist/agents/schemas/ -- the tarball's schema bundling is broken."
+            echo "::error::apra-fleet workflow fleet-sprint fell back to the local apra-pm dev path instead of resolving the packaged dist/agents/schemas/ -- the tarball's schema bundling is broken."
             cat "$TMP_INSTALL/se-help-stderr.txt"
             exit 1
           fi
-          echo "Clean install smoke test passed: fleet-sprint --help works with no node_modules, schemas resolved from dist/agents/schemas (no dev-fallback warning)"
-
-          # apra-fleet-7pm.12: the `--help` check above exits before
-          # engine.executeFile() ever runs, so it never exercised
-          # dist/fleet-sprint-runner.mjs's own import graph ('./contracts.mjs',
-          # './errors.mjs', '@apralabs/apra-fleet-workflow' [+ its '/viewer/
-          # html-utils' subpath], '@apralabs/apra-fleet-client', 'ajv') --
-          # only dist/fleet-sprint.mjs's esbuild-inlined imports. Reuse this
-          # same clean-prefix tarball extraction and drive
-          # engine.executeFile() directly against the runner script, so a
-          # broken runtime import graph fails CI instead of shipping
-          # silently.
-          node "$GITHUB_WORKSPACE/scripts/smoke-test-runner-import.mjs" "$PKG_DIR"
-          echo "Runner-load smoke test passed"
+          echo "Clean install smoke test passed: apra-fleet workflow fleet-sprint --help works via a real npm install + apra-fleet install, schemas resolved from dist/agents/schemas (no dev-fallback warning)"
 
       - name: Check if version already published
         id: check-published
