@@ -28,6 +28,7 @@ import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
 import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
+import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 // eft.4.8.1: the operator-facing surface -- PID-liveness watchdog (eft.4.3),
@@ -81,6 +82,17 @@ export async function serveMain(argv = process.argv.slice(2)) {
         console.log(SERVE_USAGE);
         return { exitCode: 0 };
     }
+
+    // Installed before anything else logs: every console.log/warn/error from
+    // this point on (including the seam-construction comments' own
+    // console.error calls below) is timestamped (local time, not UTC) and
+    // teed to <dataDir>/logs/supervisor.log, in addition to still reaching
+    // the original console (an interactive run or a shell redirect is
+    // unaffected). This is the supervisor's own equivalent of spawner.mjs's
+    // per-sprint-child raw log; a dashboard link to GET /supervisor/log is
+    // registered further down, once `supervisor` exists.
+    const selfLog = installSelfLogTee();
+    process.once('exit', () => selfLog.stop());
 
     let port = DEFAULT_SERVICE_PORT;
     if (values.port !== undefined) {
@@ -265,6 +277,11 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // builds a path from the request's :id itself.
     const logView = createLogView({ ledger, history });
     registerLogViewRoutes(supervisor, logView);
+
+    // GET /supervisor/log -- the supervisor's OWN stdout/stderr (see
+    // installSelfLogTee() above), linked from the dashboard header.
+    const selfLogView = createSelfLogView({ logPath: selfLog.logPath });
+    registerSelfLogRoutes(supervisor, selfLogView);
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.

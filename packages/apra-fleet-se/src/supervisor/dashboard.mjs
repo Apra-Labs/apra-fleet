@@ -473,7 +473,8 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '<body>\n' +
         '<div class="header">' +
         '<h1>Fleet-Sprint Supervisor</h1>' +
-        '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div></div>' +
+        '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div>' +
+        '<a href="/supervisor/log" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
         '<div class="main-content"><div class="content-area">' +
         '<div class="tab-bar" id="tab-bar">' +
