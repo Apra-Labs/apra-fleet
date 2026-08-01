@@ -6,7 +6,7 @@ import os from 'node:os';
 import http from 'node:http';
 
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
-import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
+import { createHistory, HISTORY_FILENAME, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import {
@@ -750,5 +750,198 @@ describe('api -- default HTTP proxies against a real child server', () => {
         } finally {
             await new Promise((resolve) => server.close(resolve));
         }
+    });
+});
+
+// apra-fleet-gey.2: the relaunch gate reads history.latestForIssueRoot()
+// BEFORE the member-overlap guard/spawn -- a deterministic, unaddressed
+// prior incarnation (LAUNCH_FAILED, or a FINISHED whose engine-reported
+// terminalReason is in DETERMINISTIC_TERMINAL_REASONS, e.g.
+// BEADS_SYNC_CONFLICT) is refused with a 409 naming the prior sprintId and
+// reason, unless the request sets `overrideRelaunchGate: true`.
+describe('api -- apra-fleet-gey.2 relaunch gate on prior incarnation terminal record', () => {
+    test('a same-root relaunch after a deterministic FINISHED terminalReason (BEADS_SYNC_CONFLICT) is refused 409, naming the prior sprint id and reason', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified FINISHED',
+            members: ['alice'], issueRoots: ['PROJ-1'],
+        });
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.FINISHED,
+            terminalReason: 'BEADS_SYNC_CONFLICT', verdict: 'needs-changes',
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => err instanceof ApiError
+                && err.status === 409
+                && err.field === 'issue'
+                && err.message.includes('s-prior')
+                && err.message.includes('BEADS_SYNC_CONFLICT')
+                && err.message.includes('overrideRelaunchGate'),
+        );
+        // No child was spawned and no reservation was claimed on a refused relaunch.
+        assert.equal(captured.length, 0);
+        assert.equal(ledger.list().length, 0);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('overrideRelaunchGate: true proceeds past a deterministic prior FINISHED terminalReason', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified FINISHED',
+            members: ['alice'], issueRoots: ['PROJ-1'],
+        });
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.FINISHED,
+            terminalReason: 'BEADS_SYNC_CONFLICT', verdict: 'needs-changes',
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main', overrideRelaunchGate: true,
+        });
+        assert.equal(captured.length, 1);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a same-root relaunch after a LAUNCH_FAILED prior incarnation (apra-fleet-gey.1) is refused 409', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified LAUNCH_FAILED',
+            members: ['alice'], issueRoots: ['PROJ-1'],
+        });
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.LAUNCH_FAILED, reason: 'watchdog: child exited within launch window',
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        await assert.rejects(
+            () => controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' }),
+            (err) => err instanceof ApiError && err.status === 409 && err.message.includes('s-prior'),
+        );
+        assert.equal(captured.length, 0);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a same-root relaunch after a NON-deterministic prior terminalReason (e.g. SPRINT_STALLED) is NOT gated (false negative only skips the warning)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified FINISHED',
+            members: ['alice'], issueRoots: ['PROJ-1'],
+        });
+        await history.record({
+            sprintId: 's-prior', event: HISTORY_EVENTS.FINISHED,
+            terminalReason: 'SPRINT_STALLED', verdict: 'needs-changes',
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(captured.length, 1);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('no change to first-launch behaviour for a root with no prior record at all (no gate, no warning-relevant history)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        // history has records, but for a DIFFERENT issue root -- proves
+        // the gate is scoped per-issue, not a global "any history exists" check.
+        await history.record({
+            sprintId: 's-other', event: HISTORY_EVENTS.FINISHED,
+            terminalReason: 'BEADS_SYNC_CONFLICT', members: ['alice'], issueRoots: ['OTHER-ROOT'],
+        });
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(captured.length, 1);
+        assert.ok(ledger.get(result.sprintId));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+// apra-fleet-gey.2: best-effort stale-process detection -- launch() re-reads
+// getBuildVersion() on every call and compares it against the value stamped
+// ONCE at controller creation (stampedBuildVersion).
+describe('api -- apra-fleet-gey.2 build-version staleness warning', () => {
+    test('a build-version mismatch between controller-creation stamp and the current on-disk read surfaces buildVersionWarning', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        let calls = 0;
+        // First call (at createSprintController time) stamps 'build-v1'; every
+        // call thereafter (i.e. inside launch()) reads 'build-v2'.
+        const getBuildVersion = () => (calls++ === 0 ? 'build-v1' : 'build-v2');
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]), getBuildVersion,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.ok(typeof result.buildVersionWarning === 'string');
+        assert.ok(result.buildVersionWarning.includes('build-v1'));
+        assert.ok(result.buildVersionWarning.includes('build-v2'));
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('no mismatch (build unchanged since controller creation) => buildVersionWarning is null', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const getBuildVersion = () => 'build-v1';
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]), getBuildVersion,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(result.buildVersionWarning, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('getBuildVersion() returning null (unreadable file) never blocks a launch and reports no warning', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const getBuildVersion = () => null;
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]), getBuildVersion,
+            listMembers: () => ({ members: [] }), getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({ issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' });
+        assert.equal(result.buildVersionWarning, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
     });
 });

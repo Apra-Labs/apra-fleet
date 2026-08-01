@@ -277,9 +277,11 @@ export function defaultBuildVersion() {
  *   generateSprintId?: (issue: string) => string,
  *   resolveRoleMap?: (raw: string|undefined) => Promise<object|undefined>,
  *   getBuildVersion?: () => string|null,
- *     apra-fleet-gey.2: defaults to defaultBuildVersion() (`git rev-parse
- *     HEAD`). Called once at controller creation to stamp what this process
- *     is running, and again on every launch() to read what's on disk now --
+ *     apra-fleet-gey.2: defaults to defaultBuildVersion() (this module's own
+ *     on-disk mtime via fs.statSync() -- deliberately NOT a `git rev-parse
+ *     HEAD` subprocess; see defaultBuildVersion()'s own doc comment for why).
+ *     Called once at controller creation to stamp what this process is
+ *     running, and again on every launch() to read what's on disk now --
  *     see launch()'s buildVersionWarning below.
  * }} deps
  */

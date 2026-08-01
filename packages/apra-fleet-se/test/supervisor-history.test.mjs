@@ -4,7 +4,12 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
-import { createHistory, HISTORY_FILENAME, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
+import {
+    createHistory,
+    HISTORY_FILENAME,
+    HISTORY_EVENTS,
+    isDeterministicTerminalReason,
+} from '../src/supervisor/history.mjs';
 
 // apra-fleet-eft.5.4 -- append-only sprint terminal-event history log.
 // apra-fleet-k7b.3 adds the CHILD_EXITED event (exitCode/signal), tested here.
@@ -96,5 +101,154 @@ describe('history -- CHILD_EXITED event (apra-fleet-k7b.3)', () => {
 
     test('HISTORY_EVENTS.CHILD_EXITED is the stable string "child-exited"', () => {
         assert.equal(HISTORY_EVENTS.CHILD_EXITED, 'child-exited');
+    });
+});
+
+// apra-fleet-gey.2: the relaunch gate (api.mjs's launch()) reads
+// latestForIssueRoot()'s two-shape correlation -- an issueRoots-carrying
+// anchor event (AUTO_RELEASED/FORCE_RELEASED/ABORTED_BY_RESTART/CHILD_EXITED)
+// identifies WHICH sprintId was an issueRoot's last incarnation, then the
+// actual terminal detail (FINISHED > LAUNCH_FAILED > the anchor itself) is
+// pulled from that same sprintId's own events -- see history.mjs's
+// file-level "gey.2" doc comment for the full rationale.
+describe('history -- latestForIssueRoot() (apra-fleet-gey.2)', () => {
+    test('correlates a LAUNCH_FAILED detail event (no issueRoots of its own) with its issueRoots-carrying anchor by shared sprintId', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, HISTORY_FILENAME);
+        const history = createHistory({ filePath, now: () => '2026-08-01T00:00:00.000Z' });
+        await history.start();
+
+        // The watchdog auto-releases the reservation (issueRoots-carrying),
+        // then separately records the LAUNCH_FAILED detail under the SAME
+        // sprintId -- LAUNCH_FAILED itself never carries issueRoots.
+        await history.record({
+            sprintId: 's1', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified LAUNCH_FAILED',
+            members: ['alice'], issueRoots: ['PROJ-1'],
+        });
+        await history.record({
+            sprintId: 's1', event: HISTORY_EVENTS.LAUNCH_FAILED, reason: 'watchdog: child exited within launch window',
+        });
+
+        const record = history.latestForIssueRoot('PROJ-1');
+        assert.ok(record);
+        assert.equal(record.sprintId, 's1');
+        assert.equal(record.event, HISTORY_EVENTS.LAUNCH_FAILED);
+        assert.equal(record.reason, 'watchdog: child exited within launch window');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('correlates a FINISHED detail event (terminalReason/verdict) with its anchor', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, HISTORY_FILENAME);
+        const history = createHistory({ filePath, now: () => '2026-08-01T00:00:00.000Z' });
+        await history.start();
+
+        await history.record({
+            sprintId: 's2', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog: classified FINISHED',
+            members: ['alice'], issueRoots: ['PROJ-2'],
+        });
+        await history.record({
+            sprintId: 's2', event: HISTORY_EVENTS.FINISHED,
+            terminalReason: 'BEADS_SYNC_CONFLICT', verdict: 'needs-changes',
+        });
+
+        const record = history.latestForIssueRoot('PROJ-2');
+        assert.ok(record);
+        assert.equal(record.sprintId, 's2');
+        assert.equal(record.event, HISTORY_EVENTS.FINISHED);
+        assert.equal(record.terminalReason, 'BEADS_SYNC_CONFLICT');
+        assert.equal(record.verdict, 'needs-changes');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a FINISHED detail wins over a LAUNCH_FAILED detail for the same sprintId (TERMINAL_DETAIL_EVENTS priority order)', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, HISTORY_FILENAME);
+        const history = createHistory({ filePath, now: () => '2026-08-01T00:00:00.000Z' });
+        await history.start();
+
+        await history.record({
+            sprintId: 's3', event: HISTORY_EVENTS.FORCE_RELEASED, reason: 'stuck',
+            members: ['alice'], issueRoots: ['PROJ-3'],
+        });
+        // Both a LAUNCH_FAILED and a later FINISHED detail exist for 's3';
+        // FINISHED must win regardless of recency.
+        await history.record({ sprintId: 's3', event: HISTORY_EVENTS.LAUNCH_FAILED, reason: 'child exited fast' });
+        await history.record({ sprintId: 's3', event: HISTORY_EVENTS.FINISHED, terminalReason: 'SPRINT_STALLED', verdict: 'needs-changes' });
+
+        const record = history.latestForIssueRoot('PROJ-3');
+        assert.equal(record.event, HISTORY_EVENTS.FINISHED);
+        assert.equal(record.terminalReason, 'SPRINT_STALLED');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('no detail event: the anchor itself supplies the terminal record', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, HISTORY_FILENAME);
+        const history = createHistory({ filePath, now: () => '2026-08-01T00:00:00.000Z' });
+        await history.start();
+
+        await history.record({
+            sprintId: 's4', event: HISTORY_EVENTS.FORCE_RELEASED, reason: 'operator torn down a wedged reservation',
+            members: ['alice'], issueRoots: ['PROJ-4'],
+        });
+
+        const record = history.latestForIssueRoot('PROJ-4');
+        assert.equal(record.sprintId, 's4');
+        assert.equal(record.event, HISTORY_EVENTS.FORCE_RELEASED);
+        assert.equal(record.reason, 'operator torn down a wedged reservation');
+        assert.equal(record.terminalReason, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('an issueRoot with no issueRoots-carrying event at all (true first launch) returns undefined', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, HISTORY_FILENAME);
+        const history = createHistory({ filePath, now: () => '2026-08-01T00:00:00.000Z' });
+        await history.start();
+
+        await history.record({
+            sprintId: 's5', event: HISTORY_EVENTS.AUTO_RELEASED, reason: 'watchdog',
+            members: ['alice'], issueRoots: ['SOME-OTHER-ROOT'],
+        });
+
+        assert.equal(history.latestForIssueRoot('PROJ-5'), undefined);
+        assert.equal(history.latestForIssueRoot(''), undefined);
+        assert.equal(history.latestForIssueRoot(undefined), undefined);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('history -- isDeterministicTerminalReason() (apra-fleet-gey.2)', () => {
+    test('true for a LAUNCH_FAILED terminal record regardless of its reason text', () => {
+        assert.equal(isDeterministicTerminalReason({ sprintId: 's1', event: HISTORY_EVENTS.LAUNCH_FAILED, reason: 'anything' }), true);
+    });
+
+    test('true for a FINISHED record whose terminalReason is in DETERMINISTIC_TERMINAL_REASONS (BEADS_SYNC_CONFLICT)', () => {
+        assert.equal(
+            isDeterministicTerminalReason({ sprintId: 's1', event: HISTORY_EVENTS.FINISHED, terminalReason: 'BEADS_SYNC_CONFLICT' }),
+            true,
+        );
+    });
+
+    test('false for a FINISHED record with an unlisted terminalReason (e.g. SPRINT_STALLED) -- a false negative only skips the warning, never blocks', () => {
+        assert.equal(
+            isDeterministicTerminalReason({ sprintId: 's1', event: HISTORY_EVENTS.FINISHED, terminalReason: 'SPRINT_STALLED' }),
+            false,
+        );
+    });
+
+    test('false for a FINISHED record with no terminalReason at all', () => {
+        assert.equal(isDeterministicTerminalReason({ sprintId: 's1', event: HISTORY_EVENTS.FINISHED, terminalReason: null }), false);
+    });
+
+    test('false for null/undefined records', () => {
+        assert.equal(isDeterministicTerminalReason(null), false);
+        assert.equal(isDeterministicTerminalReason(undefined), false);
     });
 });
