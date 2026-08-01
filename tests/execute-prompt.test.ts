@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { executePrompt, inFlightAgents, provisionedRemoteAgents } from '../src/tools/execute-prompt.js';
 import { getStallDetector } from '../src/services/stall/index.js';
@@ -9,6 +12,8 @@ import { getOsCommands } from '../src/os/index.js';
 import type { SSHExecResult } from '../src/types.js';
 import { setBudget, _resetBudgetState } from '../src/services/budget-awareness.js';
 import { recordSessionUsage, _resetSessionUsage, DEFAULT_SIZE_BUCKET_TOKENS } from '../src/services/context-admission.js';
+import { sessionRegistry } from '../src/services/session-registry.js';
+import { localWorkspaceId } from '../src/services/token-issuer.js';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -767,9 +772,166 @@ describe('concurrency guard: rejects a second dispatch while one is in flight (a
 
     expect(resultText(result)).toContain('already running');
     expect(resultText(result)).toContain(member.friendlyName);
+    // No pid was ever captured for this lock (no setStoredPid, no sessionRegistry
+    // entry) -- findDeadLockPid's apra-fleet-idb/iuc.4 conservative "no pid at
+    // all means still busy" branch means it never even probes execCommand.
     expect(mockExecCommand).not.toHaveBeenCalled();
     // The guard must not have cleared the ORIGINAL in-flight session's state.
     expect(inFlightAgents.has(memberId)).toBe(true);
+  });
+});
+
+// apra-fleet-idb / apra-fleet-iuc.4: an inFlightAgents entry can outlive the
+// process it was guarding (child reaped without cleanup, interactive process
+// died/disconnected). On a busy rejection, execute_prompt now verifies the
+// locked session's backing process is still alive before honoring it -- a
+// confirmed-dead pid releases the stale lock (self-heal) instead of wedging
+// the member forever; a confirmed-alive pid still returns 'busy'. These tests
+// drive findDeadLockPid's branches end-to-end through the real executePrompt
+// entry point (the "no pid captured at all" branch is already covered by the
+// concurrency-guard test above).
+describe('busy-lock self-heal on a confirmed-dead backing process (apra-fleet-idb / apra-fleet-iuc.4)', () => {
+  let memberId: string;
+  const workspaceId = localWorkspaceId();
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) {
+      inFlightAgents.delete(memberId);
+      clearStoredPid(memberId);
+      sessionRegistry.unregister(workspaceId, memberId);
+    }
+  });
+
+  it('releases a stale lock and lets the dispatch proceed when the remote subprocess pid is confirmed dead via a fresh SSH probe', async () => {
+    const member = makeTestAgent({ friendlyName: 'idb-remote-dead' }); // default agentType 'remote'
+    memberId = member.id;
+    addAgent(member);
+
+    inFlightAgents.add(memberId);
+    setStoredPid(memberId, 54321);
+
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      // findDeadLockPid's remote-pid liveness probe (mirrors orphan-recovery's
+      // isRemoteProcessAlive) -- a FRESH, independent round trip, never the
+      // (possibly wedged) channel that produced the stale lock.
+      if (cmd.includes('kill -0')) {
+        return { stdout: 'DEAD\n', stderr: '', code: 0 };
+      }
+      return { stdout: JSON.stringify({ result: 'healed', session_id: 'sess-healed' }), stderr: '', code: 0 };
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).not.toContain('already running');
+    expect(resultText(result)).toContain('healed');
+    // The dispatch genuinely proceeded (writePromptFile + probe + main + delete),
+    // not just the single busy-check probe.
+    expect(mockExecCommand.mock.calls.some(c => (c[0] as string).includes('kill -0'))).toBe(true);
+    expect(vi.mocked(writeStatusline).mock.calls.some(
+      c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
+    )).toBe(true);
+  });
+
+  it('still returns reason "busy" (control) when the remote subprocess pid is confirmed ALIVE', async () => {
+    const member = makeTestAgent({ friendlyName: 'idb-remote-alive' });
+    memberId = member.id;
+    addAgent(member);
+
+    inFlightAgents.add(memberId);
+    setStoredPid(memberId, 54322);
+
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('kill -0')) {
+        return { stdout: 'ALIVE\n', stderr: '', code: 0 };
+      }
+      return { stdout: JSON.stringify({ result: 'should not run', session_id: 'sess-x' }), stderr: '', code: 0 };
+    });
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'second dispatch', resume: false, timeout_s: 5 });
+
+    expect(resultText(result)).toContain('already running');
+    if (typeof result !== 'string' && result.structuredContent) {
+      expect(result.structuredContent.reason).toBe('busy');
+    }
+    // Only the liveness probe ran -- the dispatch itself never started.
+    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+    expect(mockExecCommand.mock.calls[0][0]).toContain('kill -0');
+    // The ORIGINAL lock must still be held.
+    expect(inFlightAgents.has(memberId)).toBe(true);
+  });
+
+  it('releases a stale lock and lets the dispatch proceed when the local subprocess pid is confirmed dead', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-idb-local-'));
+    try {
+      const member = makeTestLocalAgent({ friendlyName: 'idb-local-dead', workFolder: tmpDir, os: 'linux' });
+      memberId = member.id;
+      addAgent(member);
+
+      inFlightAgents.add(memberId);
+      // An obviously-nonexistent pid on this machine -- process.kill(pid, 0)
+      // reliably reads back ESRCH, so isPidAlive() is deterministic here
+      // without any execCommand round trip.
+      setStoredPid(memberId, 999_999);
+
+      mockExecCommand.mockResolvedValue({
+        stdout: JSON.stringify({ result: 'healed-local', session_id: 'sess-healed-local' }),
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+      expect(resultText(result)).not.toContain('already running');
+      expect(resultText(result)).toContain('healed-local');
+      expect(mockExecCommand).toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('releases a stale lock when the locked session is an interactive-style registration whose launch pid is confirmed dead', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-idb-interactive-'));
+    try {
+      const member = makeTestLocalAgent({ friendlyName: 'idb-interactive-dead', workFolder: tmpDir, os: 'linux' });
+      memberId = member.id;
+      addAgent(member);
+
+      inFlightAgents.add(memberId);
+      // No subprocess pid stored -- only a sessionRegistry entry carrying the
+      // (dead) launch-time pid, exactly the shape a persistent interactive
+      // session that died/disconnected leaves behind.
+      sessionRegistry.register({
+        member_id: memberId,
+        workspace_id: workspaceId,
+        role: 'doer',
+        work_folder: tmpDir,
+        server: null,
+        pid: 999_998,
+        status: 'busy',
+      });
+
+      mockExecCommand.mockResolvedValue({
+        stdout: JSON.stringify({ result: 'healed-interactive', session_id: 'sess-healed-interactive' }),
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 });
+
+      expect(resultText(result)).not.toContain('already running');
+      expect(resultText(result)).toContain('healed-interactive');
+      expect(mockExecCommand).toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
