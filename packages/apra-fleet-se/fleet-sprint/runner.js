@@ -8219,14 +8219,61 @@ async function runSprintCycle(context) {
     // opens the PR -- a human (or a later, explicitly-scoped issue) must
     // review and merge it.
     phase(`Publish PR C${finalCycleLabel}`);
-    await command(
-        `git push -u origin ${validated.branch}`,
-        {
-            member_name: orchestratorMember,
-            silent: true,
-            label: `Push sprint branch '${validated.branch}'`,
+    // The branch push is the LAST step of a sprint that has already done all of
+    // its work and computed a final verdict. A transient push failure (a racing
+    // writer, a momentarily unreachable remote, a credential refresh in flight)
+    // used to throw a CommandError from here, which converted a computed PASS
+    // into `verdict: 'ABORTED'` and discarded the whole run's conclusion over a
+    // network hiccup at the very end. So: failSoft plus the same short, bounded
+    // sync backoff every other push round trip uses, and -- if it STILL will not
+    // go through -- log loudly and return the COMPUTED verdict with
+    // `pushed: false` rather than destroying it.
+    //
+    // A persistent failure also skips everything downstream of the push (PR
+    // creation on a hosted remote; direct target-issue closure + D-push on a
+    // non-hosted one). None of that may run against a branch whose commits
+    // never reached the remote: a PR cannot be raised for unpushed work, and
+    // closing the sprint's target issue would advertise a completion nobody can
+    // see. This is the deliberately MINIMAL hardening -- the pluggable-publish
+    // restructure is apra-fleet-647.2, which supersedes it.
+    let pushed = false;
+    let lastPushError = '';
+    for (let attempt = 0; attempt < POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length; attempt++) {
+        if (POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt] > 0) {
+            log(`Publish PR: pushing sprint branch '${validated.branch}' failed; retrying in ${POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt] / 1000}s (attempt ${attempt + 1}/${POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length}): ${lastPushError}`);
+            if (!mockInstantRetryBackoff()) {
+                await new Promise((resolve) => setTimeout(resolve, POST_DISPATCH_SYNC_RETRY_DELAYS_MS[attempt]));
+            }
         }
-    );
+        const pushRes = await command(
+            `git push -u origin ${validated.branch}`,
+            {
+                member_name: orchestratorMember,
+                silent: true,
+                failSoft: true,
+                label: `Push sprint branch '${validated.branch}'`,
+            }
+        );
+        if (pushRes.ok) {
+            pushed = true;
+            break;
+        }
+        lastPushError = pushRes.error;
+    }
+    if (!pushed) {
+        log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin after ${POST_DISPATCH_SYNC_RETRY_DELAYS_MS.length} attempts -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
+        endGroup();
+        return {
+            status: finalVerdictResult.verdict === 'PASS' ? 'success' : 'failed',
+            verdict: finalVerdictResult.verdict,
+            notes: finalVerdictResult.notes,
+            branch: validated.branch,
+            baseBranch: validated.baseBranch,
+            goal: validated.goal,
+            maxCycles: validated.maxCycles,
+            pushed: false,
+        };
+    }
     // The final verdict is surfaced directly in the PR title and body -- a
     // human reviewer must never have to dig through sprint logs to learn
     // whether the run's own review gate passed. A FAIL verdict still publishes
@@ -8342,6 +8389,7 @@ async function runSprintCycle(context) {
         baseBranch: validated.baseBranch,
         goal: validated.goal,
         maxCycles: validated.maxCycles,
+        pushed: true,
     };
 }
 
