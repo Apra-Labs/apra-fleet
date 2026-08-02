@@ -9,7 +9,9 @@ import {
     sendJson,
     DEFAULT_SERVICE_PORT,
 } from '../src/supervisor/server.mjs';
-import { parseServeArgs, serveMain } from '../bin/serve.mjs';
+import { parseServeArgs, serveMain, composeBeforeLaunch } from '../bin/serve.mjs';
+import { defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
+import { createScopeGuard } from '../src/supervisor/scope-overlap.mjs';
 
 // apra-fleet-eft.4.1 -- supervisor skeleton: always-on process, HTTP server
 // bootstrap, POST /api/shutdown, error-isolated dispatcher, documented seams.
@@ -185,6 +187,82 @@ describe('parseServeArgs', () => {
 
     test('DEFAULT_SERVICE_PORT is a valid port', () => {
         assert.ok(Number.isInteger(DEFAULT_SERVICE_PORT) && DEFAULT_SERVICE_PORT > 0 && DEFAULT_SERVICE_PORT < 65536);
+    });
+});
+
+// apra-fleet-k06.1: the composed beforeLaunch wiring (member-overlap guard
+// THEN issue-scope guard, both over the SAME ledger) that serveMain() builds
+// and injects into createSprintController(). Exercises composeBeforeLaunch()
+// with the SAME real guard collaborators (defaultMemberOverlapGuard,
+// createScopeGuard) serveMain wires -- only the ledger/listChildren are
+// faked/injected -- so this proves the composition itself, not just each
+// guard's own already-covered unit suite.
+describe('api -- apra-fleet-k06.1 composeBeforeLaunch (member guard + scope guard, wired-level)', () => {
+    /** A minimal fake ledger -- both guards only ever call list(). */
+    function fakeLedger(reservations) {
+        return { list: () => reservations };
+    }
+
+    test('disjoint member sets but overlapping issue scope: rejected 409 field=issue, scope guard\'s checkLaunch runs', async () => {
+        const ledger = fakeLedger([
+            { sprintId: 's-active', members: ['carol'], issueRoots: ['epic-1'] },
+        ]);
+        const memberOverlapGuard = defaultMemberOverlapGuard(ledger);
+        // No real `bd` process: listChildren stubbed to report no children, so
+        // each side's live-expanded scope is exactly its own request roots.
+        const scopeGuard = createScopeGuard({ ledger, listChildren: async () => [] });
+        const beforeLaunch = composeBeforeLaunch({ memberOverlapGuard, scopeGuard });
+
+        await assert.rejects(
+            () => beforeLaunch({ members: ['alice'], issueRoots: ['epic-1'] }),
+            (err) => {
+                assert.ok(err instanceof ApiError);
+                assert.equal(err.status, 409);
+                assert.equal(err.field, 'issue');
+                assert.match(err.message, /issue-scope overlap rejects launch/);
+                assert.match(err.message, /s-active/);
+                assert.match(err.message, /epic-1/);
+                return true;
+            },
+        );
+    });
+
+    test('overlapping members: rejected 409 field=members BEFORE the scope guard ever runs (member axis runs first)', async () => {
+        const ledger = fakeLedger([
+            { sprintId: 's-active', members: ['alice'], issueRoots: ['epic-1'] },
+        ]);
+        const memberOverlapGuard = defaultMemberOverlapGuard(ledger);
+        let scopeGuardCalled = false;
+        const scopeGuard = {
+            checkLaunch: async () => {
+                scopeGuardCalled = true;
+                return { ok: true, conflicts: [] };
+            },
+        };
+        const beforeLaunch = composeBeforeLaunch({ memberOverlapGuard, scopeGuard });
+
+        // Disjoint issue scope (no overlap on that axis) but overlapping members.
+        await assert.rejects(
+            () => beforeLaunch({ members: ['alice'], issueRoots: ['epic-2'] }),
+            (err) => {
+                assert.ok(err instanceof ApiError);
+                assert.equal(err.status, 409);
+                assert.equal(err.field, 'members');
+                return true;
+            },
+        );
+        assert.equal(scopeGuardCalled, false, 'scope guard must not run once the member guard has already rejected');
+    });
+
+    test('no overlap on either axis: the launch is allowed through (composed guard resolves without throwing)', async () => {
+        const ledger = fakeLedger([
+            { sprintId: 's-active', members: ['carol'], issueRoots: ['epic-9'] },
+        ]);
+        const memberOverlapGuard = defaultMemberOverlapGuard(ledger);
+        const scopeGuard = createScopeGuard({ ledger, listChildren: async () => [] });
+        const beforeLaunch = composeBeforeLaunch({ memberOverlapGuard, scopeGuard });
+
+        await assert.doesNotReject(() => beforeLaunch({ members: ['alice'], issueRoots: ['epic-1'] }));
     });
 });
 
