@@ -4182,7 +4182,7 @@ function buildAnalysisText({
  *   most expensive phase (a full playbook run against a real sandbox).
  * @returns {string}
  */
-function buildCostAnalysis(budget, integTestRunnerStats = {}) {
+export function buildCostAnalysis(budget, integTestRunnerStats = {}) {
     const total = budget && budget.total;
     const spent = budget && typeof budget.spent === 'function' ? budget.spent() : null;
     const lines = [
