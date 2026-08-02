@@ -29,6 +29,12 @@ import { calculateCost } from '../packages/apra-fleet-workflow/src/workflow/pric
 // pin the client formula and the server's real retry-budget behavior
 // together, not just each in isolation.
 import { deriveTimeoutMs } from '@apralabs/apra-fleet-client';
+// apra-fleet-6a7.1: mocked below so these tests can assert the self-heal
+// CALL SITE in execute-prompt.ts (classified once, invoked once, gated by
+// trustHealAttempted) without needing to also drive the real
+// ClaudeProvider.ensureWorkspaceTrusted exec sequence -- that real
+// implementation is already covered by tests/ensure-workspace-trusted.test.ts.
+import { seedWorkspaceTrust } from '../src/utils/workspace-trust.js';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -52,6 +58,14 @@ vi.mock('../src/services/strategy.js', () => ({
 vi.mock('../src/services/agent-provisioner.js', () => ({
   provisionAgents: vi.fn().mockResolvedValue({ pushed: [] }),
   remoteAgentsDir: vi.fn().mockReturnValue('.claude/agents/pm'),
+}));
+
+// apra-fleet-6a7.1: seedWorkspaceTrust is mocked so the workspace_not_trusted
+// self-heal tests below can assert on the CALL SITE (invoked once, gated by
+// trustHealAttempted) without also having to drive ClaudeProvider's real
+// ensureWorkspaceTrusted exec sequence through mockExecCommand.
+vi.mock('../src/utils/workspace-trust.js', () => ({
+  seedWorkspaceTrust: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('executePrompt', () => {
@@ -2001,6 +2015,84 @@ describe('workspace-not-trusted classification (apra-fleet-eft.40.3)', () => {
 
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'workspace_not_trusted' });
     // 3 calls only -- proves the stale-session retry (which would add a 4th call) never fired.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+// apra-fleet-6a7.1: the code!==0 workspace_not_trusted classification above
+// (eft.40.3) never runs for an exit-0/empty-stdout dispatch -- a SEPARATE
+// branch. Live evidence (apra-fleet-2g2, fleet-win-dev1, 2026-08-02) showed
+// exactly that: exit 0, empty stdout, and a stderr tail carrying the same
+// trust phrase, so the existing reactive self-heal never fired and the
+// dispatch fell through as a generic empty_response. These tests cover the
+// new self-heal-and-retry-once path added for that gap.
+describe('exit-0/empty-stdout workspace_not_trusted self-heal-and-retry (apra-fleet-6a7.1)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('self-heals once via seedWorkspaceTrust and retries the dispatch, returning the retry\'s real result on success', async () => {
+    const member = makeTestAgent({ friendlyName: 'untrusted-empty-heals' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'Ignoring 4 permissions.allow entries -- this workspace has not been trusted', code: 0 })  // main: exit 0, empty stdout, trust phrase in stderr
+      .mockResolvedValueOnce({  // heal-retry: succeeds now that trust was seeded
+        stdout: JSON.stringify({ result: 'recovered after trust heal', session_id: 'sess-healed' }),
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(resultText(result)).toContain('recovered after trust heal');
+    expect(vi.mocked(seedWorkspaceTrust)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(seedWorkspaceTrust).mock.calls[0][0]).toMatchObject({ friendlyName: 'untrusted-empty-heals' });
+    // 4 calls: writePromptFile + main (untrusted, empty) + heal-retry (ok) + deletePromptFile
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it('classifies as workspace_not_trusted (not generic empty_response) when the heal-and-retry is still empty', async () => {
+    const member = makeTestAgent({ friendlyName: 'untrusted-empty-still-fails' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'this workspace has not been trusted', code: 0 })  // main: exit 0, empty stdout
+      .mockResolvedValueOnce({ stdout: '', stderr: 'this workspace has not been trusted', code: 0 })  // heal-retry: still untrusted/empty
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'workspace_not_trusted' });
+    expect(resultText(result)).toContain('ensureWorkspaceTrusted');
+    expect(vi.mocked(seedWorkspaceTrust)).toHaveBeenCalledTimes(1);
+    // 4 calls: writePromptFile + main + heal-retry + deletePromptFile -- exactly
+    // ONE retry, never a second heal/retry loop even though it failed again.
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it('a plain (non-trust) exit-0/empty-stdout dispatch is unaffected -- no self-heal, still generic empty_response', async () => {
+    const member = makeTestAgent({ friendlyName: 'plain-empty-unaffected' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: '', stderr: 'some unrelated late warning', code: 0 })  // main: exit 0, empty, no trust phrase
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'empty_response' });
+    expect(vi.mocked(seedWorkspaceTrust)).not.toHaveBeenCalled();
+    // 3 calls only -- no heal-retry fired for a non-trust empty response.
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
   });
 });
