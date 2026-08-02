@@ -4172,9 +4172,17 @@ function buildAnalysisText({
  * verbatim and never recomputes it. The remaining budget is derived from
  * `total` and `spent()`, not read from the budget object.
  * @param {{ total: number|null, spent?: () => number, pricingSummary?: () => { real: number, fallback: number } }} budget
+ * @param {{ spend?: number, dispatchCount?: number }} [integTestRunnerStats] -- apra-fleet-nwh.1:
+ *   this sprint's own tracked integ-test-runner spend (a before/after
+ *   `budget.spent()` delta accumulated by the caller around each Integ Test
+ *   phase dispatch, see runSprintCycle's integTestRunnerSpend/
+ *   integTestRunnerDispatchCount) and how many times that phase dispatched.
+ *   Reported as its OWN line, distinct from doer/reviewer/overhead, instead
+ *   of being silently folded into "overhead" -- often the single longest/
+ *   most expensive phase (a full playbook run against a real sandbox).
  * @returns {string}
  */
-function buildCostAnalysis(budget) {
+function buildCostAnalysis(budget, integTestRunnerStats = {}) {
     const total = budget && budget.total;
     const spent = budget && typeof budget.spent === 'function' ? budget.spent() : null;
     const lines = [
@@ -4189,6 +4197,22 @@ function buildCostAnalysis(budget) {
         lines.push(`Remaining budget: $${(total - spent).toFixed(4)}.`);
     } else {
         lines.push('Remaining budget: unknown/unbounded.');
+    }
+    // apra-fleet-nwh.1: an explicit integ-test-runner spend line, broken out
+    // of the totals above (it is a SUBSET of `spent`, not additional spend)
+    // so this often-longest phase is never silently bucketed into
+    // "overhead" by a reader of this block. Honest about all three states:
+    // the phase never dispatched this run, it dispatched but spend was not
+    // trackable (same `spent()`-unavailable case as above), or a real
+    // tracked figure.
+    const integDispatchCount = Number.isInteger(integTestRunnerStats.dispatchCount) ? integTestRunnerStats.dispatchCount : 0;
+    if (integDispatchCount === 0) {
+        lines.push('Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).');
+    } else if (typeof spent !== 'number') {
+        lines.push(`Integ-test-runner spend: not tracked -- ${integDispatchCount} dispatch(es) ran but the budget object did not expose spent() for this run.`);
+    } else {
+        const integSpend = typeof integTestRunnerStats.spend === 'number' ? integTestRunnerStats.spend : 0;
+        lines.push(`Integ-test-runner spend: $${integSpend.toFixed(4)} across ${integDispatchCount} dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).`);
     }
     // Report the SOURCE of each priced dispatch's cost -- real per-member
     // rates vs. pricing.mjs's tier-band fallback -- so the figures above are
@@ -5844,6 +5868,20 @@ async function runSprintCycle(context) {
     // evidence-based prompt below -- never silently swallowed.
     const deployFailures = [];
     const integFailures = [];
+
+    // apra-fleet-nwh.1: integ-test-runner's own tracked spend, broken out of
+    // the harvester's cost block so it is never silently folded into
+    // "overhead" -- often the single longest/most expensive phase (a full
+    // playbook run against a real sandbox). `budget` (destructured from
+    // `context` above) exposes only a running total via spent(), not a
+    // per-role breakdown, so this is derived here as a before/after delta
+    // around each Integ Test phase dispatch (see the Integ Test Phase block
+    // below) and fed into buildCostAnalysis() at Harvest time.
+    // integTestRunnerDispatchCount stays 0 when the phase never dispatches
+    // this run (no playbook, or deploy never succeeded), so buildCostAnalysis
+    // can report that honestly instead of a fabricated/omitted line.
+    let integTestRunnerSpend = 0;
+    let integTestRunnerDispatchCount = 0;
 
     // Reviewer newTasks rejected by validateNewTask() before ever reaching
     // `command()`, threaded into the Final Review prompt so a rejection is
@@ -7559,6 +7597,14 @@ async function runSprintCycle(context) {
 
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
+            // apra-fleet-nwh.1: snapshot the running total BEFORE this
+            // cycle's Integ Test dispatch(es) so the delta after (below) is
+            // this phase's own spend, not the whole run's. budget.spent()
+            // may be absent on an injected test double; that degrades to
+            // "not tracked" exactly like buildCostAnalysis()'s own total
+            // spend line already does, never a thrown error.
+            const integSpendBefore = typeof budget?.spent === 'function' ? budget.spent() : null;
+            integTestRunnerDispatchCount += 1;
             let integResult;
             // Set when the integ dispatch failed for an INFRASTRUCTURE reason
             // (empty_response / inactivity timeout / orphan-recovery timeout)
@@ -7761,6 +7807,16 @@ async function runSprintCycle(context) {
                 // `bugsFiled.length`.
                 integFailures.push({ cycle, notes: integResult.summary, bugsFiled: integResult.bugsFiled });
                 log(`Integration tests FAILED this cycle (C${cycle}, bugsFiled: ${integResult.bugsFiled.join(', ') || 'none'}): ${integResult.summary}`);
+            }
+            // apra-fleet-nwh.1: fold this cycle's Integ Test spend (dispatch
+            // plus any resume/retry inside the try/catch above) into the
+            // running total buildCostAnalysis() reports at Harvest time. A
+            // negative/NaN delta (a test double whose spent() does not
+            // monotonically increase) is clamped to 0 rather than corrupting
+            // the accumulator.
+            if (integSpendBefore !== null && typeof budget?.spent === 'function') {
+                const delta = budget.spent() - integSpendBefore;
+                if (Number.isFinite(delta) && delta > 0) integTestRunnerSpend += delta;
             }
             await updateDashboard();
         } else if (hasPlaybook && !deployedThisCycle) {
@@ -8323,7 +8379,10 @@ async function runSprintCycle(context) {
         finalOpenAtGoalCount: finalOpenAtGoal.length,
         regressionResult,
     });
-    const costAnalysis = buildCostAnalysis(budget);
+    const costAnalysis = buildCostAnalysis(budget, {
+        spend: integTestRunnerSpend,
+        dispatchCount: integTestRunnerDispatchCount,
+    });
     const harvesterPrompt = buildHarvesterPrompt({
         branch: validated.branch,
         baseBranch: validated.baseBranch,
