@@ -1252,6 +1252,101 @@ describe('MCP disconnect cleanup (T10)', () => {
   });
 });
 
+describe('confirmed stall aborts the in-flight dispatch (apra-fleet-3c9.2)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) {
+      inFlightAgents.delete(memberId);
+      getStallDetector().stallCheckList.delete(memberId);
+    }
+  });
+
+  // apra-fleet-3c9 (root cause of a 60.5-minute hung dispatch): before
+  // apra-fleet-3c9.1, the stall detector's onStall callback killed the remote
+  // pid but had no handle on the pending strategy.execCommand() promise, so a
+  // CONFIRMED stall still left the client waiting out its full
+  // deriveTimeoutMs()/max_total_s deadline. This test drives onStall directly
+  // (bypassing the real poll interval/threshold -- exactly as the bead
+  // describes: "simulates a confirmed stall ... asserts onStall's
+  // AbortController rejects/settles it promptly") against a fake
+  // RemoteStrategy whose execCommand hangs forever unless aborted. Against
+  // pre-fix code (no stallAbortController wired into onStall, or its signal
+  // not threaded into strategy.execCommand), this test hangs until vitest's
+  // own test timeout instead of resolving -- a clear, loud failure rather
+  // than a silent pass.
+  it('a confirmed stall settles the pending execCommand promptly via abort and returns a typed "stalled" error, never waiting out max_total_s', async () => {
+    const member = makeTestAgent({ friendlyName: 'confirmed-stall' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) => {
+        // Simulates a hung remote dispatch: this promise NEVER settles on its
+        // own -- only a fired abort signal can resolve it. If onStall's
+        // AbortController were not wired into this call's signal, this
+        // promise (and therefore the whole dispatch) would hang forever.
+        return new Promise<SSHExecResult>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
+        });
+      })
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    // A deliberately huge max_total_s: if a regression fell back to waiting
+    // out the client hard deadline instead of a prompt abort, this test would
+    // hang rather than pass -- proving the fix, not just a lucky short timer.
+    const promise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5, max_total_s: 3600 });
+
+    // Flush microtasks so executePrompt reaches the main execCommand call and
+    // registers this dispatch's stall-detector entry (stallDetector.add runs
+    // before the main dispatch, see execute-prompt.ts).
+    await vi.advanceTimersByTimeAsync(0);
+
+    const entry = getStallDetector().getEntry(memberId);
+    expect(entry).toBeDefined();
+    expect(typeof entry?.onStall).toBe('function');
+
+    // Simulate the poll loop confirming a stall (StallDetector._poll() calling
+    // entry.onStall() after the threshold elapses) -- directly, without
+    // waiting out any real/fake threshold timer ourselves.
+    entry?.onStall?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const result = await promise;
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'stalled' });
+    expect(resultText(result)).toContain('confirmed stall');
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
+  });
+
+  it('does not abort a live (non-stalled) dispatch -- onStall never fires, and the dispatch completes normally', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-stall-live-dispatch' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-no-stall', session_id: 's-no-stall' }), stderr: '', code: 0 })  // main: completes normally
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5, max_total_s: 3600 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(resultText(result)).toContain('ok-no-stall');
+    expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
+  });
+});
+
 describe('dispatch-exception retry (apra-fleet-02s.1)', () => {
   let memberId: string;
 
