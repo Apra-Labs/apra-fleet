@@ -820,6 +820,30 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
 
+  // apra-fleet-y8q.1: every retry below (dispatch-exception, stale-session,
+  // server-overloaded) re-dispatches with a FRESH session but used to reuse the
+  // SAME full timeoutMs/maxTotalMs as the original attempt -- so a single
+  // dispatch could burn up to ~2x max_total_s server-side (original attempt +
+  // one full-budget retry), well past what the client's deriveTimeoutMs()
+  // (packages/apra-fleet-client/src/client/api.mjs) budgets for the whole
+  // tools/call (max_total_s*1000 + a fixed grace margin). That let the
+  // client's hard timeout fire before the server's own retry-and-report path
+  // ever got a chance, hiding a clean typed server error behind a raw client
+  // transport timeout. Share ONE deadline budget across the original attempt
+  // and any single retry: cap a retry's maxTotalMs (and its inactivity
+  // timeoutMs, so it can't independently outlast the shared ceiling) to
+  // whatever remains of max_total_s since dispatchStartedAt, and skip the
+  // retry entirely once that budget is exhausted -- so total wall-clock time
+  // for this call never exceeds max_total_s, which is exactly what the client
+  // is prepared to wait for. When max_total_s is absent there is no hard
+  // ceiling to share, so retries keep their full timeout_s (unchanged,
+  // pre-existing behavior).
+  function retryBudget(): { timeoutMs: number; maxTotalMs: number | undefined; exhausted: boolean } {
+    if (maxTotalMs === undefined) return { timeoutMs, maxTotalMs: undefined, exhausted: false };
+    const remaining = Math.max(0, maxTotalMs - (Date.now() - dispatchStartedAt));
+    return { timeoutMs: Math.min(timeoutMs, remaining), maxTotalMs: remaining, exhausted: remaining <= 0 };
+  }
+
   // Agent file validation -- verify named agent exists before any CLI invocation
   if (input.agent) {
     const provName = provider.name;
@@ -998,11 +1022,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // session (that would run a context-dependent delta prompt with no
       // context). Let the exception surface as dispatch_failed instead.
       if (!allowFreshSessionFallback) throw dispatchErr;
+      // apra-fleet-y8q.1: no budget left to share with a retry (the original
+      // attempt already consumed the whole max_total_s) -- retrying here would
+      // just re-burn a fresh full budget past what the client is waiting for.
+      // Let the original exception surface instead of retrying blind.
+      const budget = retryBudget();
+      if (budget.exhausted) throw dispatchErr;
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
+      result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
     }
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
@@ -1027,27 +1057,37 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // recovery. An explicit session-id resume (string) deliberately does NOT --
     // its caller asserted context dependence, so a not-found id is terminal.
     if (result.code !== 0 && input.resume === true && agent.sessionId) {
-      scope.info(`[${resolvedModel}] retrying -- stale session`);
-      await tryKillPid(agent, strategy, cmds);
-      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
-      parsed = provider.parseResponse(result);
-      if (parsed.usage) _epUsage = parsed.usage;
+      // apra-fleet-y8q.1: share the remaining max_total_s budget with this
+      // retry too -- skip it outright once exhausted (see retryBudget above).
+      const staleBudget = retryBudget();
+      if (!staleBudget.exhausted) {
+        scope.info(`[${resolvedModel}] retrying -- stale session`);
+        await tryKillPid(agent, strategy, cmds);
+        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+        parsed = provider.parseResponse(result);
+        if (parsed.usage) _epUsage = parsed.usage;
+      }
     }
 
     // Server/overloaded error retry -- single attempt after delay. Skipped for
     // an explicit-id resume (apra-fleet-eft.78.1): the retry starts a fresh
     // session, which would discard the exact context the caller asked to resume.
     if (result.code !== 0 && allowFreshSessionFallback && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
-      scope.info(`[${resolvedModel}] retrying -- server overloaded`);
-      await tryKillPid(agent, strategy, cmds);
-      await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
-      parsed = provider.parseResponse(result);
-      if (parsed.usage) _epUsage = parsed.usage;
+      // apra-fleet-y8q.1: share the remaining max_total_s budget with this
+      // retry too -- skip it outright once exhausted (see retryBudget above).
+      const overloadBudget = retryBudget();
+      if (!overloadBudget.exhausted) {
+        scope.info(`[${resolvedModel}] retrying -- server overloaded`);
+        await tryKillPid(agent, strategy, cmds);
+        await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
+        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+        parsed = provider.parseResponse(result);
+        if (parsed.usage) _epUsage = parsed.usage;
+      }
     }
 
     _epExitCode = result.code;

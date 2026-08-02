@@ -1348,6 +1348,76 @@ describe('dispatch-exception retry (apra-fleet-02s.1)', () => {
   });
 });
 
+describe('shared retry deadline budget (apra-fleet-y8q.1)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  it("caps a dispatch-exception retry's maxTotalMs/timeoutMs to whatever remains of max_total_s since the original attempt started", async () => {
+    const member = makeTestAgent({ friendlyName: 'shared-budget-caps-retry' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(async () => {
+        // Simulate 60s of elapsed wall-clock time before the SSH inactivity
+        // exception fires, out of a 100s max_total_s budget.
+        vi.setSystemTime(new Date(Date.now() + 60_000));
+        throw new Error('inactivity timeout');
+      })
+      .mockImplementationOnce(async (_cmd: string, retryTimeoutMs?: number, retryMaxTotalMs?: number) => {
+        // Only ~40s of the original 100s max_total_s budget is left -- the
+        // retry must not get a fresh full 100s (or 1000s inactivity) budget.
+        expect(retryMaxTotalMs).toBeGreaterThan(0);
+        expect(retryMaxTotalMs).toBeLessThanOrEqual(40_000);
+        expect(retryTimeoutMs).toBeLessThanOrEqual(40_000);
+        return { stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 };
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: 100 });
+
+    expect(resultText(result)).toContain('ok-on-retry');
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it('skips the dispatch-exception retry entirely once the shared max_total_s budget is already exhausted', async () => {
+    const member = makeTestAgent({ friendlyName: 'shared-budget-exhausted' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(async () => {
+        // The original attempt already burned the entire 10s max_total_s
+        // budget by the time the inactivity exception fires.
+        vi.setSystemTime(new Date(Date.now() + 20_000));
+        throw new Error('inactivity timeout');
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile (finally block)
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: 10 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    expect(resultText(result)).toContain('inactivity timeout');
+    // 3 calls: writePromptFile + the one failed main call (no retry attempt,
+    // shared budget already exhausted) + deletePromptFile.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe('dispatch-exception retry -- process-tree termination on kill (apra-fleet-eft.13.4)', () => {
   let memberId: string;
 
