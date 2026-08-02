@@ -22,6 +22,7 @@ import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.j
 import { checkRunningInstance } from '../services/singleton.js';
 import { provisionAgents, type ProvisionResult } from '../services/agent-provisioner.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
+import { composePermissions } from './compose-permissions.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -384,6 +385,33 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   addAgent(tempAgent);
   logLine('register_member', `id=${tempAgent.id} name=${tempAgent.friendlyName} type=${tempAgent.agentType}`, tempAgent);
   writeStatusline();
+
+  // --- Auto-run compose_permissions for the member's role/tags (apra-fleet-5oo.1) ---
+  // register_member must not leave a member with an attribution-only settings
+  // stub: compose_permissions is the single source of truth for the member's
+  // composed permission allowlist, so it is run automatically here rather than
+  // relying on a separate manual step nobody is forced to take. Tags are
+  // already known at registration time; fall back to the 'doer' role when no
+  // doer/reviewer tag was supplied (matches compose_permissions' own default
+  // primary-mode resolution). Refusal is the only failure mode: if
+  // compose_permissions itself fails, the registration must NOT be reported as
+  // fully successful.
+  let composeResult: string;
+  try {
+    composeResult = await composePermissions({
+      member_id: tempAgent.id,
+      role: 'doer',
+      tags: tempAgent.tags,
+    });
+  } catch (e: any) {
+    composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+  }
+  if (!composeResult.startsWith('✅')) {
+    // Strip any leading non-ASCII status glyph from the underlying tool's
+    // message so this hard-failure report stays ASCII (repo convention).
+    const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');
+    return `ERROR: member not provisioned -- "${tempAgent.friendlyName}" was registered but compose_permissions failed: ${asciiDetail}`;
+  }
 
   // Block global apra-fleet MCP + skills inside local agy member workspaces
   if (isLocal && (input.llm_provider ?? 'claude') === 'agy') {
