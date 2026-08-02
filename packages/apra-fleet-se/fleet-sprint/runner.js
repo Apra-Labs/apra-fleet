@@ -7619,11 +7619,29 @@ async function runSprintCycle(context) {
                 // and files bug beads -- so it must D-push those mutations
                 // (pushBeads: true), a D-push with no git push. G-pull before,
                 // no-op G-push after.
-                // The runner spends roughly one turn per liveness poll across
-                // long-running suites, so the budget has to be well above a
-                // one-shot prompt's; the resume ladder below doubles from here if
-                // that is still not enough.
-                const INTEG_TEST_MAX_TURNS = 200;
+                // apra-fleet-63x.3: sizing the integ turn ceiling so it is NOT
+                // the routinely-binding constraint.
+                //
+                // Intended design: on a run that is actually making progress the
+                // WALL-CLOCK ceiling (max_total_s == INTEG_MAX_TOTAL_S, up to 2h
+                // at the default) should be what bounds the dispatch, never the
+                // turn count. A compliant runner spends ~1 turn per liveness poll
+                // (integ-test-runner.md caps polling at ~1 per 2 min), but a real
+                // per-feature pass also spends fast, sub-poll turns -- bd show /
+                // bd dep list, reading test output, re-checking a backgrounded
+                // suite -- so the true turn-spend rate over a multi-feature cycle
+                // is several times the poll floor. At 200 (the pre-fix value)
+                // those chatty-but-legitimate runs exhausted max_turns before the
+                // time budget, the false exhaustion apra-fleet-63x tracks (4/4
+                // historical runs). 300 gives the wall-clock ceiling the headroom
+                // to bind first on any progressing run, so a max_turns exhaustion
+                // now signals genuine runaway scope rather than a normal long
+                // cycle. Paired with the tightened scope/turn-economy guidance in
+                // integ-test-runner.md (one feature at a time, no redundant suite
+                // re-runs, respect the poll cadence) a normal cycle needs far
+                // fewer than 300 turns. The resume ladder below still doubles from
+                // here (to 600) when a run legitimately needs more.
+                const INTEG_TEST_MAX_TURNS = 300;
                 const integDispatchOpts = {
                     member_name: getMemberForRole('integ-test-runner'),
                     agentType: 'integ-test-runner',
