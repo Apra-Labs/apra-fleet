@@ -776,6 +776,41 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // apra-fleet-2l4.2: the SAME terminal-but-lingering scenario as the
+    // controller-level tests above, but driven through the REAL HTTP route
+    // (registerSprintRoutes + supervisor.handleRequest) -- the bug this whole
+    // streak fixes was reported as a raw 500/ECONNREFUSED at the HTTP
+    // boundary, so the regression coverage must prove the boundary itself,
+    // not just that the controller method's return value looks right in
+    // isolation. proxyState is stubbed to THROW (simulating the real
+    // ECONNREFUSED a closed viewer port produces) so a regressed guard
+    // (hasTerminalState silently bypassed, proxyState reached anyway) would
+    // surface as an actual 500 here, not a masked pass.
+    test('apra-fleet-2l4.2: GET /api/sprints/:id over HTTP for a terminal-but-lingering child is a clean 200, never 500/ECONNREFUSED', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => ({ terminalReason: 'FAILED' }),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9200'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints/s1'), res);
+        assert.equal(res.statusCode, 200, 'must be a clean 2xx, not a 500 from a doomed proxy into the closed port');
+        const payload = payloadOf(res);
+        // A structured status payload -- NOT the generic { error: ... }
+        // internal-error shape the supervisor's 500 isolation wrapper emits.
+        assert.equal(payload.live, false);
+        assert.equal(payload.terminal, true);
+        assert.ok(payload.state, 'must return a structured status payload, not the generic internal-error object');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('GET /api/sprints lists live reservations with resolved ports', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
@@ -838,6 +873,58 @@ describe('api -- POST /api/sprints/:id/stop proxy', () => {
         assert.deepEqual(out, { sprintId: 's1', status: 'already-terminal', child: null });
         assert.equal(resolvePortCalled, false, 'resolvePort must not be called once hasTerminalState reports terminal');
         assert.equal(proxyStopCalled, false, 'proxyStop must not be called (no doomed proxy into a closed port)');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-2l4.2: the SAME terminal-but-lingering scenario as above,
+    // driven through the REAL HTTP route (registerSprintRoutes +
+    // supervisor.handleRequest) instead of calling controller.stopSprint()
+    // directly -- the bug this streak fixes was reported as a raw
+    // 500/ECONNREFUSED at the HTTP boundary. proxyStop is stubbed to THROW
+    // (simulating the real ECONNREFUSED a closed viewer port produces) so a
+    // regressed guard would surface here as an actual 500, not a masked pass.
+    test('apra-fleet-2l4.2: POST /api/sprints/:id/stop over HTTP for a terminal-but-lingering child is a clean 200 no-op, never 500/ECONNREFUSED', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => ({ terminalReason: 'FAILED' }),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9200'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop'), res);
+        assert.equal(res.statusCode, 200, 'must be a clean 2xx no-op, not a 500 from a doomed proxy into the closed port');
+        assert.deepEqual(payloadOf(res), { sprintId: 's1', status: 'already-terminal', child: null });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // Control case: a genuinely live child (hasTerminalState falsy) must
+    // still be proxied/stopped exactly as before over the real HTTP route --
+    // proves the terminal-lingering guard above is not a blanket short-circuit.
+    test('apra-fleet-2l4.2: POST /api/sprints/:id/stop over HTTP still proxies a genuinely live child (control case, no regression)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        let stoppedPort = null;
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async (port) => { stoppedPort = port; return { statusCode: 200 }; },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(stoppedPort, 9200);
+        assert.equal(payloadOf(res).status, 'stopping');
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
