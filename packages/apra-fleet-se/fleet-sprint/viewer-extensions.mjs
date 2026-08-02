@@ -107,6 +107,26 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     sprintTasks = sprintTasks || [];
     backlogTasks = backlogTasks || [];
+
+    // apra-fleet-eft.52.1.3: a server-computed `placement` flag ('sprint' |
+    // 'backlog') on a task is AUTHORITATIVE for which section it renders in --
+    // runner.js decides Sprint vs Backlog by goal membership (goal-priority
+    // band + a blocks-edge exception), not this browser-side view, and never
+    // by hiding a row with CSS. When any task carries `placement`, re-derive
+    // both section lists from the flag so a below-goal top-level item lands in
+    // the Backlog container even if it arrived in the sprintTasks array (and
+    // vice versa). Tasks with no `placement` (every pre-existing caller and
+    // fixture) are left in whichever array the caller passed them -- this
+    // normalization is a no-op for them, so behavior is unchanged.
+    const anyPlacement = sprintTasks.some((t) => t && t.placement) || backlogTasks.some((t) => t && t.placement);
+    if (anyPlacement) {
+        const all = sprintTasks.concat(backlogTasks);
+        // A flag-less item defaults to Sprint (in-scope work of unknown rank
+        // is sprint work, mirroring runner.js's server-side default).
+        sprintTasks = all.filter((t) => t && t.placement !== 'backlog');
+        backlogTasks = all.filter((t) => t && t.placement === 'backlog');
+    }
+
     // Accept a Set (the browser-side embed's long-lived collapse state) or
     // a plain array (e.g. a future caller reconstructing it from
     // persisted/serialized state) -- never throws on either shape.

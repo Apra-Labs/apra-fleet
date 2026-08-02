@@ -153,6 +153,110 @@ export function goalPriorityMax(goal) {
     return `P${worst}`;
 }
 
+// apra-fleet-eft.52.1.3: server-side goal-membership placement for the
+// fleet-sprint dashboard's Sprint vs Backlog split. The viewer must NOT
+// decide this itself (no CSS display:none hiding in the browser, no
+// priority-only guess): goal membership is graph knowledge -- it needs the
+// full dependency edge set to honor the blocks-edge exception below -- so it
+// is computed here, in the state payload, and every task is returned tagged
+// with a `placement` field ('sprint' | 'backlog') the viewer consumes
+// verbatim.
+//
+// Rules, applied to TOP-LEVEL items only (an item whose `parent` points at no
+// other item in the dataset -- same "only an in-dataset parent nests" rule
+// the viewer's containment tree uses; descendants inherit their root's
+// placement):
+//
+//   - A top-level item is a SPRINT item unless it is DEFINITIVELY below the
+//     sprint's goal band -- i.e. it has a finite numeric priority strictly
+//     greater (numerically) than goalPriorityMax(goal). An item with no /
+//     non-numeric priority is NOT demoted (it is in-scope sprint work of
+//     unknown rank, not deliberately-deferred backlog).
+//   - EXCEPTION (visual continuity): a below-goal top-level item connected to
+//     an in-goal top-level item by a 'blocks'-type dependency edge (in either
+//     direction) stays a SPRINT item, so it renders alongside the sprint
+//     subtree it blocks / is blocked by rather than being split off into the
+//     Backlog section.
+//
+// Descendants of a top-level item always inherit that item's placement, so a
+// whole subtree lands in one section.
+/**
+ * @param {Array<{id: (string|number), parent?: (string|number), priority?: number, dependencies?: Array<{depends_on_id: (string|number), type: string}>}>} tasks - scoped bead objects
+ * @param {string} goal - sprint goal band, e.g. 'P1/P2'
+ * @returns {{ sprintTasks: object[], backlogTasks: object[] }} the same tasks, each tagged with a `placement` field, partitioned by section
+ */
+export function partitionByGoalMembership(tasks, goal) {
+    const list = Array.isArray(tasks) ? tasks : [];
+    const byId = new Map();
+    list.forEach((t) => {
+        if (t && t.id !== undefined && t.id !== null) byId.set(String(t.id), t);
+    });
+
+    const hasInDatasetParent = (t) => {
+        const p = t && t.parent;
+        return p !== undefined && p !== null && byId.has(String(p));
+    };
+
+    // Walk `parent` up to the top-level in-dataset ancestor (cycle-guarded).
+    const rootOf = (t) => {
+        let cur = t;
+        const seen = new Set();
+        while (hasInDatasetParent(cur) && !seen.has(String(cur.id))) {
+            seen.add(String(cur.id));
+            cur = byId.get(String(cur.parent));
+        }
+        return cur;
+    };
+
+    const goalMaxNum = Number(goalPriorityMax(goal).slice(1));
+    const isBelowGoal = (t) =>
+        typeof t.priority === 'number' && Number.isFinite(t.priority) && t.priority > goalMaxNum;
+
+    const topLevel = list.filter((t) => t && !hasInDatasetParent(t));
+    // In-goal top-level items: everything not definitively below the goal band.
+    const inGoalTopIds = new Set(
+        topLevel.filter((t) => !isBelowGoal(t)).map((t) => String(t.id))
+    );
+
+    // Sprint set starts as the in-goal top-levels, then absorbs below-goal
+    // top-levels connected to an in-goal top-level by a 'blocks' edge, in
+    // either direction.
+    const sprintTopIds = new Set(inGoalTopIds);
+    topLevel.forEach((t) => {
+        const id = String(t.id);
+        if (sprintTopIds.has(id)) return;
+        // Outgoing: this below-goal top-level depends_on (is blocked by) an
+        // in-goal top-level -> keep it in Sprint.
+        const deps = Array.isArray(t.dependencies) ? t.dependencies : [];
+        if (deps.some((d) => d && d.type === 'blocks' && inGoalTopIds.has(String(d.depends_on_id)))) {
+            sprintTopIds.add(id);
+        }
+    });
+    // Incoming: an in-goal top-level depends_on (is blocked by) a below-goal
+    // top-level -> keep that below-goal item in Sprint too.
+    topLevel.forEach((t) => {
+        if (!inGoalTopIds.has(String(t.id))) return;
+        const deps = Array.isArray(t.dependencies) ? t.dependencies : [];
+        deps.forEach((d) => {
+            if (!d || d.type !== 'blocks') return;
+            const other = byId.get(String(d.depends_on_id));
+            if (other && !hasInDatasetParent(other)) sprintTopIds.add(String(other.id));
+        });
+    });
+
+    const sprintTasks = [];
+    const backlogTasks = [];
+    list.forEach((t) => {
+        if (!t) return;
+        const root = rootOf(t);
+        const placement = sprintTopIds.has(String(root.id)) ? 'sprint' : 'backlog';
+        const tagged = { ...t, placement };
+        if (placement === 'backlog') backlogTasks.push(tagged);
+        else sprintTasks.push(tagged);
+    });
+    return { sprintTasks, backlogTasks };
+}
+
 // Every status that means "not yet done" for exit-condition purposes --
 // deliberately NOT `--ready`, which only reflects "dispatchable right now" and
 // silently excludes blocked and orphaned in_progress beads, so an empty
@@ -5682,7 +5786,19 @@ async function runSprintCycle(context) {
         }
 
         if (typeof publishState === 'function') {
-            publishState('beads', { sprintTasks });
+            // apra-fleet-eft.52.1.3: split the scoped tree into Sprint vs
+            // Backlog SERVER-SIDE by goal membership (goal-priority band + a
+            // blocks-edge exception for below-goal items wired to in-goal
+            // ones). Each task carries a `placement` flag the viewer consumes
+            // verbatim -- placement is never a browser-side CSS/priority
+            // guess. `backlogTasks` is only added to the payload when a
+            // below-goal item actually exists in scope, so a sprint whose
+            // whole tree is in-goal keeps publishing sprintTasks alone (the
+            // viewer/detailLookup both tolerate a missing backlogTasks key).
+            const { sprintTasks: sprintPlaced, backlogTasks } = partitionByGoalMembership(sprintTasks, validated.goal);
+            const payload = { sprintTasks: sprintPlaced };
+            if (backlogTasks.length > 0) payload.backlogTasks = backlogTasks;
+            publishState('beads', payload);
         }
     }
 
