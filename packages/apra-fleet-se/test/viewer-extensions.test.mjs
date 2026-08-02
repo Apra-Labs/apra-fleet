@@ -286,13 +286,36 @@ describe('renderBeadsHtml: status/type badges are defensive (never blank, never 
 });
 
 describe('renderBeadsHtml: Sprint / Backlog two-section layout', () => {
-    test('always renders both a Sprint and a Backlog section header, even when both are empty', () => {
+    // apra-fleet-eft.89: a section header + its body only render when that
+    // section actually has at least one task -- an empty list skips the
+    // section entirely (no header, no "No sprint tasks."/"No backlog
+    // items." placeholder row), rather than always showing both.
+    test('when both sprintTasks and backlogTasks are empty, neither section header renders, but the output stays well-formed', () => {
         assert.doesNotThrow(() => renderBeadsHtml());
         const html = renderBeadsHtml();
+        assert.ok(!html.includes('Sprint'));
+        assert.ok(!html.includes('Backlog'));
+        assert.ok(!html.includes('No sprint tasks.'));
+        assert.ok(!html.includes('No backlog items.'));
+        // The 6-column header row and table wrapper still always render.
+        assert.ok(html.includes('<th style="padding: 8px;">ID</th>'));
+        assert.ok(html.includes('<table'));
+    });
+
+    test('sprintTasks populated, backlogTasks empty: only the Sprint section renders, no Backlog header/row', () => {
+        const html = renderBeadsHtml([{ id: 'S1', title: '[impl] in the sprint', status: 'open', dependencies: [] }], []);
         assert.ok(html.includes('Sprint'));
+        assert.ok(!html.includes('Backlog'));
+        assert.ok(!html.includes('No backlog items.'));
+        assert.ok(html.includes('#S1'));
+    });
+
+    test('backlogTasks populated, sprintTasks empty: only the Backlog section renders, no Sprint header/row', () => {
+        const html = renderBeadsHtml([], [{ id: 'B1', title: '[impl] in the backlog', status: 'open' }]);
+        assert.ok(!html.includes('Sprint'));
         assert.ok(html.includes('Backlog'));
-        assert.ok(html.includes('No sprint tasks.'));
-        assert.ok(html.includes('No backlog items.'));
+        assert.ok(!html.includes('No sprint tasks.'));
+        assert.ok(html.includes('#B1'));
     });
 
     test('backlog items render flat (no indentation-based nesting) and sorted by priority then id', () => {
@@ -406,10 +429,11 @@ describe('renderBeadsHtml: collapsible/expandable tree nodes and sections (apra-
     test('a childless node renders no toggle control of its own (just an invisible spacer)', () => {
         const html = renderBeadsHtml([{ id: 'leaf', title: 'no children here', status: 'open' }]);
         assert.ok(!html.includes('data-toggle-id="leaf"'));
-        // The two section headers (Sprint/Backlog) always carry their own
-        // toggle regardless of content -- exactly 2 `.tree-toggle` controls
-        // exist here, both belonging to the sections, none to the leaf node.
-        assert.strictEqual((html.match(/class="tree-toggle"/g) || []).length, 2);
+        // Only the Sprint section has content here (backlogTasks is empty,
+        // so the Backlog section is skipped entirely per apra-fleet-eft.89)
+        // -- exactly 1 `.tree-toggle` control exists, belonging to the
+        // Sprint section header, none to the leaf node.
+        assert.strictEqual((html.match(/class="tree-toggle"/g) || []).length, 1);
     });
 
     test('a node id present in collapsedIds renders its [+] toggle and hides its children rows entirely', () => {

@@ -39,11 +39,20 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * rows -- this is expected, not an error, whenever a sprint targets more
  * than one independent top-level item at once.
  *
- * The panel always shows two top-level sections: "Sprint" (the containment
+ * The panel shows up to two top-level sections: "Sprint" (the containment
  * tree above, built from `sprintTasks`) and "Backlog" (`backlogTasks` --
  * open/deferred beads the sprint is certainly NOT addressing this run,
  * which may belong to an entirely different epic or never have gone
- * through a planning phase at all).
+ * through a planning phase at all). Each section (header + body) is
+ * rendered ONLY when that section has at least one task (apra-fleet-eft.89):
+ * an empty `sprintTasks`/`backlogTasks` array skips its section entirely
+ * rather than showing a header with a "No sprint tasks."/"No backlog
+ * items." placeholder row. This lets a caller that only ever supplies one
+ * of the two lists (e.g. the supervisor's viewer, which always calls
+ * `renderBeadsHtml([], tasks, ...)`) render a single, focused section with
+ * no always-empty sibling section cluttering the panel. The 6-column
+ * header row and outer `<table>` wrapper always render regardless of which
+ * (if either) section has content.
  *
  * apra-fleet-k7s: unlike Sprint (nested by `parent` containment), Backlog
  * has no shared parent/epic to nest under -- what it DOES sometimes have is
@@ -68,9 +77,10 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * well-formed bd data, but is not assumed) guarantees every task in the
  * input is rendered exactly once, never silently dropped.
  *
- * apra-fleet-4p5: every tree node that has children (and the two
- * top-level "Sprint"/"Backlog" section headers themselves) renders a
- * `[-]`/`[+]` toggle (a `.tree-toggle` span carrying a `data-toggle-id`,
+ * apra-fleet-4p5: every tree node that has children (and either top-level
+ * "Sprint"/"Backlog" section header that is actually rendered, per the
+ * conditional-section rule above) renders a `[-]`/`[+]` toggle (a
+ * `.tree-toggle` span carrying a `data-toggle-id`,
  * same round-trip-through-the-DOM pattern the `bead-desc` `data-bead-id`
  * attribute already uses) so a user can fold away a subtree. A node id in
  * `collapsedIds` is rendered collapsed: its own row still shows (with the
@@ -463,12 +473,18 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     // not just direct children -- there is no safety-net concern here
     // (unlike node-level collapse) since a section's rows have nowhere
     // else in the output they could spuriously reappear.
+    //
+    // apra-fleet-eft.89: a section (header + body) is only emitted when it
+    // has at least one task -- an empty sprintTasks/backlogTasks list skips
+    // that entire section (no header, no "No sprint tasks."/"No backlog
+    // items." placeholder row), rather than always rendering both. This
+    // keeps a caller that only ever supplies one of the two lists (e.g. the
+    // supervisor's renderBeadsHtml([], tasks, ...)) from showing an
+    // always-empty sibling section.
     const sprintCollapsed = collapsedIds.has('section:sprint');
-    html += sectionHeaderRow('Sprint', 'section:sprint', sprintCollapsed);
-    if (!sprintCollapsed) {
-        if (sprintTasks.length === 0) {
-            html += emptySectionRow('No sprint tasks.');
-        } else {
+    if (sprintTasks.length > 0) {
+        html += sectionHeaderRow('Sprint', 'section:sprint', sprintCollapsed);
+        if (!sprintCollapsed) {
             const rendered = new Set();
             roots.forEach((rootId) => {
                 html += renderNode(rootId, 0, rendered);
@@ -485,11 +501,9 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     }
 
     const backlogCollapsed = collapsedIds.has('section:backlog');
-    html += sectionHeaderRow('Backlog', 'section:backlog', backlogCollapsed);
-    if (!backlogCollapsed) {
-        if (backlogTasks.length === 0) {
-            html += emptySectionRow('No backlog items.');
-        } else {
+    if (backlogTasks.length > 0) {
+        html += sectionHeaderRow('Backlog', 'section:backlog', backlogCollapsed);
+        if (!backlogCollapsed) {
             // Roots (items with no in-set blocker, or whose blocker isn't
             // part of this backlog dataset) are sorted priority-then-id for
             // stable, scannable ordering; any item nested under a blocker
@@ -509,6 +523,14 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
                 }
             });
         }
+    }
+
+    // Both lists empty: neither section rendered above, so the table would
+    // otherwise be just the 6-column header row with no body at all. That
+    // is well-formed on its own, but a single graceful placeholder row
+    // reads better than a header with nothing under it.
+    if (sprintTasks.length === 0 && backlogTasks.length === 0) {
+        html += emptySectionRow('No tasks to display.');
     }
 
     html += '</table>';
