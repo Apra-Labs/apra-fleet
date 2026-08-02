@@ -21,6 +21,6 @@
   "author": "Apra Labs",
   "license": "Apache-2.0",
   "dependencies": {
-    "undici": "^8.7.0"
+    "undici": "^7.29.0"
   }
 }

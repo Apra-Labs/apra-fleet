@@ -177,6 +177,19 @@
 // Grace margin added on top of the payload's own timeout hint (timeout_s /
 // max_total_s) so the client doesn't race the server's own deadline -- the
 // server should have a chance to reply with its own timeout/error first.
+//
+// This single-budget (max_total_s * 1) + grace shape relies on the server
+// (src/tools/execute-prompt.ts, apra-fleet-y8q.1) sharing ONE max_total_s
+// deadline budget across an original dispatch attempt AND any single retry it
+// runs on its own (e.g. the fresh-session retry after an SSH inactivity
+// exception) -- a retry's own maxTotalMs/timeoutMs is capped to whatever
+// remains of max_total_s since the dispatch started, and skipped entirely
+// once that budget is exhausted. Without that server-side sharing, a retry
+// could burn a second full max_total_s budget and the client's hard timeout
+// here would fire before the server's own clean retry-and-report path ever
+// gets a chance, surfacing a raw client transport timeout instead of the
+// server's typed error. Do not widen this to max_total_s * 2 unless that
+// server-side sharing invariant is removed.
 const TIMEOUT_GRACE_MS = 30 * 1000;
 
 /**
@@ -185,6 +198,10 @@ const TIMEOUT_GRACE_MS = 30 * 1000;
  * (an inactivity timeout) when both are present, then adds a grace margin.
  * Returns undefined when neither hint is present, letting McpClient fall
  * back to its own conservative default (never infinite).
+ *
+ * See the TIMEOUT_GRACE_MS comment above: this budget is only sufficient
+ * because the server shares a single max_total_s deadline across an attempt
+ * and its own internal retry, rather than granting each a fresh full budget.
  *
  * @param {{ max_total_s?: number, timeout_s?: number }} payload
  * @returns {number | undefined}

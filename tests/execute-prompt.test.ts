@@ -14,6 +14,21 @@ import { setBudget, _resetBudgetState } from '../src/services/budget-awareness.j
 import { recordSessionUsage, _resetSessionUsage, DEFAULT_SIZE_BUCKET_TOKENS } from '../src/services/context-admission.js';
 import { sessionRegistry } from '../src/services/session-registry.js';
 import { localWorkspaceId } from '../src/services/token-issuer.js';
+// apra-fleet-63x.2: the same pricing function FleetWorkflow.agent() calls
+// (packages/apra-fleet-workflow/src/workflow/index.mjs's _resolveCost ->
+// calculateCost) to turn a dispatch's reported usage into a real budget-
+// tracked cost figure -- imported directly (relative path, not the package's
+// "exports" map, which does not expose this submodule) so this test can
+// prove the fix all the way through pricing, not just that a `usage` field
+// exists on the structured error.
+import { calculateCost } from '../packages/apra-fleet-workflow/src/workflow/pricing.mjs';
+// apra-fleet-y8q.2: the client-side timeout-derivation function
+// (packages/apra-fleet-client/src/client/api.mjs) whose sufficiency depends
+// entirely on the server sharing one max_total_s deadline budget across an
+// attempt and its retry (apra-fleet-y8q.1) -- imported here so the test can
+// pin the client formula and the server's real retry-budget behavior
+// together, not just each in isolation.
+import { deriveTimeoutMs } from '@apralabs/apra-fleet-client';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -1252,6 +1267,101 @@ describe('MCP disconnect cleanup (T10)', () => {
   });
 });
 
+describe('confirmed stall aborts the in-flight dispatch (apra-fleet-3c9.2)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) {
+      inFlightAgents.delete(memberId);
+      getStallDetector().stallCheckList.delete(memberId);
+    }
+  });
+
+  // apra-fleet-3c9 (root cause of a 60.5-minute hung dispatch): before
+  // apra-fleet-3c9.1, the stall detector's onStall callback killed the remote
+  // pid but had no handle on the pending strategy.execCommand() promise, so a
+  // CONFIRMED stall still left the client waiting out its full
+  // deriveTimeoutMs()/max_total_s deadline. This test drives onStall directly
+  // (bypassing the real poll interval/threshold -- exactly as the bead
+  // describes: "simulates a confirmed stall ... asserts onStall's
+  // AbortController rejects/settles it promptly") against a fake
+  // RemoteStrategy whose execCommand hangs forever unless aborted. Against
+  // pre-fix code (no stallAbortController wired into onStall, or its signal
+  // not threaded into strategy.execCommand), this test hangs until vitest's
+  // own test timeout instead of resolving -- a clear, loud failure rather
+  // than a silent pass.
+  it('a confirmed stall settles the pending execCommand promptly via abort and returns a typed "stalled" error, never waiting out max_total_s', async () => {
+    const member = makeTestAgent({ friendlyName: 'confirmed-stall' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) => {
+        // Simulates a hung remote dispatch: this promise NEVER settles on its
+        // own -- only a fired abort signal can resolve it. If onStall's
+        // AbortController were not wired into this call's signal, this
+        // promise (and therefore the whole dispatch) would hang forever.
+        return new Promise<SSHExecResult>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
+        });
+      })
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    // A deliberately huge max_total_s: if a regression fell back to waiting
+    // out the client hard deadline instead of a prompt abort, this test would
+    // hang rather than pass -- proving the fix, not just a lucky short timer.
+    const promise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5, max_total_s: 3600 });
+
+    // Flush microtasks so executePrompt reaches the main execCommand call and
+    // registers this dispatch's stall-detector entry (stallDetector.add runs
+    // before the main dispatch, see execute-prompt.ts).
+    await vi.advanceTimersByTimeAsync(0);
+
+    const entry = getStallDetector().getEntry(memberId);
+    expect(entry).toBeDefined();
+    expect(typeof entry?.onStall).toBe('function');
+
+    // Simulate the poll loop confirming a stall (StallDetector._poll() calling
+    // entry.onStall() after the threshold elapses) -- directly, without
+    // waiting out any real/fake threshold timer ourselves.
+    entry?.onStall?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const result = await promise;
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'stalled' });
+    expect(resultText(result)).toContain('confirmed stall');
+    expect(inFlightAgents.has(memberId)).toBe(false);
+    expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
+  });
+
+  it('does not abort a live (non-stalled) dispatch -- onStall never fires, and the dispatch completes normally', async () => {
+    const member = makeTestAgent({ friendlyName: 'no-stall-live-dispatch' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ result: 'ok-no-stall', session_id: 's-no-stall' }), stderr: '', code: 0 })  // main: completes normally
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5, max_total_s: 3600 });
+
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(resultText(result)).toContain('ok-no-stall');
+    expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
+  });
+});
+
 describe('dispatch-exception retry (apra-fleet-02s.1)', () => {
   let memberId: string;
 
@@ -1345,6 +1455,173 @@ describe('dispatch-exception retry (apra-fleet-02s.1)', () => {
     // 3 calls: writePromptFile + the one failed main call (no retry attempt) +
     // deletePromptFile in the finally block.
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('shared retry deadline budget (apra-fleet-y8q.1)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  it("caps a dispatch-exception retry's maxTotalMs/timeoutMs to whatever remains of max_total_s since the original attempt started", async () => {
+    const member = makeTestAgent({ friendlyName: 'shared-budget-caps-retry' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(async () => {
+        // Simulate 60s of elapsed wall-clock time before the SSH inactivity
+        // exception fires, out of a 100s max_total_s budget.
+        vi.setSystemTime(new Date(Date.now() + 60_000));
+        throw new Error('inactivity timeout');
+      })
+      .mockImplementationOnce(async (_cmd: string, retryTimeoutMs?: number, retryMaxTotalMs?: number) => {
+        // Only ~40s of the original 100s max_total_s budget is left -- the
+        // retry must not get a fresh full 100s (or 1000s inactivity) budget.
+        expect(retryMaxTotalMs).toBeGreaterThan(0);
+        expect(retryMaxTotalMs).toBeLessThanOrEqual(40_000);
+        expect(retryTimeoutMs).toBeLessThanOrEqual(40_000);
+        return { stdout: JSON.stringify({ result: 'ok-on-retry', session_id: 's-retry' }), stderr: '', code: 0 };
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: 100 });
+
+    expect(resultText(result)).toContain('ok-on-retry');
+    expect(result.structuredContent).not.toMatchObject({ isError: true });
+    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+  });
+
+  it('skips the dispatch-exception retry entirely once the shared max_total_s budget is already exhausted', async () => {
+    const member = makeTestAgent({ friendlyName: 'shared-budget-exhausted' });
+    memberId = member.id;
+    addAgent(member);
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(async () => {
+        // The original attempt already burned the entire 10s max_total_s
+        // budget by the time the inactivity exception fires.
+        vi.setSystemTime(new Date(Date.now() + 20_000));
+        throw new Error('inactivity timeout');
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile (finally block)
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: 10 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+    expect(resultText(result)).toContain('inactivity timeout');
+    // 3 calls: writePromptFile + the one failed main call (no retry attempt,
+    // shared budget already exhausted) + deletePromptFile.
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('client timeout budget covers the shared server-side retry budget (apra-fleet-y8q.2)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  // apra-fleet-y8q.1 made the server share ONE max_total_s deadline budget
+  // across an original attempt and its retry, capping total server-side
+  // wall-clock time at max_total_s -- not the pre-fix ~2x max_total_s.
+  // deriveTimeoutMs (packages/apra-fleet-client/src/client/api.mjs) only adds
+  // a fixed 30s grace margin on top of max_total_s*1000, so it is sufficient
+  // ONLY because of that shared-budget invariant. Pin this for representative
+  // max_total_s values: the client's derived deadline always covers the
+  // server's actual (shared-budget) worst case, with margin to spare.
+  it.each([10, 60, 300, 900, 3600, 7200])(
+    'client deadline covers the shared-budget server worst case for max_total_s=%i',
+    (maxTotalS) => {
+      const sharedBudgetWorstCaseMs = maxTotalS * 1000; // apra-fleet-y8q.1: one shared budget
+      const clientDeadlineMs = deriveTimeoutMs({ max_total_s: maxTotalS });
+
+      expect(clientDeadlineMs).toBeGreaterThan(sharedBudgetWorstCaseMs);
+    }
+  );
+
+  // The fixed 30s grace margin alone is NOT enough to cover a full second
+  // retry budget once max_total_s grows past it -- proving the client relies
+  // on the server's shared-budget invariant (apra-fleet-y8q.1), not an
+  // oversized client margin, to stay safe. Restricted to max_total_s values
+  // where the old unshared ~2x worst case actually exceeds the 30s margin
+  // (below that, even the old worst case happened to fit -- not a meaningful
+  // regression pin).
+  it.each([60, 300, 900, 3600, 7200])(
+    'client deadline would NOT have covered the old unshared ~2x worst case for max_total_s=%i',
+    (maxTotalS) => {
+      const oldUnsharedWorstCaseMs = maxTotalS * 2 * 1000; // pre-fix: a full second retry budget
+      const clientDeadlineMs = deriveTimeoutMs({ max_total_s: maxTotalS });
+
+      expect(clientDeadlineMs).toBeLessThan(oldUnsharedWorstCaseMs);
+    }
+  );
+
+  // End-to-end: drive the REAL executePrompt() through an inactivity retry
+  // that exhausts the shared max_total_s budget (apra-fleet-y8q.1's
+  // retryBudget() skips the retry once exhausted), and assert the server's
+  // typed dispatch_failed error comes back well within the client's
+  // deriveTimeoutMs-derived window -- i.e. a real caller would see a clean
+  // typed error, not a raw client-side McpClient TIMEOUT rejection. Fails
+  // against pre-apra-fleet-y8q.1 code: the unconditional retry would consume
+  // a second full max_total_s budget (mockExecCommand's queue would also be
+  // exhausted, since this test supplies none for a retry attempt), pushing
+  // total elapsed server time past deriveTimeoutMs's window.
+  it('an inactivity-retry that exhausts the shared budget returns the typed dispatch_failed error within the client-derived timeout window, not a raw timeout (apra-fleet-y8q.2)', async () => {
+    const member = makeTestAgent({ friendlyName: 'y8q2-exhausted-within-client-budget' });
+    memberId = member.id;
+    addAgent(member);
+
+    const maxTotalS = 100;
+    const start = Date.now();
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(async () => {
+        // The original attempt burns the ENTIRE max_total_s budget before the
+        // SSH inactivity exception fires -- the worst case the shared-budget
+        // fix caps total server time to.
+        vi.setSystemTime(new Date(Date.now() + maxTotalS * 1000));
+        throw new Error('inactivity timeout');
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile (retry skipped -- shared budget exhausted)
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: maxTotalS });
+
+    // The server surfaced its own typed dispatch_failed error...
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+
+    // ...and did so within the client's derived timeout budget, not after it
+    // -- a real client using deriveTimeoutMs() would have received this
+    // clean typed error instead of giving up first with a raw TIMEOUT.
+    const elapsedMs = Date.now() - start;
+    const clientDeadlineMs = deriveTimeoutMs({ max_total_s: maxTotalS });
+    expect(elapsedMs).toBeLessThan(clientDeadlineMs);
+    // Sanity: this really did hit (not comfortably undershoot) the shared
+    // budget ceiling, proving the assertion above is a real race rather than
+    // trivially true because nothing took any time.
+    expect(elapsedMs).toBeGreaterThanOrEqual(maxTotalS * 1000);
   });
 });
 
@@ -1468,6 +1745,110 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
     expect(resultText(result)).toContain('max_turns');
     expect(resultText(result)).not.toContain('/login');
+  });
+
+  // apra-fleet-63x.1: a max_turns-exhausted CLI invocation still ran real
+  // turns and burned real tokens before hitting its ceiling -- the parsed
+  // usage figure must reach the caller so FleetWorkflow.agent() can price and
+  // record the partial spend instead of silently under-counting it as $0.
+  it('carries partial usage on a max_turns_exhausted structured error rather than dropping it (apra-fleet-63x.1)', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-with-usage' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt-usage',
+          usage: { input_tokens: 12345, output_tokens: 6789 },
+        }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({
+      isError: true,
+      reason: 'max_turns_exhausted',
+      usage: { input_tokens: 12345, output_tokens: 6789, total_tokens: 12345 + 6789 },
+    });
+  });
+
+  it('reports no usage field on a max_turns_exhausted error when the CLI reported none (nothing fabricated)', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-no-usage' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt-no-usage',
+        }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+    expect(result.structuredContent).not.toHaveProperty('usage');
+  });
+
+  // apra-fleet-63x.2 (verification for apra-fleet-63x.1's cost half): it is
+  // not enough for the structuredContent to merely CARRY a `usage` field --
+  // the whole point of apra-fleet-63x was that a max_turns/timeout dispatch's
+  // spend was reported as undefined downstream (observed: a 10-hour run with
+  // dozens of max_turns exhaustions reporting stats.totalCost of $0). This
+  // drives the real executePrompt() through an exhausted (max_turns) dispatch
+  // that still burned real partial tokens, then feeds the resulting usage
+  // through the SAME calculateCost() FleetWorkflow.agent() prices every
+  // dispatch's cost with (packages/apra-fleet-workflow/src/workflow/
+  // index.mjs's _resolveCost), asserting the budget-tracked cost is a
+  // defined, non-negative number reflecting that partial usage -- never
+  // undefined/null. Fails against pre-apra-fleet-63x.1 code: before that fix,
+  // the nonzero-exit branch attached no `usage` field at all, so
+  // calculateCost(model, undefined) -> null here, not a number.
+  it('an exhausted (max_turns) dispatch with partial usage prices to a real, defined, non-negative cost via calculateCost -- never undefined/null (apra-fleet-63x.2)', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-cost-tracking' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt-cost',
+          usage: { input_tokens: 8000, output_tokens: 4000 },
+        }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+
+    const usage = (result.structuredContent as any)?.usage;
+    const cost = calculateCost('sonnet', usage);
+
+    expect(typeof cost).toBe('number');
+    expect(Number.isFinite(cost)).toBe(true);
+    expect(cost).toBeGreaterThanOrEqual(0);
+    // A genuinely partial (non-zero) usage figure must price to a strictly
+    // positive cost, not the "no usage available" $0/null case.
+    expect(cost).toBeGreaterThan(0);
   });
 
   it('classifies a genuine auth error as a structured "auth" reason with login advice when there is no max_turns signal', async () => {

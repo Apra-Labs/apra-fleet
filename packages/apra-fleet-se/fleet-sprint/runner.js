@@ -4172,9 +4172,17 @@ function buildAnalysisText({
  * verbatim and never recomputes it. The remaining budget is derived from
  * `total` and `spent()`, not read from the budget object.
  * @param {{ total: number|null, spent?: () => number, pricingSummary?: () => { real: number, fallback: number } }} budget
+ * @param {{ spend?: number, dispatchCount?: number }} [integTestRunnerStats] -- apra-fleet-nwh.1:
+ *   this sprint's own tracked integ-test-runner spend (a before/after
+ *   `budget.spent()` delta accumulated by the caller around each Integ Test
+ *   phase dispatch, see runSprintCycle's integTestRunnerSpend/
+ *   integTestRunnerDispatchCount) and how many times that phase dispatched.
+ *   Reported as its OWN line, distinct from doer/reviewer/overhead, instead
+ *   of being silently folded into "overhead" -- often the single longest/
+ *   most expensive phase (a full playbook run against a real sandbox).
  * @returns {string}
  */
-function buildCostAnalysis(budget) {
+export function buildCostAnalysis(budget, integTestRunnerStats = {}) {
     const total = budget && budget.total;
     const spent = budget && typeof budget.spent === 'function' ? budget.spent() : null;
     const lines = [
@@ -4189,6 +4197,22 @@ function buildCostAnalysis(budget) {
         lines.push(`Remaining budget: $${(total - spent).toFixed(4)}.`);
     } else {
         lines.push('Remaining budget: unknown/unbounded.');
+    }
+    // apra-fleet-nwh.1: an explicit integ-test-runner spend line, broken out
+    // of the totals above (it is a SUBSET of `spent`, not additional spend)
+    // so this often-longest phase is never silently bucketed into
+    // "overhead" by a reader of this block. Honest about all three states:
+    // the phase never dispatched this run, it dispatched but spend was not
+    // trackable (same `spent()`-unavailable case as above), or a real
+    // tracked figure.
+    const integDispatchCount = Number.isInteger(integTestRunnerStats.dispatchCount) ? integTestRunnerStats.dispatchCount : 0;
+    if (integDispatchCount === 0) {
+        lines.push('Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).');
+    } else if (typeof spent !== 'number') {
+        lines.push(`Integ-test-runner spend: not tracked -- ${integDispatchCount} dispatch(es) ran but the budget object did not expose spent() for this run.`);
+    } else {
+        const integSpend = typeof integTestRunnerStats.spend === 'number' ? integTestRunnerStats.spend : 0;
+        lines.push(`Integ-test-runner spend: $${integSpend.toFixed(4)} across ${integDispatchCount} dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).`);
     }
     // Report the SOURCE of each priced dispatch's cost -- real per-member
     // rates vs. pricing.mjs's tier-band fallback -- so the figures above are
@@ -5845,6 +5869,20 @@ async function runSprintCycle(context) {
     const deployFailures = [];
     const integFailures = [];
 
+    // apra-fleet-nwh.1: integ-test-runner's own tracked spend, broken out of
+    // the harvester's cost block so it is never silently folded into
+    // "overhead" -- often the single longest/most expensive phase (a full
+    // playbook run against a real sandbox). `budget` (destructured from
+    // `context` above) exposes only a running total via spent(), not a
+    // per-role breakdown, so this is derived here as a before/after delta
+    // around each Integ Test phase dispatch (see the Integ Test Phase block
+    // below) and fed into buildCostAnalysis() at Harvest time.
+    // integTestRunnerDispatchCount stays 0 when the phase never dispatches
+    // this run (no playbook, or deploy never succeeded), so buildCostAnalysis
+    // can report that honestly instead of a fabricated/omitted line.
+    let integTestRunnerSpend = 0;
+    let integTestRunnerDispatchCount = 0;
+
     // Reviewer newTasks rejected by validateNewTask() before ever reaching
     // `command()`, threaded into the Final Review prompt so a rejection is
     // visible to a human rather than silently dropped. Rejection is non-fatal.
@@ -6996,32 +7034,49 @@ async function runSprintCycle(context) {
                         worklistCtx.usage = null;
                     }
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        wasRetried = true;
-                        let currentMaxTurns = BASE_DOER_MAX_TURNS * 2;
-                        let resumeAttempt = 0;
-                        dispatchError = err;
-                        while (resumeAttempt < MAX_TURN_RESUME_ATTEMPTS) {
-                            resumeAttempt += 1;
-                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=${currentMaxTurns} (attempt ${resumeAttempt}/${MAX_TURN_RESUME_ATTEMPTS}) instead of giving up or regrouping.`);
-                            try {
-                                await memberSessionGuard.killIfAlive(doerMember);
-                                report = await dispatchDoerResume(currentMaxTurns);
-                                dispatchError = null;
-                                break;
-                            } catch (resumeErr) {
-                                dispatchError = resumeErr;
-                                if (resumeErr instanceof AgentDispatchError && resumeErr.details?.reason === 'max_turns_exhausted') {
-                                    currentMaxTurns *= 2;
-                                    continue;
+                        // Before resuming (or ultimately failing) a turn-exhausted
+                        // streak, check whether every assigned bead id is ALREADY
+                        // closed -- verifyDoerStreakClosed() does the mandatory
+                        // D-pull-then-read (see its doc comment). A doer that closes
+                        // its last bead and then keeps running past the VERIFY
+                        // checkpoint until it hits max_turns has genuinely
+                        // SUCCEEDED: resuming it wastes a dispatch on a session with
+                        // nothing left to do, and classifying it 'failed' would
+                        // falsely re-lane already-completed work.
+                        const preResumeUnclosed = await verifyDoerStreakClosed({
+                            command, orchestratorMember, beadIds: actualBeadIds, log,
+                        });
+                        if (preResumeUnclosed.length === 0) {
+                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns), but all assigned bead id(s) are already closed -- WARNING: the doer missed the VERIFY checkpoint (kept running after its last bd close instead of stopping). Treating this streak as a successful completion, not a failure; issuing NO resume dispatch.`);
+                            dispatchError = null;
+                        } else {
+                            wasRetried = true;
+                            let currentMaxTurns = BASE_DOER_MAX_TURNS * 2;
+                            let resumeAttempt = 0;
+                            dispatchError = err;
+                            while (resumeAttempt < MAX_TURN_RESUME_ATTEMPTS) {
+                                resumeAttempt += 1;
+                                log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' exhausted its turn limit (max_turns) -- resuming the same session with max_turns=${currentMaxTurns} (attempt ${resumeAttempt}/${MAX_TURN_RESUME_ATTEMPTS}) instead of giving up or regrouping.`);
+                                try {
+                                    await memberSessionGuard.killIfAlive(doerMember);
+                                    report = await dispatchDoerResume(currentMaxTurns);
+                                    dispatchError = null;
+                                    break;
+                                } catch (resumeErr) {
+                                    dispatchError = resumeErr;
+                                    if (resumeErr instanceof AgentDispatchError && resumeErr.details?.reason === 'max_turns_exhausted') {
+                                        currentMaxTurns *= 2;
+                                        continue;
+                                    }
+                                    // A non-max_turns failure on resume (e.g. stale
+                                    // session, transport error) isn't something
+                                    // more turns can fix -- stop escalating.
+                                    break;
                                 }
-                                // A non-max_turns failure on resume (e.g. stale
-                                // session, transport error) isn't something
-                                // more turns can fix -- stop escalating.
-                                break;
                             }
-                        }
-                        if (dispatchError) {
-                            log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
+                            if (dispatchError) {
+                                log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
+                            }
                         }
                     } else if (isPostDispatchSyncFailure(err)) {
                         // The doer turn itself COMPLETED -- only its
@@ -7542,6 +7597,14 @@ async function runSprintCycle(context) {
 
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
+            // apra-fleet-nwh.1: snapshot the running total BEFORE this
+            // cycle's Integ Test dispatch(es) so the delta after (below) is
+            // this phase's own spend, not the whole run's. budget.spent()
+            // may be absent on an injected test double; that degrades to
+            // "not tracked" exactly like buildCostAnalysis()'s own total
+            // spend line already does, never a thrown error.
+            const integSpendBefore = typeof budget?.spent === 'function' ? budget.spent() : null;
+            integTestRunnerDispatchCount += 1;
             let integResult;
             // Set when the integ dispatch failed for an INFRASTRUCTURE reason
             // (empty_response / inactivity timeout / orphan-recovery timeout)
@@ -7602,11 +7665,29 @@ async function runSprintCycle(context) {
                 // and files bug beads -- so it must D-push those mutations
                 // (pushBeads: true), a D-push with no git push. G-pull before,
                 // no-op G-push after.
-                // The runner spends roughly one turn per liveness poll across
-                // long-running suites, so the budget has to be well above a
-                // one-shot prompt's; the resume ladder below doubles from here if
-                // that is still not enough.
-                const INTEG_TEST_MAX_TURNS = 200;
+                // apra-fleet-63x.3: sizing the integ turn ceiling so it is NOT
+                // the routinely-binding constraint.
+                //
+                // Intended design: on a run that is actually making progress the
+                // WALL-CLOCK ceiling (max_total_s == INTEG_MAX_TOTAL_S, up to 2h
+                // at the default) should be what bounds the dispatch, never the
+                // turn count. A compliant runner spends ~1 turn per liveness poll
+                // (integ-test-runner.md caps polling at ~1 per 2 min), but a real
+                // per-feature pass also spends fast, sub-poll turns -- bd show /
+                // bd dep list, reading test output, re-checking a backgrounded
+                // suite -- so the true turn-spend rate over a multi-feature cycle
+                // is several times the poll floor. At 200 (the pre-fix value)
+                // those chatty-but-legitimate runs exhausted max_turns before the
+                // time budget, the false exhaustion apra-fleet-63x tracks (4/4
+                // historical runs). 300 gives the wall-clock ceiling the headroom
+                // to bind first on any progressing run, so a max_turns exhaustion
+                // now signals genuine runaway scope rather than a normal long
+                // cycle. Paired with the tightened scope/turn-economy guidance in
+                // integ-test-runner.md (one feature at a time, no redundant suite
+                // re-runs, respect the poll cadence) a normal cycle needs far
+                // fewer than 300 turns. The resume ladder below still doubles from
+                // here (to 600) when a run legitimately needs more.
+                const INTEG_TEST_MAX_TURNS = 300;
                 const integDispatchOpts = {
                     member_name: getMemberForRole('integ-test-runner'),
                     agentType: 'integ-test-runner',
@@ -7726,6 +7807,16 @@ async function runSprintCycle(context) {
                 // `bugsFiled.length`.
                 integFailures.push({ cycle, notes: integResult.summary, bugsFiled: integResult.bugsFiled });
                 log(`Integration tests FAILED this cycle (C${cycle}, bugsFiled: ${integResult.bugsFiled.join(', ') || 'none'}): ${integResult.summary}`);
+            }
+            // apra-fleet-nwh.1: fold this cycle's Integ Test spend (dispatch
+            // plus any resume/retry inside the try/catch above) into the
+            // running total buildCostAnalysis() reports at Harvest time. A
+            // negative/NaN delta (a test double whose spent() does not
+            // monotonically increase) is clamped to 0 rather than corrupting
+            // the accumulator.
+            if (integSpendBefore !== null && typeof budget?.spent === 'function') {
+                const delta = budget.spent() - integSpendBefore;
+                if (Number.isFinite(delta) && delta > 0) integTestRunnerSpend += delta;
             }
             await updateDashboard();
         } else if (hasPlaybook && !deployedThisCycle) {
@@ -8288,7 +8379,10 @@ async function runSprintCycle(context) {
         finalOpenAtGoalCount: finalOpenAtGoal.length,
         regressionResult,
     });
-    const costAnalysis = buildCostAnalysis(budget);
+    const costAnalysis = buildCostAnalysis(budget, {
+        spend: integTestRunnerSpend,
+        dispatchCount: integTestRunnerDispatchCount,
+    });
     const harvesterPrompt = buildHarvesterPrompt({
         branch: validated.branch,
         baseBranch: validated.baseBranch,

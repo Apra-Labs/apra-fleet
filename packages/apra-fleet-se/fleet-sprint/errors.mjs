@@ -339,15 +339,20 @@ export function isAuthDispatchError(err) {
 //                                 still running and it was still alive after
 //                                 the recovery window; the pid was killed with
 //                                 no result recovered.
+//   - 'stalled'                 -- a confirmed stall (no member-side progress
+//                                 for the whole stall threshold) killed the
+//                                 remote pid and aborted the in-flight dispatch
+//                                 (apra-fleet-3c9.1). Like the others, no test
+//                                 verdict was ever produced.
 //
-// For an integ-test-runner dispatch, all three mean "no test verdict was ever
-// produced" -- the run never reported pass or fail. Treating them as a genuine
-// passed:false FAIL (the pre-04g.6 behavior) is a false negative: it records a
-// test failure that never happened and blocks the sprint's confidence check on
-// an infra fault. Callers use this classifier to (a) retry once via a session
-// resume and (b) failing that, record the cycle as INCONCLUSIVE rather than a
-// test FAIL -- exactly as the part-2 stale-evidence path already does.
-const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout']);
+// For an integ-test-runner dispatch, all of these mean "no test verdict was
+// ever produced" -- the run never reported pass or fail. Treating them as a
+// genuine passed:false FAIL (the pre-04g.6 behavior) is a false negative: it
+// records a test failure that never happened and blocks the sprint's confidence
+// check on an infra fault. Callers use this classifier to (a) retry once via a
+// session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
+// than a test FAIL -- exactly as the part-2 stale-evidence path already does.
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled']);
 
 /**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never

@@ -74,6 +74,31 @@ a time.
   do not guess and do not scan the DB; stop and report that the scoped list is missing
   (return `featuresClosed: 0`, note the reason).
 
+### Scope discipline and turn economy (stay within budget)
+
+Your dispatch has a bounded turn budget, and historically this phase routinely
+exhausted it and burned 15-85 min in resume/repair (apra-fleet-63x). The budget is
+sized so a run that is making progress is bounded by wall-clock time, not by turn
+count -- exhausting the turn count means the run did too much work per feature or
+polled too fast. Keep the run within budget by holding scope tight:
+
+- **Test ONLY the handed feature ids, one at a time.** Do not expand scope, do not
+  test features you were not handed, and do not re-derive the set (see the bullets
+  above). Testing beyond the handed list is both a correctness bug and the fastest
+  way to blow the turn budget.
+- **Run each feature's tests once.** Do not routinely re-run a suite that already
+  produced a clear pass/fail. Re-run only on a genuine flaky/inconclusive signal, and
+  at most once -- if it is still inconclusive, record it inconclusive (Step 3) and
+  move on rather than looping.
+- **Do not rebuild or reset any sandbox, and do not run a full-suite pass.** That
+  lifecycle is not yours -- it belongs to `regression-test-runner` (see Step 0b).
+  Re-provisioning per feature is wasted turns.
+- **Respect the poll cadence.** When waiting on a long test run, poll about once every
+  2 minutes (Step 2) -- polling faster spends turns for no benefit and is a primary
+  cause of turn-budget exhaustion on long suites.
+- **Keep bd interactions minimal.** Read what you need (`bd show`, `bd dep list`) once
+  per feature; avoid repeated status scans.
+
 ## Step 2 -- Run tests for each feature
 
 For each open feature:

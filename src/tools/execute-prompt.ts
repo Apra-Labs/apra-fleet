@@ -40,7 +40,7 @@ import { isMaxTurnsResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'stalled';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -676,6 +676,15 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
   let clearedByStall = false;
+  // apra-fleet-3c9.1: a CONFIRMED stall must not only kill the remote pid but
+  // also cancel the in-flight strategy.execCommand() promise. Before this, the
+  // client kept waiting out its full deriveTimeoutMs deadline after the
+  // server-side work had already died (the 60.5-min hung dispatch in
+  // apra-fleet-3c9). onStall aborts this controller; its signal is merged into
+  // the signal handed to every execCommand below (see dispatchSignal), so a
+  // confirmed stall settles the pending dispatch immediately and surfaces a
+  // typed 'stalled' error instead of hanging.
+  const stallAbortController = new AbortController();
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
@@ -701,6 +710,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // Best-effort and never awaited: onStall is a fire-and-forget callback
       // from the poll loop, and tryKillPid already swallows its own errors.
       void tryKillPid(agent, strategy, cmds).catch(() => {});
+      // apra-fleet-3c9.1: killing the remote pid alone left the pending
+      // execCommand promise still awaiting its full deadline. Abort it now so
+      // the dispatch settles promptly and returns a typed 'stalled' error.
+      try { stallAbortController.abort(); } catch { /* best-effort */ }
     },
   });
 
@@ -806,6 +819,30 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
+
+  // apra-fleet-y8q.1: every retry below (dispatch-exception, stale-session,
+  // server-overloaded) re-dispatches with a FRESH session but used to reuse the
+  // SAME full timeoutMs/maxTotalMs as the original attempt -- so a single
+  // dispatch could burn up to ~2x max_total_s server-side (original attempt +
+  // one full-budget retry), well past what the client's deriveTimeoutMs()
+  // (packages/apra-fleet-client/src/client/api.mjs) budgets for the whole
+  // tools/call (max_total_s*1000 + a fixed grace margin). That let the
+  // client's hard timeout fire before the server's own retry-and-report path
+  // ever got a chance, hiding a clean typed server error behind a raw client
+  // transport timeout. Share ONE deadline budget across the original attempt
+  // and any single retry: cap a retry's maxTotalMs (and its inactivity
+  // timeoutMs, so it can't independently outlast the shared ceiling) to
+  // whatever remains of max_total_s since dispatchStartedAt, and skip the
+  // retry entirely once that budget is exhausted -- so total wall-clock time
+  // for this call never exceeds max_total_s, which is exactly what the client
+  // is prepared to wait for. When max_total_s is absent there is no hard
+  // ceiling to share, so retries keep their full timeout_s (unchanged,
+  // pre-existing behavior).
+  function retryBudget(): { timeoutMs: number; maxTotalMs: number | undefined; exhausted: boolean } {
+    if (maxTotalMs === undefined) return { timeoutMs, maxTotalMs: undefined, exhausted: false };
+    const remaining = Math.max(0, maxTotalMs - (Date.now() - dispatchStartedAt));
+    return { timeoutMs: Math.min(timeoutMs, remaining), maxTotalMs: remaining, exhausted: remaining <= 0 };
+  }
 
   // Agent file validation -- verify named agent exists before any CLI invocation
   if (input.agent) {
@@ -944,6 +981,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   };
   extra?.signal?.addEventListener('abort', abortHandler);
 
+  // apra-fleet-3c9.1: the signal handed to execCommand fires on EITHER the MCP
+  // client's cancellation OR a confirmed stall (stallAbortController). Merging
+  // them means a stall aborts the pending dispatch exactly as a client cancel
+  // would, while a live (non-stalled) dispatch -- whose controller is never
+  // aborted -- is left completely untouched.
+  const dispatchSignal = extra?.signal
+    ? AbortSignal.any([extra.signal, stallAbortController.signal])
+    : stallAbortController.signal;
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
@@ -955,7 +1000,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   try {
     let result;
     try {
-      result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+      result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
     } catch (dispatchErr: any) {
       // apra-fleet-02s.1: a genuine command-execution exception (e.g. an
       // inactivity timeout, or any other error strategy.execCommand throws)
@@ -967,15 +1012,27 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // itself cancelled the request -- there is nothing to recover from a
       // deliberate cancellation.
       if (extra?.signal?.aborted) throw dispatchErr;
+      // apra-fleet-3c9.1: a stall-triggered abort is terminal. onStall already
+      // killed the remote process and its session is gone, so retrying in a
+      // fresh session would just re-dispatch onto a member we just tore down.
+      // Let the exception surface to the outer catch, which classifies it as a
+      // typed 'stalled' error instead of retrying or hanging.
+      if (stallAbortController.signal.aborted) throw dispatchErr;
       // apra-fleet-eft.78.1: an explicit-id resume must NOT retry in a fresh
       // session (that would run a context-dependent delta prompt with no
       // context). Let the exception surface as dispatch_failed instead.
       if (!allowFreshSessionFallback) throw dispatchErr;
+      // apra-fleet-y8q.1: no budget left to share with a retry (the original
+      // attempt already consumed the whole max_total_s) -- retrying here would
+      // just re-burn a fresh full budget past what the client is waiting for.
+      // Let the original exception surface instead of retrying blind.
+      const budget = retryBudget();
+      if (budget.exhausted) throw dispatchErr;
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
+      result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
     }
     let parsed = provider.parseResponse(result);
     if (parsed.usage) _epUsage = parsed.usage;
@@ -1000,27 +1057,37 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // recovery. An explicit session-id resume (string) deliberately does NOT --
     // its caller asserted context dependence, so a not-found id is terminal.
     if (result.code !== 0 && input.resume === true && agent.sessionId) {
-      scope.info(`[${resolvedModel}] retrying -- stale session`);
-      await tryKillPid(agent, strategy, cmds);
-      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
-      parsed = provider.parseResponse(result);
-      if (parsed.usage) _epUsage = parsed.usage;
+      // apra-fleet-y8q.1: share the remaining max_total_s budget with this
+      // retry too -- skip it outright once exhausted (see retryBudget above).
+      const staleBudget = retryBudget();
+      if (!staleBudget.exhausted) {
+        scope.info(`[${resolvedModel}] retrying -- stale session`);
+        await tryKillPid(agent, strategy, cmds);
+        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+        parsed = provider.parseResponse(result);
+        if (parsed.usage) _epUsage = parsed.usage;
+      }
     }
 
     // Server/overloaded error retry -- single attempt after delay. Skipped for
     // an explicit-id resume (apra-fleet-eft.78.1): the retry starts a fresh
     // session, which would discard the exact context the caller asked to resume.
     if (result.code !== 0 && allowFreshSessionFallback && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
-      scope.info(`[${resolvedModel}] retrying -- server overloaded`);
-      await tryKillPid(agent, strategy, cmds);
-      await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, timeoutMs, maxTotalMs, onPidCaptured, extra?.signal);
-      parsed = provider.parseResponse(result);
-      if (parsed.usage) _epUsage = parsed.usage;
+      // apra-fleet-y8q.1: share the remaining max_total_s budget with this
+      // retry too -- skip it outright once exhausted (see retryBudget above).
+      const overloadBudget = retryBudget();
+      if (!overloadBudget.exhausted) {
+        scope.info(`[${resolvedModel}] retrying -- server overloaded`);
+        await tryKillPid(agent, strategy, cmds);
+        await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
+        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+        result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+        parsed = provider.parseResponse(result);
+        if (parsed.usage) _epUsage = parsed.usage;
+      }
     }
 
     _epExitCode = result.code;
@@ -1042,6 +1109,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
             : failureCategory === 'auth'
               ? 'auth'
               : 'nonzero_exit',
+          // apra-fleet-63x.1: a nonzero exit -- most commonly max_turns_exhausted,
+          // where the CLI ran real turns and burned real tokens before hitting its
+          // ceiling -- still has a REAL parsed usage figure sitting in _epUsage
+          // (captured just above from `parsed.usage` regardless of exit code).
+          // This branch used to return no `usage` field at all on any failure,
+          // so FleetWorkflow.agent() (packages/apra-fleet-workflow/src/workflow/
+          // index.mjs, apra-fleet-202.3) saw hasRealUsage=false and never priced
+          // it, silently under-counting a sprint's tracked spend (observed: a
+          // 10-hour run with dozens of max_turns exhaustions reporting
+          // stats.totalCost of $0). Attach it here whenever it's available so
+          // the caller can record the real partial cost instead of nothing.
+          ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
         },
       };
     }
@@ -1175,6 +1254,17 @@ session: ${parsed.sessionId}`;
       },
     };
   } catch (err: any) {
+    // apra-fleet-3c9.1: a confirmed stall aborted the in-flight execCommand (and
+    // NOT the MCP client). Surface it as a typed 'stalled' error so the dispatch
+    // settles here -- well under the client hard timeout -- instead of being
+    // mislabeled dispatch_failed or waiting out the full deadline.
+    if (stallAbortController.signal.aborted && !extra?.signal?.aborted) {
+      _epError = 'dispatch aborted by confirmed stall';
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.`,
+        structuredContent: { isError: true, reason: 'stalled' },
+      };
+    }
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
     _epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
     _epError = err.message;

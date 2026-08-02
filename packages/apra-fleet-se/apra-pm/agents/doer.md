@@ -147,6 +147,18 @@ Instead:
 
 ## Step 3 -- VERIFY checkpoint
 
+**STOP RULE -- read this before you finish Step 2 on your last bead id:** the instant
+`bd close` returns for your last assigned bead id (or the instant your last remaining
+bead id is disposed of via an explicit skip exception), your ONLY next action, in your
+very next turn, is emitting the VERIFY JSON below. Do not run one more sanity check, do
+not call an advisor/reviewer agent, do not re-read a file to double-check your own work,
+do not run the build or tests again "just to be sure," do not investigate an unrelated
+bead, do not tidy up. Any of those is scope creep past the checkpoint, and it is exactly
+the failure mode this rule exists to prevent: a doer that finished cleanly but kept
+burning turns after its last close, ran out of turn budget before emitting VERIFY, and
+had a genuine success recorded as a FAILURE. There is no such thing as "one more check"
+after the last close -- the last `bd close` IS the end of your work. Emit VERIFY next.
+
 When every assigned bead id has been closed (or explicitly skipped per Step 1's
 has-open-children case, Step 2.2's ambiguous-wrap-up case, or the missing-input behavior
 above), you MUST stop and return:
