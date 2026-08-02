@@ -191,6 +191,18 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         // the route answers 200, then run the body-marker assertions once
         // against that response -- this tolerates first-render latency
         // without weakening any assertion below.
+        //
+        // apra-fleet-33c.1: the package's plain `npm test` script (unlike
+        // scripts/run-tests.mjs's test:unit/test:integration/test:record
+        // modes) invokes `node --test --test-concurrency=8 ...` directly
+        // without exporting APRA_FLEET_TEST_CONCURRENCY, so scaledTimeout()
+        // silently fell back to its unscaled 15s baseMs even though the
+        // suite really was running 8-wide -- starving this real-subprocess
+        // boot under contention and making `npm test` non-deterministic.
+        // Pass the concurrency explicitly (matching the --test-concurrency
+        // value both the plain `test` script and run-tests.mjs use) so this
+        // boot-check always gets the full contention-aware budget regardless
+        // of which script invoked the suite or whether that env var is set.
         const res = await waitFor(async () => {
             try {
                 const attempt = await httpGet(port, '/');
@@ -198,7 +210,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
             } catch {
                 return false;
             }
-        }, { label: 'GET / to render the dashboard' });
+        }, { timeoutMs: scaledTimeout(15000, { concurrency: 8 }), label: 'GET / to render the dashboard' });
         assert.equal(res.status, 200, res.body);
         assert.ok(res.headers['content-type'].includes('text/html'), res.headers['content-type']);
         // supervisor-viewer-parity: section labels are now `.panel-header`
