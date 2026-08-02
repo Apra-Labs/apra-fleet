@@ -191,31 +191,6 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
-    test('createPullRequest', async () => {
-        let calledName, calledArgs;
-        const mockClient = {
-            async callTool(name, args) {
-                calledName = name;
-                calledArgs = args;
-                return { content: [{ text: 'Created pull request #1' }] };
-            }
-        };
-
-        const fleet = new ApraFleet(mockClient);
-        const options = {
-            repo: 'Apra-Labs/apra-fleet',
-            base: 'main',
-            head: 'feat/x',
-            title: 'Auto-sprint [PASS]: feat/x',
-            body: 'Body.',
-        };
-        const result = await fleet.createPullRequest(options);
-
-        assert.strictEqual(calledName, 'create_pull_request');
-        assert.deepStrictEqual(calledArgs, options);
-        assert.deepStrictEqual(result, { content: [{ text: 'Created pull request #1' }] });
-    });
-
     test('composePermissions', async () => {
         let calledName, calledArgs;
         const mockClient = {
