@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { classifyVerifySet, buildPlannerPrompt, buildFinalVerdictPrompt } from '../fleet-sprint/runner.js';
+import { classifyVerifySet, buildPlannerPrompt, buildFinalVerdictPrompt, buildReviewerPrompt } from '../fleet-sprint/runner.js';
 
 // Unit tests for apra-fleet-jfo's classifyVerifySet(): the phase-routing
 // initial slice that classifies "all children closed" beads into the
@@ -215,5 +215,42 @@ describe('buildFinalVerdictPrompt unclosed-verify-beads evidence', () => {
     test('defaults unclosedVerifyIds to empty when the param is omitted (backward compatible)', () => {
         const prompt = buildFinalVerdictPrompt({ ...baseArgs });
         assert.doesNotMatch(prompt, /STILL OPEN/);
+    });
+});
+
+// apra-fleet-jfo.3: hit live 2026-08-02 on apra-fleet-l7n's verify-only
+// relaunch -- the Re-Review call site (runner.js ~8027) passed
+// `beadIds: []` unconditionally, which buildReviewerPrompt renders as
+// "Review the work just done for the following bead id(s): ." with nothing
+// named. The reviewer correctly treats that as missing required input and
+// refuses, which after one retry throws ReviewerContractViolationError and
+// aborts the whole sprint -- the default path for any verify-only sprint
+// whose Deploy fails on cycle 1 (openAtGoal reads 0, no review ran yet).
+// These tests lock in the prompt-builder contract the fix relies on: a
+// non-empty beadIds list (the call site now passes targetIssues) produces a
+// well-formed, reviewable prompt, while an empty list reproduces the exact
+// malformed prompt text that triggered the live failure.
+describe('buildReviewerPrompt beadIds contract (regression for the Re-Review empty-beadIds bug)', () => {
+    test('an empty beadIds array reproduces the malformed "bead id(s): ." prompt (documents the bug this fix avoids)', () => {
+        const prompt = buildReviewerPrompt({
+            beadIds: [],
+            acceptanceCriteriaJson: '[]',
+            baseBranch: 'main',
+            branch: 'sprint-branch',
+            goal: 'P1/P2',
+        });
+        assert.match(prompt, /bead id\(s\): \./);
+    });
+
+    test('passing the sprint\'s targetIssues as beadIds produces a well-formed, reviewable prompt', () => {
+        const prompt = buildReviewerPrompt({
+            beadIds: ['apra-fleet-6a7', 'apra-fleet-y8q'],
+            acceptanceCriteriaJson: '[]',
+            baseBranch: 'main',
+            branch: 'sprint-branch',
+            goal: 'P1/P2',
+        });
+        assert.match(prompt, /bead id\(s\): apra-fleet-6a7, apra-fleet-y8q\./);
+        assert.doesNotMatch(prompt, /bead id\(s\): \./);
     });
 });

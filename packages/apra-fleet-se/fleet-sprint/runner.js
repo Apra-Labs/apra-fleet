@@ -8024,7 +8024,22 @@ async function runSprintCycle(context) {
                 `whether to exit, rather than trusting a verdict from an earlier cycle.`
             );
             const reReviewScope = await bdListScoped('--json');
-            const reReviewVerdict = await dispatchReview({ beadIds: [], acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
+            // apra-fleet-jfo.3: this call passed beadIds: [] unconditionally,
+            // which buildReviewerPrompt renders as "Review the work just done
+            // for the following bead id(s): ." -- no ids to review. The
+            // reviewer correctly treats that as missing required input and
+            // refuses (a CHANGES_NEEDED-shaped response with empty
+            // reopenIds/newTasks), which after one retry throws
+            // ReviewerContractViolationError and aborts the WHOLE sprint --
+            // hit live 2026-08-02 on apra-fleet-l7n-style sprints (Deploy
+            // fails on cycle 1 -> IntegTest skipped -> openAtGoal reads 0 ->
+            // this branch -> crash, before the sprint ever gets a real
+            // chance). The sprint's own root issue id(s) are always a valid,
+            // in-scope target for "review the current state" -- pass them as
+            // beadIds so the reviewer has something concrete to ground its
+            // verdict in; acceptanceCriteriaJson still carries the full scope
+            // for context.
+            const reReviewVerdict = await dispatchReview({ beadIds: targetIssues, acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
             lastReviewVerdict = reReviewVerdict.verdict;
             reviewedThisCycle = true;
 
