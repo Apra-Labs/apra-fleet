@@ -770,16 +770,6 @@ async function main() {
             // stop_prompt tool for that member FIRST -- verifying/killing a
             // still-alive prior process before spawning a second one.
             // Mirrors createMemberReservationClient's callTool wiring above.
-            //
-            // apra-fleet-6bu: this same connection is what runner.js's
-            // createServerSidePrCreator() binds its `createPullRequest`
-            // function to, so the Publish-PR / Abort-PR steps can open PRs
-            // through the fleet server's `create_pull_request` tool instead of
-            // a member-side `gh pr create` (which can never authenticate with
-            // the `ghs_` App installation tokens provision_vcs_auth deploys).
-            // An older fleet server that does not expose that tool simply
-            // makes the call throw, and the runner falls back to `gh` --
-            // no version gate is needed here.
             callTool: (name, toolArgs) => mcpClient.callTool(name, toolArgs),
         });
         process.removeListener('SIGINT', onSigint);
