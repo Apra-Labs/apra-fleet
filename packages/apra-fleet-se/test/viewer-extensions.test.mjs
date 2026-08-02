@@ -500,6 +500,19 @@ describe('renderBeadsHtml: collapsible/expandable tree nodes and sections (apra-
         assert.ok(html.includes('data-toggle-id="section:backlog"'));
     });
 
+    test('the Backlog header carries a distinct, stable CSS class and muted-band styling not present on the Sprint header (apra-fleet-eft.52.1.1)', () => {
+        const html = renderBeadsHtml([{ id: 'S1', title: 'a sprint task', status: 'open' }], [{ id: 'B1', title: 'a backlog task', status: 'open' }]);
+        const sprintHeaderRow = html.slice(html.lastIndexOf('<tr', html.indexOf('data-toggle-id="section:sprint"')), html.indexOf('data-toggle-id="section:sprint"') + 50);
+        const backlogHeaderRow = html.slice(html.lastIndexOf('<tr', html.indexOf('data-toggle-id="section:backlog"')), html.indexOf('data-toggle-id="section:backlog"') + 50);
+        assert.ok(backlogHeaderRow.includes('backlog-section'), 'Backlog header row must carry a distinct backlog-section class');
+        assert.ok(backlogHeaderRow.includes('backlog-header'), 'Backlog header cell must carry a distinct backlog-header class');
+        assert.ok(!sprintHeaderRow.includes('backlog-section'), 'Sprint header row must NOT carry the backlog-section class');
+        assert.ok(!sprintHeaderRow.includes('backlog-header'), 'Sprint header cell must NOT carry the backlog-header class');
+        // Differing style band: Backlog gets a background fill the Sprint header lacks.
+        assert.ok(backlogHeaderRow.includes('background:'), 'Backlog header must have a distinct background/muted-band style');
+        assert.ok(!sprintHeaderRow.includes('background:'), 'Sprint header must not share the Backlog muted-band background');
+    });
+
     test('collapsing the Sprint section hides every sprint row, but leaves Backlog untouched', () => {
         const sprintTasks = [{ id: 'S1', title: 'a sprint task', status: 'open' }];
         const backlogTasks = [{ id: 'B1', title: 'a backlog task', status: 'open' }];

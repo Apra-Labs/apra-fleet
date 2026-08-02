@@ -276,8 +276,19 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
             'style="cursor: pointer; display: inline-block; width: 16px; user-select: none; color: #a1a1aa;">' + label + '</span>';
     }
 
-    function sectionHeaderRow(label, sectionKey, collapsed) {
-        return '<tr><td colspan="6" style="padding: 10px 8px 4px; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; color: #a1a1aa; border-bottom: 1px solid rgba(255,255,255,0.1);">' +
+    // apra-fleet-eft.52.1.1: `variant` distinguishes the Backlog header from
+    // the Sprint header, both in DOM (a stable `backlog-header`/
+    // `backlog-section` class not present on Sprint) and visually (a muted
+    // band + more prominent header), so the two regions are no longer
+    // rendered via an identical, indistinguishable code path.
+    function sectionHeaderRow(label, sectionKey, collapsed, variant) {
+        const isBacklog = variant === 'backlog';
+        const rowClass = isBacklog ? 'section-header backlog-section' : 'section-header';
+        const cellStyle = isBacklog
+            ? 'padding: 10px 8px; font-size: 12px; font-weight: bold; letter-spacing: 0.5px; text-transform: uppercase; color: #e4e4e7; background: rgba(161,161,170,0.12); border-top: 1px solid rgba(255,255,255,0.15); border-bottom: 1px solid rgba(255,255,255,0.15);'
+            : 'padding: 10px 8px 4px; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; color: #a1a1aa; border-bottom: 1px solid rgba(255,255,255,0.1);';
+        const headerClass = isBacklog ? ' backlog-header' : '';
+        return '<tr class="' + rowClass + '"><td colspan="6" class="section-header-cell' + headerClass + '" style="' + cellStyle + '">' +
             treeToggleHtml(sectionKey, true, collapsed) + ' ' + escapeHtml(label) + '</td></tr>';
     }
 
@@ -502,7 +513,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
 
     const backlogCollapsed = collapsedIds.has('section:backlog');
     if (backlogTasks.length > 0) {
-        html += sectionHeaderRow('Backlog', 'section:backlog', backlogCollapsed);
+        html += sectionHeaderRow('Backlog', 'section:backlog', backlogCollapsed, 'backlog');
         if (!backlogCollapsed) {
             // Roots (items with no in-set blocker, or whose blocker isn't
             // part of this backlog dataset) are sorted priority-then-id for
