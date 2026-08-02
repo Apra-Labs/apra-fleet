@@ -190,14 +190,16 @@ describe('parseServeArgs', () => {
     });
 });
 
-// apra-fleet-k06.1: the composed beforeLaunch wiring (member-overlap guard
-// THEN issue-scope guard, both over the SAME ledger) that serveMain() builds
-// and injects into createSprintController(). Exercises composeBeforeLaunch()
-// with the SAME real guard collaborators (defaultMemberOverlapGuard,
-// createScopeGuard) serveMain wires -- only the ledger/listChildren are
-// faked/injected -- so this proves the composition itself, not just each
-// guard's own already-covered unit suite.
-describe('api -- apra-fleet-k06.1 composeBeforeLaunch (member guard + scope guard, wired-level)', () => {
+// apra-fleet-k06.1/k06.2: the composed beforeLaunch wiring (member-overlap
+// guard THEN issue-scope guard, both over the SAME ledger) that serveMain()
+// builds and injects into createSprintController(). Exercises
+// composeBeforeLaunch() with the SAME real guard collaborators
+// (defaultMemberOverlapGuard, createScopeGuard) serveMain wires -- only the
+// ledger/listChildren are faked/injected -- so this proves the composition
+// itself, not just each guard's own already-covered unit suite. Includes the
+// disjoint-member-but-overlapping/nested-issue-scope shape named in the k06
+// bug report (epic root reserved vs one of its children targeted).
+describe('api -- apra-fleet-k06.1/k06.2 composeBeforeLaunch (member guard + scope guard, wired-level)', () => {
     /** A minimal fake ledger -- both guards only ever call list(). */
     function fakeLedger(reservations) {
         return { list: () => reservations };
@@ -222,6 +224,36 @@ describe('api -- apra-fleet-k06.1 composeBeforeLaunch (member guard + scope guar
                 assert.match(err.message, /issue-scope overlap rejects launch/);
                 assert.match(err.message, /s-active/);
                 assert.match(err.message, /epic-1/);
+                return true;
+            },
+        );
+    });
+
+    // apra-fleet-k06.2: the specific overlap shape the k06 bug report names --
+    // one active sprint reserves an EPIC ROOT, a second (disjoint-member)
+    // request targets one of that epic's CHILDREN, not the same root id. The
+    // guard must live-expand 'epic-1' via listChildren to discover 'epic-1-
+    // child' is in its subtree, then reject on the intersection.
+    test('disjoint members but request targets a CHILD of an already-claimed epic root: rejected 409 field=issue, naming sprint + child bead id', async () => {
+        const ledger = fakeLedger([
+            { sprintId: 's-active', members: ['carol'], issueRoots: ['epic-1'] },
+        ]);
+        const memberOverlapGuard = defaultMemberOverlapGuard(ledger);
+        const scopeGuard = createScopeGuard({
+            ledger,
+            listChildren: async (parentId) => (parentId === 'epic-1' ? ['epic-1-child'] : []),
+        });
+        const beforeLaunch = composeBeforeLaunch({ memberOverlapGuard, scopeGuard });
+
+        await assert.rejects(
+            () => beforeLaunch({ members: ['alice'], issueRoots: ['epic-1-child'] }),
+            (err) => {
+                assert.ok(err instanceof ApiError);
+                assert.equal(err.status, 409);
+                assert.equal(err.field, 'issue');
+                assert.match(err.message, /issue-scope overlap rejects launch/);
+                assert.match(err.message, /s-active/);
+                assert.match(err.message, /epic-1-child/);
                 return true;
             },
         );
