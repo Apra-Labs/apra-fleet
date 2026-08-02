@@ -1109,6 +1109,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
             : failureCategory === 'auth'
               ? 'auth'
               : 'nonzero_exit',
+          // apra-fleet-63x.1: a nonzero exit -- most commonly max_turns_exhausted,
+          // where the CLI ran real turns and burned real tokens before hitting its
+          // ceiling -- still has a REAL parsed usage figure sitting in _epUsage
+          // (captured just above from `parsed.usage` regardless of exit code).
+          // This branch used to return no `usage` field at all on any failure,
+          // so FleetWorkflow.agent() (packages/apra-fleet-workflow/src/workflow/
+          // index.mjs, apra-fleet-202.3) saw hasRealUsage=false and never priced
+          // it, silently under-counting a sprint's tracked spend (observed: a
+          // 10-hour run with dozens of max_turns exhaustions reporting
+          // stats.totalCost of $0). Attach it here whenever it's available so
+          // the caller can record the real partial cost instead of nothing.
+          ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
         },
       };
     }

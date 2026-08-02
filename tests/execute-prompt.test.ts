@@ -1540,6 +1540,62 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
     expect(resultText(result)).not.toContain('/login');
   });
 
+  // apra-fleet-63x.1: a max_turns-exhausted CLI invocation still ran real
+  // turns and burned real tokens before hitting its ceiling -- the parsed
+  // usage figure must reach the caller so FleetWorkflow.agent() can price and
+  // record the partial spend instead of silently under-counting it as $0.
+  it('carries partial usage on a max_turns_exhausted structured error rather than dropping it (apra-fleet-63x.1)', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-with-usage' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt-usage',
+          usage: { input_tokens: 12345, output_tokens: 6789 },
+        }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({
+      isError: true,
+      reason: 'max_turns_exhausted',
+      usage: { input_tokens: 12345, output_tokens: 6789, total_tokens: 12345 + 6789 },
+    });
+  });
+
+  it('reports no usage field on a max_turns_exhausted error when the CLI reported none (nothing fabricated)', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-no-usage' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt-no-usage',
+        }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+    expect(result.structuredContent).not.toHaveProperty('usage');
+  });
+
   it('classifies a genuine auth error as a structured "auth" reason with login advice when there is no max_turns signal', async () => {
     const member = makeTestAgent({ friendlyName: 'genuine-auth-fail' });
     addAgent(member);
