@@ -132,14 +132,22 @@ test('createServerSidePrCreator: returns null without a callTool, and routes to 
 // (c) Abort path -- finalizeAbort()
 // ---------------------------------------------------------------------------
 
+// apra-fleet-5d5.1: finalizeAbort()'s fetch/rev-list/push calls now route
+// through runGitStep(), which always forces `failSoft: true` on the
+// underlying command() call -- so, like buildMockCommand in
+// mock-sprint-abort-pr.test.mjs, this must branch on `opts.failSoft` to match
+// the real production command() contract, rather than assuming a fixed
+// shape per subcommand.
 function buildAbortMockCommand({ commitCount = 2, originUrl = MOCK_REPO_URL, ghUrl = 'https://github.com/mock-org/mock-repo/pull/99' } = {}) {
     const log = [];
-    const command = async (cmd) => {
+    const command = async (cmd, opts = {}) => {
         log.push(cmd);
-        if (/^git fetch origin\b/.test(cmd)) return '';
-        if (/^git rev-list --count\b/.test(cmd)) return String(commitCount);
+        const failSoft = !!opts.failSoft;
+        const ok = (output) => (failSoft ? { ok: true, output, error: null } : output);
+        if (/^git fetch origin\b/.test(cmd)) return ok('');
+        if (/^git rev-list --count\b/.test(cmd)) return ok(String(commitCount));
         if (/^git remote get-url origin$/.test(cmd)) return { ok: true, output: `${originUrl}\n`, error: null };
-        if (/^git push\b/.test(cmd)) return 'To mock-remote\n * [new branch] (mocked)';
+        if (/^git push\b/.test(cmd)) return ok('To mock-remote\n * [new branch] (mocked)');
         if (/^gh pr create\b/.test(cmd)) return { ok: true, output: `${ghUrl}\n`, error: null };
         throw new Error(`buildAbortMockCommand: unexpected command '${cmd}'`);
     };

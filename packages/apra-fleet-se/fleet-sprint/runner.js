@@ -4556,10 +4556,11 @@ export function isNoMutationDispatchFailure(err) {
  *   command: (cmd: string, opts: object) => Promise<any>,
  *   log?: (msg: string) => void,
  *   createPullRequest?: ((payload: object) => Promise<any>) | null,
+ *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>,
  * }} opts
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
-export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, createPullRequest = null }) {
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, createPullRequest = null, onAuthFailure }) {
     // 1. How many commits (if any) does the sprint branch carry beyond base?
     // Every command() call below passes an explicit `member_name` -- this
     // runner never lets a git/gh dispatch fall back to an ambient member.
@@ -4569,15 +4570,41 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     // `git rev-list base..branch` would then fail with "unknown revision", so
     // fetch first and diff against the remote-tracking ref, which is always
     // resolvable: baseBranch is the ref the sprint branch was created from.
-    await command(
-        `git fetch origin ${baseBranch}`,
-        { member_name: member, silent: true, label: `Fetch base branch '${baseBranch}' for abort-path diff` }
-    );
-    const revListRaw = await command(
-        `git rev-list --count origin/${baseBranch}..${branch}`,
-        { member_name: member, silent: true, label: `Count commits beyond base for abort-path branch '${branch}'` }
-    );
-    const commitCount = parseInt(String(revListRaw).trim(), 10) || 0;
+    //
+    // apra-fleet-5d5.1: these three git calls now go through runGitStep()
+    // (the same helper the main withGitSync dispatch bracket uses) instead of
+    // calling `command()` directly, so a git-auth failure here gets the SAME
+    // provision_vcs_auth self-heal-and-retry-once treatment instead of being
+    // silently swallowed (live: apra-fleet-l7n Cycle 3 abort hit exactly this
+    // -- "Authentication failed ... Password authentication is not
+    // supported" while writing the terminal history record, with no self-heal
+    // available). runGitStep never throws; a non-ok result here is re-thrown
+    // as a CommandError so finalizeAbort()'s own external throw-on-failure
+    // contract (see main()'s catch site, which falls back to "no PR lookup"
+    // on any thrown error) is unchanged for callers.
+    const fetchRes = await runGitStep({
+        command, member, cmd: `git fetch origin ${baseBranch}`,
+        label: `Fetch base branch '${baseBranch}' for abort-path diff`,
+        log, maxTransientRetries: 1, onAuthFailure,
+    });
+    if (!fetchRes.ok) {
+        throw new CommandError(
+            `[Abort Finalize Failed] git fetch origin ${baseBranch} failed: ${fetchRes.error}`,
+            { details: { branch, baseBranch, error: fetchRes.error, kind: fetchRes.kind } }
+        );
+    }
+    const revListRes = await runGitStep({
+        command, member, cmd: `git rev-list --count origin/${baseBranch}..${branch}`,
+        label: `Count commits beyond base for abort-path branch '${branch}'`,
+        log, maxTransientRetries: 1, onAuthFailure,
+    });
+    if (!revListRes.ok) {
+        throw new CommandError(
+            `[Abort Finalize Failed] git rev-list --count origin/${baseBranch}..${branch} failed: ${revListRes.error}`,
+            { details: { branch, baseBranch, error: revListRes.error, kind: revListRes.kind } }
+        );
+    }
+    const commitCount = parseInt(String(revListRes.output).trim(), 10) || 0;
 
     if (commitCount < 1) {
         log(`finalizeAbort: branch '${branch}' has 0 commits beyond '${baseBranch}' -- no [ABORTED] PR raised (zero-commit-abort policy).`);
@@ -4585,10 +4612,17 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     }
 
     // 2. There is real work on the branch -- publish it and raise the PR.
-    await command(
-        `git push -u origin ${branch}`,
-        { member_name: member, silent: true, label: `Push abort-path sprint branch '${branch}'` }
-    );
+    const pushRes = await runGitStep({
+        command, member, cmd: `git push -u origin ${branch}`,
+        label: `Push abort-path sprint branch '${branch}'`,
+        log, maxTransientRetries: 1, onAuthFailure,
+    });
+    if (!pushRes.ok) {
+        throw new CommandError(
+            `[Abort Finalize Failed] git push -u origin ${branch} failed: ${pushRes.error}`,
+            { details: { branch, baseBranch, error: pushRes.error, kind: pushRes.kind } }
+        );
+    }
 
     const prTitle = `Auto-sprint [ABORTED]: ${branch}`;
     // The error's code/message/details can originate from agent output, and
@@ -9054,6 +9088,25 @@ export async function main(context) {
     const validatedForLock = validateArgs(args);
     const sprintLock = acquireSprintLock({ branch: validatedForLock.branch, members: validatedForLock.members });
 
+    // apra-fleet-5d5.1: the SAME reactive git/dolt credential self-heal
+    // callback runSprintCycle wires into every withGitSync bracket (see its
+    // own onAuthFailure precedence comment above) -- computed here too so
+    // finalizeAbort()'s own git ops (fetch/rev-list/push, ~line 4562) get the
+    // identical provision_vcs_auth self-heal-and-retry-once treatment instead
+    // of silently swallowing a mid-abort auth failure with no self-heal.
+    //   1. `context.onAuthFailure` -- an explicitly-injected callback (tests
+    //      wire an in-process one to prove the self-heal fires without a live
+    //      fleet server).
+    //   2. `args.callTool` -- the real provision_vcs_auth self-heal via
+    //      createVcsAuthSelfHealCallback.
+    //   3. neither -- undefined: an 'auth'-classified failure falls straight
+    //      through to finalizeAbort()'s existing throw-and-fall-back path.
+    const abortOnAuthFailure = context.onAuthFailure ?? (
+        (args && typeof args.callTool === 'function')
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
+            : undefined
+    );
+
     // Track the last phase this run entered by wrapping context.phase, so a
     // fatal diagnostic can name the phase instead of just "somewhere".
     let lastPhaseTitle = null;
@@ -9106,6 +9159,7 @@ export async function main(context) {
                 abortResult = await finalizeAbort({
                     error: err, branch, baseBranch, member, command, log,
                     createPullRequest: abortPrCreator,
+                    onAuthFailure: abortOnAuthFailure,
                 });
             } catch (finalizeErr) {
                 log(

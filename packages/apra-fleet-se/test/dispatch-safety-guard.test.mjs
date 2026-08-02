@@ -214,7 +214,19 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // `create_pull_request` path, and only when a PR tool is actually wired. It
 // passes `member_name: member` (the same member every other finalizeAbort
 // dispatch targets), confirmed present. 42 + 1 = 43.
-const EXPECTED_COMMAND_COUNT = 45;
+// apra-fleet-5d5.1: -3 -- finalizeAbort()'s three direct `command()` call
+// sites for `git fetch origin`, `git rev-list --count`, and `git push -u
+// origin` were replaced with `runGitStep({ command, member, cmd, label, log,
+// maxTransientRetries, onAuthFailure })` calls (each still passing
+// `member: member`, i.e. `member_name` once inside runGitStep's own single
+// `command(cmd, { member_name: member, ... })` site, which already existed
+// and is unchanged/still counted) so a git-auth failure here gets the same
+// provision_vcs_auth self-heal-and-retry-once as the main withGitSync
+// dispatch bracket. This is a real removal of 3 direct call sites in
+// finalizeAbort, not a member_name regression -- runGitStep is itself
+// already compliant. Whatever the true count was before this change (see the
+// unexplained 43 -> 45 gap above, predating this bead), net -3 from that.
+const EXPECTED_COMMAND_COUNT = 42;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

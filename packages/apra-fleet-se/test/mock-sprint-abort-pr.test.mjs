@@ -45,25 +45,37 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // four call sites (`git fetch origin`, `git rev-list --count`, `git push`,
 // `gh pr create`). Mirrors the exact return-value CONTRACT finalizeAbort()
 // actually relies on (see FleetWorkflow.command() in
-// apra-fleet-workflow/src/workflow/index.mjs): a non-failSoft call (fetch,
-// rev-list, push) resolves to a plain string (or throws on failure); a
-// failSoft call (gh pr create) resolves to `{ ok, output, error }` and never
-// throws.
+// apra-fleet-workflow/src/workflow/index.mjs, and note the apra-fleet-5d5.1
+// update below): whether a call resolves to a plain string/throws, or to
+// `{ ok, output, error }` and never throws, is driven by `opts.failSoft` --
+// NOT by which git subcommand it is. `gh pr create` has always been called
+// with failSoft:true. As of apra-fleet-5d5.1, finalizeAbort()'s own
+// fetch/rev-list/push calls are routed through runGitStep() (for the
+// provision_vcs_auth self-heal-and-retry-once path), which itself ALWAYS
+// forces `failSoft: true` on the underlying command() call -- so this mock
+// must branch on `opts.failSoft` exactly as the real production command()
+// does, rather than assuming a fixed shape per subcommand.
 function buildMockCommand({ commitCount, pushShouldFail = false, ghOutcome = 'created', ghUrl = 'https://github.com/mock-org/mock-repo/pull/99' } = {}) {
     const log = [];
-    const command = async (cmd) => {
+    const command = async (cmd, opts = {}) => {
         log.push(cmd);
+        const failSoft = !!opts.failSoft;
+        const ok = (output) => (failSoft ? { ok: true, output, error: null } : output);
+        const fail = (error) => {
+            if (failSoft) return { ok: false, output: '', error };
+            throw new Error(error);
+        };
         if (/^git fetch origin\b/.test(cmd)) {
-            return '';
+            return ok('');
         }
         if (/^git rev-list --count\b/.test(cmd)) {
-            return String(commitCount);
+            return ok(String(commitCount));
         }
         if (/^git push\b/.test(cmd)) {
             if (pushShouldFail) {
-                throw new Error('mock git push failure: fatal: unable to access remote');
+                return fail('mock git push failure: fatal: unable to access remote');
             }
-            return 'To mock-remote\n * [new branch] (mocked)';
+            return ok('To mock-remote\n * [new branch] (mocked)');
         }
         if (/^gh pr create\b/.test(cmd)) {
             if (ghOutcome === 'already-exists') {
@@ -331,4 +343,195 @@ test('regression: an explicit final FAIL verdict still raises a normal, non-[ABO
         check(prCmd.includes('FAIL'), `Expected the PR title/body to include the FAIL verdict, got: ${prCmd}`);
         check(!prCmd.includes('[ABORTED]'), `An ordinary FAIL-verdict PR must NOT carry the [ABORTED] prefix, got: ${prCmd}`);
     });
+});
+
+// =============================================================================
+// apra-fleet-5d5.1 -- finalizeAbort()'s own git ops (fetch/rev-list/push) now
+// get the SAME provision_vcs_auth self-heal-and-retry-once treatment as the
+// main withGitSync dispatch bracket (runGitStep's onAuthFailure, runner.js
+// ~line 616), instead of silently swallowing a mid-abort auth failure with no
+// self-heal (live: apra-fleet-l7n Cycle 3 abort hit exactly this).
+//
+// A tiny scripted command() mock: pass a map from cmd-substring -> a queue of
+// results (each `{ ok, output, error }`). Mirrors makeCommandMock in
+// git-sync-brackets.test.mjs -- finalizeAbort()'s fetch/rev-list/push calls
+// now ALWAYS go through runGitStep(), which itself always forces
+// `failSoft: true` on the underlying command() call, so this mock can return
+// the `{ ok, output, error }` shape unconditionally (matching production's
+// real command() under failSoft:true) rather than branching on opts.
+// =============================================================================
+function makeQueuedAbortCommandMock(script) {
+    const calls = [];
+    const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]));
+    const command = async (cmd, opts = {}) => {
+        calls.push({ cmd, opts });
+        for (const [key, queue] of queues) {
+            if (cmd.includes(key)) {
+                const next = queue.length > 1 ? queue.shift() : queue[0];
+                return next;
+            }
+        }
+        return { ok: true, output: '', error: null };
+    };
+    return { command, calls };
+}
+
+const QOK = (output = '') => ({ ok: true, output, error: null });
+const qfail = (error) => ({ ok: false, output: '', error });
+
+test('(5d5.1) an auth-classified git fetch failure heals once via onAuthFailure and the retry succeeds', async () => {
+    const branch = 'auto-sprint/abort-fetch-auth-heal';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [
+            qfail("fatal: could not read Username for 'https://github.com': Device not configured"),
+            QOK(''),
+        ],
+        'git rev-list --count': [QOK('2')],
+        'git push': [QOK('To mock-remote\n * [new branch] (mocked)')],
+        'gh pr create': [{ ok: true, output: 'https://github.com/mock-org/mock-repo/pull/201\n', error: null }],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async (info) => {
+        healCalls += 1;
+        check(info.member === 'local', 'onAuthFailure receives the member');
+        check(/could not read Username/.test(info.error), 'onAuthFailure receives the raw error text');
+    };
+
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        onAuthFailure,
+    });
+
+    check(result.reason === 'aborted-pr-created', `expected the abort to still complete successfully after self-heal, got: ${JSON.stringify(result)}`);
+    check(healCalls === 1, `expected exactly one self-heal call, got ${healCalls}`);
+    check(
+        calls.filter((c) => c.cmd.startsWith('git fetch origin')).length === 2,
+        `expected fetch retried exactly once after self-heal (bounded, not a loop), saw ${calls.filter((c) => c.cmd.startsWith('git fetch origin')).length}`,
+    );
+});
+
+test('(5d5.1) an auth-classified git push failure heals once via onAuthFailure and the retry succeeds', async () => {
+    const branch = 'auto-sprint/abort-push-auth-heal';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [QOK('')],
+        'git rev-list --count': [QOK('3')],
+        'git push': [
+            qfail('remote: Invalid username or token.'),
+            QOK('To mock-remote\n * [new branch] (mocked)'),
+        ],
+        'gh pr create': [{ ok: true, output: 'https://github.com/mock-org/mock-repo/pull/202\n', error: null }],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        onAuthFailure,
+    });
+
+    check(result.reason === 'aborted-pr-created', `expected the abort to still complete successfully after self-heal, got: ${JSON.stringify(result)}`);
+    check(result.pushed === true, `expected pushed:true once the retried push succeeds, got: ${JSON.stringify(result)}`);
+    check(healCalls === 1, `expected exactly one self-heal call, got ${healCalls}`);
+    check(
+        calls.filter((c) => c.cmd.startsWith('git push')).length === 2,
+        `expected push retried exactly once after self-heal, saw ${calls.filter((c) => c.cmd.startsWith('git push')).length}`,
+    );
+});
+
+test('(5d5.1) self-heal invoked but the retry STILL fails: finalizeAbort() still throws (falls back to the existing "no PR lookup" log path), self-heal called exactly once, no infinite loop', async () => {
+    const branch = 'auto-sprint/abort-push-auth-still-fails';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [QOK('')],
+        'git rev-list --count': [QOK('1')],
+        // Single-entry queue -> makeQueuedAbortCommandMock returns the same
+        // failure on every call, so both the first attempt and the post-heal
+        // retry fail identically.
+        'git push': [qfail('remote: Invalid username or token.')],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+
+    let thrown = null;
+    try {
+        await finalizeAbort({
+            error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+            branch,
+            baseBranch: 'main',
+            member: 'local',
+            command,
+            onAuthFailure,
+        });
+    } catch (e) {
+        thrown = e;
+    }
+
+    check(thrown !== null, 'expected finalizeAbort() to throw when the retry after self-heal still fails');
+    check(/git push/.test(thrown.message), `expected the thrown error to name the failing git push, got: ${thrown.message}`);
+    check(healCalls === 1, `self-heal must be invoked EXACTLY ONCE (bounded, never a loop), got ${healCalls}`);
+    check(
+        calls.filter((c) => c.cmd.startsWith('git push')).length === 2,
+        `expected exactly one bounded retry after self-heal (2 total push attempts), saw ${calls.filter((c) => c.cmd.startsWith('git push')).length}`,
+    );
+});
+
+test('(5d5.1) omitting onAuthFailure preserves the pre-existing throw-on-auth-failure behavior (no heal, single attempt)', async () => {
+    const branch = 'auto-sprint/abort-push-auth-no-heal-wired';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [QOK('')],
+        'git rev-list --count': [QOK('1')],
+        'git push': [qfail('remote: Invalid username or token.')],
+    });
+
+    let thrown = null;
+    try {
+        await finalizeAbort({
+            error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+            branch,
+            baseBranch: 'main',
+            member: 'local',
+            command, // no onAuthFailure injected
+        });
+    } catch (e) {
+        thrown = e;
+    }
+
+    check(thrown !== null, 'expected finalizeAbort() to still throw on an auth failure with no self-heal wired');
+    check(
+        calls.filter((c) => c.cmd.startsWith('git push')).length === 1,
+        `no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt, saw ${calls.filter((c) => c.cmd.startsWith('git push')).length}`,
+    );
+});
+
+test('(5d5.1) the happy path (git ops succeed first try) is unaffected -- no self-heal call at all', async () => {
+    const branch = 'auto-sprint/abort-happy-path-unaffected';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [QOK('')],
+        'git rev-list --count': [QOK('2')],
+        'git push': [QOK('To mock-remote\n * [new branch] (mocked)')],
+        'gh pr create': [{ ok: true, output: 'https://github.com/mock-org/mock-repo/pull/203\n', error: null }],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        onAuthFailure,
+    });
+
+    check(result.reason === 'aborted-pr-created', `expected a normal successful abort, got: ${JSON.stringify(result)}`);
+    check(healCalls === 0, `expected NO self-heal call on the happy path, got ${healCalls}`);
+    check(calls.filter((c) => c.cmd.startsWith('git fetch origin')).length === 1, 'fetch dispatched exactly once');
+    check(calls.filter((c) => c.cmd.startsWith('git push')).length === 1, 'push dispatched exactly once');
 });
