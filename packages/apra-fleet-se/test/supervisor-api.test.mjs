@@ -293,6 +293,10 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         );
         assert.equal(res.statusCode, 400);
         assert.equal(payloadOf(res).field, 'issue');
+        // apra-fleet-ymf.2: the rejection must NAME the specific offending id
+        // (not just report field='issue' generically), so a caller with a
+        // multi-id request can tell which of the several ids was bad.
+        assert.match(payloadOf(res).error, /bad id!!/);
         // No child was spawned -- the whole multi-root launch is rejected,
         // not just the offending id.
         assert.equal(captured.length, 0);
