@@ -4044,106 +4044,6 @@ export function isHostedGithubRemote(remoteUrl) {
     return /^(https?:\/\/([^/@\s]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url);
 }
 
-// ---------------------------------------------------------------------------
-// Server-side PR creation (apra-fleet-6bu)
-// ---------------------------------------------------------------------------
-//
-// Both PR call sites below (the PASS/FAIL Publish PR step and the abort-path
-// finalizeAbort()) historically dispatched `gh pr create` to a member via
-// execute_command. That can only work on a member carrying a MANUAL
-// `gh auth login`: the fleet's own provision_vcs_auth deploys a GitHub App
-// INSTALLATION token (`ghs_...`), and `gh auth login --with-token` rejects
-// installation tokens outright (401 -- it requires a user-context token).
-//
-// The fleet server's `create_pull_request` tool (src/tools/create-pull-request.ts)
-// closes that gap: it mints its OWN short-lived installation token with
-// pull_requests:write and POSTs to the GitHub REST API directly, so no
-// member-side `gh` auth is involved at all. These two helpers let both call
-// sites PREFER that tool and fall back to the unchanged `gh pr create`
-// dispatch whenever it is unavailable (older fleet server without the tool,
-// no GitHub App configured, PAT-only setup, mint failure, ...).
-
-/**
- * Builds the `createPullRequest(payload)` function the PR call sites prefer,
- * bound to the caller's already-connected MCP client. Returns null when there
- * is no MCP connection to call through, which the call sites read as "use the
- * `gh pr create` fallback".
- *
- * @param {{ callTool?: (name: string, args: object) => Promise<any>, log?: Function }} opts
- * @returns {((payload: object) => Promise<any>) | null}
- */
-export function createServerSidePrCreator(opts = {}) {
-    const { callTool } = opts;
-    if (typeof callTool !== 'function') return null;
-    const fleetApi = new ApraFleet({ callTool });
-    return async (payload) => (
-        typeof fleetApi.createPullRequest === 'function'
-            ? fleetApi.createPullRequest(payload)
-            : callTool('create_pull_request', payload)
-    );
-}
-
-/**
- * Attempts server-side PR creation through the `create_pull_request` tool.
- *
- * Returns null whenever the caller should FALL BACK to `gh pr create` -- no
- * tool wired, no derivable owner/repo, the tool call threw (older server: no
- * such tool), or the tool answered with its "ERROR:" marker (no GitHub App
- * configured, mint failure, API rejection). Falling back on ANY tool failure
- * (rather than only on a curated subset) is deliberate: the `gh` path is the
- * pre-existing behavior, so a fallback can never be worse than not having
- * this feature, and a genuine GitHub rejection still surfaces -- `gh` will
- * report the same rejection and the existing throw/idempotency handling
- * applies to it unchanged.
- *
- * On success returns `{ ok: true, alreadyExists, prUrl, text }`, where
- * `alreadyExists` marks the idempotent "a PR for this head is already open"
- * outcome the call sites already treat as success.
- *
- * @param {{
- *   createPullRequest?: ((payload: object) => Promise<any>) | null,
- *   repo?: string|null, base: string, head: string, title: string, body?: string,
- *   log?: Function, logPrefix?: string,
- * }} opts
- * @returns {Promise<{ ok: true, alreadyExists: boolean, prUrl: string|null, text: string }|null>}
- */
-export async function attemptServerSidePrCreate({
-    createPullRequest, repo, base, head, title, body, log = () => {}, logPrefix = 'Publish PR',
-}) {
-    if (typeof createPullRequest !== 'function') return null;
-    if (!repo) {
-        log(`${logPrefix}: could not derive an owner/repo from the origin remote -- falling back to 'gh pr create'.`);
-        return null;
-    }
-
-    let res;
-    try {
-        res = await createPullRequest({ repo, base, head, title, ...(body !== undefined ? { body } : {}) });
-    } catch (err) {
-        log(`${logPrefix}: create_pull_request is unavailable on this fleet server (${err && err.message}) -- falling back to 'gh pr create'.`);
-        return null;
-    }
-
-    const text = selfHealResultText(res);
-    const firstUrl = (t) => {
-        const m = /https?:\/\/\S+/.exec(t || '');
-        return m ? m[0].replace(/[.,)]+$/, '') : null;
-    };
-
-    if (/already exists/i.test(text)) {
-        log(`${logPrefix}: create_pull_request reports a PR for head '${head}' already exists -- treating as idempotent success.`);
-        return { ok: true, alreadyExists: true, prUrl: firstUrl(text), text };
-    }
-    if ((res && res.isError) || /^ERROR:/m.test(text.trim()) || !/Created pull request/i.test(text)) {
-        log(`${logPrefix}: create_pull_request did not create the PR (${(text || '(no detail)').split('\n')[0]}) -- falling back to 'gh pr create'.`);
-        return null;
-    }
-
-    const prUrl = firstUrl(text);
-    log(`${logPrefix}: PR created server-side via create_pull_request (no member-side gh auth needed): ${prUrl || text.split('\n')[0]}`);
-    return { ok: true, alreadyExists: false, prUrl, text };
-}
-
 // The Regression Test phase is informational-only and must never gate the
 // sprint; packages/apra-fleet-se/test/regression-phase-never-gates.test.mjs
 // enforces that.
@@ -4555,12 +4455,11 @@ export function isNoMutationDispatchFailure(err) {
  *   member: string,
  *   command: (cmd: string, opts: object) => Promise<any>,
  *   log?: (msg: string) => void,
- *   createPullRequest?: ((payload: object) => Promise<any>) | null,
  *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>,
  * }} opts
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
-export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, createPullRequest = null, onAuthFailure }) {
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure }) {
     // 1. How many commits (if any) does the sprint branch carry beyond base?
     // Every command() call below passes an explicit `member_name` -- this
     // runner never lets a git/gh dispatch fall back to an ambient member.
@@ -4642,40 +4541,6 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         '',
         'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
     ].filter((line) => line !== null).join('\n');
-
-    // apra-fleet-6bu: prefer the fleet server's own `create_pull_request` tool
-    // (no member-side `gh` auth required) and fall back to the `gh pr create`
-    // dispatch below whenever it is unwired/unavailable. The origin-remote
-    // probe is only dispatched when a tool is actually wired, so a caller that
-    // does not inject one (e.g. the direct-unit-test call sites) dispatches
-    // exactly the same commands as before this feature existed.
-    if (typeof createPullRequest === 'function') {
-        const originRes = await command('git remote get-url origin', {
-            member_name: member,
-            silent: true,
-            failSoft: true,
-            label: 'Resolve origin remote URL for server-side PR creation',
-        });
-        const originUrl = originRes && originRes.ok ? String(originRes.output || '').trim() : '';
-        const toolRes = await attemptServerSidePrCreate({
-            createPullRequest,
-            repo: parseOwnerRepoFromRemoteUrl(originUrl),
-            base: baseBranch,
-            head: branch,
-            title: prTitle,
-            body: prBody,
-            log,
-            logPrefix: 'finalizeAbort',
-        });
-        if (toolRes) {
-            return {
-                prUrl: toolRes.prUrl,
-                reason: toolRes.alreadyExists ? 'already-exists' : 'aborted-pr-created',
-                pushed: true,
-                commitCount,
-            };
-        }
-    }
 
     const prCreateRes = await command(
         `gh pr create --base "${baseBranch}" --head "${branch}" --title "${prTitle}" --body "${prBody}"`,
@@ -5023,21 +4888,6 @@ async function runSprintCycle(context) {
             ? createLlmAuthSelfHealCallback({ callTool: args.callTool, log })
             : undefined
     );
-
-    // apra-fleet-6bu: the server-side PR creator the Publish PR step prefers
-    // over `gh pr create`. Same precedence shape as the callbacks above:
-    //   1. `context.createPullRequest` -- explicitly injected (tests wire an
-    //      in-process one to prove the tool path is taken without a live
-    //      fleet server).
-    //   2. `args.callTool` -- bin/cli.mjs's already-connected
-    //      `mcpClient.callTool`, routed through the client's
-    //      `createPullRequest` wrapper.
-    //   3. neither -- null: the Publish PR step uses `gh pr create` exactly as
-    //      it always did.
-    const createPullRequestTool = context.createPullRequest ?? createServerSidePrCreator({
-        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
-        log,
-    });
 
     // Validate BEFORE any agent()/command() dispatch: a rejected/malformed arg
     // must result in zero fleet dispatches.
@@ -8867,43 +8717,23 @@ async function runSprintCycle(context) {
         // API error, the injectable mock failure below) is NOT swallowed -- it
         // is re-raised as a typed CommandError so it surfaces clearly rather
         // than being silently invisible.
-        // apra-fleet-6bu: prefer the fleet server's own `create_pull_request`
-        // tool -- it mints its own GitHub App installation token with
-        // pull_requests:write and calls the REST API directly, so this path no
-        // longer depends on a member-side `gh auth login` (which can never
-        // accept the `ghs_` installation tokens provision_vcs_auth deploys).
-        // A null result means "not available / did not create it": fall
-        // through to the UNCHANGED `gh pr create` dispatch below.
-        const serverSidePr = await attemptServerSidePrCreate({
-            createPullRequest: createPullRequestTool,
-            repo: parseOwnerRepoFromRemoteUrl(originUrl),
-            base: validated.baseBranch,
-            head: validated.branch,
-            title: prTitle,
-            body: prBody,
-            log,
-            logPrefix: 'Publish PR',
-        });
-
-        if (!serverSidePr) {
-            const prCreateRes = await command(
-                `gh pr create --base "${validated.baseBranch}" --head "${validated.branch}" --title "${prTitle}" --body "${prBody}"`,
-                {
-                    member_name: orchestratorMember,
-                    silent: true,
-                    failSoft: true,
-                    label: `Raise PR to '${validated.baseBranch}' (not merged)`,
-                }
-            );
-            if (!prCreateRes.ok) {
-                if (/already exists/i.test(prCreateRes.error || '')) {
-                    log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success (${prCreateRes.error}).`);
-                } else {
-                    throw new CommandError(
-                        `[Publish PR Failed] gh pr create failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prCreateRes.error}`,
-                        { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prCreateRes.error } }
-                    );
-                }
+        const prCreateRes = await command(
+            `gh pr create --base "${validated.baseBranch}" --head "${validated.branch}" --title "${prTitle}" --body "${prBody}"`,
+            {
+                member_name: orchestratorMember,
+                silent: true,
+                failSoft: true,
+                label: `Raise PR to '${validated.baseBranch}' (not merged)`,
+            }
+        );
+        if (!prCreateRes.ok) {
+            if (/already exists/i.test(prCreateRes.error || '')) {
+                log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success (${prCreateRes.error}).`);
+            } else {
+                throw new CommandError(
+                    `[Publish PR Failed] gh pr create failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prCreateRes.error}`,
+                    { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prCreateRes.error } }
+                );
             }
         }
     }
@@ -9148,17 +8978,8 @@ export async function main(context) {
                 const member = (validatedForLock.roleMap && validatedForLock.roleMap[ROLE_ORCHESTRATOR] && validatedForLock.roleMap[ROLE_ORCHESTRATOR].length > 0)
                     ? validatedForLock.roleMap[ROLE_ORCHESTRATOR][0]
                     : validatedForLock.members[0];
-                // apra-fleet-6bu: same server-side PR creator precedence as
-                // runSprintCycle's Publish PR step (see createPullRequestTool
-                // there) -- the [ABORTED] PR must not depend on member-side
-                // `gh` auth either. Null falls back to `gh pr create`.
-                const abortPrCreator = context.createPullRequest ?? createServerSidePrCreator({
-                    callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
-                    log,
-                });
                 abortResult = await finalizeAbort({
                     error: err, branch, baseBranch, member, command, log,
-                    createPullRequest: abortPrCreator,
                     onAuthFailure: abortOnAuthFailure,
                 });
             } catch (finalizeErr) {

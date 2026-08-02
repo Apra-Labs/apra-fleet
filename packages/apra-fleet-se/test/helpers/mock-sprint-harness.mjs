@@ -1098,18 +1098,6 @@ export async function runDevelopLoopScenario(tag, {
     // createMemberSessionGuard()'s `stop_prompt` call end-to-end, rather than
     // only unit-testing the guard helper in isolation.
     callTool,
-    // apra-fleet-6bu: optional mock for the fleet server's
-    // `create_pull_request` tool. When provided, the scenario wires an
-    // `args.callTool` that routes ONLY `create_pull_request` to this handler
-    // (returning whatever MCP-shaped result the scenario wants -- a created
-    // PR, an "already exists" idempotent success, an "ERROR: ..." fallback
-    // trigger, or a throw simulating an older server that has no such tool)
-    // and answers every OTHER tool with the same inert
-    // `{ content: [{ text: '' }] }` shape the auth-self-heal scenarios
-    // already use. Composes with an explicitly-passed `callTool`, which then
-    // handles all non-PR tools. The raw payloads the runner sent are returned
-    // as `prToolCalls` so a test can assert on repo/base/head/title/body.
-    prToolHandler,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
     // args (validateArgs: doer_worklist_mode 'resume'|'batch',
     // resume_model_switch boolean, worklist_effort_budget positive number) --
@@ -1150,18 +1138,6 @@ export async function runDevelopLoopScenario(tag, {
     // production behavior (real timed sleep, unchanged delay values) is
     // untouched -- only this env-gated test path skips the sleep. Restored in
     // the finally so it never leaks past this scenario.
-    // apra-fleet-6bu: see the `prToolHandler` option comment above.
-    const prToolCalls = [];
-    const effectiveCallTool = prToolHandler
-        ? async (name, toolArgs) => {
-            if (name === 'create_pull_request') {
-                prToolCalls.push(toolArgs);
-                return prToolHandler(toolArgs);
-            }
-            if (typeof callTool === 'function') return callTool(name, toolArgs);
-            return { content: [{ text: '' }] };
-        }
-        : callTool;
     const priorInstantRetryBackoff = process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF;
     process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = '1';
     try {
@@ -1207,7 +1183,7 @@ export async function runDevelopLoopScenario(tag, {
                 goal,
                 max_cycles: maxCycles,
                 ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
-                ...(effectiveCallTool !== undefined ? { callTool: effectiveCallTool } : {}),
+                ...(callTool !== undefined ? { callTool } : {}),
                 ...(doerWorklistMode !== undefined ? { doer_worklist_mode: doerWorklistMode } : {}),
                 ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
                 ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
@@ -1240,7 +1216,7 @@ export async function runDevelopLoopScenario(tag, {
         // realSyncSpawnCount(tempDir, ...)) -- the commandLog alone cannot
         // distinguish "requested N times, served from cache" from "actually
         // spawned N times".
-        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir, prToolCalls };
+        return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir };
     } finally {
         // apra-fleet-eft.60.3: restore the caller's prior value (never leak the
         // instant-backoff flag past this scenario).

@@ -132,7 +132,7 @@
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
  *   Supports {{secure.NAME}} token -- resolved from the credential store server-side before use.
- * @property {"read" | "push" | "admin" | "issues" | "full"} [git_access] - GitHub App access
+ * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
  * @property {string} [email] - Bitbucket account email
@@ -142,16 +142,6 @@
  * @property {string} [org_url] - Azure DevOps organization URL (e.g. https://dev.azure.com/myorg)
  * @property {string} [pat] - Azure DevOps personal access token. Supports {{secure.NAME}}
  *   token -- resolved from the credential store server-side before use.
- */
-
-/**
- * @typedef {Object} CreatePullRequestOptions
- * @property {string} repo - Target repository as "owner/name" (e.g. "Apra-Labs/apra-fleet")
- * @property {string} base - Branch the PR merges INTO (e.g. "main")
- * @property {string} head - Branch containing the changes; must already be pushed
- * @property {string} title - Pull request title
- * @property {string} [body] - Pull request body (markdown)
- * @property {boolean} [draft] - Open the PR as a draft. Defaults to false.
  */
 
 /**
@@ -334,27 +324,6 @@ export class ApraFleet {
      */
     async provisionVcsAuth(options) {
         return this.mcpClient.callTool('provision_vcs_auth', options);
-    }
-
-    /**
-     * Open a GitHub pull request server-side (src/tools/create-pull-request.ts,
-     * apra-fleet-6bu). The fleet server mints its own short-lived GitHub App
-     * installation token scoped to `repo` with pull_requests:write and calls
-     * the GitHub REST API directly, so PR creation does NOT depend on a
-     * member-side `gh auth login` (which can never accept the `ghs_`
-     * installation tokens provision_vcs_auth deploys).
-     *
-     * Result text contract: "Created pull request #<n> ..." on success, a
-     * message containing "already exists" when a PR for the same head branch
-     * is already open (idempotent success), or text starting with "ERROR:"
-     * when the call could not be made (no GitHub App configured, mint
-     * failure, API rejection) -- callers should fall back to their own PR
-     * path on that marker.
-     *
-     * @param {CreatePullRequestOptions} options
-     */
-    async createPullRequest(options) {
-        return this.mcpClient.callTool('create_pull_request', options);
     }
 
     /**

@@ -166,7 +166,10 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
     });
 
     expect(result).toContain('Member registered successfully');
-    expect(spy).toHaveBeenCalledTimes(1);
+    // Called twice: once directly by register_member's own workspace-trust
+    // seed, and once more inside the compose_permissions auto-run
+    // (apra-fleet-5oo.1) which self-heals trust on every run (apra-fleet-eft.40.2).
+    expect(spy).toHaveBeenCalledTimes(2);
     expect(spy).toHaveBeenCalledWith('~/git/trust-reg-test', expect.any(Function), 'linux');
     spy.mockRestore();
   });
