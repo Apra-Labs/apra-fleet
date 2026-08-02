@@ -163,7 +163,7 @@ function mergePermissions(settingsFile, perms) {
 const KNOWN_AGENT_FILES = [
   'planner.md', 'plan-reviewer.md', 'doer.md', 'reviewer.md',
   'deployer.md', 'integ-test-runner.md', 'regression-test-runner.md',
-  'ci-watcher.md', 'harvester.md',
+  'ci-watcher.md', 'harvester.md', 'backlog-groomer.md',
 ];
 
 // --- uninstall ---------------------------------------------------------------
@@ -266,7 +266,7 @@ function parseArgs(argv) {
 
 const HELP = `apra-pm installer
 
-Installs the auto-sprint workflow, pm skill, and eight agents into your agent
+Installs the auto-sprint workflow, pm skill, and nine agents into your agent
 harness's config directory, and grants minimal permissions.
 
 Usage:
@@ -281,8 +281,8 @@ Options:
 
 What it installs:
   <configDir>/skills/pm/      the skill (SKILL.md + sub-docs)
-  <configDir>/agents/*.md     eight sprint agents (see below)
-  <configDir>/agents/schemas/ machine-readable output/input contracts for the seven
+  <configDir>/agents/*.md     nine sprint agents (see below)
+  <configDir>/agents/schemas/ machine-readable output/input contracts for the
                               structured-output roles (planner has none -- see
                               agents/planner.md Output schema)
   <configDir>/settings.json   minimal permissions (merged, non-destructive)
@@ -305,6 +305,8 @@ Agents:
                      files parent-less [regression][carry-over] bugs
   ci-watcher         polls CI for the sprint HEAD SHA
   harvester          extracts durable knowledge, updates docs/README/CHANGELOG
+  backlog-groomer    personal backlog triage: ready/urgent work, sprint sets,
+                     duplicates, quality gaps -- scoped to one operator's assignee
 
 Requires: git, gh (GitHub CLI), and beads (bd) for task tracking.`;
 

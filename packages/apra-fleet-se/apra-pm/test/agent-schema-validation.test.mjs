@@ -38,6 +38,7 @@ const STRUCTURED_ROLES = [
   'regression-test-runner',
   'ci-watcher',
   'harvester',
+  'backlog-groomer',
 ];
 
 /**

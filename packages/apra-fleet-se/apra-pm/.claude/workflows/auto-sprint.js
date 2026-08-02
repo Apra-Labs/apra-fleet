@@ -1487,6 +1487,32 @@ const INTEG_RUN_SCHEMA = {
     "deployedSha": {
       "type": "string",
       "description": "The deploy-verified git commit part 2 (smoke test) actually ran against. Optional for backward compatibility, but an orchestrator that supplied a deployed SHA in the dispatch prompt treats a missing or mismatching value as INCONCLUSIVE evidence (never a pass). See integ-test-runner.md 'Part-2 evidence freshness'."
+    },
+    "verifySetClosed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "apra-fleet-jfo: verify-set bead ids (any issue_type, Step 1b) closed this run. Optional for backward compatibility -- absent/omitted on a dispatch that named no verify-set ids."
+    },
+    "verifySetLeftOpen": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "apra-fleet-jfo: verify-set bead ids (Step 1b) left open this run, with why (gap bug filed, or inconclusive). Optional for backward compatibility."
     }
   }
 };
