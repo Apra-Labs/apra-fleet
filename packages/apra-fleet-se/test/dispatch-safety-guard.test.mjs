@@ -230,7 +230,11 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // fix/vcs-pr-architecture-v2 (tfx revert): value re-verified by running this
 // test against the merged runner.js rather than derived by arithmetic, per
 // this test's own acceptance criteria (see comment above).
-const EXPECTED_COMMAND_COUNT = 41;
+// 41 -> 40 (apra-fleet-eft.89.2): updateDashboard()'s project-wide backlog
+// fetch (`bd list --status=${BACKLOG_STATUSES} --json`) was removed -- the
+// per-sprint fleet-sprint viewer now shows sprint progress only, backlog
+// exploration is the supervisor UX's job. Net -1 command() call site.
+const EXPECTED_COMMAND_COUNT = 40;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

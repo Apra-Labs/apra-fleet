@@ -9,7 +9,6 @@ import {
     validateIssueId,
     validateBranchName,
 } from '../fleet-sprint/runner.js';
-import { renderBeadsHtml } from '../fleet-sprint/viewer-extensions.mjs';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
 // contract (validateArgs/validateIssueId/validateBranchName), and proof
@@ -256,17 +255,16 @@ function mockCmdResult(code, stdout, stderr = '') {
     };
 }
 
-// apra-fleet-eft.6.7: `allBeadsJson`/`readyJson`/`backlogJson` let a caller
-// substitute the canned `bd list --all --limit 0 --json` / `--ready` /
-// backlog-fetch responses (default: the existing single-level bd-1 ->
-// bd-1-child fixture every other test in this suite already relies on),
-// so a test can exercise a deeper hierarchy (e.g. a 3-level
-// epic->feature->task tree) without duplicating the whole spy.
+// apra-fleet-eft.6.7: `allBeadsJson`/`readyJson` let a caller substitute the
+// canned `bd list --all --limit 0 --json` / `--ready` responses (default:
+// the existing single-level bd-1 -> bd-1-child fixture every other test in
+// this suite already relies on), so a test can exercise a deeper hierarchy
+// (e.g. a 3-level epic->feature->task tree) without duplicating the whole
+// spy.
 function buildSpyFleetApi(overrides = {}) {
     const {
         allBeadsJson = '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]',
         readyJson = '[{"id":"bd-1-child","parent":"bd-1","status":"open","title":"Task"}]',
-        backlogJson = null,
     } = overrides;
 
     const calls = { executeCommand: 0, executePrompt: 0 };
@@ -325,14 +323,6 @@ function buildSpyFleetApi(overrides = {}) {
             // intersection is non-empty, same as a real `bd` would return.
             if (/^bd list --json --limit 0$/.test(opts.command)) {
                 return mockCmdResult(0, allBeadsJson);
-            }
-            // updateDashboard()'s backlog panel fetch: project-wide,
-            // status-only, no --parent scoping (see BACKLOG_STATUSES in
-            // runner.js). Only intercepted when a test supplies backlogJson;
-            // otherwise it falls through to the generic '[]' handler below,
-            // same as every other `bd list` call.
-            if (backlogJson !== null && /^bd list --status="open,deferred,blocked" --json$/.test(opts.command)) {
-                return mockCmdResult(0, backlogJson);
             }
             if (/^bd list /.test(opts.command)) {
                 return mockCmdResult(0, '[]');
@@ -684,16 +674,17 @@ describe('runner.js mock-level execution', () => {
     });
 
     // -------------------------------------------------------------------
-    // apra-fleet-eft.6.7: bdListScoped()'s BFS (auto-sprint-3) must recurse
-    // through every level of the sprint's target tree, not just one -- and
-    // updateDashboard()'s sprintTasks/backlogTasks split (built on top of
-    // bdListScoped) must reflect that: a leaf TASK two levels below the
-    // sprint's epic (epic -> feature -> task) belongs under Sprint, never
-    // Backlog, even though the dashboard's separate backlog fetch is
-    // project-wide and would otherwise see it too.
+    // apra-fleet-eft.6.7 / apra-fleet-eft.89.2: bdListScoped()'s BFS
+    // (auto-sprint-3) must recurse through every level of the sprint's
+    // target tree, not just one -- a leaf TASK two levels below the
+    // sprint's epic (epic -> feature -> task) belongs under Sprint. (The
+    // dashboard no longer has a separate project-wide backlog set at all
+    // -- apra-fleet-eft.89.2 removed it; backlog exploration is now the
+    // supervisor UX's job. See apra-fleet-eft.89.3 for the fuller
+    // fleet-sprint-drops-backlog / supervisor-drops-sprint E2E coverage.)
     // -------------------------------------------------------------------
 
-    test('a grandchild task two levels below the sprint epic renders under Sprint (sprintTasks), never Backlog', async () => {
+    test('a grandchild task two levels below the sprint epic renders under Sprint (sprintTasks)', async () => {
         const spy = buildSpyFleetApi({
             // bd-1 is the sprint's target epic (never itself returned by
             // `bd list --all`'s BFS -- see the comment above); feat-1 is its
@@ -706,15 +697,6 @@ describe('runner.js mock-level execution', () => {
             ]),
             readyJson: JSON.stringify([
                 { id: 'task-1', parent: 'feat-1', status: 'open', title: 'Task' },
-            ]),
-            // The dashboard's backlog fetch has no --parent scoping, so a
-            // real bd would return task-1 here too -- return it alongside a
-            // genuinely unrelated backlog bead so the assertion below
-            // actually exercises updateDashboard()'s sprintIds subtraction,
-            // not just an absence in the canned data.
-            backlogJson: JSON.stringify([
-                { id: 'task-1', parent: 'feat-1', status: 'open', title: 'Task' },
-                { id: 'unrelated-1', status: 'open', title: 'Unrelated backlog item' },
             ]),
         });
         const workflow = new FleetWorkflow(spy);
@@ -737,83 +719,18 @@ describe('runner.js mock-level execution', () => {
         const lastBeads = beadsStates[beadsStates.length - 1];
 
         const sprintIds = lastBeads.data.sprintTasks.map((t) => t.id);
-        const backlogIds = lastBeads.data.backlogTasks.map((t) => t.id);
-
         assert.ok(sprintIds.includes('task-1'), `expected grandchild task-1 in sprintTasks, got: ${JSON.stringify(sprintIds)}`);
-        assert.ok(!backlogIds.includes('task-1'), `expected grandchild task-1 NOT in backlogTasks, got: ${JSON.stringify(backlogIds)}`);
-        assert.ok(backlogIds.includes('unrelated-1'), 'expected an unrelated backlog bead to remain classified as backlog');
-    });
 
-    // -------------------------------------------------------------------
-    // apra-fleet-rgo: live-reported symptom -- the dashboard's Beads Tasks
-    // tab Backlog panel rendered "No backlog items." even though a direct
-    // `bd list --status=open,deferred,blocked --json` against the same
-    // working directory returned real, project-wide beads (25 of them in
-    // the original report). The two existing test suites cover this in
-    // isolation (this file's own bdListScoped/updateDashboard mock-sprint
-    // tests prove the DATA comes back correctly shaped; viewer-extensions
-    // .test.mjs's renderBeadsHtml tests prove the HTML renderer shows rows
-    // when given a non-empty backlogTasks array) but neither test ever
-    // pipes updateDashboard()'s REAL publishState('beads', ...) payload
-    // into renderBeadsHtml() together, which is exactly the seam a
-    // command()-shape mismatch or a scope-subtraction bug could hide
-    // behind. This test closes that gap end to end: real (mocked) `bd`
-    // responses -> runner.js's updateDashboard() -> the captured
-    // publishState('beads', ...) payload -> renderBeadsHtml() -> assert
-    // the rendered HTML actually lists the project-wide backlog beads,
-    // never the empty-state message.
-    // -------------------------------------------------------------------
-
-    test('apra-fleet-rgo: a real project-wide backlog fetch renders as populated HTML, never "No backlog items."', async () => {
-        const spy = buildSpyFleetApi({
-            allBeadsJson: JSON.stringify([
-                { id: 'bd-1-child', parent: 'bd-1', status: 'open', title: 'In-scope sprint task' },
-            ]),
-            readyJson: JSON.stringify([
-                { id: 'bd-1-child', parent: 'bd-1', status: 'open', title: 'In-scope sprint task' },
-            ]),
-            // Project-wide beads unrelated to this sprint's target ('bd-1'),
-            // mirroring the shape of the original live report (several
-            // pre-existing open/deferred/blocked beads across unrelated
-            // epics, none of them descendants of the sprint's own target).
-            backlogJson: JSON.stringify([
-                { id: 'apra-fleet-9ub', status: 'open', title: 'Pre-existing unrelated open bead', priority: 2 },
-                { id: 'apra-fleet-adl', status: 'deferred', title: 'Pre-existing unrelated deferred bead', priority: 3 },
-                { id: 'apra-fleet-1cb', status: 'blocked', title: 'Pre-existing unrelated blocked bead', priority: 1 },
-            ]),
-        });
-        const workflow = new FleetWorkflow(spy);
-        const publishedStates = [];
-        workflow.on('state', (evt) => publishedStates.push(evt));
-        const engine = new WorkflowEngine(workflow);
-
-        const result = await engine.executeFile(RUNNER_SCRIPT_PATH, {
-            target_issue: 'bd-1',
-            members: ['local'],
-            branch: 'auto-sprint/rgo-backlog-e2e-test',
-            base_branch: 'main',
-            max_cycles: 1,
-        }, true);
-
-        assert.strictEqual(result.status, 'success');
-
-        const beadsStates = publishedStates.filter((e) => e.namespace === 'beads');
-        assert.ok(beadsStates.length > 0, 'expected at least one publishState("beads", ...) call');
-        const lastBeads = beadsStates[beadsStates.length - 1];
-
-        // Prove the DATA is populated (the previously-covered layer)...
-        const backlogIds = lastBeads.data.backlogTasks.map((t) => t.id);
-        assert.ok(backlogIds.includes('apra-fleet-9ub'), `expected project-wide backlog beads in the published state, got: ${JSON.stringify(backlogIds)}`);
-        assert.strictEqual(backlogIds.length, 3, `expected all 3 unrelated project-wide beads to survive the sprintIds subtraction, got: ${JSON.stringify(backlogIds)}`);
-
-        // ...and then, critically, that the SAME payload renders as real
-        // HTML rows, not the empty-state fallback -- the actual symptom
-        // apra-fleet-rgo reported (a real dashboard user staring at "No
-        // backlog items." despite real data existing).
-        const html = renderBeadsHtml(lastBeads.data.sprintTasks, lastBeads.data.backlogTasks);
-        assert.ok(!html.includes('No backlog items.'), 'expected populated backlog to render real rows, not the empty-state message');
-        assert.ok(html.includes('apra-fleet-9ub'), 'expected apra-fleet-9ub to appear in the rendered backlog HTML');
-        assert.ok(html.includes('apra-fleet-adl'), 'expected apra-fleet-adl to appear in the rendered backlog HTML');
-        assert.ok(html.includes('apra-fleet-1cb'), 'expected apra-fleet-1cb to appear in the rendered backlog HTML');
+        // apra-fleet-eft.89.2: updateDashboard() no longer fetches or
+        // publishes a project-wide backlog set at all. The removed query was
+        // specifically the unscoped `bd list --status="open,deferred,blocked"
+        // --json` (formerly BACKLOG_STATUSES) -- distinct from the scoped
+        // `--status=... --priority-max=... --limit 0` goal-priority queries
+        // elsewhere in runner.js, which are unrelated and still legitimate.
+        assert.ok(!('backlogTasks' in lastBeads.data), `expected no backlogTasks key in published beads state, got: ${JSON.stringify(Object.keys(lastBeads.data))}`);
+        assert.ok(
+            !spy.commandLog.some((c) => c.startsWith('bd list --status="open,deferred,blocked"')),
+            'expected updateDashboard() to never issue the removed project-wide backlog query',
+        );
     });
 });

@@ -168,17 +168,6 @@ export function goalPriorityMax(goal) {
 // shells.
 const NOT_DONE_STATUSES = '"open,in_progress,blocked,deferred"';
 
-// Backlog panel (dashboard "Backlog" section): beads the sprint certainly will
-// NOT be addressing this run. Excludes 'closed' (done, not backlog) and
-// 'in_progress' (actively being worked, possibly by a concurrent sprint -- a
-// meaningfully different state from idle backlog). 'blocked' IS included: a
-// bead gated on an unresolved dependency is as certainly "not being addressed
-// this run" as an untouched 'open' or 'deferred' one. Deliberately
-// project-wide (no --parent filter) so the user sees the true state of
-// unplanned/idle work, including beads unrelated to the target epic.
-// Quoted for the same reason as NOT_DONE_STATUSES above.
-const BACKLOG_STATUSES = '"open,deferred,blocked"';
-
 // ---------------------------------------------------------------------------
 // CLI -> runner argument contract
 // ---------------------------------------------------------------------------
@@ -5654,18 +5643,14 @@ async function runSprintCycle(context) {
         }
     }
 
-    // Keeps the dashboard UI updated with real bd data. One publishState call
-    // carries two sets -- see BACKLOG_STATUSES above:
-    //   sprintTasks: everything under this sprint's target scope, re-fetched
-    //     fresh every call, so beads added mid-run appear on the next refresh
-    //     with no separate wiring.
-    //   backlogTasks: open/deferred beads project-wide that are NOT in
-    //     sprintTasks -- beads this run is not addressing, which may never have
-    //     gone through a planning phase and may belong to an unrelated epic.
-    // The sets are NOT published independently: a failed sprint-tree query
-    // returns early and publishes nothing at all, backlog included. Only a
-    // failed BACKLOG query degrades gracefully (an empty backlog is published
-    // alongside the sprint tree).
+    // Keeps the dashboard UI updated with real bd data. publishState carries
+    // sprintTasks only -- everything under this sprint's target scope,
+    // re-fetched fresh every call, so beads added mid-run appear on the next
+    // refresh with no separate wiring. The per-sprint fleet-sprint viewer
+    // shows sprint progress only; project-wide backlog exploration is the
+    // supervisor UX's job, not this one's (apra-fleet-eft.89.2). A failed
+    // sprint-tree query returns early and publishes nothing at all this
+    // round.
     async function updateDashboard() {
         let sprintTasks = [];
         try {
@@ -5696,20 +5681,8 @@ async function runSprintCycle(context) {
             return; // sprintTasks fetch failed -- nothing to publish this round
         }
 
-        // Backlog fetch is independently resilient: a failure here must
-        // never suppress the (already-successful) sprint-tree publish above.
-        let backlogTasks = [];
-        try {
-            const backlogRes = await command(`bd list --status=${BACKLOG_STATUSES} --json`, { member_name: orchestratorMember, silent: true });
-            const allBacklogCandidates = parseBdJson(backlogRes, `bd list --status=${BACKLOG_STATUSES} --json`);
-            const sprintIds = new Set(sprintTasks.map((t) => t.id));
-            backlogTasks = allBacklogCandidates.filter((t) => !sprintIds.has(t.id));
-        } catch (e) {
-            log(`updateDashboard: failed to refresh backlog panel (non-fatal, will retry next update): ${e.message}`);
-        }
-
         if (typeof publishState === 'function') {
-            publishState('beads', { sprintTasks, backlogTasks });
+            publishState('beads', { sprintTasks });
         }
     }
 
