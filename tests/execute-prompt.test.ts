@@ -14,6 +14,14 @@ import { setBudget, _resetBudgetState } from '../src/services/budget-awareness.j
 import { recordSessionUsage, _resetSessionUsage, DEFAULT_SIZE_BUCKET_TOKENS } from '../src/services/context-admission.js';
 import { sessionRegistry } from '../src/services/session-registry.js';
 import { localWorkspaceId } from '../src/services/token-issuer.js';
+// apra-fleet-63x.2: the same pricing function FleetWorkflow.agent() calls
+// (packages/apra-fleet-workflow/src/workflow/index.mjs's _resolveCost ->
+// calculateCost) to turn a dispatch's reported usage into a real budget-
+// tracked cost figure -- imported directly (relative path, not the package's
+// "exports" map, which does not expose this submodule) so this test can
+// prove the fix all the way through pricing, not just that a `usage` field
+// exists on the structured error.
+import { calculateCost } from '../packages/apra-fleet-workflow/src/workflow/pricing.mjs';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -1689,6 +1697,54 @@ describe('max_turns classification (apra-fleet-p4f.2)', () => {
 
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
     expect(result.structuredContent).not.toHaveProperty('usage');
+  });
+
+  // apra-fleet-63x.2 (verification for apra-fleet-63x.1's cost half): it is
+  // not enough for the structuredContent to merely CARRY a `usage` field --
+  // the whole point of apra-fleet-63x was that a max_turns/timeout dispatch's
+  // spend was reported as undefined downstream (observed: a 10-hour run with
+  // dozens of max_turns exhaustions reporting stats.totalCost of $0). This
+  // drives the real executePrompt() through an exhausted (max_turns) dispatch
+  // that still burned real partial tokens, then feeds the resulting usage
+  // through the SAME calculateCost() FleetWorkflow.agent() prices every
+  // dispatch's cost with (packages/apra-fleet-workflow/src/workflow/
+  // index.mjs's _resolveCost), asserting the budget-tracked cost is a
+  // defined, non-negative number reflecting that partial usage -- never
+  // undefined/null. Fails against pre-apra-fleet-63x.1 code: before that fix,
+  // the nonzero-exit branch attached no `usage` field at all, so
+  // calculateCost(model, undefined) -> null here, not a number.
+  it('an exhausted (max_turns) dispatch with partial usage prices to a real, defined, non-negative cost via calculateCost -- never undefined/null (apra-fleet-63x.2)', async () => {
+    const member = makeTestAgent({ friendlyName: 'max-turns-cost-tracking' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error_max_turns',
+          terminal_reason: 'max_turns',
+          result: 'stopped after max turns',
+          session_id: 'sess-mt-cost',
+          usage: { input_tokens: 8000, output_tokens: 4000 },
+        }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted' });
+
+    const usage = (result.structuredContent as any)?.usage;
+    const cost = calculateCost('sonnet', usage);
+
+    expect(typeof cost).toBe('number');
+    expect(Number.isFinite(cost)).toBe(true);
+    expect(cost).toBeGreaterThanOrEqual(0);
+    // A genuinely partial (non-zero) usage figure must price to a strictly
+    // positive cost, not the "no usage available" $0/null case.
+    expect(cost).toBeGreaterThan(0);
   });
 
   it('classifies a genuine auth error as a structured "auth" reason with login advice when there is no max_turns signal', async () => {
