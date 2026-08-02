@@ -22,6 +22,13 @@ import { localWorkspaceId } from '../src/services/token-issuer.js';
 // prove the fix all the way through pricing, not just that a `usage` field
 // exists on the structured error.
 import { calculateCost } from '../packages/apra-fleet-workflow/src/workflow/pricing.mjs';
+// apra-fleet-y8q.2: the client-side timeout-derivation function
+// (packages/apra-fleet-client/src/client/api.mjs) whose sufficiency depends
+// entirely on the server sharing one max_total_s deadline budget across an
+// attempt and its retry (apra-fleet-y8q.1) -- imported here so the test can
+// pin the client formula and the server's real retry-budget behavior
+// together, not just each in isolation.
+import { deriveTimeoutMs } from '@apralabs/apra-fleet-client';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -1518,6 +1525,103 @@ describe('shared retry deadline budget (apra-fleet-y8q.1)', () => {
     // 3 calls: writePromptFile + the one failed main call (no retry attempt,
     // shared budget already exhausted) + deletePromptFile.
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('client timeout budget covers the shared server-side retry budget (apra-fleet-y8q.2)', () => {
+  let memberId: string;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    if (memberId) clearStoredPid(memberId);
+  });
+
+  // apra-fleet-y8q.1 made the server share ONE max_total_s deadline budget
+  // across an original attempt and its retry, capping total server-side
+  // wall-clock time at max_total_s -- not the pre-fix ~2x max_total_s.
+  // deriveTimeoutMs (packages/apra-fleet-client/src/client/api.mjs) only adds
+  // a fixed 30s grace margin on top of max_total_s*1000, so it is sufficient
+  // ONLY because of that shared-budget invariant. Pin this for representative
+  // max_total_s values: the client's derived deadline always covers the
+  // server's actual (shared-budget) worst case, with margin to spare.
+  it.each([10, 60, 300, 900, 3600, 7200])(
+    'client deadline covers the shared-budget server worst case for max_total_s=%i',
+    (maxTotalS) => {
+      const sharedBudgetWorstCaseMs = maxTotalS * 1000; // apra-fleet-y8q.1: one shared budget
+      const clientDeadlineMs = deriveTimeoutMs({ max_total_s: maxTotalS });
+
+      expect(clientDeadlineMs).toBeGreaterThan(sharedBudgetWorstCaseMs);
+    }
+  );
+
+  // The fixed 30s grace margin alone is NOT enough to cover a full second
+  // retry budget once max_total_s grows past it -- proving the client relies
+  // on the server's shared-budget invariant (apra-fleet-y8q.1), not an
+  // oversized client margin, to stay safe. Restricted to max_total_s values
+  // where the old unshared ~2x worst case actually exceeds the 30s margin
+  // (below that, even the old worst case happened to fit -- not a meaningful
+  // regression pin).
+  it.each([60, 300, 900, 3600, 7200])(
+    'client deadline would NOT have covered the old unshared ~2x worst case for max_total_s=%i',
+    (maxTotalS) => {
+      const oldUnsharedWorstCaseMs = maxTotalS * 2 * 1000; // pre-fix: a full second retry budget
+      const clientDeadlineMs = deriveTimeoutMs({ max_total_s: maxTotalS });
+
+      expect(clientDeadlineMs).toBeLessThan(oldUnsharedWorstCaseMs);
+    }
+  );
+
+  // End-to-end: drive the REAL executePrompt() through an inactivity retry
+  // that exhausts the shared max_total_s budget (apra-fleet-y8q.1's
+  // retryBudget() skips the retry once exhausted), and assert the server's
+  // typed dispatch_failed error comes back well within the client's
+  // deriveTimeoutMs-derived window -- i.e. a real caller would see a clean
+  // typed error, not a raw client-side McpClient TIMEOUT rejection. Fails
+  // against pre-apra-fleet-y8q.1 code: the unconditional retry would consume
+  // a second full max_total_s budget (mockExecCommand's queue would also be
+  // exhausted, since this test supplies none for a retry attempt), pushing
+  // total elapsed server time past deriveTimeoutMs's window.
+  it('an inactivity-retry that exhausts the shared budget returns the typed dispatch_failed error within the client-derived timeout window, not a raw timeout (apra-fleet-y8q.2)', async () => {
+    const member = makeTestAgent({ friendlyName: 'y8q2-exhausted-within-client-budget' });
+    memberId = member.id;
+    addAgent(member);
+
+    const maxTotalS = 100;
+    const start = Date.now();
+
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce(async () => {
+        // The original attempt burns the ENTIRE max_total_s budget before the
+        // SSH inactivity exception fires -- the worst case the shared-budget
+        // fix caps total server time to.
+        vi.setSystemTime(new Date(Date.now() + maxTotalS * 1000));
+        throw new Error('inactivity timeout');
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });  // deletePromptFile (retry skipped -- shared budget exhausted)
+
+    const result = await executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 1000, max_total_s: maxTotalS });
+
+    // The server surfaced its own typed dispatch_failed error...
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
+
+    // ...and did so within the client's derived timeout budget, not after it
+    // -- a real client using deriveTimeoutMs() would have received this
+    // clean typed error instead of giving up first with a raw TIMEOUT.
+    const elapsedMs = Date.now() - start;
+    const clientDeadlineMs = deriveTimeoutMs({ max_total_s: maxTotalS });
+    expect(elapsedMs).toBeLessThan(clientDeadlineMs);
+    // Sanity: this really did hit (not comfortably undershoot) the shared
+    // budget ceiling, proving the assertion above is a real race rather than
+    // trivially true because nothing took any time.
+    expect(elapsedMs).toBeGreaterThanOrEqual(maxTotalS * 1000);
   });
 });
 
