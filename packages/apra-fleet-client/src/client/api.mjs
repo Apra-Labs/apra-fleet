@@ -132,7 +132,7 @@
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
  *   Supports {{secure.NAME}} token -- resolved from the credential store server-side before use.
- * @property {"read" | "push" | "admin" | "issues" | "full"} [git_access] - GitHub App access
+ * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
  * @property {string} [email] - Bitbucket account email
