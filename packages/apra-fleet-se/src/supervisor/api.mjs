@@ -45,6 +45,7 @@ import { readJsonBody, sendJson } from './server.mjs';
 import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
+import { defaultHasTerminalState } from './watchdog.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
@@ -291,6 +292,17 @@ export function defaultBuildVersion() {
  *   proxyState?: (port: number) => Promise<object>,
  *   proxyStop?: (port: number) => Promise<object>,
  *   resolvePort?: (pid: number|null) => number|undefined,
+ *   hasTerminalState?: (sprintId: string, branch: string|null) => object|null,
+ *     apra-fleet-2l4.1: defaults to watchdog.mjs's defaultHasTerminalState()
+ *     (a pure on-disk read of the engine's own persisted old_runs/<runId>.json
+ *     terminal record). getSprint()/stopSprint() consult this BEFORE
+ *     resolvePort()/proxyState()/proxyStop() -- a persisted terminal state can
+ *     exist while the child's OS process is still alive in its post-terminal
+ *     dashboard-linger window (its embedded HTTP viewer server closes before
+ *     the process itself exits), a window PID-liveness-based resolvePort()
+ *     cannot see on its own and would otherwise proxy into a closed port
+ *     (ECONNREFUSED surfacing as a raw 500). Inject to stub without real fs
+ *     reads in tests.
  *   beforeLaunch?: (ctx: { members: string[], issueRoots: string[] }) => Promise<void>|void,
  *     Defaults to defaultMemberOverlapGuard(ledger) (eft.5.2): rejects with a
  *     409 ApiError on any member overlap with an active reservation. Inject to
@@ -328,6 +340,11 @@ export function createSprintController(deps = {}) {
     const generateSprintId = deps.generateSprintId ?? ((issue) => `${issue}-${randomUUID()}`);
     const resolvePort = deps.resolvePort
         ?? ((pid) => (pid != null && spawner.getLiveEntry ? spawner.getLiveEntry(pid)?.port : undefined));
+    // apra-fleet-2l4.1: same collaborator watchdog.mjs's classifySprint() uses
+    // to distinguish CRASHED from FINISHED -- reused here so getSprint()/
+    // stopSprint() can detect "already terminal" independently of PID
+    // liveness, before ever touching the child's viewer port.
+    const hasTerminalState = deps.hasTerminalState ?? defaultHasTerminalState;
     const getBuildVersion = deps.getBuildVersion ?? defaultBuildVersion;
     // apra-fleet-gey.2: stamped ONCE, at controller creation (supervisor
     // startup) -- deliberately never re-read afterward, so this stays "what
@@ -560,6 +577,17 @@ export function createSprintController(deps = {}) {
     async function getSprint(id) {
         const reservation = ledger.get(id);
         if (reservation) {
+            // apra-fleet-2l4.1: check FIRST whether the engine has already
+            // persisted a terminal run-state for this sprint (old_runs/
+            // <runId>.json) -- independent of PID liveness, so a child in its
+            // post-terminal dashboard-linger window (OS process still alive,
+            // but its embedded HTTP viewer server has already closed) is
+            // reported cleanly here instead of proxying into a closed port
+            // and surfacing a raw ECONNREFUSED-derived 500.
+            const terminalState = hasTerminalState(id, reservation.branch ?? null);
+            if (terminalState) {
+                return { sprintId: id, live: false, terminal: true, state: terminalState };
+            }
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {
                 const state = await proxyState(port);
@@ -579,6 +607,18 @@ export function createSprintController(deps = {}) {
         const reservation = ledger.get(id);
         if (!reservation) {
             throw new ApiError(404, `no live sprint '${id}' to stop`);
+        }
+        // apra-fleet-2l4.1: same terminal-state check as getSprint() above,
+        // BEFORE resolving/proxying the child's viewer port -- a persisted
+        // terminal run-state means there is genuinely nothing left to stop,
+        // even while the child's OS process is still alive in its
+        // post-terminal dashboard-linger window. Returns a clean no-op
+        // success instead of a doomed proxyStop() call against an
+        // already-closed port (previously surfaced as a raw 500
+        // ECONNREFUSED -- apra-fleet-2l4).
+        const terminalState = hasTerminalState(id, reservation.branch ?? null);
+        if (terminalState) {
+            return { sprintId: id, status: 'already-terminal', child: null };
         }
         const port = resolvePort(reservation.childPid ?? null);
         if (port == null) {
