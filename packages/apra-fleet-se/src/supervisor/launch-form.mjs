@@ -11,14 +11,20 @@
 // renders the server's response (including 400 field errors and 409 member-
 // overlap conflicts) legibly.
 //
-// SINGLE-ROOT CONSTRAINT: POST /api/sprints (api.mjs's validateLaunchRequest)
-// accepts exactly one `issue` root per launch -- issueRoots is always a
-// single-element array. The Backlog tree lets the operator click MULTIPLE rows
-// (a true multi-select, toggling each row's highlight), but submission is only
-// valid with EXACTLY one row selected; buildLaunchRequestBody() below returns a
-// clear client-side validation error (not a server round-trip) for zero or
-// more-than-one selections, so the operator is steered to a single root without
-// this module inventing a multi-root launch semantics the server doesn't have.
+// FORM-LEVEL SINGLE-ROOT CONSTRAINT (a client-side UX choice, NOT a server
+// limitation): apra-fleet-ymf.1 taught POST /api/sprints (api.mjs's
+// validateLaunchRequest) to accept the SAME comma-separated multi-root
+// `issue` form the CLI's `--issue` flag already did (e.g.
+// `{"issue": "epic-1,epic-2"}`), splitting and validating each id and
+// forwarding a multi-element `issueRoots` array. This form does NOT expose
+// that yet: the Backlog tree lets the operator click MULTIPLE rows (a true
+// multi-select, toggling each row's highlight), but submission here is still
+// only valid with EXACTLY one row selected -- buildLaunchRequestBody() below
+// returns a clear client-side validation error (not a server round-trip) for
+// zero or more-than-one selections. Multi-root launches remain reachable via
+// a direct POST /api/sprints call (or the CLI); wiring this form's multi-
+// select through to a comma-joined `issue` is tracked separately, not folded
+// into ymf.1's server-side fix.
 //
 // TESTABLE WITHOUT A DOM: buildLaunchRequestBody() and formatLaunchError() are
 // plain, side-effect-free functions -- unit-testable directly from Node -- and
@@ -63,7 +69,8 @@ export const FORM_ROLE_OPTIONS = Object.freeze([...ROLES, ORCHESTRATOR_ROLE]);
  * Pure client-side validation + request-body construction for the Launch
  * Sprint form. Never talks to the network -- callers POST `result.body` to
  * POST /api/sprints themselves. See the module doc for why exactly one
- * selected issue root is required.
+ * selected issue root is required HERE, even though the server itself
+ * (apra-fleet-ymf.1) now accepts a comma-separated multi-root `issue`.
  *
  * @param {{
  *   selectedRoots: string[],
@@ -85,7 +92,8 @@ export function buildLaunchRequestBody(input) {
     if (roots.length > 1) {
         return {
             ok: false,
-            error: 'Select exactly one issue -- launching multiple issue roots in a single sprint is not yet supported.',
+            error: 'Select exactly one issue -- this form launches one issue root at a time. '
+                + '(The API itself accepts a comma-separated multi-root issue via a direct POST /api/sprints call or the CLI\'s --issue flag.)',
         };
     }
     const members = Array.isArray(opts.members) ? opts.members.filter((m) => typeof m === 'string' && m.length > 0) : [];

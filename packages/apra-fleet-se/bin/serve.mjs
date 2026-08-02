@@ -44,7 +44,8 @@ import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.
 // constructing the real dashboard below (instead of the inert stub) is what
 // actually wires the Launch Sprint form onto the page.
 import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
-import { createSprintController, registerSprintRoutes } from '../src/supervisor/api.mjs';
+import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
+import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
 import { listFleetMembers } from '../src/supervisor/fleet-members.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
 
@@ -58,6 +59,41 @@ Options:
       --port <port>   HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
   -h, --help          Show this help message.
 `.trim();
+
+/**
+ * apra-fleet-k06.1: compose BOTH launch-time overlap guards api.mjs's own
+ * header comment (eft.5.2/eft.5.3) already describes as meant to run
+ * together, as a standalone/exported factory so the composition itself --
+ * not just each guard in isolation -- is directly unit-testable without
+ * booting the real supervisor process (serveMain constructs its real
+ * defaultMemberOverlapGuard/createScopeGuard collaborators and passes them
+ * here; a test can inject fakes/stubs of the SAME shape instead).
+ *
+ * Member axis runs FIRST, preserving its exact pre-existing
+ * behavior/message/status (409, field 'members') for every case it already
+ * covered. The issue-scope axis runs second, over the SAME ledger; a
+ * conflict throws the same ApiError(409, ...) shape the member guard uses
+ * (field 'issue', a formatScopeConflict() message naming the conflicting
+ * sprint(s) and overlapping bead ids) rather than an unhandled 500 --
+ * registerSprintRoutes' onApiError only translates ApiError instances into a
+ * clean JSON error response. Either guard failing rejects the whole launch; a
+ * launch overlapping on neither axis still succeeds.
+ *
+ * @param {{
+ *   memberOverlapGuard: (ctx: { members: string[], issueRoots: string[] }) => Promise<void>|void,
+ *   scopeGuard: { checkLaunch: (issueRoots: string[]) => Promise<{ ok: boolean, conflicts: Array<{sprintId: string, overlappingIds: string[]}> }> },
+ * }} deps
+ * @returns {(ctx: { members: string[], issueRoots: string[] }) => Promise<void>}
+ */
+export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
+    return async ({ members, issueRoots }) => {
+        await memberOverlapGuard({ members, issueRoots });
+        const scopeResult = await scopeGuard.checkLaunch(issueRoots);
+        if (!scopeResult.ok) {
+            throw new ApiError(409, formatScopeConflict(scopeResult.conflicts), 'issue');
+        }
+    };
+}
 
 export function parseServeArgs(argv) {
     try {
@@ -237,12 +273,32 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // seam constructed above rather than re-deriving "tracker minus claimed
     // scope" a second way. ledger/spawner/history are the same collaborators
     // every other seam in this file shares.
+    const listMembersForLaunch = () => listFleetMembers({ resolveConnection: resolveFleetServerConnection });
+
+    // apra-fleet-k06.1: compose BOTH launch-time overlap guards api.mjs's own
+    // header comment (eft.5.2/eft.5.3) already describes as meant to run
+    // together. Before this, createSprintController() below was constructed
+    // with no `beforeLaunch` override, so it silently fell back to
+    // defaultMemberOverlapGuard ALONE -- the issue-scope guard
+    // (createScopeGuard, live-expanded subtree overlap) was exercised only by
+    // its own unit tests, never wired into the real POST /api/sprints path.
+    // Two sprints with disjoint member sets but overlapping/nested issue
+    // scopes (e.g. one targets an epic, another one of that epic's children)
+    // could both launch and dispatch against the same beads concurrently.
+    // See composeBeforeLaunch() above for the composition itself (ordering,
+    // error shape) -- extracted as its own export so the composition is
+    // directly unit-testable without booting this whole process.
+    const memberOverlapGuard = defaultMemberOverlapGuard(ledger, listMembersForLaunch);
+    const scopeGuard = createScopeGuard({ ledger });
+    const beforeLaunch = composeBeforeLaunch({ memberOverlapGuard, scopeGuard });
+
     const sprintController = createSprintController({
         ledger,
         spawner,
         history,
-        listMembers: () => listFleetMembers({ resolveConnection: resolveFleetServerConnection }),
+        listMembers: listMembersForLaunch,
         getBacklog: async () => ({ tree: await backlog.buildTree() }),
+        beforeLaunch,
     });
     registerSprintRoutes(supervisor, sprintController);
 

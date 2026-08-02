@@ -224,6 +224,86 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // apra-fleet-ymf.1: POST /api/sprints must accept the SAME comma-separated
+    // multi-root `issue` form the CLI's --issue flag already does, splitting
+    // it into individual `issueRoots` (never one opaque joined string) and
+    // validating each id -- see splitIssueIds()/validateLaunchRequest() in
+    // api.mjs. This is the headline behavior added by ymf.1; regression-tests
+    // both the split-and-validate happy path and the per-id validation.
+    test('apra-fleet-ymf.1: comma-separated issue ids launch one sprint scoped to both roots', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'epic-1,epic-2', members: ['alice'], branch: 'feat/x', base: 'main',
+        });
+
+        // issueRoots is the SPLIT array, one entry per root -- not the raw
+        // comma-joined string -- matching the CLI's targetIssues shape.
+        assert.deepEqual(result.issueRoots, ['epic-1', 'epic-2']);
+        assert.equal(captured.length, 1);
+        // The child argv still receives the single comma-joined --issue value
+        // (byte-identical to what the CLI's own --issue flag would forward).
+        const args = captured[0].args;
+        const ii = args.indexOf('--issue');
+        assert.ok(ii >= 0, 'child argv must contain --issue');
+        assert.equal(args[ii + 1], 'epic-1,epic-2');
+        // Both roots are recorded on the ledger reservation, not just one.
+        const reservation = ledger.get(result.sprintId);
+        assert.deepEqual(reservation.issueRoots, ['epic-1', 'epic-2']);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-ymf.1: a single-id request still behaves exactly as before (no splitting artifacts)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+        });
+        assert.deepEqual(result.issueRoots, ['PROJ-1']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-ymf.1: an invalid id inside an otherwise-valid comma-separated list is rejected (400, no spawn)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/sprints', { issue: 'epic-1,bad id!!', members: ['a'], branch: 'feat/x', base: 'main' }),
+            res,
+        );
+        assert.equal(res.statusCode, 400);
+        assert.equal(payloadOf(res).field, 'issue');
+        // apra-fleet-ymf.2: the rejection must NAME the specific offending id
+        // (not just report field='issue' generically), so a caller with a
+        // multi-id request can tell which of the several ids was bad.
+        assert.match(payloadOf(res).error, /bad id!!/);
+        // No child was spawned -- the whole multi-root launch is rejected,
+        // not just the offending id.
+        assert.equal(captured.length, 0);
+        assert.equal(ledger.list().length, 0, 'no partial ledger claim for a rejected multi-root launch');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('invalid issue id => 400 naming the issue field (via imported validateIssueId)', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
@@ -646,6 +726,91 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // apra-fleet-2l4.1: a terminal-but-lingering child (the engine already
+    // persisted a terminal run-state, e.g. old_runs/<runId>.json, but the OS
+    // process/embedded viewer port has not exited yet) must be reported
+    // cleanly via hasTerminalState() -- BEFORE resolvePort()/proxyState() are
+    // ever reached -- instead of proxying into a closed port and surfacing a
+    // raw ECONNREFUSED-derived 500. hasTerminalState is injected here
+    // (per its own doc comment: "Inject to stub without real fs reads in
+    // tests") rather than exercising the real fs-backed defaultHasTerminalState.
+    test('apra-fleet-2l4.1: GET /api/sprints/:id on a terminal-but-lingering child returns {live:false, terminal:true} WITHOUT proxying the (closed) port', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        let resolvePortCalled = false;
+        let proxyStateCalled = false;
+        const terminalState = { terminalReason: 'FAILED', verdict: 'FAIL' };
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: (id, branch) => {
+                assert.equal(id, 's1');
+                assert.equal(branch, 'feat/x');
+                return terminalState;
+            },
+            resolvePort: (pid) => { resolvePortCalled = true; return pid === 42 ? 9200 : undefined; },
+            proxyState: async (port) => { proxyStateCalled = true; return { port, status: 'running', tree: [] }; },
+        });
+        const out = await controller.getSprint('s1');
+        assert.deepEqual(out, { sprintId: 's1', live: false, terminal: true, state: terminalState });
+        assert.equal(resolvePortCalled, false, 'resolvePort must not be called once hasTerminalState reports terminal');
+        assert.equal(proxyStateCalled, false, 'proxyState must not be called (no doomed proxy into a closed port)');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-2l4.1: GET /api/sprints/:id still proxies a genuinely live child (hasTerminalState returns falsy)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async (port) => ({ port, status: 'running', tree: [] }),
+        });
+        const out = await controller.getSprint('s1');
+        assert.equal(out.live, true);
+        assert.equal(out.state.status, 'running');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-2l4.2: the SAME terminal-but-lingering scenario as the
+    // controller-level tests above, but driven through the REAL HTTP route
+    // (registerSprintRoutes + supervisor.handleRequest) -- the bug this whole
+    // streak fixes was reported as a raw 500/ECONNREFUSED at the HTTP
+    // boundary, so the regression coverage must prove the boundary itself,
+    // not just that the controller method's return value looks right in
+    // isolation. proxyState is stubbed to THROW (simulating the real
+    // ECONNREFUSED a closed viewer port produces) so a regressed guard
+    // (hasTerminalState silently bypassed, proxyState reached anyway) would
+    // surface as an actual 500 here, not a masked pass.
+    test('apra-fleet-2l4.2: GET /api/sprints/:id over HTTP for a terminal-but-lingering child is a clean 200, never 500/ECONNREFUSED', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => ({ terminalReason: 'FAILED' }),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9200'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints/s1'), res);
+        assert.equal(res.statusCode, 200, 'must be a clean 2xx, not a 500 from a doomed proxy into the closed port');
+        const payload = payloadOf(res);
+        // A structured status payload -- NOT the generic { error: ... }
+        // internal-error shape the supervisor's 500 isolation wrapper emits.
+        assert.equal(payload.live, false);
+        assert.equal(payload.terminal, true);
+        assert.ok(payload.state, 'must return a structured status payload, not the generic internal-error object');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('GET /api/sprints lists live reservations with resolved ports', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
@@ -672,6 +837,106 @@ describe('api -- POST /api/sprints/:id/stop proxy', () => {
         const controller = createSprintController({
             ledger, history, spawner: recordingSpawner([]),
             listMembers: () => ({}), getBacklog: () => ({}),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async (port) => { stoppedPort = port; return { statusCode: 200 }; },
+        });
+        const out = await controller.stopSprint('s1');
+        assert.equal(stoppedPort, 9200);
+        assert.equal(out.status, 'stopping');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-2l4.1: the SAME terminal-state guard as GET /api/sprints/:id
+    // above, applied to the stop handler -- a persisted terminal run-state
+    // means there is genuinely nothing left to stop, even while the child's
+    // OS process is still alive in its post-terminal dashboard-linger window.
+    // Must return a clean no-op success WITHOUT ever resolving/proxying the
+    // (already-closed) child /stop port.
+    test('apra-fleet-2l4.1: stopping a terminal-but-lingering child returns {status:"already-terminal"} WITHOUT proxying the (closed) port', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        let resolvePortCalled = false;
+        let proxyStopCalled = false;
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: (id, branch) => {
+                assert.equal(id, 's1');
+                assert.equal(branch, 'feat/x');
+                return { terminalReason: 'FAILED' };
+            },
+            resolvePort: (pid) => { resolvePortCalled = true; return pid === 42 ? 9200 : undefined; },
+            proxyStop: async (port) => { proxyStopCalled = true; return { statusCode: 200 }; },
+        });
+        const out = await controller.stopSprint('s1');
+        assert.deepEqual(out, { sprintId: 's1', status: 'already-terminal', child: null });
+        assert.equal(resolvePortCalled, false, 'resolvePort must not be called once hasTerminalState reports terminal');
+        assert.equal(proxyStopCalled, false, 'proxyStop must not be called (no doomed proxy into a closed port)');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-2l4.2: the SAME terminal-but-lingering scenario as above,
+    // driven through the REAL HTTP route (registerSprintRoutes +
+    // supervisor.handleRequest) instead of calling controller.stopSprint()
+    // directly -- the bug this streak fixes was reported as a raw
+    // 500/ECONNREFUSED at the HTTP boundary. proxyStop is stubbed to THROW
+    // (simulating the real ECONNREFUSED a closed viewer port produces) so a
+    // regressed guard would surface here as an actual 500, not a masked pass.
+    test('apra-fleet-2l4.2: POST /api/sprints/:id/stop over HTTP for a terminal-but-lingering child is a clean 200 no-op, never 500/ECONNREFUSED', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => ({ terminalReason: 'FAILED' }),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9200'); },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop'), res);
+        assert.equal(res.statusCode, 200, 'must be a clean 2xx no-op, not a 500 from a doomed proxy into the closed port');
+        assert.deepEqual(payloadOf(res), { sprintId: 's1', status: 'already-terminal', child: null });
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // Control case: a genuinely live child (hasTerminalState falsy) must
+    // still be proxied/stopped exactly as before over the real HTTP route --
+    // proves the terminal-lingering guard above is not a blanket short-circuit.
+    test('apra-fleet-2l4.2: POST /api/sprints/:id/stop over HTTP still proxies a genuinely live child (control case, no regression)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const supervisor = createSupervisor({ port: 0 });
+        let stoppedPort = null;
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async (port) => { stoppedPort = port; return { statusCode: 200 }; },
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(mockReq('POST', '/api/sprints/s1/stop'), res);
+        assert.equal(res.statusCode, 200);
+        assert.equal(stoppedPort, 9200);
+        assert.equal(payloadOf(res).status, 'stopping');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-2l4.1: a genuinely live child is still stopped exactly as before (hasTerminalState returns falsy)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        let stoppedPort = null;
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
             resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
             proxyStop: async (port) => { stoppedPort = port; return { statusCode: 200 }; },
         });

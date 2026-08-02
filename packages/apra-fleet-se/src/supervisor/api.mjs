@@ -20,7 +20,11 @@
 // validateBranchName and the cli.mjs resolveRoleMap helper -- it never
 // re-implements the id/branch regexes here. A malformed issue id or branch name
 // is rejected with a 400 that names the offending field, before any child is
-// spawned.
+// spawned. apra-fleet-ymf.1: `issue` accepts the SAME comma-separated
+// multi-root form as the CLI's `--issue` flag (splitIssueIds() mirrors
+// bin/cli.mjs:468's split/trim/filter exactly) -- each id is validated
+// individually and forwarded as `issueRoots` (a string[], one root per
+// entry), never as one opaque joined string.
 //
 // COLLABORATOR SEAMS: every side-effecting collaborator (spawner, ledger,
 // history, member/backlog sources, and the child HTTP proxies) is injected, so
@@ -41,6 +45,7 @@ import { readJsonBody, sendJson } from './server.mjs';
 import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { isDeterministicTerminalReason } from './history.mjs';
+import { defaultHasTerminalState } from './watchdog.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
@@ -58,6 +63,23 @@ export class ApiError extends Error {
         this.status = status;
         if (field) this.field = field;
     }
+}
+
+/**
+ * apra-fleet-ymf.1: split a request's `issue` field into individual ids,
+ * mirroring bin/cli.mjs:468's `values.issue.split(',').map(s =>
+ * s.trim()).filter(Boolean)` exactly -- so a comma-separated multi-root
+ * request (`{"issue": "epic-1,epic-2"}`) reaches the same targetIssues shape
+ * the CLI path already feeds runner.js, instead of 400ing on the whole
+ * opaque string. A non-string `value` (including `undefined`) returns `[]`
+ * so the caller falls through to `validateIssueId(value)` for byte-identical
+ * error text on the missing/malformed cases this never used to split.
+ * @param {*} value
+ * @returns {string[]}
+ */
+function splitIssueIds(value) {
+    if (typeof value !== 'string') return [];
+    return value.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
 /** Normalize a `members` request value (array OR comma string) into a deduped array. */
@@ -270,6 +292,17 @@ export function defaultBuildVersion() {
  *   proxyState?: (port: number) => Promise<object>,
  *   proxyStop?: (port: number) => Promise<object>,
  *   resolvePort?: (pid: number|null) => number|undefined,
+ *   hasTerminalState?: (sprintId: string, branch: string|null) => object|null,
+ *     apra-fleet-2l4.1: defaults to watchdog.mjs's defaultHasTerminalState()
+ *     (a pure on-disk read of the engine's own persisted old_runs/<runId>.json
+ *     terminal record). getSprint()/stopSprint() consult this BEFORE
+ *     resolvePort()/proxyState()/proxyStop() -- a persisted terminal state can
+ *     exist while the child's OS process is still alive in its post-terminal
+ *     dashboard-linger window (its embedded HTTP viewer server closes before
+ *     the process itself exits), a window PID-liveness-based resolvePort()
+ *     cannot see on its own and would otherwise proxy into a closed port
+ *     (ECONNREFUSED surfacing as a raw 500). Inject to stub without real fs
+ *     reads in tests.
  *   beforeLaunch?: (ctx: { members: string[], issueRoots: string[] }) => Promise<void>|void,
  *     Defaults to defaultMemberOverlapGuard(ledger) (eft.5.2): rejects with a
  *     409 ApiError on any member overlap with an active reservation. Inject to
@@ -307,6 +340,11 @@ export function createSprintController(deps = {}) {
     const generateSprintId = deps.generateSprintId ?? ((issue) => `${issue}-${randomUUID()}`);
     const resolvePort = deps.resolvePort
         ?? ((pid) => (pid != null && spawner.getLiveEntry ? spawner.getLiveEntry(pid)?.port : undefined));
+    // apra-fleet-2l4.1: same collaborator watchdog.mjs's classifySprint() uses
+    // to distinguish CRASHED from FINISHED -- reused here so getSprint()/
+    // stopSprint() can detect "already terminal" independently of PID
+    // liveness, before ever touching the child's viewer port.
+    const hasTerminalState = deps.hasTerminalState ?? defaultHasTerminalState;
     const getBuildVersion = deps.getBuildVersion ?? defaultBuildVersion;
     // apra-fleet-gey.2: stamped ONCE, at controller creation (supervisor
     // startup) -- deliberately never re-read afterward, so this stays "what
@@ -316,13 +354,34 @@ export function createSprintController(deps = {}) {
 
     /** Validate a launch request against the SHARED runner.js helpers. */
     function validateLaunchRequest(body) {
-        const issue = body.issue ?? body.target_issue;
+        const rawIssue = body.issue ?? body.target_issue;
         const branch = body.branch;
         const base = body.base ?? body.base_branch;
         const members = normalizeMembers(body.members);
 
-        try { validateIssueId(issue); }
-        catch (err) { throw new ApiError(400, err.message, 'issue'); }
+        // apra-fleet-ymf.1: `issue` may be a single id OR a comma-separated
+        // list of ids (mirroring bin/cli.mjs:468's --issue flag / runner.js's
+        // targetIssues), so it is split and EACH id validated individually
+        // rather than passing the whole raw string to validateIssueId (whose
+        // ISSUE_ID_PATTERN has no comma in its charset and would 400 the
+        // entire multi-root request). When the split yields nothing (missing,
+        // non-string, empty, whitespace-only, or comma-only input),
+        // validateIssueId(rawIssue) is called directly on the ORIGINAL value
+        // so the error text for those edge cases is byte-identical to the
+        // pre-fix single-id behavior.
+        const issueIds = splitIssueIds(rawIssue);
+        if (issueIds.length === 0) {
+            try { validateIssueId(rawIssue); }
+            catch (err) { throw new ApiError(400, err.message, 'issue'); }
+            // validateIssueId only throws on a falsy/malformed value, so an
+            // empty split with a value it accepts should be unreachable --
+            // guarded anyway so a launch can never proceed with zero roots.
+            throw new ApiError(400, `[Arg Contract] issue must contain at least one id, got "${rawIssue}".`, 'issue');
+        }
+        for (const id of issueIds) {
+            try { validateIssueId(id); }
+            catch (err) { throw new ApiError(400, err.message, 'issue'); }
+        }
         try { validateBranchName(branch, 'branch'); }
         catch (err) { throw new ApiError(400, err.message, 'branch'); }
         try { validateBranchName(base, 'base'); }
@@ -330,7 +389,11 @@ export function createSprintController(deps = {}) {
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
         }
-        return { issue, branch, base, members };
+        // `issue` stays a single comma-joined string (the exact shape
+        // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
+        // to the input for the single-id case); `issueIds` is the split array
+        // callers use for issueRoots / per-root history lookups.
+        return { issue: issueIds.join(','), issueIds, branch, base, members };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -371,30 +434,49 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
-        const { issue, branch, base, members } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members } = validateLaunchRequest(body);
         const rawRoleMap = body.roleMap === undefined
             ? undefined
             : (typeof body.roleMap === 'string' ? body.roleMap : JSON.stringify(body.roleMap));
         const roleMap = await roleMapResolver(rawRoleMap);
         const union = memberUnion(members, roleMap);
-        const issueRoots = [issue];
+        // apra-fleet-ymf.1: issueRoots is the SPLIT array of individual ids
+        // (never the raw comma-joined string) -- the same shape the CLI path
+        // already feeds runner.js's targetIssues, and what the ledger schema,
+        // history.latestForIssueRoot(), and the eft.5.3 issue-scope overlap
+        // guard all expect: one root id per array entry, not one entry
+        // holding every root joined together.
+        const issueRoots = issueIds;
 
-        // apra-fleet-gey.2: gate this relaunch on the prior incarnation's
-        // terminal record, BEFORE the member-overlap guard/spawn -- a
-        // deterministic, unaddressed prior failure (e.g. the engine's own
-        // BEADS_SYNC_CONFLICT, or a gey.1 LAUNCH_FAILED fast-exit) will
-        // almost certainly recur on an identical relaunch, so there is no
-        // reason to burn a spawn/reservation attempt re-hitting it. The
-        // request's `overrideRelaunchGate: true` is the documented,
+        // apra-fleet-gey.2 (extended by ymf.1 for multi-root requests): gate
+        // this relaunch on the prior incarnation's terminal record, BEFORE
+        // the member-overlap guard/spawn -- a deterministic, unaddressed
+        // prior failure (e.g. the engine's own BEADS_SYNC_CONFLICT, or a
+        // gey.1 LAUNCH_FAILED fast-exit) will almost certainly recur on an
+        // identical relaunch, so there is no reason to burn a
+        // spawn/reservation attempt re-hitting it. Checked per-root (in
+        // request order) since a multi-root request's ledger history is keyed
+        // by INDIVIDUAL root ids, not the joined string -- the first root
+        // with a deterministic prior terminal record gates the whole launch.
+        // The request's `overrideRelaunchGate: true` is the documented,
         // explicit escape hatch -- never a silent bypass.
-        const priorTerminal = typeof history.latestForIssueRoot === 'function'
-            ? history.latestForIssueRoot(issue)
-            : undefined;
-        if (priorTerminal && isDeterministicTerminalReason(priorTerminal) && body.overrideRelaunchGate !== true) {
+        let priorTerminal;
+        let priorTerminalRoot;
+        if (typeof history.latestForIssueRoot === 'function') {
+            for (const root of issueRoots) {
+                const found = history.latestForIssueRoot(root);
+                if (found && isDeterministicTerminalReason(found)) {
+                    priorTerminal = found;
+                    priorTerminalRoot = root;
+                    break;
+                }
+            }
+        }
+        if (priorTerminal && body.overrideRelaunchGate !== true) {
             const namedReason = priorTerminal.terminalReason ?? priorTerminal.reason ?? priorTerminal.event;
             throw new ApiError(
                 409,
-                `relaunch of '${issue}' refused: its prior incarnation ('${priorTerminal.sprintId}') ended with ` +
+                `relaunch of '${priorTerminalRoot}' refused: its prior incarnation ('${priorTerminal.sprintId}') ended with ` +
                 `'${namedReason}', which is treated as deterministic and unaddressed -- pass ` +
                 `overrideRelaunchGate: true to relaunch anyway.`,
                 'issue',
@@ -495,6 +577,17 @@ export function createSprintController(deps = {}) {
     async function getSprint(id) {
         const reservation = ledger.get(id);
         if (reservation) {
+            // apra-fleet-2l4.1: check FIRST whether the engine has already
+            // persisted a terminal run-state for this sprint (old_runs/
+            // <runId>.json) -- independent of PID liveness, so a child in its
+            // post-terminal dashboard-linger window (OS process still alive,
+            // but its embedded HTTP viewer server has already closed) is
+            // reported cleanly here instead of proxying into a closed port
+            // and surfacing a raw ECONNREFUSED-derived 500.
+            const terminalState = hasTerminalState(id, reservation.branch ?? null);
+            if (terminalState) {
+                return { sprintId: id, live: false, terminal: true, state: terminalState };
+            }
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {
                 const state = await proxyState(port);
@@ -514,6 +607,18 @@ export function createSprintController(deps = {}) {
         const reservation = ledger.get(id);
         if (!reservation) {
             throw new ApiError(404, `no live sprint '${id}' to stop`);
+        }
+        // apra-fleet-2l4.1: same terminal-state check as getSprint() above,
+        // BEFORE resolving/proxying the child's viewer port -- a persisted
+        // terminal run-state means there is genuinely nothing left to stop,
+        // even while the child's OS process is still alive in its
+        // post-terminal dashboard-linger window. Returns a clean no-op
+        // success instead of a doomed proxyStop() call against an
+        // already-closed port (previously surfaced as a raw 500
+        // ECONNREFUSED -- apra-fleet-2l4).
+        const terminalState = hasTerminalState(id, reservation.branch ?? null);
+        if (terminalState) {
+            return { sprintId: id, status: 'already-terminal', child: null };
         }
         const port = resolvePort(reservation.childPid ?? null);
         if (port == null) {
