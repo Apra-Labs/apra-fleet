@@ -224,6 +224,82 @@ describe('api -- POST /api/sprints validation + goal forwarding', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // apra-fleet-ymf.1: POST /api/sprints must accept the SAME comma-separated
+    // multi-root `issue` form the CLI's --issue flag already does, splitting
+    // it into individual `issueRoots` (never one opaque joined string) and
+    // validating each id -- see splitIssueIds()/validateLaunchRequest() in
+    // api.mjs. This is the headline behavior added by ymf.1; regression-tests
+    // both the split-and-validate happy path and the per-id validation.
+    test('apra-fleet-ymf.1: comma-separated issue ids launch one sprint scoped to both roots', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+
+        const result = await controller.launch({
+            issue: 'epic-1,epic-2', members: ['alice'], branch: 'feat/x', base: 'main',
+        });
+
+        // issueRoots is the SPLIT array, one entry per root -- not the raw
+        // comma-joined string -- matching the CLI's targetIssues shape.
+        assert.deepEqual(result.issueRoots, ['epic-1', 'epic-2']);
+        assert.equal(captured.length, 1);
+        // The child argv still receives the single comma-joined --issue value
+        // (byte-identical to what the CLI's own --issue flag would forward).
+        const args = captured[0].args;
+        const ii = args.indexOf('--issue');
+        assert.ok(ii >= 0, 'child argv must contain --issue');
+        assert.equal(args[ii + 1], 'epic-1,epic-2');
+        // Both roots are recorded on the ledger reservation, not just one.
+        const reservation = ledger.get(result.sprintId);
+        assert.deepEqual(reservation.issueRoots, ['epic-1', 'epic-2']);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-ymf.1: a single-id request still behaves exactly as before (no splitting artifacts)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({ tasks: [] }),
+        });
+        const result = await controller.launch({
+            issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main',
+        });
+        assert.deepEqual(result.issueRoots, ['PROJ-1']);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-ymf.1: an invalid id inside an otherwise-valid comma-separated list is rejected (400, no spawn)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        const captured = [];
+        const supervisor = createSupervisor({ port: 0 });
+        registerSprintRoutes(supervisor, createSprintController({
+            ledger, history, spawner: recordingSpawner(captured),
+            listMembers: () => ({ members: [] }), getBacklog: () => ({}),
+        }));
+
+        const res = mockRes();
+        await supervisor.handleRequest(
+            mockReq('POST', '/api/sprints', { issue: 'epic-1,bad id!!', members: ['a'], branch: 'feat/x', base: 'main' }),
+            res,
+        );
+        assert.equal(res.statusCode, 400);
+        assert.equal(payloadOf(res).field, 'issue');
+        // No child was spawned -- the whole multi-root launch is rejected,
+        // not just the offending id.
+        assert.equal(captured.length, 0);
+        assert.equal(ledger.list().length, 0, 'no partial ledger claim for a rejected multi-root launch');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('invalid issue id => 400 naming the issue field (via imported validateIssueId)', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
