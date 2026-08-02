@@ -722,6 +722,56 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // apra-fleet-2l4.1: a terminal-but-lingering child (the engine already
+    // persisted a terminal run-state, e.g. old_runs/<runId>.json, but the OS
+    // process/embedded viewer port has not exited yet) must be reported
+    // cleanly via hasTerminalState() -- BEFORE resolvePort()/proxyState() are
+    // ever reached -- instead of proxying into a closed port and surfacing a
+    // raw ECONNREFUSED-derived 500. hasTerminalState is injected here
+    // (per its own doc comment: "Inject to stub without real fs reads in
+    // tests") rather than exercising the real fs-backed defaultHasTerminalState.
+    test('apra-fleet-2l4.1: GET /api/sprints/:id on a terminal-but-lingering child returns {live:false, terminal:true} WITHOUT proxying the (closed) port', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        let resolvePortCalled = false;
+        let proxyStateCalled = false;
+        const terminalState = { terminalReason: 'FAILED', verdict: 'FAIL' };
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: (id, branch) => {
+                assert.equal(id, 's1');
+                assert.equal(branch, 'feat/x');
+                return terminalState;
+            },
+            resolvePort: (pid) => { resolvePortCalled = true; return pid === 42 ? 9200 : undefined; },
+            proxyState: async (port) => { proxyStateCalled = true; return { port, status: 'running', tree: [] }; },
+        });
+        const out = await controller.getSprint('s1');
+        assert.deepEqual(out, { sprintId: 's1', live: false, terminal: true, state: terminalState });
+        assert.equal(resolvePortCalled, false, 'resolvePort must not be called once hasTerminalState reports terminal');
+        assert.equal(proxyStateCalled, false, 'proxyState must not be called (no doomed proxy into a closed port)');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-2l4.1: GET /api/sprints/:id still proxies a genuinely live child (hasTerminalState returns falsy)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyState: async (port) => ({ port, status: 'running', tree: [] }),
+        });
+        const out = await controller.getSprint('s1');
+        assert.equal(out.live, true);
+        assert.equal(out.state.status, 'running');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('GET /api/sprints lists live reservations with resolved ports', async () => {
         const dir = await tmpDir();
         const { ledger, history } = await stores(dir);
@@ -748,6 +798,54 @@ describe('api -- POST /api/sprints/:id/stop proxy', () => {
         const controller = createSprintController({
             ledger, history, spawner: recordingSpawner([]),
             listMembers: () => ({}), getBacklog: () => ({}),
+            resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxyStop: async (port) => { stoppedPort = port; return { statusCode: 200 }; },
+        });
+        const out = await controller.stopSprint('s1');
+        assert.equal(stoppedPort, 9200);
+        assert.equal(out.status, 'stopping');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-2l4.1: the SAME terminal-state guard as GET /api/sprints/:id
+    // above, applied to the stop handler -- a persisted terminal run-state
+    // means there is genuinely nothing left to stop, even while the child's
+    // OS process is still alive in its post-terminal dashboard-linger window.
+    // Must return a clean no-op success WITHOUT ever resolving/proxying the
+    // (already-closed) child /stop port.
+    test('apra-fleet-2l4.1: stopping a terminal-but-lingering child returns {status:"already-terminal"} WITHOUT proxying the (closed) port', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        let resolvePortCalled = false;
+        let proxyStopCalled = false;
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: (id, branch) => {
+                assert.equal(id, 's1');
+                assert.equal(branch, 'feat/x');
+                return { terminalReason: 'FAILED' };
+            },
+            resolvePort: (pid) => { resolvePortCalled = true; return pid === 42 ? 9200 : undefined; },
+            proxyStop: async (port) => { proxyStopCalled = true; return { statusCode: 200 }; },
+        });
+        const out = await controller.stopSprint('s1');
+        assert.deepEqual(out, { sprintId: 's1', status: 'already-terminal', child: null });
+        assert.equal(resolvePortCalled, false, 'resolvePort must not be called once hasTerminalState reports terminal');
+        assert.equal(proxyStopCalled, false, 'proxyStop must not be called (no doomed proxy into a closed port)');
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-2l4.1: a genuinely live child is still stopped exactly as before (hasTerminalState returns falsy)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await stores(dir);
+        await ledger.claim('s1', { members: ['a'], issueRoots: ['R'], childPid: 42, branch: 'feat/x' });
+        let stoppedPort = null;
+        const controller = createSprintController({
+            ledger, history, spawner: recordingSpawner([]),
+            listMembers: () => ({}), getBacklog: () => ({}),
+            hasTerminalState: () => null,
             resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
             proxyStop: async (port) => { stoppedPort = port; return { statusCode: 200 }; },
         });
