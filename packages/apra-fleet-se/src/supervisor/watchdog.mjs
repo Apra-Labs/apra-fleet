@@ -507,6 +507,21 @@ export function createWatchdog(deps = {}) {
     let snapshot = [];
     /** @type {ReturnType<typeof setInterval>|null} */
     let timer = null;
+    // apra-fleet-eft.4.9: reentrancy guard for the setInterval-triggered
+    // classifyAll() below. classifyAll() does blocking per-sprint spawnSync
+    // cmdline reads plus ~1.5s HTTP liveness probes per sprint, so with
+    // several tracked sprints a single tick can exceed intervalMs and the
+    // NEXT tick can fire while the previous classifyAll() promise is still
+    // unresolved. Two overlapping classifyAll() runs both mutate the shared
+    // recordedCrashes/recordedFinishes/recordedLaunchFailures sets and can
+    // both race to write the same sprint's persisted state file
+    // (recordTerminalError/recordFinished), so a tick that fires while the
+    // prior one is still in flight is skipped here rather than allowed to
+    // start a second, overlapping classifyAll() run. This flag guards ONLY
+    // the interval-triggered path below -- a direct classifyAll() call (e.g.
+    // start()'s initial prime, or a test/consumer calling it explicitly)
+    // is never blocked by it.
+    let intervalClassifyInFlight = false;
     // Sprint ids the CRASHED recorder has already fired for, so a wedged
     // ledger entry that stays CRASHED across many interval ticks gets
     // exactly ONE terminal-error log line + state write, not one per tick.
@@ -787,7 +802,21 @@ export function createWatchdog(deps = {}) {
             // start() does not race the first interval tick.
             try { await classifyAll(); } catch (err) { logError('[watchdog] initial classify failed:', err); }
             timer = setIntervalFn(() => {
-                classifyAll().catch((err) => logError('[watchdog] interval classify failed:', err));
+                // apra-fleet-eft.4.9: skip this tick if the previous
+                // interval-triggered classifyAll() has not resolved yet, so
+                // overlapping runs never race on recordedCrashes/
+                // recordedFinishes/recordedLaunchFailures or interleave
+                // their state-file writes. The `finally` always clears the
+                // flag -- even a classifyAll() rejection (already caught
+                // below) or a thrown error unlocks the NEXT tick.
+                if (intervalClassifyInFlight) {
+                    log('[watchdog] tick skipped: previous classifyAll() still in flight');
+                    return;
+                }
+                intervalClassifyInFlight = true;
+                classifyAll()
+                    .catch((err) => logError('[watchdog] interval classify failed:', err))
+                    .finally(() => { intervalClassifyInFlight = false; });
             }, intervalMs);
             // Never let the watchdog's own interval keep the process alive on its
             // account -- the supervisor lifecycle owns process liveness.
