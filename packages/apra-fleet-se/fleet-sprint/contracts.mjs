@@ -476,6 +476,19 @@ const FALLBACK_integReport = {
             type: 'string',
             description: "The deploy-verified git commit part 2 (smoke test) actually ran against. Optional for backward compatibility, but an orchestrator that supplied a deployed SHA in the dispatch prompt treats a missing or mismatching value as INCONCLUSIVE evidence (never a pass). See integ-test-runner.md 'Part-2 evidence freshness'.",
         },
+        // apra-fleet-jfo: verify-set (any issue_type, all children closed) closure
+        // reporting. Both optional for backward compatibility -- absent on a
+        // dispatch that named no verify-set ids. Mirrors
+        // integ-test-runner-output.json; keep the two in sync.
+        verifySetClosed: { type: 'array', items: { type: 'string' } },
+        verifySetLeftOpen: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: { id: { type: 'string' }, reason: { type: 'string' } },
+                required: ['id', 'reason'],
+            },
+        },
     },
     required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary'],
 };

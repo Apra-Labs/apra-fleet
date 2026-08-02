@@ -2620,6 +2620,94 @@ export function validateArgs(args) {
 // from that same field, so this prompt's instruction MUST stay aligned with
 // planner.md Step 3.
 /**
+ * Classify beads whose every child is closed as ready for the `verify` route
+ * (apra-fleet-jfo): implementation-complete parents that must be excluded
+ * from Plan/Develop/Review and verified against the live deployed product,
+ * never administratively closed on child-closure alone -- see
+ * docs/fleet-sprint-phase-routing-design.md and apra-fleet-jfo for the design.
+ *
+ * Pure: derives the verify set fresh from `allBeads` on every call. There is
+ * no persisted list -- callers re-invoke this at each classification point
+ * (pre-sprint validation, cycle top, IntegTest dispatch) rather than caching,
+ * so a crash-restart re-derives it for free and nothing can drift out of sync
+ * with the beads DB.
+ *
+ * Eligibility (a bead qualifies iff ALL of):
+ *   1. in scope: is itself one of `targetIssues`, or is a BFS descendant of
+ *      one (same discovery rule bdListScoped uses).
+ *   2. status is 'open' or 'in_progress' (not already closed/deferred).
+ *   3. has at least one child. Childless beads are leaves -- they route
+ *      through the normal Plan/Develop pipeline, never verify. A parent with
+ *      NO children is never eligible, regardless of anything else.
+ *   4. EVERY child (any issue_type) has status 'closed', checked against the
+ *      FULL unfiltered `allBeads` list, not a scope-filtered subset -- an
+ *      out-of-scope open child must still block eligibility. Partial closure
+ *      never qualifies.
+ *   5. no unmet 'blocks' dependency (apra-fleet inv-4): a parent whose
+ *      blocker is still being implemented in this same run must not be
+ *      verified against today's incomplete state.
+ *
+ * @param {Array<object>} allBeads - the FULL, unfiltered project bead list.
+ * @param {string[]} targetIssues - the sprint's target issue root id(s).
+ * @returns {{ verifyIds: string[], ineligible: Array<{id: string, reason: string}> }}
+ */
+export function classifyVerifySet(allBeads, targetIssues) {
+    const byId = new Map((allBeads || []).map((b) => [b.id, b]));
+    const childrenOf = new Map();
+    for (const b of (allBeads || [])) {
+        if (b && b.parent) {
+            if (!childrenOf.has(b.parent)) childrenOf.set(b.parent, []);
+            childrenOf.get(b.parent).push(b);
+        }
+    }
+
+    // Same BFS discovery bdListScoped uses (module-scoped, ~line 5099), kept
+    // as a standalone copy here since this function must stay pure/testable
+    // independent of the closure state bdListScoped lives inside.
+    const scopeIds = new Set();
+    const frontier = [...(targetIssues || [])];
+    while (frontier.length > 0) {
+        const id = frontier.shift();
+        for (const child of (childrenOf.get(id) || [])) {
+            if (!scopeIds.has(child.id)) {
+                scopeIds.add(child.id);
+                frontier.push(child.id);
+            }
+        }
+    }
+    for (const id of (targetIssues || [])) scopeIds.add(id);
+
+    const verifyIds = [];
+    const ineligible = [];
+    for (const id of scopeIds) {
+        const bead = byId.get(id);
+        if (!bead) continue;
+        if (bead.status !== 'open' && bead.status !== 'in_progress') continue;
+
+        const kids = childrenOf.get(id) || [];
+        if (kids.length === 0) continue; // leaf -- normal pipeline, not eligible
+
+        if (!kids.every((k) => k.status === 'closed')) continue; // partial closure never qualifies
+
+        const unmetBlockerIds = (bead.dependencies || [])
+            .filter((d) => d.type === 'blocks')
+            .map((d) => d.depends_on_id)
+            .filter((depId) => {
+                const dep = byId.get(depId);
+                return dep && dep.status !== 'closed';
+            });
+        if (unmetBlockerIds.length > 0) {
+            ineligible.push({ id, reason: `unmet blocker(s): ${unmetBlockerIds.join(', ')}` });
+            continue;
+        }
+
+        verifyIds.push(id);
+    }
+
+    return { verifyIds, ineligible };
+}
+
+/**
  * @param {{
  *   isDeltaCycle: boolean,
  *   targetIssues: string[],
@@ -2629,10 +2717,11 @@ export function validateArgs(args) {
  *   feedback: string|null,
  *   replanScope?: string[]|null,
  *   rejectedNewTasksToResubmit?: Array<{title: string, description: string, reason: string, cycle: number|string}>,
+ *   verifyExcluded?: string[],
  * }} opts
  * @returns {string}
  */
-export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [] }) {
+export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, rejectedNewTasksToResubmit = [], verifyExcluded = [] }) {
     const lines = [];
 
     // SCOPED in-cycle replan clause: present ONLY when a reviewer flagged
@@ -2690,6 +2779,22 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
     }
 
     lines.push(`Sprint root issue id(s) (--parent scope for this sprint): ${targetIssues.join(', ')}.`);
+
+    // apra-fleet-jfo: authoritative, data-driven verify-route exclusion. This
+    // supersedes the generic "pending feature-closure" prose above with an
+    // exact id list from classifyVerifySet(), on EVERY cycle (not just delta
+    // re-planning passes) and for any issue_type, not just features/bugs.
+    if (Array.isArray(verifyExcluded) && verifyExcluded.length > 0) {
+        lines.push(
+            `VERIFY-ROUTE EXCLUSION -- these bead(s) are implementation-complete (every child ` +
+            `closed) and are routed to integration-test verification this cycle, not planning: ` +
+            `${verifyExcluded.join(', ')}. Do NOT create tasks for them, do NOT re-decompose them, ` +
+            `do NOT treat them as unplanned or unaddressed work, and do NOT let plan-review gates ` +
+            `bind over them -- they are out of scope for this planning pass entirely. Only the ` +
+            `integration-test phase may close them (or reopen work under them if verification finds ` +
+            `a real gap).`
+        );
+    }
     lines.push(`Goal priority for this sprint: ${goal}.`);
     lines.push(
         // Mirrors buildPlanReviewerPrompt's matching criterion. Doers may only
@@ -2759,7 +2864,7 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
  * }} opts
  * @returns {string}
  */
-function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null }) {
+function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [] }) {
     const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
     const lines = [
         'Review the beads DAG created by the planner for this sprint, per your agent contract.',
@@ -2767,6 +2872,19 @@ function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], 
         `sprint root issue id(s) ${targetIssues.join(', ')}, goal priority ${goal}. ` +
         'Review only the features and tasks under this scope.',
     ];
+
+    // apra-fleet-jfo: same authoritative, data-driven verify-route exclusion
+    // as buildPlannerPrompt -- the plan-reviewer must not fail the plan for
+    // "not decomposing" or "not covering" a bead that is routed to
+    // integration-test verification, not planning.
+    if (Array.isArray(verifyExcluded) && verifyExcluded.length > 0) {
+        lines.push(
+            `VERIFY-ROUTE EXCLUSION -- these bead(s) are implementation-complete (every child ` +
+            `closed) and routed to integration-test verification this cycle: ${verifyExcluded.join(', ')}. ` +
+            `Do not withhold approval on the grounds that they are undecomposed, uncovered, or ` +
+            `missing model metadata -- they are out of scope for this plan review entirely.`
+        );
+    }
 
     // Present only on a scoped in-cycle replan; an ordinary plan-review
     // dispatch carries no such clause.
@@ -5724,7 +5842,19 @@ async function runSprintCycle(context) {
 
     let initialBeads = await bdListScoped('--ready --json');
 
-    if (initialBeads.length === 0) {
+    // apra-fleet-jfo: a sprint whose scope has zero ready leaf work can still
+    // be legitimate -- a pure-verify sprint aimed at an already-implemented
+    // parent (or a target bead that is itself all-children-closed). Computed
+    // once here and reused below so the "nothing to do" diagnostics never
+    // misreport this as a deadlock.
+    const preSprintVerifyIds = initialBeads.length === 0
+        ? classifyVerifySet(await fetchAllBeadsShared(), targetIssues).verifyIds
+        : [];
+    if (preSprintVerifyIds.length > 0) {
+        log(`Pre-sprint validation: no ready leaf beads, but ${preSprintVerifyIds.length} bead(s) are implementation-complete and routed to verify: ${preSprintVerifyIds.join(', ')}. Proceeding as a verify-only sprint.`);
+    }
+
+    if (initialBeads.length === 0 && preSprintVerifyIds.length === 0) {
         // An empty `--ready` set is not by itself "nothing left to do": real
         // unblocked work can be deadlocked on a bead stuck in a stale
         // 'in_progress' state left by an interrupted run that never reached `bd
@@ -5862,6 +5992,20 @@ async function runSprintCycle(context) {
             .map(([id]) => id);
     }
 
+    // apra-fleet-jfo: every bead id ever classified into the verify set this
+    // sprint, monotone (added at classification, never removed -- even after
+    // a bounce or eventual closure). Feeds the stall-detector's progress
+    // score below: a bead cannot re-earn classification credit by
+    // oscillating in and out of eligibility.
+    const verifyEverIds = new Set();
+
+    // apra-fleet-jfo D6: per-parent count of verify-fail bounces this sprint
+    // (a gap bug filed under the parent, making it ineligible again). Capped
+    // at VERIFY_GAP_LIMIT -- a parent that keeps failing verification is
+    // deferred rather than bounced forever.
+    const VERIFY_GAP_LIMIT = 2;
+    const verifyGapCounts = new Map();
+
     // Deploy/Integration failure evidence, threaded into the Final Review's
     // evidence-based prompt below -- never silently swallowed.
     const deployFailures = [];
@@ -5927,6 +6071,21 @@ async function runSprintCycle(context) {
         }
 
         // =======================
+        // apra-fleet-jfo: Route -- classify verify-set beads BEFORE Plan
+        // =======================
+        // A bead whose every child is closed is implementation-complete and
+        // must not be re-planned/re-decomposed -- it needs real integration-
+        // test verification, not another Plan/Develop pass. Recomputed fresh
+        // every cycle (no persisted list); classification itself counts as
+        // sprint progress (see the stall-detector high-water-mark change
+        // below), which is the actual fix for tonight's false-stall bug.
+        const { verifyIds: verifySetThisCycle } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues);
+        for (const id of verifySetThisCycle) verifyEverIds.add(id);
+        if (verifySetThisCycle.length > 0) {
+            log(`Route C${cycle}: ${verifySetThisCycle.length} bead(s) implementation-complete, routed to verify (excluded from Plan/Develop): ${verifySetThisCycle.join(', ')}`);
+        }
+
+        // =======================
         // 1. Planning Loop
         // =======================
         // Approval is `verdict === 'APPROVED'` EXACTLY, read from the
@@ -5966,6 +6125,7 @@ async function runSprintCycle(context) {
                 requirementsContent,
                 feedback: plannerFeedback,
                 rejectedNewTasksToResubmit: pendingRejectedNewTasks,
+                verifyExcluded: verifySetThisCycle,
             });
             // The planner writes no code but MUTATES beads (it creates the task
             // DAG), so it is bracketed pushCode:false / pushBeads:true -- its
@@ -6174,7 +6334,7 @@ async function runSprintCycle(context) {
                 try {
                     try {
                         verdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
-                            buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts }),
+                            buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle }),
                             { ...planReviewerDispatchOpts, member_name: getMemberForRole('plan-reviewer') }
                         ));
                     } catch (err) {
@@ -6489,6 +6649,7 @@ async function runSprintCycle(context) {
                                 // like the main Plan phase, so a pending
                                 // rejected newTask must resurface here too.
                                 rejectedNewTasksToResubmit: pendingRejectedNewTasks,
+                                verifyExcluded: verifySetThisCycle,
                             }),
                             {
                                 member_name: getMemberForRole('planner'),
@@ -6520,7 +6681,7 @@ async function runSprintCycle(context) {
                     const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 60;
                     try {
                         const scopedVerdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
-                            buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds }),
+                            buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle }),
                             {
                                 member_name: getMemberForRole('plan-reviewer'),
                                 agentType: 'plan-reviewer',
@@ -7610,6 +7771,16 @@ async function runSprintCycle(context) {
             // INCONCLUSIVE below instead of a false passed:false FAIL. Carries
             // {reason, message} for the note.
             let integInfraInconclusive = null;
+            // apra-fleet-jfo: declared here (not `const` inside the try block
+            // below) so the bounce-cap logic after the try/catch can still see
+            // the verify set even when the try block throws early -- a `const`
+            // inside `try {}` is block-scoped and unreachable once the block
+            // ends, which caused a live ReferenceError on any genuine FAIL path
+            // that reached the bounce-cap check. Defaults to empty so an
+            // early-thrown dispatch simply skips the bounce-cap block below
+            // (its `verifySetForIntegTest.length > 0` guard short-circuits).
+            let verifySetForIntegTest = [];
+            let verifySetIdSet = new Set();
             try {
                 // integ-test-runner.md's contract requires "an explicit list of
                 // feature ids ... already scoped for you by the orchestrator" as
@@ -7621,43 +7792,44 @@ async function runSprintCycle(context) {
                 // per the fixed per-cycle phase sequence every other
                 // cycle-evaluation check in this file assumes.
                 const openFeatures = await bdListScoped('--type=feature --status=open --json');
-                // Pending-closure BUGS -- open bug-type beads whose task children
-                // are all closed -- have no other closure owner: doers refuse
-                // them (non-task), reviewers may not close, and the feature
-                // prompt below only names features, so they would linger open at
-                // goal priority forever. The integ runner has bead-closing
-                // authority and pushBeads: true, so it owns them.
-                // At most one `bd list --all` is issued for this whole block; the
-                // open-bug derivation reuses the shared snapshot.
-                const allForClosure = await bdListScoped('');
-                const openBugs = allForClosure.filter((b) => b.issue_type === 'bug' && b.status === 'open');
-                const childrenByParent = new Map();
-                for (const b of allForClosure) {
-                    if (!b.parent) continue;
-                    if (!childrenByParent.has(b.parent)) childrenByParent.set(b.parent, []);
-                    childrenByParent.get(b.parent).push(b);
-                }
-                const pendingClosureBugs = openBugs.filter((bug) => {
-                    const kids = childrenByParent.get(bug.id) || [];
-                    return kids.length > 0 && kids.every((k) => k.status === 'closed');
-                });
-                const pendingClosureClause = pendingClosureBugs.length > 0
-                    ? ` Additionally, these open bug bead(s) have ALL their task children closed and await ` +
-                      `verification-closure: ${pendingClosureBugs.map((b) => b.id).join(', ')}. For each, if ` +
-                      `your pass shows the underlying defect no longer reproduces, close it (bd close) with a ` +
-                      `note naming the evidence; if it still reproduces, leave it open and say why.`
+                // apra-fleet-jfo: replaces the old bug-only pendingClosureBugs
+                // derivation. Any issue_type qualifies (bug, feature, task-parent,
+                // epic); classified against the FULL unfiltered project bead list
+                // (fetchAllBeadsShared, not a scope-filtered subset) so an
+                // out-of-scope open child still blocks eligibility. These beads
+                // have no other closure owner: doers refuse non-task beads,
+                // reviewers may not close, and the plain feature prompt below only
+                // names features -- without this they would linger open at goal
+                // priority forever. The integ runner has bead-closing authority
+                // and pushBeads: true, so it owns verify-set closure.
+                ({ verifyIds: verifySetForIntegTest } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues));
+                verifySetIdSet = new Set(verifySetForIntegTest);
+                // Dedupe: a feature already in the verify set gets the stronger
+                // verify clause below (real evidence, gap filed under itself), not
+                // also the generic "run tests for this feature" line.
+                const openFeaturesNotInVerifySet = openFeatures.filter((f) => !verifySetIdSet.has(f.id));
+                const verifyClause = verifySetForIntegTest.length > 0
+                    ? ` Additionally, these bead(s) have ALL their children closed and await ` +
+                      `verification-closure: ${verifySetForIntegTest.join(', ')}. For each, verify against the ` +
+                      `deployed build per the playbook. If your pass shows the underlying work holds (the ` +
+                      `defect no longer reproduces, or the feature behaves as specified), close it (bd close) ` +
+                      `with a note citing the commands run and the observed output. If it does NOT hold, leave ` +
+                      `it open and file a bug describing the gap with evidence, parented under THAT bead ` +
+                      `specifically (--parent <that bead's own id>, NOT ${targetIssues[0]}) -- filing it under ` +
+                      `the right parent is required so the gap is correctly attributed and that parent is ` +
+                      `re-routed to development next cycle instead of staying stuck in verify.`
                     : '';
                 // The per-cycle Integ Test phase is FEATURE CLOSURE ONLY:
                 // integ-test-playbook.md owns no sandbox, no smoke test, and no
                 // real-bd suite -- those belong to regression-test-playbook.md,
                 // dispatched once per sprint in Finalization below.
-                const featurePrompt = (openFeatures.length > 0
+                const featurePrompt = (openFeaturesNotInVerifySet.length > 0
                     ? `Run tests using integ-test-playbook.md, for these open feature id(s) only: ` +
-                      `${openFeatures.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
+                      `${openFeaturesNotInVerifySet.map((f) => f.id).join(', ')}. Add bug beads if needed, filed under ` +
                       `--parent ${targetIssues[0]}.`
                     : `Run tests using integ-test-playbook.md. No open type=feature beads are in scope ` +
                       `this cycle -- report nothing to test. Add bug beads if needed, filed under ` +
-                      `--parent ${targetIssues[0]}.`) + pendingClosureClause;
+                      `--parent ${targetIssues[0]}.`) + verifyClause;
                 // integ-test-runner does NOT touch code (pushCode: false, no git
                 // push) but it DOES mutate beads -- it closes passing features
                 // and files bug beads -- so it must D-push those mutations
@@ -7805,6 +7977,43 @@ async function runSprintCycle(context) {
                 // `bugsFiled.length`.
                 integFailures.push({ cycle, notes: integResult.summary, bugsFiled: integResult.bugsFiled });
                 log(`Integration tests FAILED this cycle (C${cycle}, bugsFiled: ${integResult.bugsFiled.join(', ') || 'none'}): ${integResult.summary}`);
+            } else {
+                // apra-fleet-4bg: a successful/no-op cycle previously produced NO
+                // log line at all, making it indistinguishable from a silent
+                // contract violation (an agent that never touched its scope but
+                // still reported passed:true). Log every outcome, not just
+                // failures.
+                log(`Integration tests PASSED this cycle (C${cycle}): ${integResult.featuresClosed} feature(s) closed, ${integResult.issuesCreated} bug(s) filed. ${integResult.summary}`);
+            }
+            // apra-fleet-jfo D6: verify-fail bounce cap. A gap bug filed under a
+            // verify-set parent makes that parent structurally ineligible again
+            // at next classification (its child count now includes an open bug)
+            // -- no sticky "bounced" flag is needed for the round-trip itself.
+            // This only tracks HOW MANY TIMES a given parent has bounced, so a
+            // parent that keeps failing verification is deferred rather than
+            // looping forever.
+            if (Array.isArray(integResult.bugsFiled) && integResult.bugsFiled.length > 0 && verifySetForIntegTest.length > 0) {
+                for (const bugId of integResult.bugsFiled) {
+                    try {
+                        const bugShowRaw = await command(`bd show ${bugId} --json`, { member_name: orchestratorMember, silent: true });
+                        const bugBeads = parseBdJson(bugShowRaw, `bd show ${bugId} --json`);
+                        const parentId = Array.isArray(bugBeads) ? bugBeads[0]?.parent : bugBeads?.parent;
+                        if (!parentId || !verifySetIdSet.has(parentId)) continue;
+                        const gapCount = (verifyGapCounts.get(parentId) ?? 0) + 1;
+                        verifyGapCounts.set(parentId, gapCount);
+                        if (gapCount > VERIFY_GAP_LIMIT) {
+                            log(`Verify-route bounce cap: ${parentId} has failed verification ${gapCount} time(s) this sprint (limit ${VERIFY_GAP_LIMIT}) -- deferring rather than bouncing again.`);
+                            await command(
+                                `bd update ${parentId} --status=deferred --append-notes "Deferred by apra-fleet-jfo's verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
+                                { member_name: orchestratorMember, silent: true }
+                            );
+                        } else {
+                            log(`Verify-route bounce: ${parentId} failed verification (gap bug ${bugId} filed), attempt ${gapCount}/${VERIFY_GAP_LIMIT} -- will re-route to plan/develop once ${bugId} closes.`);
+                        }
+                    } catch (bugLookupErr) {
+                        log(`Verify-route bounce-cap lookup for ${bugId} failed (non-fatal, cap tracking skipped for this bug): ${bugLookupErr.message}`);
+                    }
+                }
             }
             // apra-fleet-nwh.1: fold this cycle's Integ Test spend (dispatch
             // plus any resume/retry inside the try/catch above) into the
@@ -7845,12 +8054,24 @@ async function runSprintCycle(context) {
         // is caught.
         const closedCount = (await bdListScoped('--status=closed --json')).length;
         closedCountHistory.push(closedCount);
+        // apra-fleet-jfo: a bead classified into the verify set this cycle is
+        // real progress too -- it was implementation-complete work correctly
+        // excluded from Plan/Develop, now awaiting real integration-test
+        // verification (which cannot happen until IntegTest actually runs).
+        // Without this, a cycle that closes every leaf bead under several
+        // parents -- but closes none of the parents themselves, since only
+        // IntegTest may do that -- reads as zero progress and stalls the
+        // sprint, exactly what happened live 2026-08-02 on apra-fleet-l7n and
+        // apra-fleet-2sn. `verifyEverIds` is monotone (only ever grows), so a
+        // bead cannot re-earn credit by oscillating in and out of
+        // eligibility -- the high-water-mark oscillation-proofing survives.
+        const progressScore = closedCount + verifyEverIds.size;
         // High-water-mark progress. A cycle only counts as progress when it sets
-        // a NEW all-time high for the closed count this sprint -- returning to a
-        // previously-seen value (even one different from the immediately prior
-        // cycle, e.g. 5,4,5,4,...) is not progress.
-        if (closedCount > highWaterClosedCount) {
-            highWaterClosedCount = closedCount;
+        // a NEW all-time high for this sprint -- returning to a previously-seen
+        // value (even one different from the immediately prior cycle, e.g.
+        // 5,4,5,4,...) is not progress.
+        if (progressScore > highWaterClosedCount) {
+            highWaterClosedCount = progressScore;
             staleCycles = 0;
         } else {
             staleCycles++;
@@ -7862,13 +8083,29 @@ async function runSprintCycle(context) {
                 ? ` Reopen-thrash detected on bead(s) [${thrashIds.join(', ')}] (reopened more than ${REOPEN_THRASH_LIMIT} times) -- ` +
                   `likely cause of the oscillation.`
                 : '';
+            const verifySuffix = verifyEverIds.size > 0
+                ? ` ${verifyEverIds.size} bead(s) were routed to verify this sprint but never closed -- the verifier ` +
+                  `may be failing rather than the sprint being genuinely out of work: ${[...verifyEverIds].join(', ')}.`
+                : '';
             throw new StalledSprintError(
-                `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress on closed beads ` +
-                `in scope '${sprintFilter}'. Closed-count history: [${closedCountHistory.join(', ')}] (high-water mark: ${highWaterClosedCount}).` +
-                thrashSuffix +
+                `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress ` +
+                `(closed beads + verify-routed beads) in scope '${sprintFilter}'. Closed-count history: ` +
+                `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
+                thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
             );
+        }
+
+        // apra-fleet-jfo D5: if the ONLY open-at-goal beads remaining are
+        // verify-routed and no playbook exists to verify them, no further
+        // cycle can make progress by construction -- exit to Finalization
+        // directly rather than let the stall net eventually convert
+        // "finished but unverifiable" into an ABORT.
+        if (!hasPlaybook && openAtGoal.length > 0 && openAtGoal.every((b) => verifyEverIds.has(b.id))) {
+            log(`Cycle ${cycle}: all ${openAtGoal.length} remaining open-at-goal bead(s) are verify-routed (${openAtGoal.map((b) => b.id).join(', ')}) and no integ-test-playbook.md exists to verify them -- exiting cycle loop, cannot make further progress by construction.`);
+            endGroup();
+            break;
         }
 
         // The exit decision below must never rely on a verdict from an EARLIER

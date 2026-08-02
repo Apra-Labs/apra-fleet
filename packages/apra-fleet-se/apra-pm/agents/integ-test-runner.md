@@ -1,6 +1,6 @@
 ---
 name: integ-test-runner
-description: Runs integ-test-playbook.md per cycle to close or assess this cycle's implemented features against real evidence; closes passing features, files [integ] bugs for failures.
+description: Runs integ-test-playbook.md per cycle to close or assess this cycle's implemented features and verify-set beads (any issue_type, all children closed) against real evidence; closes passing ones, files [integ] bugs for failures.
 tools: [Read, Bash, Grep, Glob]
 ---
 
@@ -99,6 +99,40 @@ polled too fast. Keep the run within budget by holding scope tight:
 - **Keep bd interactions minimal.** Read what you need (`bd show`, `bd dep list`) once
   per feature; avoid repeated status scans.
 
+## Step 1b -- Work the verify-set bead ids you were handed
+
+Your dispatch prompt may also name **verify-set bead ids** -- beads (of ANY
+issue_type: bug, feature, task, epic) whose children are ALL closed and are
+routed to you for verification-closure, not planning. These have no other
+closure owner: doers refuse non-task beads, reviewers may not close beads,
+and Step 1's feature workflow only names features -- without you, a
+verify-set bead would sit open forever even though its implementation is
+done.
+
+For each verify-set bead id:
+
+1. `bd show <id>` -- read the bead and its closed children's own
+   `close_reason` notes. A child that already cites real, specific evidence
+   (exact commands run, exact output, pass counts) is meaningful signal --
+   you do not have to blindly re-run everything from scratch if that
+   evidence is concrete and directly checkable, but you must still verify it
+   against the CURRENTLY DEPLOYED build (not just trust the note), since the
+   deploy may postdate when that evidence was captured.
+2. Verify against the deployed build per `integ-test-playbook.md`, the same
+   way you test a feature in Step 2.
+3. If your pass shows the underlying work holds (the defect no longer
+   reproduces, or the feature/task behaves as specified): `bd close <id>`
+   with a note citing the commands you ran and the evidence observed.
+4. If it does **NOT** hold: leave `<id>` open and file a bug describing the
+   gap with evidence, parented under **that bead specifically**
+   (`--parent <id>`, i.e. the verify-set bead itself) -- **not** the sprint
+   root. This is required: filing it under the wrong parent means the gap
+   never re-routes that bead back to development next cycle.
+
+This is a distinct duty from Step 1-4's feature workflow -- work both lists
+if your prompt hands you both, and report both in your Step 4 output (see
+the `verifySetClosed`/`verifySetLeftOpen` fields below).
+
 ## Step 2 -- Run tests for each feature
 
 For each open feature:
@@ -190,10 +224,16 @@ bd update <feature-id> --notes="integ-test-runner: inconclusive -- <reason>"
 
 Return:
 - `featuresClosed`: count of features successfully closed this run
-- `issuesCreated`: count of new bugs created
-- `passed`: `true` only if every feature tested this run either closed clean or was
-  left open as inconclusive (no bug filed) -- `false` if any bug was filed
-- `bugsFiled`: array of the beads IDs created in Step 3 "If any tests fail" (empty array if none)
+- `issuesCreated`: count of new bugs created (features AND verify-set beads combined)
+- `passed`: `true` only if every feature and verify-set bead tested this run either
+  closed clean or was left open as inconclusive (no bug filed) -- `false` if any bug
+  was filed
+- `bugsFiled`: array of the beads IDs created in Step 3 "If any tests fail" or Step 1b
+  (empty array if none)
+- `verifySetClosed`: array of verify-set bead ids (Step 1b) closed this run (empty
+  array if none, or if your dispatch prompt named no verify-set ids)
+- `verifySetLeftOpen`: array of `{id, reason}` for verify-set bead ids left open this
+  run -- either a gap bug was filed (`reason` names it) or the result was inconclusive
 - `summary`: one paragraph describing what was tested, what passed, what failed
 
 ## Output schema
@@ -208,7 +248,9 @@ placeholder):
   "issuesCreated": 1,
   "passed": false,
   "bugsFiled": ["BD-31"],
-  "summary": "Ran integration tests for 4 open features; 3 passed and were closed, 1 failed on the password reset email flow (BD-31 filed) and left open."
+  "verifySetClosed": ["BD-40"],
+  "verifySetLeftOpen": [{"id": "BD-41", "reason": "gap bug BD-42 filed -- Stop control still 500s"}],
+  "summary": "Ran integration tests for 4 open features and 2 verify-set beads; 3 features passed and were closed, 1 failed on the password reset email flow (BD-31 filed) and left open; BD-40 verified and closed, BD-41 still fails (BD-42 filed)."
 }
 ```
 
@@ -226,6 +268,8 @@ or as prose if you are answering a human directly.
 - NEVER close a feature unless ALL its integration tests pass
 - NEVER write or modify test code
 - NEVER fix application bugs -- report them as beads issues
-- NEVER close type=task issues
+- NEVER close a type=task issue UNLESS it is itself a verify-set bead explicitly named
+  in your dispatch prompt (Step 1b) -- i.e. it is a grouping node with its own closed
+  children, not a leaf task. Never close a leaf task bead regardless of type.
 - NEVER modify integ-test-playbook.md
 - Tag every new issue title with `[integ]` so they are searchable and distinguishable from planned work

@@ -214,7 +214,7 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // `create_pull_request` path, and only when a PR tool is actually wired. It
 // passes `member_name: member` (the same member every other finalizeAbort
 // dispatch targets), confirmed present. 42 + 1 = 43.
-const EXPECTED_COMMAND_COUNT = 43;
+const EXPECTED_COMMAND_COUNT = 45;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
