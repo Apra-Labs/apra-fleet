@@ -230,7 +230,7 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // fix/vcs-pr-architecture-v2 (tfx revert): value re-verified by running this
 // test against the merged runner.js rather than derived by arithmetic, per
 // this test's own acceptance criteria (see comment above).
-const EXPECTED_COMMAND_COUNT = 42;
+const EXPECTED_COMMAND_COUNT = 41;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
