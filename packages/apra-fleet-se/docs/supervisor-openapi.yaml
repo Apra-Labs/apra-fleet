@@ -1,0 +1,1045 @@
+openapi: 3.0.3
+info:
+  title: fleet-sprint Supervisor API
+  description: >
+    The always-on `fleet-se serve` supervisor process (packages/apra-fleet-se/bin/serve.mjs).
+    Owns the reservation ledger, spawns per-sprint detached children, and exposes
+    this HTTP API plus a single-page operator dashboard. Default port 8787
+    (src/supervisor/server.mjs DEFAULT_SERVICE_PORT), overridable via --port.
+
+    Source of truth for every route below is the code, not this file -- see
+    the companion doc packages/apra-fleet-se/docs/supervisor-api.md for the
+    operational semantics (relaunch gate, member-overlap guard, ledger vs
+    history, "terminal" meaning) that OpenAPI cannot capture precisely.
+  version: "1.0.0"
+servers:
+  - url: http://127.0.0.1:8787
+    description: default local supervisor port
+
+tags:
+  - name: lifecycle
+    description: Supervisor process lifecycle (server.mjs)
+  - name: sprints
+    description: Sprint launch/list/stop and member/backlog views (api.mjs)
+  - name: reservations
+    description: Manual reservation force-release (reconcile.mjs)
+  - name: dolt-mutex
+    description: Cross-sprint dolt-push serialization (dolt-mutex.mjs)
+  - name: id-allocator
+    description: Cross-sprint child-bead-id minting (id-allocator.mjs)
+  - name: dashboard
+    description: HTML operator dashboard and per-sprint live/history/log views
+
+paths:
+  # ---------------------------------------------------------------------
+  # Lifecycle (server.mjs) -- always present, even before any seam wiring
+  # ---------------------------------------------------------------------
+  /api/health:
+    get:
+      tags: [lifecycle]
+      summary: Liveness probe
+      description: >
+        Confirms the supervisor process is up and reports which collaborator
+        seams are still inert stubs (a seam whose name ends in ":stub" was
+        never wired with a real implementation).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, uptimeSeconds, pid, seams]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  uptimeSeconds: { type: integer }
+                  pid: { type: integer }
+                  seams:
+                    type: object
+                    description: seam name -> collaborator name ("<name>:stub" if unwired, else "wired" or the collaborator's own name)
+                    additionalProperties: { type: string }
+
+  /api/shutdown:
+    post:
+      tags: [lifecycle]
+      summary: Clean, in-band supervisor shutdown
+      description: >
+        The ONLY clean in-band way to stop the supervisor (SIGINT/SIGTERM are
+        the out-of-band way). Responds immediately, then tears down the HTTP
+        server and every seam (ledger, spawner, watchdog, dashboard,
+        doltMutex, idAllocator) asynchronously via setImmediate -- the caller
+        is guaranteed a response before teardown begins.
+      responses:
+        "200":
+          description: Shutdown accepted; teardown proceeds after the response flushes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [shutting-down] }
+
+  # ---------------------------------------------------------------------
+  # Sprint / member / backlog operator endpoints (api.mjs)
+  # ---------------------------------------------------------------------
+  /api/members:
+    get:
+      tags: [sprints]
+      summary: List fleet members with a live-reservation overlay
+      description: >
+        Fetches the fleet's own list_members, then overlays reservation state
+        from TWO sources merged (local ledger wins over the server's own
+        per-member reservedBy record when both are present -- see
+        supervisor-api.md "ledger vs server reservation record").
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      description: raw fleet member fields spread, plus the two overlay fields below
+                      required: [name, reserved, reservedBy]
+                      properties:
+                        name: { type: string }
+                        reserved: { type: boolean }
+                        reservedBy:
+                          type: [string, "null"]
+                          description: sprintId holding the reservation, or null if free
+
+  /api/backlog:
+    get:
+      tags: [sprints]
+      summary: Backlog as a nested tree (legacy/original shape)
+      description: >
+        The full beads tracker minus every active sprint's live-expanded
+        scope, as a nested tree. Additive to GET /api/backlog/tasks (the
+        flat, filterable shape the dashboard's Backlog tab actually uses) --
+        not a replacement for it.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tree, scopeFreshness]
+                properties:
+                  tree:
+                    type: array
+                    items: { $ref: "#/components/schemas/BacklogNode" }
+                  scopeFreshness: { $ref: "#/components/schemas/ScopeFreshness" }
+
+  /api/backlog/tasks:
+    get:
+      tags: [sprints]
+      summary: Backlog as a flat, filterable task list
+      description: >
+        Registered by backlog.mjs's registerBacklogRoutes(), distinct from
+        GET /api/backlog above. Returns only UNCLAIMED beads (partialClaim
+        annotates a bead that is only partly claimed by other sprints).
+      parameters:
+        - in: query
+          name: type
+          schema: { type: string }
+          description: exact, case-insensitive match against issue_type
+        - in: query
+          name: status
+          schema: { type: string }
+          description: exact, case-insensitive match against status
+        - in: query
+          name: priority
+          schema: { type: integer }
+          description: exact numeric match
+        - in: query
+          name: model
+          schema: { type: string }
+          description: exact, case-insensitive match against the assigned model field
+        - in: query
+          name: q
+          schema: { type: string }
+          description: case-insensitive substring match against "<id> <title>"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks, total, filterOptions]
+                properties:
+                  tasks:
+                    type: array
+                    description: raw `bd list --json` rows (unclaimed only), each with an added partialClaim field
+                    items:
+                      type: object
+                      properties:
+                        partialClaim:
+                          oneOf:
+                            - { $ref: "#/components/schemas/PartialClaim" }
+                            - type: "null"
+                  total:
+                    type: integer
+                    description: count of the free (unclaimed) set BEFORE query-param filtering
+                  filterOptions:
+                    type: object
+                    properties:
+                      type: { type: array, items: { type: string } }
+                      status: { type: array, items: { type: string } }
+                      priority: { type: array, items: { type: integer } }
+                      model: { type: array, items: { type: string } }
+        "500":
+          description: backlog build failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, enum: ["failed to build backlog tasks"] }
+
+  /api/sprints:
+    get:
+      tags: [sprints]
+      summary: List every live (ledger-held) sprint
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sprints, scopeFreshness]
+                properties:
+                  sprints:
+                    type: array
+                    items:
+                      type: object
+                      required: [sprintId, members, issueRoots, childPid, port]
+                      properties:
+                        sprintId: { type: string }
+                        members: { type: array, items: { type: string } }
+                        issueRoots: { type: array, items: { type: string } }
+                        childPid: { type: [integer, "null"] }
+                        port: { type: [integer, "null"] }
+                  scopeFreshness: { $ref: "#/components/schemas/ScopeFreshness" }
+    post:
+      tags: [sprints]
+      summary: Launch a sprint
+      description: >
+        Validated launch that forwards the per-request goal into the detached
+        child's argv. See supervisor-api.md for the full precondition order:
+        request-shape validation -> gey.2 relaunch gate -> eft.5.2 member-
+        overlap guard -> ledger.claim() -> spawn.
+
+        KNOWN GAP (apra-fleet-ymf): `issue` accepts exactly ONE issue id, not
+        a comma-separated list -- unlike the CLI's `--issue a,b` (see
+        fleet-sprint-cli-contract.md). validateIssueId() rejects a comma as
+        an invalid character, so a comma-joined value 400s on the `issue`
+        field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issue, branch, base, members]
+              properties:
+                issue:
+                  type: string
+                  description: >
+                    Single target issue id, matched against
+                    ^[A-Za-z0-9._-]+$ (validateIssueId). `target_issue` is
+                    accepted as an alias (body.issue ?? body.target_issue).
+                    Exactly one id -- see the KNOWN GAP note above.
+                branch:
+                  type: string
+                  description: sprint branch name, matched against ^[A-Za-z0-9._/-]+$ (validateBranchName)
+                base:
+                  type: string
+                  description: >
+                    base branch name, same pattern as branch. `base_branch`
+                    is accepted as an alias (body.base ?? body.base_branch).
+                members:
+                  description: >
+                    non-empty member list. Accepts a JSON array of strings
+                    OR a single comma-separated string (normalizeMembers());
+                    entries are trimmed and de-duplicated. Empty after
+                    normalization -> 400.
+                  oneOf:
+                    - type: array
+                      items: { type: string }
+                    - type: string
+                goal:
+                  type: string
+                  nullable: true
+                  description: forwarded verbatim into the child's --goal argv when present; echoed back in the response as null if omitted
+                maxCycles:
+                  type: integer
+                  description: forwarded into the child's --max-cycles argv
+                allowMissingMembers:
+                  type: boolean
+                  description: forwarded into the child's --allow-missing-members flag
+                requirementsFile:
+                  type: string
+                  description: forwarded into the child's --requirements-file argv
+                roleMap:
+                  description: JSON object OR a JSON string / "@path" resolved via the shared resolveRoleMap() (same resolver bin/cli.mjs uses)
+                  type: object
+                  additionalProperties:
+                    type: array
+                    items: { type: string }
+                budget:
+                  type: number
+                  description: USD ceiling forwarded into the child's --budget argv
+                overrideRelaunchGate:
+                  type: boolean
+                  description: >
+                    Explicit escape hatch: bypasses the apra-fleet-gey.2
+                    relaunch gate (a deterministic, unaddressed prior
+                    terminal failure for the same issue root). Never a
+                    silent bypass -- must be passed explicitly.
+      responses:
+        "201":
+          description: Sprint launched and reservation claimed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sprintId, pid, port, issueRoots, members]
+                properties:
+                  sprintId: { type: string, description: "generated as `<issue>-<uuid>`, also forwarded to the child as --run-id" }
+                  pid: { type: integer }
+                  port: { type: integer }
+                  logPath: { type: [string, "null"] }
+                  issueRoots:
+                    type: array
+                    items: { type: string }
+                    description: always a single-element array, [issue] -- see the KNOWN GAP note above
+                  members:
+                    type: array
+                    items: { type: string }
+                    description: the full member UNION (members + every roleMap value, including the orchestrator role), not just the request's `members` field
+                  goal: { type: string, nullable: true }
+                  buildVersionWarning:
+                    type: string
+                    nullable: true
+                    description: >
+                      apra-fleet-gey.2 best-effort staleness check: non-null
+                      when the running supervisor process's stamped build
+                      (its own api.mjs mtime at startup) differs from the
+                      on-disk build right now. Advisory only -- never blocks
+                      the launch.
+        "400":
+          description: request-shape validation failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FieldError" }
+        "409":
+          description: >
+            Either the apra-fleet-gey.2 relaunch gate (field "issue": a prior
+            incarnation of this issue root ended with a deterministic,
+            unaddressed terminal reason and overrideRelaunchGate was not
+            true) or the eft.5.2 member-overlap guard (field "members": the
+            member union intersects another active reservation).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FieldError" }
+
+  /api/sprints/{id}:
+    get:
+      tags: [sprints]
+      summary: Live child state if the sprint is running, else its historical record
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [sprintId, live, state]
+                    properties:
+                      sprintId: { type: string }
+                      live: { type: boolean, enum: [true] }
+                      state:
+                        type: object
+                        description: proxied verbatim from the child's own GET /state
+                  - type: object
+                    required: [sprintId, live, history, latest]
+                    properties:
+                      sprintId: { type: string }
+                      live: { type: boolean, enum: [false] }
+                      history:
+                        type: array
+                        items: { $ref: "#/components/schemas/HistoryEvent" }
+                      latest: { $ref: "#/components/schemas/HistoryEvent" }
+        "404":
+          description: no sprint with this id is live or in history
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/sprints/{id}/stop:
+    post:
+      tags: [sprints]
+      summary: Proxy the child's own cooperative /stop endpoint
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+      responses:
+        "200":
+          description: stop request forwarded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sprintId, status, child]
+                properties:
+                  sprintId: { type: string }
+                  status: { type: string, enum: [stopping] }
+                  child:
+                    type: object
+                    nullable: true
+                    properties:
+                      statusCode: { type: integer }
+        "404":
+          description: no live sprint with this id (no ledger reservation)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: reservation exists but its child has no reachable port
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------------------------------------------------------------------
+  # Reservation force-release (reconcile.mjs)
+  # ---------------------------------------------------------------------
+  /api/reservations/{sprintId}/force-release:
+    post:
+      tags: [reservations]
+      summary: Manually tear down a wedged reservation
+      description: >
+        Releases BOTH ledger axes (members + issueRoots) atomically, best-
+        effort kills the reservation's still-live child (SIGKILL, in the
+        production wiring; a kill failure never blocks the release), and
+        records a FORCE_RELEASED history event. Only touches this
+        supervisor's own local ledger -- see supervisor-api.md.
+      parameters:
+        - in: path
+          name: sprintId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                by: { type: string, description: operator identity, optional }
+                reason: { type: string, description: free-text reason, optional }
+      responses:
+        "200":
+          description: released
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, sprintId, audit]
+                properties:
+                  status: { type: string, enum: [force-released] }
+                  sprintId: { type: string }
+                  audit:
+                    type: object
+                    description: >
+                      the recorded history event, plus childPid (the pid
+                      that was recorded before release, or null),
+                      killed (boolean, or null if no childPid was
+                      recorded), and branch/base/goal (each null for
+                      legacy entries) -- captured before release so a
+                      dashboard Restart control can re-POST /api/sprints
+                      without a separate lookup.
+        "400":
+          description: missing sprintId in path
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: no live reservation for this sprint id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------------------------------------------------------------------
+  # Dolt-push mutex (dolt-mutex.mjs)
+  # ---------------------------------------------------------------------
+  /api/dolt-push-mutex/{sprintId}/acquire:
+    post:
+      tags: [dolt-mutex]
+      summary: Acquire the global dolt-push mutex (long-polling)
+      description: >
+        Serializes every cross-sprint `bd dolt push`. FIFO queue; the HTTP
+        response is DEFERRED until this sprintId is actually granted the
+        mutex -- this is a long-poll, not an immediate accept/reject. A
+        client disconnect before grant cancels the queued wait. There is no
+        409 here: contention is resolved by waiting, not by rejecting.
+      parameters:
+        - in: path
+          name: sprintId
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pid: { type: integer, nullable: true }
+      responses:
+        "200":
+          description: mutex granted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, token, sprintId, expiresAt]
+                properties:
+                  status: { type: string, enum: [acquired] }
+                  token:
+                    type: string
+                    description: "opaque grant token, format `<sprintId>#<seq>#<base36 timestamp>`; required for release/renew"
+                  sprintId: { type: string }
+                  expiresAt: { type: integer, description: epoch ms; lease default 60000ms, extend via renew }
+        "503":
+          description: acquire failed (e.g. mutex shutting down)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/dolt-push-mutex/{sprintId}/release:
+    post:
+      tags: [dolt-mutex]
+      summary: Release a held (or previously-held) mutex grant
+      parameters:
+        - in: path
+          name: sprintId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: >
+            Always 200; `released` is false (not an error) when the token
+            does not match the current holder -- idempotent, no 404/409.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [released]
+                properties:
+                  released: { type: boolean }
+        "400":
+          description: missing/empty token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/dolt-push-mutex/{sprintId}/renew:
+    post:
+      tags: [dolt-mutex]
+      summary: Extend the lease on a held mutex grant
+      parameters:
+        - in: path
+          name: sprintId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: renewed true/false, never an error status for a token mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [renewed]
+                properties:
+                  renewed: { type: boolean }
+                  expiresAt: { type: integer, description: present only when renewed is true }
+        "400":
+          description: missing/empty token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/dolt-push-mutex:
+    get:
+      tags: [dolt-mutex]
+      summary: Current mutex holder and wait queue
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [held, holder, waiting, queueDepth]
+                properties:
+                  held: { type: boolean }
+                  holder:
+                    nullable: true
+                    type: object
+                    properties:
+                      sprintId: { type: string }
+                      pid: { type: integer, nullable: true }
+                      acquiredAt: { type: integer }
+                      expiresAt: { type: integer }
+                  waiting:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sprintId: { type: string }
+                        pid: { type: integer, nullable: true }
+                        enqueuedAt: { type: integer }
+                  queueDepth: { type: integer }
+
+  # ---------------------------------------------------------------------
+  # Child-id allocator (id-allocator.mjs)
+  # ---------------------------------------------------------------------
+  /api/child-id-allocator/{parentId}/allocate:
+    post:
+      tags: [id-allocator]
+      summary: Reserve the next child bead id under a parent
+      description: >
+        Two-phase: allocate() reserves synchronously under a lease (default
+        60000ms); the caller must run `bd create --id <childId>` then
+        `bd update <childId> --parent <parentId>` and then call confirm() on
+        success or release() on failure. An abandoned reservation (lease
+        expired or pid dead) is reclaimed back to the free pool automatically.
+      parameters:
+        - in: path
+          name: parentId
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pid: { type: integer, nullable: true }
+                sprintId: { type: string }
+                floor:
+                  type: integer
+                  description: seeds/raises the high-water mark on first touch of a parent; never lowers it
+      responses:
+        "200":
+          description: allocated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, childId, parentId, seq, token, expiresAt]
+                properties:
+                  status: { type: string, enum: [allocated] }
+                  childId: { type: string, description: "`<parentId>.<seq>`" }
+                  parentId: { type: string }
+                  seq: { type: integer }
+                  token: { type: string }
+                  expiresAt: { type: integer, description: epoch ms }
+        "503":
+          description: allocate failed (e.g. persist failure, empty parentId)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/child-id-allocator/confirm:
+    post:
+      tags: [id-allocator]
+      summary: Durably commit a reserved seq (parent-agnostic; searched by token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: confirmed true/false (idempotent; unknown/already-committed token returns false, not an error)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [confirmed]
+                properties:
+                  confirmed: { type: boolean }
+        "400":
+          description: missing/empty token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/child-id-allocator/release:
+    post:
+      tags: [id-allocator]
+      summary: Return a reserved seq to the free pool (parent-agnostic; searched by token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: released true/false (idempotent)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [released]
+                properties:
+                  released: { type: boolean }
+        "400":
+          description: missing/empty token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/child-id-allocator:
+    get:
+      tags: [id-allocator]
+      summary: Current per-parent allocation state
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [parents]
+                properties:
+                  parents:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        highWater: { type: integer }
+                        free: { type: array, items: { type: integer }, description: sorted ascending }
+                        reserved:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              seq: { type: integer }
+                              pid: { type: integer, nullable: true }
+                              sprintId: { type: string, nullable: true }
+                              expiresAt: { type: integer }
+
+  # ---------------------------------------------------------------------
+  # Dashboard / per-sprint live, history, log views -- HTML/plain-text, not JSON
+  # ---------------------------------------------------------------------
+  /:
+    get:
+      tags: [dashboard]
+      summary: Operator dashboard (Sprint Stack, Backlog, Launch Sprint form)
+      responses:
+        "200":
+          description: OK
+          content:
+            text/html: {}
+
+  /sprints/{id}/live:
+    get:
+      tags: [dashboard]
+      summary: Live child viewer HTML, proxied; falls back to the history page once the sprint has no live port
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+      responses:
+        "200":
+          description: live child HTML (rewritten to route relative paths back through this proxy), or a history page if not live
+          content:
+            text/html: {}
+        "400":
+          description: missing sprint id in path
+          content:
+            text/plain: {}
+        "404":
+          description: no live sprint and no history for this id
+          content:
+            text/plain: {}
+        "502":
+          description: upstream child connect/response error
+          content:
+            text/plain: {}
+
+  /sprints/{id}/live/events:
+    get:
+      tags: [dashboard]
+      summary: Server-Sent Events stream, proxied unbuffered from the live child
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+      responses:
+        "200":
+          description: text/event-stream, no buffering
+          content:
+            text/event-stream: {}
+        "400": { description: missing sprint id in path }
+        "404": { description: sprint is no longer live }
+        "502": { description: upstream connect error }
+
+  /sprints/{id}/live/state:
+    get:
+      tags: [dashboard]
+      summary: Proxy the live child's own GET /state (query string forwarded verbatim)
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+      responses:
+        "200": { description: proxied child state JSON }
+        "400": { description: missing sprint id in path }
+        "404": { description: sprint is no longer live }
+
+  /sprints/{id}/live/stop:
+    post:
+      tags: [dashboard]
+      summary: Proxy POST to the live child's own /stop
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+      responses:
+        "200": { description: proxied }
+        "400": { description: missing sprint id in path }
+        "404": { description: sprint is no longer live }
+
+  /sprints/{id}/live/save_logs:
+    post:
+      tags: [dashboard]
+      summary: Proxy POST to the live child's own /save_logs
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+      responses:
+        "200": { description: proxied }
+        "400": { description: missing sprint id in path }
+        "404": { description: sprint is no longer live }
+
+  /sprints/{id}/live/extensions/{extId}/detail/{itemId}:
+    get:
+      tags: [dashboard]
+      summary: Proxy an extension detail panel from the live child
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+        - in: path
+          name: extId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: proxied }
+        "400": { description: missing sprint id in path }
+        "404": { description: sprint is no longer live }
+
+  /sprints/{id}/live/activities/{activityId}/output:
+    get:
+      tags: [dashboard]
+      summary: Proxy an activity's output from the live child
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+        - in: path
+          name: activityId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: proxied }
+        "400": { description: missing sprint id in path }
+        "404": { description: sprint is no longer live }
+
+  /sprints/{id}/history:
+    get:
+      tags: [dashboard]
+      summary: Full-template historical view of a finished sprint (process-free)
+      description: >
+        Renders old_runs/<id>.json (falling back to legacy old_sprints/<id>.json)
+        through the same HTML template the live viewer uses, frozen (no
+        polling, Save/Stop hidden). sprintId is validated via isSafeSprintId()
+        and never concatenated unsafely into a filesystem path.
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+      responses:
+        "200":
+          description: OK
+          content:
+            text/html: {}
+        "400":
+          description: missing or unsafe sprint id
+          content:
+            text/plain: {}
+        "404":
+          description: no history for this sprint id
+          content:
+            text/plain: {}
+
+  /sprints/{id}/log:
+    get:
+      tags: [dashboard]
+      summary: Raw stdout/stderr log file for a sprint (live, crashed, or finished)
+      description: >
+        Looked up by id via the ledger's logPath, falling back to the most
+        recent logPath recorded in history for a released reservation --
+        never built from the request's :id as a filesystem path.
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+        - in: query
+          name: tail
+          schema: { type: integer }
+          description: if a positive integer, return only the last N lines; otherwise the full file
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain: {}
+        "400":
+          description: missing or unsafe sprint id
+          content:
+            text/plain: {}
+        "404":
+          description: no logPath recorded for this sprint, or the file is missing on disk
+          content:
+            text/plain: {}
+        "500":
+          description: read error
+          content:
+            text/plain: {}
+
+  /supervisor/log:
+    get:
+      tags: [dashboard]
+      summary: The supervisor process's own stdout/stderr
+      parameters:
+        - in: query
+          name: tail
+          schema: { type: integer }
+          description: if a positive integer, return only the last N lines; otherwise the full file
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain: {}
+        "404":
+          description: log file not yet created
+          content:
+            text/plain: {}
+        "500":
+          description: read error
+          content:
+            text/plain: {}
+
+components:
+  parameters:
+    SprintId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    FieldError:
+      allOf:
+        - $ref: "#/components/schemas/Error"
+        - type: object
+          properties:
+            field:
+              type: string
+              description: name of the offending request field, present on every 400 this API returns and on the two 409s POST /api/sprints returns ("issue" or "members")
+    ScopeFreshness:
+      type: object
+      required: [lastSyncedAt, ageSeconds]
+      properties:
+        lastSyncedAt: { type: string, nullable: true, description: ISO-8601, or null if never synced }
+        ageSeconds:
+          oneOf:
+            - type: integer
+            - type: string
+              enum: [never-synced]
+    BacklogNode:
+      type: object
+      required: [id, title, issueType, status, partialClaim, children]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        issueType: { type: string }
+        status: { type: string }
+        partialClaim:
+          oneOf:
+            - { $ref: "#/components/schemas/PartialClaim" }
+            - type: "null"
+        children:
+          type: array
+          items: { $ref: "#/components/schemas/BacklogNode" }
+    PartialClaim:
+      type: object
+      required: [totalCount, claimedCount, freeCount, sprints]
+      properties:
+        totalCount: { type: integer }
+        claimedCount: { type: integer }
+        freeCount: { type: integer }
+        sprints:
+          type: array
+          items:
+            type: object
+            properties:
+              sprintId: { type: string }
+              count: { type: integer }
+    HistoryEvent:
+      type: object
+      required: [sprintId, event, at]
+      properties:
+        sprintId: { type: string }
+        event:
+          type: string
+          enum: [aborted-by-restart, force-released, child-exited, finished, auto-released, launch-failed]
+        reason: { type: string, nullable: true }
+        by: { type: string, nullable: true }
+        members: { type: array, items: { type: string } }
+        issueRoots: { type: array, items: { type: string } }
+        at: { type: string, description: ISO-8601 }
+        exitCode: { type: integer, nullable: true, description: meaningful only for event=child-exited }
+        signal: { type: string, nullable: true, description: meaningful only for event=child-exited }
+        logPath: { type: string, nullable: true, description: meaningful only for event=child-exited }
+        terminalReason: { type: string, nullable: true, description: meaningful only for event=finished; the engine's own terminalReason verbatim }
+        verdict: { type: string, nullable: true, description: meaningful only for event=finished }
