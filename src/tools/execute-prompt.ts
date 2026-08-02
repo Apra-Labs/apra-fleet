@@ -21,6 +21,7 @@ import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
 import { recoverOrphanedDispatch, isRemoteProcessAlive } from '../services/orphan-recovery.js';
+import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { durableOutputPath } from '../os/linux.js';
 import { LogScope, maskSecrets, truncateForLog, logWarn } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
@@ -997,6 +998,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   let _epError: string | undefined;
   let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
   let _epOffline = false;
+  // apra-fleet-6a7.1: gates the exit-0/empty-stdout workspace_not_trusted
+  // self-heal-and-retry below to exactly one attempt per call, mirroring
+  // runGitStep's authHealAttempted shape (fleet-sprint/runner.js:616) -- a
+  // repeat trust failure after the heal is terminal, never looped.
+  let trustHealAttempted = false;
   try {
     let result;
     try {
@@ -1175,11 +1181,43 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         }
       }
 
+      // apra-fleet-6a7.1: the code!==0 workspace_not_trusted classification
+      // above (~line 1048) never sees this branch -- exit 0 + empty stdout is
+      // a SEPARATE path, but live evidence (apra-fleet-2g2, fleet-win-dev1,
+      // 2026-08-02) showed it can be caused by the exact same trust-gate
+      // failure: exited 0, empty stdout, and the stderr tail contained the
+      // exact matched phrase, so the code!==0 classifier never ran. Classify
+      // it here too and -- unlike that path, which only advises a manual fix
+      // -- self-heal via the same seedWorkspaceTrust/ensureWorkspaceTrusted
+      // path compose_permissions already uses, then retry the dispatch
+      // exactly once (gated by trustHealAttempted, mirroring runGitStep's
+      // onAuthFailure shape: a repeat failure after the heal is terminal, not
+      // looped).
+      if ((!parsed.result || parsed.result.trim() === '')
+        && provider.classifyError(result.stderr || result.stdout) === 'workspace_not_trusted'
+        && !trustHealAttempted) {
+        trustHealAttempted = true;
+        scope.info(`[${resolvedModel}] exit-0/empty-stdout classified as workspace_not_trusted -- self-healing (seedWorkspaceTrust) once, then retrying the dispatch`);
+        await seedWorkspaceTrust(agent, strategy, 'execute_prompt');
+        const healBudget = retryBudget();
+        if (!healBudget.exhausted) {
+          await tryKillPid(agent, strategy, cmds);
+          const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+          const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
+          result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
+          parsed = provider.parseResponse(result);
+          if (parsed.usage) _epUsage = parsed.usage;
+        }
+      }
+
       if (!parsed.result || parsed.result.trim() === '') {
         const stderrTail = (result.stderr || '').trim().slice(-500);
+        const trustClassified = provider.classifyError(result.stderr || result.stdout) === 'workspace_not_trusted';
         return {
-          text: `[FAIL] execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
-          structuredContent: { isError: true, reason: 'empty_response' },
+          text: trustClassified
+            ? `[FAIL] ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${stderrTail}`
+            : `[FAIL] execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
+          structuredContent: { isError: true, reason: trustClassified ? 'workspace_not_trusted' : 'empty_response' },
         };
       }
     }
