@@ -209,12 +209,15 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // above) -- nets to 41 - 1 + 2 = 42. Verified against the merged runner.js
 // by running this test after resolving the merge (see the actual/expected
 // mismatch it reports if this arithmetic is ever wrong).
-// apra-fleet-6bu: +1 -- finalizeAbort() now resolves the member's `git remote
-// get-url origin` (failSoft) to derive the owner/repo for the server-side
-// `create_pull_request` path, and only when a PR tool is actually wired. It
-// passes `member_name: member` (the same member every other finalizeAbort
-// dispatch targets), confirmed present. 42 + 1 = 43.
-const EXPECTED_COMMAND_COUNT = 45;
+// 43 -> 45 (apra-fleet-jfo, 64dc595): the verify-route/phase-routing slice
+// added two command() sites (`bd show <bugId> --json` and its follow-up),
+// both member_name: orchestratorMember -- the constant was bumped without a
+// note at the time; recorded here for the audit trail.
+// 45 -> 44 (apra-fleet-tfx.5 revert): finalizeAbort's failSoft `git remote
+// get-url origin` probe (added by the now-reverted apra-fleet-6bu
+// server-side PR-creation path) was removed along with the rest of that
+// call site.
+const EXPECTED_COMMAND_COUNT = 44;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
