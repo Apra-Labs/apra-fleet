@@ -37,7 +37,12 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * lost even though it is no longer used for nesting. Multiple top-level
  * roots (tasks with no in-dataset parent) render as multiple top-level
  * rows -- this is expected, not an error, whenever a sprint targets more
- * than one independent top-level item at once.
+ * than one independent top-level item at once. apra-fleet-eft.52.1.2: those
+ * TOP-LEVEL roots are ordered by status urgency first (In-progress -> Open
+ * -> Blocked -> Closed, priority-then-id breaking ties within a status);
+ * this is non-recursive -- each root's own children keep their existing
+ * natural DAG order (see `childrenOf[nodeId].slice().sort()` in
+ * `renderNode`), unaffected by their parent's status.
  *
  * The panel shows up to two top-level sections: "Sprint" (the containment
  * tree above, built from `sprintTasks`) and "Backlog" (`backlogTasks` --
@@ -192,6 +197,22 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         return statusBadge(node.status);
     }
 
+    // apra-fleet-eft.52.1.2: rank used to order Sprint's TOP-LEVEL roots only
+    // (see sprintRootSort below) -- in-progress work surfaces first, closed
+    // work sinks to the bottom. Mirrors statusBadgeForNode's 'open' +
+    // ready===false ==> effectively-blocked distinction above, so a root
+    // row's rank always agrees with its own rendered status badge. Anything
+    // outside these four (e.g. 'deferred', or a future/unrecognized status)
+    // ranks after 'closed' rather than throwing or being treated as one of
+    // the four.
+    const STATUS_ORDER = { in_progress: 0, open: 1, blocked: 2, closed: 3 };
+    function statusRank(node) {
+        const status = (node.status || '').toString().toLowerCase();
+        const effective = (status === 'open' && node.ready === false) ? 'blocked' : status;
+        const rank = STATUS_ORDER[effective];
+        return typeof rank === 'number' ? rank : STATUS_ORDER.closed + 1;
+    }
+
     function priorityBadge(priority) {
         const label = (typeof priority === 'number' && Number.isFinite(priority)) ? 'P' + priority : 'P?';
         return '<span style="color: #a1a1aa; font-size: 10px;">' + label + '</span>';
@@ -323,9 +344,30 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         }
     });
 
+    // apra-fleet-eft.52.1.2: TOP-LEVEL Sprint roots only are primarily
+    // ordered by status urgency (statusRank above) -- In-progress -> Open ->
+    // Blocked -> Closed -- falling back to the existing priority-then-id
+    // ordering only to break ties within the same status. This is
+    // deliberately NOT applied recursively: `childrenOf[nodeId]` in
+    // renderNode below keeps its own unrelated (natural DAG / id) order, so
+    // a subtree's hierarchy stays legible rather than being scrambled by
+    // status.
+    function sprintRootSort(aId, bId) {
+        const a = map[aId];
+        const b = map[bId];
+        const ra = statusRank(a);
+        const rb = statusRank(b);
+        if (ra !== rb) return ra - rb;
+        const pa = (typeof a.priority === 'number' && Number.isFinite(a.priority)) ? a.priority : 99;
+        const pb = (typeof b.priority === 'number' && Number.isFinite(b.priority)) ? b.priority : 99;
+        if (pa !== pb) return pa - pb;
+        return String(aId).localeCompare(String(bId));
+    }
+
     const roots = sprintTasks
         .filter((t) => !(t.parent !== undefined && t.parent !== null && map[t.parent]))
-        .map((t) => t.id);
+        .map((t) => t.id)
+        .sort(sprintRootSort);
 
     function renderNode(nodeId, depth, rendered) {
         if (rendered.has(nodeId)) return ''; // cycle-guard: never render twice

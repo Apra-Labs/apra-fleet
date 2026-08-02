@@ -221,6 +221,70 @@ describe('renderBeadsHtml: containment tree (parent-based nesting, blocks-deps a
     });
 });
 
+// apra-fleet-eft.52.1.2: Sprint's TOP-LEVEL rows are primarily ordered by
+// status urgency (In-progress -> Open -> Blocked -> Closed), falling back to
+// priority-then-id only to break ties within a status. This is explicitly
+// NON-recursive: a nested child list under one of those roots keeps its
+// existing natural DAG order, unaffected by its parent's (or its own)
+// status.
+describe('renderBeadsHtml: Sprint top-level status ordering (apra-fleet-eft.52.1.2)', () => {
+    const childPrefix = String.fromCharCode(0x2514, 0x2500) + ' ';
+
+    test('top-level roots with all four statuses render in order In-progress, Open, Blocked, Closed, regardless of input order', () => {
+        const tasks = [
+            { id: 'ROOT-CLOSED', title: '[impl] closed root', status: 'closed', priority: 1, dependencies: [] },
+            { id: 'ROOT-BLOCKED', title: '[impl] blocked root', status: 'open', ready: false, priority: 1, dependencies: [] },
+            { id: 'ROOT-OPEN', title: '[impl] open root', status: 'open', priority: 1, dependencies: [] },
+            { id: 'ROOT-INPROGRESS', title: '[impl] in-progress root', status: 'in_progress', priority: 1, dependencies: [] },
+        ];
+        const html = renderBeadsHtml(tasks);
+
+        const posInProgress = html.indexOf('>#ROOT-INPROGRESS</td>');
+        const posOpen = html.indexOf('>#ROOT-OPEN</td>');
+        const posBlocked = html.indexOf('>#ROOT-BLOCKED</td>');
+        const posClosed = html.indexOf('>#ROOT-CLOSED</td>');
+
+        assert.ok(posInProgress < posOpen, 'in-progress root must render before the open root');
+        assert.ok(posOpen < posBlocked, 'open root must render before the blocked root');
+        assert.ok(posBlocked < posClosed, 'blocked root must render before the closed root');
+    });
+
+    test('within the same status, roots still fall back to priority-then-id ordering', () => {
+        const tasks = [
+            { id: 'LOW', title: '[impl] low priority', status: 'open', priority: 4, dependencies: [] },
+            { id: 'HIGH', title: '[impl] high priority', status: 'open', priority: 1, dependencies: [] },
+        ];
+        const html = renderBeadsHtml(tasks);
+        assert.ok(html.indexOf('>#HIGH</td>') < html.indexOf('>#LOW</td>'), 'P1 root must sort before P4 root within the same status');
+    });
+
+    test('the status sort is non-recursive: a nested child list keeps its original DAG order, not a status-based order', () => {
+        const tasks = [
+            { id: 'EPIC', title: '[bug] epic', status: 'open', dependencies: [] },
+            { id: 'EPIC.1', parent: 'EPIC', title: '[impl] closed child', status: 'closed', dependencies: [] },
+            { id: 'EPIC.2', parent: 'EPIC', title: '[impl] in-progress child', status: 'in_progress', dependencies: [] },
+        ];
+        const html = renderBeadsHtml(tasks);
+        // Children keep their existing (natural DAG / id) order -- EPIC.1
+        // before EPIC.2 -- even though EPIC.2 (in-progress) would sort ahead
+        // of EPIC.1 (closed) under the top-level status rule.
+        assert.ok(html.indexOf(childPrefix + '#EPIC.1</td>') < html.indexOf(childPrefix + '#EPIC.2</td>'), 'children must remain in natural order, not be re-sorted by status');
+    });
+
+    test('the Backlog section ordering is unaffected by the Sprint status sort', () => {
+        const sprintTasks = [{ id: 'S1', title: '[impl] sprint root', status: 'closed', dependencies: [] }];
+        const backlogTasks = [
+            { id: 'B-low', title: '[bug] low priority backlog item', status: 'in_progress', priority: 4 },
+            { id: 'B-high', title: '[bug] high priority backlog item', status: 'closed', priority: 1 },
+        ];
+        const html = renderBeadsHtml(sprintTasks, backlogTasks);
+        // Backlog keeps its own priority-then-id ordering (P1 before P4),
+        // even though B-low's status (in_progress) would outrank B-high's
+        // (closed) under Sprint's status rule -- Backlog does not use it.
+        assert.ok(html.indexOf('#B-high') < html.indexOf('#B-low'), 'Backlog must still sort P1 before P4, unaffected by status');
+    });
+});
+
 describe('renderBeadsHtml: status/type badges are defensive (never blank, never throw)', () => {
     test('in_progress (bd\'s real status string, underscore) gets its accent-colored badge, not the generic fallback', () => {
         const html = renderBeadsHtml([{ id: 1, title: '[impl] active work', status: 'in_progress', dependencies: [] }]);
