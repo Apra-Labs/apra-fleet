@@ -14,6 +14,14 @@ interface PoolEntry {
   client: Client;
   lastUsed: number;
   timer: ReturnType<typeof setTimeout>;
+  // apra-fleet-9zz.1: count of execCommand() calls currently in flight on
+  // this connection (incremented before client.exec() is issued, decremented
+  // when that call's promise settles -- see execCommand below). A provisional
+  // stall-detector entry (stall-detector.ts) only refreshes the idle timer
+  // incidentally via the poller's own tail probes, not via this activity
+  // directly, so a long-running exec could otherwise sit through an idle-timer
+  // fire with no other signal that the connection is still genuinely in use.
+  activeChannels: number;
 }
 
 const pool = new Map<string, PoolEntry>();
@@ -26,6 +34,20 @@ function poolKey(agent: Agent): string {
 function cleanupEntry(key: string): void {
   const entry = pool.get(key);
   if (entry) {
+    if (entry.activeChannels > 0) {
+      // apra-fleet-9zz.1: a channel opened by execCommand (or an exec call
+      // about to open one) is still live on this connection -- ending it here
+      // would reap a genuinely active command out from under a caller that is
+      // still waiting on its result. Re-arm the idle timer instead of
+      // reaping; execCommand decrements activeChannels when the in-flight
+      // call actually settles, so a later idle-timer fire with no active
+      // channels left reaps normally.
+      clearTimeout(entry.timer);
+      const timer = setTimeout(() => cleanupEntry(key), IDLE_TIMEOUT);
+      timer.unref();
+      entry.timer = timer;
+      return;
+    }
     try { entry.client.end(); } catch {}
     clearTimeout(entry.timer);
     pool.delete(key);
@@ -72,7 +94,7 @@ function connectClient(config: ConnectConfig, key: string): Promise<Client> {
     client.on('ready', () => {
       const timer = setTimeout(() => cleanupEntry(key), IDLE_TIMEOUT);
       timer.unref();
-      pool.set(key, { client, lastUsed: Date.now(), timer });
+      pool.set(key, { client, lastUsed: Date.now(), timer, activeChannels: 0 });
 
       client.on('close', () => {
         pool.delete(key);
@@ -132,7 +154,25 @@ export async function execCommand(
   abortSignal?: AbortSignal,
 ): Promise<SSHExecResult> {
   const { client, warning } = await connectWithTOFU(agent);
-  resetIdleTimer(poolKey(agent));
+  const key = poolKey(agent);
+  resetIdleTimer(key);
+
+  // apra-fleet-9zz.1: mark this call as an active channel on the pool entry
+  // BEFORE issuing client.exec() -- covers both the in-flight exec request
+  // and the channel it opens -- so cleanupEntry's idle-timer reap can see it
+  // and never end the connection out from under it (see cleanupEntry above).
+  // connectWithTOFU/connectClient always populates the pool entry before
+  // returning (pool.set() runs before the 'ready' promise resolves), so this
+  // entry is guaranteed to exist here.
+  const poolEntry = pool.get(key);
+  if (poolEntry) poolEntry.activeChannels += 1;
+  let channelReleased = false;
+  function releaseChannel(): void {
+    if (channelReleased) return;
+    channelReleased = true;
+    const entry = pool.get(key);
+    if (entry) entry.activeChannels = Math.max(0, entry.activeChannels - 1);
+  }
 
   return new Promise<SSHExecResult>((resolve, reject) => {
     let settled = false;
@@ -141,6 +181,7 @@ export async function execCommand(
       settled = true;
       clearTimeout(inactivityTimer);
       if (maxTotalTimer) clearTimeout(maxTotalTimer);
+      releaseChannel();
       fn();
     }
 
