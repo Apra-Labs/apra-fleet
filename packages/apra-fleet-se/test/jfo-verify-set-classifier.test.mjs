@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { classifyVerifySet, buildPlannerPrompt } from '../fleet-sprint/runner.js';
+import { classifyVerifySet, buildPlannerPrompt, buildFinalVerdictPrompt } from '../fleet-sprint/runner.js';
 
 // Unit tests for apra-fleet-jfo's classifyVerifySet(): the phase-routing
 // initial slice that classifies "all children closed" beads into the
@@ -168,5 +168,52 @@ describe('buildPlannerPrompt verify-route exclusion clause', () => {
             verifyExcluded: [],
         });
         assert.doesNotMatch(prompt, /VERIFY-ROUTE EXCLUSION/);
+    });
+});
+
+// apra-fleet-jfo.2: the structural gap identified after 2g2's redeploy --
+// verify-routed beads (parents with children) are excluded from
+// `openAtGoal`/`finalOpenAtGoal` no matter their status, so a Deploy
+// failure that skips IntegTest could let a sprint finalize as "done" with
+// verify targets never actually re-verified. buildFinalVerdictPrompt's
+// `unclosedVerifyIds` param is the Final Review's half of the fix: it must
+// surface any still-open verify-routed bead as explicit evidence and
+// instruct the reviewer not to rubber-stamp PASS on the (misleadingly
+// zero) openAtGoalCount alone.
+describe('buildFinalVerdictPrompt unclosed-verify-beads evidence', () => {
+    const baseArgs = {
+        targetIssues: ['root'],
+        branch: 'sprint-branch',
+        baseBranch: 'main',
+        goal: 'P1/P2',
+        cyclesRun: 5,
+        closedCount: 3,
+        openAtGoalCount: 0,
+        deployFailures: [],
+        integFailures: [],
+        rejectedNewTasks: [],
+    };
+
+    test('names still-open verify-routed beads and warns against rubber-stamping PASS', () => {
+        const prompt = buildFinalVerdictPrompt({
+            ...baseArgs,
+            unclosedVerifyIds: ['parentA', 'parentB'],
+        });
+        assert.match(prompt, /STILL OPEN/);
+        assert.match(prompt, /parentA, parentB/);
+        assert.match(prompt, /do not treat 0 open-at-goal as/);
+    });
+
+    test('omits the evidence block entirely when no verify-routed bead is unclosed', () => {
+        const prompt = buildFinalVerdictPrompt({
+            ...baseArgs,
+            unclosedVerifyIds: [],
+        });
+        assert.doesNotMatch(prompt, /STILL OPEN/);
+    });
+
+    test('defaults unclosedVerifyIds to empty when the param is omitted (backward compatible)', () => {
+        const prompt = buildFinalVerdictPrompt({ ...baseArgs });
+        assert.doesNotMatch(prompt, /STILL OPEN/);
     });
 });

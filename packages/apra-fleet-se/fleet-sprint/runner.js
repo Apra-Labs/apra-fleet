@@ -4063,10 +4063,11 @@ export function isHostedGithubRemote(remoteUrl) {
  *   deployFailures: Array<{cycle: number, notes: string}>,
  *   integFailures: Array<{cycle: number, notes: string, bugsFiled: string[]}>,
  *   rejectedNewTasks: Array<{cycle: number, reason: string, raw: object}>,
+ *   unclosedVerifyIds?: string[],
  * }} opts
  * @returns {string}
  */
-function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [] }) {
+export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [] }) {
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
@@ -4092,6 +4093,20 @@ function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cycle
         lines.push(
             `${rejectedNewTasks.length} reviewer-proposed newTask(s) were REJECTED (not created via bd create) for failing input validation: ` +
             rejectedNewTasks.map((r) => `C${r.cycle}: ${r.reason}`).join(' | ')
+        );
+    }
+    if (unclosedVerifyIds.length > 0) {
+        // apra-fleet-jfo.2: verify-routed beads (implementation-complete,
+        // all children closed, awaiting real integration-test
+        // re-verification) have children themselves, so they are
+        // structurally excluded from `openAtGoalCount` above no matter their
+        // status -- do not let their absence from that count read as "done".
+        lines.push(
+            `${unclosedVerifyIds.length} verify-routed bead(s) are STILL OPEN and were never confirmed working ` +
+            `against the deployed build this sprint (most likely because Deploy failed before IntegTest could ` +
+            `attempt them): ${unclosedVerifyIds.join(', ')}. These do NOT count toward openAtGoalCount above ` +
+            `(bdListScoped excludes beads with children from that count), so do not treat 0 open-at-goal as ` +
+            `evidence these are done -- treat each one as an open, unverified target when deciding PASS/FAIL.`
         );
     }
     lines.push(
@@ -8085,13 +8100,41 @@ async function runSprintCycle(context) {
             await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
         }
 
-        if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED') {
+        // apra-fleet-jfo.2: verify-routed beads have children, so
+        // `bdListScoped`'s parent-filter structurally excludes them from
+        // `openAtGoal` no matter their status -- a cycle where Deploy fails
+        // (skipping IntegTest entirely, so no verify-routed bead ever gets a
+        // chance to close) can therefore still read `openAtGoal.length === 0`
+        // and exit here with those beads never actually re-verified. Check
+        // their live status independently before allowing the count-based
+        // exit to fire. Guarded on `verifyEverIds.size > 0` so a sprint that
+        // never routed any bead to verify (the common case) pays no extra
+        // `bd list` dispatch here at all.
+        let stillOpenVerifyIds = [];
+        if (verifyEverIds.size > 0) {
+            const beadsForVerifyCheck = await fetchAllBeadsShared();
+            stillOpenVerifyIds = [...verifyEverIds].filter((id) => {
+                const b = beadsForVerifyCheck.find((x) => x.id === id);
+                return b && b.status !== 'closed';
+            });
+        }
+
+        if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0) {
             log(`Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.`);
             endGroup();
             break;
         }
 
-        log(`Cycle ${cycle} evaluation: ${openAtGoal.length} bead(s) still open at/above goal priority ${goalMax}, last reviewer verdict: ${lastReviewVerdict ?? '(none this cycle)'}. Continuing.`);
+        log(
+            `Cycle ${cycle} evaluation: ${openAtGoal.length} bead(s) still open at/above goal priority ${goalMax}, ` +
+            `last reviewer verdict: ${lastReviewVerdict ?? '(none this cycle)'}` +
+            (stillOpenVerifyIds.length > 0
+                ? `, ${stillOpenVerifyIds.length} verify-routed bead(s) still open and unverified ` +
+                  `(${stillOpenVerifyIds.join(', ')}) -- not exiting on goal-priority count alone until these ` +
+                  `close or a future cycle's IntegTest genuinely attempts them`
+                : '') +
+            `. Continuing.`
+        );
 
         cycle++;
         endGroup();
@@ -8115,6 +8158,22 @@ async function runSprintCycle(context) {
     await doltPullBefore(orchestratorMember, { command, log });
     const finalOpenAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
     const finalClosedCount = (await bdListScoped('--status=closed --json')).length;
+    // apra-fleet-jfo.2: same structural blind spot as the per-cycle exit
+    // check -- verify-routed beads never appear in finalOpenAtGoal (they
+    // have children), so a sprint that exhausted MAX_CYCLES with Deploy
+    // failing every time could otherwise reach Final Review reporting
+    // "0 open bead(s)" while the verify-routed targets were never actually
+    // re-verified. Surface it as explicit evidence rather than leaving the
+    // Final Review to rubber-stamp PASS on an incomplete count. Guarded on
+    // `verifyEverIds.size > 0` -- see the per-cycle check above for why.
+    let finalUnclosedVerifyIds = [];
+    if (verifyEverIds.size > 0) {
+        const finalBeadsForVerifyCheck = await fetchAllBeadsShared();
+        finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => {
+            const b = finalBeadsForVerifyCheck.find((x) => x.id === id);
+            return b && b.status !== 'closed';
+        });
+    }
 
     let finalVerdictResult;
     // The Final Review covers an entire epic's worth of work, categorically
@@ -8152,6 +8211,7 @@ async function runSprintCycle(context) {
             deployFailures,
             integFailures,
             rejectedNewTasks,
+            unclosedVerifyIds: finalUnclosedVerifyIds,
         }),
         // member_name is repeated literally here -- not only via the
         // shared opts object -- so the source-level call-site parse in
