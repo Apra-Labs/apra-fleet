@@ -577,6 +577,29 @@ describe('renderBeadsHtml: collapsible/expandable tree nodes and sections (apra-
         assert.ok(!sprintHeaderRow.includes('background:'), 'Sprint header must not share the Backlog muted-band background');
     });
 
+    test('the Backlog header toggle still reflects collapsed/expanded state, on top of its distinct backlog class (apra-fleet-eft.52.1.1)', () => {
+        const sprintTasks = [{ id: 'S1', title: 'a sprint task', status: 'open' }];
+        const backlogTasks = [{ id: 'B1', title: 'a backlog task', status: 'open' }];
+
+        const expandedHtml = renderBeadsHtml(sprintTasks, backlogTasks);
+        const expandedBacklogRow = expandedHtml.slice(
+            expandedHtml.lastIndexOf('<tr', expandedHtml.indexOf('data-toggle-id="section:backlog"')),
+            expandedHtml.indexOf('data-toggle-id="section:backlog"') + 200
+        );
+        assert.ok(expandedBacklogRow.includes('backlog-header'), 'expanded Backlog header row must still carry its distinct class');
+        assert.ok(expandedBacklogRow.includes('[-]'), 'expanded Backlog header toggle must show [-]');
+        assert.ok(!expandedBacklogRow.includes('[+]'), 'expanded Backlog header toggle must not show [+]');
+
+        const collapsedHtml = renderBeadsHtml(sprintTasks, backlogTasks, new Set(['section:backlog']));
+        const collapsedBacklogRow = collapsedHtml.slice(
+            collapsedHtml.lastIndexOf('<tr', collapsedHtml.indexOf('data-toggle-id="section:backlog"')),
+            collapsedHtml.indexOf('data-toggle-id="section:backlog"') + 200
+        );
+        assert.ok(collapsedBacklogRow.includes('backlog-header'), 'collapsed Backlog header row must still carry its distinct class');
+        assert.ok(collapsedBacklogRow.includes('[+]'), 'collapsed Backlog header toggle must show [+]');
+        assert.ok(!collapsedBacklogRow.includes('[-]'), 'collapsed Backlog header toggle must not show [-]');
+    });
+
     test('collapsing the Sprint section hides every sprint row, but leaves Backlog untouched', () => {
         const sprintTasks = [{ id: 'S1', title: 'a sprint task', status: 'open' }];
         const backlogTasks = [{ id: 'B1', title: 'a backlog task', status: 'open' }];
