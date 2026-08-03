@@ -60,6 +60,51 @@ const NON_GITHUB_AUTH_TEXTS = {
     'Gitea (401 Unauthorized)': "remote: 401 Unauthorized\nfatal: Authentication failed for 'https://gitea.example.com/acme/widgets.git/'",
 };
 
+// The SAME four provider texts with git's generic "fatal: Authentication
+// failed for '<url>'" tail STRIPPED -- isolates the provider-distinguishing
+// signal itself. Before apra-fleet-417.6 landed its own AUTH_* pattern for
+// each of these (azure-devops.mjs's TF401019 AUTH_DENIED rule, bitbucket.mjs's
+// "Invalid or expired app password" AUTH_EXPIRED rule, and generic-git.mjs's
+// portable "HTTP Basic: Access denied" / "401 Unauthorized" entries), every
+// one of these bare lines classified UNKNOWN -- the earlier version of this
+// suite passed on the tail alone and would have kept passing even if
+// TF401019 were replaced with nonsense. These fixtures close that gap: they
+// fail unless the provider's own pattern (not git's generic tail) is what
+// classifies the line.
+//
+// `provider` here is the classifyFailure() opts.provider a caller who has
+// actually resolved the member's VCS provider (e.g. via resolveProvider())
+// would pass. TF401019 and the app-password literal are VENDOR-SPECIFIC
+// patterns that live only on their own provider descriptor (azure-devops.mjs,
+// bitbucket.mjs) -- not on generic-git.mjs -- so they are only reachable by
+// naming that provider explicitly; they are deliberately NOT inherited by the
+// 'github' chain classifyGitFailure()'s provider-agnostic default uses (see
+// runner.js's own doc comment on classifyGitFailure: "Thin adapter ... default
+// 'github' provider"), same as GitHubVCS's own AUTH_EXPIRED literals are not
+// reachable from 'azure-devops'. The GitLab/GitEA literals, by contrast, were
+// added as PORTABLE entries directly on generic-git.mjs (see apra-fleet-417.6)
+// specifically so they need no provider name at all -- 'github' inherits them
+// like every other chain, which is what classifyGitFailure()'s no-provider
+// default path already exercises.
+const NON_GITHUB_AUTH_TEXTS_BARE = {
+    'Azure DevOps (TF401019)': {
+        text: "remote: TF401019: The Git repository with name or identifier 'core' does not exist, or you do not have permission to perform this operation.",
+        provider: 'azure-devops',
+    },
+    'GitLab (HTTP Basic: Access denied)': {
+        text: 'remote: HTTP Basic: Access denied',
+        provider: undefined,
+    },
+    'Bitbucket (Invalid or expired app password)': {
+        text: 'remote: Invalid or expired app password.',
+        provider: 'bitbucket',
+    },
+    'Gitea (401 Unauthorized)': {
+        text: 'remote: 401 Unauthorized',
+        provider: undefined,
+    },
+};
+
 describe('non-GitHub provider auth texts classify as AUTH_* (apra-fleet-647.1.3.4)', () => {
     for (const [label, text] of Object.entries(NON_GITHUB_AUTH_TEXTS)) {
         test(`${label} classifies to an AUTH_* kind, not UNKNOWN`, () => {
@@ -73,6 +118,37 @@ describe('non-GitHub provider auth texts classify as AUTH_* (apra-fleet-647.1.3.
             assert.equal(classifyGitFailure(text), 'auth', `${label} must map to the legacy 'auth' verdict too`);
         });
     }
+});
+
+describe("non-GitHub provider auth texts classify as AUTH_* on the BARE provider line alone, without git's generic tail (apra-fleet-647.1.3.4 / apra-fleet-417.6)", () => {
+    for (const [label, { text, provider }] of Object.entries(NON_GITHUB_AUTH_TEXTS_BARE)) {
+        test(`${label}: the bare provider line (no "fatal: Authentication failed" tail) still classifies to an AUTH_* kind`, () => {
+            assert.ok(
+                !/Authentication failed/i.test(text),
+                `fixture bug: ${label}'s bare text must not itself contain git's generic tail`,
+            );
+            const opts = provider ? { provider } : undefined;
+            const { kind, retryable } = classifyFailure(text, opts);
+            assert.ok(
+                kind === K.AUTH_EXPIRED || kind === K.AUTH_DENIED,
+                `expected an AUTH_* kind for the bare ${label} line, got ${kind} -- the provider-distinguishing pattern must do the classifying, not git's generic tail`,
+            );
+            assert.notEqual(kind, K.UNKNOWN, `${label}'s bare line must not classify UNKNOWN`);
+            assert.equal(retryable, false, 'auth failures are never retryable without remediation first');
+        });
+    }
+
+    test("vendor-specific patterns (TF401019, app-password) are NOT reachable from the default provider chain classifyGitFailure() uses -- they require naming the provider explicitly, unlike the portable GitLab/Gitea entries on generic-git.mjs", () => {
+        const tf401019Bare = NON_GITHUB_AUTH_TEXTS_BARE['Azure DevOps (TF401019)'].text;
+        const appPasswordBare = NON_GITHUB_AUTH_TEXTS_BARE['Bitbucket (Invalid or expired app password)'].text;
+        assert.equal(classifyFailure(tf401019Bare).kind, K.UNKNOWN, 'TF401019 must not leak into the default/github chain');
+        assert.equal(classifyFailure(appPasswordBare).kind, K.UNKNOWN, 'the app-password literal must not leak into the default/github chain');
+
+        const gitlabBare = NON_GITHUB_AUTH_TEXTS_BARE['GitLab (HTTP Basic: Access denied)'].text;
+        const giteaBare = NON_GITHUB_AUTH_TEXTS_BARE['Gitea (401 Unauthorized)'].text;
+        assert.equal(classifyGitFailure(gitlabBare), 'auth', 'the portable GitLab literal must classify via the default provider chain (no opts.provider needed)');
+        assert.equal(classifyGitFailure(giteaBare), 'auth', 'the portable Gitea literal must classify via the default provider chain (no opts.provider needed)');
+    });
 });
 
 describe('non-GitHub provider auth texts drive exactly one self-heal + retry, not a sprint-fatal abort (apra-fleet-647.1.3.4)', () => {
