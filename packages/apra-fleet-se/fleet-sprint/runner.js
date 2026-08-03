@@ -4761,6 +4761,15 @@ async function runSprintCycle(context) {
     // `agentType`/persona of its own and is not one of the seven types.
     //
     // Option flags:
+    //   - needsVcsAuth: gates the proactive ensureVcsAuthFresh preflight,
+    //     independently of `pushCode` (apra-fleet-647.1.1.2). Defaults to
+    //     `pushCode || pushBeads`: a code-writing role always needed it
+    //     already, and this extends the same proactive preflight to read-side
+    //     roles whose bracket still D-pushes beads (planner, integ-test-
+    //     runner, regression-test-runner) -- `bd dolt push` hits the same
+    //     credential surface as `git push`. Explicitly pass `needsVcsAuth:
+    //     true` for a bracket that will raise a PR (or otherwise needs a
+    //     fresh credential) even with pushCode:false and pushBeads:false.
     //   - skipPreDispatchSync: the prior attempt failed TERMINALLY with nothing
     //     published, so the local G/D workspace is unchanged since that
     //     attempt's pull -- skip the pre-dispatch sync entirely.
@@ -4786,15 +4795,27 @@ async function runSprintCycle(context) {
     // a G-push hitting a real content conflict can attempt exactly one
     // agent-with-runbook resolution before failing the streak (a no-op for
     // non-code-writing roles; never fires for a plain divergence).
-    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, skipPreDispatchSync = false, skipPreDispatchDoltPull = false, resumeOntoRemoteTip = false } = {}) {
+    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, needsVcsAuth = pushCode || pushBeads, skipPreDispatchSync = false, skipPreDispatchDoltPull = false, resumeOntoRemoteTip = false } = {}) {
         if (skipPreDispatchSync) {
             log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
         } else {
             // Proactively refresh this member's VCS credentials before the
-            // G-pull, gated to code-writing roles: read-only roles never `git
-            // push`, so there is nothing to preflight. ensureVcsAuthFresh is
-            // itself a no-op when a still-fresh credential is cached.
-            if (pushCode) {
+            // G-pull/D-push, gated on `needsVcsAuth` rather than directly on
+            // `pushCode`: a code-writing role always needs it (pushCode implies
+            // needsVcsAuth by the default above), but so does any read-side
+            // role whose bracket still D-pushes beads (planner, integ-test-
+            // runner, regression-test-runner) or will raise a PR -- `bd dolt
+            // push` shells out to git under the hood and hits the exact same
+            // credential surface a `git push` does (apra-fleet-647.1.1.2). A
+            // pure read-only role (reviewer, plan-reviewer, deployer -- no
+            // push of either kind) passes needsVcsAuth:false (the computed
+            // default) and gets no preflight, since it has nothing to
+            // preflight for. ensureVcsAuthFresh is itself a no-op when a
+            // still-fresh credential is cached, and NEVER throws -- a
+            // preflight failure degrades silently and never aborts a
+            // dispatch.
+            if (needsVcsAuth) {
+                log(`[Sync] preflight: member '${member}' needs a fresh VCS credential before this dispatch (pushCode=${pushCode}, pushBeads=${pushBeads}, needsVcsAuth=${needsVcsAuth}).`);
                 await ensureVcsAuthFresh(member);
             }
             await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip });
