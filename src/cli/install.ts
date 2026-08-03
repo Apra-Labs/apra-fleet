@@ -421,6 +421,33 @@ function copyDirSync(src: string, dest: string): void {
   }
 }
 
+/**
+ * Additive overlay copy: copies `src` into `dest` WITHOUT replacing any file the
+ * destination already owns. Returns the dest-relative paths that were left alone.
+ *
+ * Root `skills/pm/` and the vendored apra-fleet-se PM skill both carry `SKILL.md`,
+ * `doer-reviewer-loop.md` and `simple-sprint.md`. A clobbering copy lets the retired
+ * 4-role root `SKILL.md` silently replace the vendored 8-role one and still report
+ * install success, which is why the overlay must never overwrite.
+ */
+export function overlayDirSync(src: string, dest: string, relBase = ''): string[] {
+  const skipped: string[] = [];
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dest, entry.name);
+    const rel = relBase ? path.join(relBase, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      skipped.push(...overlayDirSync(s, d, rel));
+    } else if (fs.existsSync(d)) {
+      skipped.push(rel);
+    } else {
+      fs.copyFileSync(s, d);
+    }
+  }
+  return skipped;
+}
+
 function writeAssetFile(destPath: string, content: string): void {
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
   fs.writeFileSync(destPath, content);
@@ -1036,8 +1063,11 @@ ${killHint}
       const root = findProjectRoot();
       const repoSkillsPm = path.join(root, 'skills', 'pm');
       if (fs.existsSync(repoSkillsPm) && fs.readdirSync(repoSkillsPm).length > 0) {
-        copyDirSync(repoSkillsPm, paths.skillsDir);
-        console.log('    [OK] Overlaid apra-fleet PM skill overrides from skills/pm/');
+        const skipped = overlayDirSync(repoSkillsPm, paths.skillsDir);
+        console.log('    [OK] Overlaid apra-fleet PM skill additions from skills/pm/');
+        if (skipped.length > 0) {
+          console.log(`    [--] Kept ${skipped.length} vendored PM skill file(s): ${skipped.join(', ')}`);
+        }
       }
     } else {
       // Dev/npm mode: prefer apra-pm local copy, fall back to dist/
@@ -1048,8 +1078,11 @@ ${killHint}
       // Overlay apra-fleet-owned PM skill additions/overrides from skills/pm/ in repo root
       const repoSkillsPm = path.join(root, 'skills', 'pm');
       if (fs.existsSync(repoSkillsPm) && fs.readdirSync(repoSkillsPm).length > 0) {
-        copyDirSync(repoSkillsPm, paths.skillsDir);
-        console.log('    [OK] Overlaid apra-fleet PM skill overrides from skills/pm/');
+        const skipped = overlayDirSync(repoSkillsPm, paths.skillsDir);
+        console.log('    [OK] Overlaid apra-fleet PM skill additions from skills/pm/');
+        if (skipped.length > 0) {
+          console.log(`    [--] Kept ${skipped.length} vendored PM skill file(s): ${skipped.join(', ')}`);
+        }
       }
     }
   }
