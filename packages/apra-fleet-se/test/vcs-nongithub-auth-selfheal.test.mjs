@@ -77,15 +77,19 @@ const NON_GITHUB_AUTH_TEXTS = {
 // would pass. TF401019 and the app-password literal are VENDOR-SPECIFIC
 // patterns that live only on their own provider descriptor (azure-devops.mjs,
 // bitbucket.mjs) -- not on generic-git.mjs -- so they are only reachable by
-// naming that provider explicitly; they are deliberately NOT inherited by the
-// 'github' chain classifyGitFailure()'s provider-agnostic default uses (see
-// runner.js's own doc comment on classifyGitFailure: "Thin adapter ... default
-// 'github' provider"), same as GitHubVCS's own AUTH_EXPIRED literals are not
-// reachable from 'azure-devops'. The GitLab/GitEA literals, by contrast, were
-// added as PORTABLE entries directly on generic-git.mjs (see apra-fleet-417.6)
-// specifically so they need no provider name at all -- 'github' inherits them
-// like every other chain, which is what classifyGitFailure()'s no-provider
-// default path already exercises.
+// naming that provider explicitly; they are NOT inherited by the 'github'
+// chain's default rule set. apra-fleet-417.7 threaded the member's own
+// resolved provider into classifyGitFailure() (it now takes an optional
+// SECOND `provider` argument -- see runner.js's own doc comment on
+// classifyGitFailure), so classifyGitFailure() is no longer unconditionally
+// provider-agnostic: a caller (runGitStep, via resolveMemberProvider) that
+// names the provider now reaches these vendor-specific rules end to end,
+// same as GitHubVCS's own AUTH_EXPIRED literals are only reachable when
+// 'github' (or no provider, since it is the default) is named. The GitLab/
+// GitEA literals, by contrast, were added as PORTABLE entries directly on
+// generic-git.mjs (see apra-fleet-417.6) specifically so they need no
+// provider name at all -- 'github' (classifyGitFailure()'s no-provider
+// default) inherits them like every other chain.
 const NON_GITHUB_AUTH_TEXTS_BARE = {
     'Azure DevOps (TF401019)': {
         text: "remote: TF401019: The Git repository with name or identifier 'core' does not exist, or you do not have permission to perform this operation.",
@@ -138,16 +142,29 @@ describe("non-GitHub provider auth texts classify as AUTH_* on the BARE provider
         });
     }
 
-    test("vendor-specific patterns (TF401019, app-password) are NOT reachable from the default provider chain classifyGitFailure() uses -- they require naming the provider explicitly, unlike the portable GitLab/Gitea entries on generic-git.mjs", () => {
+    test("vendor-specific patterns (TF401019, app-password) are NOT reachable from the default provider chain (no provider named) -- they require naming the provider explicitly, unlike the portable GitLab/Gitea entries on generic-git.mjs", () => {
         const tf401019Bare = NON_GITHUB_AUTH_TEXTS_BARE['Azure DevOps (TF401019)'].text;
         const appPasswordBare = NON_GITHUB_AUTH_TEXTS_BARE['Bitbucket (Invalid or expired app password)'].text;
         assert.equal(classifyFailure(tf401019Bare).kind, K.UNKNOWN, 'TF401019 must not leak into the default/github chain');
         assert.equal(classifyFailure(appPasswordBare).kind, K.UNKNOWN, 'the app-password literal must not leak into the default/github chain');
+        assert.equal(classifyGitFailure(tf401019Bare), 'unknown', 'classifyGitFailure() with no provider argument must still fall back to the default chain (no verdict change for callers that cannot resolve a provider)');
+        assert.equal(classifyGitFailure(appPasswordBare), 'unknown', 'classifyGitFailure() with no provider argument must still fall back to the default chain (no verdict change for callers that cannot resolve a provider)');
 
         const gitlabBare = NON_GITHUB_AUTH_TEXTS_BARE['GitLab (HTTP Basic: Access denied)'].text;
         const giteaBare = NON_GITHUB_AUTH_TEXTS_BARE['Gitea (401 Unauthorized)'].text;
         assert.equal(classifyGitFailure(gitlabBare), 'auth', 'the portable GitLab literal must classify via the default provider chain (no opts.provider needed)');
         assert.equal(classifyGitFailure(giteaBare), 'auth', 'the portable Gitea literal must classify via the default provider chain (no opts.provider needed)');
+    });
+
+    // apra-fleet-417.7: the flip side of the guard above -- once a caller DOES
+    // name the member's own resolved provider (as runGitStep now does via
+    // resolveMemberProvider), classifyGitFailure() reaches these
+    // vendor-specific rules and stops classifying them UNKNOWN.
+    test('classifyGitFailure(text, provider): naming the member-resolved provider makes the vendor-specific rule reachable (TF401019 -> azure-devops, app-password -> bitbucket)', () => {
+        const tf401019Bare = NON_GITHUB_AUTH_TEXTS_BARE['Azure DevOps (TF401019)'].text;
+        const appPasswordBare = NON_GITHUB_AUTH_TEXTS_BARE['Bitbucket (Invalid or expired app password)'].text;
+        assert.equal(classifyGitFailure(tf401019Bare, 'azure-devops'), 'auth', 'TF401019 must classify auth once the azure-devops provider is named');
+        assert.equal(classifyGitFailure(appPasswordBare, 'bitbucket'), 'auth', 'the app-password literal must classify auth once the bitbucket provider is named');
     });
 });
 
@@ -171,6 +188,77 @@ describe('non-GitHub provider auth texts drive exactly one self-heal + retry, no
             );
         });
     }
+});
+
+// apra-fleet-417.7: end to end -- a member whose resolved provider is
+// 'azure-devops'/'bitbucket' must classify the bare vendor literal (no git
+// generic tail) as 'auth', not 'unknown', once runGitStep is given a
+// resolveMemberProvider that resolves it. The observable that distinguishes
+// 'auth' from 'unknown' at the syncMemberAfter/runGitStep boundary is
+// runGitStep's own log line ("<kind> git failure ..."), since both kinds
+// share the SAME bounded self-heal + single retry mechanics (so healCalls/
+// push-attempt counts alone would pass whether or not the fix worked --
+// see the log-line assertion below, not just the outcome).
+describe('a member whose resolved VCS provider is azure-devops/bitbucket classifies the bare vendor literal as auth, not unknown, end to end through runGitStep (apra-fleet-417.7)', () => {
+    const CASES = [
+        {
+            label: 'Azure DevOps (TF401019, bare)',
+            text: NON_GITHUB_AUTH_TEXTS_BARE['Azure DevOps (TF401019)'].text,
+            provider: 'azure-devops',
+        },
+        {
+            label: 'Bitbucket (app-password, bare)',
+            text: NON_GITHUB_AUTH_TEXTS_BARE['Bitbucket (Invalid or expired app password)'].text,
+            provider: 'bitbucket',
+        },
+    ];
+
+    for (const { label, text, provider } of CASES) {
+        test(`${label}: syncMemberAfter's G-push logs an 'auth git failure' (not 'unknown'), self-heals once, and the retry succeeds`, async () => {
+            const { command } = makeCommandMock({
+                'git push': [fail(text), OK],
+            });
+            let healCalls = 0;
+            const onAuthFailure = async () => { healCalls += 1; };
+            const logLines = [];
+            const log = (msg) => logLines.push(msg);
+            const resolveMemberProvider = async () => provider;
+
+            const res = await syncMemberAfter('m1', { command, onAuthFailure, log, resolveMemberProvider });
+
+            assert.equal(res.ok, true, `expected the push to ultimately succeed after self-heal, got: ${JSON.stringify(res)}`);
+            assert.equal(healCalls, 1, `${label}: expected exactly one self-heal call, got ${healCalls}`);
+            assert.ok(
+                logLines.some((l) => l.includes('auth git failure')),
+                `${label}: expected an 'auth git failure' log line (provider threading must classify auth, not unknown) -- got: ${JSON.stringify(logLines)}`,
+            );
+            assert.ok(
+                !logLines.some((l) => l.includes('unknown git failure')),
+                `${label}: must NOT classify unknown once the member's own provider is resolved -- got: ${JSON.stringify(logLines)}`,
+            );
+        });
+    }
+
+    test("a member whose provider cannot be resolved (resolveMemberProvider throws) fails closed to the default chain -- TF401019 still classifies unknown, no throw, self-heal still bounded", async () => {
+        const text = NON_GITHUB_AUTH_TEXTS_BARE['Azure DevOps (TF401019)'].text;
+        const { command } = makeCommandMock({
+            'git push': [fail(text), OK],
+        });
+        let healCalls = 0;
+        const onAuthFailure = async () => { healCalls += 1; };
+        const logLines = [];
+        const log = (msg) => logLines.push(msg);
+        const resolveMemberProvider = async () => { throw new Error('member registry unreachable'); };
+
+        const res = await syncMemberAfter('m1', { command, onAuthFailure, log, resolveMemberProvider });
+
+        assert.equal(res.ok, true, 'an unresolvable provider must not abort the sync -- it degrades to the default chain');
+        assert.equal(healCalls, 1, 'the default-chain UNKNOWN classification still gets its one bounded self-heal + retry');
+        assert.ok(
+            logLines.some((l) => l.includes('unknown git failure')),
+            `expected the default-chain 'unknown git failure' classification when the provider cannot be resolved -- got: ${JSON.stringify(logLines)}`,
+        );
+    });
 });
 
 describe('a genuinely unrecognized VCS failure classifies UNKNOWN, gets exactly one bounded retry, then fails (apra-fleet-647.1.3.4)', () => {

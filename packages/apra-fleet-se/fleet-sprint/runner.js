@@ -633,15 +633,27 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
 /**
  * Classify a failed git command's output into the failure classes the sync
  * brackets route differently. Thin adapter over VCSModule.classifyFailure()
- * (default 'github' provider) + toGitVerdict(), mapping the neutral kind
- * taxonomy onto this module's legacy verdict vocabulary with NO verdict
- * change from the deleted pattern-list classifier.
+ * + toGitVerdict(), mapping the neutral kind taxonomy onto this module's
+ * legacy verdict vocabulary with NO verdict change from the deleted
+ * pattern-list classifier.
+ *
+ * apra-fleet-417.7: `provider` is optional and, when supplied, selects the
+ * member's own resolved VCS provider chain (e.g. 'azure-devops',
+ * 'bitbucket') instead of the default 'github' chain -- this is what makes
+ * azure-devops.mjs's TF401019 and bitbucket.mjs's app-password rules
+ * reachable at runtime; they are NOT inherited by the default chain (see
+ * vcs-nongithub-auth-selfheal.test.mjs). Omitting it (every call site that
+ * cannot resolve a provider) reproduces the prior provider-agnostic default
+ * exactly -- NO verdict change for GitHub members or any caller that does
+ * not pass one.
  *
  * @param {string} output - the raw git stderr/stdout of the failed command
+ * @param {string} [provider] - the member's resolved VCS provider; falls back
+ *   to VCSModule's default ('github') chain when omitted/falsy.
  * @returns {'diverged'|'auth'|'transient'|'unknown'}
  */
-export function classifyGitFailure(output) {
-    return toGitVerdict(classifyFailure(output).kind);
+export function classifyGitFailure(output, provider) {
+    return toGitVerdict(classifyFailure(output, provider ? { provider } : undefined).kind);
 }
 
 /**
@@ -670,9 +682,18 @@ export function classifyGitFailure(output) {
  * classification is excluded from this and is still returned immediately,
  * never retried -- see the module header's SINGLE-WRITER TOKEN PASSING stance.
  *
+ * apra-fleet-417.7: an optional `provider` (the member's own resolved VCS
+ * provider, e.g. from VCSModule.resolveProvider()) is threaded straight into
+ * classifyGitFailure() so a vendor-specific AUTH rule (azure-devops.mjs's
+ * TF401019, bitbucket.mjs's app-password literal) is reachable here, not just
+ * from a caller that names the provider directly against classifyFailure().
+ * Omitting it (unresolvable/absent provider) falls back to today's default
+ * 'github' chain -- no throw, no new failure mode, no verdict change for
+ * GitHub members.
+ *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'unknown' }>}
  */
-async function runGitStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure }) {
+async function runGitStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, provider }) {
     let attempt = 0;
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
@@ -680,7 +701,7 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
         if (res && res.ok) return res;
         const error = res ? res.error : 'unknown command failure';
-        const kind = classifyGitFailure(error);
+        const kind = classifyGitFailure(error, provider);
         if (kind === 'transient' && attempt < maxTransientRetries) {
             attempt += 1;
             log(`[Sync] transient git failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
@@ -699,6 +720,29 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
             continue;
         }
         return { ok: false, output: res ? res.output : '', error, kind };
+    }
+}
+
+/**
+ * Resolve `member`'s VCS provider via an injected `resolveMemberProvider`
+ * (see createMemberVcsProviderResolver below) for threading into
+ * classifyGitFailure(), failing CLOSED to `undefined` (today's default
+ * 'github' chain) on any error or when no resolver was injected -- this must
+ * never throw, since a provider-resolution hiccup must never abort a sync
+ * bracket that would otherwise succeed on the default chain.
+ *
+ * @param {((member: string) => Promise<string|undefined>)|undefined} resolveMemberProvider
+ * @param {string} member
+ * @param {Function} log
+ * @returns {Promise<string|undefined>}
+ */
+async function resolveGitProviderForClassification(resolveMemberProvider, member, log) {
+    if (typeof resolveMemberProvider !== 'function') return undefined;
+    try {
+        return await resolveMemberProvider(member);
+    } catch (err) {
+        log(`[Sync] could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for GitHub members): ${err.message}`);
+        return undefined;
     }
 }
 
@@ -725,20 +769,26 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
  * resumeOntoRemoteTip); omitting it keeps the ff-only-merge behaviour for every
  * first attempt.
  *
+ * apra-fleet-417.7: an optional injected `resolveMemberProvider` (see
+ * createMemberVcsProviderResolver) is resolved ONCE at the top of this call
+ * and threaded into every runGitStep call below, so a G-pull auth failure for
+ * a non-GitHub member classifies via that member's own provider chain.
+ *
  * @param {string} member
- * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string, onAuthFailure?: Function, resetToRemoteTip?: boolean }} opts
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string, onAuthFailure?: Function, resetToRemoteTip?: boolean, resolveMemberProvider?: (member: string) => Promise<string|undefined> }} opts
  * @returns {Promise<{ ok: true, member: string }>}
  */
 export async function syncMemberBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch, onAuthFailure, resetToRemoteTip = false } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch, onAuthFailure, resetToRemoteTip = false, resolveMemberProvider } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberBefore requires an injected command() in opts");
     }
+    const provider = await resolveGitProviderForClassification(resolveMemberProvider, member, log);
 
     const fetchCmd = branch ? `git fetch ${remote} ${branch}` : `git fetch ${remote}`;
     const fetch = await runGitStep({
         command, member, cmd: fetchCmd,
-        label: `G-pull fetch for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        label: `G-pull fetch for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
     });
     if (!fetch.ok) {
         // A brand-new sprint branch created locally from base, before its
@@ -776,7 +826,7 @@ export async function syncMemberBefore(member, opts = {}) {
         const resetTarget = `${remote}/${branch}`;
         const reset = await runGitStep({
             command, member, cmd: `git reset --hard ${resetTarget}`,
-            label: `G-pull reset-to-remote-tip for '${member}'`, log, maxTransientRetries, onAuthFailure,
+            label: `G-pull reset-to-remote-tip for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
         });
         if (!reset.ok) {
             throw new GitSyncError(
@@ -791,7 +841,7 @@ export async function syncMemberBefore(member, opts = {}) {
     const mergeCmd = branch ? `git merge --ff-only ${remote}/${branch}` : 'git merge --ff-only';
     const merge = await runGitStep({
         command, member, cmd: mergeCmd,
-        label: `G-pull ff-only merge for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        label: `G-pull ff-only merge for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
     });
     if (!merge.ok) {
         if (merge.kind === 'diverged') {
@@ -836,18 +886,24 @@ export async function syncMemberBefore(member, opts = {}) {
  * call below for a bounded one-shot self-heal (call it once, retry the same
  * command once) whenever a step is classified 'auth'.
  *
+ * apra-fleet-417.7: an optional injected `resolveMemberProvider` (see
+ * createMemberVcsProviderResolver) is resolved ONCE at the top of this call
+ * and threaded into every runGitStep call below, so a G-push auth failure for
+ * a non-GitHub member classifies via that member's own provider chain.
+ *
  * @param {string} member
  * @param {{
  *   command: Function, pushCode?: boolean, log?: Function,
  *   maxTransientRetries?: number, remote?: string, branch?: string,
  *   agent?: Function, resolveConflictModel?: string, onAuthFailure?: Function,
+ *   resolveMemberProvider?: (member: string) => Promise<string|undefined>,
  * }} opts
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, rebased: boolean, tier2Resolved?: boolean }>}
  */
 export async function syncMemberAfter(member, opts = {}) {
     const {
         command, pushCode = true, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch,
-        agent, resolveConflictModel, onAuthFailure,
+        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider,
     } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberAfter requires an injected command() in opts");
@@ -856,12 +912,13 @@ export async function syncMemberAfter(member, opts = {}) {
     if (!pushCode) {
         return { ok: true, member, pushed: false, rebased: false };
     }
+    const provider = await resolveGitProviderForClassification(resolveMemberProvider, member, log);
 
     const pushCmd = branch ? `git push ${remote} ${branch}` : 'git push';
 
     let push = await runGitStep({
         command, member, cmd: pushCmd,
-        label: `G-push for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        label: `G-push for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, rebased: false };
@@ -881,7 +938,7 @@ export async function syncMemberAfter(member, opts = {}) {
     const rebaseCmd = branch ? `git pull --rebase ${remote} ${branch}` : 'git pull --rebase';
     const rebase = await runGitStep({
         command, member, cmd: rebaseCmd,
-        label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
     });
     if (!rebase.ok) {
         // Tier 1 scripted detection: confirm from git's own porcelain status --
@@ -912,7 +969,7 @@ export async function syncMemberAfter(member, opts = {}) {
             if (stillUnmerged.length === 0) {
                 const rePush = await runGitStep({
                     command, member, cmd: pushCmd,
-                    label: `G-push after Tier 2 conflict resolution for '${member}'`, log, maxTransientRetries, onAuthFailure,
+                    label: `G-push after Tier 2 conflict resolution for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
                 });
                 if (rePush.ok) {
                     log(`[Sync] Tier 2 conflict resolution for member '${member}' succeeded -- working tree clean and the resolved code was pushed.`);
@@ -939,7 +996,7 @@ export async function syncMemberAfter(member, opts = {}) {
 
     push = await runGitStep({
         command, member, cmd: pushCmd,
-        label: `G-push re-push after rebase for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        label: `G-push re-push after rebase for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, rebased: true };
@@ -1025,6 +1082,7 @@ export {
  *   sprintId?: string, branch?: string, maxTransientRetries?: number,
  *   remote?: string, agent?: Function, resolveConflictModel?: string,
  *   onAuthFailure?: Function,
+ *   resolveMemberProvider?: (member: string) => Promise<string|undefined>,
  * }} opts
  * @returns {Promise<{ ok: true, member: string, gPush: object, dPush: object }>}
  */
@@ -1032,12 +1090,12 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     const {
         command, pushCode = true, pushBeads = true, log = () => {},
         mutex, sprintId, branch, maxTransientRetries = 1, remote = 'origin',
-        agent, resolveConflictModel, onAuthFailure,
+        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider,
     } = opts;
 
     let gPush;
     try {
-        gPush = await syncMemberAfter(member, { command, pushCode, log, branch, maxTransientRetries, remote, agent, resolveConflictModel, onAuthFailure });
+        gPush = await syncMemberAfter(member, { command, pushCode, log, branch, maxTransientRetries, remote, agent, resolveConflictModel, onAuthFailure, resolveMemberProvider });
     } catch (gPushErr) {
         log(`[Sync] G-push failed for member '${member}' -- skipping D-push and failing this streak rather than advertising an unreachable close (a beads close whose justifying code never reached the shared branch): ${gPushErr.message}`);
         throw gPushErr;
@@ -1773,6 +1831,49 @@ function parseExpiresAtFromProvisionText(text) {
     if (!m) return null;
     const d = new Date(m[1]);
     return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * apra-fleet-417.7: builds the `resolveMemberProvider(member)` callback
+ * threaded through syncMemberBefore/syncMemberAfter/finalizeAbort into
+ * runGitStep, so classifyGitFailure() classifies a git failure via the
+ * member's OWN resolved VCS provider chain (VCSModule.resolveProvider())
+ * instead of always falling back to the default 'github' chain -- this is
+ * what makes azure-devops.mjs's TF401019 -> AUTH_DENIED and bitbucket.mjs's
+ * app-password -> AUTH_EXPIRED rules reachable at runtime, not just from a
+ * caller that names the provider directly against classifyFailure().
+ *
+ * The resolution is cached per member for the lifetime of the returned
+ * callback (a member's registered VCS provider does not change mid-sprint),
+ * so a member whose provider fails to resolve (fleet unreachable, no
+ * registered provider) is not re-queried on every subsequent git failure --
+ * it fails closed to `undefined` (today's default chain) exactly once per
+ * member, then reuses that cached `undefined`.
+ *
+ * `callTool` is injected (the caller's MCP client), so this stays
+ * transport-agnostic and unit-testable without a live fleet server.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, log?: Function }} opts
+ * @returns {(member: string) => Promise<string|undefined>}
+ */
+export function createMemberVcsProviderResolver(opts = {}) {
+    const { callTool, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+    /** @type {Map<string, string|undefined>} member -> resolved provider (or undefined if unresolvable). */
+    const cache = new Map();
+
+    return async function resolveMemberProvider(member) {
+        if (cache.has(member)) return cache.get(member);
+        try {
+            const { provider } = await resolveProvider(member, { fleetApi });
+            cache.set(member, provider);
+            return provider;
+        } catch (err) {
+            log(`[Sync] could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for GitHub members): ${err.message}`);
+            cache.set(member, undefined);
+            return undefined;
+        }
+    };
 }
 
 /**
@@ -4178,6 +4279,29 @@ export function isNoMutationDispatchFailure(err) {
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
 export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool }) {
+    // Built up-front (not just at the PR-creation step further down) so the
+    // SAME ApraFleet client can also resolve `member`'s VCS provider
+    // (apra-fleet-417.7) for the runGitStep calls below -- avoids
+    // constructing a second client just for that lookup. `null` when no
+    // callTool is wired (e.g. a mock-sprint scenario with no MCP client);
+    // every downstream use already guards on this being non-null.
+    const fleetApi = typeof callTool === 'function' ? new ApraFleet({ callTool }) : null;
+
+    // apra-fleet-417.7: resolve `member`'s VCS provider ONCE up-front so the
+    // git failures below (fetch/rev-list/push) classify via that member's own
+    // provider chain, not just the default 'github' one. Fails closed to
+    // `undefined` (today's default chain) on any error -- a provider-
+    // resolution hiccup here must never abort an otherwise-recoverable abort
+    // finalization.
+    let provider;
+    if (fleetApi) {
+        try {
+            ({ provider } = await resolveProvider(member, { fleetApi }));
+        } catch (err) {
+            log(`finalizeAbort: could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for GitHub members): ${err.message}`);
+        }
+    }
+
     // 1. How many commits (if any) does the sprint branch carry beyond base?
     // Every command() call below passes an explicit `member_name` -- this
     // runner never lets a git/gh dispatch fall back to an ambient member.
@@ -4202,7 +4326,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     const fetchRes = await runGitStep({
         command, member, cmd: `git fetch origin ${baseBranch}`,
         label: `Fetch base branch '${baseBranch}' for abort-path diff`,
-        log, maxTransientRetries: 1, onAuthFailure,
+        log, maxTransientRetries: 1, onAuthFailure, provider,
     });
     if (!fetchRes.ok) {
         throw new CommandError(
@@ -4213,7 +4337,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     const revListRes = await runGitStep({
         command, member, cmd: `git rev-list --count origin/${baseBranch}..${branch}`,
         label: `Count commits beyond base for abort-path branch '${branch}'`,
-        log, maxTransientRetries: 1, onAuthFailure,
+        log, maxTransientRetries: 1, onAuthFailure, provider,
     });
     if (!revListRes.ok) {
         throw new CommandError(
@@ -4232,7 +4356,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     const pushRes = await runGitStep({
         command, member, cmd: `git push -u origin ${branch}`,
         label: `Push abort-path sprint branch '${branch}'`,
-        log, maxTransientRetries: 1, onAuthFailure,
+        log, maxTransientRetries: 1, onAuthFailure, provider,
     });
     if (!pushRes.ok) {
         throw new CommandError(
@@ -4286,7 +4410,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     // VCSModule's orchestrator-built curl command, dispatched to `member`
     // through execute_command, using a push+pr credential minted
     // just-in-time immediately before this one call (never at sprint setup).
-    const fleetApi = typeof callTool === 'function' ? new ApraFleet({ callTool }) : null;
+    // (fleetApi is built at the top of this function, above.)
     if (!fleetApi) {
         // Graceful degradation (apra-fleet-tfx.8.1): raising the [ABORTED] PR
         // needs an MCP client to mint a just-in-time push+pr credential on
@@ -4630,6 +4754,26 @@ async function runSprintCycle(context) {
             : undefined
     );
 
+    // apra-fleet-417.7: the member-provider resolver every withGitSync bracket
+    // passes to syncMemberBefore (G-pull) and syncMemberAfterOrdered (G-push)
+    // as `resolveMemberProvider`, so a git failure classifies via that
+    // member's OWN resolved VCS provider chain instead of always falling back
+    // to the default 'github' chain -- what makes azure-devops.mjs's
+    // TF401019 and bitbucket.mjs's app-password AUTH rules reachable at
+    // runtime. Same precedence shape as onAuthFailure above:
+    //   1. `context.resolveMemberVcsProvider` -- an explicitly-injected
+    //      resolver (tests wire an in-process one to prove the threading
+    //      without a live fleet server).
+    //   2. `args.callTool` -- the real VCSModule.resolveProvider() lookup via
+    //      createMemberVcsProviderResolver (this file).
+    //   3. neither -- undefined: every runGitStep call below falls back to
+    //      the default 'github' chain, exactly as before this bead.
+    const resolveMemberVcsProvider = context.resolveMemberVcsProvider ?? (
+        (args && typeof args.callTool === 'function')
+            ? createMemberVcsProviderResolver({ callTool: args.callTool, log })
+            : undefined
+    );
+
     // The PROACTIVE counterpart to onAuthFailure above. Unlike onAuthFailure,
     // this defaults to a callable async no-op rather than undefined, so
     // withGitSync's pre-dispatch bracket can call it unconditionally (gated
@@ -4802,7 +4946,7 @@ async function runSprintCycle(context) {
                 log(`[Sync] preflight: member '${member}' needs a fresh VCS credential before this dispatch (pushCode=${pushCode}, pushBeads=${pushBeads}, needsVcsAuth=${needsVcsAuth}).`);
                 await ensureVcsAuthFresh(member);
             }
-            await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip });
+            await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip, resolveMemberProvider: resolveMemberVcsProvider });
             // EXPLICITLY FATAL (apra-fleet-417.3.1): a pre-dispatch D-pull that
             // silently degraded would hand the agent a STALE beads clone and
             // let it act on it -- worse than not dispatching at all.
@@ -4852,6 +4996,7 @@ async function runSprintCycle(context) {
                         await syncMemberAfterOrdered(member, {
                             command, pushCode, pushBeads, log, branch: validated.branch,
                             mutex: doltPushMutex, sprintId: sprintMutexId, agent, onAuthFailure,
+                            resolveMemberProvider: resolveMemberVcsProvider,
                         });
                         syncErr = null;
                         break;
