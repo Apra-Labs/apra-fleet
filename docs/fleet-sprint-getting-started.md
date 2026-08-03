@@ -240,8 +240,8 @@ work over SSH, with passwords collected out-of-band (never typed into the chat).
 One member is enough to start, and a single-member sprint avoids the multi-clone
 topology questions entirely. You will also want git credentials provisioned for
 the member so it can push the branch and open the PR -- apra-fleet's
-`provision_vcs_auth` supports **GitHub**, Bitbucket, and **Azure DevOps** (org URL
-+ PAT), so a GitHub- or AzDevOps-hosted git repo is fully supported.
+`provision_vcs_auth` supports **GitHub**, Bitbucket, and **Azure DevOps** (org URL+ PAT), 
+so a GitHub- or AzDevOps-hosted git repo is fully supported.
 
 ### 2.5 Scale sideways: one member per sprint, several sprints at once
 
