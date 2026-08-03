@@ -1,12 +1,45 @@
 /**
- * VCS provider registry (apra-fleet-647.1.3.1).
+ * VCS provider registry (apra-fleet-647.1.3.1; extended apra-fleet-647.1.5.1
+ * to be THE single provider manifest -- see isAuthBackend()/known-vocabulary
+ * note below).
  *
  * The manifest of provider implementations available to
- * VCSModule.classifyFailure(). ADDING A PROVIDER IS: write one file next to
- * this one exporting a descriptor of the shape documented in ./generic-git.mjs,
- * then add it to BUILT_IN_PROVIDERS below. classifyFailure's dispatch contract
- * -- its signature, its return shape, its kind precedence, its inheritance
- * walk -- is never touched, and no existing provider file is edited either.
+ * VCSModule.classifyFailure(), VCSModule.resolveProvider() and
+ * VCSModule.buildVcsCommand() (create-pull-request / comment). ADDING A
+ * PROVIDER IS: write one file next to this one exporting a descriptor of the
+ * shape documented in ./generic-git.mjs, then add it to BUILT_IN_PROVIDERS
+ * below -- NO OTHER FILE under fleet-sprint/ changes. classifyFailure's
+ * dispatch contract -- its signature, its return shape, its kind precedence,
+ * its inheritance walk -- is never touched, and no existing provider file is
+ * edited either.
+ *
+ * REQUIRED EXPORT SHAPE (registerVcsProvider() validates the fields marked
+ * required; everything else is optional and only needed for the axis it
+ * supports):
+ *   {
+ *     name:       string                  // required; the `provider` value callers pass
+ *     extends:    string|null             // provider whose classifyFailure() rules are inherited
+ *     rules:      { [VCS_FAILURE_KIND]: RegExp[] }   // classifyFailure() axis
+ *     precedence: string[]|undefined      // optional kind-check order override
+ *     extractProviderCode: (raw) => string|null       // classifyFailure() axis
+ *     matchesHost: (host) => boolean                  // capabilities() axis
+ *     capabilitiesForHost: (host) => { canOpenPullRequest: boolean }  // capabilities() axis
+ *     defaultAuthMode: string|null        // OPTIONAL, but declaring it (even
+ *                                          // as null) is what makes a provider
+ *                                          // part of resolveProvider()'s/
+ *                                          // buildVcsCommand()'s known-provider
+ *                                          // vocabulary -- see isAuthBackend()
+ *                                          // below. Omit entirely for a
+ *                                          // classification-only provider
+ *                                          // (generic-git, dolt) that is not a
+ *                                          // member-facing VCS auth backend.
+ *     builders:   { [action]: Function }|null  // create-pull-request/comment
+ *                                                // command builders; null means
+ *                                                // "known provider, action(s)
+ *                                                // not yet implemented" (fails
+ *                                                // closed with a typed ERROR:,
+ *                                                // never a silently wrong command)
+ *   }
  *
  * The manifest is an explicit import list rather than a directory scan on
  * purpose: this package is bundled into a single executable (npm run
@@ -21,6 +54,8 @@
 import { GenericGitVCS } from './generic-git.mjs';
 import { GitHubVCS } from './github.mjs';
 import { DoltVCS } from './dolt.mjs';
+import { BitbucketVCS } from './bitbucket.mjs';
+import { AzureDevOpsVCS } from './azure-devops.mjs';
 
 /** The provider assumed when a caller passes no `provider`. GitHub, NOT
  *  generic-git: runner.js applies the GitHub literals unconditionally today
@@ -32,6 +67,8 @@ const BUILT_IN_PROVIDERS = [
     GenericGitVCS,
     GitHubVCS,
     DoltVCS,
+    BitbucketVCS,
+    AzureDevOpsVCS,
 ];
 
 const registry = new Map();
@@ -42,7 +79,7 @@ const registry = new Map();
  * than inside a failure classifier, where the error would mask the very
  * failure being classified.
  *
- * @param {{ name: string, extends?: string|null, rules?: object, precedence?: string[], extractProviderCode?: Function }} impl
+ * @param {{ name: string, extends?: string|null, rules?: object, precedence?: string[], extractProviderCode?: Function, defaultAuthMode?: string|null, builders?: object|null }} impl
  * @returns {string} the registered provider name
  */
 export function registerVcsProvider(impl) {
@@ -54,6 +91,24 @@ export function registerVcsProvider(impl) {
     }
     if (impl.extractProviderCode != null && typeof impl.extractProviderCode !== 'function') {
         throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function \`extractProviderCode\`.`);
+    }
+    // apra-fleet-647.1.5.1: the two auth-backend fields folded in from
+    // vcs-module.mjs's former BUILDERS/DEFAULT_AUTH_MODES tables. Both are
+    // OPTIONAL (a classification-only provider like generic-git/dolt omits
+    // them entirely -- see isAuthBackend() below), but validated up front,
+    // same rationale as `rules`/`extractProviderCode` above.
+    if (Object.prototype.hasOwnProperty.call(impl, 'defaultAuthMode') && impl.defaultAuthMode !== null && typeof impl.defaultAuthMode !== 'string') {
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-string, non-null \`defaultAuthMode\`.`);
+    }
+    if (impl.builders != null) {
+        if (typeof impl.builders !== 'object') {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-object \`builders\` table.`);
+        }
+        for (const [action, builder] of Object.entries(impl.builders)) {
+            if (typeof builder !== 'function') {
+                throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function builder for action "${action}".`);
+            }
+        }
     }
     registry.set(impl.name, impl);
     return impl.name;
@@ -78,6 +133,36 @@ export function listVcsProviders() {
 /** @returns {object|undefined} the raw descriptor, or undefined if unknown. */
 export function getVcsProvider(name) {
     return registry.get(name);
+}
+
+/**
+ * Whether `impl` is a member-facing "VCS auth backend" -- one a member can
+ * actually be provisioned/registered against via provision_vcs_auth (github,
+ * bitbucket, azure-devops) -- as opposed to a classification-only entry in
+ * this SAME registry (generic-git, dolt) that exists purely for
+ * classifyFailure()'s inheritance walk and is never a value a member's own
+ * `vcsProvider` field holds.
+ *
+ * The marker is declaring the `defaultAuthMode` OWN property at all (even as
+ * `null` -- see ./bitbucket.mjs, ./azure-devops.mjs), NOT its value, so a
+ * provider opts into VCSModule.resolveProvider()'s/buildVcsCommand()'s known
+ * vocabulary by declaring that one field, with no second list to keep in
+ * sync (apra-fleet-647.1.5.1 AC: "registry and vocabulary can never drift
+ * apart").
+ *
+ * @param {object|undefined} impl
+ * @returns {boolean}
+ */
+export function isAuthBackend(impl) {
+    return !!impl && Object.prototype.hasOwnProperty.call(impl, 'defaultAuthMode');
+}
+
+/** @returns {string[]} every registered auth-backend provider name (see
+ *  isAuthBackend()), in registration order -- the known-provider vocabulary
+ *  for VCSModule.resolveProvider() and buildVcsCommand()'s "unsupported
+ *  provider" error. */
+export function listVcsAuthProviders() {
+    return listVcsProviders().filter((name) => isAuthBackend(registry.get(name)));
 }
 
 /**
@@ -130,4 +215,4 @@ export function resolveVcsProviderForHost(host) {
 
 for (const impl of BUILT_IN_PROVIDERS) registerVcsProvider(impl);
 
-export { GenericGitVCS, GitHubVCS, DoltVCS };
+export { GenericGitVCS, GitHubVCS, DoltVCS, BitbucketVCS, AzureDevOpsVCS };

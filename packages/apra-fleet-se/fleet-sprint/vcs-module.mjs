@@ -33,135 +33,23 @@ import {
     unregisterVcsProvider,
     isKnownVcsProvider,
     listVcsProviders,
+    listVcsAuthProviders,
     getVcsProvider,
     resolveVcsProviderChain,
     resolveVcsProviderForHost,
 } from './vcs-providers/index.mjs';
-
-const GITHUB_API = 'https://api.github.com';
-const REDACTED = '***REDACTED***';
-const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
-
-/** Single-quote a string for embedding in a POSIX shell command,
- *  closing/reopening the quote around any embedded single quotes. */
-function shQuote(value) {
-    return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
-
-function assertRepo(repo) {
-    const value = String(repo ?? '').trim();
-    if (!REPO_RE.test(value)) {
-        throw new Error(`ERROR: VCSModule: invalid repo "${repo}" -- expected "owner/name" (e.g. "Apra-Labs/apra-fleet").`);
-    }
-    return value;
-}
-
-function assertToken(token) {
-    const value = String(token ?? '');
-    if (!value) {
-        throw new Error('ERROR: VCSModule: no token supplied -- caller must mint one via provision_vcs_auth before calling VCSModule.');
-    }
-    return value;
-}
-
-/** Build the GitHub REST "create pull request" curl command.
- *  POST /repos/{owner}/{repo}/pulls -- see
- *  https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request */
-function buildGitHubCreatePrCommand({ repo, base, head, title, body, token }) {
-    const safeRepo = assertRepo(repo);
-    const safeToken = assertToken(token);
-    if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
-    if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a create-pull-request command.');
-    if (!title) throw new Error('ERROR: VCSModule: "title" is required to build a create-pull-request command.');
-
-    const payload = { title, head, base };
-    if (body !== undefined) payload.body = body;
-    const payloadJson = JSON.stringify(payload);
-    const url = `${GITHUB_API}/repos/${safeRepo}/pulls`;
-
-    const buildCurl = (authToken) => [
-        'curl -sS -X POST',
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json')}`,
-        `-H ${shQuote('Content-Type: application/json')}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28')}`,
-        `-d ${shQuote(payloadJson)}`,
-        `-w ${shQuote('\n%{http_code}')}`,
-        url,
-    ].join(' ');
-
-    return {
-        provider: 'github',
-        action: 'create-pull-request',
-        command: buildCurl(safeToken),
-        logSafeCommand: buildCurl(REDACTED),
-        // Interpretation contract mirrors the reverted server-side tool
-        // (src/tools/create-pull-request.ts) so callers migrating to
-        // VCSModule keep the same success/already-exists/error semantics:
-        //   - 2xx                          -> success; body has .number/.html_url
-        //   - 422 + "already exists" text  -> idempotent success
-        //   - anything else                -> error
-        interpret: {
-            successStatusRange: [200, 299],
-            alreadyExistsStatus: 422,
-            alreadyExistsPattern: 'already exists',
-        },
-    };
-}
-
-/** Build the GitHub REST "comment on an issue/PR" curl command, used to
- *  annotate an existing PR when a sprint aborts after the PR was already
- *  raised (rather than opening a second PR for the same head).
- *  POST /repos/{owner}/{repo}/issues/{issue_number}/comments -- see
- *  https://docs.github.com/en/rest/issues/comments#create-an-issue-comment */
-function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token }) {
-    const safeRepo = assertRepo(repo);
-    const safeToken = assertToken(token);
-    if (!issueNumber) throw new Error('ERROR: VCSModule: "issue_number" is required to build a comment command.');
-    if (!body) throw new Error('ERROR: VCSModule: "body" is required to build a comment command.');
-
-    const payloadJson = JSON.stringify({ body });
-    const url = `${GITHUB_API}/repos/${safeRepo}/issues/${issueNumber}/comments`;
-
-    const buildCurl = (authToken) => [
-        'curl -sS -X POST',
-        `-H ${shQuote(`Authorization: Bearer ${authToken}`)}`,
-        `-H ${shQuote('Accept: application/vnd.github+json')}`,
-        `-H ${shQuote('Content-Type: application/json')}`,
-        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28')}`,
-        `-d ${shQuote(payloadJson)}`,
-        `-w ${shQuote('\n%{http_code}')}`,
-        url,
-    ].join(' ');
-
-    return {
-        provider: 'github',
-        action: 'comment',
-        command: buildCurl(safeToken),
-        logSafeCommand: buildCurl(REDACTED),
-        interpret: {
-            successStatusRange: [200, 299],
-        },
-    };
-}
-
-const BUILDERS = {
-    github: {
-        'create-pull-request': buildGitHubCreatePrCommand,
-        comment: buildGitHubCommentCommand,
-    },
-    // bitbucket / azure-devops: not yet implemented. Listed explicitly (rather
-    // than left absent) so the dispatch error below can name every provider
-    // VCSModule is aware of vs. one it genuinely does not recognize.
-    bitbucket: null,
-    'azure-devops': null,
-};
 
 /**
  * Provider-dispatched command build step. `action` is one of
  * 'create-pull-request' | 'comment'; `params.provider` selects the REST
  * dispatch. Pure and deterministic -- no network I/O, no filesystem access,
  * no randomness (beyond whatever caller-supplied fields it is handed).
+ *
+ * apra-fleet-647.1.5.1: dispatches through the vcs-providers/ registry --
+ * each provider's own command builders live as a `builders` field on its
+ * descriptor (see ./vcs-providers/github.mjs) rather than in a second
+ * provider-name-keyed table here. Adding a provider's builders is therefore
+ * one file under vcs-providers/, never a change to this function.
  *
  * Returns { provider, action, command, logSafeCommand, interpret }.
  * Throws an Error whose message starts with the ASCII marker "ERROR:" for an
@@ -170,12 +58,12 @@ const BUILDERS = {
  */
 function buildVcsCommand(action, params) {
     const provider = params && params.provider;
-    const providerBuilders = Object.prototype.hasOwnProperty.call(BUILDERS, provider) ? BUILDERS[provider] : undefined;
-    if (!providerBuilders) {
-        const known = Object.keys(BUILDERS).join(', ');
+    const impl = getVcsProvider(provider);
+    if (!impl) {
+        const known = listVcsAuthProviders().join(', ');
         throw new Error(`ERROR: VCSModule: unsupported VCS provider "${provider}" -- known providers: ${known}.`);
     }
-    const builder = providerBuilders[action];
+    const builder = impl.builders && impl.builders[action];
     if (!builder) {
         throw new Error(`ERROR: VCSModule: provider "${provider}" does not yet implement action "${action}".`);
     }
@@ -188,7 +76,8 @@ export function buildCreatePrCommand(params) {
 }
 
 // ---------------------------------------------------------------------------
-// Provider resolution (apra-fleet-647.1.2.1)
+// Provider resolution (apra-fleet-647.1.2.1; refolded onto the registry
+// apra-fleet-647.1.5.1)
 // ---------------------------------------------------------------------------
 //
 // Each provider owns its OWN default auth-mode vocabulary (GitHub: App vs.
@@ -196,18 +85,17 @@ export function buildCreatePrCommand(params) {
 // via their own single token field) so a caller (runner.js) never has to
 // hardcode a provider-specific mode literal alongside the provider name.
 // `null` means "this provider has no separate auth-mode choice at
-// provision_vcs_auth call time".
+// provision_vcs_auth call time". That per-provider default now lives as the
+// `defaultAuthMode` field on the provider's OWN descriptor (see
+// ./vcs-providers/github.mjs, ./vcs-providers/bitbucket.mjs,
+// ./vcs-providers/azure-devops.mjs) rather than in a second provider-name-
+// keyed table here.
 //
 // GitHub defaults to 'github-app' (never 'pat') because that is the mode
 // runner.js has always hardcoded -- resolveProvider() must reproduce that
 // exact behavior for every already-github-provisioned member, not merely a
 // plausible one (apra-fleet-647.1.2.1 AC: "Existing GitHub members behave
 // exactly as before").
-const DEFAULT_AUTH_MODES = Object.freeze({
-    github: 'github-app',
-    bitbucket: null,
-    'azure-devops': null,
-});
 
 /**
  * Resolve `member`'s persisted VCS provider (and that provider's own default
@@ -218,10 +106,12 @@ const DEFAULT_AUTH_MODES = Object.freeze({
  * failure naming the member and the known providers, never a silent GitHub
  * assumption (apra-fleet-647.1.2's whole point).
  *
- * The known-provider vocabulary is BUILDERS' own key set (this module's
- * single manifest of providers it is aware of at all), so a provider added
- * there is automatically recognized here too -- no second list to keep in
- * sync.
+ * The known-provider vocabulary is listVcsAuthProviders() -- every registered
+ * vcs-providers/ descriptor that declares its own `defaultAuthMode` (this
+ * module's single manifest of member-facing VCS auth backends it is aware of
+ * at all; see ./vcs-providers/index.mjs's isAuthBackend()) -- so a provider
+ * added there is automatically recognized here too, no second list to keep
+ * in sync.
  *
  * @param {string} member
  * @param {{ fleetApi: { memberDetail: (opts: { member_name: string, format?: string }) => Promise<any> } }} opts
@@ -231,7 +121,7 @@ export async function resolveProvider(member, { fleetApi } = {}) {
     if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
         throw new Error(`ERROR: VCSModule: resolveProvider requires an injected fleetApi.memberDetail() -- cannot resolve a VCS provider for member '${member}' without one.`);
     }
-    const known = Object.keys(BUILDERS);
+    const known = listVcsAuthProviders();
 
     let res;
     try {
@@ -262,7 +152,8 @@ export async function resolveProvider(member, { fleetApi } = {}) {
         throw new Error(`ERROR: VCSModule: resolveProvider: member '${member}' has no registered VCS provider (vcsProvider: ${provider ? `"${provider}"` : '(absent)'}) -- known providers: ${known.join(', ')}. Provision one via provision_vcs_auth with an explicit 'provider' before relying on resolveProvider.`);
     }
 
-    return { provider, authMode: Object.prototype.hasOwnProperty.call(DEFAULT_AUTH_MODES, provider) ? DEFAULT_AUTH_MODES[provider] : null };
+    const impl = getVcsProvider(provider);
+    return { provider, authMode: impl && Object.prototype.hasOwnProperty.call(impl, 'defaultAuthMode') ? impl.defaultAuthMode : null };
 }
 
 /** Build a "comment on abort" command for the given provider. */
@@ -525,6 +416,7 @@ export const VCSModule = {
     unregisterVcsProvider,
     isKnownVcsProvider,
     listVcsProviders,
+    listVcsAuthProviders,
     getVcsProvider,
     DEFAULT_VCS_PROVIDER,
 };
@@ -536,6 +428,7 @@ export {
     unregisterVcsProvider,
     isKnownVcsProvider,
     listVcsProviders,
+    listVcsAuthProviders,
     getVcsProvider,
 };
 

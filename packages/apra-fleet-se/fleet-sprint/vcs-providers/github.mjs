@@ -1,5 +1,11 @@
 /**
- * GitHubVCS -- the GitHub provider for VCSModule.classifyFailure().
+ * GitHubVCS -- the GitHub provider for VCSModule.classifyFailure(), and (apra-
+ * fleet-647.1.5.1) THE manifest entry for everything else GitHub-specific:
+ * its default auth mode and its create-pull-request/comment command builders.
+ * Before 647.1.5.1 those lived in two separate provider-name-keyed tables in
+ * vcs-module.mjs (BUILDERS, DEFAULT_AUTH_MODES) that a new provider had to
+ * also edit; now they are fields on THIS descriptor, so adding a provider is
+ * one file here, nothing in vcs-module.mjs.
  *
  * Owns ONLY GitHub's own literals and inherits everything portable from
  * GenericGitVCS via `extends` (a GitHub push still fails with plain git and
@@ -20,6 +26,113 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
+
+const GITHUB_API = 'https://api.github.com';
+const REDACTED = '***REDACTED***';
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/** Single-quote a string for embedding in a POSIX shell command,
+ *  closing/reopening the quote around any embedded single quotes. */
+function shQuote(value) {
+    return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function assertRepo(repo) {
+    const value = String(repo ?? '').trim();
+    if (!REPO_RE.test(value)) {
+        throw new Error(`ERROR: VCSModule: invalid repo "${repo}" -- expected "owner/name" (e.g. "Apra-Labs/apra-fleet").`);
+    }
+    return value;
+}
+
+function assertToken(token) {
+    const value = String(token ?? '');
+    if (!value) {
+        throw new Error('ERROR: VCSModule: no token supplied -- caller must mint one via provision_vcs_auth before calling VCSModule.');
+    }
+    return value;
+}
+
+/** Build the GitHub REST "create pull request" curl command.
+ *  POST /repos/{owner}/{repo}/pulls -- see
+ *  https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request */
+function buildGitHubCreatePrCommand({ repo, base, head, title, body, token }) {
+    const safeRepo = assertRepo(repo);
+    const safeToken = assertToken(token);
+    if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
+    if (!head) throw new Error('ERROR: VCSModule: "head" branch is required to build a create-pull-request command.');
+    if (!title) throw new Error('ERROR: VCSModule: "title" is required to build a create-pull-request command.');
+
+    const payload = { title, head, base };
+    if (body !== undefined) payload.body = body;
+    const payloadJson = JSON.stringify(payload);
+    const url = `${GITHUB_API}/repos/${safeRepo}/pulls`;
+
+    const buildCurl = (authToken) => [
+        'curl -sS -X POST',
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json')}`,
+        `-H ${shQuote('Content-Type: application/json')}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28')}`,
+        `-d ${shQuote(payloadJson)}`,
+        `-w ${shQuote('\n%{http_code}')}`,
+        url,
+    ].join(' ');
+
+    return {
+        provider: 'github',
+        action: 'create-pull-request',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        // Interpretation contract mirrors the reverted server-side tool
+        // (src/tools/create-pull-request.ts) so callers migrating to
+        // VCSModule keep the same success/already-exists/error semantics:
+        //   - 2xx                          -> success; body has .number/.html_url
+        //   - 422 + "already exists" text  -> idempotent success
+        //   - anything else                -> error
+        interpret: {
+            successStatusRange: [200, 299],
+            alreadyExistsStatus: 422,
+            alreadyExistsPattern: 'already exists',
+        },
+    };
+}
+
+/** Build the GitHub REST "comment on an issue/PR" curl command, used to
+ *  annotate an existing PR when a sprint aborts after the PR was already
+ *  raised (rather than opening a second PR for the same head).
+ *  POST /repos/{owner}/{repo}/issues/{issue_number}/comments -- see
+ *  https://docs.github.com/en/rest/issues/comments#create-an-issue-comment */
+function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token }) {
+    const safeRepo = assertRepo(repo);
+    const safeToken = assertToken(token);
+    if (!issueNumber) throw new Error('ERROR: VCSModule: "issue_number" is required to build a comment command.');
+    if (!body) throw new Error('ERROR: VCSModule: "body" is required to build a comment command.');
+
+    const payloadJson = JSON.stringify({ body });
+    const url = `${GITHUB_API}/repos/${safeRepo}/issues/${issueNumber}/comments`;
+
+    const buildCurl = (authToken) => [
+        'curl -sS -X POST',
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`)}`,
+        `-H ${shQuote('Accept: application/vnd.github+json')}`,
+        `-H ${shQuote('Content-Type: application/json')}`,
+        `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28')}`,
+        `-d ${shQuote(payloadJson)}`,
+        `-w ${shQuote('\n%{http_code}')}`,
+        url,
+    ].join(' ');
+
+    return {
+        provider: 'github',
+        action: 'comment',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: {
+            successStatusRange: [200, 299],
+        },
+    };
+}
 
 /** GitHub's credential-rejection literals. "remote: Invalid username or
  *  token/password" is what a git push over HTTPS gets back from GitHub with a
@@ -91,6 +204,19 @@ export const GitHubVCS = Object.freeze({
     extractProviderCode,
     matchesHost,
     capabilitiesForHost,
+    // apra-fleet-647.1.5.1: GitHub's own default auth mode (App, never PAT --
+    // see vcs-module.mjs resolveProvider()'s header note on why this must stay
+    // 'github-app') and its command builders. A provider descriptor need not
+    // declare `defaultAuthMode`/`builders` at all (see ./generic-git.mjs,
+    // ./dolt.mjs -- classification-only providers that are not a member-facing
+    // VCS auth backend); declaring `defaultAuthMode` (even as `null`) is what
+    // makes a provider part of resolveProvider()'s/buildVcsCommand()'s known
+    // vocabulary -- see ./index.mjs's isAuthBackend().
+    defaultAuthMode: 'github-app',
+    builders: Object.freeze({
+        'create-pull-request': buildGitHubCreatePrCommand,
+        comment: buildGitHubCommentCommand,
+    }),
 });
 
 export default GitHubVCS;
