@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
-import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride, _setInstallForceTimingOverride } from '../src/cli/install.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -196,6 +196,82 @@ describe('install --force (#96)', () => {
 
     exitSpy.mockRestore();
     errorSpy.mockRestore();
+  });
+});
+
+describe('install --force ETXTBSY regression: survives first SIGTERM (apra-fleet-l7n.2.2)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    // Generous, deterministic timing so the poll loop gets several iterations
+    // regardless of host scheduling jitter (default TEST timing is intentionally
+    // tiny to keep the rest of the suite fast).
+    _setInstallForceTimingOverride({ pollIntervalMs: 5, graceMs: 30, killGraceMs: 15 });
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    _setInstallForceTimingOverride(null);
+    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+  });
+
+  it('does not copy the binary until the process is confirmed gone, and escalates to SIGKILL after the grace window', async () => {
+    // Ordered trace of every observable event so we can assert relative ordering,
+    // not just presence/absence.
+    const seq: string[] = [];
+    let sigkillIssued = false;
+
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (sigkillIssued) {
+          // Only reports gone once the process has been escalated against.
+          seq.push('pgrep:gone');
+          throw Object.assign(new Error('no match'), { status: 1 });
+        }
+        seq.push('pgrep:running');
+        return '5678\n' as any;
+      }
+      if (c === 'pkill -x apra-fleet') {
+        seq.push('kill:term');
+        return '' as any;
+      }
+      if (c === 'pkill -9 -x apra-fleet') {
+        sigkillIssued = true;
+        seq.push('kill:sigkill');
+        return '' as any;
+      }
+      return '' as any;
+    });
+    vi.mocked(fs.copyFileSync).mockImplementation(() => { seq.push('copyFileSync'); });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force'])).resolves.toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    // (2) SIGKILL escalation occurred, and only after multiple polls during the
+    // graceful-SIGTERM window -- not a single check followed by a fixed sleep.
+    const runningPollsBeforeEscalation = seq.slice(0, seq.indexOf('kill:sigkill')).filter(s => s === 'pgrep:running').length;
+    expect(seq).toContain('kill:term');
+    expect(seq).toContain('kill:sigkill');
+    expect(runningPollsBeforeEscalation).toBeGreaterThan(1);
+
+    // (1) The binary copy never happens while isApraFleetRunning() would still
+    // report true -- it only happens after the last observed check reported gone.
+    const copyIdx = seq.indexOf('copyFileSync');
+    const lastRunningIdx = seq.lastIndexOf('pgrep:running');
+    const sigkillIdx = seq.indexOf('kill:sigkill');
+    expect(copyIdx).toBeGreaterThan(-1);
+    expect(copyIdx).toBeGreaterThan(lastRunningIdx);
+    expect(copyIdx).toBeGreaterThan(sigkillIdx);
+
+    exitSpy.mockRestore();
   });
 });
 
