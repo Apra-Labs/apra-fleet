@@ -579,6 +579,8 @@ These invariants apply across all providers that can terminate a dispatch withou
 - **Max-turns detection is channel-agnostic.** A CLI can signal "hit the turn limit" through more than one channel in the same transcript stream -- a `type:result` event's `terminal_reason` field, that same event's `subtype` (`error_max_turns`), a distinct standalone `max_turns_reached` transcript event (which can arrive before, or instead of, any result event, e.g. when a hard-timeout kill truncates the stream first), or a plain-text fallback when no result event terminates the stream at all. `src/providers/claude.ts` normalizes every one of these channels to the same `terminalReason: 'max_turns'` on the parsed response, and `src/providers/provider.ts` exposes a single shared classifier (checking the normalized `terminalReason` OR the raw `error_max_turns` subtype) that every call site uses -- there is exactly one place that decides "was this a max-turns termination," never a per-call-site heuristic. This does not add any new MCP reason-enum value; `max_turns_exhausted` already existed and is now reliably reached from every transcript shape that means it.
 - **Stall detection is a superset backstop, not a replacement.** The transcript-mtime cross-check described in `docs/stall-detector-resilience.md` (section 7) exists specifically so that a terminal-signal-detection gap (like the max-turns case above, or any future one) cannot regress into the old failure mode of a dead session sitting unkilled until the hard ceiling -- a frozen transcript is killed within the configured inactivity window regardless of whether content parsing understood why it went quiet.
 - **A busy-lock rejection is verified against process liveness before being honored.** `execute_prompt`'s in-flight lock (`inFlightAgents`, `src/tools/execute-prompt.ts`) can outlive the process it was guarding (a child reaped without its exit handler firing, or an interactive session's underlying CLI process dying after registration). Before returning a `busy` rejection, the dispatch path probes the locked session's pid for liveness -- locally via a direct signal-0 check, remotely via a fresh independent liveness round trip (never the possibly-wedged channel that produced the stale lock), and via the session registry's last-known pid for interactive sessions -- and self-heals (releases the lock, warns, and proceeds with the new dispatch) only on a **definitive** dead-pid reading. Ambiguity (no pid captured at all, e.g. a dispatch that hasn't reached its pid-capture step yet) is always treated as still-busy, never as staleness evidence, so a self-heal attempt can never race a dispatch that is still starting up. This keeps `fleet_status`'s independently-computed busy/idle view and the dispatch gate's busy/idle view from ever disagreeing for longer than one dead-lock detection cycle.
+- **A confirmed stall cancels the in-flight dispatch, not just the remote process.** Killing the remote pid a stalled dispatch was running is necessary but not sufficient -- the MCP `tools/call` that dispatched it can still be sitting on a pending `execCommand()` promise with no way to reject it, so the client falls back to waiting out its own hard deadline even though the server-side work died minutes earlier. The stall path now threads an `AbortController` through `onStall` that is wired into the same strategy-level `execCommand()` abort signal remote strategies already accept, so a confirmed stall settles the pending call immediately with a typed `stalled` dispatch error instead of silently degrading into a multi-thousand-second client-side timeout wait.
+- **The client's dispatch deadline must cover every server-side retry the request can trigger, not just the first attempt.** When the server's own inactivity-timeout handling retries a dispatch once with a fresh session (same `timeout_s`/`max_total_s`), the total server-side worst case is a multiple of the value the client's deadline was derived from. A client deadline sized for only the first attempt can fire before the server's own retry-and-report-cleanly path gets a chance to run, which surfaces a raw transport timeout to the caller instead of a clean typed error. The fix is a single shared retry-budget helper that both sides size their deadlines from, so "the client waits at least as long as the server's own worst-case retry sequence" is a property of one function, not something every dispatch call site has to remember to compute correctly.
 
 See `docs/provider-matrix.md` for the full comparison table.
 
@@ -731,6 +733,8 @@ SSH passwords are encrypted with AES-256-GCM before being written to the registr
 ### Connection Pooling with Idle Timeout
 
 SSH connections are expensive to establish (TCP + key exchange + auth). The server pools them in memory and reuses connections across tool calls, with a 5-minute idle timeout that auto-closes unused connections. Timers are `unref()`'d so they don't prevent Node from exiting.
+
+The idle timer is reset by normal pool activity (`execCommand`/`getConnection`), but a stall-detector entry that is still `provisional` (created before it has a log file to poll) does not generate that activity itself -- it only benefits from the stall poller's own incidental probes. The pool's cleanup path therefore never tears down an entry purely on the idle timer firing: it re-checks for an active channel immediately before ending the connection, and only actually closes it when genuinely idle. This closes off a class of latent bug where a long-running dispatch with a provisional-shaped stall entry could otherwise have a live channel reaped out from under it. Separately, pooled SSH connections have keepalive configured (interval + a bounded probe count) so a silently dropped network connection is detected and torn down rather than sitting as a phantom pool entry indefinitely.
 
 ### Base64 Prompt Encoding
 
@@ -1076,6 +1080,28 @@ This checks the latest GitHub release, downloads the installer for your
 platform, and re-runs it automatically. The server restarts with the new
 binary. If you are already on the latest version it reports so and exits. Full
 detail: [docs/features/update.md](features/update.md).
+
+### Stopping a running server before an overwrite install
+
+`install --force` (and `update`, which drives the same path) must stop the
+currently-running server before copying the new binary over the installed
+path, since the OS refuses to overwrite a binary that is still mapped into a
+running process. A single termination signal followed by a fixed delay is not
+reliable: a singleton that is mid-request can take longer to exit than an
+arbitrary fixed sleep, and a copy attempted before it actually exits fails
+outright and leaves the old server running.
+
+The install path instead polls process liveness over a bounded grace window
+after the initial termination signal, and escalates to a harder kill signal
+if the process is still alive once that window elapses, polling again over a
+second (shorter) window before giving up. The binary copy is only attempted
+once the old process is confirmed gone. Symmetrically, the "stopped running
+server" success message is gated on that same confirmation rather than
+printed unconditionally -- if the process is still detected running after
+both the initial signal and the escalation, install reports a clear error
+(with the manual kill command for the platform) and exits non-zero instead of
+proceeding into a copy that would fail anyway or claiming success it can't
+back up.
   </doc>
 
   <doc title="Update" desc="Keeping Fleet and its members updated.">
