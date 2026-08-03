@@ -304,3 +304,20 @@ This checks the latest GitHub release, downloads the installer for your
 platform, and re-runs it automatically. The server restarts with the new
 binary. If you are already on the latest version it reports so and exits. Full
 detail: [docs/features/update.md](features/update.md).
+
+### Known limitation: installing over a running server can fail
+
+`install --force` (and `update`, which drives the same path) stops the
+currently-running server before copying the new binary over the installed
+path. That stop-then-copy sequence is not yet fully verified end to end: if
+the old server process has not actually exited by the time the copy starts,
+the copy fails outright (the OS refuses to overwrite a binary that is still
+mapped into a running process), and the install aborts with the old server
+left running. A future install must not just fire a termination signal and
+assume success after a fixed delay -- it needs to positively confirm the old
+process has exited (polling process liveness, escalating if it hasn't
+exited within a grace window) before it reports the server as stopped or
+attempts the binary copy, and it must not print a success message ("stopped
+running server") until that confirmation has actually happened. Until that
+lands, if `install --force`/`update` fails on a copy step, check whether the
+old server process is still running before retrying.

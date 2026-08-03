@@ -100,6 +100,24 @@ instructions match what the runner enforces.
   turning a real verdict into a run failure -- the sprint's work product
   (the verdict) and its publish step are treated as separable outcomes.
 
+## A max_turns/timeout streak is not automatically a failure
+
+A doer streak that exhausts `max_turns` or times out is not, by itself,
+evidence that the work failed -- the doer may have already closed every bead
+it was assigned and simply kept running past that point (e.g. an extra
+unrequested verification pass) before hitting the ceiling. Before classifying
+such a streak as `FAILED` and triggering a full resume dispatch, the runner
+checks whether every bead id assigned to that streak is already closed; if
+so, it is classified as a successful streak that overran its own VERIFY step
+(logged as a warning), and no resume is dispatched. A streak with any bead
+still open resumes exactly as before -- this check only ever narrows the
+existing `FAILED` classification, it never widens it. This is deliberately
+layered as defense-in-depth alongside the doer's own contract (the doer's
+instructions already say its only next action after closing its last
+assigned bead is to emit its VERIFY result, nothing else) -- this check
+catches the case even if a doer implementation regresses on that discipline
+again, without the two mechanisms needing to trust each other.
+
 ## Invariant for future changes to this area
 
 When adding a new typed error class or a new dispatch-failure reason, decide

@@ -36,3 +36,21 @@ can attribute and reason about, not guess at.
 
 Setup is a one-time cost; the recurring cost is the work itself. See the
 [FAQ](FAQ.md) for the full breakdown.
+
+## Per-phase honesty in the sprint cost report
+
+The sprint cost-analysis breakdown gives Integ Test its own line, separate
+from doer/reviewer/overhead. Integ Test dispatches are often the single
+longest and most expensive phase of a cycle (they routinely burn a large
+turn budget re-verifying a change), so folding their spend into a generic
+"overhead" bucket would systematically hide where the money actually went.
+
+A dispatch that exhausts its turn ceiling or times out still gets its
+partial token usage recorded and priced, rather than being reported as an
+undefined/zero cost. A run that took hours and produced a real (if partial)
+usage figure must never show up as cheaper than a run that finished cleanly
+in minutes just because the expensive run didn't complete cleanly -- an
+undercounted total is worse than an admittedly-partial one, because it
+looks precise while being wrong. Where a dispatch's cost genuinely cannot be
+priced (an unpriced model id, a dispatch that never ran at all), the report
+says so explicitly rather than silently substituting zero.

@@ -127,6 +127,16 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 
 ---
 
+### 8. Confirmed Stall Must Cancel the In-Flight Dispatch, Not Just the Remote Process
+
+**Scenario:** The poller confirms a stall (edge cases 1-7 above all agree there has been no activity past the threshold) and needs to actually end the hung dispatch.
+
+**Decision:** Killing the remote pid is necessary but not sufficient. The `onStall` callback also carries an `AbortController` wired into the same `execCommand()` abort-signal path remote strategies already accept, so a confirmed stall rejects the pending MCP `tools/call` immediately with a typed `stalled` error -- it does not leave the client waiting out its own independent hard deadline for a server-side process that is already dead. See `docs/architecture.md`'s "Terminal-Signal and Dead-Session Detection Invariants" section for how this fits alongside the other dispatch-termination invariants (max-turns detection, busy-lock liveness checks) as defense-in-depth against a hung dispatch surviving past its detection.
+
+**Rationale:** Without this, a confirmed stall detection (which exists specifically to catch a hang within a bounded window) degraded back into the exact multi-thousand-second wait it was built to avoid, because the detector and the dispatch's own promise were two independent things and only one of them knew the session was dead.
+
+---
+
 ## Consistency Checks
 
 ### Invariants

@@ -269,6 +269,31 @@ evidence rather than mocked-exec unit assertions (which `tests/ensure-workspace-
 `tests/compose-permissions.test.ts`, `tests/execute-prompt.test.ts`, and
 `tests/prompt-errors.test.ts` already cover).
 
+## Workspace trust detection must not assume a nonzero exit code
+
+The workspace-trust failure mode documented above (eft.40) was originally
+detected only on a nonzero CLI exit code with a matching stderr pattern. A
+live incident found a second shape of the same underlying problem: a
+freshly-initialized provider identity that has never been run interactively
+on that host can also fail with **exit code 0 and empty stdout** -- the CLI
+exits cleanly mid-turn with no parseable output at all, rather than a
+nonzero exit with a recognizable trust-dialog message. Detection logic that
+only fires on nonzero exit misses this case entirely, so the existing
+self-heal (re-seed workspace trust and retry once) never triggers, and the
+dispatch instead surfaces as a generic empty-response failure with no
+actionable signal.
+
+The fix classifies an exit-0/empty-stdout dispatch against a workspace whose
+trust has not been established as `workspace_not_trusted` (not
+`empty_response`), gated to self-heal-and-retry exactly once: seed trust,
+retry the dispatch, and if the retry still comes back empty, fall through to
+`workspace_not_trusted` rather than looping. A plain empty-stdout dispatch
+against an already-trusted workspace is unaffected -- the new classification
+only applies when the trust signal itself indicates the workspace has never
+been accepted. This closes an entire failure class (a member's very first
+real dispatch after registration silently dying with no diagnostic signal)
+that the exit-code-based detection alone could not catch.
+
 ## Windows entrypoint guards: `file://${process.argv[1]}` string comparison silently never matches
 
 Several standalone verification/CLI scripts under `scripts/` used the common
