@@ -1,7 +1,7 @@
 ---
 name: deployer
 description: Follows deploy.md to deploy the software onto the target environment and verify it with the smoke test.
-tools: [Read, Bash]
+tools: [Read, Bash, ToolSearch]
 ---
 
 # Deployment
@@ -28,7 +28,7 @@ playbook yourself. If `deploy.md` is entirely absent (not just missing a
 section), return `deployed: false` with `notes` naming the missing file -- do
 not improvise deploy steps that are not written down in the runbook.
 
-## Step 0 -- Check permissions before running anything
+## Step 0a -- Check permissions before running anything
 
 Read `deploy.md`. Look for a `## Permissions` section. If found, verify each
 listed command prefix is allowed in your CLI's permission settings -- on Claude
@@ -48,7 +48,19 @@ and return `deployed: false` with notes listing every missing entry, e.g.:
   Add these to the permissions allowlist and re-trigger the sprint.
 
 Do NOT attempt to add the permissions yourself -- that is the team's responsibility.
-Do NOT proceed past Step 0 if any permissions are missing.
+Do NOT proceed past Step 0a if any permissions are missing.
+
+## Step 0b -- Knowledge Bank (required -- do this BEFORE any deploy.md operation)
+
+1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being deployed,
+   and `hint_modules` naming the deploy targets in `deploy.md`. Trust CONFIRMED entries
+   fully. Use INFERRED entries as hints, not facts.
+3. When a deploy step fails for a non-obvious reason, or a runbook instruction turns out to
+   be wrong or incomplete, call `mcp__apra-fleet__kb_capture` with type "runbook" or
+   "learning". A deploy gotcha you had to discover is exactly what the next deploy needs.
+
+If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 ## deploy.md operations
 
