@@ -20,6 +20,7 @@ const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
+import { buildCreatePrCommand } from './vcs-module.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -2106,16 +2107,28 @@ function selfHealResultText(result) {
 // Returns the newly-provisioned credential's `expiresAt` (a Date, or null
 // when the response carries no expiry metadata -- PAT-mode credentials never
 // expire) so a caller can cache it and skip a future redundant call.
-// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
-// @returns {Promise<{ expiresAt: Date|null }>}
-async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix }) {
+//
+// `gitAccess` defaults to 'push' -- the shared self-heal/preflight callers
+// below NEVER override it. The only callers permitted to pass a higher
+// level ('push+pr') are the two PR-raising call sites (Publish PR,
+// finalizeAbort), each via provisionPrCapableAuthForMember, invoked
+// immediately before their PR-creation dispatch -- never at sprint setup,
+// never from this shared self-heal/preflight path. See apra-fleet-tfx.8 and
+// the just-in-time credential-scoping ADR (docs/adr-server-never-acts-on-repo.md)
+// for the rogue-dispatch blast-radius rationale: widening this default would
+// give every member standing pull_requests:write for the whole sprint.
+// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string, gitAccess?: string }} opts
+// @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
+async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = 'push' }) {
     let repos;
+    let derivedRepo = null;
     try {
         const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
         const url = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
         const repo = parseOwnerRepoFromRemoteUrl(url);
         if (repo) {
             repos = [repo];
+            derivedRepo = repo;
         } else {
             log(`${logPrefix}: could not derive an owner/repo from member '${member}' git remote (raw: '${url}'); calling provision_vcs_auth without an explicit repos scope.`);
         }
@@ -2129,7 +2142,7 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         member_name: member,
         provider: 'github',
         github_mode: 'github-app',
-        git_access: 'push',
+        git_access: gitAccess,
         ...(repos ? { repos } : {}),
     });
     const provisionText = selfHealResultText(provisionRes);
@@ -2137,11 +2150,148 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // starting with the failure emoji. A failed provision must never be
     // allowed to report success: doing so burns the one-shot self-heal and
     // logs a lie.
-    if ((provisionRes && provisionRes.isError) || /^❌/.test(provisionText.trim())) {
+    if ((provisionRes && provisionRes.isError) || /^âŒ/.test(provisionText.trim())) {
         throw new Error(`provision_vcs_auth failed for member '${member}': ${provisionText || '(no detail)'}`);
     }
 
-    return { expiresAt: parseExpiresAtFromProvisionText(provisionText) };
+    return { expiresAt: parseExpiresAtFromProvisionText(provisionText), repo: derivedRepo };
+}
+
+// Narrowly-scoped, PR-capable provisioning. This is the ONLY call path in
+// runner.js permitted to request git_access: 'push+pr' -- callers must be
+// exactly the two PR-raising call sites (Publish PR, finalizeAbort), invoked
+// immediately before their PR-creation dispatch, never at sprint setup and
+// never from the shared self-heal/preflight path above (which always stays
+// on 'push'). See the just-in-time credential-scoping rationale on
+// provisionVcsAuthForMember above.
+//
+// Also returns the 'owner/repo' this call derived from the member's own git
+// remote (same derivation provisionVcsAuthForMember already performs to
+// scope the mint) -- reusing it here means the PR-raising call sites never
+// need a SECOND `git remote get-url origin` dispatch of their own just to
+// learn the repo VCSModule needs to build the PR-creation command.
+// @param {{ fleetApi: object, command: Function, member: string, log?: Function, logPrefix: string }} opts
+// @returns {Promise<{ expiresAt: Date|null, repo: string|null }>}
+async function provisionPrCapableAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix }) {
+    return provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix, gitAccess: 'push+pr' });
+}
+
+// Default credential label provision_vcs_auth deploys under when no explicit
+// `label` is passed (src/tools/provision-vcs-auth.ts: `label = input.label ??
+// input.provider`) -- the PR-raising call sites never pass a label either, so
+// the deployed git-credential-helper file is always
+// $HOME/.fleet-git-credential-github for the 'github' provider.
+const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
+
+// Reads the raw token back out of the git-credential-helper script
+// provision_vcs_auth just deployed onto `member`'s filesystem
+// ($HOME/.fleet-git-credential-<label>, an executable script that PRINTS
+// "protocol=...\nhost=...\nusername=...\npassword=<token>\n" when run -- see
+// src/os/linux.ts gitCredentialHelperWrite()/src/os/windows.ts). This is the
+// ONLY way an orchestrator-side caller (VCSModule's runner.js callers) can
+// ever learn the actual token value: provision_vcs_auth's own MCP response
+// never carries it (src/tools/provision-vcs-auth.ts masks it to
+// "<first 4 chars>****" in its metadata) -- the server deploys the credential
+// DIRECTLY onto the member, it never round-trips the plaintext back through
+// the MCP response. Dispatched with `silent: true` so the extraction command
+// itself is never logged/echoed anywhere (the token value briefly transits
+// this one command's captured stdout, held only in-process, and is used
+// immediately to build the VCSModule command).
+// @param {{ command: Function, member: string, label?: string }} opts
+// @returns {Promise<string>}
+async function readMemberVcsCredentialToken({ command, member, label = GITHUB_VCS_CREDENTIAL_LABEL }) {
+    const credFile = `$HOME/.fleet-git-credential-${label}`;
+    const res = await command(`${credFile}`, {
+        member_name: member,
+        silent: true,
+        failSoft: true,
+        label: 'Read just-provisioned VCS credential token for PR creation',
+    });
+    if (!res || !res.ok) {
+        throw new Error(`Failed to read VCS credential token for member '${member}' from '${credFile}': ${res ? res.error : '(no result)'}`);
+    }
+    const m = /^password=(.*)$/m.exec(String(res.output || ''));
+    const token = m ? m[1].trim() : '';
+    if (!token) {
+        throw new Error(`VCS credential token for member '${member}' was empty/unreadable after provisioning (expected a 'password=' line from '${credFile}').`);
+    }
+    return token;
+}
+
+// Splits a VCSModule create-pull-request curl result's captured stdout into
+// its HTTP status code and JSON body. VCSModule's buildCreatePrCommand always
+// appends `-w '\n%{http_code}'`, so curl's own stdout is "<json body>\n<status>".
+// @param {string} output
+// @returns {{ status: number|null, body: unknown }}
+function parseVcsCurlOutput(output) {
+    const text = String(output || '');
+    const lines = text.split('\n');
+    const statusLine = lines.length ? lines[lines.length - 1].trim() : '';
+    const status = /^\d+$/.test(statusLine) ? parseInt(statusLine, 10) : null;
+    const bodyText = (status !== null ? lines.slice(0, -1) : lines).join('\n').trim();
+    let body = null;
+    if (bodyText) {
+        try {
+            body = JSON.parse(bodyText);
+        } catch {
+            body = null;
+        }
+    }
+    return { status, body, bodyText };
+}
+
+// Mints a just-in-time push+pr credential for `member`, reads back the token
+// it deployed, builds the create-pull-request command through VCSModule (the
+// orchestrator-side command builder, apra-fleet-tfx.7), and dispatches it via
+// `command()` -- `member` is a dumb executor of a command this function (and
+// VCSModule) decided, never `gh`, never a server-side fallback. Returns the
+// same shape both PR-raising call sites need: { ok, alreadyExists, prUrl,
+// error }, mirroring the interpretation contract the reverted server-side
+// create-pull-request.ts tool used (2xx -> success; 422 "already exists" ->
+// idempotent success; anything else -> error).
+// @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
+// @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null }>}
+async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix }) {
+    const { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
+    if (!repo) {
+        throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
+    }
+    const token = await readMemberVcsCredentialToken({ command, member });
+    const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token });
+
+    const res = await command(built.command, {
+        member_name: member,
+        silent: true,
+        failSoft: true,
+        label: `Raise PR to '${base}' via VCSModule (not merged)`,
+    });
+    if (!res || !res.ok) {
+        return { ok: false, alreadyExists: false, prUrl: null, error: (res && res.error) || 'execute_command failed' };
+    }
+
+    const { status, body: respBody, bodyText } = parseVcsCurlOutput(res.output);
+    const [lo, hi] = built.interpret.successStatusRange;
+    if (status !== null && status >= lo && status <= hi) {
+        const prUrl = respBody && typeof respBody.html_url === 'string' ? respBody.html_url : null;
+        return { ok: true, alreadyExists: false, prUrl, error: null };
+    }
+
+    const errorMessages = [];
+    if (respBody && typeof respBody.message === 'string') errorMessages.push(respBody.message);
+    if (respBody && Array.isArray(respBody.errors)) {
+        for (const e of respBody.errors) {
+            if (e && typeof e.message === 'string') errorMessages.push(e.message);
+        }
+    }
+    const errorText = errorMessages.join('; ') || bodyText || `HTTP ${status ?? '(unknown)'}`;
+
+    if (status === built.interpret.alreadyExistsStatus && new RegExp(built.interpret.alreadyExistsPattern, 'i').test(errorText)) {
+        const urlMatch = /https?:\/\/\S+/.exec(errorText);
+        const existingUrl = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : null;
+        return { ok: true, alreadyExists: true, prUrl: existingUrl, error: null };
+    }
+
+    return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}` };
 }
 
 // provision_vcs_auth returns plain human-readable text with no structured
@@ -2276,14 +2426,14 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
 
         const text = selfHealResultText(provisionRes).trim();
 
-        if (/^⏭/.test(text)) {
+        if (/^â­/.test(text)) {
             // Skip marker (local member): provision_llm_auth is a no-op here,
             // so retrying would just reproduce the same failure.
             log(`[Dispatch] self-heal: provision_llm_auth skipped for local member '${member}': ${text || '(no detail)'}. This member's credentials can only be refreshed via an interactive /login on this machine.`);
             return false;
         }
 
-        if ((provisionRes && provisionRes.isError) || /^❌/.test(text)) {
+        if ((provisionRes && provisionRes.isError) || /^âŒ/.test(text)) {
             log(`[Dispatch] self-heal: provision_llm_auth failed for member '${member}': ${text || '(no detail)'}. Not retrying.`);
             return false;
         }
@@ -4078,22 +4228,22 @@ export function buildRejectedNewTaskResurfaceLines(pending) {
 
 // ---------------------------------------------------------------------------
 // PR body/title text sanitization. The final reviewer's verdict notes are LLM
-// output embedded in the PR title/body that the Publish PR step interpolates
-// into a double-quoted `gh pr create --title "..." --body "..."` command()
-// string -- the same injection class SAFE_TEXT_RE exists to close for newTask
-// titles, at a different call site.
+// output embedded in the PR title/body that the Publish PR step passes into
+// VCSModule's create-pull-request command builder, which JSON-encodes them
+// into the curl request payload -- the same injection class SAFE_TEXT_RE
+// exists to close for newTask titles, at a different call site.
 //
 // Unlike validateNewTask(), rejecting is not an option here: the PR must still
 // carry the sprint's verdict to a human even when the notes are malformed, and
 // failing closed would drop the one thing that human most needs to read. So
 // this strips instead: every character outside SAFE_TEXT_RE becomes a space,
 // keeping the notes readable while nothing that could break out of the
-// double-quoted command string reaches `command()`.
+// shell-quoted command string VCSModule builds around it.
 /**
  * Sanitizes LLM-authored free text (e.g. finalVerdictResult.notes) before it
- * is interpolated into a double-quoted `gh pr create`/`git` command() string.
- * Replaces every character outside SAFE_TEXT_RE with a space, collapses the
- * resulting whitespace, and returns the readable remainder.
+ * is embedded in a VCSModule-built PR title/body and dispatched via
+ * `command()`. Replaces every character outside SAFE_TEXT_RE with a space,
+ * collapses the resulting whitespace, and returns the readable remainder.
  * @param {unknown} text
  * @returns {string}
  */
@@ -4115,18 +4265,19 @@ export function sanitizePrText(text) {
 // ---------------------------------------------------------------------------
 //
 // A sprint can run against an origin with no hosting API behind it -- e.g. a
-// sandbox wired to a plain `file://` bare mirror, which has no `gh` credential
-// either. `gh pr create` cannot work there, so the Publish PR step uses this
+// sandbox wired to a plain `file://` bare mirror. VCSModule's REST-based PR
+// creation can never work there either, so the Publish PR step uses this
 // classifier to detect the case up front and take the non-PR-gated closure
-// path instead, rather than failing the whole sprint on `gh` auth.
+// path instead, rather than failing the whole sprint on a doomed API call.
 /**
- * Returns true when `remoteUrl` looks like a GitHub remote `gh pr create`
- * can actually open a PR against (an `https://github.com/...` or
- * `git@github.com:...`/`ssh://git@github.com/...` URL) -- as opposed to a
- * non-hosted remote (a plain `file://` bare mirror, or any other host `gh`
- * has no hosting API for). A missing/empty/unresolvable URL is treated as
- * non-hosted (fails closed toward the safer "skip PR creation" path rather
- * than attempting a `gh pr create` that would just fail on auth).
+ * Returns true when `remoteUrl` looks like a GitHub remote VCSModule's
+ * create-pull-request REST call can actually open a PR against (an
+ * `https://github.com/...` or `git@github.com:...`/`ssh://git@github.com/...`
+ * URL) -- as opposed to a non-hosted remote (a plain `file://` bare mirror,
+ * or any other host with no hosting API VCSModule supports). A missing/
+ * empty/unresolvable URL is treated as non-hosted (fails closed toward the
+ * safer "skip PR creation" path rather than attempting a REST call that
+ * would just fail).
  * @param {string} remoteUrl
  * @returns {boolean}
  */
@@ -4564,10 +4715,11 @@ export function isNoMutationDispatchFailure(err) {
  *   command: (cmd: string, opts: object) => Promise<any>,
  *   log?: (msg: string) => void,
  *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>,
+ *   callTool?: (name: string, args: object) => Promise<any>,
  * }} opts
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
-export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure }) {
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool }) {
     // 1. How many commits (if any) does the sprint branch carry beyond base?
     // Every command() call below passes an explicit `member_name` -- this
     // runner never lets a git/gh dispatch fall back to an ambient member.
@@ -4633,8 +4785,8 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
 
     const prTitle = `Auto-sprint [ABORTED]: ${branch}`;
     // The error's code/message/details can originate from agent output, and
-    // this text is interpolated into a double-quoted `gh pr create` command()
-    // string -- same sanitization rationale as the PASS/FAIL Publish PR step.
+    // this text is embedded in a VCSModule-built PR body -- same sanitization
+    // rationale as the PASS/FAIL Publish PR step.
     const safeCode = sanitizePrText(error && error.code);
     const safeMessage = sanitizePrText(error && error.message);
     const safeDetails = sanitizePrText(
@@ -4650,35 +4802,43 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
     ].filter((line) => line !== null).join('\n');
 
-    const prCreateRes = await command(
-        `gh pr create --base "${baseBranch}" --head "${branch}" --title "${prTitle}" --body "${prBody}"`,
-        {
-            member_name: member,
-            silent: true,
-            failSoft: true,
-            label: `Raise [ABORTED] PR to '${baseBranch}' (not merged)`,
-        }
-    );
-
-    if (!prCreateRes.ok) {
-        if (/already exists/i.test(prCreateRes.error || '')) {
-            // Idempotent: the desired end state -- a PR open for this branch
-            // -- already holds, so this is swallowed rather than thrown. The
-            // error text carries the existing PR's URL inline, so extract it
-            // and return a usable link rather than `null`.
-            const urlMatch = /https?:\/\/\S+/.exec(prCreateRes.error || '');
-            const existingUrl = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : null;
-            log(`finalizeAbort: an [ABORTED] PR for branch '${branch}' already exists -- treating as idempotent success (${prCreateRes.error}).`);
-            return { prUrl: existingUrl, reason: 'already-exists', pushed: true, commitCount };
-        }
+    // The reverted gh-based PR creation is gone (apra-fleet-tfx.8): raise the [ABORTED] PR via
+    // VCSModule's orchestrator-built curl command, dispatched to `member`
+    // through execute_command, using a push+pr credential minted
+    // just-in-time immediately before this one call (never at sprint setup).
+    const fleetApi = typeof callTool === 'function' ? new ApraFleet({ callTool }) : null;
+    if (!fleetApi) {
         throw new CommandError(
-            `[Publish Abort PR Failed] gh pr create failed for branch '${branch}' -> '${baseBranch}': ${prCreateRes.error}`,
-            { details: { branch, baseBranch, error: prCreateRes.error } }
+            `[Publish Abort PR Failed] no MCP callTool available to provision a push+pr credential for member '${member}' -- cannot raise the [ABORTED] PR for branch '${branch}'.`,
+            { details: { branch, baseBranch } }
         );
     }
+    const prResult = await raiseVcsPrForMember({
+        fleetApi,
+        command,
+        member,
+        base: baseBranch,
+        head: branch,
+        title: prTitle,
+        body: prBody,
+        log,
+        logPrefix: '[Publish Abort PR]',
+    });
 
-    const createdUrl = String(prCreateRes.output || '').trim().split('\n').pop() || null;
-    return { prUrl: createdUrl, reason: 'aborted-pr-created', pushed: true, commitCount };
+    if (!prResult.ok) {
+        throw new CommandError(
+            `[Publish Abort PR Failed] VCSModule create-pull-request failed for branch '${branch}' -> '${baseBranch}': ${prResult.error}`,
+            { details: { branch, baseBranch, error: prResult.error } }
+        );
+    }
+    if (prResult.alreadyExists) {
+        // Idempotent: the desired end state -- a PR open for this branch --
+        // already holds, so this is swallowed rather than thrown.
+        log(`finalizeAbort: an [ABORTED] PR for branch '${branch}' already exists -- treating as idempotent success.`);
+        return { prUrl: prResult.prUrl, reason: 'already-exists', pushed: true, commitCount };
+    }
+
+    return { prUrl: prResult.prUrl, reason: 'aborted-pr-created', pushed: true, commitCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -8809,7 +8969,7 @@ async function runSprintCycle(context) {
     const finalVerdictLabel = finalVerdictResult.verdict === 'PASS' ? 'PASS' : 'FAIL';
 
     // Resolve the sprint's own git 'origin' remote and classify it (see
-    // isHostedGithubRemote() above) BEFORE ever attempting `gh pr create`. A
+    // isHostedGithubRemote() above) BEFORE ever attempting the VCSModule REST create-pull-request call. A
     // non-hosted remote (a file:// bare mirror, or any other host `gh` has no
     // hosting API for) means PR creation can never succeed, and attempting it
     // anyway throws a hard 'gh auth login required' CommandError that would
@@ -8855,7 +9015,7 @@ async function runSprintCycle(context) {
     } else {
         // finalVerdictResult.notes is LLM-authored free text -- sanitize with
         // sanitizePrText() (see the comment above its definition) BEFORE it is
-        // ever interpolated into the double-quoted `gh pr create` command()
+        // ever embedded in the VCSModule-built create-pull-request command()
         // string below. validated.goal/validated.branch need no sanitization
         // here: both are already validated against shell-injection-safe patterns
         // (GOAL_PATTERN/BRANCH_NAME_PATTERN) at arg-validation time.
@@ -8870,35 +9030,47 @@ async function runSprintCycle(context) {
             'Do NOT auto-merge -- see pm skill R12; a human must review and merge this PR.',
         ].filter((line) => line !== null).join('\n');
 
-        // Idempotent PR creation. `gh pr create` is dispatched with
-        // `failSoft: true` (rather than the default throw-on-isError behaviour)
-        // so a re-run of finalization against a branch that ALREADY has an open
-        // PR from a prior, otherwise-successful run can be told apart from a
-        // genuine gh/git failure. `gh pr create` fails with an "already exists"
-        // message in that case -- that specific failure is swallowed (logged,
-        // not thrown) because it means the desired end state (a PR is open for
-        // this branch) already holds. Any OTHER failure (auth, network, a real
-        // API error, the injectable mock failure below) is NOT swallowed -- it
-        // is re-raised as a typed CommandError so it surfaces clearly rather
-        // than being silently invisible.
-        const prCreateRes = await command(
-            `gh pr create --base "${validated.baseBranch}" --head "${validated.branch}" --title "${prTitle}" --body "${prBody}"`,
-            {
-                member_name: orchestratorMember,
-                silent: true,
-                failSoft: true,
-                label: `Raise PR to '${validated.baseBranch}' (not merged)`,
-            }
-        );
-        if (!prCreateRes.ok) {
-            if (/already exists/i.test(prCreateRes.error || '')) {
-                log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success (${prCreateRes.error}).`);
-            } else {
-                throw new CommandError(
-                    `[Publish PR Failed] gh pr create failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prCreateRes.error}`,
-                    { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prCreateRes.error } }
-                );
-            }
+        // Idempotent PR creation via VCSModule (apra-fleet-tfx.8: the reverted
+        // gh-based path is gone). A push+pr credential is minted just-in-time immediately
+        // before this one call (never at sprint setup, never for any other
+        // phase), VCSModule builds the orchestrator-side curl command, and
+        // `orchestratorMember` dispatches it via execute_command -- no gh, no
+        // server-side fallback. A re-run of finalization against a branch
+        // that ALREADY has an open PR from a prior, otherwise-successful run
+        // can be told apart from a genuine failure: the REST create-PR call
+        // returns 422 "already exists" in that case -- that specific outcome
+        // is swallowed (logged, not thrown) because it means the desired end
+        // state (a PR is open for this branch) already holds. Any OTHER
+        // failure (auth, network, a real API error, the injectable mock
+        // failure below) is NOT swallowed -- it is re-raised as a typed
+        // CommandError so it surfaces clearly rather than being silently
+        // invisible.
+        const fleetApiForPr = (args && typeof args.callTool === 'function') ? new ApraFleet({ callTool: args.callTool }) : null;
+        if (!fleetApiForPr) {
+            throw new CommandError(
+                `[Publish PR Failed] no MCP callTool available to provision a push+pr credential for member '${orchestratorMember}' -- cannot raise the PR for branch '${validated.branch}'.`,
+                { details: { branch: validated.branch, baseBranch: validated.baseBranch } }
+            );
+        }
+        const prResult = await raiseVcsPrForMember({
+            fleetApi: fleetApiForPr,
+            command,
+            member: orchestratorMember,
+            base: validated.baseBranch,
+            head: validated.branch,
+            title: prTitle,
+            body: prBody,
+            log,
+            logPrefix: '[Publish PR]',
+        });
+        if (!prResult.ok) {
+            throw new CommandError(
+                `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
+                { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
+            );
+        }
+        if (prResult.alreadyExists) {
+            log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success.`);
         }
     }
 
@@ -9143,8 +9315,14 @@ export async function main(context) {
                     ? validatedForLock.roleMap[ROLE_ORCHESTRATOR][0]
                     : validatedForLock.members[0];
                 abortResult = await finalizeAbort({
-                    error: err, branch, baseBranch, member, command, log,
+                    error: err,
+                    branch,
+                    baseBranch,
+                    member,
+                    command,
+                    log,
                     onAuthFailure: abortOnAuthFailure,
+                    callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
                 });
             } catch (finalizeErr) {
                 log(
