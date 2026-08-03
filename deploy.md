@@ -5,10 +5,15 @@
 Commands below require these prefixes in `.claude/settings.json` under `permissions.allow`:
 - `Bash(*apra-fleet-installer-* install *)`
 - `Bash(*apra-fleet* --version)`
+- `Bash(*apra-fleet* start)`
 - `Bash(npm ci)`
 - `Bash(npm run build)`
 - `Bash(npm run build:binary)`
 - `Bash(dist/apra-fleet-installer-* install *)`
+- `Bash(curl * localhost:8787/api/sprints*)` -- for the pre-`install --force`
+  active-sprints check below. Port 8787 is the supervisor's own API; the
+  singleton MCP server `install --force` restarts is a separate process on
+  7523, not what you're querying here.
 
 ## Deploy
 
@@ -27,6 +32,11 @@ reservations and relaunch afterward.
 npm ci
 npm run build
 npm run build:binary
+
+# Active-sprints check (see Caution above): if this returns a non-empty
+# "sprints" array, STOP -- wait for them to finish, or be ready to
+# force-release their stale reservations and relaunch afterward.
+curl -s http://localhost:8787/api/sprints
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"

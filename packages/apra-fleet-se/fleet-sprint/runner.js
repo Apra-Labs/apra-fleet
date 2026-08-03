@@ -5510,6 +5510,86 @@ async function runSprintCycle(context) {
         return ready.filter((b) => !parentIds.has(b.id));
     }
 
+    // How many times a given bead has already been auto-reclaimed this sprint
+    // (see reclaimStaleInProgress below). Keyed by bead id, lives for the
+    // whole sprint process so the bounce cap accumulates across cycles, not
+    // just within one call.
+    const staleInProgressReclaimCounts = new Map();
+    const STALE_IN_PROGRESS_RECLAIM_LIMIT = 2;
+    // Stamped once, on the FIRST call to reclaimStaleInProgress (the
+    // pre-sprint one) -- runSprintCycle's `context` carries no injected clock,
+    // so this is a plain Date.now(), same as the other direct call sites
+    // already in this file. Declared here (not at the capture site) so its
+    // TDZ covers every call to reclaimStaleInProgress, including the
+    // pre-sprint one.
+    let sprintLaunchTime = null;
+
+    /**
+     * Reclaims 'in_progress' beads that are safe to redispatch to 'open':
+     * no unmet `blocks` dependencies (nothing left to wait on) AND claimed
+     * BEFORE this sprint incarnation's own launch time -- so a genuinely
+     * live claim, including this very sprint's own in-flight work from an
+     * earlier point in the SAME cycle, is never touched. A bead with no
+     * parseable `started_at` is treated as predating this sprint (`bd
+     * update --claim` always stamps `started_at`, so a bead claimed by
+     * THIS sprint always has one -- an unparseable/absent value can only
+     * mean orphaned state from something else).
+     *
+     * Bounded per bead via staleInProgressReclaimCounts: a bead that keeps
+     * landing back in 'in_progress' (a doer repeatedly failing on it
+     * specifically, not a one-off orphaned claim) stops being silently
+     * reclaimed after STALE_IN_PROGRESS_RECLAIM_LIMIT attempts and is
+     * surfaced as needing human investigation instead -- the same
+     * bounce-cap precedent already used for the verify-route gap counter
+     * (VERIFY_GAP_LIMIT) elsewhere in this file, applied to this failure
+     * mode.
+     *
+     * Originally this reclaim only ran ONCE, as a pre-sprint gate, and only
+     * when the pre-sprint ready set was empty -- a bead orphaned mid-sprint
+     * (a crashed doer, a killed dispatch, or -- as observed in practice --
+     * a prior aborted sprint incarnation whose claims were still in_progress
+     * on relaunch) was invisible to every later cycle, so the sprint just
+     * spun Plan-finds-nothing -> Deploy forever until the stall detector
+     * eventually gave up, burning cycles/cost for zero progress. This is
+     * now also called at the top of every cycle's readiness check, so an
+     * orphaned claim self-heals on the very next cycle instead of silently
+     * persisting for the rest of the run.
+     * @param {{ notDoneBeads: object[], reasonTag: string }} opts
+     * @returns {Promise<{ reclaimedIds: string[], cappedIds: string[] }>}
+     */
+    async function reclaimStaleInProgress({ notDoneBeads, reasonTag }) {
+        if (sprintLaunchTime === null) sprintLaunchTime = Date.now();
+        const notDoneIds = new Set(notDoneBeads.map((b) => b.id));
+        const unmetBlockers = (bead) => (bead.dependencies || [])
+            .filter((d) => d.type === 'blocks' && notDoneIds.has(d.depends_on_id))
+            .map((d) => d.depends_on_id);
+
+        const candidates = notDoneBeads.filter((b) => {
+            if (b.status !== 'in_progress') return false;
+            if (unmetBlockers(b).length > 0) return false;
+            const startedAtMs = b.started_at ? Date.parse(b.started_at) : NaN;
+            return Number.isNaN(startedAtMs) || startedAtMs < sprintLaunchTime;
+        });
+
+        const reclaimedIds = [];
+        const cappedIds = [];
+        for (const bead of candidates) {
+            const priorAttempts = staleInProgressReclaimCounts.get(bead.id) ?? 0;
+            if (priorAttempts >= STALE_IN_PROGRESS_RECLAIM_LIMIT) {
+                cappedIds.push(bead.id);
+                continue;
+            }
+            staleInProgressReclaimCounts.set(bead.id, priorAttempts + 1);
+            log(`${reasonTag}: ${bead.id} is stuck 'in_progress' (started_at=${bead.started_at || 'n/a'}) with no unmet blockers and predates this sprint's launch -- reclaiming to 'open' so the sprint can dispatch it (attempt ${priorAttempts + 1}/${STALE_IN_PROGRESS_RECLAIM_LIMIT}).`);
+            await command(`bd update ${bead.id} --status open`, { member_name: orchestratorMember, silent: true });
+            reclaimedIds.push(bead.id);
+        }
+        if (cappedIds.length > 0) {
+            log(`${reasonTag}: ${cappedIds.length} bead(s) hit the stale-in_progress reclaim bounce cap (limit ${STALE_IN_PROGRESS_RECLAIM_LIMIT}) and were left 'in_progress' rather than reclaimed again -- needs human investigation: ${cappedIds.join(', ')}.`);
+        }
+        return { reclaimedIds, cappedIds };
+    }
+
     /**
      * Dispatches one reviewer round and returns its schema-validated verdict.
      * Shared by the per-round Develop/Review dispatch and the Cycle Evaluation
@@ -6053,13 +6133,11 @@ async function runSprintCycle(context) {
             .filter((d) => d.type === 'blocks' && notDoneIds.has(d.depends_on_id))
             .map((d) => d.depends_on_id);
 
-        const staleInProgress = notDoneBeads.filter((b) => b.status === 'in_progress' && unmetBlockers(b).length === 0);
-
-        if (staleInProgress.length > 0) {
-            for (const bead of staleInProgress) {
-                log(`Pre-sprint self-heal: ${bead.id} is stuck 'in_progress' (started_at=${bead.started_at || 'n/a'}) with no unmet blockers -- reclaiming to 'open' so the sprint can dispatch it.`);
-                await command(`bd update ${bead.id} --status open`, { member_name: orchestratorMember, silent: true });
-            }
+        const { reclaimedIds: preSprintReclaimedIds } = await reclaimStaleInProgress({
+            notDoneBeads,
+            reasonTag: 'Pre-sprint self-heal',
+        });
+        if (preSprintReclaimedIds.length > 0) {
             initialBeads = await bdListScoped('--ready --json');
         }
 
@@ -6699,9 +6777,32 @@ async function runSprintCycle(context) {
         // filter exists to stop NON-target parents/bugs from wasting doer
         // dispatches, never to make a sprint's own target unreachable.
         const targetIssueSet = new Set(targetIssues);
-        const readyBeads = (await readyLeafBeads())
+        let readyBeads = (await readyLeafBeads())
             .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
             .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+
+        // Per-cycle self-heal (not just pre-sprint, see reclaimStaleInProgress's
+        // doc comment): only when THIS cycle's ready set is otherwise empty --
+        // mirrors the pre-sprint gate exactly, and keeps the common case (real
+        // ready work every cycle) issuing zero extra `bd` calls, unlike an
+        // unconditional per-cycle check. Reclaim any bead orphaned in_progress
+        // since before this sprint launched, then recompute readiness, so a
+        // claim orphaned mid-run (or reused from a prior aborted incarnation on
+        // relaunch) self-heals on the very next cycle instead of silently
+        // blocking every cycle after it for the rest of the sprint.
+        if (readyBeads.length === 0) {
+            const notDoneBeadsThisCycle = await bdListScoped(`--status=${NOT_DONE_STATUSES} --json`);
+            const { reclaimedIds: cycleReclaimedIds } = await reclaimStaleInProgress({
+                notDoneBeads: notDoneBeadsThisCycle,
+                reasonTag: `Cycle ${cycle} self-heal`,
+            });
+            if (cycleReclaimedIds.length > 0) {
+                log(`Cycle ${cycle} self-heal: reclaimed ${cycleReclaimedIds.length} orphaned bead(s), re-checking readiness: ${cycleReclaimedIds.join(', ')}.`);
+                readyBeads = (await readyLeafBeads())
+                    .filter((b) => targetIssueSet.has(b.id) || !b.issue_type || b.issue_type === 'task')
+                    .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+            }
+        }
 
         // The second plan-cap-deferral abort condition: deferring the contested
         // beads must never silently leave nothing dispatchable. An empty
