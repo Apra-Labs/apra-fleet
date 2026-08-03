@@ -152,7 +152,7 @@ test(
                     ensureBranchCommands.length, 0,
                     `expected zero ensure-branch (\`git checkout -B\`) commands to have run, got: ${JSON.stringify(commandLog)}`,
                 );
-                const prCommands = commandLog.filter((c) => /^curl -sS -X POST\b/.test(c) && /\/pulls\b/.test(c));
+                const prCommands = commandLog.filter((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
                 assert.strictEqual(
                     prCommands.length, 0,
                     `expected zero PR-raise commands to have run, got: ${JSON.stringify(commandLog)}`,
