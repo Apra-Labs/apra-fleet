@@ -25,6 +25,15 @@ const healingCallTool = async (name) => {
     if (name === 'provision_llm_auth') {
         return { content: [{ text: '✅ provisioned LLM credentials' }] };
     }
+    // apra-fleet-647.1.2.1: provisionVcsAuthForMember (reached by this
+    // scenario's own git push/PR steps, unrelated to the LLM-auth self-heal
+    // under test here) resolves the member's provider via VCSModule.
+    // resolveProvider(), a 'member_detail' call that requires a real JSON
+    // body -- unlike the other tool names here, which none of runner.js's
+    // VCS/coordination call sites JSON.parse().
+    if (name === 'member_detail') {
+        return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+    }
     return { content: [{ text: '' }] };
 };
 

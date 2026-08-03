@@ -24,7 +24,7 @@ const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider } from './vcs-module.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -1547,12 +1547,19 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
         log(`${logPrefix}: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
     }
 
-    // TODO: derive provider/github_mode from the member's persisted
-    // vcsProvider instead of hardcoding GitHub App mode.
+    // apra-fleet-647.1.2.1: provider and auth-mode are resolved from the
+    // member's own persisted vcsProvider (VCSModule.resolveProvider), never
+    // hardcoded here -- resolveProvider throws its own typed "ERROR:" for a
+    // member with no registered provider rather than silently defaulting to
+    // GitHub. `authMode` is provider-owned (github: 'github-app'; other
+    // providers: null, no separate mode axis) and is only forwarded as
+    // `<provider>_mode` when non-null, matching provision_vcs_auth's own
+    // `github_mode` field name for the one provider that has one today.
+    const { provider, authMode } = await resolveProvider(member, { fleetApi });
     const provisionRes = await fleetApi.provisionVcsAuth({
         member_name: member,
-        provider: 'github',
-        github_mode: 'github-app',
+        provider,
+        ...(authMode ? { [`${provider}_mode`]: authMode } : {}),
         git_access: gitAccess,
         ...(repos ? { repos } : {}),
     });

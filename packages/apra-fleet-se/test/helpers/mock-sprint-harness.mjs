@@ -125,6 +125,17 @@ export function isSpawnFailure(err) {
 // the mutex is effectively a no-op grant).
 export function defaultMockCallTool() {
     return async (name, toolArgs) => {
+        // apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the
+        // member's provider via VCSModule.resolveProvider() -- a
+        // 'member_detail' call BEFORE every provision_vcs_auth call -- so
+        // this default must answer it with a registered 'github' provider
+        // (the only provider any mock-sprint scenario configures today) or
+        // every self-heal/preflight/PR-raise call site would start throwing
+        // a "no registered VCS provider" ERROR: for every scenario that
+        // relies on this default rather than its own callTool override.
+        if (name === 'member_detail') {
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };

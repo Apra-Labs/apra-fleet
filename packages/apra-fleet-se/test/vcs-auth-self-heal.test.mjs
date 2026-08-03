@@ -42,6 +42,14 @@ describe('parseOwnerRepoFromRemoteUrl', () => {
     });
 });
 
+// apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the member's
+// provider via VCSModule.resolveProvider(), which calls fleetApi.
+// memberDetail() ('member_detail') BEFORE provision_vcs_auth. Every callTool
+// mock below must answer that lookup with a registered 'github' provider,
+// intercepted here (not counted alongside the provision_vcs_auth calls each
+// test tracks) so the existing call-count assertions stay meaningful.
+const MEMBER_DETAIL_GITHUB = { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+
 describe('createVcsAuthSelfHealCallback', () => {
     test('calls provision_vcs_auth with the member, github-app defaults, and a repos list derived from the member\'s own git remote', async () => {
         const calls = [];
@@ -51,7 +59,11 @@ describe('createVcsAuthSelfHealCallback', () => {
             }
             return { ok: true, output: '', error: null };
         };
-        const callTool = async (name, args) => { calls.push({ name, args }); return { status: 'ok' }; };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
         const logs = [];
         const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command, log: (m) => logs.push(m) });
 
@@ -78,7 +90,11 @@ describe('createVcsAuthSelfHealCallback', () => {
             }
             return { ok: true, output: '', error: null };
         };
-        const callTool = async (name, args) => { calls.push({ name, args }); return { status: 'ok' }; };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
         const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
 
         await onAuthFailure({ member: 'some-other-member', label: 'D-push', error: 'auth failure' });
@@ -94,7 +110,11 @@ describe('createVcsAuthSelfHealCallback', () => {
             }
             return { ok: true, output: '', error: null };
         };
-        const callTool = async (name, args) => { calls.push({ name, args }); return { status: 'ok' }; };
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            calls.push({ name, args });
+            return { status: 'ok' };
+        };
         const onAuthFailure = createVcsAuthSelfHealCallback({ callTool, command });
 
         await onAuthFailure({ member: 'm1', label: 'G-push', error: 'auth failure' });

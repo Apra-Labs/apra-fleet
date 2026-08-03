@@ -118,6 +118,12 @@ function buildMockCommand({ commitCount, pushShouldFail = false, prOutcome = 'cr
 // Mirrors mock-sprint-harness.mjs's defaultMockCallTool() exactly.
 function mockAbortCallTool() {
     return async (name, toolArgs) => {
+        // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the
+        // member's provider via VCSModule.resolveProvider() (a
+        // 'member_detail' call) BEFORE every provision_vcs_auth call.
+        if (name === 'member_detail') {
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
@@ -604,6 +610,9 @@ function buildMockCommandForPrRetry({ commitCount = 1, pullsQueue, credQueue } =
 function mockAbortCallToolCounting() {
     let provisionVcsAuthCalls = 0;
     const callTool = async (name, toolArgs) => {
+        if (name === 'member_detail') {
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        }
         if (name === 'provision_vcs_auth') {
             provisionVcsAuthCalls += 1;
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();

@@ -69,10 +69,22 @@ const remoteCommand = async (cmd) => {
 
 const farFutureExpiry = () => new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1h out
 
+// apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the member's
+// provider via VCSModule.resolveProvider(), which itself calls
+// fleetApi.memberDetail() (the 'member_detail' MCP tool) BEFORE ever calling
+// provision_vcs_auth. Every callTool mock below must therefore answer
+// 'member_detail' with a JSON body carrying a registered 'github' provider
+// (mirroring src/tools/member-detail.ts's real json-format response) -- this
+// resolver call is intercepted and answered here, NOT counted alongside the
+// provision_vcs_auth calls each test tracks, so every existing call-count
+// assertion below stays meaningful.
+const MEMBER_DETAIL_GITHUB = { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+
 describe('createVcsAuthPreflightCallback', () => {
     test('(case 1: mint-when-missing) mints a fresh VCS credential exactly once when no prior credential is cached for the member', async () => {
         const calls = [];
         const callTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push({ name, args });
             return { content: [{ text: `Provisioned VCS credential.\n  expiresAt: ${farFutureExpiry()}` }] };
         };
@@ -97,6 +109,7 @@ describe('createVcsAuthPreflightCallback', () => {
     test('(case 2: skip-when-fresh) repeated calls for the SAME member with a still-fresh (non-expiring-soon) cached credential trigger NO redundant provision_vcs_auth call', async () => {
         const calls = [];
         const callTool = async (name) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push(name);
             return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
         };
@@ -112,6 +125,7 @@ describe('createVcsAuthPreflightCallback', () => {
     test('a DIFFERENT member has its own independent cache entry (a fresh credential for one member never masks a missing one for another)', async () => {
         const calls = [];
         const callTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push(args.member_name);
             return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
         };
@@ -129,7 +143,8 @@ describe('createVcsAuthPreflightCallback', () => {
         const calls = [];
         let nowMs = Date.now();
         const now = () => nowMs;
-        const callTool = async () => {
+        const callTool = async (name) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             calls.push(nowMs);
             // Each mint expires 12 minutes out from "now" -- comfortably
             // outside the 10-minute preflight window until the clock below
@@ -153,7 +168,11 @@ describe('createVcsAuthPreflightCallback', () => {
 
     test('a credential response carrying no expiry (PAT mode) is cached as "known-good, never needs refresh" -- never re-provisioned', async () => {
         const calls = [];
-        const callTool = async () => { calls.push(1); return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] }; };
+        const callTool = async (name) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            calls.push(1);
+            return { content: [{ text: 'Provisioned VCS credential (PAT mode, no expiry).' }] };
+        };
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand });
 
         await ensureVcsAuthFresh('fleet-mac');
@@ -182,6 +201,7 @@ describe('createVcsAuthPreflightCallback', () => {
         // freshness alone.
         const preflightCalls = [];
         const preflightCallTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
             preflightCalls.push({ name, args });
             return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
         };
@@ -199,7 +219,11 @@ describe('createVcsAuthPreflightCallback', () => {
             'git push': [fail("fatal: could not read Username for 'https://github.com': Device not configured"), OK],
         });
         const healCalls = [];
-        const healCallTool = async (name, args) => { healCalls.push({ name, args }); return { content: [{ text: 'Provisioned.' }] }; };
+        const healCallTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            healCalls.push({ name, args });
+            return { content: [{ text: 'Provisioned.' }] };
+        };
         const onAuthFailure = createVcsAuthSelfHealCallback({ callTool: healCallTool, command: pushCommand });
 
         const res = await syncMemberAfter('fleet-mac', { command: pushCommand, onAuthFailure });
@@ -237,6 +261,7 @@ describe('runSprintCycle: the real withGitSync pushCode-gated preflight wiring',
         await withScenarioMarkers('glv.2 preflight end-to-end', async () => {
             const vcsCalls = [];
             const callTool = async (name, args) => {
+                if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
                 if (name === 'provision_vcs_auth') {
                     vcsCalls.push(args);
                     return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };

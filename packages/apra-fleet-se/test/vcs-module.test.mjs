@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { VCSModule, buildCreatePrCommand, buildCommentCommand } from '../fleet-sprint/vcs-module.mjs';
+import { VCSModule, buildCreatePrCommand, buildCommentCommand, resolveProvider } from '../fleet-sprint/vcs-module.mjs';
 
 // apra-fleet-tfx.7: orchestrator-side VCSModule -- provider-dispatched
 // PR-creation command builder. Pure/deterministic: no network calls in this
@@ -178,5 +178,78 @@ describe('VCSModule default export', () => {
     test('exposes the same builders as the named exports', () => {
         assert.strictEqual(VCSModule.buildCreatePrCommand, buildCreatePrCommand);
         assert.strictEqual(VCSModule.buildCommentCommand, buildCommentCommand);
+        assert.strictEqual(VCSModule.resolveProvider, resolveProvider);
+    });
+});
+
+// =============================================================================
+// VCSModule.resolveProvider (apra-fleet-647.1.2.1) -- reads a member's
+// persisted vcsProvider from the fleet member registry via an injected
+// fleetApi.memberDetail(), with NO default and NO guessing. A dedicated
+// [test]-typed sibling bead (apra-fleet-647.1.2.2) owns the full runner.js
+// call-site coverage (both provision_vcs_auth callers going through this);
+// this suite exercises resolveProvider() itself, directly and in isolation.
+// =============================================================================
+describe('VCSModule.resolveProvider', () => {
+    function fleetApiReturning(vcsProvider) {
+        return {
+            memberDetail: async () => ({ content: [{ text: JSON.stringify({ vcsProvider }) }] }),
+        };
+    }
+
+    test('a member registered with GitHub resolves to provider "github" and its GitHub App auth mode', async () => {
+        const result = await resolveProvider('fleet-mac', { fleetApi: fleetApiReturning('github') });
+        assert.deepEqual(result, { provider: 'github', authMode: 'github-app' });
+    });
+
+    test('an absent vcsProvider (member never provisioned) throws an ASCII "ERROR:" naming the member and the known providers -- never defaults to GitHub', async () => {
+        await assert.rejects(
+            () => resolveProvider('fleet-mac', { fleetApi: fleetApiReturning(undefined) }),
+            (err) => {
+                assert.match(err.message, /^ERROR:/);
+                assert.match(err.message, /fleet-mac/);
+                assert.match(err.message, /github, bitbucket, azure-devops/);
+                return true;
+            },
+        );
+    });
+
+    test('an unrecognized provider string throws an ASCII "ERROR:" naming the member, never silently coerced to a known provider', async () => {
+        await assert.rejects(
+            () => resolveProvider('fleet-mac', { fleetApi: fleetApiReturning('gitlab') }),
+            /ERROR:.*fleet-mac/,
+        );
+    });
+
+    test('memberDetail() call failure (e.g. fleet server unreachable) propagates as a typed "ERROR:" rejection, not a silent GitHub default', async () => {
+        const fleetApi = { memberDetail: async () => { throw new Error('fleet server unreachable'); } };
+        await assert.rejects(
+            () => resolveProvider('fleet-mac', { fleetApi }),
+            (err) => {
+                assert.match(err.message, /^ERROR:/);
+                assert.match(err.message, /fleet server unreachable/);
+                return true;
+            },
+        );
+    });
+
+    test('a non-JSON memberDetail() response (e.g. "no member found") surfaces that text verbatim, not a generic parse error', async () => {
+        const fleetApi = { memberDetail: async () => ({ content: [{ text: 'no member found matching "ghost"' }] }) };
+        await assert.rejects(
+            () => resolveProvider('ghost', { fleetApi }),
+            /no member found matching "ghost"/,
+        );
+    });
+
+    test('requires an injected fleetApi.memberDetail() -- throws a clear "ERROR:" rather than crashing on a missing method', async () => {
+        await assert.rejects(
+            () => resolveProvider('fleet-mac', {}),
+            /ERROR:.*memberDetail/,
+        );
+    });
+
+    test('a non-GitHub known provider (bitbucket) resolves to that provider with a null auth mode (no separate mode axis)', async () => {
+        const result = await resolveProvider('fleet-mac', { fleetApi: fleetApiReturning('bitbucket') });
+        assert.deepEqual(result, { provider: 'bitbucket', authMode: null });
     });
 });

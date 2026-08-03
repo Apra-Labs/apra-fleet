@@ -186,6 +186,84 @@ export function buildCreatePrCommand(params) {
     return buildVcsCommand('create-pull-request', params);
 }
 
+// ---------------------------------------------------------------------------
+// Provider resolution (apra-fleet-647.1.2.1)
+// ---------------------------------------------------------------------------
+//
+// Each provider owns its OWN default auth-mode vocabulary (GitHub: App vs.
+// PAT; Bitbucket/Azure DevOps have no such axis -- they always authenticate
+// via their own single token field) so a caller (runner.js) never has to
+// hardcode a provider-specific mode literal alongside the provider name.
+// `null` means "this provider has no separate auth-mode choice at
+// provision_vcs_auth call time".
+//
+// GitHub defaults to 'github-app' (never 'pat') because that is the mode
+// runner.js has always hardcoded -- resolveProvider() must reproduce that
+// exact behavior for every already-github-provisioned member, not merely a
+// plausible one (apra-fleet-647.1.2.1 AC: "Existing GitHub members behave
+// exactly as before").
+const DEFAULT_AUTH_MODES = Object.freeze({
+    github: 'github-app',
+    bitbucket: null,
+    'azure-devops': null,
+});
+
+/**
+ * Resolve `member`'s persisted VCS provider (and that provider's own default
+ * auth mode) from the fleet member registry, via the injected `fleetApi`'s
+ * `memberDetail()` (member_detail, the only MCP surface that currently
+ * exposes Agent.vcsProvider -- src/tools/member-detail.ts). NO default, NO
+ * guessing: an absent or unrecognized vcsProvider is a typed "ERROR:"
+ * failure naming the member and the known providers, never a silent GitHub
+ * assumption (apra-fleet-647.1.2's whole point).
+ *
+ * The known-provider vocabulary is BUILDERS' own key set (this module's
+ * single manifest of providers it is aware of at all), so a provider added
+ * there is automatically recognized here too -- no second list to keep in
+ * sync.
+ *
+ * @param {string} member
+ * @param {{ fleetApi: { memberDetail: (opts: { member_name: string, format?: string }) => Promise<any> } }} opts
+ * @returns {Promise<{ provider: string, authMode: string|null }>}
+ */
+export async function resolveProvider(member, { fleetApi } = {}) {
+    if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
+        throw new Error(`ERROR: VCSModule: resolveProvider requires an injected fleetApi.memberDetail() -- cannot resolve a VCS provider for member '${member}' without one.`);
+    }
+    const known = Object.keys(BUILDERS);
+
+    let res;
+    try {
+        res = await fleetApi.memberDetail({ member_name: member, format: 'json' });
+    } catch (err) {
+        throw new Error(`ERROR: VCSModule: resolveProvider could not read the member registry for member '${member}': ${err && err.message ? err.message : err}`);
+    }
+    const text = typeof res === 'string'
+        ? res
+        : (res && Array.isArray(res.content) && res.content[0] && typeof res.content[0].text === 'string')
+            ? res.content[0].text
+            : '';
+
+    let parsed = null;
+    try {
+        parsed = JSON.parse(text);
+    } catch {
+        // member_detail returns a plain (non-JSON) string when the member
+        // itself cannot be resolved (see resolveMember in
+        // src/utils/resolve-member.ts) -- surface that text as-is rather
+        // than a generic parse-error message, since it already names the
+        // problem (e.g. "no member found matching ...").
+        throw new Error(`ERROR: VCSModule: resolveProvider could not resolve member '${member}' from the registry: ${text || '(empty member_detail response)'}`);
+    }
+
+    const provider = parsed && typeof parsed.vcsProvider === 'string' ? parsed.vcsProvider : null;
+    if (!provider || !known.includes(provider)) {
+        throw new Error(`ERROR: VCSModule: resolveProvider: member '${member}' has no registered VCS provider (vcsProvider: ${provider ? `"${provider}"` : '(absent)'}) -- known providers: ${known.join(', ')}. Provision one via provision_vcs_auth with an explicit 'provider' before relying on resolveProvider.`);
+    }
+
+    return { provider, authMode: Object.prototype.hasOwnProperty.call(DEFAULT_AUTH_MODES, provider) ? DEFAULT_AUTH_MODES[provider] : null };
+}
+
 /** Build a "comment on abort" command for the given provider. */
 export function buildCommentCommand(params) {
     return buildVcsCommand('comment', params);
@@ -325,6 +403,7 @@ export const VCSModule = {
     buildCommentCommand,
     classifyFailure,
     toGitVerdict,
+    resolveProvider,
     registerVcsProvider,
     unregisterVcsProvider,
     isKnownVcsProvider,

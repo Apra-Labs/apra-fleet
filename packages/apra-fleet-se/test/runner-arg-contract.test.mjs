@@ -275,6 +275,12 @@ function mockCmdResult(code, stdout, stderr = '') {
 // dolt_push_mutex/child_id_allocator must answer with valid, minimal JSON
 // too, not the plain '✅ mock <name>' prose generic callers elsewhere use.
 function spyCallTool(name, toolArgs) {
+    // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the member's
+    // provider via VCSModule.resolveProvider() (a 'member_detail' call)
+    // BEFORE every provision_vcs_auth call.
+    if (name === 'member_detail') {
+        return Promise.resolve({ content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] });
+    }
     if (name === 'provision_vcs_auth') {
         const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
         return Promise.resolve({ content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
