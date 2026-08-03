@@ -1,51 +1,39 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "apra-pm/doer-output@1",
+  "$id": "apra-pm/planner-output@1",
   "version": 1,
-  "title": "doer output",
-  "description": "Canonical machine-readable output contract for the doer role. See agents/doer.md Step 3 (VERIFY checkpoint) and Branch and secrets rules (BLOCKED) for the prose contract this mirrors.",
+  "title": "planner output",
+  "description": "Canonical machine-readable output contract for the planner role. See agents/planner.md Step 4 (Validate your own DAG) and Step 0 (Knowledge Bank) for the prose contract this mirrors. The planner previously had no schema at all -- its dispatch ended 'Confirm with any text when done' -- so this is the contract that makes its output routable rather than free prose.",
   "type": "object",
-  "required": [
-    "status",
-    "closedIds",
-    "notes"
-  ],
+  "required": ["status", "notes"],
   "properties": {
     "status": {
       "type": "string",
-      "enum": [
-        "VERIFY",
-        "BLOCKED"
-      ]
-    },
-    "closedIds": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "enum": ["OK", "BLOCKED"]
     },
     "notes": {
       "type": "string"
+    },
+    "featureIds": {
+      "type": "array",
+      "description": "Feature-level bead ids created or updated this round.",
+      "items": { "type": "string" }
+    },
+    "taskIds": {
+      "type": "array",
+      "description": "Task-level bead ids created or updated this round.",
+      "items": { "type": "string" }
     },
     "kb_captures": {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
       "items": {
         "type": "object",
-        "required": [
-          "type",
-          "title",
-          "summary",
-          "source_files"
-        ],
+        "required": ["type", "title", "summary", "source_files"],
         "properties": {
           "type": {
             "type": "string",
-            "enum": [
-              "knowledge",
-              "learning",
-              "runbook"
-            ]
+            "enum": ["knowledge", "learning", "runbook"]
           },
           "title": {
             "type": "string",
@@ -58,16 +46,12 @@
           "source_files": {
             "type": "array",
             "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
-            "items": {
-              "type": "string"
-            },
+            "items": { "type": "string" },
             "minItems": 1
           },
           "symbols": {
             "type": "array",
-            "items": {
-              "type": "string"
-            }
+            "items": { "type": "string" }
           }
         }
       }
