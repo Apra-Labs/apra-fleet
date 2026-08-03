@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- install --force stop-confirmation fix (closes prior sprint's deploy-gate carry-over)
+
+Sprint goal: continue the dispatch-stall/timeout reliability cluster by fixing
+the two items a prior sprint in this same cluster had to carry forward after
+its own deploy gate failed -- `install --force`/`update` could fail with
+`ETXTBSY` (text file is busy) when it copied the new binary over a still-running
+old server process, and it printed a "stopped running server" success message
+unconditionally rather than only once termination was actually confirmed. All
+scope work is now implemented, tested, and verified; the sprint's final verdict
+is PASS.
+
+What shipped:
+
+- `install --force`/`update` now polls the old server process's liveness over
+  a bounded grace window after sending the initial termination signal, and
+  escalates to a harder kill signal (with a second, shorter poll window) if
+  the process is still alive once the window elapses. The binary copy is only
+  attempted once the old process is confirmed gone, closing the `ETXTBSY`
+  failure that could occur when a fixed sleep wasn't long enough for a
+  mid-request singleton to exit.
+- The "Stopped running server." success message is now gated on that same
+  confirmed-termination check instead of being printed unconditionally. If
+  the old process is still detected running after both the initial signal and
+  the escalation, install now reports a clear, actionable error (including
+  the manual command to finish stopping it for the current platform) and
+  exits non-zero, instead of asserting a stop that didn't actually happen.
+
+No items are carried forward from this cycle. An end-of-sprint regression
+pass could not run: the sandbox's permission allowlist did not cover the
+commands the regression playbook requires, so the pass stopped at its own
+permissions check before either its real-bd suite or its smoke test could
+execute. This is informational and does not carry over any new bead; the
+permissions gap needs to be resolved by an operator before a regression pass
+can be attempted.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.3687.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0695 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- Dispatch-layer stall/timeout reliability hardening
 
 Sprint goal: dedupe and fix a cluster of dispatch-stall and max_turns-exhaustion
