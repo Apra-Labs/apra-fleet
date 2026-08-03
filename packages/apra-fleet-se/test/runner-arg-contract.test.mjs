@@ -255,6 +255,47 @@ function mockCmdResult(code, stdout, stderr = '') {
     };
 }
 
+// apra-fleet-tfx.8.4: raiseVcsPrForMember() mints a just-in-time push+pr
+// credential via `args.callTool('provision_vcs_auth', ...)` immediately
+// before building/dispatching the VCSModule curl PR-create command --
+// without a callTool, the Publish PR step gracefully degrades (see
+// apra-fleet-tfx.8.1) and skips PR creation entirely. This standalone
+// `(name, args) => Promise<any>` function is passed as the `callTool` KEY
+// inside engine.executeFile()'s args object (the exact shape bin/cli.mjs
+// wires from its live mcpClient.callTool -- see the 'callTool' known-arg-key
+// comment in runner.js), not a property on the fleetApi returned by
+// buildSpyFleetApi() -- FleetWorkflow's fleetApi has no callTool slot of its
+// own, only executeCommand/executePrompt.
+//
+// A non-null callTool also activates createMcpDoltPushMutexClient/
+// createMcpChildIdAllocatorClient, both of which are read through
+// parseCoordinationToolResult() -- it JSON.parse()s the tool's text and
+// THROWS on anything that isn't valid JSON (see mock-sprint-harness.mjs's
+// defaultMockCallTool doc comment for the identical fix there) -- so
+// dolt_push_mutex/child_id_allocator must answer with valid, minimal JSON
+// too, not the plain '✅ mock <name>' prose generic callers elsewhere use.
+function spyCallTool(name, toolArgs) {
+    if (name === 'provision_vcs_auth') {
+        const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+        return Promise.resolve({ content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] });
+    }
+    if (name === 'dolt_push_mutex') {
+        const action = toolArgs && toolArgs.action;
+        if (action === 'acquire') {
+            return Promise.resolve({ content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] });
+        }
+        return Promise.resolve({ content: [{ text: JSON.stringify({ released: true }) }] });
+    }
+    if (name === 'child_id_allocator') {
+        const action = toolArgs && toolArgs.action;
+        if (action === 'allocate') {
+            return Promise.resolve({ content: [{ text: JSON.stringify({ childId: null, token: null }) }] });
+        }
+        return Promise.resolve({ content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] });
+    }
+    return Promise.resolve({ content: [{ text: `✅ mock ${name}` }] });
+}
+
 // apra-fleet-eft.6.7: `allBeadsJson`/`readyJson` let a caller substitute the
 // canned `bd list --all --limit 0 --json` / `--ready` responses (default:
 // the existing single-level bd-1 -> bd-1-child fixture every other test in
@@ -340,6 +381,21 @@ function buildSpyFleetApi(overrides = {}) {
             if (/^git remote get-url origin\b/.test(opts.command)) {
                 return mockCmdResult(0, 'https://github.com/mock-org/mock-repo.git');
             }
+            // apra-fleet-tfx.8/tfx.8.4: raiseVcsPrForMember() reads back the
+            // just-provisioned push+pr credential's token from the git-
+            // credential-helper script, then dispatches VCSModule's `curl
+            // ... /pulls` create-pull-request command directly (no `gh`
+            // dependency) -- answer both so this spy's PR-raise path is
+            // exercised exactly like the real one, instead of silently
+            // degrading to "no MCP callTool available" (see `callTool`
+            // below) and skipping PR creation altogether.
+            if (/^\$HOME\/\.fleet-git-credential-/.test(opts.command)) {
+                return mockCmdResult(0, 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n', '');
+            }
+            if (/^curl -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
+                const body = JSON.stringify({ number: 101, html_url: 'https://github.com/mock-org/mock-repo/pull/101' });
+                return mockCmdResult(0, `${body}\n201`, '');
+            }
             return mockCmdResult(0, '');
         },
         executePrompt: async (opts) => {
@@ -409,6 +465,12 @@ describe('runner.js mock-level execution', () => {
             base_branch: 'develop',
             goal: 'P1',
             max_cycles: 1,
+            // apra-fleet-tfx.8.4: without a callTool, raiseVcsPrForMember()
+            // cannot mint the just-in-time push+pr credential and gracefully
+            // degrades to skipping PR creation entirely (apra-fleet-tfx.8.1)
+            // -- this test exercises the PR-raise path itself, so it needs a
+            // working callTool.
+            callTool: spyCallTool,
         }, true);
 
         assert.strictEqual(result.status, 'success');
@@ -467,14 +529,28 @@ describe('runner.js mock-level execution', () => {
         assert.ok(spy.commandLog[firstGitIdx + 5].includes('git checkout -B auto-sprint/reach-test origin/auto-sprint/reach-test'));
         // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
         // `git remote get-url origin` (isHostedGithubRemote()) between the
-        // push and `gh pr create` -- this spy answers it with a hosted
-        // GitHub URL (see the `git remote get-url origin` branch above), so
-        // the hosted-remote `gh pr create` path is exercised unchanged, just
-        // with one extra command in between.
-        const last3 = spy.commandLog.slice(-3);
-        assert.match(last3[0], /^git push -u origin auto-sprint\/reach-test/);
-        assert.match(last3[1], /^git remote get-url origin\b/);
-        assert.match(last3[2], /^gh pr create --base "develop" --head "auto-sprint\/reach-test"/);
+        // push and PR creation -- this spy answers it with a hosted GitHub
+        // URL (see the `git remote get-url origin` branch above), so the
+        // hosted-remote PR-raise path is exercised unchanged, just with one
+        // extra command in between.
+        // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
+        // is gone. raiseVcsPrForMember() now (1) re-derives 'owner/repo' via
+        // its OWN `git remote get-url origin` call (a SECOND classification-
+        // shaped probe), (2) reads back the just-provisioned push+pr
+        // credential's token from the git-credential-helper script, then (3)
+        // dispatches VCSModule's `curl ... /pulls` create-pull-request
+        // command -- so the last 5 commandLog entries are: push, the
+        // classification probe, the repo-derivation probe, the credential-
+        // token read, and the curl POST itself.
+        const last5 = spy.commandLog.slice(-5);
+        assert.match(last5[0], /^git push -u origin auto-sprint\/reach-test/);
+        assert.match(last5[1], /^git remote get-url origin\b/);
+        assert.match(last5[2], /^git remote get-url origin\b/);
+        assert.match(last5[3], /^\$HOME\/\.fleet-git-credential-/);
+        assert.match(last5[4], /^curl -sS -X POST\b/);
+        assert.ok(last5[4].includes('/pulls'));
+        assert.ok(last5[4].includes('"base":"develop"'));
+        assert.ok(last5[4].includes('"head":"auto-sprint/reach-test"'));
     });
 
     test('a malicious issue id is rejected with a validation error and results in ZERO fleet dispatches', async () => {

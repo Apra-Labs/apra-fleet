@@ -107,11 +107,41 @@ export function isSpawnFailure(err) {
 // its own `callTool` override (see vcs-auth-preflight.test.mjs /
 // vcs-auth-self-heal.test.mjs for that pattern applied directly against the
 // exported callback factories).
+//
+// apra-fleet-tfx.8.4 fix: wiring `callTool` by default here (previously only
+// opt-in) also activates createMcpChildIdAllocatorClient/dolt_push_mutex's
+// MCP client whenever a scenario mints a new child bead or acquires the push
+// mutex -- BOTH of those, unlike provision_vcs_auth/member_reservation/
+// stop_prompt, are read through parseCoordinationToolResult(), which
+// JSON.parse()s the tool's text and THROWS on anything that isn't valid JSON
+// (see runner.js). The old generic `✅ mock <name>` text is plain prose, not
+// JSON, so any scenario that reaches one of these two tools (e.g. a reviewer
+// newTasks response gets id-allocated via `bd create`) would fail every
+// allocate/acquire call with "returned a non-JSON response" -- a real
+// regression this default callTool must not silently mask. Answer both with
+// valid, minimal JSON so the allocator/mutex client's own null-token/
+// null-childId fallback paths take over exactly as they did when callTool was
+// unwired (id derivation still falls back to `bd create --parent` locally;
+// the mutex is effectively a no-op grant).
 export function defaultMockCallTool() {
     return async (name, toolArgs) => {
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+        }
+        if (name === 'child_id_allocator') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'allocate') {
+                return { content: [{ text: JSON.stringify({ childId: null, token: null }) }] };
+            }
+            return { content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] };
+        }
+        if (name === 'dolt_push_mutex') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'acquire') {
+                return { content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] };
+            }
+            return { content: [{ text: JSON.stringify({ released: true }) }] };
         }
         return { content: [{ text: `✅ mock ${name}` }] };
     };
