@@ -75,6 +75,49 @@ function mockServerRunningAtRoot(root: string) {
   });
 }
 
+// Simulates a running instance resolvable via macOS's `ps -o comm=` (apra-fleet-fyc.2.6):
+// unlike Linux's readlinkSync(/proc/pid/exe), BSD ps exposes the full executable path
+// directly for the matched PID, so getRunningInstanceBinaryPath() shells out instead.
+function mockServerRunningAtRootDarwin(root: string) {
+  vi.mocked(execSync).mockImplementation((cmd: any) => {
+    const c = cmd.toString();
+    if (c === 'pgrep -x apra-fleet') return `${RUNNING_PID}\n` as any;
+    if (c === `ps -o comm= -p ${RUNNING_PID}`) return `${path.join(root, 'bin', 'apra-fleet')}\n` as any;
+    return '' as any;
+  });
+}
+
+// Simulates a running instance resolvable via Windows' `tasklist` (PID discovery) plus
+// `wmic ... get ExecutablePath` (binary path resolution) -- apra-fleet-fyc.2.6.
+function mockServerRunningAtRootWin32(root: string) {
+  vi.mocked(execSync).mockImplementation((cmd: any) => {
+    const c = cmd.toString();
+    if (c === 'tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV') {
+      return `"apra-fleet.exe","${RUNNING_PID}","Console","1","12,345 K"\n` as any;
+    }
+    if (c === `wmic process where "ProcessId=${RUNNING_PID}" get ExecutablePath /value`) {
+      return `\r\n\r\nExecutablePath=${path.join(root, 'bin', 'apra-fleet.exe')}\r\n\r\n` as any;
+    }
+    return '' as any;
+  });
+}
+
+// Simulates a running instance whose binary path cannot be resolved at all (e.g. the
+// /proc/<pid>/exe symlink vanished, or permission was denied). getRunningInstanceBinaryPath()
+// must return null in this case, so resolveRunningInstanceRoot() returns null too, and
+// isApraFleetRunningAtDifferentRoot() must conservatively return false -- the existing
+// collision guard should still fire rather than silently skipping (apra-fleet-fyc.2.6, case c).
+function mockServerRunningUnresolvable() {
+  vi.mocked(execSync).mockImplementation((cmd: any) => {
+    const c = cmd.toString();
+    if (c === 'pgrep -x apra-fleet') return `${RUNNING_PID}\n` as any;
+    return '' as any;
+  });
+  vi.mocked(fs.readlinkSync).mockImplementation(() => {
+    throw new Error('ENOENT: no such file or directory');
+  });
+}
+
 describe('install running-process guard scoping (apra-fleet-fyc.2.5.2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -174,5 +217,117 @@ describe('install running-process guard scoping (apra-fleet-fyc.2.5.2)', () => {
 
     exitSpy.mockRestore();
     logSpy.mockRestore();
+  });
+});
+
+describe('install running-process guard: unresolvable root and cross-platform binary resolution (apra-fleet-fyc.2.6)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} } as any);
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+  });
+
+  it('case c: unresolvable running-instance root keeps the guard active (conservative fallback)', async () => {
+    mockServerRunningUnresolvable();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).toContain('apra-fleet is currently running');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('case c2: --skip-running-check still bypasses the guard even when the root is unresolvable, without killing anything', async () => {
+    mockServerRunningUnresolvable();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(runInstall(['--skill', 'none', '--skip-running-check'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
+    expect(calls).not.toContain('pkill -x apra-fleet');
+    expect(calls).not.toContain('taskkill /F /IM apra-fleet.exe');
+
+    exitSpy.mockRestore();
+  });
+
+  it('macOS: different-root running instance (resolved via `ps -o comm=`) proceeds without block', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    mockServerRunningAtRootDarwin(OTHER_ROOT);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runInstall(['--skill', 'none'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).not.toContain('apra-fleet is currently running');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('macOS: same-root running instance (resolved via `ps -o comm=`) still blocks', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    mockServerRunningAtRootDarwin(SAME_ROOT);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).toContain('apra-fleet is currently running');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('Windows: different-root running instance (resolved via `wmic`) proceeds without block', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    mockServerRunningAtRootWin32(OTHER_ROOT);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runInstall(['--skill', 'none'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).not.toContain('apra-fleet is currently running');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('Windows: same-root running instance (resolved via `wmic`) still blocks, and --force stops it via taskkill', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    mockServerRunningAtRootWin32(SAME_ROOT);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
+    expect(calls).toContain('taskkill /F /IM apra-fleet.exe');
+
+    exitSpy.mockRestore();
   });
 });
