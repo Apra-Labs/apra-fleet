@@ -399,6 +399,35 @@ export function toGitVerdict(kind) {
     }
 }
 
+/**
+ * Adapter from the neutral taxonomy to dolt-sync.mjs's legacy classifyDoltFailure
+ * verdict vocabulary (apra-fleet-647.1.3.2), so classifyDoltFailure can delegate
+ * to classifyFailure(raw, { provider: 'dolt' }) with NO verdict change. The
+ * companion of toGitVerdict() above -- same collapsing rules, but preserves the
+ * three dolt-only benign/fatal kinds (NO_REMOTE, EMPTY_REMOTE,
+ * REMOTE_UNREACHABLE) that git has no equivalent of, instead of folding them
+ * into 'unknown'.
+ *
+ * Both AUTH kinds collapse to 'auth' -- classifyDoltFailure has never
+ * distinguished them (DoltVCS's own AUTH_EXPIRED table already carries every
+ * dolt auth literal, including the publickey-refusal one; see dolt.mjs).
+ *
+ * @param {string} kind - a VCS_FAILURE_KINDS member
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'unknown'}
+ */
+export function toDoltVerdict(kind) {
+    switch (kind) {
+        case VCS_FAILURE_KINDS.NO_REMOTE: return 'no-remote';
+        case VCS_FAILURE_KINDS.EMPTY_REMOTE: return 'empty-remote';
+        case VCS_FAILURE_KINDS.REMOTE_UNREACHABLE: return 'remote-unreachable';
+        case VCS_FAILURE_KINDS.DIVERGED: return 'diverged';
+        case VCS_FAILURE_KINDS.AUTH_EXPIRED:
+        case VCS_FAILURE_KINDS.AUTH_DENIED: return 'auth';
+        case VCS_FAILURE_KINDS.TRANSIENT: return 'transient';
+        default: return 'unknown';
+    }
+}
+
 // ---------------------------------------------------------------------------
 // capabilities(remoteUrl) (apra-fleet-647.1.4.1)
 // ---------------------------------------------------------------------------
@@ -489,6 +518,7 @@ export const VCSModule = {
     buildCommentCommand,
     classifyFailure,
     toGitVerdict,
+    toDoltVerdict,
     resolveProvider,
     capabilities,
     registerVcsProvider,

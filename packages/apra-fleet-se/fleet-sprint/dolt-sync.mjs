@@ -79,6 +79,7 @@
  */
 
 import { DoltDivergedError, DoltSyncError } from './errors.mjs';
+import { classifyFailure, toDoltVerdict } from './vcs-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Dolt sync brackets: D-pull / D-push
@@ -110,118 +111,16 @@ import { DoltDivergedError, DoltSyncError } from './errors.mjs';
 // each dispatch. `command` is dependency-injected so unit tests can drive these
 // helpers with a mock command() and no live Dolt server.
 
-// Substrings that mark a `bd dolt` failure as NO-REMOTE: this local beads clone
-// has no configured dolt remote at all (e.g. a temp fixture repo with no
-// 'origin'), so there is nothing to pull or push. This is a benign, non-error
-// condition -- distinct from both a genuine divergence and a transient
-// network/server hiccup -- and is checked FIRST so its text always wins. A
-// remote that IS configured but unreachable/diverged/auth-failing never matches
-// these patterns and still falls through to the diverged/transient/unknown
-// classification.
-const DOLT_NO_REMOTE_PATTERNS = [
-    /error 1105.*no remote/i,
-    /\bno remote\b/i,
-];
-
-// Substrings that mark a `bd dolt pull` failure as an EMPTY-REMOTE: the
-// sync.remote IS configured (unlike no-remote above) but has never had anything
-// pushed into it -- e.g. a sync.remote derived from a bare git-only mirror that
-// Dolt itself has never pushed a branch into. Distinct from BOTH no-remote
-// (nothing configured at all) and a genuine divergence/conflict (something IS
-// there, but disagrees with the local clone): a remote with zero branches has
-// nothing to reconcile, so pulling it is a benign no-op, not a fatal sync
-// failure. Matched on Dolt's specific Error 1105 wording so it can never
-// swallow a real pull failure that merely mentions "remote", and checked before
-// the diverged/transient patterns for the same reason as
-// DOLT_NO_REMOTE_PATTERNS.
-const DOLT_EMPTY_REMOTE_PATTERNS = [
-    /error 1105.*no branches found in remote/i,
-    /no branches found in remote/i,
-];
-
-// Substrings that mark a `bd dolt` failure as a DIVERGENCE (the remote moved
-// under us / a data or merge conflict). Reconciled once by the push loser, or
-// surfaced as DoltDivergedError -- never retried blindly.
-const DOLT_DIVERGED_PATTERNS = [
-    /conflict/i,
-    /would (be )?overwrit/i,
-    /cannot fast[- ]forward/i,
-    /not possible to fast[- ]forward/i,
-    /non-fast-forward/i,
-    /\[rejected\]/i,
-    /failed to push/i,
-    /updates were rejected/i,
-    /remote (is )?ahead/i,
-    /behind the remote/i,
-    /not up[- ]to[- ]date/i,
-    /have diverged/i,
-    /merge (is )?required/i,
-    /working set (is )?not clean/i,
-];
-
-// Substrings that mark a `bd dolt` failure as an AUTH (credential) failure --
-// mirrors GIT_AUTH_PATTERNS above. `bd dolt push` shells out to git under the
-// hood, so it surfaces the same credential-prompt text a plain git push does.
-//
-// ORDERING (apra-fleet-spp, apra-fleet-417.3.1): these are checked BEFORE the
-// diverged patterns, not after. The live 2026-08-02 fleet-mac failure
-//
-//   Error: push to origin/main: Error 1105: unknown push error; addTableFiles,
-//   updateManifestAddFiles: fatal: could not read Username for
-//   'https://github.com': Device not configured
-//
-// was reported to the operator as data divergence and hard-aborted an
-// otherwise healthy sprint, when in fact nothing had diverged and the fix was
-// simply to re-provision the member's VCS credentials. The auth patterns below
-// are narrow and credential-shaped; the divergence patterns are deliberately
-// loose (they include bare /conflict/i, and the transient set includes bare
-// /lock/i), so a credential message that happens to mention either word would
-// be swallowed by the looser class. Specific beats loose: AUTH wins, always.
-// A credential failure must NEVER be classified 'diverged'.
-const DOLT_AUTH_PATTERNS = [
-    /could not read Username for/i,
-    /could not read Password for/i,
-    /Authentication failed/i,
-    /Permission denied \(publickey\)/i,
-    /remote: Invalid username or (token|password)/i,
-    /terminal prompts disabled/i,
-    /support for password authentication was removed/i,
-    /Bad credentials/i,
-];
-
-// Substrings that mark a `bd dolt` failure as TRANSIENT (network / server /
-// lock) -- safe to retry a bounded number of times.
-const DOLT_TRANSIENT_PATTERNS = [
-    /could not resolve host/i,
-    /unable to (access|connect)/i,
-    /connection (timed out|reset|refused)/i,
-    /operation timed out/i,
-    /\btimed out\b/i,
-    /\btimeout\b/i,
-    /temporary failure/i,
-    /early eof/i,
-    /rpc failed/i,
-    /the remote end hung up/i,
-    /server (is )?(starting|not ready|unavailable)/i,
-    /connection refused/i,
-    /dial tcp/i,
-    /i\/o timeout/i,
-    /database is locked/i,
-    /lock/i,
-];
-
-// Substrings that mark a `bd dolt` failure as REMOTE-UNREACHABLE: the
-// configured sync remote itself cannot be opened (deleted directory behind a
-// file:// remote, dead path, missing remote db). Distinct from 'transient'
-// (retrying cannot help: the target is gone, not busy) and from 'no-remote'
-// (here a remote IS configured, it just points at nothing). Checked before
-// 'diverged'/'transient' so a stat/open failure is never misread as a conflict
-// or retried blindly.
-const DOLT_REMOTE_UNREACHABLE_PATTERNS = [
-    /could not be accessed/i,
-    /failed to get remote db/i,
-    /stat [^:]+: no such file or directory/i,
-];
+// apra-fleet-647.1.3.2: the DOLT_*_PATTERNS lists that used to live here
+// (DOLT_NO_REMOTE_PATTERNS, DOLT_EMPTY_REMOTE_PATTERNS,
+// DOLT_REMOTE_UNREACHABLE_PATTERNS, DOLT_AUTH_PATTERNS, DOLT_DIVERGED_PATTERNS,
+// DOLT_TRANSIENT_PATTERNS) are GONE -- classifyDoltFailure() below delegates
+// to VCSModule.classifyFailure(raw, { provider: 'dolt' }), the ONE place VCS
+// stderr is parsed. The 'dolt' provider (./vcs-providers/dolt.mjs) carries
+// every one of those six tables VERBATIM, plus their own precedence (auth
+// checked BEFORE diverged -- see that file's header for the live incident
+// this ordering prevents, apra-fleet-spp), so this is a delegation, not a
+// behavior change.
 
 /**
  * Best-effort extraction of the remote URL named in a remote-unreachable
@@ -242,36 +141,20 @@ export function extractDoltRemoteUrl(output) {
 
 /**
  * Classify a failed `bd dolt` command's output into the failure classes the
- * Dolt brackets route differently. no-remote is checked FIRST: a local clone
- * with no configured dolt remote has nothing to pull/push, which is a benign
- * skip, never a divergence or a retryable transient failure. empty-remote (a
- * configured sync.remote with zero branches ever pushed into it) and
- * remote-unreachable (a configured remote that cannot be opened at all) are
- * checked next, for the same reason.
- *
- * 'auth' is then checked BEFORE 'diverged' (apra-fleet-spp / apra-fleet-417.3.1
- * -- see the DOLT_AUTH_PATTERNS comment for the live incident this ordering
- * exists to prevent): the credential patterns are narrow, the divergence and
- * transient patterns are deliberately loose, and a credential failure reported
- * as data divergence both misleads the operator and sends the push down a
- * reconcile ladder that cannot possibly fix it.
- *
- * Divergence follows: a remote-moved/conflict state must never be misread as
- * transient and retried blindly, even if its message also contains a
- * lock/network word.
+ * Dolt brackets route differently. Thin adapter over
+ * VCSModule.classifyFailure(raw, { provider: 'dolt' }) + toDoltVerdict(),
+ * mapping the neutral kind taxonomy onto this module's legacy verdict
+ * vocabulary with NO verdict change from the deleted pattern-list classifier.
+ * The 'dolt' provider's own `precedence` (./vcs-providers/dolt.mjs) preserves
+ * this function's documented check order: no-remote, empty-remote,
+ * remote-unreachable, THEN auth (before diverged -- apra-fleet-spp /
+ * apra-fleet-417.3.1), THEN diverged, THEN transient.
  *
  * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
  * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'unknown'}
  */
 export function classifyDoltFailure(output) {
-    const text = String(output == null ? '' : output);
-    for (const re of DOLT_NO_REMOTE_PATTERNS) if (re.test(text)) return 'no-remote';
-    for (const re of DOLT_EMPTY_REMOTE_PATTERNS) if (re.test(text)) return 'empty-remote';
-    for (const re of DOLT_REMOTE_UNREACHABLE_PATTERNS) if (re.test(text)) return 'remote-unreachable';
-    for (const re of DOLT_AUTH_PATTERNS) if (re.test(text)) return 'auth';
-    for (const re of DOLT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
-    for (const re of DOLT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
-    return 'unknown';
+    return toDoltVerdict(classifyFailure(output, { provider: 'dolt' }).kind);
 }
 
 /**

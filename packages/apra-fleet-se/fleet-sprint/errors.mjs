@@ -38,6 +38,15 @@ import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 //                         which `retryable` is true.
 //   NO_REMOTE             No remote is configured at all -- there is nothing
 //                         to push or pull. Benign, not an error condition.
+//   EMPTY_REMOTE           A remote IS configured but has never had anything
+//                         pushed into it (apra-fleet-647.1.3.2, dolt provider
+//                         only today -- Dolt's "no branches found in remote"
+//                         Error 1105). Distinct from NO_REMOTE (nothing
+//                         configured at all): benign, nothing to reconcile.
+//   REMOTE_UNREACHABLE     A configured remote cannot be opened at all (a
+//                         deleted directory behind a file:// remote, a dead
+//                         path). Distinct from TRANSIENT: retrying cannot
+//                         help, the target is gone, not busy.
 //   UNSUPPORTED_OPERATION The requested action is not implemented for this
 //                         provider. A programming/config error; retrying and
 //                         re-authenticating are both pointless.
@@ -48,13 +57,16 @@ import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 // `retryable` means exactly one thing: SAFE TO RE-RUN THE SAME COMMAND WITH NO
 // REMEDIATION FIRST. It is therefore false for AUTH_EXPIRED even though the
 // auth self-heal path does retry once -- that retry is only legal AFTER
-// re-provisioning, which is remediation.
+// re-provisioning, which is remediation. REMOTE_UNREACHABLE is false for the
+// same "retrying cannot help" reason.
 export const VCS_FAILURE_KINDS = Object.freeze({
     AUTH_EXPIRED: 'AUTH_EXPIRED',
     AUTH_DENIED: 'AUTH_DENIED',
     DIVERGED: 'DIVERGED',
     TRANSIENT: 'TRANSIENT',
     NO_REMOTE: 'NO_REMOTE',
+    EMPTY_REMOTE: 'EMPTY_REMOTE',
+    REMOTE_UNREACHABLE: 'REMOTE_UNREACHABLE',
     UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
     UNKNOWN: 'UNKNOWN',
 });

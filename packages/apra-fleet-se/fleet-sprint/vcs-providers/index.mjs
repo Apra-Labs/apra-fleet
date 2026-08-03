@@ -20,6 +20,7 @@
 
 import { GenericGitVCS } from './generic-git.mjs';
 import { GitHubVCS } from './github.mjs';
+import { DoltVCS } from './dolt.mjs';
 
 /** The provider assumed when a caller passes no `provider`. GitHub, NOT
  *  generic-git: runner.js applies the GitHub literals unconditionally today
@@ -30,6 +31,7 @@ export const DEFAULT_VCS_PROVIDER = 'github';
 const BUILT_IN_PROVIDERS = [
     GenericGitVCS,
     GitHubVCS,
+    DoltVCS,
 ];
 
 const registry = new Map();
@@ -128,4 +130,4 @@ export function resolveVcsProviderForHost(host) {
 
 for (const impl of BUILT_IN_PROVIDERS) registerVcsProvider(impl);
 
-export { GenericGitVCS, GitHubVCS };
+export { GenericGitVCS, GitHubVCS, DoltVCS };

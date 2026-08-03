@@ -25,7 +25,7 @@ const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -613,84 +613,28 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
 // each dispatch. `command` is dependency-injected so unit tests can drive these
 // helpers with a mock command() and no live fleet.
 
-// Substrings that mark a git failure as a DIVERGENCE (non-FF / unmerged /
-// conflict). Never retried -- see the single-writer stance above.
-const GIT_DIVERGED_PATTERNS = [
-    /not possible to fast-forward/i,
-    /non-fast-forward/i,
-    /fast-forwards? are not allowed/i,
-    /\[rejected\]/i,
-    /failed to push some refs/i,
-    /updates were rejected/i,
-    /unmerged/i,
-    /needs merge/i,
-    /would be overwritten/i,
-    /^conflict/im,
-    /automatic merge failed/i,
-    /have diverged/i,
-];
-
-// Substrings that mark a git failure as an AUTH (credential) failure -- the
-// member's provisioned VCS token/credential has expired or is otherwise
-// rejected by the remote. Distinct from 'transient' (network/lock blips a plain
-// retry can resolve): retrying an auth failure without re-provisioning
-// credentials first can never succeed. Auth is therefore classified BEFORE
-// 'transient', so an auth failure is never blindly retried -- but AFTER
-// 'diverged', which must never be misclassified.
-const GIT_AUTH_PATTERNS = [
-    /could not read Username for/i,
-    /could not read Password for/i,
-    /Authentication failed/i,
-    /Permission denied \(publickey\)/i,
-    /remote: Invalid username or (token|password)/i,
-    /terminal prompts disabled/i,
-    /support for password authentication was removed/i,
-    /Bad credentials/i,
-];
-
-// Substrings that mark a git failure as TRANSIENT (network / lock) -- safe to
-// retry a bounded number of times.
-const GIT_TRANSIENT_PATTERNS = [
-    /could not resolve host/i,
-    /unable to access/i,
-    /connection (timed out|reset|refused)/i,
-    /operation timed out/i,
-    /\btimed out\b/i,
-    /\btimeout\b/i,
-    /temporary failure/i,
-    /early eof/i,
-    /rpc failed/i,
-    /the remote end hung up/i,
-    /index\.lock/i,
-    /unable to create '.*lock'/i,
-    /cannot lock ref/i,
-    /ssh_exchange_identification/i,
-    // A failSoft command() resolves a FleetTransportError (client <->
-    // fleet-server connection blip, e.g. undici 'fetch failed' on a dead
-    // pooled socket) into its error string. That is a transient failure of the
-    // DISPATCH CHANNEL, not a git failure, and must be retried rather than
-    // classified 'unknown' (which is never retried, and is sprint-fatal here).
-    /transport failure while executing command/i,
-    /fetch failed/i,
-];
+// apra-fleet-647.1.3.2: the git stderr/stdout pattern lists that used to live
+// here (GIT_DIVERGED_PATTERNS, GIT_AUTH_PATTERNS, GIT_TRANSIENT_PATTERNS) are
+// GONE -- classifyGitFailure() below delegates to VCSModule.classifyFailure(),
+// the ONE place VCS stderr is parsed (vcs-module.mjs's own header comment).
+// The default 'github' provider chain (GitHubVCS -> GenericGitVCS, see
+// ./vcs-providers/github.mjs and ./generic-git.mjs) reproduces every pattern
+// that lived in the three deleted lists verbatim -- built for exactly this
+// migration in apra-fleet-647.1.3.1 -- so this is a delegation, not a
+// behavior change.
 
 /**
  * Classify a failed git command's output into the failure classes the sync
- * brackets route differently. Divergence is checked FIRST: a non-FF/unmerged
- * state must never be misread as transient/auth and retried blindly, even if
- * its message also contains a lock/network/credential word. 'auth' is checked
- * NEXT, before 'transient': a credential failure is not a network/lock blip,
- * and retrying it without re-provisioning credentials first cannot succeed.
+ * brackets route differently. Thin adapter over VCSModule.classifyFailure()
+ * (default 'github' provider) + toGitVerdict(), mapping the neutral kind
+ * taxonomy onto this module's legacy verdict vocabulary with NO verdict
+ * change from the deleted pattern-list classifier.
  *
  * @param {string} output - the raw git stderr/stdout of the failed command
  * @returns {'diverged'|'auth'|'transient'|'unknown'}
  */
 export function classifyGitFailure(output) {
-    const text = String(output == null ? '' : output);
-    for (const re of GIT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
-    for (const re of GIT_AUTH_PATTERNS) if (re.test(text)) return 'auth';
-    for (const re of GIT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
-    return 'unknown';
+    return toGitVerdict(classifyFailure(output).kind);
 }
 
 /**
