@@ -63,19 +63,44 @@ const DIVERGED = [
 /** Credential missing / stale / rejected as invalid -- re-provisioning can fix
  *  it. git and OpenSSH emit all of these with no vendor involvement: the first
  *  three are git's credential-helper prompts (or their suppression), and the
- *  last is git's own refusal text for basic-auth-over-HTTPS. */
+ *  last is git's own refusal text for basic-auth-over-HTTPS.
+ *
+ *  apra-fleet-417.6: 'remote: 401 Unauthorized' is Gitea's literal in the
+ *  647.1.3 epic's provider list, but the text itself is a bare HTTP status
+ *  with no vendor name or product literal in it -- exactly the kind of entry
+ *  this file's header says belongs here rather than in a dedicated
+ *  gitea.mjs. HTTP's own semantics pick the AUTH_* split: 401 means "you did
+ *  not authenticate" (no/expired/invalid credential -- re-provisioning is the
+ *  fix), as opposed to 403 ("you authenticated fine, but you may not do
+ *  this" -- see AUTH_DENIED below). No dedicated Gitea provider file/registry
+ *  entry is added for this: registering a classification-only 'gitea'
+ *  provider would flip buildVcsCommand()'s unknown-provider error for it from
+ *  "unsupported VCS provider" to "does not yet implement action", which is
+ *  not this bead's scope. */
 const AUTH_EXPIRED = [
     /could not read Username for/i,
     /could not read Password for/i,
     /terminal prompts disabled/i,
     /Authentication failed/i,
     /support for password authentication was removed/i,
+    /remote:\s*401 Unauthorized/i,
 ];
 
 /** Identity understood, access refused. OpenSSH offered a key and the server
- *  rejected it: minting the same credential again cannot help. */
+ *  rejected it: minting the same credential again cannot help.
+ *
+ *  apra-fleet-417.6: 'remote: HTTP Basic: Access denied' is GitLab's literal
+ *  in the 647.1.3 epic's provider list, but -- same rationale as the 401
+ *  entry above -- it names no vendor and is the generic Apache/git-http-
+ *  backend basic-auth refusal text, so it lives here rather than in a
+ *  dedicated gitlab.mjs (no registered 'gitlab' provider is added for the
+ *  same buildVcsCommand()-error-shape reason documented on AUTH_EXPIRED
+ *  above). The literal says "Access denied", not "expired"/"invalid" --
+ *  HTTP's 403-shaped refusal, not a 401 -- so AUTH_DENIED, not
+ *  AUTH_EXPIRED. */
 const AUTH_DENIED = [
     /Permission denied \(publickey\)/i,
+    /HTTP Basic:\s*Access denied/i,
 ];
 
 /** Network / lock blips a plain retry can clear. Verbatim

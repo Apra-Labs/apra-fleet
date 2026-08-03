@@ -18,16 +18,34 @@
  * ./index.mjs's isAuthBackend().
  *
  * Extends GenericGitVCS for stderr classification (Bitbucket speaks plain
- * git-over-HTTPS/SSH; it has no vendor-specific auth literal in the parity
- * corpus today -- see generic-git.mjs's own header note on what belongs
- * portable vs. vendor-specific).
+ * git-over-HTTPS/SSH; it had no vendor-specific auth literal in the parity
+ * corpus before apra-fleet-417.6 -- see generic-git.mjs's own header note on
+ * what belongs portable vs. vendor-specific).
+ *
+ * apra-fleet-417.6: 'remote: Invalid or expired app password.' is
+ * Bitbucket's own literal for a dead/rotated app password, reached without
+ * git's generic "fatal: Authentication failed" tail (e.g. over a transport
+ * that does not append it). The text says "expired" outright, and
+ * re-provisioning a fresh app password is exactly the fix, so AUTH_EXPIRED
+ * (contrast Azure DevOps' TF401019, which is AUTH_DENIED -- see
+ * ./azure-devops.mjs -- because re-minting the same credential there cannot
+ * help).
  *
  * ASCII only.
  */
 
+import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
+
+const AUTH_EXPIRED = [
+    /Invalid or expired app password/i,
+];
+
 export const BitbucketVCS = Object.freeze({
     name: 'bitbucket',
     extends: 'generic-git',
+    rules: Object.freeze({
+        [K.AUTH_EXPIRED]: AUTH_EXPIRED,
+    }),
     defaultAuthMode: null,
     builders: null,
 });
