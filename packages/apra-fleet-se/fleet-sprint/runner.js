@@ -6,9 +6,10 @@ import {
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
 import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
-// The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Prefer
-// the purpose-based entry points on DoltSync; the named primitives are the
-// not-yet-migrated call sites' compatibility path (apra-fleet-417.2.2).
+// The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
+// runner.js call site uses the purpose-based entry points on DoltSync
+// (apra-fleet-417.2.2); the named primitives are imported here only to be
+// re-exported below for the existing unit suites that drive them directly.
 import { DoltSync, doltPullBefore, doltPushAfter, preflightBeadsHealthGate } from './dolt-sync.mjs';
 
 // Backoff for retrying ONLY the post-dispatch sync step of a bracket whose
@@ -1000,10 +1001,12 @@ export async function syncMemberAfter(member, opts = {}) {
 // `bd dolt ...` command here or anywhere else: add to DoltSync instead.
 //
 // runner.js calls the purpose-based entry points DoltSync.syncBefore() /
-// DoltSync.syncAfter() / DoltSync.status(). The lower-level primitives are
-// re-exported below UNCHANGED so the existing unit suites (which import them
-// from runner.js) and the not-yet-migrated call sites keep working; migrating
-// every call site onto the purpose-based API is apra-fleet-417.2.2.
+// DoltSync.syncAfter() / DoltSync.status() at every call site (apra-fleet-
+// 417.2.2 migrated the last direct doltPullBefore()/doltPushAfter() callers).
+// The lower-level primitives are re-exported below UNCHANGED so the existing
+// unit suites (which import them directly from runner.js) keep working; they
+// are IMPLEMENTATION DETAIL of the purpose-based API, not a second supported
+// call surface for new code.
 export {
     extractDoltRemoteUrl,
     classifyDoltFailure,
@@ -1057,7 +1060,7 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
         throw gPushErr;
     }
 
-    const dPush = await doltPushAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure });
+    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure });
     return { ok: true, member, gPush, dPush };
 }
 
@@ -4795,7 +4798,7 @@ async function runSprintCycle(context) {
                 await ensureVcsAuthFresh(member);
             }
             await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip });
-            await doltPullBefore(member, { command, log, skipPull: skipPreDispatchDoltPull, onAuthFailure });
+            await DoltSync.syncBefore(member, { command, log, skipPull: skipPreDispatchDoltPull, onAuthFailure });
         }
         // The teardown is deliberately NOT a `finally`. A throw out of a
         // `finally` replaces the (successful) dispatch result and is
@@ -5601,9 +5604,9 @@ async function runSprintCycle(context) {
     // Defense in depth: the pre-sprint health gate above already pulled this
     // clone, but a stale orchestrator clone here would misreport every remote
     // doer's work, so pull again immediately before the verification read.
-    // doltPullBefore() is a benign no-op when the clone is current and when no
-    // dolt remote is configured at all.
-    await doltPullBefore(orchestratorMember, { command, log });
+    // DoltSync.syncBefore() is a benign no-op when the clone is current and
+    // when no dolt remote is configured at all.
+    await DoltSync.syncBefore(orchestratorMember, { command, log });
 
     await updateDashboard();
 
@@ -6269,7 +6272,7 @@ async function runSprintCycle(context) {
                     { member_name: orchestratorMember, silent: true, label: `Attach plan-cap deferral finding to ${id}` }
                 );
             }
-            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
             planCapDeferredIds = contestedIds;
         }
 
@@ -7456,7 +7459,7 @@ async function runSprintCycle(context) {
             // The orchestrator just MUTATED beads (reopens + newTask creates) in
             // its own clone -- D-push so members observe them on their next
             // dispatch's D-pull.
-            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
             } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
             await updateDashboard();
@@ -7891,7 +7894,7 @@ async function runSprintCycle(context) {
         // counts so the completion/stall math reads the current cross-member
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
-        await doltPullBefore(orchestratorMember, { command, log });
+        await DoltSync.syncBefore(orchestratorMember, { command, log });
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -8112,7 +8115,7 @@ async function runSprintCycle(context) {
 
             // D-push the orchestrator's applied re-review reopens/newTask
             // creates, same as the Develop/Review transition site above.
-            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
         }
 
         // apra-fleet-jfo.2: verify-routed beads are decomposed parents, so
@@ -8171,7 +8174,7 @@ async function runSprintCycle(context) {
     // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
-    await doltPullBefore(orchestratorMember, { command, log });
+    await DoltSync.syncBefore(orchestratorMember, { command, log });
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
@@ -8843,7 +8846,7 @@ async function runSprintCycle(context) {
                     log(`Publish PR: failed to close target issue '${id}' directly (non-fatal, continuing): ${closeRes.error}`);
                 }
             }
-            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+            await DoltSync.syncAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
         } else {
             log('Publish PR: final verdict is FAIL -- leaving target issue(s) open (not closing on a non-PASS verdict).');
         }
