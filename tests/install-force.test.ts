@@ -125,10 +125,14 @@ describe('install --force (#96)', () => {
   it('server running, --force — kills server and completes install (Linux)', async () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     const killCalls: string[] = [];
+    let killed = false;
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
-      if (c === 'pgrep -x apra-fleet') return 'apra-fleet' as any;
-      if (c === 'pkill -x apra-fleet') { killCalls.push(c); return '' as any; }
+      if (c === 'pgrep -x apra-fleet') {
+        if (killed) throw Object.assign(new Error('no match'), { status: 1 });
+        return 'apra-fleet' as any;
+      }
+      if (c === 'pkill -x apra-fleet') { killCalls.push(c); killed = true; return '' as any; }
       return '' as any;
     });
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -144,10 +148,15 @@ describe('install --force (#96)', () => {
   it('server running, --force — kills server and completes install (Windows)', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
     const killCalls: string[] = [];
+    let killed = false;
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
-      if (c.startsWith('tasklist')) return '"apra-fleet.exe","5678","Console","1","14,000 K"\n' as any;
-      if (c.startsWith('taskkill')) { killCalls.push(c); return '' as any; }
+      if (c.startsWith('tasklist')) {
+        return killed
+          ? 'INFO: No tasks are running which match the specified criteria.' as any
+          : '"apra-fleet.exe","5678","Console","1","14,000 K"\n' as any;
+      }
+      if (c.startsWith('taskkill')) { killCalls.push(c); killed = true; return '' as any; }
       return '' as any;
     });
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -162,9 +171,14 @@ describe('install --force (#96)', () => {
 
   it('--force install success message includes "Restart Claude Code"', async () => {
     mockServerRunning();
+    let killed = false;
     vi.mocked(execSync).mockImplementation((cmd: any) => {
       const c = cmd.toString();
-      if (c === 'pgrep -x apra-fleet') return 'apra-fleet' as any;
+      if (c === 'pgrep -x apra-fleet') {
+        if (killed) throw Object.assign(new Error('no match'), { status: 1 });
+        return 'apra-fleet' as any;
+      }
+      if (c === 'pkill -x apra-fleet') { killed = true; return '' as any; }
       return '' as any;
     });
     const logLines: string[] = [];

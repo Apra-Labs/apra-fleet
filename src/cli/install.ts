@@ -969,6 +969,14 @@ ${killHint}
     }
     killApraFleet();
     await waitForApraFleetToStop();
+    if (isApraFleetRunning()) {
+      console.error(`
+Error: could not stop the running apra-fleet server (it is still running after
+SIGTERM and a SIGKILL escalation). Stop it manually before installing:
+${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pkill -x apra-fleet'}
+`);
+      process.exit(1);
+    }
     console.log('  Stopped running server.');
   }
 
