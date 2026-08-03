@@ -692,12 +692,73 @@ export function isApraFleetRunning(): boolean {
   }
 }
 
-export function killApraFleet(): void {
+export function killApraFleet(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
   if (process.platform === 'win32') {
+    // taskkill /F is already forceful -- no softer signal to escalate from,
+    // so SIGKILL escalation on Windows just reissues the same command.
     execSync('taskkill /F /IM apra-fleet.exe', { stdio: 'ignore' });
   } else {
     // -x = exact name match
-    execSync('pkill -x apra-fleet', { stdio: 'ignore' });
+    const cmd = signal === 'SIGKILL' ? 'pkill -9 -x apra-fleet' : 'pkill -x apra-fleet';
+    execSync(cmd, { stdio: 'ignore' });
+  }
+}
+
+// --- install --force termination polling: bounded wait + SIGKILL escalation ---
+//
+// killApraFleet() above only sends SIGTERM (or the already-forceful Windows
+// taskkill /F). A singleton that is mid-request can take longer than a flat
+// sleep to exit, which previously produced ETXTBSY on fs.copyFileSync (the
+// old apra-fleet binary was still open). waitForApraFleetToStop() polls
+// isApraFleetRunning() over a grace window instead of sleeping a fixed
+// duration, and escalates to SIGKILL if a non-installer apra-fleet process
+// is still alive once that window elapses.
+export interface InstallForceTiming {
+  pollIntervalMs: number;
+  graceMs: number;
+  killGraceMs: number;
+}
+const PROD_INSTALL_FORCE_TIMING: InstallForceTiming = { pollIntervalMs: 200, graceMs: 3000, killGraceMs: 2000 };
+// Tests run with NODE_ENV=test (see tests/setup.ts) and don't fake these timers,
+// so default to a much shorter window there to keep the suite fast, unless a
+// test explicitly overrides via _setInstallForceTimingOverride() to exercise
+// the escalation path directly.
+const TEST_INSTALL_FORCE_TIMING: InstallForceTiming = { pollIntervalMs: 2, graceMs: 20, killGraceMs: 20 };
+let _installForceTimingOverride: InstallForceTiming | null = null;
+/** Test-only: override the poll/grace timing used by waitForApraFleetToStop(). Pass null to restore default. */
+export function _setInstallForceTimingOverride(t: InstallForceTiming | null): void {
+  _installForceTimingOverride = t;
+}
+function installForceTiming(): InstallForceTiming {
+  if (_installForceTimingOverride) return _installForceTimingOverride;
+  return process.env.NODE_ENV === 'test' ? TEST_INSTALL_FORCE_TIMING : PROD_INSTALL_FORCE_TIMING;
+}
+
+/**
+ * Wait for any non-installer apra-fleet process to exit after killApraFleet()
+ * sends SIGTERM. Polls isApraFleetRunning() over a grace window; if the
+ * process is still alive once the window elapses, escalates to SIGKILL and
+ * polls again over a second (shorter) window. Returns as soon as no
+ * non-installer apra-fleet process is detected, or once both windows have
+ * elapsed -- callers should not assume termination is guaranteed in the
+ * latter case (see apra-fleet-l7n.3 for surfacing that failure to the
+ * operator instead of asserting success).
+ */
+export async function waitForApraFleetToStop(): Promise<void> {
+  const { pollIntervalMs, graceMs, killGraceMs } = installForceTiming();
+
+  let deadline = Date.now() + graceMs;
+  while (isApraFleetRunning() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+  }
+
+  if (!isApraFleetRunning()) return;
+
+  // Grace window elapsed and a non-installer apra-fleet process is still alive -- escalate.
+  killApraFleet('SIGKILL');
+  deadline = Date.now() + killGraceMs;
+  while (isApraFleetRunning() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
 }
 
@@ -907,7 +968,7 @@ ${killHint}
       process.exit(1);
     }
     killApraFleet();
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await waitForApraFleetToStop();
     console.log('  Stopped running server.');
   }
 
