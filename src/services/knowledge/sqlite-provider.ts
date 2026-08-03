@@ -666,6 +666,17 @@ export class SqliteProvider implements MemoryProvider {
     return null;
   }
 
+  /**
+   * LEGACY-ONLY as of 2026-08-03 (decided with KB-TRUST PHASE 1). The predicate
+   * below matches only rows whose source_files is empty -- "concept entries" --
+   * and capture() now refuses to create such a row at all. Every entry captured
+   * from here on carries a basis, so this can only ever match rows predating the
+   * Phase 1 gate. Staleness for basis-carrying entries is freshnessSweep()'s job
+   * instead; note the two mechanisms differ (a stale flag, not a confidence
+   * downgrade), so the INFERRED -> UNVERIFIED ladder simply stops firing for new
+   * knowledge. Tracked as apra-fleet-4wz.7. Kept as-is deliberately: legacy rows
+   * still exist in live KBs and must still decay.
+   */
   private decayConceptEntries(db: Database.Database, days: number): void {
     const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
     // F1 (D1): only an ACTIVE directive (type='user-directive' AND

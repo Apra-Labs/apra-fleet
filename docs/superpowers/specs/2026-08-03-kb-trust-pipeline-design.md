@@ -472,6 +472,26 @@ already exists (`kb-export.ts:104-110`) and de-fangs the destructive half of the
   `SqliteProvider.capture()`, not the tool handlers, because three of the four
   capture call sites bypass the tool layer. This follows the existing D1 clamp
   precedent at `sqlite-provider.ts:666`.
+- **`user-directive` is exempt from the empty-basis rule (2026-08-03, found
+  during Phase 1).** A standing human instruction is not a claim about code and
+  cites no files by nature; existing captures pass only `symbols`. It stays
+  quarantined as an UNVERIFIED pending proposal and is CLI-activated only, so it
+  never reaches the bible on its own. A directive that DOES cite files is still
+  held to those files existing. No other type is exempt.
+- **The provider carries its repo root (2026-08-03, found during Phase 1).**
+  `SqliteProvider` had `dbPath` and `projectSlug` but no repo path, and
+  `computeSourceFileHashes` called `computeFileHashBatch` with no `cwd`, so
+  relative paths resolved against the fleet server's `process.cwd()`. The root is
+  now threaded through `createKbProvidersForSlug` onto the provider, keeping the
+  invariant unbypassable rather than depending on each call site passing it. The
+  shared global KB spans every repo and gets none by design: it enforces the
+  empty-basis half only.
+- **Confidence decay becomes legacy-only (2026-08-03, found during Phase 1).**
+  `decayConceptEntries()` matches only rows with an empty `source_files`, and
+  capture now refuses to create one, so the INFERRED -> UNVERIFIED ladder can
+  fire only on rows predating the gate. Accepted as a documented consequence
+  rather than broadening decay, which would be a behavior change beyond this
+  work and would interact with `freshnessSweep()`. Tracked as `apra-fleet-4wz.7`.
 
 ## Open questions
 
