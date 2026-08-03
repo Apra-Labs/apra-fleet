@@ -462,7 +462,22 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // classifier existed. A scenario exercising the non-hosted path
         // (e.g. a `file://` sandbox mirror) overrides this explicitly.
         originUrl = 'https://github.com/mock-org/mock-repo.git',
+        // apra-fleet-647.1.1.3: stateful VCSModule create-pull-request REST
+        // response override -- an array of `{ status: number, body?: object
+        // }` consumed ONE PER curl POST /pulls call (the last entry sticks
+        // once the queue is down to one, same one-per-call/sticky-last
+        // convention as dolt-sync-brackets.test.mjs's makeCommandMock), so a
+        // scenario can simulate e.g. a 401 on the first PR-creation attempt
+        // and a 201 on the retry after the reactive auth self-heal -- the
+        // "dedicated handler" the comment on the default curl POST /pulls
+        // branch below already asks for, since prExistsState's fixed
+        // 201-then-422 shape cannot express an auth failure. Checked BEFORE
+        // gitGhFailurePattern/prExistsState, so it fully overrides the
+        // default simulation when provided; omitted (the default), the
+        // existing 201/already-exists-422 behavior is completely unchanged.
+        prCurlResponseQueue = null,
     } = options;
+    const prCurlResponseQueueLocal = prCurlResponseQueue ? [...prCurlResponseQueue] : null;
 
     let planRound = 0;
     let reviewRound = 0;
@@ -601,6 +616,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 return mockCmdResult(0, 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n', '');
             }
             if (/^curl -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
+                if (prCurlResponseQueueLocal && prCurlResponseQueueLocal.length > 0) {
+                    const next = prCurlResponseQueueLocal.length > 1 ? prCurlResponseQueueLocal.shift() : prCurlResponseQueueLocal[0];
+                    const resolved = typeof next === 'function' ? next() : next;
+                    const bodyText = resolved.body !== undefined ? JSON.stringify(resolved.body) : '';
+                    return mockCmdResult(0, `${bodyText}\n${resolved.status}`, '');
+                }
                 if (gitGhFailurePattern && gitGhFailurePattern.test(opts.command)) {
                     // A curl invocation itself still exits 0 even when the
                     // REST call fails -- this branch exists only for tests
@@ -1187,6 +1208,9 @@ export async function runDevelopLoopScenario(tag, {
     // separate scenario runs against the exact SAME branch to simulate a
     // re-run of finalization.
     gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
+    // apra-fleet-647.1.1.3: see buildMockFleetApi's `prCurlResponseQueue`
+    // option comment above.
+    prCurlResponseQueue,
     // apra-fleet-eft.64.1: optional override for the mocked `git remote
     // get-url origin` stdout -- see buildMockFleetApi's `originUrl` option
     // comment above. Lets a scenario simulate a non-hosted remote (e.g.
@@ -1267,6 +1291,7 @@ export async function runDevelopLoopScenario(tag, {
             gitGhFailureMessage,
             prExistsState,
             ...(originUrl !== undefined ? { originUrl } : {}),
+            ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
         });
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('log', (e) => logs.push(e.msg));
