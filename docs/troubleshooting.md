@@ -39,10 +39,22 @@ Fleet can configure member permissions. Ask it to, for example, "Grant
 
 | Provider | Config location |
 |----------|-----------------|
-| Claude | `.claude/settings.local.json` |
+| Claude | `.claude/settings.local.json` (initial role/tag-based provisioning) |
 | Gemini | `.gemini/policies/` |
 | Codex | `.codex/config.toml` (approval mode) |
 | Copilot | `.github/copilot/settings.local.json` |
+
+**Claude has two different permission-config write targets, by design.**
+Initial provisioning (role/tags, run at registration time) writes
+`.claude/settings.local.json`, a personal/machine-local file. Mid-sprint
+reactive grants (`compose_permissions` called with a `grant` list, e.g. when
+a dispatch hits a missing-permission error) write `.claude/settings.json`
+instead -- merged with whatever is already there, never overwritten -- because
+that is the project-level file every role's own Permissions Step 0 check
+reads before dispatch. If a checker and the grant path ever disagree on which
+file is authoritative, granted permissions silently never take effect even
+though the grant call reports success; treat `.claude/settings.json` as the
+single source of truth for anything a Step 0 gate needs to see.
 
 **Permission granted but still denied on Claude**
 

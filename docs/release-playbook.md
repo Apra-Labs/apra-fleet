@@ -32,6 +32,15 @@ git commit -m "chore: bump version to 0.3.6"
 git push
 ```
 
+## 1a. Optional: verify the npm-publish gate locally first
+
+The `npm-publish` job's gating sequence (prepublishOnly, shebang check,
+dry-run pack verification, clean-pack guard, and a real pack+install into an
+isolated temp prefix) can be replayed locally, on a clean checkout, before
+ever pushing a tag -- see `tests/integration/npm-publish-gate.sh`. This is
+useful confidence that a release will clear CI's gating steps without
+needing to cut a real tag to find out; it does not publish anything itself.
+
 ## 2. Tag and push
 
 Releases are tag-triggered. Pushing a `v*` tag kicks off the `release` job

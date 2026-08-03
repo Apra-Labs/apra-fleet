@@ -386,3 +386,44 @@ against an allowlisted character set before any shell-involving fallback
 path could see it; this extra check is appropriate there specifically
 because that caller's inputs are narrow enough to allowlist safely, not
 because it is a stronger guarantee than the shim-resolution fix itself.
+
+## A permission-writer and its checker must agree on one authoritative file
+
+Several roles gate a dispatch on a "Step 0" check that reads a project-level
+permissions file before proceeding, so an agent doesn't start real work only
+to fail partway through on a missing allowlist entry. This only works if
+whatever grants permissions writes to the exact same file the checker reads.
+It is easy to end up with two plausible candidate files for the same concern
+(a personal/machine-local config versus a project-level config) where the
+granting path defaults to one and every checker reads the other -- the grant
+call reports success, the file it wrote really does contain the new entry,
+and the dispatch still fails on the "missing permission" error, because
+nobody was lying, they just disagreed about which file was authoritative.
+The fix is not "merge better" but "pick one file as the single source of
+truth for anything a checker consults, and make every writer and reader of
+that concern target it explicitly" -- for reactive/mid-sprint grants in
+particular, prefer the project-level file over a personal/local one, since
+project-level is what shared checkers (Step 0 gates, playbooks) can actually
+see.
+
+## Fixed-path shared sandboxes need their own mutual-exclusion lock
+
+A regression/smoke-test sandbox that deliberately lives at one fixed,
+well-known path (rather than a fresh randomly-named directory per run) has a
+real benefit -- no hand-off file is needed between its Setup, Test, and
+Teardown phases, since they all agree on the same path implicitly. But a
+fixed path has no mutual exclusion of its own: if a second run's Teardown
+phase ever executes while a first run is still mid-Setup or mid-Test, it can
+destroy the sandbox out from under the still-in-progress run. The durable
+fix is a small lock file living beside the sandbox (not inside it, so
+Teardown's own cleanup of the sandbox never destroys the lock it needs to
+check first), recording which run currently owns it. Because each phase of
+such a playbook typically runs as its own separate process invocation, a
+single PID recorded once at the start is not enough to prove liveness across
+the whole run -- the lock needs to be handed off from the short-lived setup
+process to whatever long-lived process (e.g. a server the setup phase
+starts) will still be alive when Teardown finally checks it, so there is no
+gap in coverage. Teardown should treat a lock recording a PID that is no
+longer alive as abandoned and safe to reclaim (a crash must not permanently
+strand the sandbox with no way to clean it up), and should only refuse to
+proceed when the lock's owner is confirmed still alive.

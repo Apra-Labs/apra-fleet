@@ -197,6 +197,30 @@ For headless or remote members, set `ANTIGRAVITY_API_KEY` (obtain from
 invoking fleet commands. The agy CLI checks env vars before falling back to
 OAuth.
 
+## Running-process guard on install
+
+Before an SEA-binary or npm-global install writes anything, `install` checks
+whether an apra-fleet instance is already running on the machine and, if so,
+refuses with `apra-fleet is currently running. Stop the server before
+installing.` (dev-mode installs skip this check entirely).
+
+The guard is scoped to the **install target's root**, not the whole machine:
+it resolves the already-running instance's own binary/install path and
+compares it against the root this install would write into. If the running
+instance lives under a different root (for example, an isolated temp prefix
+used to smoke-test a freshly packed tarball while a real, unrelated
+apra-fleet service is already running elsewhere on the same host), the new
+install proceeds without blocking or touching the other process. If the
+running instance shares the same root, or its root cannot be resolved at all
+(a conservative fallback -- ambiguity is treated as a potential conflict, not
+as safe), the guard still blocks as before.
+
+`--force` remains the way to kill whatever is currently running and proceed
+regardless of root. Use `--skip-running-check` instead when you know the
+install is safe (e.g. CI running a scripted smoke test into a scratch
+prefix) and want to bypass the check itself rather than kill a live,
+unrelated process out from under other work.
+
 ## Uninstall
 
 The built-in uninstall command surgically removes MCP registration,
