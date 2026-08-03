@@ -4762,10 +4762,25 @@ async function runSprintCycle(context) {
     // TF401019 and bitbucket.mjs's app-password AUTH rules reachable at
     // runtime. Same precedence shape as onAuthFailure above:
     //   1. `context.resolveMemberVcsProvider` -- an explicitly-injected
-    //      resolver (tests wire an in-process one to prove the threading
-    //      without a live fleet server).
+    //      resolver. NOT reachable through the production entry point:
+    //      every real caller (bin/cli.mjs, and every mock-sprint scenario)
+    //      drives this file via `WorkflowEngine.executeFile()`, whose
+    //      `runWithContext()` always builds `context` as `{
+    //      ...this._bindPrimitives(), args, budget }` (apra-fleet-workflow/
+    //      src/workflow/index.mjs) -- there is no key through which an
+    //      `executeFile()` caller can set `context.resolveMemberVcsProvider`
+    //      (or its onAuthFailure/memberSessionGuard/ensureVcsAuthFresh/
+    //      onLlmAuthFailure siblings above/below). This tier only exists for
+    //      a direct `main()`/`runSprintCycle()` call built by hand (e.g. via
+    //      `FleetWorkflow.createContext()`), which nothing in this codebase
+    //      does today (apra-fleet-417.9) -- kept for parity with its
+    //      siblings' shape, not because it is exercised.
     //   2. `args.callTool` -- the real VCSModule.resolveProvider() lookup via
-    //      createMemberVcsProviderResolver (this file).
+    //      createMemberVcsProviderResolver (this file). THIS is the tier
+    //      every real caller and every mock-sprint scenario reaches (see
+    //      mock-sprint-member-vcs-provider-threading.test.mjs, apra-fleet-
+    //      417.9, for end-to-end coverage of a non-GitHub member's G-push
+    //      auth failure classifying via this exact wiring).
     //   3. neither -- undefined: every runGitStep call below falls back to
     //      the default 'github' chain, exactly as before this bead.
     const resolveMemberVcsProvider = context.resolveMemberVcsProvider ?? (
