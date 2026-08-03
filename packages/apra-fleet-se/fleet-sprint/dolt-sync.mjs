@@ -31,6 +31,14 @@
  *                                to a shared beads remote? Issues no dolt
  *                                command and never throws.
  *
+ * FAULT-TOLERANCE POLICY (apra-fleet-417.3.1): syncBefore/syncAfter return a
+ * STRUCTURED OUTCOME `{ ok, kind, degraded, detail, ... }` and are DEGRADED BY
+ * DEFAULT -- an unresolved sync failure does not throw, it reports
+ * `degraded: true` and lets the sprint continue. A call site that must still
+ * hard-abort says so explicitly with `fatal: true` (and `healthGate: true`
+ * implies it). See the "Structured outcomes and the bounded
+ * DEGRADED-BUT-NON-FATAL path" section near the bottom of this file.
+ *
  * The lower-level primitives (doltPullBefore / preflightBeadsHealthGate /
  * doltPushAfter / classifyDoltFailure / extract*) stay exported because the
  * unit suites drive them directly and 417.2.2 migrates call sites onto the
@@ -151,9 +159,22 @@ const DOLT_DIVERGED_PATTERNS = [
 // Substrings that mark a `bd dolt` failure as an AUTH (credential) failure --
 // mirrors GIT_AUTH_PATTERNS above. `bd dolt push` shells out to git under the
 // hood, so it surfaces the same credential-prompt text a plain git push does.
-// Checked after 'diverged' (which must never be misclassified) but before
-// 'transient', so an auth failure is never blindly retried without
-// re-provisioning credentials first.
+//
+// ORDERING (apra-fleet-spp, apra-fleet-417.3.1): these are checked BEFORE the
+// diverged patterns, not after. The live 2026-08-02 fleet-mac failure
+//
+//   Error: push to origin/main: Error 1105: unknown push error; addTableFiles,
+//   updateManifestAddFiles: fatal: could not read Username for
+//   'https://github.com': Device not configured
+//
+// was reported to the operator as data divergence and hard-aborted an
+// otherwise healthy sprint, when in fact nothing had diverged and the fix was
+// simply to re-provision the member's VCS credentials. The auth patterns below
+// are narrow and credential-shaped; the divergence patterns are deliberately
+// loose (they include bare /conflict/i, and the transient set includes bare
+// /lock/i), so a credential message that happens to mention either word would
+// be swallowed by the looser class. Specific beats loose: AUTH wins, always.
+// A credential failure must NEVER be classified 'diverged'.
 const DOLT_AUTH_PATTERNS = [
     /could not read Username for/i,
     /could not read Password for/i,
@@ -223,23 +244,29 @@ export function extractDoltRemoteUrl(output) {
  * skip, never a divergence or a retryable transient failure. empty-remote (a
  * configured sync.remote with zero branches ever pushed into it) and
  * remote-unreachable (a configured remote that cannot be opened at all) are
- * checked next, for the same reason. Divergence follows: a remote-moved/conflict state
- * must never be misread as transient and retried blindly, even if its message
- * also contains a lock/network word. 'auth' is checked after 'diverged' but
- * before 'transient', same ordering rationale as classifyGitFailure -- a
- * credential failure must never be misread as a conflict, and retrying it
- * without re-provisioning credentials cannot succeed.
+ * checked next, for the same reason.
+ *
+ * 'auth' is then checked BEFORE 'diverged' (apra-fleet-spp / apra-fleet-417.3.1
+ * -- see the DOLT_AUTH_PATTERNS comment for the live incident this ordering
+ * exists to prevent): the credential patterns are narrow, the divergence and
+ * transient patterns are deliberately loose, and a credential failure reported
+ * as data divergence both misleads the operator and sends the push down a
+ * reconcile ladder that cannot possibly fix it.
+ *
+ * Divergence follows: a remote-moved/conflict state must never be misread as
+ * transient and retried blindly, even if its message also contains a
+ * lock/network word.
  *
  * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
- * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'unknown'}
  */
 export function classifyDoltFailure(output) {
     const text = String(output == null ? '' : output);
     for (const re of DOLT_NO_REMOTE_PATTERNS) if (re.test(text)) return 'no-remote';
     for (const re of DOLT_EMPTY_REMOTE_PATTERNS) if (re.test(text)) return 'empty-remote';
     for (const re of DOLT_REMOTE_UNREACHABLE_PATTERNS) if (re.test(text)) return 'remote-unreachable';
-    for (const re of DOLT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
     for (const re of DOLT_AUTH_PATTERNS) if (re.test(text)) return 'auth';
+    for (const re of DOLT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
     for (const re of DOLT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
     return 'unknown';
 }
@@ -301,10 +328,36 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
     }
 }
 
+// Bounded exponential backoff between TRANSIENT retries (apra-fleet-417.3.1).
+// A network blip, a busy dolt-server or a held row lock is not cleared by an
+// instant re-issue -- the previous code retried with zero delay, which turned
+// the bound into "fail twice as fast". Delay is attempt-indexed and capped, and
+// `sleep` is injectable so unit suites never actually wait.
+const DOLT_BACKOFF_BASE_MS = 500;
+const DOLT_BACKOFF_MAX_MS = 8000;
+
+/**
+ * Delay before transient retry #`attempt` (1-based): base * 2^(attempt-1),
+ * capped at DOLT_BACKOFF_MAX_MS.
+ *
+ * @param {number} attempt
+ * @param {number} [baseMs]
+ * @param {number} [maxMs]
+ * @returns {number}
+ */
+export function doltBackoffDelayMs(attempt, baseMs = DOLT_BACKOFF_BASE_MS, maxMs = DOLT_BACKOFF_MAX_MS) {
+    const n = Math.max(1, Number(attempt) || 1);
+    return Math.min(maxMs, baseMs * Math.pow(2, n - 1));
+}
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * Run a single `bd dolt` command via the injected command() with failSoft,
- * retrying ONLY transient failures up to `maxTransientRetries` times. A
- * diverged (or unknown) failure is returned immediately, never retried.
+ * retrying ONLY transient failures up to `maxTransientRetries` times, with a
+ * bounded exponential backoff between attempts (doltBackoffDelayMs; override
+ * the waiter with `sleep` in tests). A diverged (or unknown) failure is
+ * returned immediately, never retried.
  *
  * AUTH SELF-HEAL CONTRACT (the optional `onAuthFailure` param, threaded
  * through by every caller below): a DISTINCT, bounded one-shot path, never
@@ -316,7 +369,7 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
  *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown' }>}
  */
-async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure }) {
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS }) {
     let attempt = 0;
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
@@ -327,7 +380,9 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         const kind = classifyDoltFailure(error);
         if (kind === 'transient' && attempt < maxTransientRetries) {
             attempt += 1;
-            log(`[Dolt] transient failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
+            const delayMs = doltBackoffDelayMs(attempt, backoffBaseMs);
+            log(`[Dolt] transient failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries} after ${delayMs}ms backoff: ${error}`);
+            if (delayMs > 0 && typeof sleep === 'function') await sleep(delayMs);
             continue;
         }
         if (kind === 'auth' && typeof onAuthFailure === 'function' && !authHealAttempted) {
@@ -383,7 +438,7 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh' }>}
  */
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -406,7 +461,7 @@ export async function doltPullBefore(member, opts = {}) {
 
     const pull = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs,
     });
     if (!pull.ok) {
         if (pull.kind === 'no-remote') {
@@ -425,6 +480,16 @@ export async function doltPullBefore(member, opts = {}) {
             throw new DoltDivergedError(
                 `[Dolt] D-pull for member '${member}' hit an unmergeable beads conflict and must not be auto-resolved by judgment: ${pull.error}`,
                 { member, doltOutput: pull.error, operation: 'pull' },
+            );
+        }
+        if (pull.kind === 'auth') {
+            // apra-fleet-spp: a credential failure is its own class. It is NOT
+            // a divergence (nothing conflicted) and must not be described as
+            // one; the remedy is re-provisioning this member's VCS auth, which
+            // the bounded one-shot onAuthFailure self-heal above already tried.
+            throw new DoltSyncError(
+                `[Dolt] D-pull for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${pull.error}`,
+                { member, doltOutput: pull.error, details: { kind: 'auth', operation: 'pull' } },
             );
         }
         if (pull.kind === 'remote-unreachable') {
@@ -569,7 +634,7 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote' }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -612,7 +677,7 @@ export async function doltPushAfter(member, opts = {}) {
     async function doltPushGuarded() {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, reconciled: false };
@@ -637,6 +702,17 @@ export async function doltPushAfter(member, opts = {}) {
             log(`[Dolt] D-push for member '${member}' skipped: no dolt remote configured (bd-level sync.remote neutralized/absent; push failure treated as benign: ${push.error})`);
             return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };
         }
+        if (push.kind === 'auth') {
+            // apra-fleet-spp: the live 2026-08-02 fleet-mac failure. This used
+            // to reach the reconcile ladder and end as DoltDivergedError
+            // ("still rejected after one reconcile pull"), which was simply
+            // false -- nothing had diverged. It is now its own terminal class,
+            // reached only after the bounded one-shot auth self-heal above.
+            throw new DoltSyncError(
+                `[Dolt] D-push for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${push.error}`,
+                { member, doltOutput: push.error, details: { kind: 'auth', operation: 'push' } },
+            );
+        }
         if (push.kind === 'remote-unreachable') {
             const url = extractDoltRemoteUrl(push.error);
             throw new DoltSyncError(
@@ -656,7 +732,7 @@ export async function doltPushAfter(member, opts = {}) {
     log(`[Dolt] D-push for member '${member}' was rejected (another writer pushed first); reconciling with a single D-pull then one re-push (first-successful-pusher-wins).`);
     const reconcile = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs,
     });
     if (!reconcile.ok) {
         if (reconcile.kind === 'diverged') {
@@ -673,7 +749,7 @@ export async function doltPushAfter(member, opts = {}) {
 
     push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, reconciled: true };
@@ -685,6 +761,194 @@ export async function doltPushAfter(member, opts = {}) {
         { member, doltOutput: push.error, operation: 'push' },
     );
     } // end doltPushGuarded
+}
+
+// ---------------------------------------------------------------------------
+// Structured outcomes and the bounded DEGRADED-BUT-NON-FATAL path
+// (apra-fleet-417.3.1 / apra-fleet-417.3)
+// ---------------------------------------------------------------------------
+//
+// PRODUCT DECISION (417.3, do not relitigate): concurrent multi-agent dolt
+// push/pull is a NORMAL condition, and a beads-sync hiccup must never
+// hard-abort an otherwise healthy sprint. The primitives above still THROW --
+// that is what the fatal call sites and the existing DoltDivergedError /
+// DoltSyncError consumers (terminal-reason resolution, conflict-dump capture,
+// PostDispatchSyncError wrapping) rely on. What changes here is the DEFAULT at
+// the purpose-based entry points: syncBefore()/syncAfter() answer with a
+// STRUCTURED OUTCOME instead of throwing, and a hard abort is now something a
+// call site asks for EXPLICITLY (`fatal: true`), not what it gets by accident.
+//
+// Outcome shape (a superset of the primitives' old return objects, so every
+// existing consumer of `.skipped` / `.reason` / `.pushed` / `.reconciled`
+// keeps working unchanged):
+//
+//   { ok, kind, degraded, detail, member, operation, error?, ...legacy fields }
+//
+//   ok        -- did the sync do what it was asked to do (a benign skip is ok)
+//   kind      -- 'synced' | 'no-remote' | 'empty-remote' | 'already-fresh'
+//                | 'diverged' | 'auth' | 'transient' | 'remote-unreachable'
+//                | 'unknown'
+//   degraded  -- true when the sync FAILED and the sprint is continuing anyway
+//   detail    -- one human-readable line (the underlying error's message)
+//   error     -- the underlying typed error, retained for later escalation
+//
+// VISIBILITY: a degraded outcome is never silent. It is logged loudly, passed
+// to the optional `onDegraded` hook (the seam a caller uses to file a flagged
+// follow-up bead), and appended to a module-level record list that
+// getDegradedSyncRecords() exposes so a sprint can report "these syncs did not
+// land". A record for `member` is retired when a later syncAfter() for the same
+// member succeeds -- i.e. the NEXT bracket IS the queued retry; no separate
+// retry timer exists or is wanted.
+
+const degradedSyncRecords = [];
+
+/**
+ * Append a degraded-sync record to the module-level visibility list.
+ *
+ * @param {{ member: string, operation: string, kind: string, detail: string }} record
+ * @returns {object} the stored record (timestamped)
+ */
+export function recordDegradedSync(record) {
+    const stored = { at: new Date().toISOString(), pendingRetry: true, ...record };
+    degradedSyncRecords.push(stored);
+    return stored;
+}
+
+/**
+ * Every degraded sync recorded so far this process, oldest first. Optionally
+ * filtered to one member. Returns copies: callers cannot mutate the log.
+ *
+ * @param {{ member?: string, pendingOnly?: boolean }} [filter]
+ * @returns {object[]}
+ */
+export function getDegradedSyncRecords(filter = {}) {
+    const { member, pendingOnly = false } = filter;
+    return degradedSyncRecords
+        .filter((r) => (member ? r.member === member : true))
+        .filter((r) => (pendingOnly ? r.pendingRetry : true))
+        .map((r) => ({ ...r }));
+}
+
+/**
+ * Retire this member's pending degraded records after a later sync for the
+ * same member succeeded (the queued retry landed). With no member, clears the
+ * whole list -- test hygiene only.
+ *
+ * @param {string} [member]
+ * @returns {number} how many records were retired
+ */
+export function clearDegradedSyncRecords(member) {
+    if (member === undefined) {
+        const n = degradedSyncRecords.length;
+        degradedSyncRecords.length = 0;
+        return n;
+    }
+    let n = 0;
+    for (const r of degradedSyncRecords) {
+        if (r.member === member && r.pendingRetry) {
+            r.pendingRetry = false;
+            r.resolvedAt = new Date().toISOString();
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/**
+ * Classify a thrown dolt-sync error into an outcome `kind`. A DoltDivergedError
+ * is 'diverged' by construction; anything else is re-derived from its captured
+ * raw dolt output, so a credential failure reports 'auth' (never 'diverged') --
+ * apra-fleet-spp.
+ *
+ * @param {Error} err
+ * @returns {string}
+ */
+export function classifySyncError(err) {
+    if (err instanceof DoltDivergedError) return 'diverged';
+    const raw = err && err.doltOutput ? err.doltOutput : (err && err.message) || '';
+    const kind = classifyDoltFailure(raw);
+    return kind === 'unknown' && !(err instanceof DoltSyncError) ? 'error' : kind;
+}
+
+/**
+ * Normalize a primitive's successful return value into the structured outcome.
+ *
+ * @param {object} result
+ * @param {string} member
+ * @param {'pull'|'push'} operation
+ * @returns {object}
+ */
+function successOutcome(result, member, operation) {
+    const res = result && typeof result === 'object' ? result : {};
+    const kind = res.skipped && res.reason ? res.reason : 'synced';
+    return {
+        ...res,
+        ok: true,
+        kind,
+        degraded: false,
+        detail: res.skipped
+            ? `[Dolt] D-${operation} for member '${member}' was a benign no-op (${kind}).`
+            : `[Dolt] D-${operation} for member '${member}' completed.`,
+        member,
+        operation,
+    };
+}
+
+/**
+ * Run one primitive bracket under the degraded-by-default policy.
+ *
+ * With `fatal: true` the primitive's typed error propagates untouched -- that
+ * is how the explicitly-fatal call sites (the pre-flight beads-health gate,
+ * the pre-dispatch D-pull, the post-dispatch sync bracket) keep their existing
+ * DoltDivergedError / DoltSyncError behavior and their terminal-reason
+ * plumbing. Hard abort is now the explicit last resort, not the default.
+ *
+ * @param {Function} run - () => Promise<object>, the throwing primitive
+ * @param {{ member: string, operation: 'pull'|'push', fatal?: boolean, log?: Function, onDegraded?: Function }} ctx
+ * @returns {Promise<object>} structured outcome
+ */
+async function runDegradable(run, ctx) {
+    const { member, operation, fatal = false, log = () => {}, onDegraded } = ctx;
+    let result;
+    try {
+        result = await run();
+    } catch (err) {
+        if (fatal) throw err;
+        const kind = classifySyncError(err);
+        const outcome = {
+            ok: false,
+            kind,
+            degraded: true,
+            detail: (err && err.message) || String(err),
+            member,
+            operation,
+            error: err,
+        };
+        log(
+            `[Dolt] DEGRADED (non-fatal): D-${operation} for member '${member}' did not land (${kind}). ` +
+            `The sprint CONTINUES -- this member's beads mutations are safe in its local clone and the next ` +
+            `D-${operation} bracket for '${member}' is the queued retry. Cause: ${outcome.detail}`,
+        );
+        const record = recordDegradedSync({ member, operation, kind, detail: outcome.detail });
+        if (typeof onDegraded === 'function') {
+            try {
+                await onDegraded({ ...outcome, record });
+            } catch (hookErr) {
+                log(`[Dolt] degraded-sync onDegraded hook failed for member '${member}' (non-fatal): ${(hookErr && hookErr.message) || hookErr}`);
+            }
+        }
+        return outcome;
+    }
+    const outcome = successOutcome(result, member, operation);
+    // The next successful bracket IS the queued retry: retire this member's
+    // outstanding degraded records once one lands.
+    if (operation === 'push' && outcome.ok) {
+        const retired = clearDegradedSyncRecords(member);
+        if (retired > 0) {
+            log(`[Dolt] D-push for member '${member}' succeeded; retired ${retired} previously degraded sync record(s) for this member.`);
+        }
+    }
+    return outcome;
 }
 
 // ---------------------------------------------------------------------------
@@ -701,20 +965,34 @@ export async function doltPushAfter(member, opts = {}) {
  * re-thrown with the composed, actionable "beads DB diverged" line (workspace
  * path + conflicting tables + remediation) that the dashboard persists.
  *
+ * Returns a STRUCTURED OUTCOME ({ ok, kind, degraded, detail, ... }) and, by
+ * default, does NOT throw: a sync failure the module cannot resolve is
+ * surfaced as `degraded: true` so the sprint loop continues (apra-fleet-417.3).
+ * Pass `fatal: true` to restore the throwing behavior at a call site that
+ * genuinely must abort the run -- `healthGate: true` implies `fatal: true`,
+ * since that gate exists precisely to stop a run before it mutates anything.
+ *
  * All other opts are passed through unchanged to doltPullBefore():
  * `command` (required), `log`, `maxTransientRetries`, `skipPull`,
- * `onAuthFailure`, `checkSyncRemoteConfigured`.
+ * `onAuthFailure`, `checkSyncRemoteConfigured`, `sleep`, `backoffBaseMs`.
  *
  * @param {string} member
- * @param {{ command: Function, healthGate?: boolean, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, skipPull?: boolean, onAuthFailure?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh' }>}
- * @throws {DoltDivergedError|DoltSyncError}
+ * @param {{ command: Function, healthGate?: boolean, fatal?: boolean, onDegraded?: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, skipPull?: boolean, onAuthFailure?: Function, sleep?: Function, backoffBaseMs?: number }} opts
+ * @returns {Promise<object>} structured outcome
+ * @throws {DoltDivergedError|DoltSyncError} only when `fatal`/`healthGate` is set
  */
 export async function syncBefore(member, opts = {}) {
-    const { healthGate = false, ...rest } = opts;
-    return healthGate
-        ? preflightBeadsHealthGate(member, rest)
-        : doltPullBefore(member, rest);
+    const { healthGate = false, fatal, onDegraded, ...rest } = opts;
+    const run = healthGate
+        ? () => preflightBeadsHealthGate(member, rest)
+        : () => doltPullBefore(member, rest);
+    return runDegradable(run, {
+        member,
+        operation: 'pull',
+        fatal: fatal === undefined ? healthGate : fatal,
+        log: rest.log,
+        onDegraded,
+    });
 }
 
 /**
@@ -726,16 +1004,32 @@ export async function syncBefore(member, opts = {}) {
  * call the same entry point unconditionally instead of branching at the call
  * site. All opts are passed through unchanged to doltPushAfter().
  *
+ * Returns a STRUCTURED OUTCOME ({ ok, kind, degraded, detail, pushed,
+ * reconciled, ... }) and, by default, does NOT throw. A push that is still
+ * unresolved after the bounded transient retries, the one-shot auth self-heal
+ * and the single reconcile is reported as `degraded: true` and the sprint
+ * CONTINUES: the member's beads mutations are already committed in its local
+ * clone, and the next syncAfter() for that member is the queued retry. Pass
+ * `fatal: true` at a call site that must still hard-abort (the post-dispatch
+ * sync bracket does, so an unreachable close can never be advertised).
+ *
  * This is the seam the recovery ladder is to be wired behind -- see the
  * RECOVERY-LADDER DISPOSITION note in the module header (apra-fleet-vkc.1).
  *
  * @param {string} member
- * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote' }>}
- * @throws {DoltDivergedError|DoltSyncError}
+ * @param {{ command: Function, pushBeads?: boolean, fatal?: boolean, onDegraded?: Function, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function, sleep?: Function, backoffBaseMs?: number }} opts
+ * @returns {Promise<object>} structured outcome
+ * @throws {DoltDivergedError|DoltSyncError} only when `fatal: true` is set
  */
 export async function syncAfter(member, opts = {}) {
-    return doltPushAfter(member, opts);
+    const { fatal = false, onDegraded, ...rest } = opts;
+    return runDegradable(() => doltPushAfter(member, rest), {
+        member,
+        operation: 'push',
+        fatal,
+        log: rest.log,
+        onDegraded,
+    });
 }
 
 /**
@@ -758,6 +1052,12 @@ export async function status(member, opts = {}) {
     return { member, syncRemoteConfigured: await checkFn(member, { command, log }) };
 }
 
-export const DoltSync = { syncBefore, syncAfter, status };
+export const DoltSync = {
+    syncBefore,
+    syncAfter,
+    status,
+    getDegradedSyncRecords,
+    clearDegradedSyncRecords,
+};
 
 export default DoltSync;

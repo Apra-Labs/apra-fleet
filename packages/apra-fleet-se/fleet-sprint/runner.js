@@ -1007,6 +1007,26 @@ export async function syncMemberAfter(member, opts = {}) {
 // unit suites (which import them directly from runner.js) keep working; they
 // are IMPLEMENTATION DETAIL of the purpose-based API, not a second supported
 // call surface for new code.
+//
+// apra-fleet-417.3.1 -- DEGRADED BY DEFAULT. DoltSync.syncBefore/syncAfter now
+// return a structured outcome and do NOT throw on an unresolved sync failure;
+// they log loudly, record the failure (DoltSync.getDegradedSyncRecords()) and
+// let the sprint continue, because a beads-sync hiccup during concurrent
+// multi-agent pushing is a NORMAL condition and must not fail an otherwise
+// healthy sprint. Every call site below that must STILL hard-abort says so
+// explicitly with `fatal: true`, and only these four classes do:
+//   - the post-dispatch sync bracket (syncMemberAfterOrdered): a degraded
+//     D-push there would advertise an unreachable close;
+//   - the pre-dispatch D-pull: a degraded pull hands the agent a stale clone;
+//   - the orchestrator's read-freshness D-pulls before streak verification,
+//     cycle-evaluation counts and final-review counts: a stale read misreports
+//     every remote member's work as unfinished;
+//   - the pre-flight beads-health gate (`healthGate: true`, which implies
+//     fatal): its entire purpose is to stop the run before anything mutates.
+// The orchestrator's post-mutation D-pushes are deliberately NOT fatal: those
+// beads writes are already committed in the orchestrator's local clone, so an
+// unresolved push is a publication delay, not data loss, and the next D-push
+// bracket is its queued retry.
 export {
     extractDoltRemoteUrl,
     classifyDoltFailure,
@@ -1060,7 +1080,14 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
         throw gPushErr;
     }
 
-    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure });
+    // EXPLICITLY FATAL (apra-fleet-417.3.1): DoltSync.syncAfter is degraded by
+    // default, but this is the post-dispatch bracket -- the member's beads
+    // closes must reach the shared remote or the orchestrator's next read sees
+    // a bead this streak believes it closed. A silent degrade here would
+    // advertise an unreachable close, exactly what the G-push-before-D-push
+    // ordering above exists to prevent, and would erase the
+    // BEADS_SYNC_CONFLICT terminal reason the dashboard reports.
+    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true });
     return { ok: true, member, gPush, dPush };
 }
 
@@ -2121,7 +2148,7 @@ export async function verifyDoerStreakClosed({ command, orchestratorMember, bead
     // closes. Routed through the single dolt-sync module's purpose-based BEFORE
     // bracket (apra-fleet-417.2.1); behavior is identical to the previous
     // direct doltPullBefore() call.
-    await DoltSync.syncBefore(orchestratorMember, { command, log });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
     const label = `bd show ${beadIds.join(' ')} --json`;
     const showRes = await command(label, { member_name: orchestratorMember, silent: true });
     const showBeads = parseBdJson(showRes, label);
@@ -4813,7 +4840,10 @@ async function runSprintCycle(context) {
                 await ensureVcsAuthFresh(member);
             }
             await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip });
-            await DoltSync.syncBefore(member, { command, log, skipPull: skipPreDispatchDoltPull, onAuthFailure });
+            // EXPLICITLY FATAL (apra-fleet-417.3.1): a pre-dispatch D-pull that
+            // silently degraded would hand the agent a STALE beads clone and
+            // let it act on it -- worse than not dispatching at all.
+            await DoltSync.syncBefore(member, { command, log, skipPull: skipPreDispatchDoltPull, onAuthFailure, fatal: true });
         }
         // The teardown is deliberately NOT a `finally`. A throw out of a
         // `finally` replaces the (successful) dispatch result and is
@@ -5621,7 +5651,7 @@ async function runSprintCycle(context) {
     // doer's work, so pull again immediately before the verification read.
     // DoltSync.syncBefore() is a benign no-op when the clone is current and
     // when no dolt remote is configured at all.
-    await DoltSync.syncBefore(orchestratorMember, { command, log });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
 
     await updateDashboard();
 
@@ -7909,7 +7939,7 @@ async function runSprintCycle(context) {
         // counts so the completion/stall math reads the current cross-member
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
-        await DoltSync.syncBefore(orchestratorMember, { command, log });
+        await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -8189,7 +8219,7 @@ async function runSprintCycle(context) {
     // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
-    await DoltSync.syncBefore(orchestratorMember, { command, log });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
