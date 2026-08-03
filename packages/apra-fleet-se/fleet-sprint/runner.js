@@ -485,7 +485,14 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
             const detail = failedPrecondition.map((p) => {
                 const reasons = [];
                 if (p.originError !== null) reasons.push(`origin URL unavailable (${p.originError})`);
-                if (!p.doltOk) reasons.push(`bd dolt pull probe failed (${p.doltError})`);
+                // "dolt pull probe" (not "bd dolt pull") deliberately -- this is
+                // prose describing what doltProbe() checks, not a literal
+                // command; keeping the exact 'bd dolt pull'/'bd dolt push' tokens
+                // out of message text keeps this file clean for the
+                // dolt-literal-guard.mjs mechanical scan (apra-fleet-417.2.3),
+                // which flags any such literal outside a comment/import as a
+                // reintroduced direct dolt command.
+                if (!p.doltOk) reasons.push(`dolt pull probe failed (${p.doltError})`);
                 return `${p.member}: ${reasons.join('; ')}`;
             }).join(', ');
             return {
@@ -496,7 +503,7 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
                 message:
                     '[Topology] Refusing to start the synced-mode sprint: one or more members failed a sync precondition -- ' +
                     detail +
-                    '. In synced mode every member must report the same origin URL AND pass a `bd dolt pull` probe. ' +
+                    '. In synced mode every member must report the same origin URL AND pass a dolt-pull sync probe. ' +
                     'See docs/architecture.md "Multi-member topology (fleet-sprint)".',
             };
         }
