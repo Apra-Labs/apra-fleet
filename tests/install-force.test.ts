@@ -213,6 +213,75 @@ describe('install --force (#96)', () => {
   });
 });
 
+describe('install --force still-running after kill (apra-fleet-l7n.3.2)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+  });
+
+  it('does NOT print "Stopped running server." and surfaces a clear error when the process is still running after kill', async () => {
+    // isApraFleetRunning() (via pgrep) keeps reporting the server running even
+    // after killApraFleet()'s SIGTERM/SIGKILL escalation -- the process could
+    // not be stopped.
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') return '5678\n' as any;
+      // pkill (SIGTERM and SIGKILL escalation) "succeeds" as a command but
+      // never actually terminates the process in this scenario.
+      if (c === 'pkill -x apra-fleet' || c === 'pkill -9 -x apra-fleet') return '' as any;
+      return '' as any;
+    });
+    const logLines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args) => { logLines.push(args.join(' ')); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force'])).rejects.toThrow('exit');
+
+    expect(logLines.join('\n')).not.toContain('Stopped running server.');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).toContain('could not stop the running apra-fleet server');
+    expect(errText).toContain('pkill -x apra-fleet');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('complementary case: still prints "Stopped running server." when the process does stop', async () => {
+    let killed = false;
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') {
+        if (killed) throw Object.assign(new Error('no match'), { status: 1 });
+        return '5678\n' as any;
+      }
+      if (c === 'pkill -x apra-fleet') { killed = true; return '' as any; }
+      return '' as any;
+    });
+    const logLines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args) => { logLines.push(args.join(' ')); });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--force'])).resolves.toBeUndefined();
+
+    expect(logLines.join('\n')).toContain('Stopped running server.');
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+});
+
 describe('install --force ETXTBSY regression: survives first SIGTERM (apra-fleet-l7n.2.2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
