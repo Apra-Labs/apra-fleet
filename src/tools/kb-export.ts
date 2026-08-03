@@ -95,22 +95,34 @@ function resolveRepoPath(explicit?: string): string {
   return candidate;
 }
 
-// T2.3 (F6a, D5 AMENDED): off-switch for the auto-commit below, read from the
+// T2.3 (F6a, D5 AMENDED): switch for the auto-commit below, read from the
 // same KB config file kb-setup.ts writes (FLEET_DIR/knowledge/config.json),
-// under a new { bible: { autoCommit?: boolean } } section. Default TRUE.
-// Missing file, missing section, or malformed JSON all degrade to the
-// default (TRUE) -- kb_export never fails because the config is absent or
-// bad, and a config problem must not silently disable the feature either.
+// under a { bible: { autoCommit?: boolean } } section.
+//
+// KB-TRUST PHASE 1 (decided 2026-08-03): the default is now FALSE. kb_import
+// preserves a bible's CONFIRMED confidence as its sole exemption from the D1
+// clamp, justified in-code because "the bible is a git-reviewed, human-merged
+// artifact". Auto-committing the export as pm-kb <kb@pm.local>, mid-sprint, on
+// a feature branch, made that review a bot commit nobody was asked to look at.
+// The default should make human review possible rather than pre-empt it.
+// Missing file, missing section, or malformed JSON all degrade to the default
+// (FALSE) -- kb_export never fails because the config is absent or bad, and a
+// config problem must not silently start committing on the team's behalf.
 const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
 
 function autoCommitEnabled(): boolean {
   try {
-    if (!fs.existsSync(KB_CONFIG_PATH)) return true;
+    if (!fs.existsSync(KB_CONFIG_PATH)) return false;
     const raw = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8')) as { bible?: { autoCommit?: boolean } };
-    return raw.bible?.autoCommit ?? true;
+    return raw.bible?.autoCommit ?? false;
   } catch {
-    return true;
+    return false;
   }
+}
+
+/** Test seam: the default is a trust decision, so it is asserted directly. */
+export function _autoCommitEnabledForTest(): boolean {
+  return autoCommitEnabled();
 }
 
 function isGitRepo(repoPath: string): boolean {

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import type { KBEntryInput, CaptureSource } from '../services/knowledge/types.js';
+import { KbCaptureRejected } from '../services/knowledge/types.js';
+import type { KBEntryInput, CaptureSource, AudnDecision } from '../services/knowledge/types.js';
 
 export const kbHarvestSchema = z.object({
   repo_path: z.string().optional()
@@ -98,7 +99,7 @@ function extractLearnings(transcript: string): ExtractedLearning[] {
 // author='harvest', source='harvest' so it is distinguishable in queries.
 export async function kbHarvest(input: KbHarvestInput): Promise<string> {
   if (!input.session_transcript) {
-    return JSON.stringify({ entries_captured: 0, entries_updated: 0, entries_skipped: 0 });
+    return JSON.stringify({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0 });
   }
 
   const providers = await getKbProviders(input.repo_path);
@@ -108,6 +109,7 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
   let entries_captured = 0;
   let entries_updated = 0;
   let entries_skipped = 0;
+  let entries_rejected = 0;
 
   // D5 + revised D7 (T2.3): harvested entries are UNVERIFIED, regex-extracted,
   // low-trust captures from the execute_prompt autowire -- distinct provenance
@@ -131,7 +133,23 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
       confidence: 'UNVERIFIED',
     };
 
-    const { audn_decision } = await provider.capture(entryInput);
+    // KB-TRUST PHASE 1: capture now fails closed on an uncheckable basis, and
+    // harvest is the highest-volume writer -- its regex extraction frequently
+    // yields no file paths at all. Isolate each capture so one rejected entry
+    // is counted and the loop continues; an unhandled throw here would abort
+    // the remaining entries and die silently, because auto-harvest is
+    // dispatched fire-and-forget with a bare .catch() in execute-prompt.ts.
+    let audn_decision: AudnDecision;
+    try {
+      ({ audn_decision } = await provider.capture(entryInput));
+    } catch (err) {
+      if (err instanceof KbCaptureRejected) {
+        entries_rejected++;
+        continue;
+      }
+      throw err;
+    }
+
     if (audn_decision === 'add' || audn_decision === 'flagged') {
       entries_captured++;
     } else if (audn_decision === 'update') {
@@ -141,5 +159,5 @@ export async function kbHarvest(input: KbHarvestInput): Promise<string> {
     }
   }
 
-  return JSON.stringify({ entries_captured, entries_updated, entries_skipped });
+  return JSON.stringify({ entries_captured, entries_updated, entries_skipped, entries_rejected });
 }

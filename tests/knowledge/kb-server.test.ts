@@ -86,7 +86,9 @@ describe('kb-server', () => {
         title: 'Test from kb-server',
         summary: 'Testing HTTP capture',
         content: 'This entry was created via the HTTP REST API.',
-        source_files: [],
+        // KB-TRUST PHASE 1: a capture needs a basis that resolves in the repo
+        // the server is anchored at. This used to be [], which now rejects.
+        source_files: ['src/commands/kb-server.ts'],
         symbols: [],
         tags: [],
         content_hash: '',
@@ -100,6 +102,55 @@ describe('kb-server', () => {
     expect(res.status).toBe(201);
     expect(res.body.id).toBeTruthy();
     expect(res.body.audn_decision).toBe('add');
+  });
+
+  // The HTTP route calls provider.capture() directly and never touches the
+  // kb_capture handler, so it is one of the three call sites a tool-layer check
+  // would have missed. Enforcement lives in the provider; this asserts it lands.
+  it('POST /api/kb/capture rejects an entry with no source_files', async () => {
+    const res = await request('POST', '/api/kb/capture', {
+      body: {
+        type: 'learning',
+        title: 'Unfalsifiable over HTTP',
+        summary: 'Cites nothing',
+        content: 'A claim with no basis, submitted over the REST API.',
+        source_files: [],
+        symbols: [],
+        tags: [],
+        content_hash: '',
+        content_hash_type: 'sha256',
+        flagged_for_review: false,
+        author: 'test',
+        source: 'doer',
+        confidence: 'INFERRED',
+      },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('CAPTURE_REJECTED');
+    expect(res.body.reason).toBe('no_source_files');
+  });
+
+  it('POST /api/kb/capture rejects source_files that do not exist in the repo', async () => {
+    const res = await request('POST', '/api/kb/capture', {
+      body: {
+        type: 'learning',
+        title: 'Cites a ghost over HTTP',
+        summary: 'Cites a file that is not there',
+        content: 'A claim about a file this repository does not contain.',
+        source_files: ['src/does-not-exist-anywhere.ts'],
+        symbols: [],
+        tags: [],
+        content_hash: '',
+        content_hash_type: 'sha256',
+        flagged_for_review: false,
+        author: 'test',
+        source: 'doer',
+        confidence: 'INFERRED',
+      },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('CAPTURE_REJECTED');
+    expect(res.body.reason).toBe('missing_source_files');
   });
 
   it('returns 400 for path traversal attempt', async () => {

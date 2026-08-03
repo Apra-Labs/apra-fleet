@@ -2,7 +2,8 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
-import type { KBEntryInput, ContentType, Confidence } from '../services/knowledge/types.js';
+import { KbCaptureRejected } from '../services/knowledge/types.js';
+import type { KBEntryInput, ContentType, Confidence, AudnDecision } from '../services/knowledge/types.js';
 
 // T2.1 (F4, D3 HARDENED): kb_import -- the trusted-channel write path that lets a
 // warm local KB absorb a merged-in bible (.fleet/kb-canonical.json). The
@@ -99,6 +100,13 @@ export interface KbImportReport {
   skipped: number;
   linked: number;
   flagged: number;
+  /**
+   * Bible entries refused by the Phase 1 capture basis check -- no source_files,
+   * or source_files absent from this worktree. Import is NOT exempt: an
+   * unfalsifiable entry must not enter through any path, including a legacy
+   * bible, so re-importing an old bible deliberately drops those entries.
+   */
+  rejected: number;
   sweep: { checked: number; staled: number; unstaled: number };
 }
 
@@ -131,6 +139,7 @@ export async function kbImport(input: KbImportInput): Promise<string> {
   let skipped = 0;
   let linked = 0;
   let flagged = 0;
+  let rejected = 0;
 
   for (const candidate of parsed) {
     // Malformed entry -> tolerate and skip individually.
@@ -169,10 +178,22 @@ export async function kbImport(input: KbImportInput): Promise<string> {
     // Route through the AUDN choke point with the INTERNAL import mode and the
     // preserved bible id. A user-directive is still forced through the directive
     // gate (pending proposal) INSIDE capture() -- import mode does not bypass it.
-    const { audn_decision } = await provider.capture(kbInput, {
-      importMode: true,
-      preferredId: entry.id,
-    });
+    // KB-TRUST PHASE 1: isolate each entry so one unfalsifiable bible entry is
+    // counted and the import continues, rather than aborting every entry after
+    // it. Import mode exempts the confidence clamp, never the basis check.
+    let audn_decision: AudnDecision;
+    try {
+      ({ audn_decision } = await provider.capture(kbInput, {
+        importMode: true,
+        preferredId: entry.id,
+      }));
+    } catch (err) {
+      if (err instanceof KbCaptureRejected) {
+        rejected++;
+        continue;
+      }
+      throw err;
+    }
 
     if (audn_decision === 'add') imported++;
     else if (audn_decision === 'none') skipped++;
@@ -202,6 +223,6 @@ export async function kbImport(input: KbImportInput): Promise<string> {
   // basis paths remain cwd-independent either way).
   const sweep = await provider.freshnessSweep(repoAnchor);
 
-  const report: KbImportReport = { imported, skipped, linked, flagged, sweep };
+  const report: KbImportReport = { imported, skipped, linked, flagged, rejected, sweep };
   return JSON.stringify(report);
 }

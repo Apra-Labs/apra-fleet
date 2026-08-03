@@ -13,6 +13,7 @@ import {
   orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { KbCaptureRejected } from './types.js';
 import type {
   MemoryProvider,
   KBEntry,
@@ -39,6 +40,17 @@ function truncateContent(content: string): string {
   return content.slice(0, CONTENT_CAP) + TRUNCATION_SUFFIX;
 }
 
+/**
+ * Minimum length of a kb_promote reason. Matches the length floor kb_harvest
+ * already applies to an extracted learning -- short enough that a real one-line
+ * citation passes, long enough that "ok" / "lgtm" / "verified" does not.
+ */
+const MIN_PROMOTE_REASON_LENGTH = 20;
+
+function isNonTrivialPromoteReason(reason?: string): boolean {
+  return (reason ?? '').trim().length >= MIN_PROMOTE_REASON_LENGTH;
+}
+
 class NotImplementedError extends Error {
   constructor(method: string) {
     super(`SqliteProvider.${method}() not yet implemented`);
@@ -50,8 +62,17 @@ export class SqliteProvider implements MemoryProvider {
   private db: Database.Database | null = null;
   readonly dbPath: string;
   readonly projectSlug: string;
+  /**
+   * Root of the repo this provider's KB is about. capture() resolves relative
+   * source_files against it, so the basis check is anchored to the repo the
+   * entry describes rather than to the fleet server's process.cwd() -- the
+   * repo-blindness failure class of apra-fleet-tm7. Undefined for the single
+   * shared global KB, which spans every repo and has no one root.
+   */
+  readonly repoPath: string | undefined;
 
-  constructor(dbPath?: string) {
+  constructor(dbPath?: string, repoPath?: string) {
+    this.repoPath = repoPath;
     if (dbPath !== undefined) {
       this.dbPath = dbPath;
       this.projectSlug = path.basename(dbPath, '.sqlite') || 'custom';
@@ -245,6 +266,57 @@ export class SqliteProvider implements MemoryProvider {
     );
   }
 
+  /**
+   * Resolve a source_files entry for existence checking. Absolute paths pass
+   * through; relative paths anchor at this provider's repo. Mirrors the
+   * resolution computeFileHashBatch does with an explicit { cwd } root.
+   */
+  private resolveBasisFile(p: string): string {
+    return path.isAbsolute(p) || this.repoPath === undefined ? p : path.join(this.repoPath, p);
+  }
+
+  /**
+   * Basis files that are CHECKABLE and absent. A relative path with no repo root
+   * (the shared global KB) is not checkable and is therefore not reported --
+   * capture() and promote() must apply exactly the same rule, or an entry that
+   * was legitimately capturable would be permanently un-promotable.
+   */
+  private unresolvableBasisFiles(files: string[]): string[] {
+    return files.filter((f) => {
+      if (this.repoPath === undefined && !path.isAbsolute(f)) return false;
+      return !fs.existsSync(this.resolveBasisFile(f));
+    });
+  }
+
+  /**
+   * The Phase 1 fail-closed gate. See the call site in capture() for rationale.
+   * Throws KbCaptureRejected so batch writers can isolate and count a rejected
+   * entry while unexpected failures still propagate.
+   */
+  private assertCheckableBasis(input: KBEntryInput): void {
+    const files = input.source_files ?? [];
+
+    if (files.length === 0) {
+      if (input.type === 'user-directive') return;
+      throw new KbCaptureRejected(
+        'no_source_files',
+        'kb capture rejected: an entry must cite at least one source file. '
+          + 'An entry with no basis can never be staled by the freshness sweep, '
+          + 'so nothing can ever falsify it. Entry: ' + input.title
+      );
+    }
+
+    const missing = this.unresolvableBasisFiles(files);
+    if (missing.length > 0) {
+      throw new KbCaptureRejected(
+        'missing_source_files',
+        'kb capture rejected: source file(s) do not exist'
+          + (this.repoPath ? ' in ' + this.repoPath : '')
+          + ': ' + missing.join(', ') + '. Entry: ' + input.title
+      );
+    }
+  }
+
   // T2.2 (F3 PART A): resolve a per-file hash basis for the given source_files
   // at capture time, for ALL types. Files that do not resolve are simply
   // absent from the returned map (not an error). Bounded to the caller's own
@@ -253,7 +325,12 @@ export class SqliteProvider implements MemoryProvider {
   private async computeSourceFileHashes(files: string[]): Promise<Record<string, string>> {
     if (files.length === 0) return {};
     try {
-      const hashes = await computeFileHashBatch(files);
+      // Anchor relative basis paths at this provider's repo, the same root the
+      // capture gate checked them against and the one freshnessSweep(root) uses.
+      const hashes = await computeFileHashBatch(
+        files,
+        this.repoPath !== undefined ? { cwd: this.repoPath } : undefined
+      );
       const map: Record<string, string> = {};
       for (const file of Object.keys(hashes)) {
         const result = hashes[file];
@@ -662,6 +739,31 @@ export class SqliteProvider implements MemoryProvider {
         tags,
       };
     }
+
+    // KB-TRUST PHASE 1 (decided 2026-08-03): capture FAILS CLOSED on an
+    // uncheckable basis, and this is the ENFORCEMENT copy for the same reason
+    // the confidence clamp below is here -- three of the four capture call
+    // sites (kb_harvest, kb_import, the HTTP /api/kb/capture route) never touch
+    // the kb_capture handler, so a tool-layer check would be bypassed by most
+    // of the traffic.
+    //
+    // Rationale: freshnessSweep() builds its work set ONLY from entries with a
+    // parsed source_file_hashes basis, so an entry citing no files is never
+    // checked and can never be staled -- permanently CONFIRMED-able and
+    // structurally unfalsifiable. An entry citing files that do not exist is
+    // checkable and already wrong.
+    //
+    // NO exemption for source='harvest' or for importMode. Import is exempt
+    // from the confidence clamp only; an unfalsifiable entry must not enter
+    // through any path, including a legacy bible.
+    //
+    // user-directive IS exempt from the empty-basis half: a standing human
+    // instruction ("never force-push to main") is not a claim about code and
+    // cites no files by nature. It is still quarantined to an UNVERIFIED
+    // pending proposal by the directive gate above and can only be activated
+    // CLI-side, so it never reaches the bible on its own. A directive that DOES
+    // cite files is still held to those files existing.
+    this.assertCheckableBasis(input);
 
     // T1.2 (F3, R3, KB 9462ab04): general confidence clamp -- the ENFORCEMENT
     // copy. The kb_capture tool handler (kb-capture.ts) also clamps and returns
@@ -1108,6 +1210,35 @@ export class SqliteProvider implements MemoryProvider {
     if (entry.type === 'user-directive') {
       throw new Error(
         'Cannot promote a user-directive via kb_promote (F1/D1): directive activation is human-terminal only. Run `apra-fleet kb approve-directive ' + id + '` (or `reject-directive ' + id + '` to discard).'
+      );
+    }
+
+    // KB-TRUST PHASE 1 (decided 2026-08-03): promotion is the ONLY path that
+    // mints CONFIRMED, so it carries two extra gates.
+    //
+    // (1) A promotion without a recorded evidence string is refused. The
+    // promote note is the only durable record of WHY an entry was trusted; a
+    // blank or throwaway reason makes a CONFIRMED entry as unauditable as the
+    // 97-entry bible this work exists to replace.
+    if (!isNonTrivialPromoteReason(reason)) {
+      throw new Error(
+        'kb_promote requires a reason recording the evidence for this promotion '
+          + '(at least ' + MIN_PROMOTE_REASON_LENGTH + ' characters stating what you checked). Entry: ' + id
+      );
+    }
+
+    // (2) An entry whose basis no longer resolves cannot be verified against
+    // the tree, so it cannot earn CONFIRMED. Zero source_files is included:
+    // capture now refuses those, but rows predating this rule still exist and
+    // are exactly the structurally unfalsifiable entries.
+    const unresolved = this.unresolvableBasisFiles(entry.source_files);
+    if (entry.source_files.length === 0 || unresolved.length > 0) {
+      throw new Error(
+        'Cannot promote an entry whose basis does not resolve: '
+          + (entry.source_files.length === 0
+            ? 'it cites no source files'
+            : 'missing ' + unresolved.join(', '))
+          + '. Entry: ' + id
       );
     }
 

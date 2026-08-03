@@ -11,7 +11,7 @@ export interface KbProviders {
 }
 
 export async function createKbProviders(cwd?: string): Promise<KbProviders> {
-  return createKbProvidersForSlug(slugFor(cwd));
+  return createKbProvidersForSlug(slugFor(cwd), cwd ?? process.cwd());
 }
 
 // There is exactly ONE global KB, shared by every project. Now that providers
@@ -33,10 +33,14 @@ function getGlobalProvider(): Promise<SqliteProvider> {
   return _globalProvider;
 }
 
-async function createKbProvidersForSlug(slug: string): Promise<KbProviders> {
+// repoPath is the root the project provider anchors relative source_files at
+// (the Phase 1 capture basis check and the basis hashes both use it). The global
+// provider gets none on purpose: one shared KB spans every repo, so no single
+// root is correct for it.
+async function createKbProvidersForSlug(slug: string, repoPath: string): Promise<KbProviders> {
   const projectDir = path.join(FLEET_DIR, 'knowledge', slug);
   fs.mkdirSync(projectDir, { recursive: true });
-  const projectProvider = new SqliteProvider(path.join(projectDir, 'kb.sqlite'));
+  const projectProvider = new SqliteProvider(path.join(projectDir, 'kb.sqlite'), repoPath);
   await projectProvider.init();
   const globalProvider = await getGlobalProvider();
   return { project: projectProvider, global: globalProvider, projectSlug: slug };
@@ -72,7 +76,7 @@ export async function getKbProviders(cwd?: string): Promise<KbProviders> {
   if (!pending) {
     // Store the promise, not the resolved value, so concurrent callers for the
     // same slug share one provider instead of racing to build two.
-    pending = createKbProvidersForSlug(slug);
+    pending = createKbProvidersForSlug(slug, cwd ?? process.cwd());
     _providers.set(slug, pending);
   }
   return pending;

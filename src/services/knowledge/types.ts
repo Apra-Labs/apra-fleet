@@ -28,6 +28,22 @@ export type CaptureSource = 'session' | 'review' | 'harvest' | 'promotion' | 'im
 
 export type AudnDecision = 'add' | 'update' | 'flagged' | 'none';
 
+/**
+ * Thrown by SqliteProvider.capture() when an entry has no checkable basis.
+ *
+ * Distinct from a generic Error so batch writers (kb_harvest, kb_import) can
+ * isolate a rejected entry, count it, and continue, while an unexpected failure
+ * still propagates. `reason` is machine-readable; the message names the files.
+ */
+export type CaptureRejectionReason = 'no_source_files' | 'missing_source_files';
+
+export class KbCaptureRejected extends Error {
+  constructor(readonly reason: CaptureRejectionReason, message: string) {
+    super(message);
+    this.name = 'KbCaptureRejected';
+  }
+}
+
 export interface CodeIntelCall {
   tool: string;
   args: Record<string, string>;

@@ -6,6 +6,7 @@ import { FLEET_DIR } from '../paths.js';
 import { createKbProviders } from '../services/knowledge/kb-providers.js';
 import { validateFilePaths } from '../services/knowledge/path-validation.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
+import { KbCaptureRejected } from '../services/knowledge/types.js';
 import type { KBEntryInput } from '../services/knowledge/types.js';
 
 const MAX_BODY_SIZE = 1_048_576; // 1MB
@@ -94,7 +95,9 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
   // If --db flag provided, override the project DB path
   if (dbPath) {
     const { SqliteProvider } = await import('../services/knowledge/sqlite-provider.js');
-    const overrideProvider = new SqliteProvider(dbPath);
+    // Same repo anchor createKbProviders() defaults to, so the capture basis
+    // check behaves identically with and without the --db override.
+    const overrideProvider = new SqliteProvider(dbPath, process.cwd());
     await overrideProvider.init();
     (providers as any).project = overrideProvider;
   }
@@ -191,6 +194,13 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
 
       return jsonResponse(res, 404, { error: 'Not found', code: 'NOT_FOUND' });
     } catch (err: unknown) {
+      // KB-TRUST PHASE 1: a capture refused for having no checkable basis is a
+      // bad request, not a server fault. This route calls provider.capture()
+      // directly, bypassing the kb_capture handler entirely, which is why the
+      // rule lives in the provider and only its presentation lives here.
+      if (err instanceof KbCaptureRejected) {
+        return jsonResponse(res, 400, { error: err.message, code: 'CAPTURE_REJECTED', reason: err.reason });
+      }
       if (err instanceof Error) {
         if (err.message === 'BODY_TOO_LARGE') {
           return jsonResponse(res, 413, { error: 'Request body too large (max 1MB)', code: 'PAYLOAD_TOO_LARGE' });
