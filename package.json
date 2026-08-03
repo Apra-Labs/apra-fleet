@@ -46,6 +46,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "overrides": {
+    "undici": "^7.29.0"
+  },
   "scripts": {
     "build": "npm run build:contract && tsc",
     "build:contract": "npm run build --workspace=@apralabs/fleet-api-contract",
