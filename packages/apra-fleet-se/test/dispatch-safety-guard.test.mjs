@@ -246,10 +246,22 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // arithmetic. NOTE: the tfx.8 issue text cited 44; that was a stale
 // projection that never materialized on this branch -- 40 is the actual,
 // measured value and the one asserted here.
-const EXPECTED_COMMAND_COUNT = 41;
-// Bumped 40 -> 41: Final Review's reopenIds persist block gained one new
-// command() call site (`bd update <id> --status=open --append-notes ...`),
-// verified compliant with member_name (member_name: orchestratorMember).
+// 40 -> 37 (apra-fleet-417.2.1, the single dolt-sync module): the three dolt
+// command() call sites MOVED out of runner.js into ./dolt-sync.mjs, which is
+// now the only permitted `bd dolt` command surface -- (1) runDoltStep()'s
+// single spawn, (2) isMemberSyncRemoteConfigured()'s `bd config get
+// sync.remote --json` gate, and (3) preflightBeadsHealthGate()'s best-effort
+// `pwd` diagnostic. NOT a member_name regression and NOT a silently-dropped
+// dispatch: same precedent as the eft.8.12 conflict-ladder.mjs extraction
+// above, except that this time the moved sites are NOT left unguarded --
+// dolt-sync.mjs is asserted by its own test below, so the invariant still
+// covers every one of them.
+// 37 -> 38 (integration-branch merge): Final Review's reopenIds persist
+// block gained one new command() call site (`bd update <id> --status=open
+// --append-notes ...`), verified compliant with member_name (member_name:
+// orchestratorMember). Independent of the dolt-sync extraction above --
+// both land in this rebase, so the two deltas combine: 40 - 3 + 1 = 38.
+const EXPECTED_COMMAND_COUNT = 38;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -310,6 +322,41 @@ test('every command()/agent() call site in runner.js passes member_name or membe
         `every site still passes member_name/member_id.`
     );
 
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// apra-fleet-417.2.1: runner.js is no longer the only file that dispatches
+// commands -- the dolt brackets moved into ./dolt-sync.mjs, which is now the
+// single permitted `bd dolt` command surface. Guard it with the SAME
+// invariant, so the three sites that moved there cannot silently lose their
+// explicit member_name, and so a future dolt command added to that module is
+// caught by this suite rather than at runtime on a real fleet dispatch.
+const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
+// runDoltStep()'s single `bd dolt` spawn, isMemberSyncRemoteConfigured()'s
+// `bd config get sync.remote --json` gate, and preflightBeadsHealthGate()'s
+// best-effort `pwd` diagnostic -- exactly the three that left runner.js.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 3;
+
+test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(DOLT_SYNC_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_DOLT_SYNC_COMMAND_COUNT,
+        `Expected ${EXPECTED_DOLT_SYNC_COMMAND_COUNT} command() call site(s) in dolt-sync.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_DOLT_SYNC_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'dolt-sync.mjs must never dispatch an agent() -- it is a command-only sync module.'
+    );
     assert.deepStrictEqual(
         violations,
         [],
