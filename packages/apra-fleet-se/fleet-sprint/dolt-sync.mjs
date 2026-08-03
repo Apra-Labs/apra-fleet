@@ -253,6 +253,15 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * more. If `onAuthFailure` throws, or is omitted, the failed result is
  * returned to the caller as-is.
  *
+ * apra-fleet-647.1.3.3: an 'unknown' classification gets this SAME bounded
+ * one-shot self-heal + single retry, rather than failing immediately -- an
+ * unrecognized provider failure text is more likely a stale credential than a
+ * truly fatal condition, so it is worth exactly one bounded self-heal attempt
+ * before giving up. It shares the single `authHealAttempted` latch with the
+ * 'auth' path, so self-heal still fires AT MOST ONCE per runDoltStep call. A
+ * 'diverged' classification remains excluded and is still returned
+ * immediately, never retried.
+ *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown' }>}
  */
 async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS }) {
@@ -271,9 +280,9 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
             if (delayMs > 0 && typeof sleep === 'function') await sleep(delayMs);
             continue;
         }
-        if (kind === 'auth' && typeof onAuthFailure === 'function' && !authHealAttempted) {
+        if ((kind === 'auth' || kind === 'unknown') && typeof onAuthFailure === 'function' && !authHealAttempted) {
             authHealAttempted = true;
-            log(`[Dolt] auth failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
+            log(`[Dolt] ${kind} failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
             try {
                 await onAuthFailure({ member, label, cmd, error, kind: 'dolt' });
             } catch (healErr) {

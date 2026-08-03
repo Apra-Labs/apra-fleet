@@ -659,6 +659,17 @@ export function classifyGitFailure(output) {
  * returned as-is for the caller to turn into its typed
  * GitSyncError/GitDivergedError.
  *
+ * apra-fleet-647.1.3.3: an 'unknown' classification (any provider auth/failure
+ * text classifyGitFailure could not otherwise recognize) gets the SAME bounded
+ * one-shot self-heal + single retry as 'auth', rather than failing immediately
+ * -- an unrecognized provider auth string is far more likely to be a stale
+ * credential than a genuinely fatal condition, and one bounded self-heal
+ * attempt is cheap. This shares the single `authHealAttempted` latch with the
+ * 'auth' path, so the self-heal still fires AT MOST ONCE per runGitStep call
+ * regardless of whether it was triggered by 'auth' or 'unknown'. A 'diverged'
+ * classification is excluded from this and is still returned immediately,
+ * never retried -- see the module header's SINGLE-WRITER TOKEN PASSING stance.
+ *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'unknown' }>}
  */
 async function runGitStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure }) {
@@ -675,9 +686,9 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
             log(`[Sync] transient git failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
             continue;
         }
-        if (kind === 'auth' && typeof onAuthFailure === 'function' && !authHealAttempted) {
+        if ((kind === 'auth' || kind === 'unknown') && typeof onAuthFailure === 'function' && !authHealAttempted) {
             authHealAttempted = true;
-            log(`[Sync] auth git failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
+            log(`[Sync] ${kind} git failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
             try {
                 await onAuthFailure({ member, label, cmd, error, kind: 'git' });
             } catch (healErr) {

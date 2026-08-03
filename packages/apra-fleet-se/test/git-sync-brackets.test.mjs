@@ -531,6 +531,87 @@ test('(fmu) an onAuthFailure that itself throws is treated as a failed self-heal
 });
 
 // =============================================================================
+// apra-fleet-647.1.3.3 -- an 'unknown' classification is no longer immediately
+// sprint-fatal: it now gets the SAME bounded one-shot self-heal + single
+// retry as 'auth', so an unrecognized provider auth string is not treated as
+// automatically fatal. 'diverged' remains excluded from any retry -- see the
+// module header's SINGLE-WRITER TOKEN PASSING stance.
+// =============================================================================
+
+test('(647.1.3.3) self-heal success: an UNKNOWN-classified G-push failure heals once via onAuthFailure and the single bounded retry succeeds', async () => {
+    const novelText = 'some totally novel git failure the classifier has never seen before';
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(novelText), OK],
+    });
+    check(classifyGitFailure(novelText) === 'unknown', 'precondition: the injected error text must classify as unknown');
+    let healCalls = 0;
+    const onAuthFailure = async (info) => {
+        healCalls += 1;
+        check(info.member === 'm1', 'onAuthFailure receives the member');
+        check(info.error === novelText, 'onAuthFailure receives the raw provider text verbatim');
+    };
+    const res = await syncMemberAfter('m1', { command, onAuthFailure });
+    check(res.ok === true && res.pushed === true, `expected the push to ultimately succeed after self-heal, got: ${JSON.stringify(res)}`);
+    check(healCalls === 1, `expected exactly one self-heal call, got ${healCalls}`);
+    check(calls.filter((c) => /git push/.test(c.cmd)).length === 2, 'push retried exactly once after self-heal (bounded, not a loop)');
+});
+
+test('(647.1.3.3) self-heal called but the retry STILL fails on an UNKNOWN failure: the typed GitSyncError still surfaces, self-heal called exactly once, no unbounded loop', async () => {
+    const novelText = 'a second, still-unrecognized git failure';
+    const { command, calls } = makeCommandMock({
+        // Single-entry queue -> the same failure repeats on every call, so
+        // both the first attempt and the post-heal retry fail identically.
+        'git push': [fail(novelText)],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+    let err = null;
+    try {
+        await syncMemberAfter('m1', { command, onAuthFailure });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitSyncError, `expected GitSyncError (non-diverged failure), got ${err && err.constructor.name}`);
+    check(err.constructor.name !== 'GitDivergedError', 'an unknown failure must never surface as GitDivergedError');
+    check(healCalls === 1, `self-heal must be invoked EXACTLY ONCE (bounded, never a loop), got ${healCalls}`);
+    check(calls.filter((c) => /git push/.test(c.cmd)).length === 2, `expected exactly one bounded retry after self-heal (2 total push attempts), saw ${calls.filter((c) => /git push/.test(c.cmd)).length}`);
+});
+
+test('(647.1.3.3) omitting onAuthFailure preserves pre-existing behavior on an unknown-classified failure: no retry, single attempt', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail('yet another unrecognized git failure')],
+    });
+    let err = null;
+    try {
+        await syncMemberAfter('m1', { command }); // no onAuthFailure injected
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitSyncError, `expected a GitSyncError, got ${err && err.constructor.name}`);
+    check(
+        calls.filter((c) => /git push/.test(c.cmd)).length === 1,
+        `no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt, saw ${calls.filter((c) => /git push/.test(c.cmd)).length}`,
+    );
+});
+
+test('(647.1.3.3) DIVERGED is still excluded from self-heal/retry even when onAuthFailure is provided -- never retried', async () => {
+    const { command, calls } = makeCommandMock({
+        'git merge --ff-only': [fail('fatal: Not possible to fast-forward, aborting.')],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+    let err = null;
+    try {
+        await syncMemberBefore('m1', { command, onAuthFailure });
+    } catch (e) {
+        err = e;
+    }
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+    check(healCalls === 0, 'a diverged failure must never invoke onAuthFailure self-heal');
+    check(calls.filter((c) => /git merge --ff-only/.test(c.cmd)).length === 1, 'diverged must not be retried at all, bounded to a single attempt');
+});
+
+// =============================================================================
 // (h) NO vendored agent .md file gains orchestrator-side sync commands. The
 // sync brackets live in runner.js; agents never run git/dolt sync themselves
 // (Plan 3.2). This is a REAL assertion over the vendored markdown, not a note:
