@@ -42,20 +42,26 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // =============================================================================
 
 // Builds a minimal, hermetic mock `command(cmd, opts)` for finalizeAbort()'s
-// four call sites (`git fetch origin`, `git rev-list --count`, `git push`,
-// `gh pr create`). Mirrors the exact return-value CONTRACT finalizeAbort()
-// actually relies on (see FleetWorkflow.command() in
+// call sites (`git fetch origin`, `git rev-list --count`, `git push`, the
+// `git remote get-url origin` repo-derivation probe, the just-provisioned
+// git-credential-helper token read, and the VCSModule `curl ... /pulls`
+// create-pull-request dispatch -- apra-fleet-tfx.8/tfx.8.4: the `gh pr
+// create` call sites are gone). Mirrors the exact return-value CONTRACT
+// finalizeAbort() actually relies on (see FleetWorkflow.command() in
 // apra-fleet-workflow/src/workflow/index.mjs, and note the apra-fleet-5d5.1
 // update below): whether a call resolves to a plain string/throws, or to
 // `{ ok, output, error }` and never throws, is driven by `opts.failSoft` --
-// NOT by which git subcommand it is. `gh pr create` has always been called
-// with failSoft:true. As of apra-fleet-5d5.1, finalizeAbort()'s own
-// fetch/rev-list/push calls are routed through runGitStep() (for the
-// provision_vcs_auth self-heal-and-retry-once path), which itself ALWAYS
-// forces `failSoft: true` on the underlying command() call -- so this mock
-// must branch on `opts.failSoft` exactly as the real production command()
-// does, rather than assuming a fixed shape per subcommand.
-function buildMockCommand({ commitCount, pushShouldFail = false, ghOutcome = 'created', ghUrl = 'https://github.com/mock-org/mock-repo/pull/99' } = {}) {
+// NOT by which git subcommand it is. The VCSModule call sites (credential
+// read, curl POST, and the repo-derivation `git remote get-url origin`) are
+// ALWAYS dispatched with failSoft:true (see provisionVcsAuthForMember/
+// readMemberVcsCredentialToken/raiseVcsPrForMember in runner.js). As of
+// apra-fleet-5d5.1, finalizeAbort()'s own fetch/rev-list/push calls are
+// routed through runGitStep() (for the provision_vcs_auth self-heal-and-
+// retry-once path), which itself ALWAYS forces `failSoft: true` on the
+// underlying command() call -- so this mock must branch on `opts.failSoft`
+// exactly as the real production command() does, rather than assuming a
+// fixed shape per subcommand.
+function buildMockCommand({ commitCount, pushShouldFail = false, prOutcome = 'created', prUrl = 'https://github.com/mock-org/mock-repo/pull/99' } = {}) {
     const log = [];
     const command = async (cmd, opts = {}) => {
         log.push(cmd);
@@ -77,19 +83,49 @@ function buildMockCommand({ commitCount, pushShouldFail = false, ghOutcome = 'cr
             }
             return ok('To mock-remote\n * [new branch] (mocked)');
         }
-        if (/^gh pr create\b/.test(cmd)) {
-            if (ghOutcome === 'already-exists') {
-                return {
-                    ok: false,
-                    output: '',
-                    error: `GraphQL: a pull request for branch already exists: ${ghUrl} (createPullRequest)`,
-                };
+        // provisionPrCapableAuthForMember (provisionVcsAuthForMember) derives
+        // 'owner/repo' from this probe BEFORE minting the push+pr credential.
+        if (/^git remote get-url origin\b/.test(cmd)) {
+            return ok('https://github.com/mock-org/mock-repo.git');
+        }
+        // readMemberVcsCredentialToken reads back the just-provisioned
+        // git-credential-helper script's deployed token.
+        if (/^\$HOME\/\.fleet-git-credential-/.test(cmd)) {
+            return ok('protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n');
+        }
+        // VCSModule's buildCreatePrCommand: a curl POST to .../pulls, with
+        // `-w '\n%{http_code}'` appended (see parseVcsCurlOutput in runner.js).
+        if (/^curl -sS -X POST\b/.test(cmd) && /\/pulls\b/.test(cmd)) {
+            if (prOutcome === 'already-exists') {
+                const body = JSON.stringify({
+                    message: 'Validation Failed',
+                    errors: [{ message: `A pull request already exists for this branch. ${prUrl}` }],
+                });
+                return ok(`${body}\n422`);
             }
-            return { ok: true, output: `${ghUrl}\n`, error: null };
+            const body = JSON.stringify({ number: 101, html_url: prUrl });
+            return ok(`${body}\n201`);
         }
         throw new Error(`buildMockCommand: unexpected command dispatched in this scenario: '${cmd}'`);
     };
     return { command, log };
+}
+
+// apra-fleet-tfx.8.4: finalizeAbort()'s PR-raising call sites now mint a
+// just-in-time push+pr credential via `callTool('provision_vcs_auth', ...)`
+// (ApraFleet.provisionVcsAuth) BEFORE building/dispatching the VCSModule
+// create-pull-request command -- so every scenario below that expects the PR
+// to actually be raised (as opposed to the callTool-absent graceful
+// degradation path, apra-fleet-tfx.8.1) must supply a working `callTool`.
+// Mirrors mock-sprint-harness.mjs's defaultMockCallTool() exactly.
+function mockAbortCallTool() {
+    return async (name, toolArgs) => {
+        if (name === 'provision_vcs_auth') {
+            const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+            return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+        }
+        return { content: [{ text: `✅ mock ${name}` }] };
+    };
 }
 
 // -----------------------------------------------------------------------
@@ -100,8 +136,8 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
     const branch = 'auto-sprint/abort-commits-exist';
     const { command, log } = buildMockCommand({
         commitCount: 2,
-        ghOutcome: 'created',
-        ghUrl: 'https://github.com/mock-org/mock-repo/pull/101',
+        prOutcome: 'created',
+        prUrl: 'https://github.com/mock-org/mock-repo/pull/101',
     });
     const logs = [];
     const error = new SprintPlanRejectedError('Plan rejected after 3 rounds', {
@@ -117,6 +153,7 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
         member: 'local',
         command,
         log: (m) => logs.push(m),
+        callTool: mockAbortCallTool(),
     });
 
     check(result.commitCount === 2, `Expected commitCount 2, got: ${JSON.stringify(result)}`);
@@ -129,14 +166,14 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
         `Expected a 'git push -u origin ${branch}' command to be dispatched, command log: ${JSON.stringify(log)}`
     );
 
-    const prCmd = log.find((c) => c.startsWith('gh pr create'));
-    check(!!prCmd, `Expected a 'gh pr create' command to be dispatched, command log: ${JSON.stringify(log)}`);
+    const prCmd = log.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+    check(!!prCmd, `Expected a VCSModule 'curl ... /pulls' create-pull-request command to be dispatched, command log: ${JSON.stringify(log)}`);
     check(
-        prCmd.includes(`--title "Auto-sprint [ABORTED]: ${branch}"`),
-        `Expected the [ABORTED] PR title prefix to appear EXACTLY, got: ${prCmd}`
+        prCmd.includes(`"title":"Auto-sprint [ABORTED]: ${branch}"`),
+        `Expected the [ABORTED] PR title prefix to appear EXACTLY in the JSON payload, got: ${prCmd}`
     );
     check(
-        prCmd.includes('--base "main"') && prCmd.includes(`--head "${branch}"`),
+        prCmd.includes('"base":"main"') && prCmd.includes(`"head":"${branch}"`),
         `Expected the PR to target base 'main' from head '${branch}', got: ${prCmd}`
     );
     check(
@@ -154,10 +191,10 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
 });
 
 // -----------------------------------------------------------------------
-// (b) same abort, but zero commits beyond base -> no `gh pr create` call at
-// all (a zero-commit-abort is not worth an empty-diff PR).
+// (b) same abort, but zero commits beyond base -> no create-pull-request
+// call at all (a zero-commit-abort is not worth an empty-diff PR).
 // -----------------------------------------------------------------------
-test('finalizeAbort: 0 commits beyond base -> no gh pr create call, zero-commit-abort reason', async () => {
+test('finalizeAbort: 0 commits beyond base -> no create-pull-request call, zero-commit-abort reason', async () => {
     const branch = 'auto-sprint/abort-zero-commits';
     const { command, log } = buildMockCommand({ commitCount: 0 });
     const logs = [];
@@ -170,6 +207,7 @@ test('finalizeAbort: 0 commits beyond base -> no gh pr create call, zero-commit-
         member: 'local',
         command,
         log: (m) => logs.push(m),
+        callTool: mockAbortCallTool(),
     });
 
     check(result.commitCount === 0, `Expected commitCount 0, got: ${JSON.stringify(result)}`);
@@ -178,7 +216,7 @@ test('finalizeAbort: 0 commits beyond base -> no gh pr create call, zero-commit-
     check(result.reason === 'zero-commit-abort', `Expected reason 'zero-commit-abort', got: ${JSON.stringify(result)}`);
 
     check(!log.some((c) => c.startsWith('git push')), `Expected NO 'git push' call for a zero-commit abort, command log: ${JSON.stringify(log)}`);
-    check(!log.some((c) => c.startsWith('gh pr create')), `Expected NO 'gh pr create' call for a zero-commit abort, command log: ${JSON.stringify(log)}`);
+    check(!log.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')), `Expected NO create-pull-request call for a zero-commit abort, command log: ${JSON.stringify(log)}`);
     check(
         logs.some((m) => m.includes('0 commits beyond') && m.includes('no [ABORTED] PR raised')),
         `Expected a logged message explaining the zero-commit-abort policy, logs: ${JSON.stringify(logs)}`
@@ -245,8 +283,8 @@ test('mock sprint: a zero-commit sprint-abort dispatches no gh pr create but sti
             `Expected zero doer dispatches (no commits possible), got: ${JSON.stringify(scenario.dispatched.map((d) => d.agent))}`
         );
         check(
-            !scenario.commandLog.some((c) => c.startsWith('gh pr create')),
-            `Expected NO 'gh pr create' dispatch for a zero-commit abort, commandLog: ${JSON.stringify(scenario.commandLog)}`
+            !scenario.commandLog.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')),
+            `Expected NO create-pull-request dispatch for a zero-commit abort, commandLog: ${JSON.stringify(scenario.commandLog)}`
         );
 
         const terminalState = scenario.states.find((e) => e.namespace === 'terminal');
@@ -263,15 +301,16 @@ test('mock sprint: a zero-commit sprint-abort dispatches no gh pr create but sti
 });
 
 // -----------------------------------------------------------------------
-// (c) `gh pr create` returning "already exists" is swallowed (not thrown);
-// the existing PR's URL is parsed out of the error text and surfaced.
+// (c) VCSModule's create-pull-request curl call returning HTTP 422 "already
+// exists" is swallowed (not thrown); the existing PR's URL is parsed out of
+// the response body and surfaced.
 // -----------------------------------------------------------------------
 test('finalizeAbort: gh pr create "already exists" is swallowed, existing PR URL surfaced, no throw', async () => {
     const branch = 'auto-sprint/abort-idempotent-pr';
     const { command, log } = buildMockCommand({
         commitCount: 1,
-        ghOutcome: 'already-exists',
-        ghUrl: 'https://github.com/mock-org/mock-repo/pull/55',
+        prOutcome: 'already-exists',
+        prUrl: 'https://github.com/mock-org/mock-repo/pull/55',
     });
     const logs = [];
     const error = new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null });
@@ -286,21 +325,22 @@ test('finalizeAbort: gh pr create "already exists" is swallowed, existing PR URL
             member: 'local',
             command,
             log: (m) => logs.push(m),
+            callTool: mockAbortCallTool(),
         });
     } catch (err) {
         thrown = err;
     }
 
-    check(thrown === null, `Expected finalizeAbort() NOT to throw on an "already exists" gh pr create failure, got: ${thrown ? thrown.message : ''}`);
+    check(thrown === null, `Expected finalizeAbort() NOT to throw on an "already exists" (422) create-pull-request response, got: ${thrown ? thrown.message : ''}`);
     check(result.reason === 'already-exists', `Expected reason 'already-exists', got: ${JSON.stringify(result)}`);
     check(result.pushed === true, `Expected pushed:true (the branch push itself succeeded before the idempotent PR-create), got: ${JSON.stringify(result)}`);
     check(
         result.prUrl === 'https://github.com/mock-org/mock-repo/pull/55',
-        `Expected the EXISTING PR's URL to be parsed out of the gh error text and surfaced, got: ${JSON.stringify(result)}`
+        `Expected the EXISTING PR's URL to be parsed out of the 422 response body and surfaced, got: ${JSON.stringify(result)}`
     );
     check(
-        log.some((c) => c.startsWith('gh pr create')),
-        `Expected a 'gh pr create' command to still have been dispatched, command log: ${JSON.stringify(log)}`
+        log.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')),
+        `Expected a VCSModule 'curl ... /pulls' create-pull-request command to still have been dispatched, command log: ${JSON.stringify(log)}`
     );
     check(
         logs.some((m) => m.includes('already exists') && m.includes('idempotent success')),
@@ -319,8 +359,8 @@ test('regression: a successful (PASS) sprint still raises a normal, non-[ABORTED
         console.log('Running mock sprint scenario (PASS/FAIL finalization regression check: PASS side)...');
         const passRun = await runOnce('abortprpass');
         check(passRun.result && passRun.result.status === 'success', `Expected the PASS regression run to succeed, got: ${JSON.stringify(passRun.result)}`);
-        const prCmd = passRun.commandLog.find((c) => c.startsWith('gh pr create'));
-        check(!!prCmd, `Expected a 'gh pr create' command to be dispatched, commandLog: ${JSON.stringify(passRun.commandLog)}`);
+        const prCmd = passRun.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+        check(!!prCmd, `Expected a VCSModule create-pull-request command to be dispatched, commandLog: ${JSON.stringify(passRun.commandLog)}`);
         check(!prCmd.includes('[ABORTED]'), `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${prCmd}`);
     });
 });
@@ -338,7 +378,7 @@ test('regression: an explicit final FAIL verdict still raises a normal, non-[ABO
         });
         check(!failRun.error, `Expected the FAIL regression scenario not to throw: ${failRun.error ? failRun.error.message : ''}`);
         check(failRun.result && failRun.result.status === 'failed', `Expected a FAIL final verdict to produce status:'failed', got: ${JSON.stringify(failRun.result)}`);
-        const prCmd = failRun.commandLog.find((c) => c.startsWith('gh pr create'));
+        const prCmd = failRun.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
         check(!!prCmd, `A FAIL verdict must still publish a PR, commandLog: ${JSON.stringify(failRun.commandLog)}`);
         check(prCmd.includes('FAIL'), `Expected the PR title/body to include the FAIL verdict, got: ${prCmd}`);
         check(!prCmd.includes('[ABORTED]'), `An ordinary FAIL-verdict PR must NOT carry the [ABORTED] prefix, got: ${prCmd}`);
@@ -379,6 +419,18 @@ function makeQueuedAbortCommandMock(script) {
 const QOK = (output = '') => ({ ok: true, output, error: null });
 const qfail = (error) => ({ ok: false, output: '', error });
 
+// apra-fleet-tfx.8.4: every (5d5.1) scenario below that expects finalizeAbort()
+// to reach the PR-raising step (result.reason === 'aborted-pr-created') must
+// answer the VCSModule call sites too -- the repo-derivation `git remote
+// get-url origin` probe, the just-provisioned credential-token read, and the
+// curl POST create-pull-request dispatch itself -- plus supply a `callTool`
+// so the just-in-time push+pr credential mint (provision_vcs_auth) succeeds.
+const VCS_MODULE_SCRIPT = (prUrl) => ({
+    'git remote get-url origin': [QOK('https://github.com/mock-org/mock-repo.git')],
+    '.fleet-git-credential-': [QOK('protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n')],
+    '/pulls': [QOK(`${JSON.stringify({ number: 101, html_url: prUrl })}\n201`)],
+});
+
 test('(5d5.1) an auth-classified git fetch failure heals once via onAuthFailure and the retry succeeds', async () => {
     const branch = 'auto-sprint/abort-fetch-auth-heal';
     const { command, calls } = makeQueuedAbortCommandMock({
@@ -388,7 +440,7 @@ test('(5d5.1) an auth-classified git fetch failure heals once via onAuthFailure 
         ],
         'git rev-list --count': [QOK('2')],
         'git push': [QOK('To mock-remote\n * [new branch] (mocked)')],
-        'gh pr create': [{ ok: true, output: 'https://github.com/mock-org/mock-repo/pull/201\n', error: null }],
+        ...VCS_MODULE_SCRIPT('https://github.com/mock-org/mock-repo/pull/201'),
     });
     let healCalls = 0;
     const onAuthFailure = async (info) => {
@@ -404,6 +456,7 @@ test('(5d5.1) an auth-classified git fetch failure heals once via onAuthFailure 
         member: 'local',
         command,
         onAuthFailure,
+        callTool: mockAbortCallTool(),
     });
 
     check(result.reason === 'aborted-pr-created', `expected the abort to still complete successfully after self-heal, got: ${JSON.stringify(result)}`);
@@ -423,7 +476,7 @@ test('(5d5.1) an auth-classified git push failure heals once via onAuthFailure a
             qfail('remote: Invalid username or token.'),
             QOK('To mock-remote\n * [new branch] (mocked)'),
         ],
-        'gh pr create': [{ ok: true, output: 'https://github.com/mock-org/mock-repo/pull/202\n', error: null }],
+        ...VCS_MODULE_SCRIPT('https://github.com/mock-org/mock-repo/pull/202'),
     });
     let healCalls = 0;
     const onAuthFailure = async () => { healCalls += 1; };
@@ -435,6 +488,7 @@ test('(5d5.1) an auth-classified git push failure heals once via onAuthFailure a
         member: 'local',
         command,
         onAuthFailure,
+        callTool: mockAbortCallTool(),
     });
 
     check(result.reason === 'aborted-pr-created', `expected the abort to still complete successfully after self-heal, got: ${JSON.stringify(result)}`);
@@ -516,7 +570,7 @@ test('(5d5.1) the happy path (git ops succeed first try) is unaffected -- no sel
         'git fetch origin': [QOK('')],
         'git rev-list --count': [QOK('2')],
         'git push': [QOK('To mock-remote\n * [new branch] (mocked)')],
-        'gh pr create': [{ ok: true, output: 'https://github.com/mock-org/mock-repo/pull/203\n', error: null }],
+        ...VCS_MODULE_SCRIPT('https://github.com/mock-org/mock-repo/pull/203'),
     });
     let healCalls = 0;
     const onAuthFailure = async () => { healCalls += 1; };
@@ -528,6 +582,7 @@ test('(5d5.1) the happy path (git ops succeed first try) is unaffected -- no sel
         member: 'local',
         command,
         onAuthFailure,
+        callTool: mockAbortCallTool(),
     });
 
     check(result.reason === 'aborted-pr-created', `expected a normal successful abort, got: ${JSON.stringify(result)}`);

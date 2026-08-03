@@ -94,6 +94,30 @@ test('unit: isNonRetryableDispatchError matches auth/trust signatures and nothin
 // the concurrent full real-bd suite run, where the parent bug's notes
 // separately track an unrelated eft.85 concurrency-contention false-negative
 // on this same file).
+// apra-fleet-tfx.8.4: buildMockFleetApi()'s default callTool (used whenever a
+// scenario does not supply its own -- see mock-sprint-harness.mjs's
+// defaultMockCallTool) is now wired unconditionally (previously opt-in only),
+// so a scenario that does NOT override it gets a generic 'mock <name>'
+// success for EVERY tool including provision_llm_auth -- which would make
+// this test's own LLM-auth self-heal (runner.js's onLlmAuthFailure,
+// createLlmAuthSelfHealCallback) succeed and retry through the whole
+// PLANNER_DISPATCH_RETRY_DELAYS_MS ladder, defeating the exact "no retry can
+// fix an auth failure" invariant this test exists to pin. The real
+// provision_llm_auth tool is a no-op for a local member -- only an
+// interactive /login on that machine can refresh those credentials (see
+// createLlmAuthSelfHealCallback's doc comment) -- so this scenario supplies
+// its own callTool mirroring that real, deterministic-failure response
+// (isError:true, the same generic MCP-level "this call did not succeed"
+// signal createLlmAuthSelfHealCallback also checks for) instead of relying
+// on the generic default (same pattern final-review-auth-self-heal.test.mjs
+// uses to exercise the OPPOSITE, successful-heal path).
+const localMemberSkipsLlmAuthHeal = async (name) => {
+    if (name === 'provision_llm_auth') {
+        return { isError: true, content: [{ text: 'Skipped: local member credentials can only be refreshed via an interactive /login on this machine.' }] };
+    }
+    return { content: [{ text: `mock ${name}` }] };
+};
+
 test('mock sprint: Planner auth failure aborts the retry loop after ONE attempt instead of exhausting the backoff', { timeout: scaledTimeout(120000) }, async () => {
     await withScenarioMarkers('plannerauthnoretry', async () => {
         console.log('Running mock sprint scenario (Planner dispatch always fails with an Authentication failed response)...');
@@ -103,6 +127,7 @@ test('mock sprint: Planner auth failure aborts the retry loop after ONE attempt 
             members: ['local'],
             taskSpecs: [{ title: 'Task: Planner auth-failure no-retry scenario work' }],
             maxCycles: 1,
+            callTool: localMemberSkipsLlmAuthHeal,
             plannerHandler: async () => {
                 plannerCalls += 1;
                 return {

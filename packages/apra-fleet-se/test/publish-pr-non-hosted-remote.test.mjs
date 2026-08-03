@@ -96,8 +96,8 @@ test('mock sprint: hosted GitHub origin remote still routes through PR creation 
             `Expected the origin-remote classification probe to be dispatched, commandLog: ${JSON.stringify(run.commandLog)}`
         );
         check(
-            run.commandLog.some((c) => c.startsWith('gh pr create') && c.includes(`--head "${run.branch}"`)),
-            `Expected 'gh pr create' to still be dispatched for the hosted remote, commandLog: ${JSON.stringify(run.commandLog)}`
+            run.commandLog.some((c) => /^curl -sS -X POST\b/.test(c) && /\/pulls\b/.test(c) && c.includes(`"head":"${run.branch}"`)),
+            `Expected VCSModule's PR-create curl command to still be dispatched for the hosted remote, commandLog: ${JSON.stringify(run.commandLog)}`
         );
 
         // The target/epic bead must NOT be closed directly (the only `bd

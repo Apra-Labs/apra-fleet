@@ -77,13 +77,13 @@ test('mock sprint: a persistently failing Publish push keeps the computed verdic
         // Nothing downstream of the push runs: a PR cannot be raised for
         // commits that never reached the remote.
         check(
-            scenario.commandLog.every((c) => !/^gh pr create/.test(c)),
-            `expected no 'gh pr create' after a failed publish push, commands: ${JSON.stringify(scenario.commandLog.filter((c) => /^gh /.test(c)))}`,
+            scenario.commandLog.every((c) => !(/^curl -sS -X POST\b/.test(c) && /\/pulls\b/.test(c))),
+            `expected no VCSModule PR-create curl command after a failed publish push, commands: ${JSON.stringify(scenario.commandLog.filter((c) => /^curl /.test(c)))}`,
         );
     });
 });
 
-test('mock sprint: the Publish push success path is unchanged -- one push, gh pr create still raised, pushed:true', { timeout: 180000 }, async () => {
+test('mock sprint: the Publish push success path is unchanged -- one push, VCSModule PR create still raised, pushed:true', { timeout: 180000 }, async () => {
     await withScenarioMarkers('publishpushok', async () => {
         const scenario = await runDevelopLoopScenario('publishpushok', {
             members: ['local'],
@@ -105,8 +105,8 @@ test('mock sprint: the Publish push success path is unchanged -- one push, gh pr
             `expected exactly one publish-push attempt on the success path, got ${publishPushes.length}`,
         );
         check(
-            scenario.commandLog.some((c) => /^gh pr create/.test(c)),
-            `expected 'gh pr create' to still be dispatched on the success path, commands: ${JSON.stringify(scenario.commandLog.filter((c) => /^gh /.test(c)))}`,
+            scenario.commandLog.some((c) => /^curl -sS -X POST\b/.test(c) && /\/pulls\b/.test(c)),
+            `expected VCSModule's PR-create curl command to still be dispatched on the success path, commands: ${JSON.stringify(scenario.commandLog.filter((c) => /^curl /.test(c)))}`,
         );
     });
 });

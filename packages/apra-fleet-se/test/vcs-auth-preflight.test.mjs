@@ -259,12 +259,33 @@ describe('runSprintCycle: the real withGitSync pushCode-gated preflight wiring',
             });
 
             assert.ok(!result.error, `scenario should not abort: ${result.error ? result.error.message : ''}`);
+            // apra-fleet-tfx.8/tfx.8.4: raiseVcsPrForMember() mints its OWN
+            // just-in-time push+pr credential immediately before the PR
+            // dispatch, IN ADDITION to any push preflight -- so this
+            // scenario (which runs to a successful PR-raising Publish PR
+            // step) now expects exactly TWO provision_vcs_auth calls: the
+            // withGitSync preflight's 'push' mint before the doer's first
+            // pushCode:true dispatch, and the PR step's separate 'push+pr'
+            // mint. Both target the same code-writing member; the harvester's
+            // later dispatch still skips on the cached-fresh 'push'
+            // credential (proof the preflight cache itself is unaffected).
             assert.equal(
                 vcsCalls.length,
-                1,
-                `expected exactly one provision_vcs_auth call (the doer's first pushCode:true dispatch; the harvester's later dispatch on the SAME member must skip on the cached-fresh credential), got ${vcsCalls.length}: ${JSON.stringify(vcsCalls)}`,
+                2,
+                `expected exactly two provision_vcs_auth calls (the doer's preflight 'push' mint, and the PR step's just-in-time 'push+pr' mint; the harvester's later dispatch on the SAME member must still skip on the cached-fresh 'push' credential), got ${vcsCalls.length}: ${JSON.stringify(vcsCalls)}`,
             );
-            assert.equal(vcsCalls[0].member_name, 'member-doer', `expected the sole preflight call to target the code-writing member, got: ${JSON.stringify(vcsCalls[0])}`);
+            assert.ok(
+                vcsCalls.every((c) => c.member_name === 'member-doer'),
+                `expected both preflight and JIT PR-provisioning calls to target the code-writing member, got: ${JSON.stringify(vcsCalls)}`,
+            );
+            assert.ok(
+                vcsCalls.some((c) => c.git_access === 'push'),
+                `expected one call to be the withGitSync preflight's 'push' mint, got: ${JSON.stringify(vcsCalls)}`,
+            );
+            assert.ok(
+                vcsCalls.some((c) => c.git_access === 'push+pr'),
+                `expected one call to be the PR step's just-in-time 'push+pr' mint, got: ${JSON.stringify(vcsCalls)}`,
+            );
             assert.ok(
                 vcsCalls.every((c) => c.member_name !== 'member-reviewer'),
                 `a read-only role member must never trigger a preflight provision_vcs_auth call, got: ${JSON.stringify(vcsCalls)}`,

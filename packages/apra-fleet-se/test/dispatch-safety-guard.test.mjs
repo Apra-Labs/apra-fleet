@@ -234,6 +234,18 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // fetch (`bd list --status=${BACKLOG_STATUSES} --json`) was removed -- the
 // per-sprint fleet-sprint viewer now shows sprint progress only, backlog
 // exploration is the supervisor UX's job. Net -1 command() call site.
+// 40 -> 40 (apra-fleet-tfx.8 / tfx.8.1): the Publish PR and finalizeAbort
+// call sites were re-wired off `gh pr create` onto VCSModule's REST
+// create-pull-request dispatch. This REMOVED the two `gh pr create`
+// command() sites (one per PR-raising path) and ADDED exactly two command()
+// sites, both now consolidated in the shared raiseVcsPrForMember() helper:
+// (1) readMemberVcsCredentialToken()'s read of the just-provisioned
+// git-credential-helper script, and (2) the VCSModule-built `curl ... /pulls`
+// dispatch itself. -2 + 2 nets ZERO, so the count stays 40 -- verified by
+// running this test (and checkPath against dc1aa80~1) rather than by
+// arithmetic. NOTE: the tfx.8 issue text cited 44; that was a stale
+// projection that never materialized on this branch -- 40 is the actual,
+// measured value and the one asserted here.
 const EXPECTED_COMMAND_COUNT = 40;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
