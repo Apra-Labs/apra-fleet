@@ -238,12 +238,13 @@ describe('composePermissions -- Copilot proactive', () => {
 // ---------------------------------------------------------------------------
 
 describe('composePermissions -- Claude reactive grant', () => {
-  it('reads existing settings.local.json and merges new grants', async () => {
+  it('reads existing settings.json and merges new grants (apra-fleet-mf7)', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
 
     const existing = JSON.stringify({ permissions: { allow: ['Read', 'Write', 'Bash(git:*)'] } });
-    // First call is the read of existing settings.local.json
+    // First call is the read of existing settings.json -- the file deploy.md's
+    // Step 0 (and every other permission checker) actually reads.
     mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
     // mkdir + write calls
     mockExecCommand.mockResolvedValue(OK);
@@ -260,13 +261,23 @@ describe('composePermissions -- Claude reactive grant', () => {
     expect(result).toContain('Bash(docker-compose:*)');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    // Should have read the existing file
-    expect(allCmds.some(cmd => cmd.includes('cat .claude/settings.local.json'))).toBe(true);
+    // Should have read the existing settings.json (the checker's source), not settings.local.json
+    expect(allCmds.some(cmd => cmd.includes('cat .claude/settings.json'))).toBe(true);
 
-    // Write command should include both old and new permissions
     const writes = allCmds.filter(cmd => cmd.includes('cat >'));
+
+    // The grant must land in settings.json -- the file every permission checker reads --
+    // merged with the pre-existing allow list, not overwritten.
+    const settingsJsonWrite = writes.find(cmd => cmd.includes('.claude/settings.json'))!;
+    expect(settingsJsonWrite).toBeDefined();
+    expect(settingsJsonWrite).toContain('Read');
+    expect(settingsJsonWrite).toContain('Write');
+    expect(settingsJsonWrite).toContain('Bash(git:*)');
+    expect(settingsJsonWrite).toContain('Bash(docker:*)');
+
+    // settings.local.json (personal/machine-local overrides: mcpServers disable,
+    // skillOverrides) is still delivered separately, unaffected by this fix.
     const writeCmd = writes.find(cmd => cmd.includes('.claude/settings.local.json'))!;
-    expect(writeCmd).toContain('Read');
     expect(writeCmd).toContain('Bash(docker:*)');
   });
 
