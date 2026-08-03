@@ -489,6 +489,21 @@ const FALLBACK_integReport = {
                 required: ['id', 'reason'],
             },
         },
+        // apra-fleet: out-of-scope test failures observed and cross-linked/filed
+        // per integ-test-runner.md Step 1c. Mirrors integ-test-runner-output.json;
+        // keep the two in sync.
+        observedFailures: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    test: { type: 'string' },
+                    cause: { type: 'string' },
+                    beadId: { type: 'string' },
+                },
+                required: ['test', 'cause', 'beadId'],
+            },
+        },
     },
     required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary'],
 };
@@ -554,13 +569,16 @@ export const finalVerdict = {
     properties: {
         verdict: { type: 'string', enum: ['PASS', 'FAIL'] },
         notes: { type: 'string' },
-        // Stabilization log iteration 5: on FAIL, the final reviewer's
-        // actionable findings must land in BEADS (the only artifact the
-        // NEXT sprint's planner reads) -- notes alone only reach the PR
-        // body and the analysis doc. Same item shape as reviewerVerdict's
-        // newTasks; validated by the same validateNewTask() allowlist and
-        // created by the orchestrator (the reviewer never touches bd
-        // itself). Optional so a PASS needs no boilerplate.
+        // Stabilization log iteration 5, widened 2026-08: the final reviewer's
+        // actionable findings must land in BEADS (the only artifact the NEXT
+        // sprint's planner reads) -- notes alone only reach the PR body and
+        // the analysis doc. This is NOT gated to FAIL: a PASS run can still
+        // surface secondary findings (e.g. a real defect that doesn't block
+        // this epic's own acceptance criteria) that would otherwise be lost
+        // prose with no follow-up mechanism. Same item shape as
+        // reviewerVerdict's newTasks; validated by the same validateNewTask()
+        // allowlist and created by the orchestrator (the reviewer never
+        // touches bd itself). Optional so a clean PASS needs no boilerplate.
         newTasks: {
             type: 'array',
             items: {
@@ -571,6 +589,26 @@ export const finalVerdict = {
                     priority: { type: 'string' },
                 },
                 required: ['title', 'description', 'priority'],
+            },
+        },
+        // Beads the review found should be reopened -- e.g. a task closed on
+        // insufficient evidence, or a defect in already-closed work this diff
+        // did not actually fix. Unlike reviewerVerdict's per-round reopenIds
+        // (a flat id list sharing one blanket `notes` across every reopened
+        // id), the Final Review's reopens can span unrelated beads with
+        // unrelated causes, so each entry carries its OWN reason -- the
+        // orchestrator appends it as a durable note on that specific bead
+        // (never a blanket broadcast). Optional so a clean PASS needs no
+        // boilerplate.
+        reopenIds: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+                required: ['id', 'reason'],
             },
         },
     },

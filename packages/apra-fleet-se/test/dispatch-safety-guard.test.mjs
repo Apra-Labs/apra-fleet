@@ -246,7 +246,10 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // arithmetic. NOTE: the tfx.8 issue text cited 44; that was a stale
 // projection that never materialized on this branch -- 40 is the actual,
 // measured value and the one asserted here.
-const EXPECTED_COMMAND_COUNT = 40;
+const EXPECTED_COMMAND_COUNT = 41;
+// Bumped 40 -> 41: Final Review's reopenIds persist block gained one new
+// command() call site (`bd update <id> --status=open --append-notes ...`),
+// verified compliant with member_name (member_name: orchestratorMember).
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

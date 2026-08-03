@@ -133,6 +133,26 @@ This is a distinct duty from Step 1-4's feature workflow -- work both lists
 if your prompt hands you both, and report both in your Step 4 output (see
 the `verifySetClosed`/`verifySetLeftOpen` fields below).
 
+## Step 1c -- Any test failure you observe, even out-of-scope, must leave a trail
+
+If a full-suite or targeted run you execute anywhere in this role (Step 1b's deployed-build
+verification, or Step 2's per-feature tests) surfaces failures that do not belong to the
+beads you were handed, do not silently absorb them into a clean `passed: true` just because
+you traced the cause elsewhere (uncommitted WIP for another bead, an untracked file, etc.).
+Correctly identifying the cause is not the same as it being tracked:
+
+1. `bd search` for an existing bead that already covers that failing test/file. If found,
+   note the cross-reference in your `summary` and in `observedFailures` (Step 4) -- no new
+   bead needed.
+2. If none exists, file one (`[integ]`, type=bug, priority per the rules in Step 3, parented
+   under the bead that appears to own the root cause if identifiable, else the sprint scope)
+   with a note that it was observed but not reproduced by your own handed work, e.g.
+   "uncommitted WIP for 417.4" or "untracked file, no owning bead."
+
+This does not block closing the verify-set beads/features that did hold -- it only ensures a
+real, currently-failing test never disappears with zero paper trail just because it wasn't
+"your" bug.
+
 ## Step 2 -- Run tests for each feature
 
 For each open feature:
@@ -234,6 +254,9 @@ Return:
   array if none, or if your dispatch prompt named no verify-set ids)
 - `verifySetLeftOpen`: array of `{id, reason}` for verify-set bead ids left open this
   run -- either a gap bug was filed (`reason` names it) or the result was inconclusive
+- `observedFailures`: array of `{test, cause, beadId}` for out-of-scope test failures you
+  observed per Step 1c (empty array if none) -- `beadId` is the existing bead you
+  cross-linked, or the new one you filed
 - `summary`: one paragraph describing what was tested, what passed, what failed
 
 ## Output schema
@@ -250,7 +273,8 @@ placeholder):
   "bugsFiled": ["BD-31"],
   "verifySetClosed": ["BD-40"],
   "verifySetLeftOpen": [{"id": "BD-41", "reason": "gap bug BD-42 filed -- Stop control still 500s"}],
-  "summary": "Ran integration tests for 4 open features and 2 verify-set beads; 3 features passed and were closed, 1 failed on the password reset email flow (BD-31 filed) and left open; BD-40 verified and closed, BD-41 still fails (BD-42 filed)."
+  "observedFailures": [{"test": "mock-sprint-stall-same-cycle-integ-closure.test.mjs", "cause": "untracked file, no owning bead", "beadId": "BD-43"}],
+  "summary": "Ran integration tests for 4 open features and 2 verify-set beads; 3 features passed and were closed, 1 failed on the password reset email flow (BD-31 filed) and left open; BD-40 verified and closed, BD-41 still fails (BD-42 filed); full-suite run also showed 1 unrelated failure in an untracked test file, filed as BD-43."
 }
 ```
 

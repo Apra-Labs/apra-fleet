@@ -2615,8 +2615,12 @@ export async function createChildBeadWithAllocatedId(opts) {
  */
 export async function persistNewTaskBestEffort({ createFn, command, member, parentId, newTask, cycle, log = () => {}, stage }) {
     try {
-        await createFn();
-        return true;
+        // createFn's return value (when it forwards createChildBeadWithAllocatedId's
+        // { childId }) lets callers log exactly which bead id was created, not just
+        // a count. Existing callers that ignore the return value are unaffected --
+        // this is still truthy either way.
+        const result = await createFn();
+        return result ?? true;
     } catch (err) {
         log(`[fleet-sprint] newTask bd create FAILED (non-fatal, ${stage}): ${err.message} -- falling back to parent-bead notes.`);
         try {
@@ -4324,7 +4328,7 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
         `Evidence: ${closedCount} bead(s) closed in scope; ${openAtGoalCount} bead(s) still open at or above goal priority ${goal}.`,
-        `Diff range to review if useful: ${baseBranch}..${branch} (base_branch..branch).`,
+        `The evidence above (bead counts, deploy/integ outcomes) is a summary, not proof -- it reflects what the sprint claims, not what the code does. You MUST review the actual net diff yourself before returning PASS; a PASS grounded only in bead-closure counts is not acceptable. Diff range: ${baseBranch}..${branch} (base_branch..branch). Review it as a whole against what closed -- net changes vs. the beads claimed done, not a commit-by-commit walk.`,
     ];
     if (deployFailures.length > 0) {
         lines.push(
@@ -4366,11 +4370,25 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
         'never rubber-stamp PASS regardless of open goal-priority beads or deploy/integration failures.'
     );
     lines.push(
-        'If your verdict is FAIL: also return your actionable findings as `newTasks` ' +
-        '(title, description, priority each) so they persist in beads for the next sprint -- ' +
-        'notes alone do not reach the backlog. One task per distinct finding; reference ' +
-        'concrete files/tests in each description. NEVER touch beads yourself (no bd create/update); ' +
-        'the orchestrator applies your newTasks. On PASS, omit newTasks or return [].'
+        'Return any actionable findings as `newTasks` (title, description, priority each) so they ' +
+        'persist in beads for the next sprint -- notes alone do not reach the backlog. This applies ' +
+        'on BOTH verdicts, not just FAIL: a PASS can still have real secondary findings (a defect that ' +
+        'does not block this epic\'s own acceptance criteria, a missing test, a follow-up worth tracking) ' +
+        'that would otherwise be lost prose with no way for a future sprint to act on them. One task per ' +
+        'distinct finding; reference concrete files/tests in each description. Omit newTasks or return ' +
+        '[] only when you have nothing further to flag.'
+    );
+    lines.push(
+        'If any ALREADY-CLOSED bead should be reopened -- e.g. it was closed on insufficient evidence, ' +
+        'or a defect remains in work already marked done -- return it in `reopenIds` as ' +
+        '`{ id, reason }`. Every entry needs its OWN specific reason (not a shared blanket note): the ' +
+        'orchestrator appends `reason` verbatim as a durable note on that exact bead, so a vague or ' +
+        'missing reason is useless to whoever reads it later. Do not use reopenIds for beads that were ' +
+        'never closed -- that is what `newTasks` is for.'
+    );
+    lines.push(
+        'NEVER touch beads yourself (no bd create/update/reopen) -- the orchestrator applies your ' +
+        'newTasks and reopenIds.'
     );
     return lines.join('\n\n');
 }
@@ -8150,6 +8168,13 @@ async function runSprintCycle(context) {
                 // failures.
                 log(`Integration tests PASSED this cycle (C${cycle}): ${integResult.featuresClosed} feature(s) closed, ${integResult.issuesCreated} bug(s) filed. ${integResult.summary}`);
             }
+            // apra-fleet: Step 1c in integ-test-runner.md requires out-of-scope
+            // failures observed during verification to be cross-linked or filed,
+            // not silently dropped just because the cycle otherwise passed.
+            if (Array.isArray(integResult.observedFailures) && integResult.observedFailures.length > 0) {
+                log(`Integration tests C${cycle}: ${integResult.observedFailures.length} out-of-scope failure(s) observed and tracked -- ` +
+                    integResult.observedFailures.map((f) => `${f.test} (${f.cause}) -> ${f.beadId}`).join(' | '));
+            }
             // apra-fleet-jfo D6: verify-fail bounce cap. A gap bug filed under a
             // verify-set parent makes that parent structurally ineligible again
             // at next classification (its child count now includes an open bug)
@@ -8598,14 +8623,19 @@ async function runSprintCycle(context) {
     // see src/viewer/index.mjs), a second independent reason a raw JSON
     // re-print here would be redundant.
 
-    // Persist a FAIL's actionable findings to BEADS -- the only artifact the
-    // next sprint's planner reads (notes reach only the PR body and the
-    // analysis doc). Same orchestrator-applies contract, allowlist validation,
-    // and id-allocator path as the per-round reviewer's newTasks; a rejected
-    // finding is logged and recorded, never sprint-fatal.
+    // Persist the Final Review's actionable findings to BEADS -- the only
+    // artifact the next sprint's planner reads (notes reach only the PR body
+    // and the analysis doc). NOT gated to FAIL: a PASS can still surface real
+    // secondary findings (defects that don't block this epic's own
+    // acceptance criteria) that would otherwise be lost prose with no
+    // follow-up mechanism. Same orchestrator-applies contract, allowlist
+    // validation, and id-allocator path as the per-round reviewer's
+    // newTasks; a rejected finding is logged and recorded, never sprint-fatal.
     const finalNewTasks = Array.isArray(finalVerdictResult.newTasks) ? finalVerdictResult.newTasks : [];
-    if (finalVerdictResult.verdict === 'FAIL' && finalNewTasks.length > 0) {
-        let createdCount = 0;
+    let dPushNeededAfterFinalFindings = false;
+    if (finalNewTasks.length > 0) {
+        const createdIds = [];
+        let createdCountUnknownId = 0;
         for (const newTask of finalNewTasks) {
             const validation = validateNewTask(newTask);
             if (!validation.ok) {
@@ -8613,7 +8643,7 @@ async function runSprintCycle(context) {
                 rejectedNewTasks.push({ cycle: finalCycleLabel, reason: validation.reason, raw: newTask });
                 // Never let a rejected finding vanish -- persist it verbatim to
                 // the parent bead's notes as a fallback. This is the
-                // highest-stakes site of the three: Final Review's FAIL findings
+                // highest-stakes site of the three: Final Review's findings
                 // are the handoff to the next sprint's planner. Non-fatal;
                 // degrades to the run log.
                 try {
@@ -8632,20 +8662,88 @@ async function runSprintCycle(context) {
                 newTask, cycle: finalCycleLabel, log, stage: 'final-review',
                 createFn: async () => {
                     const floor = await computeChildFloor({ command, member: orchestratorMember, parentId: targetIssues[0] });
-                    await createChildBeadWithAllocatedId({
+                    return createChildBeadWithAllocatedId({
                         command, allocator: childIdAllocator, member: orchestratorMember,
                         title, description, priority, parentId: targetIssues[0],
                         sprintId: sprintMutexId, floor, log,
-                        label: `Create follow-up task from Final Review FAIL findings: ${title}`,
+                        label: `Create follow-up task from Final Review findings: ${title}`,
                     });
                 },
             });
-            if (created) createdCount += 1;
+            if (created) {
+                dPushNeededAfterFinalFindings = true;
+                if (created.childId) {
+                    createdIds.push(created.childId);
+                    log(`Final Review newTasks: created ${created.childId} ("${title}") under ${targetIssues[0]}.`);
+                } else {
+                    createdCountUnknownId += 1;
+                    log(`Final Review newTasks: created a follow-up task ("${title}") under ${targetIssues[0]} (bd-derived id, not tracked by the allocator).`);
+                }
+            }
         }
-        if (createdCount > 0) {
-            log(`Final Review: persisted ${createdCount} FAIL finding(s) to beads as follow-up task(s) under ${targetIssues[0]}.`);
-            await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+        if (createdIds.length > 0 || createdCountUnknownId > 0) {
+            log(`Final Review: persisted ${createdIds.length + createdCountUnknownId} finding(s) to beads as follow-up task(s) under ${targetIssues[0]}${createdIds.length > 0 ? `: ${createdIds.join(', ')}` : ''}.`);
         }
+    }
+
+    // Beads the Final Review flagged for reopening -- each with its OWN
+    // reason (unlike the per-round reviewer's reopenIds, which shares one
+    // blanket `notes` string across every id this round). Same goal-scope
+    // guard as the per-round reviewer: never reopen a below-goal-priority
+    // bead into scope this sprint no longer targets. Reason is appended
+    // (never overwritten) via --append-notes so it never clobbers the
+    // bead's existing notes.
+    const finalReopenIds = Array.isArray(finalVerdictResult.reopenIds) ? finalVerdictResult.reopenIds : [];
+    if (finalReopenIds.length > 0) {
+        let reopenAllowlist = null;
+        try {
+            const inScopeNow = await bdListScoped('');
+            reopenAllowlist = new Map(inScopeNow.map((b) => [b.id, b]));
+        } catch {
+            reopenAllowlist = null; // lookup failed -- apply reopens unguarded rather than dropping them
+        }
+        const reopenedIds = [];
+        for (const entry of finalReopenIds) {
+            const id = entry && typeof entry.id === 'string' ? entry.id.trim() : '';
+            const reason = entry && typeof entry.reason === 'string' ? entry.reason.trim() : '';
+            if (!id || !reason) {
+                log(`Final Review reopenIds: SKIPPED a malformed entry (both id and reason are required) -- ${JSON.stringify(entry)}`);
+                continue;
+            }
+            const bead = reopenAllowlist ? reopenAllowlist.get(id) : null;
+            if (reopenAllowlist && bead && typeof bead.priority === 'number' && bead.priority > goalMax) {
+                log(`Final Review reopenIds: SKIPPED '${id}' (priority P${bead.priority} is below this sprint's goal ${validated.goal} -- deferred scope, not reopened).`);
+                continue;
+            }
+            try {
+                // bd update has no --append-notes-file / --stdin equivalent for
+                // notes (only --body-file/--stdin, and only for description) --
+                // --append-notes only accepts an inline string. reason is
+                // LLM-authored free text, so it must go through the same
+                // flatten-to-single-line, shell-injection-safe sanitizer used
+                // for the PR body's notes, never interpolated raw.
+                const safeReason = sanitizePrText(reason);
+                if (!safeReason) {
+                    log(`Final Review reopenIds: SKIPPED '${id}' (reason sanitized to empty -- nothing safe to record).`);
+                    continue;
+                }
+                await command(
+                    `bd update ${id} --status=open --append-notes "[Final Review C${finalCycleLabel}] Reopened -- ${safeReason}"`,
+                    { member_name: orchestratorMember, silent: true, label: `Reopen ${id} per Final Review verdict` }
+                );
+                reopenedIds.push(id);
+                dPushNeededAfterFinalFindings = true;
+                log(`Final Review reopenIds: reopened ${id} -- ${safeReason}`);
+            } catch (reopenErr) {
+                log(`[fleet-sprint] Final Review reopen FAILED (non-fatal) for '${id}': ${reopenErr.message} -- reason preserved verbatim in this run log: ${reason}`);
+            }
+        }
+        if (reopenedIds.length > 0) {
+            log(`Final Review: reopened ${reopenedIds.length} bead(s): ${reopenedIds.join(', ')}.`);
+        }
+    }
+    if (dPushNeededAfterFinalFindings) {
+        await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
     }
 
     // =======================
@@ -8896,9 +8994,14 @@ async function runSprintCycle(context) {
                 throw err;
             }
         }
-        // No duplicate log() dump -- see dispatchReview() for why.
+        // No duplicate log() dump -- see dispatchReview() for why. The file
+        // path itself IS worth a line: it is the durable, committed record of
+        // the Final Review verdict (and everything else in analysisText) --
+        // unlike the verdict object, it survives after this process exits.
         if (harvesterResult.status !== 'OK') {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
+        } else {
+            log(`Harvester: wrote sprint analysis (including the Final Review verdict) to ${analysisArtifactFile}.`);
         }
     } catch (err) {
         if (err instanceof AgentOutputError) {
