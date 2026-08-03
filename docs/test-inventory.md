@@ -945,6 +945,14 @@ source-build fallback is still a requirement:
 
 Either way this must not be left red. Flagged as a decision, not a removal candidate.
 
+**RESOLVED (2026-08-03):** operator confirmed the `deploy.md` rewrite in `669065a1`
+was deliberate (explicit "strip gh/CI entirely, build+install locally" instruction) --
+the darwin-x64 source-build fallback is no longer a distinct code path since ALL
+platforms now always build from source (no `ARTIFACT`/`FALLBACK_BUILD` selection logic
+exists anywhere in `deploy.md` post-rewrite). The subject is genuinely gone, not
+regressed. Test file deleted; `apra-fleet-workflow` suite confirmed 238/238 green after
+removal.
+
 ### 5.2 `serve-wiring-integration.test.mjs` -- concurrency-dependent failure, reproduced
 
 Measured both ways during this audit:
