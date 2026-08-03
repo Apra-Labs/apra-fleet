@@ -26,6 +26,17 @@
  * redaction marker. Callers must log/echo `logSafeCommand`, never `command`.
  */
 
+import { VCS_FAILURE_KINDS, VCS_RETRYABLE_KINDS } from './errors.mjs';
+import {
+    DEFAULT_VCS_PROVIDER,
+    registerVcsProvider,
+    unregisterVcsProvider,
+    isKnownVcsProvider,
+    listVcsProviders,
+    getVcsProvider,
+    resolveVcsProviderChain,
+} from './vcs-providers/index.mjs';
+
 const GITHUB_API = 'https://api.github.com';
 const REDACTED = '***REDACTED***';
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
@@ -180,6 +191,156 @@ export function buildCommentCommand(params) {
     return buildVcsCommand('comment', params);
 }
 
-export const VCSModule = { buildCreatePrCommand, buildCommentCommand };
+// ---------------------------------------------------------------------------
+// Failure classification (apra-fleet-647.1.3.1)
+// ---------------------------------------------------------------------------
+//
+// classifyFailure() is the ONE place VCS stderr is ever parsed. No other file
+// may carry a regex over a git/dolt/provider error string: add a pattern to a
+// provider file under ./vcs-providers/ instead. Downstream code branches on
+// the neutral `kind` ALONE -- never on `providerCode`, never on `raw`.
+//
+// TAXONOMY (the neutral vocabulary; canonical definitions in errors.mjs
+// VCS_FAILURE_KINDS)
+//
+//   kind                   | retryable | meaning                                  | remediation
+//   -----------------------+-----------+------------------------------------------+---------------------------
+//   AUTH_EXPIRED           | false     | credential missing/stale/invalid         | re-provision, then retry
+//   AUTH_DENIED            | false     | identity refused; lacks access           | operator grants access
+//   DIVERGED               | false     | non-FF / unmerged / conflicted           | never auto-resolve
+//   TRANSIENT              | true      | network / server / lock blip             | retry, bounded
+//   NO_REMOTE              | false     | no remote configured; nothing to sync    | none; benign no-op
+//   UNSUPPORTED_OPERATION  | false     | action not implemented for this provider | fix the call/config
+//   UNKNOWN                | false     | unrecognized -- must surface, not guess  | operator triage
+//
+// `retryable` is true ONLY for TRANSIENT, and means "safe to re-run the same
+// command with NO remediation first". AUTH_EXPIRED is therefore false even
+// though the self-heal path retries once -- that retry follows remediation.
+//
+// PRECEDENCE. Kinds are checked in KIND_PRECEDENCE order and the first match
+// wins, so a stderr carrying several signals gets the most dangerous reading:
+// DIVERGED before AUTH before TRANSIENT is exactly runner.js's
+// classifyGitFailure ordering -- a diverged state must never be misread as a
+// retryable blip because its message happens to contain a lock or credential
+// word, and an auth failure must never be blindly retried. NO_REMOTE and
+// UNSUPPORTED_OPERATION come last because their texts are the narrowest and
+// the least dangerous to under-match. A provider may override the order with
+// its own `precedence` array (dolt's classifier, for example, promotes
+// no-remote to first) without any change here.
+
+const KIND_PRECEDENCE = Object.freeze([
+    VCS_FAILURE_KINDS.DIVERGED,
+    VCS_FAILURE_KINDS.AUTH_EXPIRED,
+    VCS_FAILURE_KINDS.AUTH_DENIED,
+    VCS_FAILURE_KINDS.TRANSIENT,
+    VCS_FAILURE_KINDS.NO_REMOTE,
+    VCS_FAILURE_KINDS.UNSUPPORTED_OPERATION,
+]);
+
+/**
+ * Classify a failed VCS command's raw stderr/stdout into the neutral taxonomy.
+ *
+ * PURE: no I/O, no clock, no randomness, no module-level mutable state, and no
+ * global (/g) regexes -- calling it twice with the same input always returns a
+ * deeply-equal result.
+ *
+ * NON-THROWING, including for an unknown/absent provider, which falls back to
+ * the default provider's chain. This is a DELIBERATE asymmetry with
+ * buildVcsCommand() above, which DOES throw "ERROR:" on an unsupported
+ * provider: building a wrong command silently would corrupt a repo, whereas a
+ * classifier that throws would convert a recoverable sync failure into a crash
+ * -- and would do it precisely when something is already going wrong. An
+ * unmatched stderr returns UNKNOWN, which is never retried and never
+ * self-healed, so a mis-fallback degrades to "surface it", not to a guess.
+ *
+ * @param {string} rawStderr - the raw stderr/stdout of the failed command
+ * @param {{ provider?: string }} [opts] - provider selects the rule chain;
+ *   defaults to DEFAULT_VCS_PROVIDER ('github'), which reproduces runner.js's
+ *   full auth pattern set exactly.
+ * @returns {{ kind: string, providerCode: string|null, retryable: boolean, raw: string }}
+ *   `kind` is the ONLY field control flow may branch on. `providerCode` is the
+ *   provider-specific token (e.g. an HTTP status, or an Azure DevOps
+ *   'TF401019') carried as a DIAGNOSTIC detail. `raw` is the input, normalized
+ *   to a string, so a caller can log the evidence behind the verdict.
+ */
+export function classifyFailure(rawStderr, opts = {}) {
+    const raw = String(rawStderr == null ? '' : rawStderr);
+    const providerName = (opts && opts.provider) || DEFAULT_VCS_PROVIDER;
+    const chain = resolveVcsProviderChain(providerName);
+
+    const precedence = chain.find((p) => Array.isArray(p.precedence))?.precedence || KIND_PRECEDENCE;
+
+    let kind = VCS_FAILURE_KINDS.UNKNOWN;
+    outer:
+    for (const candidate of precedence) {
+        // Most-derived provider first within each kind, so a provider can
+        // sharpen a base verdict without editing the base.
+        for (const provider of chain) {
+            const patterns = (provider.rules && provider.rules[candidate]) || [];
+            for (const re of patterns) {
+                if (re.test(raw)) {
+                    kind = candidate;
+                    break outer;
+                }
+            }
+        }
+    }
+
+    let providerCode = null;
+    for (const provider of chain) {
+        if (typeof provider.extractProviderCode === 'function') {
+            providerCode = provider.extractProviderCode(raw) ?? null;
+            if (providerCode !== null) break;
+        }
+    }
+
+    return { kind, providerCode, retryable: VCS_RETRYABLE_KINDS.has(kind), raw };
+}
+
+/**
+ * Adapter from the neutral taxonomy to runner.js's legacy git verdict
+ * vocabulary, so apra-fleet-647.1.3.2 can delete GIT_*_PATTERNS and delegate
+ * classifyGitFailure() to classifyFailure() with NO verdict change.
+ *
+ * Both AUTH kinds collapse to 'auth' (today's classifier does not distinguish
+ * them). NO_REMOTE and UNSUPPORTED_OPERATION collapse to 'unknown' because git
+ * has no such verdict today and 'unknown' is what those texts classify as --
+ * preserving parity, not inventing behavior.
+ *
+ * @param {string} kind - a VCS_FAILURE_KINDS member
+ * @returns {'diverged'|'auth'|'transient'|'unknown'}
+ */
+export function toGitVerdict(kind) {
+    switch (kind) {
+        case VCS_FAILURE_KINDS.DIVERGED: return 'diverged';
+        case VCS_FAILURE_KINDS.AUTH_EXPIRED:
+        case VCS_FAILURE_KINDS.AUTH_DENIED: return 'auth';
+        case VCS_FAILURE_KINDS.TRANSIENT: return 'transient';
+        default: return 'unknown';
+    }
+}
+
+export const VCSModule = {
+    buildCreatePrCommand,
+    buildCommentCommand,
+    classifyFailure,
+    toGitVerdict,
+    registerVcsProvider,
+    unregisterVcsProvider,
+    isKnownVcsProvider,
+    listVcsProviders,
+    getVcsProvider,
+    DEFAULT_VCS_PROVIDER,
+};
+
+export {
+    VCS_FAILURE_KINDS,
+    DEFAULT_VCS_PROVIDER,
+    registerVcsProvider,
+    unregisterVcsProvider,
+    isKnownVcsProvider,
+    listVcsProviders,
+    getVcsProvider,
+};
 
 export default VCSModule;

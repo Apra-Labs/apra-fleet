@@ -10,6 +10,66 @@
 
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 
+// ---------------------------------------------------------------------------
+// Neutral VCS failure taxonomy (apra-fleet-647.1.3.1)
+// ---------------------------------------------------------------------------
+//
+// The provider-agnostic vocabulary VCSModule.classifyFailure() emits, and the
+// ONLY vocabulary downstream code is allowed to branch on. It deliberately
+// contains no provider words: a caller decides what to do from `kind` alone,
+// never by re-reading raw stderr and never by asking which provider produced
+// it. Provider-specific detail (an Azure DevOps 'TF401019', a GitHub HTTP
+// status) travels separately in `providerCode` as a DIAGNOSTIC, never as a
+// control-flow input.
+//
+//   AUTH_EXPIRED          The presented credential is missing, stale or
+//                         rejected as invalid. RE-PROVISIONING CAN FIX IT --
+//                         this is the kind the one-shot provision_vcs_auth
+//                         self-heal path exists for.
+//   AUTH_DENIED           The identity was understood and refused: the
+//                         principal lacks access. Re-minting the SAME
+//                         credential cannot fix it; an operator must grant
+//                         access.
+//   DIVERGED              The remote moved / a non-fast-forward, unmerged or
+//                         conflicted state. Never retried blindly -- under the
+//                         single-writer stance this is proof the invariant is
+//                         already broken.
+//   TRANSIENT             A network / server / lock blip. The ONLY kind for
+//                         which `retryable` is true.
+//   NO_REMOTE             No remote is configured at all -- there is nothing
+//                         to push or pull. Benign, not an error condition.
+//   UNSUPPORTED_OPERATION The requested action is not implemented for this
+//                         provider. A programming/config error; retrying and
+//                         re-authenticating are both pointless.
+//   UNKNOWN               Explicitly unrecognized. Never retried, never
+//                         self-healed -- an unmatched stderr must surface, not
+//                         be guessed at.
+//
+// `retryable` means exactly one thing: SAFE TO RE-RUN THE SAME COMMAND WITH NO
+// REMEDIATION FIRST. It is therefore false for AUTH_EXPIRED even though the
+// auth self-heal path does retry once -- that retry is only legal AFTER
+// re-provisioning, which is remediation.
+export const VCS_FAILURE_KINDS = Object.freeze({
+    AUTH_EXPIRED: 'AUTH_EXPIRED',
+    AUTH_DENIED: 'AUTH_DENIED',
+    DIVERGED: 'DIVERGED',
+    TRANSIENT: 'TRANSIENT',
+    NO_REMOTE: 'NO_REMOTE',
+    UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
+    UNKNOWN: 'UNKNOWN',
+});
+
+/** The kinds that are safe to retry with no remediation -- TRANSIENT only.
+ *  See the `retryable` note above before adding to this set. */
+export const VCS_RETRYABLE_KINDS = Object.freeze(new Set([VCS_FAILURE_KINDS.TRANSIENT]));
+
+/** The kinds that mean "the credential is the problem" (either half of the
+ *  AUTH split), for callers that route both to the same remediation. */
+export const VCS_AUTH_KINDS = Object.freeze(new Set([
+    VCS_FAILURE_KINDS.AUTH_EXPIRED,
+    VCS_FAILURE_KINDS.AUTH_DENIED,
+]));
+
 /**
  * Thrown when a sprint's Plan phase exhausts its planning rounds (3, per
  * apra-fleet-unw.15) without the plan-reviewer returning an APPROVED
