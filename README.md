@@ -19,7 +19,7 @@ workforce -- on any machine, anywhere, using every LLM provider at once.
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-fleet)
 
-[Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [Docs](https://apra-labs.github.io/apra-fleet)
+[Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [fleet-sprint Getting Started Guide](docs/fleet-sprint-getting-started.md) - [Docs](https://apra-labs.github.io/apra-fleet)
 
 </div>
 
@@ -141,6 +141,14 @@ apra-fleet workflow fleet-sprint \
 ```
 
 Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop till closure
+
+> **New to fleet-sprint?** Read the
+> [fleet-sprint Getting Started Guide](docs/fleet-sprint-getting-started.md)
+> ([HTML](docs/fleet-sprint-getting-started.html) -
+> [PDF](docs/fleet-sprint-getting-started.pdf)) -- a plain-English walkthrough
+> of what it does, what you need to prepare (beads backlog, `deploy.md`,
+> test playbooks, member registration), how to launch and monitor a sprint,
+> and what's automated versus what's still your call.
 
 **Running fleet-sprint after npm install:** the `apra-fleet workflow
 fleet-sprint ...` command above is the same one command for everyone --
@@ -282,6 +290,7 @@ third-party verticals.
 
 | Topic | Link |
 |-------|------|
+| **fleet-sprint Getting Started Guide (start here, plain English)** | [Markdown](docs/fleet-sprint-getting-started.md) - [HTML](docs/fleet-sprint-getting-started.html) - [PDF](docs/fleet-sprint-getting-started.pdf) |
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |

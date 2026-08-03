@@ -111,6 +111,10 @@ Fall back to non-`--json`/non-`--assignee` forms if unsupported, then filter cli
 visibly separate. `bd show <id> --json` before any judgment call -- never flag
 description quality from a summary line alone.
 
+If a `bd` JSON payload is too large to read directly, redirect it under a scratch dir
+instead of the repo root -- e.g. `.beads/tmp/<name>.json` (already covered by the
+existing `.beads/` gitignore entry) -- never write scratch JSON to the repo root.
+
 ## Step 2 -- Structural deadlock scan (every time)
 
 `bd dep cycles` does not traverse parent-child paths, so it misses the most common real
