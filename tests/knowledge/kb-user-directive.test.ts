@@ -98,6 +98,7 @@ describe('F1: MCP capture of a user-directive is a pending proposal', () => {
       summary: 'Standing user rule',
       content: 'The user said: never force-push to main.',
       symbols: ['gitPolicy'],
+      source_files: ['src/fixture.ts'],
     }));
 
     // No clamp note (the request defaulted to INFERRED, not CONFIRMED), but the
@@ -116,6 +117,7 @@ describe('F1: MCP capture of a user-directive is a pending proposal', () => {
       summary: 'Standing user rule',
       content: 'Always run the ASCII sweep before commit.',
       symbols: ['asciiSweep'],
+      source_files: ['src/fixture.ts'],
       role: 'reviewer',
     }));
     const entry = (await provider.query({ ids: [out.id] })).results[0];
@@ -130,6 +132,7 @@ describe('F1: MCP capture of a user-directive is a pending proposal', () => {
       summary: 'Standing user rule',
       content: 'Prefer small PRs.',
       symbols: ['prPolicy'],
+      source_files: ['src/fixture.ts'],
     }));
     const entry = (await provider.query({ ids: [out.id] })).results[0];
     expect(entry.author).toBe('unknown');
@@ -142,6 +145,7 @@ describe('F1: MCP capture of a user-directive is a pending proposal', () => {
       summary: 'Standing user rule',
       content: 'Deploy Fridays only.',
       symbols: ['deployWindow'],
+      source_files: ['src/fixture.ts'],
       confidence: 'CONFIRMED',
     }));
     const entry = (await provider.query({ ids: [out.id] })).results[0];
@@ -155,6 +159,7 @@ describe('F1: MCP capture of a user-directive is a pending proposal', () => {
       summary: 'Standing user rule',
       content: 'Attempt to route a directive to the global KB.',
       symbols: ['globalRule'],
+      source_files: ['src/fixture.ts'],
       scope: 'global',
     }));
     const entry = (await provider.query({ ids: [out.id] })).results[0];
@@ -172,6 +177,7 @@ describe('F1/H2: pending proposals are excluded from retrieval defaults but visi
       summary: 'pending proposal',
       content: 'quokkaTerm: the user decided we deploy only on Fridays.',
       symbols: ['quokkaSymbol'],
+      source_files: ['src/fixture.ts'],
     }));
     const res = await provider.query({ query: 'quokkaTerm' });
     expect(res.results.some(e => e.id === out.id)).toBe(false);
@@ -184,6 +190,7 @@ describe('F1/H2: pending proposals are excluded from retrieval defaults but visi
       summary: 'pending proposal',
       content: 'wombat directive body',
       symbols: ['wombatSymbol'],
+      source_files: ['src/fixture.ts'],
     }));
     const primed = await provider.prime({ hint_symbols: ['wombatSymbol'] });
     expect(primed.top_entries.some(e => e.id === out.id)).toBe(false);
@@ -196,6 +203,7 @@ describe('F1/H2: pending proposals are excluded from retrieval defaults but visi
       summary: 'pending proposal',
       content: 'listable directive body',
       symbols: ['listSymbol'],
+      source_files: ['src/fixture.ts'],
     }));
     const listed = await provider.list({ type: 'user-directive' });
     expect(listed.some(e => e.id === out.id)).toBe(true);
@@ -208,6 +216,7 @@ describe('F1/H2: pending proposals are excluded from retrieval defaults but visi
       summary: 'pending proposal',
       content: 'flagged directive body',
       symbols: ['flagSymbol'],
+      source_files: ['src/fixture.ts'],
     }));
     const flagged = await provider.query({ flagged_only: true, include_stale: true });
     expect(flagged.results.some(e => e.id === out.id)).toBe(true);
@@ -224,6 +233,7 @@ describe('F1: directive activation primitives', () => {
       summary: 'pending proposal',
       content: 'approve directive body',
       symbols: ['approveSymbol'],
+      source_files: ['src/fixture.ts'],
     }));
 
     const active = await provider.approveDirective(out.id);
@@ -241,6 +251,7 @@ describe('F1: directive activation primitives', () => {
       summary: 'pending proposal',
       content: 'reject directive body',
       symbols: ['rejectSymbol'],
+      source_files: ['src/fixture.ts'],
     }));
 
     const rejected = await provider.rejectDirective(out.id);
@@ -350,9 +361,15 @@ describe('D6 semantic 2: an ACTIVE directive is never auto-decayed', () => {
       type: 'knowledge',
       title: 'A decayable concept',
       content: 'concept-level, no file link',
-      source_files: [],
+      source_files: ['src/fixture.ts'],
       confidence: 'INFERRED',
     }));
+    // KB-TRUST PHASE 1: decayConceptEntries() only touches empty-basis rows, and
+    // capture() now refuses to create one, so clear the basis to the legacy
+    // concept shape this CONTROL is about.
+    (provider as any).getDb()
+      .prepare('UPDATE entries SET source_files = ?, source_file_hashes = ? WHERE id = ?')
+      .run(JSON.stringify([]), JSON.stringify({}), id);
     const old = new Date(Date.now() - 60 * 86400 * 1000).toISOString();
     (provider as any).getDb().prepare('UPDATE entries SET last_accessed = ? WHERE id = ?').run(old, id);
 

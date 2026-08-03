@@ -57,7 +57,7 @@ function bibleEntry(over: Partial<BibleEntryFixture> & { id: string }): BibleEnt
     title: over.id + ' title token',
     summary: 'Summary for ' + over.id,
     symbols: [],
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     confidence: 'CONFIRMED',
     updated_at: '2026-07-07T00:00:00.000Z',
     ...over,
@@ -90,7 +90,7 @@ function localInput(over: Partial<KBEntryInput> = {}): KBEntryInput {
     title: 'local title',
     summary: 'local summary',
     content: 'local content',
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols: [],
     tags: [],
     content_hash: '',
@@ -156,12 +156,14 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
     expect(q.results.some(e => e.id === 'dir-1')).toBe(false);
   });
 
-  it('TEST 3: idempotent -- re-import of the same bible adds nothing (id-skip carries idempotency even for a symbol-less/file-less entry)', async () => {
+  it('TEST 3: idempotent -- re-import of the same bible adds nothing (id-skip carries idempotency even for a symbol-less entry)', async () => {
     const p = writeBible([
       bibleEntry({ id: 'idem-sym', symbols: ['idemSym'], source_files: ['src/idem.ts'] }),
-      // Symbol-less AND file-less: AUDN can NEVER dedupe this (empty arrays), so
-      // only the id-skip gate makes it idempotent (LOW-2).
-      bibleEntry({ id: 'idem-bare', symbols: [], source_files: [] }),
+      // Symbol-less: AUDN can NEVER dedupe this (symbolsOverlap is false on an
+      // empty array), so only the id-skip gate makes it idempotent (LOW-2).
+      // KB-TRUST PHASE 1: this fixture used to be file-less as well, which the
+      // capture basis check now rejects outright -- see the case below.
+      bibleEntry({ id: 'idem-bare', symbols: [], source_files: ['src/idem-bare.ts'] }),
     ]);
 
     const first = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
@@ -172,6 +174,24 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
     expect(second.imported).toBe(0);
     expect(second.skipped).toBe(2);
     expect(rowCount()).toBe(countAfterFirst); // no new rows
+  });
+
+  // KB-TRUST PHASE 1 (decided 2026-08-03): import is NOT exempt from the capture
+  // basis check. Dropping the zero-source_files entries of a legacy bible is the
+  // intended outcome -- those entries are the structurally unfalsifiable ones
+  // freshnessSweep() can never stale.
+  it('TEST 3a: a file-less bible entry is rejected rather than imported', async () => {
+    const p = writeBible([
+      bibleEntry({ id: 'has-basis', symbols: ['basisSym'], source_files: ['src/basis.ts'] }),
+      bibleEntry({ id: 'no-basis', symbols: [], source_files: [] }),
+    ]);
+
+    const report = JSON.parse(await kbImport({ repo: tmpRepo, path: p }));
+
+    expect(report.imported).toBe(1);
+    expect(report.rejected).toBe(1);
+    expect(rawRow('no-basis')).toBeUndefined();
+    expect(rawRow('has-basis')).toBeDefined();
   });
 
   it('TEST 4: AUDN routing -- duplicate skipped, refinement linked, contradiction flagged, each counted', async () => {

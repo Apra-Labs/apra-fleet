@@ -170,7 +170,7 @@ describe('KB learning -- capture and recall CI guards', () => {
       flagged_for_review: false,
       author: 'kb-token-test',
     });
-    await provider.promote(id, 'confirmed learning');
+    await provider.promote(id, 'confirmed learning: verified in fixture');
 
     const result = await provider.query({ query: 'Parser Evaluator inheritance' });
     expect(result.results.length).toBeGreaterThan(0);
@@ -219,7 +219,7 @@ describe('KB learning -- capture and recall CI guards', () => {
       flagged_for_review: false,
       author: 'kb-token-test',
     });
-    await provider.promote(taskAId, 'confirmed Task A correction');
+    await provider.promote(taskAId, 'confirmed Task A correction: verified in fixture');
 
     // Also capture the 5 eval files so prime warm session works
     for (const f of EVAL_FILES) {
@@ -251,7 +251,7 @@ describe('KB learning -- capture and recall CI guards', () => {
       content: 'Unrelated to any code.',
       confidence: 'CONFIRMED',
       symbols: ['PastaTimer', 'CookingEngine'],
-      source_files: [],
+      source_files: ['src/fixture.ts'],
       source: 'doer',
       tags: ['unrelated'],
       content_hash: '',

@@ -40,7 +40,7 @@ describe('SqliteProvider.list (T3.3, F8a)', () => {
   it('confidence filter returns only that tier', async () => {
     await provider.capture(makeInput({ confidence: 'UNVERIFIED', title: 'A', symbols: ['symA'] }));
     const { id } = await provider.capture(makeInput({ confidence: 'INFERRED', title: 'B', symbols: ['symB'] }));
-    await provider.promote(id, 'test');
+    await provider.promote(id, 'test fixture: verified against the seeded tree');
 
     const confirmed = await provider.list({ confidence: 'CONFIRMED' });
     expect(confirmed.length).toBe(1);
@@ -184,7 +184,7 @@ describe('kb_list tool', () => {
   it('returns the stable reduced field set', async () => {
     await provider.capture(makeInput({ confidence: 'INFERRED', symbols: ['symTool'] }));
     const { id } = await provider.capture(makeInput({ title: 'ToPromote', confidence: 'INFERRED', symbols: ['symPromote'] }));
-    await provider.promote(id, 'confirmed by test');
+    await provider.promote(id, 'confirmed by test: basis verified');
 
     const parsed = JSON.parse(await kbList({ confidence: 'CONFIRMED' }));
     expect(parsed.total).toBe(1);

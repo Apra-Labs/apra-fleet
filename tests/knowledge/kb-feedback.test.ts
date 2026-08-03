@@ -14,7 +14,7 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
     title: 'Feedback test entry',
     summary: 'An entry that will receive feedback',
     content: 'Some content that may later prove wrong.',
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols: ['feedbackSubject'],
     tags: [],
     content_hash: '',
@@ -56,7 +56,7 @@ describe('SqliteProvider.feedback (T3.1, D7)', () => {
     // INFERRED, then promote). This still proves the "downvoted CONFIRMED stays
     // CONFIRMED-but-stale-flagged" contract precisely.
     const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
-    await provider.promote(id);
+    await provider.promote(id, 'test fixture: verified against the seeded tree');
     const before = await fetchEntry(id);
     expect(before.confidence).toBe('CONFIRMED');
 
@@ -98,7 +98,7 @@ describe('SqliteProvider.feedback (T3.1, D7)', () => {
       title: 'Proposed standing instruction',
       summary: 'A directive proposal, not yet approved',
       content: 'Always do X.',
-      source_files: [],
+      source_files: ['src/fixture.ts'],
       symbols: [],
       tags: [],
       content_hash: '',

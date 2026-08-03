@@ -47,7 +47,7 @@ describe('kb_promote', () => {
 
   it('promotes UNVERIFIED -> INFERRED', async () => {
     const { id } = await provider.capture(makeInput({ confidence: 'UNVERIFIED' }));
-    const result = await provider.promote(id);
+    const result = await provider.promote(id, 'test fixture: verified against the seeded tree');
     expect(result.confidence_before).toBe('UNVERIFIED');
     expect(result.confidence_after).toBe('INFERRED');
   });
@@ -56,8 +56,8 @@ describe('kb_promote', () => {
     // R5 (T1.2): provider.capture() clamps CONFIRMED -> INFERRED, so reach
     // CONFIRMED via the ladder, then assert a further promote is a no-op.
     const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
-    await provider.promote(id);
-    const result = await provider.promote(id);
+    await provider.promote(id, 'test fixture: verified against the seeded tree');
+    const result = await provider.promote(id, 'test fixture: verified against the seeded tree');
     expect(result.confidence_before).toBe('CONFIRMED');
     expect(result.confidence_after).toBe('CONFIRMED');
   });

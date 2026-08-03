@@ -31,7 +31,7 @@ afterEach(() => {
 describe('kb_harvest', () => {
   it('returns zero counts when no transcript is provided', async () => {
     const result = JSON.parse(await kbHarvest({}));
-    expect(result).toEqual({ entries_captured: 0, entries_updated: 0, entries_skipped: 0 });
+    expect(result).toEqual({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0 });
   });
 
   it('extracts learnings from transcript with pattern markers', async () => {
@@ -70,14 +70,14 @@ Bug: The cleanup handler in src/services/registry.ts does not close the database
   });
 
   it('deduplicates already-captured learnings via AUDN', async () => {
-    const transcript = `Note: The registry uses lazy initialization and must be called before other operations.`;
+    const transcript = `Note: The registry uses lazy initialization and must be called before other operations in src/registry.ts.`;
 
     await provider.capture({
       type: 'learning',
       title: 'The registry uses lazy initialization and must be called before other operations.',
       summary: 'The registry uses lazy initialization and must be called before other operations.',
       content: 'The registry uses lazy initialization and must be called before other operations.',
-      source_files: [],
+      source_files: ['src/registry.ts'],
       symbols: [],
       tags: [],
       content_hash: '',
@@ -104,6 +104,10 @@ describe('kb_harvest routes per repo_path (two repos, one process)', () => {
     fs.mkdirSync(dir, { recursive: true });
     execFileSync('git', ['init', '-q', '.'], { cwd: dir });
     execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: dir });
+    // KB-TRUST PHASE 1: harvest captures need a basis that resolves in the repo
+    // the provider is anchored at, so each fixture repo carries one real file.
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'registry.ts'), 'export const registry = 1;\n');
     return dir;
   }
 
@@ -130,8 +134,8 @@ describe('kb_harvest routes per repo_path (two repos, one process)', () => {
   });
 
   it('a harvest for repo A and a harvest for repo B land in two distinct kb.sqlite files, with no cross-contamination', async () => {
-    const transcriptA = `Note: Repo alpha's registry module uses a lazy singleton via getOrCreate.`;
-    const transcriptB = `Bug: Repo beta's cleanup handler leaks a database connection on double-close.`;
+    const transcriptA = `Note: Repo alpha's registry module in src/registry.ts uses a lazy singleton via getOrCreate.`;
+    const transcriptB = `Bug: Repo beta's cleanup handler in src/registry.ts leaks a database connection on double-close.`;
 
     const resultA = JSON.parse(await kbHarvest({ repo_path: repoA, session_transcript: transcriptA }));
     expect(resultA.entries_captured).toBeGreaterThanOrEqual(1);

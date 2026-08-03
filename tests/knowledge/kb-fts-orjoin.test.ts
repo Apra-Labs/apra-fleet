@@ -52,7 +52,7 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
     title: 'Placeholder title',
     summary: 'Placeholder summary',
     content: 'Placeholder content',
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols: [],
     tags: [],
     content_hash: '',

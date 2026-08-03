@@ -34,7 +34,7 @@ async function seedPending(text = 'The user said: never force-push to main.', sy
     title: text.slice(0, 60),
     summary: 'pending proposal',
     content: text,
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols,
     tags: [],
     content_hash: '',

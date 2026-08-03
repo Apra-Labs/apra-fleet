@@ -14,7 +14,7 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
     title: 'Test entry',
     summary: 'Test summary',
     content: 'Test content',
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols: [],
     tags: [],
     content_hash: '',

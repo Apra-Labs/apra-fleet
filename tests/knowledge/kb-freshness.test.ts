@@ -102,6 +102,10 @@ describe('SqliteProvider staleness at prime (T2.2 / F3, revised D3)', () => {
     expect(row.results[0].stale).toBe(false);
   });
 
+  // KB-TRUST PHASE 1: capture() now refuses an entry with no source_files, so a
+  // basis-less row can only arise as a LEGACY row predating that rule -- which
+  // is exactly what real KBs still contain, and exactly why the rule exists.
+  // Build one directly so the never-staled property stays covered.
   it('entry with no source_files (empty basis) is untouched even when unrelated files change', async () => {
     const unrelated = path.join(tmpDir, 'unrelated.ts');
     fs.writeFileSync(unrelated, 'export const unrelated = true;');
@@ -110,8 +114,11 @@ describe('SqliteProvider staleness at prime (T2.2 / F3, revised D3)', () => {
       title: 'freshnessSymbol3 no basis entry',
       content: 'Behavior involving freshnessSymbol3.',
       symbols: ['freshnessSymbol3'],
-      source_files: [],
+      source_files: ['src/fixture.ts'],
     }));
+    (provider as any).getDb()
+      .prepare('UPDATE entries SET source_files = ?, source_file_hashes = ? WHERE id = ?')
+      .run(JSON.stringify([]), JSON.stringify({}), id);
 
     fs.writeFileSync(unrelated, 'export const unrelated = false; // changed');
 
@@ -297,17 +304,21 @@ describe('SqliteProvider.freshnessSweep + bidirectional staleness (T1.3, F2/D2)'
   it('empty/malformed basis: never staled, never revived, never counted in checked', async () => {
     const unrelated = path.join(tmpDir, 'unrelated-sweep.ts');
     fs.writeFileSync(unrelated, 'export const u = 1;');
-    // Empty basis (no source_files).
+    // Empty basis. KB-TRUST PHASE 1 refuses this at capture, so it can only be a
+    // LEGACY row -- cleared directly, which is how such rows really exist.
     const { id: emptyId } = await provider.capture(makeInput({
       title: 'emptyBasisSymbol entry',
       symbols: ['emptyBasisSymbol'],
-      source_files: [],
+      source_files: ['src/fixture.ts'],
     }));
+    (provider as any).getDb()
+      .prepare('UPDATE entries SET source_files = ?, source_file_hashes = ? WHERE id = ?')
+      .run(JSON.stringify([]), JSON.stringify({}), emptyId);
     // Malformed basis via direct SQL.
     const { id: badId } = await provider.capture(makeInput({
       title: 'malformedBasisSymbol entry',
       symbols: ['malformedBasisSymbol'],
-      source_files: [],
+      source_files: ['src/fixture.ts'],
     }));
     (provider as any).getDb()
       .prepare("UPDATE entries SET source_file_hashes = '{not valid json' WHERE id = ?")

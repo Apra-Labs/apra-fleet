@@ -34,7 +34,7 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
     title: 'placeholder title token',
     summary: 'placeholder summary',
     content: 'placeholder content',
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols: [],
     tags: [],
     content_hash: '',
@@ -76,14 +76,14 @@ async function captureContradictionPair(
     summary: symbol + ' fails under load',
     content: symbol + ' is broken when called concurrently.',
     symbols: [symbol],
-    source_files: opts.originalFiles ?? [],
+    source_files: opts.originalFiles ?? ['src/fixture.ts'],
   }));
   const challengerOut = await provider.capture(makeInput({
     title: symbol + ' is fixed report',
     summary: symbol + ' now works correctly',
     content: symbol + ' is fixed as of the latest release.',
     symbols: [symbol],
-    source_files: opts.challengerFiles ?? [],
+    source_files: opts.challengerFiles ?? ['src/fixture.ts'],
   }));
   expect(challengerOut.audn_decision).toBe('flagged');
   return { originalId: originalOut.id, challengerId: challengerOut.id };
@@ -382,7 +382,14 @@ describe('SqliteProvider.reconcilePrefilter (T3.1, D4 HARDENED, resolution R1)',
 
   it('leaves a pair alone when either side has an empty basis', async () => {
     const { originalId, challengerId } = await captureContradictionPair('emptyBasisPrefilterSym');
-    // Neither side carries source_files -- both bases are empty.
+    // Neither side carries source_files -- both bases are empty. KB-TRUST PHASE 1
+    // refuses such a capture, so these can only be LEGACY rows; clear both bases
+    // directly, which is the only way the prefilter still meets one in the wild.
+    for (const id of [originalId, challengerId]) {
+      (provider as any).getDb()
+        .prepare('UPDATE entries SET source_files = ?, source_file_hashes = ? WHERE id = ?')
+        .run(JSON.stringify([]), JSON.stringify({}), id);
+    }
 
     const report = await provider.reconcilePrefilter();
     expect(report.resolved).toHaveLength(0);

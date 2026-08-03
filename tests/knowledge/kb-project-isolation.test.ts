@@ -62,7 +62,7 @@ describe('KB project isolation', () => {
         content: 'execFile is safe; exec interpolates shell which causes injection risk',
         confidence: 'CONFIRMED',
         symbols: ['execFile', 'exec'],
-        source_files: [],
+        source_files: ['src/fixture.ts'],
         source: 'doer',
         tags: ['global', 'security'],
         scope: 'global',

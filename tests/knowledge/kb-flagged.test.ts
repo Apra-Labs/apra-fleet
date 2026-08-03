@@ -8,7 +8,7 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
     title: 'Registry initialization behavior',
     summary: 'How registry init works',
     content: 'The registry initializes lazily on first access.',
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols: ['initRegistry'],
     tags: [],
     content_hash: '',
@@ -53,9 +53,15 @@ describe('kb_query flagged_only', () => {
   });
 
   it('returns entry with contradiction_of set', async () => {
-    const { id: originalId } = await provider.capture(makeInput({ title: 'Original claim' }));
+    // Distinct bases: with a shared source_files list AUDN's filesOverlap would
+    // treat the challenger as a duplicate of the original and never add it.
+    const { id: originalId } = await provider.capture(makeInput({
+      title: 'Original claim',
+      source_files: ['src/original.ts'],
+    }));
     const { id: challengerId } = await provider.capture(makeInput({
       title: 'Contradicting claim',
+      source_files: ['src/challenger.ts'],
       contradiction_of: originalId,
     }));
 

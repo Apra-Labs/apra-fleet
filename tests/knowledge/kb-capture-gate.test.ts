@@ -55,6 +55,7 @@ describe('kb_capture CONFIRMED gate (D1)', () => {
       summary: 'Captured as UNVERIFIED',
       content: 'A low-trust learning.',
       symbols: ['unverifiedSymbol'],
+      source_files: ['src/fixture.ts'],
       confidence: 'UNVERIFIED',
     }));
 
@@ -70,6 +71,7 @@ describe('kb_capture CONFIRMED gate (D1)', () => {
       summary: 'No confidence supplied',
       content: 'Should default to INFERRED.',
       symbols: ['defaultSymbol'],
+      source_files: ['src/fixture.ts'],
     }));
 
     expect(out.confidence_clamped).toBe(false);
@@ -84,14 +86,15 @@ describe('kb_capture CONFIRMED gate (D1)', () => {
       summary: 'Captured then promoted',
       content: 'Starts UNVERIFIED, climbs the ladder via promote.',
       symbols: ['ladderSymbol'],
+      source_files: ['src/fixture.ts'],
       confidence: 'UNVERIFIED',
     }));
 
-    const first = await provider.promote(out.id);
+    const first = await provider.promote(out.id, 'test fixture: verified against the seeded tree');
     expect(first.confidence_before).toBe('UNVERIFIED');
     expect(first.confidence_after).toBe('INFERRED');
 
-    const second = await provider.promote(out.id);
+    const second = await provider.promote(out.id, 'test fixture: verified against the seeded tree');
     expect(second.confidence_before).toBe('INFERRED');
     expect(second.confidence_after).toBe('CONFIRMED');
 
@@ -116,7 +119,7 @@ describe('SqliteProvider.capture CONFIRMED clamp (F3 provider enforcement)', () 
       title: 'Provider-level CONFIRMED capture',
       summary: 'Captured straight through the provider as CONFIRMED',
       content: 'The HTTP route would mint this as CONFIRMED without the clamp.',
-      source_files: [],
+      source_files: ['src/fixture.ts'],
       symbols: ['providerClampSymbol'],
       tags: [],
       content_hash: '',
@@ -138,7 +141,7 @@ describe('SqliteProvider.capture CONFIRMED clamp (F3 provider enforcement)', () 
       title: 'Directive via provider',
       summary: 'A directive routed straight through the provider',
       content: 'Attempted active directive.',
-      source_files: [],
+      source_files: ['src/fixture.ts'],
       symbols: [],
       tags: [],
       content_hash: '',
@@ -164,7 +167,7 @@ describe('SqliteProvider.capture CONFIRMED clamp (F3 provider enforcement)', () 
       title: 'Provider capture then promote',
       summary: 'Captured INFERRED via provider, climbs to CONFIRMED via promote',
       content: 'Ladder check.',
-      source_files: [],
+      source_files: ['src/fixture.ts'],
       symbols: ['ladderProviderSymbol'],
       tags: [],
       content_hash: '',

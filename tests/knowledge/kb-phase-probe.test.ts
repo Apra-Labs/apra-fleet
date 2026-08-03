@@ -92,7 +92,7 @@ describe('KB phase learning curve -- stale savings grow monotonically', () => {
       title: 'caching strategy learning for sprint workflow',
       summary: 'Use lazy loading for caching strategy in sprint workflow.',
       content: 'Detailed caching strategy notes for the sprint workflow pipeline.',
-      source_files: [],
+      source_files: ['src/fixture.ts'],
       symbols: ['caching'],
       tags: ['caching', 'strategy'],
       content_hash: 'learning-hash-v1',

@@ -78,11 +78,21 @@ afterEach(() => {
   }
 });
 
+// KB-TRUST PHASE 1 (decided 2026-08-03): bible.autoCommit now defaults to FALSE,
+// so the tests below -- which are about the COMMIT MECHANICS, not the default --
+// opt in explicitly. The default itself is covered by
+// tests/knowledge/kb-export-autocommit-default.test.ts.
+function enableAutoCommit(): void {
+  fs.mkdirSync(path.dirname(KB_CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ bible: { autoCommit: true } }));
+}
+
 describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
   it('changed -> exactly one pathspec commit with pm-kb identity', async () => {
+    enableAutoCommit();
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const result = JSON.parse(await kbExport({ repo_path: repoDir }));
     expect(result.exported).toBe(1);
@@ -103,9 +113,10 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
   });
 
   it('content-unchanged -> no commit on re-export', async () => {
+    enableAutoCommit();
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const first = JSON.parse(await kbExport({ repo_path: repoDir }));
     expect(first.committed).toBe(true);
@@ -118,6 +129,7 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
   });
 
   it('git failure -> export still succeeds and logs a warning (non-fatal)', async () => {
+    enableAutoCommit();
     // A ".git" that exists but is not a real git repo (isGitRepo() checks
     // existsSync only) -- any actual git command inside fails.
     fs.rmSync(path.join(repoDir, '.git'), { recursive: true, force: true });
@@ -126,8 +138,8 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     const warnSpy = vi.spyOn(logHelpers, 'logWarn');
 
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const result = JSON.parse(await kbExport({ repo_path: repoDir }));
     expect(result.exported).toBe(1);
@@ -142,8 +154,8 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
     fs.writeFileSync(KB_CONFIG_PATH, JSON.stringify({ bible: { autoCommit: false } }));
 
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const result = JSON.parse(await kbExport({ repo_path: repoDir }));
     expect(result.exported).toBe(1);
@@ -155,13 +167,14 @@ describe('kb_export auto-commit (T2.3, F6a, D5 amended)', () => {
   });
 
   it('dirty unrelated file never committed (pathspec-only)', async () => {
+    enableAutoCommit();
     const otherPath = path.join(repoDir, 'other.txt');
     fs.writeFileSync(otherPath, 'unrelated dirty content');
     git(repoDir, ['add', 'other.txt']);
 
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const result = JSON.parse(await kbExport({ repo_path: repoDir }));
     expect(result.committed).toBe(true);

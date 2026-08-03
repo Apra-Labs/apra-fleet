@@ -57,7 +57,7 @@ describe('SqliteProvider.stats (T2.1, F5, D4)', () => {
   it('totals by confidence and type reflect a mixed fixture (whole-table, not liveness-filtered)', async () => {
     await provider.capture(makeInput({ type: 'learning', confidence: 'UNVERIFIED', title: 'L1', symbols: ['s1'] }));
     const inferred = await provider.capture(makeInput({ type: 'knowledge', confidence: 'INFERRED', title: 'K1', symbols: ['s2'] }));
-    await provider.promote(inferred.id, 'test');
+    await provider.promote(inferred.id, 'test fixture: verified against the seeded tree');
     await provider.capture(makeInput({ type: 'runbook', confidence: 'UNVERIFIED', title: 'R1', symbols: ['s3'], source_files: ['docs/r.md'] }));
 
     const stats = await provider.stats();
@@ -123,10 +123,10 @@ describe('SqliteProvider.stats (T2.1, F5, D4)', () => {
 
   it('promote_ratio = promoted_at IS NOT NULL / CONFIRMED count', async () => {
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test'); // UNVERIFIED -> INFERRED (no promoted_at yet)
-    await provider.promote(a.id, 'test'); // INFERRED -> CONFIRMED (promoted_at set)
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree'); // UNVERIFIED -> INFERRED (no promoted_at yet)
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree'); // INFERRED -> CONFIRMED (promoted_at set)
     await provider.capture(makeInput({ title: 'B', confidence: 'INFERRED', symbols: ['symB'] }));
-    await provider.promote((await provider.capture(makeInput({ title: 'C', confidence: 'INFERRED', symbols: ['symC'] }))).id, 'test');
+    await provider.promote((await provider.capture(makeInput({ title: 'C', confidence: 'INFERRED', symbols: ['symC'] }))).id, 'test fixture: verified against the seeded tree');
 
     const stats = await provider.stats();
     // 2 CONFIRMED entries (A, C), both with promoted_at set.
@@ -136,8 +136,8 @@ describe('SqliteProvider.stats (T2.1, F5, D4)', () => {
 
   it('coverage: exact match required, substring near-miss does not count', async () => {
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['resolveRepoPath'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const stats = await provider.stats({ symbols: ['resolveRepoPath', 'resolveRepoPathExtra', 'totallyMissing'] });
     expect(stats.coverage).toEqual({
@@ -199,8 +199,8 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
 
   it('bible absent -> present false, drift = all live CONFIRMED entries', async () => {
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const result = JSON.parse(await kbStats({ repo: tmpDir }));
     expect(result.bible).toEqual({ present: false, entries: 0, drift: 1 });
@@ -208,8 +208,8 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
 
   it('bible present, current -> drift 0', async () => {
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
     const entry = (await provider.query({ ids: [a.id] })).results[0];
 
     const fleetDir = path.join(tmpDir, '.fleet');
@@ -229,8 +229,8 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
 
   it('bible present with drift -> a newer live CONFIRMED entry not yet in the bible counts as drift', async () => {
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const fleetDir = path.join(tmpDir, '.fleet');
     fs.mkdirSync(fleetDir, { recursive: true });
@@ -238,7 +238,7 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
       path.join(fleetDir, 'kb-canonical.json'),
       JSON.stringify([{
         id: 'old-entry', type: 'knowledge', title: 'Old', summary: 'Old',
-        symbols: [], source_files: [], confidence: 'CONFIRMED',
+        symbols: [], source_files: ['src/fixture.ts'], confidence: 'CONFIRMED',
         updated_at: '2020-01-01T00:00:00.000Z',
       }]),
     );
@@ -251,8 +251,8 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
 
   it('malformed bible JSON degrades to the absent shape rather than throwing', async () => {
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const fleetDir = path.join(tmpDir, '.fleet');
     fs.mkdirSync(fleetDir, { recursive: true });
@@ -264,8 +264,8 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
 
   it('invalid repo path degrades to bible absent rather than throwing', async () => {
     const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
-    await provider.promote(a.id, 'test');
-    await provider.promote(a.id, 'test');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const result = JSON.parse(await kbStats({ repo: path.join(tmpDir, 'does-not-exist') }));
     expect(result.bible).toEqual({ present: false, entries: 0, drift: 1 });

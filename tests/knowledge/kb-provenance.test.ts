@@ -37,6 +37,7 @@ describe('kb_capture provenance stamping (T2.3 / D5)', () => {
       summary: 'Captured with a valid role hint',
       content: 'A doer captured this.',
       symbols: ['provenanceSymbolA'],
+      source_files: ['src/fixture.ts'],
       role: 'doer',
     }));
 
@@ -52,6 +53,7 @@ describe('kb_capture provenance stamping (T2.3 / D5)', () => {
       summary: 'Captured with a bogus role hint',
       content: 'Someone captured this with a made-up role.',
       symbols: ['provenanceSymbolB'],
+      source_files: ['src/fixture.ts'],
       role: 'totally-not-a-real-role',
     }));
 
@@ -66,6 +68,7 @@ describe('kb_capture provenance stamping (T2.3 / D5)', () => {
       summary: 'Captured with no role hint',
       content: 'No role was supplied.',
       symbols: ['provenanceSymbolC'],
+      source_files: ['src/fixture.ts'],
     }));
 
     const entry = await fetchEntry(out.id);
@@ -80,6 +83,7 @@ describe('kb_capture provenance stamping (T2.3 / D5)', () => {
       summary: 'Captured by a reviewer',
       content: 'A reviewer captured this.',
       symbols: ['provenanceSymbolD'],
+      source_files: ['src/fixture.ts'],
       role: 'reviewer',
     }));
 
@@ -96,7 +100,7 @@ describe('kb_promote provenance stamping (T2.3 / D5)', () => {
       title: 'Promotable provenance entry',
       summary: 'Starts as a session capture',
       content: 'Some content to promote.',
-      source_files: [],
+      source_files: ['src/fixture.ts'],
       symbols: ['promoSymbol'],
       tags: [],
       content_hash: '',
@@ -107,11 +111,11 @@ describe('kb_promote provenance stamping (T2.3 / D5)', () => {
       confidence: 'UNVERIFIED',
     });
 
-    await provider.promote(id);
+    await provider.promote(id, 'test fixture: verified against the seeded tree');
     const afterFirst = await fetchEntry(id);
     expect(afterFirst.source).toBe('promotion');
 
-    await provider.promote(id);
+    await provider.promote(id, 'test fixture: verified against the seeded tree');
     const afterSecond = await fetchEntry(id);
     expect(afterSecond.confidence).toBe('CONFIRMED');
     expect(afterSecond.source).toBe('promotion');
@@ -120,7 +124,7 @@ describe('kb_promote provenance stamping (T2.3 / D5)', () => {
 
 describe('kb_harvest provenance (revised D7)', () => {
   it('a harvested entry is stamped author=harvest and source=harvest', async () => {
-    const transcript = 'Note: The harvested provenance module always tags entries distinctly from real captures.';
+    const transcript = 'Note: The harvested provenance module in src/provenance.ts always tags entries distinctly from real captures.';
 
     const result = JSON.parse(await kbHarvest({ session_transcript: transcript }));
     expect(result.entries_captured).toBeGreaterThanOrEqual(1);
@@ -140,7 +144,7 @@ describe('legacy provenance values still parse (D5 tolerant reads, no migration)
       title: 'Legacy provenance row',
       summary: 'Simulates a pre-T2.3 row',
       content: 'Legacy content.',
-      source_files: [],
+      source_files: ['src/fixture.ts'],
       symbols: ['legacySymbol'],
       tags: [],
       content_hash: '',

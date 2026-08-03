@@ -41,7 +41,7 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
     title: 'placeholder title token',
     summary: 'placeholder summary',
     content: 'placeholder content',
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols: [],
     tags: [],
     content_hash: '',
@@ -152,7 +152,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     const aUndecided = await provider.capture(makeInput({
       title: 'undecidedSym is broken report', summary: 'undecidedSym broken summary',
       content: 'undecidedSym is broken when called concurrently.',
-      symbols: ['undecidedSym'], source_files: [],
+      symbols: ['undecidedSym'], source_files: ['src/fixture.ts'],
     }));
 
     // --- Step 2: write the branch-B bible fixture -------------------------
@@ -174,7 +174,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     const bUndecided: BibleEntryFixture = {
       id: 'b-undecided', type: 'knowledge', title: 'undecidedSym is fixed report',
       summary: 'undecidedSym is fixed as of the latest release.',
-      symbols: ['undecidedSym'], source_files: [], confidence: 'CONFIRMED', // empty basis -> hash-undecidable
+      symbols: ['undecidedSym'], source_files: ['src/fixture.ts'], confidence: 'CONFIRMED', // empty basis -> hash-undecidable
     };
     const bDirective: BibleEntryFixture = {
       id: 'b-directive', type: 'user-directive', title: 'Always run zorptastic lint before commit',

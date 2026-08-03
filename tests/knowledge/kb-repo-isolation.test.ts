@@ -19,6 +19,10 @@ function makeRepo(root: string, name: string, remote: string): string {
   fs.mkdirSync(dir, { recursive: true });
   execFileSync('git', ['init', '-q', '.'], { cwd: dir });
   execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: dir });
+  // KB-TRUST PHASE 1: capture requires a basis that resolves in the repo the
+  // provider is anchored at, so every fixture repo carries one real file.
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src', 'fixture.ts'), 'export const fixture = 1;\n');
   return dir;
 }
 
@@ -94,6 +98,7 @@ describe('KB provider scoping (apra-fleet-3zl)', () => {
       title: 'Alpha-only fact',
       summary: 'Belongs exclusively to repo alpha.',
       content: 'If this shows up under beta, repo scoping is broken.',
+      source_files: ['src/fixture.ts'],
       repo_path: repoA,
     } as any);
 
@@ -111,11 +116,13 @@ describe('KB provider scoping (apra-fleet-3zl)', () => {
     await kbCapture({
       type: 'knowledge', title: 'Beta-only fact',
       summary: 'Belongs exclusively to repo beta.', content: 'x',
+      source_files: ['src/fixture.ts'],
       repo_path: repoB,
     } as any);
     await kbCapture({
       type: 'knowledge', title: 'Alpha-only fact',
       summary: 'Belongs exclusively to repo alpha.', content: 'y',
+      source_files: ['src/fixture.ts'],
       repo_path: repoA,
     } as any);
 

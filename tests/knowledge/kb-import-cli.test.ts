@@ -104,7 +104,7 @@ describe('kbImportCmd smoke (real kbImport, temp repo + bible)', () => {
 
   it('happy path: imports a bible and exits 0', async () => {
     fs.writeFileSync(path.join(tmpRepo, '.fleet', 'kb-canonical.json'), JSON.stringify([
-      { id: 'cli-1', type: 'knowledge', title: 'cli entry', summary: 'a fact', symbols: ['cliSym'], source_files: [], confidence: 'CONFIRMED', updated_at: '2026-07-07T00:00:00.000Z' },
+      { id: 'cli-1', type: 'knowledge', title: 'cli entry', summary: 'a fact', symbols: ['cliSym'], source_files: ['src/fixture.ts'], confidence: 'CONFIRMED', updated_at: '2026-07-07T00:00:00.000Z' },
     ]), 'utf-8');
 
     const code = await kbImportCmd(kbImport, ['--repo', tmpRepo]);

@@ -80,6 +80,7 @@ describe('kb flagged-pipeline e2e (T3.7, F11)', () => {
       summary: 'Describes the retry backoff algorithm',
       content: 'Retries use exponential backoff with jitter.',
       symbols: ['retryBackoff'],
+      source_files: ['src/fixture.ts'],
     }));
     const cId = cOut.id;
 

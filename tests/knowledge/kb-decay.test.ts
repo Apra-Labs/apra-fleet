@@ -6,9 +6,9 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
   return {
     type: 'knowledge',
     title: 'Some concept',
-    summary: 'A concept with no file link',
+    summary: 'A concept linked to one fixture file',
     content: 'This is a concept-level entry.',
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols: ['someSymbol'],
     tags: [],
     content_hash: '',
@@ -19,6 +19,24 @@ function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
     confidence: 'INFERRED',
     ...overrides,
   };
+}
+
+/**
+ * KB-TRUST PHASE 1 (2026-08-03): decayConceptEntries() only touches rows whose
+ * source_files is empty, and capture() now refuses to create such a row. A
+ * decayable "concept entry" is therefore a LEGACY row from before that rule --
+ * captured with a basis here, then cleared directly so these tests still cover
+ * the decay ladder. See the Phase 1 note: decay is now legacy-only in practice.
+ */
+async function captureConceptEntry(
+  provider: SqliteProvider,
+  overrides: Partial<KBEntryInput> = {}
+): Promise<string> {
+  const { id } = await provider.capture(makeInput(overrides));
+  (provider as any).getDb()
+    .prepare('UPDATE entries SET source_files = ?, source_file_hashes = ? WHERE id = ?')
+    .run(JSON.stringify([]), JSON.stringify({}), id);
+  return id;
 }
 
 let provider: SqliteProvider;
@@ -41,7 +59,7 @@ function runDecay(p: SqliteProvider, days: number): void {
 
 describe('confidence decay', () => {
   it('demotes INFERRED -> UNVERIFIED for old concept entries', async () => {
-    const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
+    const id = await captureConceptEntry(provider, { confidence: 'INFERRED' });
 
     // Force last_accessed to be 60 days ago
     const old = new Date(Date.now() - 60 * 86400 * 1000).toISOString();
@@ -54,7 +72,7 @@ describe('confidence decay', () => {
   });
 
   it('does not demote entries with last_accessed within the decay window', async () => {
-    const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
+    const id = await captureConceptEntry(provider, { confidence: 'INFERRED' });
 
     // Set last_accessed to 10 days ago (within 30-day window)
     const recent = new Date(Date.now() - 10 * 86400 * 1000).toISOString();
@@ -69,8 +87,13 @@ describe('confidence decay', () => {
   it('does not demote CONFIRMED entries', async () => {
     // R5 (T1.2): provider.capture() now clamps CONFIRMED -> INFERRED, so seed a
     // CONFIRMED entry via the real ladder (capture INFERRED, then promote).
+    // Promote FIRST -- promote() refuses an entry whose basis does not resolve,
+    // so the basis is cleared to concept shape only after it reaches CONFIRMED.
     const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
-    await provider.promote(id);
+    await provider.promote(id, 'test fixture: verified against the seeded tree');
+    (provider as any).getDb()
+      .prepare('UPDATE entries SET source_files = ?, source_file_hashes = ? WHERE id = ?')
+      .run(JSON.stringify([]), JSON.stringify({}), id);
 
     const old = new Date(Date.now() - 60 * 86400 * 1000).toISOString();
     (provider as any).getDb().prepare('UPDATE entries SET last_accessed = ? WHERE id = ?').run(old, id);
@@ -110,7 +133,7 @@ describe('confidence decay', () => {
   });
 
   it('does not demote recently promoted entries even if never accessed', async () => {
-    const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
+    const id = await captureConceptEntry(provider, { confidence: 'INFERRED' });
 
     // Recent promotion, no last_accessed
     const recentPromo = new Date(Date.now() - 5 * 86400 * 1000).toISOString();
@@ -123,7 +146,7 @@ describe('confidence decay', () => {
   });
 
   it('prime() triggers decay with decay_after_days option', async () => {
-    const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
+    const id = await captureConceptEntry(provider, { confidence: 'INFERRED' });
 
     const old = new Date(Date.now() - 60 * 86400 * 1000).toISOString();
     (provider as any).getDb().prepare('UPDATE entries SET last_accessed = ? WHERE id = ?').run(old, id);
@@ -136,7 +159,7 @@ describe('confidence decay', () => {
   });
 
   it('prime() without decay_after_days defaults to 30-day window', async () => {
-    const { id } = await provider.capture(makeInput({ confidence: 'INFERRED' }));
+    const id = await captureConceptEntry(provider, { confidence: 'INFERRED' });
 
     // 60 days ago -- beyond default 30-day window
     const old = new Date(Date.now() - 60 * 86400 * 1000).toISOString();

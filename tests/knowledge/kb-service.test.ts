@@ -52,7 +52,7 @@ function makeEntry(overrides: Partial<KBEntry> = {}): KBEntry {
     title: 'Test Entry',
     summary: 'A test entry summary.',
     content: 'Test content body.',
-    source_files: [],
+    source_files: ['src/fixture.ts'],
     symbols: [],
     tags: [],
     content_hash: '',

@@ -60,7 +60,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       symbols: ['symA'],
       source_files: ['src/a.ts'],
     }));
-    await provider.promote(a.id, 'confirmed for test');
+    await provider.promote(a.id, 'confirmed for test: basis checked in fixture');
 
     // Entry B: left at INFERRED, never promoted.
     await provider.capture(makeInput({
@@ -79,7 +79,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       symbols: ['symC'],
       source_files: ['src/c.ts'],
     }));
-    await provider.promote(c.id, 'confirmed for test');
+    await provider.promote(c.id, 'confirmed for test: basis checked in fixture');
     const cUpdate = await provider.capture(makeInput({
       title: 'Entry C knowledge',
       summary: 'Summary C',
@@ -101,7 +101,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
 
   it('field set is exact: id, type, title, summary, symbols, source_files, confidence, updated_at', async () => {
     const { id } = await provider.capture(makeInput({ title: 'Field set entry' }));
-    await provider.promote(id, 'confirmed for test');
+    await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
     await kbExport({ repo_path: tmpDir });
     const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8'));
@@ -123,7 +123,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
         symbols: [`symOrder${i}`],
         source_files: [`src/order${i}.ts`],
       }));
-      await provider.promote(id, 'confirmed for test');
+      await provider.promote(id, 'confirmed for test: basis checked in fixture');
       ids.push(id);
     }
 
@@ -164,7 +164,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       title: 'Non-ASCII entry: caf' + eAcute + ' ' + emDash + ' note',
       summary: 'Uses an em-dash and accented letter',
     }));
-    await provider.promote(id, 'confirmed for test');
+    await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
     await kbExport({ repo_path: tmpDir });
     const raw = fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'));
@@ -192,7 +192,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
 
     it('falls back to the validated session working directory when repo_path is omitted', async () => {
       const { id } = await provider.capture(makeInput({ title: 'Session-context entry' }));
-      await provider.promote(id, 'confirmed for test');
+      await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
       cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
       const result = JSON.parse(await kbExport({}));
@@ -204,7 +204,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
 
     it('explicit repo_path input takes precedence over the session working directory', async () => {
       const { id } = await provider.capture(makeInput({ title: 'Explicit-wins entry' }));
-      await provider.promote(id, 'confirmed for test');
+      await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
       const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-export-other-'));
       try {
@@ -232,11 +232,11 @@ describe('kb_export (T3.4, F8b, D8)', () => {
   describe('scope param (T3.3, F9a, D8)', () => {
     it('default scope (omitted) exports the project KB to kb-canonical.json, byte-identical to before this task', async () => {
       const { id } = await provider.capture(makeInput({ title: 'Project-scope default entry' }));
-      await provider.promote(id, 'confirmed for test');
+      await provider.promote(id, 'confirmed for test: basis checked in fixture');
       // Put an unrelated CONFIRMED entry in the global KB to prove default
       // scope never reads it.
       const { id: globalId } = await globalProvider.capture(makeInput({ title: 'Global-only entry', symbols: ['globalOnlySym'] }));
-      await globalProvider.promote(globalId, 'confirmed for test');
+      await globalProvider.promote(globalId, 'confirmed for test: basis checked in fixture');
 
       const result = JSON.parse(await kbExport({ repo_path: tmpDir }));
       expect(result.scope).toBe('project');
@@ -250,13 +250,13 @@ describe('kb_export (T3.4, F8b, D8)', () => {
 
     it('scope="global" reads the global KB and writes kb-canonical-global.json with the same stable field set', async () => {
       const { id: projectId } = await provider.capture(makeInput({ title: 'Project-only entry' }));
-      await provider.promote(projectId, 'confirmed for test');
+      await provider.promote(projectId, 'confirmed for test: basis checked in fixture');
       const { id: globalId } = await globalProvider.capture(makeInput({
         title: 'Global bible entry',
         symbols: ['globalSym'],
         source_files: ['src/global.ts'],
       }));
-      await globalProvider.promote(globalId, 'confirmed for test');
+      await globalProvider.promote(globalId, 'confirmed for test: basis checked in fixture');
 
       const result = JSON.parse(await kbExport({ repo_path: tmpDir, scope: 'global' }));
       expect(result.scope).toBe('global');
@@ -290,7 +290,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       const { id } = await globalProvider.capture(makeInput({
         title: 'Global non-ASCII entry ' + emDash + ' note',
       }));
-      await globalProvider.promote(id, 'confirmed for test');
+      await globalProvider.promote(id, 'confirmed for test: basis checked in fixture');
 
       await kbExport({ repo_path: tmpDir, scope: 'global' });
       const raw = fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical-global.json'));
