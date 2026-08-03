@@ -26,44 +26,6 @@ const SAMPLE_LOG = [
   { cycle: 1, phase: 'Harvest', label: 'harvester',        outTokens:  600, costUsd: 0.009, ts: '2026-06-26T09:35:00Z' },
 ];
 
-// -- 1. heading and section structure ------------------------------------------
-
-test('buildExecutionSummary: returns string containing Sprint Execution Summary heading', () => {
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 1, goalMet: true, goal: 'test goal', tasksOpen: 0, openIssueIds: [],
-  });
-  assert.ok(typeof summaryText === 'string', 'summaryText must be a string');
-  assert.ok(summaryText.includes('Sprint Execution Summary'),
-    'must contain heading "Sprint Execution Summary"');
-});
-
-// -- 2. per-phase breakdown with phases, costs, and agent counts ----------------
-
-test('buildExecutionSummary: per-phase breakdown section is present', () => {
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 1, goalMet: true, goal: 'g', tasksOpen: 0, openIssueIds: [],
-  });
-  assert.ok(summaryText.includes('Per-phase breakdown'),
-    'must include Per-phase breakdown section heading');
-});
-
-test('buildExecutionSummary: all four phase names appear in output', () => {
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 1, goalMet: true, goal: 'g', tasksOpen: 0, openIssueIds: [],
-  });
-  for (const ph of ['Plan', 'Develop', 'Test', 'Harvest']) {
-    assert.ok(summaryText.includes(ph), `phase "${ph}" must appear in output`);
-  }
-});
-
-test('buildExecutionSummary: Develop phase sums outTokens for all its entries', () => {
-  // iter-c1-i0 (2800) + iter-c1-i1 (2200) = 5000
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 1, goalMet: true, goal: 'g', tasksOpen: 0, openIssueIds: [],
-  });
-  assert.ok(summaryText.includes('5000'), 'Develop phase must sum outTokens to 5000');
-});
-
 test('buildExecutionSummary: per-phase cost totals appear in output', () => {
   // Plan costUsd = 0.013 -> $0.0130
   const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
@@ -72,31 +34,7 @@ test('buildExecutionSummary: per-phase cost totals appear in output', () => {
   assert.ok(summaryText.includes('$0.0130'), 'Plan phase cost $0.0130 must appear');
 });
 
-test('buildExecutionSummary: dispatch count per phase is accurate', () => {
-  // Develop has 2 entries -> "| Develop | 2 |"
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 1, goalMet: true, goal: 'g', tasksOpen: 0, openIssueIds: [],
-  });
-  assert.ok(summaryText.includes('| Develop | 2 |'), 'Develop row must show 2 dispatches');
-  assert.ok(summaryText.includes('| Plan | 1 |'), 'Plan row must show 1 dispatch');
-});
-
-// -- 3. cycle reporting with iterations and reviewer feedback ------------------
-
-test('buildExecutionSummary: cycleCount appears in output', () => {
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 3, goalMet: true, goal: 'g', tasksOpen: 0, openIssueIds: [],
-  });
-  assert.ok(summaryText.includes('**Cycles:** 3'), 'must show cycle count');
-});
-
-test('buildExecutionSummary: develop iterations noted when multiple iter-c*-i* labels present', () => {
-  // iter-c1-i0 and iter-c1-i1 -> reports develop iterations
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 1, goalMet: true, goal: 'g', tasksOpen: 0, openIssueIds: [],
-  });
-  assert.ok(summaryText.includes('develop iteration'), 'must note develop iterations');
-});
+// -- Assertions unique to this file (the rest were duplicates of sprint-cost.test.mjs)
 
 test('buildExecutionSummary: reviewer feedback round noted when CHANGES NEEDED label present', () => {
   const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
@@ -106,39 +44,6 @@ test('buildExecutionSummary: reviewer feedback round noted when CHANGES NEEDED l
     'must note reviewer CHANGES NEEDED / feedback round');
 });
 
-// -- 4. goalMet=false path: risks section produced and populated ---------------
-
-test('buildExecutionSummary: goalMet=false section is present (not suppressed)', () => {
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 1, goalMet: false, goal: 'finish feature', tasksOpen: 2,
-    openIssueIds: ['BD-5', 'BD-6'],
-  });
-  assert.ok(summaryText.length > 0, 'summaryText must not be empty when goalMet=false');
-  assert.ok(summaryText.includes('Sprint Execution Summary'),
-    'heading must still appear when goalMet=false');
-});
-
-test('buildExecutionSummary: goalMet=false lists open issue ids', () => {
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 1, goalMet: false, goal: 'finish feature', tasksOpen: 2,
-    openIssueIds: ['BD-5', 'BD-6'],
-  });
-  assert.ok(summaryText.includes('BD-5') && summaryText.includes('BD-6'),
-    'must list open issue IDs in risks section');
-});
-
-test('buildExecutionSummary: goalMet=false shows task count and goal text', () => {
-  const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
-    cycleCount: 1, goalMet: false, goal: 'finish feature', tasksOpen: 2,
-    openIssueIds: ['BD-5', 'BD-6'],
-  });
-  assert.ok(summaryText.includes('2 task(s) still open'),
-    'must include open task count');
-  assert.ok(summaryText.includes('finish feature'),
-    'must include goal text in risks section');
-  assert.ok(summaryText.includes('Goal NOT met'),
-    'must indicate goal was not met');
-});
 
 test('buildExecutionSummary: goalMet=false risks section is non-empty', () => {
   const { summaryText } = buildExecutionSummary(SAMPLE_LOG, {
@@ -161,42 +66,6 @@ test('buildExecutionSummary: goalMet=true risks section shows none', () => {
     'risks section must show "None -- goal met." when goal is met');
 });
 
-// -- 5. empty logEntries: valid section, no throw, timing n/a -----------------
-
-test('buildExecutionSummary: empty logEntries does not throw', () => {
-  assert.doesNotThrow(() => {
-    buildExecutionSummary([], {
-      cycleCount: 0, goalMet: false, goal: '', tasksOpen: 0, openIssueIds: [],
-    });
-  });
-});
-
-test('buildExecutionSummary: empty logEntries returns string with heading', () => {
-  const { summaryText } = buildExecutionSummary([], {
-    cycleCount: 0, goalMet: false, goal: '', tasksOpen: 0, openIssueIds: [],
-  });
-  assert.ok(typeof summaryText === 'string', 'summaryText must be a string for empty log');
-  assert.ok(summaryText.includes('Sprint Execution Summary'),
-    'heading must be present for empty log');
-});
-
-test('buildExecutionSummary: empty logEntries shows all phases with zero dispatches', () => {
-  const { summaryText } = buildExecutionSummary([], {
-    cycleCount: 0, goalMet: false, goal: '', tasksOpen: 0, openIssueIds: [],
-  });
-  for (const ph of ['Plan', 'Develop', 'Test', 'Harvest']) {
-    assert.ok(summaryText.includes(`| ${ph} | 0 |`),
-      `phase ${ph} must show 0 dispatches in empty-log case`);
-  }
-});
-
-test('buildExecutionSummary: empty logEntries uses n/a timing marker instead of crashing', () => {
-  const { summaryText } = buildExecutionSummary([], {
-    cycleCount: 0, goalMet: false, goal: '', tasksOpen: 0, openIssueIds: [],
-  });
-  assert.match(summaryText, /n\/a \(no timestamps\)/,
-    'must degrade to n/a timing marker when no timestamps present');
-});
 
 test('buildExecutionSummary: null logEntries handled gracefully', () => {
   assert.doesNotThrow(() => {

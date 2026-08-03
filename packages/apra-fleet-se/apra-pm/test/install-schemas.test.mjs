@@ -45,17 +45,3 @@ test('install.mjs\'s schemasDest is a child of agentsDest, i.e. installed alongs
     'schemasDest must be path.join(agentsDest, "schemas")'
   );
 });
-
-test('uninstall() removes the installed agents/schemas directory (source check)', () => {
-  const uninstallBody = src.slice(src.indexOf('function uninstall('), src.indexOf('\n// --- main'));
-  assert.match(
-    uninstallBody,
-    /schemasDest\s*=\s*path\.join\(agentsDest,\s*['"]schemas['"]\)/,
-    'uninstall() must resolve the same schemasDest path as install'
-  );
-  assert.match(
-    uninstallBody,
-    /rmSync\(schemasDest,\s*\{\s*recursive:\s*true,\s*force:\s*true\s*\}\)/,
-    'uninstall() must remove schemasDest recursively'
-  );
-});

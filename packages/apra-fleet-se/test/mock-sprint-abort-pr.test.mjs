@@ -10,8 +10,6 @@ import {
     setup,
     teardown,
     buildMockFleetApi,
-    runOnce,
-    runDevelopLoopScenario,
     withScenarioMarkers,
 } from './helpers/mock-sprint-harness.mjs';
 
@@ -346,43 +344,6 @@ test('finalizeAbort: gh pr create "already exists" is swallowed, existing PR URL
         logs.some((m) => m.includes('already exists') && m.includes('idempotent success')),
         `Expected a logged message noting the PR already exists and was treated as an idempotent success, logs: ${JSON.stringify(logs)}`
     );
-});
-
-// -----------------------------------------------------------------------
-// (d) regression: the ordinary PASS/FAIL Publish PR step (runSprintCycle's
-// own finalization, a separate code path from the abort-path finalizeAbort()
-// above) is unaffected -- normal (non-"[ABORTED]") PRs are still raised for
-// both a successful sprint and an explicit final FAIL verdict.
-// -----------------------------------------------------------------------
-test('regression: a successful (PASS) sprint still raises a normal, non-[ABORTED] PR', async () => {
-    await withScenarioMarkers('abortprpass', async () => {
-        console.log('Running mock sprint scenario (PASS/FAIL finalization regression check: PASS side)...');
-        const passRun = await runOnce('abortprpass');
-        check(passRun.result && passRun.result.status === 'success', `Expected the PASS regression run to succeed, got: ${JSON.stringify(passRun.result)}`);
-        const prCmd = passRun.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
-        check(!!prCmd, `Expected a VCSModule create-pull-request command to be dispatched, commandLog: ${JSON.stringify(passRun.commandLog)}`);
-        check(!prCmd.includes('[ABORTED]'), `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${prCmd}`);
-    });
-});
-
-test('regression: an explicit final FAIL verdict still raises a normal, non-[ABORTED] PR', async () => {
-    await withScenarioMarkers('abortprfail', async () => {
-        console.log('Running mock sprint scenario (PASS/FAIL finalization regression check: FAIL side)...');
-        const failRun = await runDevelopLoopScenario('abortprfail', {
-            members: ['local'],
-            taskSpecs: [{ title: 'Task: PASS/FAIL finalization regression (FAIL side)' }],
-            maxCycles: 1,
-            finalReviewHandler: async () => ({
-                content: [{ text: JSON.stringify({ verdict: 'FAIL', notes: 'Explicit test-injected FAIL for the eft.1.3 regression check.' }) }]
-            }),
-        });
-        check(!failRun.error, `Expected the FAIL regression scenario not to throw: ${failRun.error ? failRun.error.message : ''}`);
-        check(failRun.result && failRun.result.status === 'failed', `Expected a FAIL final verdict to produce status:'failed', got: ${JSON.stringify(failRun.result)}`);
-        const prCmd = failRun.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
-        check(!!prCmd, `A FAIL verdict must still publish a PR, commandLog: ${JSON.stringify(failRun.commandLog)}`);
-        check(prCmd.includes('FAIL'), `Expected the PR title/body to include the FAIL verdict, got: ${prCmd}`);
-        check(!prCmd.includes('[ABORTED]'), `An ordinary FAIL-verdict PR must NOT carry the [ABORTED] prefix, got: ${prCmd}`);
-    });
 });
 
 // =============================================================================

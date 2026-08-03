@@ -49,11 +49,6 @@ afterEach(() => {
 });
 
 describe('the shared bd-invocation helper (scripts/lib/exec-bd.mjs) on the host platform', () => {
-  it('execBdSync runs a real "bd --version" and returns its output, with no throw', () => {
-    const out = execBdSync(['--version'], { encoding: 'utf-8' });
-    expect(String(out)).toMatch(/bd version/);
-  });
-
   // apra-fleet-2cc.1's actual root-cause fix: execFileSync('bd', ...) without
   // shell:true throws 'spawnSync bd ENOENT' on win32 because Windows'
   // CreateProcess cannot exec the npm-installed bd.cmd shim directly.

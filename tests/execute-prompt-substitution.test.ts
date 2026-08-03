@@ -55,29 +55,6 @@ describe('execute_prompt -- substitutions surface tests', () => {
     vi.useRealTimers();
   });
 
-  // (q) SECURE invariant: {{secure.NAME}} passes through verbatim, credential store not consulted
-  it('(q) {{secure.github_pat}} in prompt with no substitutions: staged verbatim, credential store not called', async () => {
-    const member = makeTestAgent({ friendlyName: 'secure-passthrough' });
-    addAgent(member);
-    setupExec();
-
-    const { credentialResolve } = await import('../src/services/credential-store.js');
-
-    await executePrompt({
-      member_id: member.id,
-      prompt: 'use {{secure.github_pat}}',
-      resume: false,
-      timeout_s: 5,
-    });
-
-    // execute_prompt rejects prompts containing {{secure.NAME}} -- verify early return
-    // Actually re-reading: the existing guard rejects this. Let me test that.
-    // calls[0] should NOT be writePromptFile -- the call must be rejected.
-    // So mockExecCommand should NOT have been called at all.
-    // This is the existing secure-prompt guard.
-    expect(vi.mocked(credentialResolve)).not.toHaveBeenCalled();
-  });
-
   // (q) Confirm early rejection: {{secure.NAME}} prompt triggers error before any exec
   it('(q) prompt containing {{secure.NAME}} is rejected before staging -- no exec', async () => {
     const member = makeTestAgent({ friendlyName: 'secure-reject' });

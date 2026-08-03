@@ -44,7 +44,10 @@ const SCRIPT_PATH = path.resolve(
   'check-watchdog-isolation.mjs',
 );
 
-const DEAD_PID_FILE = 'mock-sprint-planner-dispatch-dead-pid.test.mjs';
+// Must stay in lockstep with check-watchdog-isolation.mjs's own DEAD_PID_FILE.
+// (Was mock-sprint-planner-dispatch-dead-pid.test.mjs until that file was
+// retired as a strict assertion subset of the survivor named below.)
+const DEAD_PID_FILE = 'mock-sprint-planner-dispatch-attempt1-clean-fail-attempt2-dead-session.test.mjs';
 const STALLED_SESSION_FILE = 'mock-sprint-planner-dispatch-stalled-session.test.mjs';
 
 function spawnScript(args: string[]): { status: number; stdout: string; stderr: string } {

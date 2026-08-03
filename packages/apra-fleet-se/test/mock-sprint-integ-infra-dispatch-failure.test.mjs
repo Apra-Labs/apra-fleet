@@ -121,6 +121,12 @@ test('mock sprint: an integ dispatch inactivity timeout that persists after resu
             !result.logs.some((m) => m.includes('Integration tests FAILED this cycle')),
             `A persisted infra dispatch failure must NEVER be recorded as a genuine test FAILURE, logs: ${JSON.stringify(result.logs)}`
         );
+        // apra-fleet-4bg.1 (folded in from mock-sprint-integ-passed-summary-log
+        // test 3, which spent a whole extra sprint on this one negative).
+        check(
+            !result.logs.some((m) => m.includes('Integration tests PASSED this cycle')),
+            `An INCONCLUSIVE cycle must never also log a PASSED summary line, logs: ${JSON.stringify(result.logs)}`
+        );
         check(
             !result.logs.some((m) => m.includes('treating as passed:false')),
             `An infra dispatch failure must never fall through to the generic passed:false handling, logs: ${JSON.stringify(result.logs)}`
@@ -153,6 +159,12 @@ test('mock sprint: a genuine integ test FAIL (passed:false verdict) is still rec
         check(
             !result.logs.some((m) => m.includes('Integration tests INCONCLUSIVE this cycle')),
             `A genuine test FAIL must NOT be misrecorded as INCONCLUSIVE, logs: ${JSON.stringify(result.logs)}`
+        );
+        // apra-fleet-4bg.1 (folded in from mock-sprint-integ-passed-summary-log
+        // test 2, which spent a whole extra sprint on this one negative).
+        check(
+            !result.logs.some((m) => m.includes('Integration tests PASSED this cycle')),
+            `A passed:false cycle must never also log a PASSED summary line, logs: ${JSON.stringify(result.logs)}`
         );
     });
 });

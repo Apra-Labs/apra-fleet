@@ -380,6 +380,15 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             run1.commandLog[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]) && /Final Verdict: PASS/.test(run1.commandLog[prIdx]),
             `Expected the PR title AND body to include the PASS verdict, got: ${run1.commandLog[prIdx]}`
         );
+
+        // apra-fleet-eft.1.3 regression (folded in from the former
+        // mock-sprint-abort-pr.test.mjs 'abortprpass' scenario, which spent a
+        // whole extra runOnce() sprint on this single negative): a successful
+        // sprint's PR must never carry the abort path's [ABORTED] prefix.
+        check(
+            run1.commandLog[prIdx] && !run1.commandLog[prIdx].includes('[ABORTED]'),
+            `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${run1.commandLog[prIdx]}`
+        );
     });
 });
 

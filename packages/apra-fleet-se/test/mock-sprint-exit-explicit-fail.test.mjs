@@ -48,5 +48,13 @@ test('mock sprint: an explicit final FAIL verdict propagates to status:failed an
             !!explicitFailPrCmd && /"title":"[^"]*FAIL[^"]*"/.test(explicitFailPrCmd) && /Final Verdict: FAIL/.test(explicitFailPrCmd),
             `Expected the PR title AND body to include the FAIL verdict, got: ${explicitFailPrCmd}`
         );
+        // apra-fleet-eft.1.3 regression (folded in from the former
+        // mock-sprint-abort-pr.test.mjs 'abortprfail' scenario): an ordinary
+        // FAIL-verdict PR is NOT an abort -- it must never carry the abort
+        // path's [ABORTED] prefix.
+        check(
+            !!explicitFailPrCmd && !explicitFailPrCmd.includes('[ABORTED]'),
+            `An ordinary FAIL-verdict PR must NOT carry the [ABORTED] prefix, got: ${explicitFailPrCmd}`
+        );
     });
 });
