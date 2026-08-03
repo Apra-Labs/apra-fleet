@@ -62,6 +62,26 @@ function extractProviderCode(raw) {
     return null;
 }
 
+/** Host-recognition for VCSModule.capabilities() (apra-fleet-647.1.4.1).
+ *  `github.com` itself plus GitHub Enterprise Server hosts, which have no
+ *  fixed domain -- an operator names theirs anything ("github.mycompany.com",
+ *  "ghe.internal", ...) -- so there is no closed literal list to match
+ *  against. The portable signal every such host shares is the vendor name
+ *  itself appearing in the hostname; a host with no "github" substring (Azure
+ *  DevOps' dev.azure.com, GitLab's gitlab.com or a self-hosted
+ *  gitlab.example.com, ...) is deliberately left to GenericGitVCS's
+ *  catch-all rather than guessed at here. */
+function matchesHost(host) {
+    return typeof host === 'string' && /github/i.test(host);
+}
+
+/** Every host this provider matches can open a PR via the REST call
+ *  buildGitHubCreatePrCommand() builds -- github.com and GitHub Enterprise
+ *  Server alike speak the same `/repos/{owner}/{repo}/pulls` shape. */
+function capabilitiesForHost(_host) {
+    return { canOpenPullRequest: true };
+}
+
 export const GitHubVCS = Object.freeze({
     name: 'github',
     extends: 'generic-git',
@@ -69,6 +89,8 @@ export const GitHubVCS = Object.freeze({
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
     }),
     extractProviderCode,
+    matchesHost,
+    capabilitiesForHost,
 });
 
 export default GitHubVCS;

@@ -25,7 +25,7 @@ const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
-import { buildCreatePrCommand, resolveProvider } from './vcs-module.mjs';
+import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -3742,34 +3742,6 @@ export function sanitizePrText(text) {
     return out.replace(/\s+/g, ' ').trim();
 }
 
-// ---------------------------------------------------------------------------
-// Non-hosted git remote detection for Harvest/Publish
-// ---------------------------------------------------------------------------
-//
-// A sprint can run against an origin with no hosting API behind it -- e.g. a
-// sandbox wired to a plain `file://` bare mirror. VCSModule's REST-based PR
-// creation can never work there either, so the Publish PR step uses this
-// classifier to detect the case up front and take the non-PR-gated closure
-// path instead, rather than failing the whole sprint on a doomed API call.
-/**
- * Returns true when `remoteUrl` looks like a GitHub remote VCSModule's
- * create-pull-request REST call can actually open a PR against (an
- * `https://github.com/...` or `git@github.com:...`/`ssh://git@github.com/...`
- * URL) -- as opposed to a non-hosted remote (a plain `file://` bare mirror,
- * or any other host with no hosting API VCSModule supports). A missing/
- * empty/unresolvable URL is treated as non-hosted (fails closed toward the
- * safer "skip PR creation" path rather than attempting a REST call that
- * would just fail).
- * @param {string} remoteUrl
- * @returns {boolean}
- */
-export function isHostedGithubRemote(remoteUrl) {
-    const url = String(remoteUrl ?? '').trim();
-    if (!url) return false;
-    if (/^file:\/\//i.test(url)) return false;
-    return /^(https?:\/\/([^/@\s]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url);
-}
-
 // The Regression Test phase is informational-only and must never gate the
 // sprint; packages/apra-fleet-se/test/regression-phase-never-gates.test.mjs
 // enforces that.
@@ -4277,6 +4249,28 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
             `[Abort Finalize Failed] git push -u origin ${branch} failed: ${pushRes.error}`,
             { details: { branch, baseBranch, error: pushRes.error, kind: pushRes.kind } }
         );
+    }
+
+    // Same origin-remote gate as the Publish PR step, via
+    // VCSModule.capabilities(): a remote whose provider cannot open a PR (a
+    // file:// bare mirror, or any other host with no hosting API support)
+    // must never hit raiseVcsPrForMember()'s doomed REST call, which would
+    // surface as a hard-to-diagnose failure while the sprint is already
+    // aborting. Resolving the remote is itself failSoft -- an unresolvable
+    // remote fails closed to canOpenPullRequest:false -- so a probe hiccup
+    // here degrades to "PR skipped", never a thrown error. The branch above
+    // is already pushed either way.
+    const originUrlRes = await command('git remote get-url origin', {
+        member_name: member,
+        silent: true,
+        failSoft: true,
+        label: 'Resolve origin remote URL for abort-path PR gate',
+    });
+    const originUrl = originUrlRes.ok ? originUrlRes.output.trim() : '';
+    const abortPathCapabilities = vcsCapabilities(originUrl);
+    if (!abortPathCapabilities.canOpenPullRequest) {
+        log(`finalizeAbort: origin remote '${originUrl || '(unresolved)'}' cannot open a pull request (host: ${abortPathCapabilities.host || 'unknown'}) -- skipping [ABORTED] PR creation; branch '${branch}' is still pushed.`);
+        return { prUrl: null, reason: 'non-hosted-remote', pushed: true, commitCount };
     }
 
     const prTitle = `Auto-sprint [ABORTED]: ${branch}`;
@@ -8827,14 +8821,16 @@ async function runSprintCycle(context) {
     // reviewer can weigh it before merging.
     const finalVerdictLabel = finalVerdictResult.verdict === 'PASS' ? 'PASS' : 'FAIL';
 
-    // Resolve the sprint's own git 'origin' remote and classify it (see
-    // isHostedGithubRemote() above) BEFORE ever attempting the VCSModule REST create-pull-request call. A
-    // non-hosted remote (a file:// bare mirror, or any other host `gh` has no
-    // hosting API for) means PR creation can never succeed, and attempting it
-    // anyway throws a hard 'gh auth login required' CommandError that would
-    // fail the whole sprint. Resolving the remote is itself failSoft -- an
-    // unresolvable remote is treated as non-hosted, per isHostedGithubRemote()'s
-    // fail-closed default -- so a probe hiccup here can never kill the sprint.
+    // Resolve the sprint's own git 'origin' remote and classify it via
+    // VCSModule.capabilities() BEFORE ever attempting the VCSModule REST
+    // create-pull-request call. A remote whose provider cannot open a PR (a
+    // file:// bare mirror, or any other host with no hosting API support)
+    // means PR creation can never succeed, and attempting it anyway throws a
+    // hard 'gh auth login required'-shaped CommandError that would fail the
+    // whole sprint. Resolving the remote is itself failSoft -- an
+    // unresolvable remote fails closed to canOpenPullRequest:false, per
+    // capabilities()'s own contract -- so a probe hiccup here can never kill
+    // the sprint.
     const originUrlRes = await command('git remote get-url origin', {
         member_name: orchestratorMember,
         silent: true,
@@ -8842,7 +8838,7 @@ async function runSprintCycle(context) {
         label: 'Resolve origin remote URL',
     });
     const originUrl = originUrlRes.ok ? originUrlRes.output.trim() : '';
-    const hostedRemote = isHostedGithubRemote(originUrl);
+    const hostedRemote = vcsCapabilities(originUrl).canOpenPullRequest;
 
     if (!hostedRemote) {
         log(`Publish PR: origin remote '${originUrl || '(unresolved)'}' is not a gh-hostable GitHub remote -- ` +

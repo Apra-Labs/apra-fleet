@@ -133,6 +133,19 @@ export const GenericGitVCS = Object.freeze({
     extractProviderCode() {
         return null;
     },
+    /** Catch-all for VCSModule.capabilities() host dispatch (apra-fleet-
+     *  647.1.4.1): every resolvable host matches SOME provider, and this is
+     *  the fallback when no more specific provider (e.g. GitHubVCS) claims
+     *  it, so resolveVcsProviderForHost() never returns nothing. */
+    matchesHost() {
+        return true;
+    },
+    /** No REST create-pull-request implementation exists for a generic/
+     *  unrecognized host (Azure DevOps, GitLab, or anything else VCSModule
+     *  has no provider for yet) -- fails closed, never guesses a vendor. */
+    capabilitiesForHost() {
+        return { canOpenPullRequest: false };
+    },
 });
 
 export default GenericGitVCS;

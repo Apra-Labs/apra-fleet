@@ -259,9 +259,16 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // 37 -> 38 (integration-branch merge): Final Review's reopenIds persist
 // block gained one new command() call site (`bd update <id> --status=open
 // --append-notes ...`), verified compliant with member_name (member_name:
-// orchestratorMember). Independent of the dolt-sync extraction above --
-// both land in this rebase, so the two deltas combine: 40 - 3 + 1 = 38.
-const EXPECTED_COMMAND_COUNT = 38;
+// orchestratorMember).
+// 38 -> 39 (apra-fleet-647.1.4.1): finalizeAbort() gained ONE new command()
+// call site -- resolving 'git remote get-url origin' via VCSModule.capabilities()
+// before attempting the [ABORTED] PR, the same gate the Publish PR step
+// already had. It carries member_name (see finalizeAbort()'s new
+// originUrlRes call), so the invariant this file checks is unaffected.
+// The two bumps above are independent (different commits, different
+// history) and both land in this rebase, so the deltas combine:
+// 40 - 3 + 1 + 1 = 39.
+const EXPECTED_COMMAND_COUNT = 39;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

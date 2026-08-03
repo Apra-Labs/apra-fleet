@@ -35,6 +35,7 @@ import {
     listVcsProviders,
     getVcsProvider,
     resolveVcsProviderChain,
+    resolveVcsProviderForHost,
 } from './vcs-providers/index.mjs';
 
 const GITHUB_API = 'https://api.github.com';
@@ -398,12 +399,98 @@ export function toGitVerdict(kind) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// capabilities(remoteUrl) (apra-fleet-647.1.4.1)
+// ---------------------------------------------------------------------------
+//
+// The ONE place a git remote URL is parsed into a host and classified for PR
+// capability -- replaces runner.js's isHostedGithubRemote(), whose regex
+// hardcoded 'github.com' literally and treated every other host (Azure
+// DevOps, GitLab, GitHub Enterprise, ...) as "non-hosted" by default. Here
+// the URL is parsed into a bare host and the decision is delegated to
+// whichever registered provider's matchesHost() claims it (see
+// resolveVcsProviderForHost() in ./vcs-providers/index.mjs) -- so a provider
+// added later (e.g. a real Azure DevOps/GitLab implementation) gains
+// capability recognition for free, with zero change here.
+
+/**
+ * Parse a git remote URL into its scheme and bare lowercase host, or null for
+ * anything unresolvable (missing/empty/malformed). Accepts the three shapes
+ * runner.js's PR-gate call sites can see:
+ *   - a normal URL with a scheme:    https://[user@]host/owner/repo(.git)
+ *                                     ssh://[user@]host/owner/repo
+ *                                     file:///path/to/bare.git
+ *   - scp-like SSH shorthand with NO scheme: user@host:owner/repo(.git)
+ * @param {unknown} remoteUrl
+ * @returns {{ scheme: string, host: string|null } | null}
+ */
+function parseRemote(remoteUrl) {
+    const url = String(remoteUrl ?? '').trim();
+    if (!url) return null;
+
+    // scp-like shorthand (e.g. git@github.com:owner/repo.git) has no
+    // `scheme://` prefix at all, which `new URL()` cannot parse -- detect and
+    // extract the host directly. Guarded by the scheme-prefix test so an
+    // actual `ssh://user@host/...` URL (which DOES have a scheme) falls
+    // through to the URL branch below instead.
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+        const scpMatch = /^[^@\s/]+@([^:\s/]+):/.exec(url);
+        if (scpMatch) return { scheme: 'ssh', host: scpMatch[1].toLowerCase() };
+        return null;
+    }
+
+    let parsed;
+    try {
+        parsed = new URL(url);
+    } catch {
+        return null;
+    }
+    const scheme = parsed.protocol.replace(/:$/, '').toLowerCase();
+    if (scheme === 'file') return { scheme: 'file', host: null };
+    const host = parsed.hostname ? parsed.hostname.toLowerCase() : null;
+    if (!host) return null;
+    return { scheme, host };
+}
+
+/**
+ * Answer what a git 'origin' remote supports, dispatched through the
+ * resolved provider implementation -- NOT a literal host list. Used by
+ * runner.js's Publish-PR non-hosted-remote gate and finalizeAbort's
+ * abort-PR gate; both replace their former isHostedGithubRemote() call with
+ * this.
+ *
+ * Behavior preserved from isHostedGithubRemote() (apra-fleet-647.1.4 AC):
+ *   - a `file://` remote:                  hasRemote:true, canOpenPullRequest:false
+ *   - missing/empty/unresolvable URL:      hasRemote:false, canOpenPullRequest:false (fails closed)
+ *   - a `github.com` remote (any of the 3 URL shapes isHostedGithubRemote
+ *     recognized): canOpenPullRequest:true, same as before.
+ * NEW behavior (the whole point of apra-fleet-647.1.4): a GitHub Enterprise
+ * host, or any other resolvable host, is classified by asking its provider
+ * rather than being bucketed into "non-hosted" purely for not being
+ * literally 'github.com'.
+ *
+ * @param {unknown} remoteUrl
+ * @returns {{ hasRemote: boolean, canOpenPullRequest: boolean, host: string|null }}
+ */
+export function capabilities(remoteUrl) {
+    const parsed = parseRemote(remoteUrl);
+    if (!parsed) return { hasRemote: false, canOpenPullRequest: false, host: null };
+    if (parsed.scheme === 'file') return { hasRemote: true, canOpenPullRequest: false, host: null };
+
+    const provider = resolveVcsProviderForHost(parsed.host);
+    const providerCaps = (provider && typeof provider.capabilitiesForHost === 'function')
+        ? provider.capabilitiesForHost(parsed.host)
+        : { canOpenPullRequest: false };
+    return { hasRemote: true, canOpenPullRequest: !!providerCaps.canOpenPullRequest, host: parsed.host };
+}
+
 export const VCSModule = {
     buildCreatePrCommand,
     buildCommentCommand,
     classifyFailure,
     toGitVerdict,
     resolveProvider,
+    capabilities,
     registerVcsProvider,
     unregisterVcsProvider,
     isKnownVcsProvider,

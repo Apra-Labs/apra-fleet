@@ -100,6 +100,32 @@ export function resolveVcsProviderChain(name) {
     return chain;
 }
 
+/**
+ * Resolve which registered provider claims `host` for VCSModule.capabilities()
+ * (apra-fleet-647.1.4.1) -- a DIFFERENT dispatch axis than
+ * resolveVcsProviderChain() above (that one resolves a NAME the caller
+ * already knows to its inheritance chain for failure classification; this
+ * one resolves an unknown remote HOST to the provider that recognizes it).
+ *
+ * Every non-catch-all provider (anything but 'generic-git' itself) is tried
+ * first, most-recently-registered first, so a provider registered at runtime
+ * via registerVcsProvider() can claim a host without editing this file.
+ * 'generic-git' is always the fallback -- its own matchesHost() returns true
+ * unconditionally, so it never needs to be tried first.
+ *
+ * @param {string|null} host
+ * @returns {object} a provider descriptor; never undefined.
+ */
+export function resolveVcsProviderForHost(host) {
+    for (const provider of [...registry.values()].reverse()) {
+        if (provider.name === 'generic-git') continue;
+        if (typeof provider.matchesHost === 'function' && provider.matchesHost(host)) {
+            return provider;
+        }
+    }
+    return registry.get('generic-git') || GenericGitVCS;
+}
+
 for (const impl of BUILT_IN_PROVIDERS) registerVcsProvider(impl);
 
 export { GenericGitVCS, GitHubVCS };

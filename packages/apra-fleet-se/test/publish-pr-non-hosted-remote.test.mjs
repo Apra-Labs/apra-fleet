@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isHostedGithubRemote } from '../fleet-sprint/runner.js';
+import { capabilities } from '../fleet-sprint/vcs-module.mjs';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
@@ -163,30 +163,40 @@ test('mock sprint: non-hosted (file://) origin remote with a FAIL verdict leaves
 });
 
 // -----------------------------------------------------------------------
-// isHostedGithubRemote() unit cases (apra-fleet-eft.64.4): pin the pure
-// classifier's four documented input classes directly, independent of the
-// full mock-sprint scenario harness above.
+// VCSModule.capabilities() unit cases (apra-fleet-647.1.4.1, superseding the
+// former isHostedGithubRemote() cases from apra-fleet-eft.64.4): pin the pure
+// classifier's documented input classes directly, independent of the full
+// mock-sprint scenario harness above. A fuller capabilities() table
+// (GitHub Enterprise, Azure DevOps, GitLab, ...) lives in the dedicated
+// VCSModule test suite (apra-fleet-647.1.4.2); these cases just pin the two
+// runner.js call sites' preserved behavior.
 // -----------------------------------------------------------------------
-test('isHostedGithubRemote: classifies a plain file:// bare mirror as non-hosted', () => {
-    assert.equal(isHostedGithubRemote('file:///tmp/some-bare-mirror.git'), false);
+test('capabilities: classifies a plain file:// bare mirror as hasRemote but not PR-capable', () => {
+    assert.deepEqual(
+        capabilities('file:///tmp/some-bare-mirror.git'),
+        { hasRemote: true, canOpenPullRequest: false, host: null }
+    );
 });
 
-test('isHostedGithubRemote: classifies an https://github.com/... URL as hosted', () => {
-    assert.equal(isHostedGithubRemote('https://github.com/mock-org/mock-repo.git'), true);
+test('capabilities: classifies an https://github.com/... URL as PR-capable', () => {
+    assert.equal(capabilities('https://github.com/mock-org/mock-repo.git').canOpenPullRequest, true);
     // With an embedded username (https://user@github.com/...) too.
-    assert.equal(isHostedGithubRemote('https://x-access-token@github.com/mock-org/mock-repo.git'), true);
+    assert.equal(capabilities('https://x-access-token@github.com/mock-org/mock-repo.git').canOpenPullRequest, true);
 });
 
-test('isHostedGithubRemote: classifies a git@github.com:... SSH-shorthand URL as hosted', () => {
-    assert.equal(isHostedGithubRemote('git@github.com:mock-org/mock-repo.git'), true);
-    assert.equal(isHostedGithubRemote('ssh://git@github.com/mock-org/mock-repo.git'), true);
+test('capabilities: classifies a git@github.com:... SSH-shorthand URL as PR-capable', () => {
+    assert.equal(capabilities('git@github.com:mock-org/mock-repo.git').canOpenPullRequest, true);
+    assert.equal(capabilities('ssh://git@github.com/mock-org/mock-repo.git').canOpenPullRequest, true);
 });
 
-test('isHostedGithubRemote: fails closed to non-hosted for an empty/unresolvable remote', () => {
-    assert.equal(isHostedGithubRemote(''), false);
-    assert.equal(isHostedGithubRemote(undefined), false);
-    assert.equal(isHostedGithubRemote(null), false);
-    // A resolvable-but-non-GitHub host (e.g. a self-hosted GitLab) is also
-    // non-hosted per this classifier's contract (gh has no hosting API for it).
-    assert.equal(isHostedGithubRemote('https://gitlab.example.com/mock-org/mock-repo.git'), false);
+test('capabilities: fails closed to hasRemote:false/canOpenPullRequest:false for an empty/unresolvable remote', () => {
+    assert.deepEqual(capabilities(''), { hasRemote: false, canOpenPullRequest: false, host: null });
+    assert.deepEqual(capabilities(undefined), { hasRemote: false, canOpenPullRequest: false, host: null });
+    assert.deepEqual(capabilities(null), { hasRemote: false, canOpenPullRequest: false, host: null });
+    // A resolvable-but-non-GitHub host (e.g. a self-hosted GitLab) has a
+    // remote but is not PR-capable, per GenericGitVCS's catch-all.
+    const gitlab = capabilities('https://gitlab.example.com/mock-org/mock-repo.git');
+    assert.equal(gitlab.hasRemote, true);
+    assert.equal(gitlab.canOpenPullRequest, false);
+    assert.equal(gitlab.host, 'gitlab.example.com');
 });
