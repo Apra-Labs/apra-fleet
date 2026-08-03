@@ -194,6 +194,67 @@ describe('createVcsAuthPreflightCallback', () => {
         );
     });
 
+    // =========================================================================
+    // apra-fleet-647.1.2.2: the PROACTIVE preflight caller goes through
+    // VCSModule.resolveProvider() too (via provisionVcsAuthForMember), exactly
+    // like the reactive self-heal covered above and in
+    // vcs-auth-self-heal.test.mjs. Same two cases the module-level
+    // resolveProvider suite (vcs-module.test.mjs) cannot exercise on its own:
+    // a non-GitHub-registered member, and a member with no registered
+    // provider -- proven here through runner.js's real preflight call site,
+    // not just resolveProvider() in isolation.
+    // =========================================================================
+    test('a member registered with a non-GitHub provider (bitbucket) resolves to that provider with NO github literal anywhere in the preflight call', async () => {
+        const calls = [];
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket' }) }] };
+            calls.push({ name, args });
+            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+        };
+        const bitbucketCommand = async (cmd) => {
+            if (cmd === 'git remote get-url origin') {
+                return { ok: true, output: 'https://bitbucket.org/acme/widgets.git', error: null };
+            }
+            return { ok: true, output: '', error: null };
+        };
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: bitbucketCommand });
+
+        await ensureVcsAuthFresh('bb-member');
+
+        assert.equal(calls.length, 1, `expected exactly one provision_vcs_auth call, got ${calls.length}`);
+        assert.equal(calls[0].name, 'provision_vcs_auth');
+        assert.deepEqual(calls[0].args, {
+            member_name: 'bb-member',
+            provider: 'bitbucket',
+            git_access: 'push',
+            repos: ['acme/widgets'],
+        });
+        assert.ok(!('github_mode' in calls[0].args), `expected no github_mode field for a non-GitHub provider, got: ${JSON.stringify(calls[0].args)}`);
+        assert.ok(
+            JSON.stringify(calls[0].args).indexOf('github') === -1,
+            `expected no 'github' literal anywhere in a bitbucket member's preflight call, got: ${JSON.stringify(calls[0].args)}`,
+        );
+    });
+
+    test('a member with NO registered VCS provider degrades silently (typed error logged, never thrown) and never calls provision_vcs_auth -- no silent GitHub default', async () => {
+        const calls = [];
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: undefined }) }] };
+            calls.push({ name, args });
+            return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+        };
+        const logs = [];
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand, log: (m) => logs.push(m) });
+
+        await assert.doesNotReject(() => ensureVcsAuthFresh('unprovisioned-member'));
+
+        assert.equal(calls.length, 0, `expected NO provision_vcs_auth call for a member with no registered provider, got: ${JSON.stringify(calls)}`);
+        assert.ok(
+            logs.some((l) => /preflight: provision_vcs_auth failed for member 'unprovisioned-member'/.test(l) && /^.*ERROR:.*unprovisioned-member/.test(l)),
+            `expected a swallowed typed-error log entry naming the member, got: ${JSON.stringify(logs)}`,
+        );
+    });
+
     test('(case 3: reactive-path-intact) a genuinely long-running dispatch that outlasts the preflight-minted token still heals via the REACTIVE self-heal, independently of the preflight cache', async () => {
         // The preflight mints a credential comfortably outside the
         // expiring-soon window -- on its own, this member's NEXT preflight
