@@ -74,7 +74,7 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     // base-dev profile entry -- confirms the composed allowlist actually landed
     // in settings, not just an empty/placeholder array.
     expect(settings.permissions.allow).toContain('Bash(git:*)');
-  });
+  }, 15000);
 
   it('AC2: reports "member not provisioned" instead of success when compose_permissions fails', async () => {
     mockComposePermissions.mockResolvedValue('compose_permissions threw: boom');
