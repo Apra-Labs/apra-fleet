@@ -2183,6 +2183,14 @@ async function provisionPrCapableAuthForMember({ fleetApi, command, member, log 
 // $HOME/.fleet-git-credential-github for the 'github' provider.
 const GITHUB_VCS_CREDENTIAL_LABEL = 'github';
 
+// Typed marker returned by finalizeAbort() (and logged by the Publish PR step)
+// when the callTool-absent graceful-degradation path is taken: PR creation was
+// intentionally skipped because no MCP client was wired to mint the push+pr
+// credential VCSModule needs, NOT because a PR-creation attempt failed. Callers
+// (and tests) can discriminate this benign skip from a genuine PR failure by
+// this exact reason string. See apra-fleet-tfx.8.1.
+const PR_SKIPPED_NO_MCP_CLIENT = 'pr-skipped-no-mcp-client';
+
 // Reads the raw token back out of the git-credential-helper script
 // provision_vcs_auth just deployed onto `member`'s filesystem
 // ($HOME/.fleet-git-credential-<label>, an executable script that PRINTS
@@ -4808,10 +4816,19 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     // just-in-time immediately before this one call (never at sprint setup).
     const fleetApi = typeof callTool === 'function' ? new ApraFleet({ callTool }) : null;
     if (!fleetApi) {
-        throw new CommandError(
-            `[Publish Abort PR Failed] no MCP callTool available to provision a push+pr credential for member '${member}' -- cannot raise the [ABORTED] PR for branch '${branch}'.`,
-            { details: { branch, baseBranch } }
-        );
+        // Graceful degradation (apra-fleet-tfx.8.1): raising the [ABORTED] PR
+        // needs an MCP client to mint a just-in-time push+pr credential on
+        // `member`. When no callTool is wired (e.g. a mock-sprint scenario
+        // that never opted into an MCP client), the abort-path branch is
+        // ALREADY pushed above -- so instead of an unconditional hard-throw
+        // that would break every such pre-existing scenario, this degrades to
+        // a typed 'pr-skipped-no-mcp-client' outcome: a clear log line, the
+        // pushed branch still returned to the caller, only the auto-raised PR
+        // skipped. In production callTool is always wired (bin/cli.mjs), so
+        // this branch never runs there; it exists purely so PR creation is not
+        // a hard MCP dependency for callers that legitimately have none.
+        log(`[Publish Abort PR Skipped] no MCP callTool available to mint a push+pr credential for member '${member}' -- branch '${branch}' is pushed but the [ABORTED] PR was not raised.`);
+        return { prUrl: null, reason: PR_SKIPPED_NO_MCP_CLIENT, pushed: true, commitCount };
     }
     const prResult = await raiseVcsPrForMember({
         fleetApi,
@@ -9047,30 +9064,41 @@ async function runSprintCycle(context) {
         // invisible.
         const fleetApiForPr = (args && typeof args.callTool === 'function') ? new ApraFleet({ callTool: args.callTool }) : null;
         if (!fleetApiForPr) {
-            throw new CommandError(
-                `[Publish PR Failed] no MCP callTool available to provision a push+pr credential for member '${orchestratorMember}' -- cannot raise the PR for branch '${validated.branch}'.`,
-                { details: { branch: validated.branch, baseBranch: validated.baseBranch } }
-            );
-        }
-        const prResult = await raiseVcsPrForMember({
-            fleetApi: fleetApiForPr,
-            command,
-            member: orchestratorMember,
-            base: validated.baseBranch,
-            head: validated.branch,
-            title: prTitle,
-            body: prBody,
-            log,
-            logPrefix: '[Publish PR]',
-        });
-        if (!prResult.ok) {
-            throw new CommandError(
-                `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
-                { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
-            );
-        }
-        if (prResult.alreadyExists) {
-            log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success.`);
+            // Graceful degradation (apra-fleet-tfx.8.1): minting the push+pr
+            // credential VCSModule needs to raise this PR requires an MCP
+            // client. When no callTool is wired (e.g. a mock-sprint scenario
+            // that never opted into an MCP client), the sprint branch is
+            // already pushed by the withGitSync bracket -- so rather than an
+            // unconditional hard-throw that would fail every such pre-existing
+            // scenario at the very last step, this degrades to a clear,
+            // skipped-PR log and lets the sprint report its real verdict. In
+            // production callTool is always wired (bin/cli.mjs), so this branch
+            // never runs there; it exists purely so PR creation is not a hard
+            // MCP dependency for callers that legitimately have none. A genuine
+            // PR-creation FAILURE (auth, network, a real API error) still
+            // throws below -- only the callTool-absent case is degraded.
+            log(`[Publish PR Skipped] no MCP callTool available to mint a push+pr credential for member '${orchestratorMember}' -- branch '${validated.branch}' is pushed but the PR was not raised.`);
+        } else {
+            const prResult = await raiseVcsPrForMember({
+                fleetApi: fleetApiForPr,
+                command,
+                member: orchestratorMember,
+                base: validated.baseBranch,
+                head: validated.branch,
+                title: prTitle,
+                body: prBody,
+                log,
+                logPrefix: '[Publish PR]',
+            });
+            if (!prResult.ok) {
+                throw new CommandError(
+                    `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
+                    { details: { branch: validated.branch, baseBranch: validated.baseBranch, error: prResult.error } }
+                );
+            }
+            if (prResult.alreadyExists) {
+                log(`Publish PR: a PR for branch '${validated.branch}' already exists -- treating as idempotent success.`);
+            }
         }
     }
 
