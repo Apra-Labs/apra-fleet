@@ -305,19 +305,24 @@ platform, and re-runs it automatically. The server restarts with the new
 binary. If you are already on the latest version it reports so and exits. Full
 detail: [docs/features/update.md](features/update.md).
 
-### Known limitation: installing over a running server can fail
+### Stopping a running server before an overwrite install
 
-`install --force` (and `update`, which drives the same path) stops the
+`install --force` (and `update`, which drives the same path) must stop the
 currently-running server before copying the new binary over the installed
-path. That stop-then-copy sequence is not yet fully verified end to end: if
-the old server process has not actually exited by the time the copy starts,
-the copy fails outright (the OS refuses to overwrite a binary that is still
-mapped into a running process), and the install aborts with the old server
-left running. A future install must not just fire a termination signal and
-assume success after a fixed delay -- it needs to positively confirm the old
-process has exited (polling process liveness, escalating if it hasn't
-exited within a grace window) before it reports the server as stopped or
-attempts the binary copy, and it must not print a success message ("stopped
-running server") until that confirmation has actually happened. Until that
-lands, if `install --force`/`update` fails on a copy step, check whether the
-old server process is still running before retrying.
+path, since the OS refuses to overwrite a binary that is still mapped into a
+running process. A single termination signal followed by a fixed delay is not
+reliable: a singleton that is mid-request can take longer to exit than an
+arbitrary fixed sleep, and a copy attempted before it actually exits fails
+outright and leaves the old server running.
+
+The install path instead polls process liveness over a bounded grace window
+after the initial termination signal, and escalates to a harder kill signal
+if the process is still alive once that window elapses, polling again over a
+second (shorter) window before giving up. The binary copy is only attempted
+once the old process is confirmed gone. Symmetrically, the "stopped running
+server" success message is gated on that same confirmation rather than
+printed unconditionally -- if the process is still detected running after
+both the initial signal and the escalation, install reports a clear error
+(with the manual kill command for the platform) and exits non-zero instead of
+proceeding into a copy that would fail anyway or claiming success it can't
+back up.

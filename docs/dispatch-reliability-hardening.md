@@ -1,6 +1,6 @@
-<!-- llm-context: Design notes for a cluster of dispatch/orchestration reliability fixes -- self-heal-and-retry coverage at git-operation boundaries, watchdog tick reentrancy, the doer VERIFY-only-next-action contract, and the undici/Node toolchain pin. Read alongside architecture.md's "Terminal-Signal and Dead-Session Detection Invariants", stall-detector-resilience.md, and runner-error-classification.md, which cover the rest of the same reliability cluster. -->
-<!-- keywords: self-heal, retry, watchdog, reentrancy, VERIFY, doer contract, undici, toolchain pin, finalizeAbort, git auth -->
-<!-- see-also: architecture.md, stall-detector-resilience.md, runner-error-classification.md, design-git-auth.md -->
+<!-- llm-context: Design notes for a cluster of dispatch/orchestration reliability fixes -- self-heal-and-retry coverage at git-operation boundaries, watchdog tick reentrancy, the doer VERIFY-only-next-action contract, the undici/Node toolchain pin, and the CLI overwrite-install stop/confirm sequence. Read alongside architecture.md's "Terminal-Signal and Dead-Session Detection Invariants", stall-detector-resilience.md, runner-error-classification.md, and install.md, which cover the rest of the same reliability cluster. -->
+<!-- keywords: self-heal, retry, watchdog, reentrancy, VERIFY, doer contract, undici, toolchain pin, finalizeAbort, git auth, install --force, ETXTBSY, poll, escalation -->
+<!-- see-also: architecture.md, stall-detector-resilience.md, runner-error-classification.md, design-git-auth.md, install.md -->
 
 # Dispatch and orchestration reliability hardening
 
@@ -68,6 +68,29 @@ not automatically a failure" section) that inspects bead-close state directly
 rather than trusting the doer to have followed its own contract -- the two
 mechanisms are independent and neither should be relied on to make the other
 unnecessary.
+
+## An overwrite-install's "stop the old process" step needs confirmation, not a timer
+
+A CLI install/update path that stops a running singleton before overwriting
+its own binary cannot rely on "send a termination signal, then sleep a fixed
+duration, then proceed" -- a process that is mid-request can outlive an
+arbitrary fixed delay, and copying over a binary that is still mapped into a
+still-running process fails at the OS level (the copy is rejected outright,
+not silently corrupted). The durable pattern is a bounded poll on actual
+process liveness after the signal, with an escalation to a harder kill signal
+and a second, shorter poll window if the process hasn't exited by the end of
+the first window -- and the binary copy is gated on that poll confirming the
+process is gone, not on the signal having been sent.
+
+The same confirmation has to gate any user-facing "stopped" success message
+too. A message that's printed unconditionally right after the signal (rather
+than after confirming termination) can tell an operator the server stopped
+when it didn't -- which is worse than a copy failure, because it actively
+asserts a false state instead of surfacing the real one. When termination
+can't be confirmed even after escalation, the correct behavior is to report a
+clear, actionable error (including the manual command to finish the job) and
+exit non-zero, rather than either asserting success or silently proceeding
+into a copy attempt that's guaranteed to fail.
 
 ## Toolchain compatibility is a tracked invariant, not an incidental detail
 
