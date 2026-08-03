@@ -21,6 +21,36 @@ The smoke test's sandbox never touches the real `~/.apra-fleet`
 well-known path (not a random per-run directory) so no hand-off file is
 needed between steps.
 
+Because the path is fixed, two regression passes in flight against the same
+machine at once would otherwise stomp on each other -- specifically, a
+second run's `## Teardown` (`node dist/index.js stop` + `rm -rf $SANDBOX`)
+can destroy a first run's sandbox while it is still mid-`## Setup` or
+mid-`## Test scenario`. `## Setup` and `## Teardown` below guard against
+this with a lock file living NEXT TO the sandbox (`$SANDBOX.lock` --
+deliberately outside the directory `## Teardown` deletes, so the lock is
+never a casualty of the cleanup it gates), via `scripts/sandbox-lock.mjs`
+(apra-fleet-egc.1):
+- `## Setup` acquires the lock before touching anything (mkdir/install/
+  clone); if another live run already holds it, Setup fails loud with a
+  `sandbox busy` message and a non-zero exit instead of proceeding.
+- `## Teardown` only `rm -rf`s the sandbox (and releases the lock) if it can
+  prove it owns it -- a live lock naming a PID other than this sandbox's own
+  fleet server is left untouched.
+- A single normal `## Setup` -> `## Test scenario` -> `## Teardown` pass is
+  unaffected: the lock is acquired at the start and released at the end, as
+  before.
+
+**If `## Setup`'s busy-check refuses (non-zero exit), STOP the whole pass
+right there.** Do not proceed to `## Test scenario`, and do not run
+`## Teardown` either: this run never acquired the lock, so it has nothing of
+its own to tear down, and `## Teardown`'s ownership check -- which compares
+the lock's recorded PID against the sandbox's own currently-running server --
+cannot by itself distinguish "a stray/misfired Teardown call for a run that
+never actually owned this sandbox" from "this run's own legitimate Teardown"
+once another live run's Setup has since completed the hand-off to its own
+server PID. The busy-check at the start of `## Setup` is what actually
+prevents that ambiguity from ever arising -- respect its exit code.
+
 Conventions used below:
 - Sandbox root: `~/temp/.apra-fleet-tests` (`$HOME/temp/.apra-fleet-tests`
   on POSIX, `%USERPROFILE%\temp\.apra-fleet-tests` on Windows).
@@ -120,6 +150,15 @@ normally has all three already):
 ```bash
 SANDBOX="$HOME/temp/.apra-fleet-tests"
 export REAL_HOME="$HOME"
+
+# Busy-check (apra-fleet-egc.1): claim the sandbox lock BEFORE touching
+# anything below. Fails loud ('sandbox busy', non-zero exit) if another live
+# run already holds it, instead of racing/clobbering it. Passes $$ (this
+# Setup shell's own PID) -- see scripts/sandbox-lock.mjs's file header for
+# why that is correct for the early part of Setup even though it is a
+# transient PID.
+node "<repo-root>/scripts/sandbox-lock.mjs" acquire "$SANDBOX" "$$" || exit 1
+
 export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
@@ -127,6 +166,13 @@ mkdir -p "$HOME"
 cd "<repo-root>"
 node dist/index.js install
 node dist/index.js start
+
+# Re-point the lock at the sandbox's own long-lived fleet-server PID (not
+# this Setup shell, which exits once this code block finishes) -- the
+# server stays up through ## Test scenario until ## Teardown stops it, so
+# this is what keeps the lock a true liveness signal for the rest of the run.
+node "<repo-root>/scripts/sandbox-lock.mjs" mark-server-started "$SANDBOX" || exit 1
+
 git clone https://github.com/Apra-Labs/fleet-e2e-toy "$HOME/toy-repo"
 ```
 
@@ -270,6 +316,16 @@ SANDBOX="$HOME/temp/.apra-fleet-tests"
 export HOME="$SANDBOX"
 export USERPROFILE="$HOME"
 export APRA_FLEET_PORT=18700
+
+# Ownership check (apra-fleet-egc.1): only stop the server and rm -rf the
+# sandbox if this Teardown can prove it owns the lock -- i.e. the lock
+# currently names THIS sandbox's own fleet-server PID (or is missing/stale,
+# meaning there is nothing live to protect). A lock naming some OTHER live
+# PID means a different run currently owns this sandbox; refuse loud instead
+# of destroying it. Runs BEFORE 'stop' so it reads the still-live
+# server.json to compare against.
+node "<repo-root>/scripts/sandbox-lock.mjs" release "$SANDBOX" || exit 1
+
 node dist/index.js stop
 rm -rf "$SANDBOX"
 ```
