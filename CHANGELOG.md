@@ -2,6 +2,89 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Dispatch-layer stall/timeout reliability hardening
+
+Sprint goal: dedupe and fix a cluster of dispatch-stall and max_turns-exhaustion
+incidents traced to a stall detector that could not actually cancel a hung
+dispatch, a client timeout budget that didn't account for the server's own
+retry, and several related latent hazards found while investigating the same
+incident cluster. **Goal work fully landed and code-quality-approved, but the
+sprint's own final verdict is FAIL** -- the deploy gate failed before the smoke
+test could run, and that failure was confirmed to be a genuine pre-existing
+defect, not an environment fluke (see below).
+
+What shipped:
+
+- A confirmed stall now cancels the in-flight MCP dispatch itself (via an
+  `AbortController` threaded through the same abort-signal path remote
+  strategies already accept), instead of only killing the remote process and
+  leaving the client to wait out its own independent hard deadline.
+- The client's dispatch timeout budget now shares a single derivation with
+  the server's own inactivity-timeout retry, so the client can no longer time
+  out before the server's own retry-and-report-cleanly path gets a chance to
+  run.
+- Workspace-trust detection now also classifies an exit-0/empty-stdout
+  dispatch against a never-trusted workspace as `workspace_not_trusted`
+  (previously only a nonzero exit code triggered this), gated to
+  self-heal-and-retry exactly once.
+- The SSH connection pool's idle-reap path now re-verifies a channel is
+  genuinely idle immediately before closing it, closing a latent risk that a
+  provisional (not-yet-polled) stall-tracking entry's channel could be reaped
+  while still live; SSH connections also now configure keepalive so a
+  silently dropped connection is detected rather than left as a phantom pool
+  entry.
+- The supervisor watchdog's periodic tick now has a reentrancy guard, so an
+  overlapping tick (possible once per-tick liveness checks take longer than
+  the tick interval) is skipped rather than racing the in-flight tick on
+  shared state.
+- `finalizeAbort()`'s own git operations now go through the same
+  self-heal-and-retry-once pattern already used elsewhere, so a stale
+  credential encountered during abort cleanup no longer silently drops a
+  PR-lookup step from the terminal history record.
+- The sprint cost-analysis report now gives Integ Test its own line (previously
+  folded into "overhead"), and dispatches that exhaust their turn ceiling or
+  time out now report their real partial cost rather than an undefined/zero
+  figure.
+- The orchestrator no longer automatically classifies a max_turns/timeout
+  streak as failed when every bead it was assigned is already closed -- it is
+  now classified as a successful streak that overran its own VERIFY step, and
+  no wasted resume dispatch is triggered. Paired with a strengthened doer
+  contract stating that the moment its last assigned bead closes, its only
+  next action is emitting the VERIFY result.
+- `undici` is now pinned to the 7.x line workspace-wide via package-manager
+  overrides, fixing a Node 20 incompatibility that broke child-process-spawn
+  tests independent of any application code.
+
+However, the sprint fails its own deploy gate: `install --force` failed with
+`ETXTBSY` (text file is busy) while copying the new binary over a still-running
+server process, and the smoke test never ran as a result. This was confirmed to
+be a genuine, pre-existing latent defect in the installer's stop-then-copy
+sequence (it waits a fixed short delay and unconditionally reports the old
+server stopped, without verifying the process actually exited before copying
+over it) rather than caused by this sprint's own changes -- but it still blocks
+release and is tracked as carried-forward work (see below).
+
+Carried forward to a future sprint:
+
+- Make `install --force`/`update` verify the old server process has actually
+  exited (polling liveness, escalating if needed) before copying the new
+  binary, instead of assuming success after a fixed delay.
+- Gate the installer's "stopped running server" message on confirmed
+  termination instead of asserting it unconditionally.
+- An end-of-sprint regression pass could not run at all: the sandbox's
+  permission allowlist did not cover the commands the regression playbook
+  requires, so the pass stopped at its own permissions check before either
+  its real-bd suite or its smoke test could execute. This is informational
+  and does not carry over any new bead.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $4.1194.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1562 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 10 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- fleet-sprint runner error-classification correctness
 
 Sprint goal: fix a cluster of error-classification defects in the
