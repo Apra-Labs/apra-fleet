@@ -1021,8 +1021,9 @@ export async function syncMemberAfter(member, opts = {}) {
 //   - the orchestrator's read-freshness D-pulls before streak verification,
 //     cycle-evaluation counts and final-review counts: a stale read misreports
 //     every remote member's work as unfinished;
-//   - the pre-flight beads-health gate (`healthGate: true`, which implies
-//     fatal): its entire purpose is to stop the run before anything mutates.
+//   - the pre-flight beads-health gate (`readinessGate: true`, the
+//     apra-fleet-417.5 rename of `healthGate`, which implies fatal): its
+//     entire purpose is to stop the run before anything mutates.
 // The orchestrator's post-mutation D-pushes are deliberately NOT fatal: those
 // beads writes are already committed in the orchestrator's local clone, so an
 // unresolved push is a publication delay, not data loss, and the next D-push
@@ -4843,7 +4844,7 @@ async function runSprintCycle(context) {
             // EXPLICITLY FATAL (apra-fleet-417.3.1): a pre-dispatch D-pull that
             // silently degraded would hand the agent a STALE beads clone and
             // let it act on it -- worse than not dispatching at all.
-            await DoltSync.syncBefore(member, { command, log, skipPull: skipPreDispatchDoltPull, onAuthFailure, fatal: true });
+            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true });
         }
         // The teardown is deliberately NOT a `finally`. A throw out of a
         // `finally` replaces the (successful) dispatch result and is
@@ -5359,8 +5360,9 @@ async function runSprintCycle(context) {
     // workspace path, conflicting table(s), and remediation -- while the sprint
     // has still mutated nothing. This is the first fleet dispatch of the run.
     // Routed through the single dolt-sync module (apra-fleet-417.2.1):
-    // healthGate selects the pre-flight variant of the BEFORE bracket.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, healthGate: true });
+    // readinessGate (apra-fleet-417.5 rename of healthGate) selects the
+    // pre-flight variant of the BEFORE bracket.
+    await DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true });
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch

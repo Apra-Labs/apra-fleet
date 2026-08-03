@@ -19,9 +19,10 @@
  * --------------------------------------------------------------------------
  *   syncBefore(member, opts)  -- freshen `member`'s beads clone before it is
  *                                read from or dispatched (D-pull bracket).
- *                                `opts.healthGate: true` selects the
- *                                pre-flight beads-health variant, which
- *                                additionally composes the actionable
+ *                                `opts.readinessGate: true` (apra-fleet-417.5
+ *                                rename of `healthGate`, ADR Decision 2)
+ *                                selects the pre-flight beads-health variant,
+ *                                which additionally composes the actionable
  *                                "beads DB diverged" diagnosis line.
  *   syncAfter(member, opts)   -- publish `member`'s beads mutations (D-push
  *                                bracket, mutex-serialized, with the single
@@ -32,12 +33,14 @@
  *                                command and never throws.
  *
  * FAULT-TOLERANCE POLICY (apra-fleet-417.3.1): syncBefore/syncAfter return a
- * STRUCTURED OUTCOME `{ ok, kind, degraded, detail, ... }` and are DEGRADED BY
- * DEFAULT -- an unresolved sync failure does not throw, it reports
- * `degraded: true` and lets the sprint continue. A call site that must still
- * hard-abort says so explicitly with `fatal: true` (and `healthGate: true`
- * implies it). See the "Structured outcomes and the bounded
- * DEGRADED-BUT-NON-FATAL path" section near the bottom of this file.
+ * STRUCTURED OUTCOME `{ ok, kind, degraded, degradedKind, detail, ... }` and
+ * are DEGRADED BY DEFAULT -- an unresolved sync failure does not throw, it
+ * reports `degraded: true` (with `degradedKind` carrying the ADR's
+ * backend-neutral failure taxonomy, apra-fleet-417.5) and lets the sprint
+ * continue. A call site that must still hard-abort says so explicitly with
+ * `fatal: true` (and `readinessGate: true` implies it). See the "Structured
+ * outcomes and the bounded DEGRADED-BUT-NON-FATAL path" section near the
+ * bottom of this file.
  *
  * The lower-level primitives (doltPullBefore / preflightBeadsHealthGate /
  * doltPushAfter / classifyDoltFailure / extract*) stay exported because the
@@ -870,6 +873,76 @@ export function classifySyncError(err) {
     return kind === 'unknown' && !(err instanceof DoltSyncError) ? 'error' : kind;
 }
 
+// ---------------------------------------------------------------------------
+// Backend-neutral degraded.kind taxonomy (docs/adr-taskdb-backend-neutral-
+// interface.md Decision 2, apra-fleet-417.5)
+// ---------------------------------------------------------------------------
+//
+// The ADR's TaskDBModule contract carries failure classification in a
+// backend-neutral vocabulary: 'transient', 'auth', 'conflict-resolvable',
+// 'conflict-unresolvable', 'store-unreachable', 'no-store',
+// 'coordination-unavailable', 'unknown'. The adapter-level `kind` this module
+// already produces (classifyDoltFailure / classifySyncError) stays exactly as
+// it is -- runner.js and the fault-tolerance/health-gate test suites branch on
+// its Dolt-flavored values ('diverged', 'no-remote', 'remote-unreachable',
+// ...) today, and `degraded` is a hard boolean those same suites assert with
+// `assert.equal(outcome.degraded, true/false)`. Neither can change shape
+// without breaking passing tests, so the neutral taxonomy is exposed as a
+// SIBLING field, `degradedKind`, set only when `degraded: true`, rather than
+// nesting it under `degraded` the way the ADR's prose literally shows.
+//
+// This mapping is the adapter's declaration of "which neutral kind is this
+// Dolt-specific failure an instance of" -- the direct analogue of 647.1's
+// classifyFailure() kind set. A diverged outcome only ever reaches the
+// degraded path after the one bounded reconcile has already failed (see
+// doltPushAfter), so it always maps to 'conflict-unresolvable' here, never
+// 'conflict-resolvable' (that state exists only transiently, mid-reconcile,
+// and is never itself reported as a degraded terminal outcome).
+const NEUTRAL_KIND_MAP = {
+    diverged: 'conflict-unresolvable',
+    auth: 'auth',
+    transient: 'transient',
+    'no-remote': 'no-store',
+    'empty-remote': 'no-store',
+    'remote-unreachable': 'store-unreachable',
+    unknown: 'unknown',
+    error: 'unknown',
+};
+
+/**
+ * Map an adapter-flavored outcome `kind` (classifySyncError's return value) to
+ * the ADR's backend-neutral failure taxonomy. Unrecognized kinds map to
+ * 'unknown' rather than throwing, since this runs on the degraded (already
+ * failure) path and must never itself raise.
+ *
+ * @param {string} kind
+ * @returns {'transient'|'auth'|'conflict-resolvable'|'conflict-unresolvable'|'store-unreachable'|'no-store'|'coordination-unavailable'|'unknown'}
+ */
+export function toNeutralDegradedKind(kind) {
+    return NEUTRAL_KIND_MAP[kind] || 'unknown';
+}
+
+/**
+ * TaskDBModule capabilities descriptor (ADR Decision 2/3) for the Dolt/beads
+ * adapter: declares which neutral degraded.kind values this backend can ever
+ * produce, plus the booleans callers use instead of assuming Dolt semantics.
+ *
+ * `supportsRepair: false` reflects that `repair()` below is a named seam, not
+ * a wired recovery ladder yet -- apra-fleet-vkc.1 owns that wiring (see the
+ * RECOVERY-LADDER DISPOSITION note in this file's header). `supportsRepair`
+ * will become `true` once vkc.1 lands.
+ *
+ * @returns {{ wholeStatePublish: boolean, supportsRepair: boolean, supportsCoordinationLock: boolean, kinds: string[] }}
+ */
+export function capabilities() {
+    return {
+        wholeStatePublish: true,
+        supportsRepair: false,
+        supportsCoordinationLock: true,
+        kinds: ['transient', 'auth', 'conflict-resolvable', 'conflict-unresolvable', 'store-unreachable', 'no-store', 'unknown'],
+    };
+}
+
 /**
  * Normalize a primitive's successful return value into the structured outcome.
  *
@@ -919,6 +992,11 @@ async function runDegradable(run, ctx) {
             ok: false,
             kind,
             degraded: true,
+            // Backend-neutral classification (ADR Decision 2, apra-fleet-417.5)
+            // alongside the adapter-flavored `kind` above -- see the
+            // NEUTRAL_KIND_MAP comment for why this is a sibling field rather
+            // than nested under `degraded`.
+            degradedKind: toNeutralDegradedKind(kind),
             detail: (err && err.message) || String(err),
             member,
             operation,
@@ -960,36 +1038,60 @@ async function runDegradable(run, ctx) {
  * a dispatch, or an orchestrator-side read of cross-member beads state --
  * sees the shared remote's current truth rather than a stale local copy.
  *
- * `opts.healthGate: true` selects the pre-flight variant used once per run
- * before any mutating git/PR command: identical probe, but a divergence is
- * re-thrown with the composed, actionable "beads DB diverged" line (workspace
- * path + conflicting tables + remediation) that the dashboard persists.
+ * `opts.readinessGate: true` (apra-fleet-417.5 rename of `healthGate`, ADR
+ * Decision 2) selects the pre-flight variant used once per run before any
+ * mutating git/PR command: identical probe, but a divergence is re-thrown
+ * with the composed, actionable "beads DB diverged" line (workspace path +
+ * conflicting tables + remediation) that the dashboard persists.
  *
- * Returns a STRUCTURED OUTCOME ({ ok, kind, degraded, detail, ... }) and, by
- * default, does NOT throw: a sync failure the module cannot resolve is
- * surfaced as `degraded: true` so the sprint loop continues (apra-fleet-417.3).
- * Pass `fatal: true` to restore the throwing behavior at a call site that
- * genuinely must abort the run -- `healthGate: true` implies `fatal: true`,
- * since that gate exists precisely to stop a run before it mutates anything.
+ * Returns a STRUCTURED OUTCOME ({ ok, kind, degraded, degradedKind, detail,
+ * ... }) and, by default, does NOT throw: a sync failure the module cannot
+ * resolve is surfaced as `degraded: true` (with `degradedKind` carrying the
+ * ADR's backend-neutral taxonomy) so the sprint loop continues
+ * (apra-fleet-417.3). Pass `fatal: true` to restore the throwing behavior at a
+ * call site that genuinely must abort the run -- `readinessGate: true`
+ * implies `fatal: true`, since that gate exists precisely to stop a run
+ * before it mutates anything.
+ *
+ * `opts.skipRefresh` (apra-fleet-417.5 rename of `skipPull`, ADR Decision 2)
+ * is threaded through to doltPullBefore()'s `skipPull` -- see that function's
+ * doc comment for what it suppresses. The legacy spellings `healthGate` and
+ * `skipPull` are REJECTED (thrown) rather than silently ignored: silently
+ * dropping either into the `...rest` passthrough would leave a stale call
+ * site with `fatal` quietly defaulting to `false`, turning a hard pre-flight
+ * abort into a silent degrade.
  *
  * All other opts are passed through unchanged to doltPullBefore():
- * `command` (required), `log`, `maxTransientRetries`, `skipPull`,
- * `onAuthFailure`, `checkSyncRemoteConfigured`, `sleep`, `backoffBaseMs`.
+ * `command` (required), `log`, `maxTransientRetries`, `onAuthFailure`,
+ * `checkSyncRemoteConfigured`, `sleep`, `backoffBaseMs`.
  *
  * @param {string} member
- * @param {{ command: Function, healthGate?: boolean, fatal?: boolean, onDegraded?: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, skipPull?: boolean, onAuthFailure?: Function, sleep?: Function, backoffBaseMs?: number }} opts
+ * @param {{ command: Function, readinessGate?: boolean, fatal?: boolean, onDegraded?: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, skipRefresh?: boolean, onAuthFailure?: Function, sleep?: Function, backoffBaseMs?: number }} opts
  * @returns {Promise<object>} structured outcome
- * @throws {DoltDivergedError|DoltSyncError} only when `fatal`/`healthGate` is set
+ * @throws {DoltDivergedError|DoltSyncError} only when `fatal`/`readinessGate` is set
  */
 export async function syncBefore(member, opts = {}) {
-    const { healthGate = false, fatal, onDegraded, ...rest } = opts;
-    const run = healthGate
-        ? () => preflightBeadsHealthGate(member, rest)
-        : () => doltPullBefore(member, rest);
+    const { readinessGate = false, skipRefresh, fatal, onDegraded, healthGate, skipPull, ...rest } = opts;
+    if (healthGate !== undefined) {
+        throw new Error(
+            "DoltSync.syncBefore: opts.healthGate is retired -- pass opts.readinessGate instead " +
+            "(docs/adr-taskdb-backend-neutral-interface.md Decision 2, apra-fleet-417.5).",
+        );
+    }
+    if (skipPull !== undefined) {
+        throw new Error(
+            "DoltSync.syncBefore: opts.skipPull is retired -- pass opts.skipRefresh instead " +
+            "(docs/adr-taskdb-backend-neutral-interface.md Decision 2, apra-fleet-417.5).",
+        );
+    }
+    const adapterOpts = { ...rest, skipPull: skipRefresh };
+    const run = readinessGate
+        ? () => preflightBeadsHealthGate(member, adapterOpts)
+        : () => doltPullBefore(member, adapterOpts);
     return runDegradable(run, {
         member,
         operation: 'pull',
-        fatal: fatal === undefined ? healthGate : fatal,
+        fatal: fatal === undefined ? readinessGate : fatal,
         log: rest.log,
         onDegraded,
     });
@@ -1016,13 +1118,24 @@ export async function syncBefore(member, opts = {}) {
  * This is the seam the recovery ladder is to be wired behind -- see the
  * RECOVERY-LADDER DISPOSITION note in the module header (apra-fleet-vkc.1).
  *
+ * `opts.mutatedItemIds` (ADR Decision 2/3, apra-fleet-417.5) is accepted per
+ * the TaskDBModule contract but INTENTIONALLY NOT CONSUMED by this adapter:
+ * the Dolt/beads backend publishes whole state (`capabilities().
+ * wholeStatePublish === true`), so a later successful push always implicitly
+ * carries any earlier one and a per-item publish ledger keyed on these ids
+ * buys nothing here. A future non-whole-state backend (e.g. the ADR's Jira
+ * walk-through) is the one that must thread `mutatedItemIds` into a real
+ * per-item retry ledger -- this parameter exists on the interface today so
+ * that backend does not need a signature change to land.
+ *
  * @param {string} member
- * @param {{ command: Function, pushBeads?: boolean, fatal?: boolean, onDegraded?: Function, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function, sleep?: Function, backoffBaseMs?: number }} opts
+ * @param {{ command: Function, pushBeads?: boolean, fatal?: boolean, onDegraded?: Function, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function, sleep?: Function, backoffBaseMs?: number, mutatedItemIds?: string[] }} opts
  * @returns {Promise<object>} structured outcome
  * @throws {DoltDivergedError|DoltSyncError} only when `fatal: true` is set
  */
 export async function syncAfter(member, opts = {}) {
-    const { fatal = false, onDegraded, ...rest } = opts;
+    const { fatal = false, onDegraded, mutatedItemIds, ...rest } = opts;
+    void mutatedItemIds; // see doc comment: accepted for interface parity, not consumed by this whole-state-publish adapter
     return runDegradable(() => doltPushAfter(member, rest), {
         member,
         operation: 'push',
@@ -1052,10 +1165,103 @@ export async function status(member, opts = {}) {
     return { member, syncRemoteConfigured: await checkFn(member, { command, log }) };
 }
 
+// ---------------------------------------------------------------------------
+// TaskDBModule contract completion (docs/adr-taskdb-backend-neutral-
+// interface.md Decision 2, apra-fleet-417.5): refreshView / ensureReady /
+// flush / repair, each delegating to the machinery above rather than
+// introducing new dolt call sites -- this module remains the SINGLE permitted
+// dolt command surface (see the module header).
+// ---------------------------------------------------------------------------
+
+/**
+ * Make `member`'s local view current before the orchestrator reads task
+ * state. Delegates to the same D-pull bracket syncBefore() uses, non-fatal by
+ * default (a stale-but-present view is reported via `fresh: false`, not
+ * thrown) -- ADR Decision 2: "Never throws; fresh:false means reads are
+ * possibly stale, so callers treat verification as INCONCLUSIVE rather than
+ * failed."
+ *
+ * `opts.purpose` is accepted for interface parity (a future backend may use
+ * it to decide whether a cache invalidation is warranted) but this adapter's
+ * refresh is unconditional, so it is not otherwise consulted.
+ *
+ * @param {string} member
+ * @param {{ command: Function, purpose?: string, fatal?: boolean, log?: Function, [key: string]: any }} opts
+ * @returns {Promise<{ fresh: boolean, degraded?: object }>}
+ */
+export async function refreshView(member, opts = {}) {
+    const { purpose, fatal = false, ...rest } = opts;
+    void purpose; // interface parity only -- see doc comment
+    const outcome = await syncBefore(member, { ...rest, fatal });
+    return outcome.degraded ? { fresh: false, degraded: outcome } : { fresh: outcome.ok };
+}
+
+/**
+ * Sprint-start gate: bring `member`'s local view of the task store into a
+ * usable state before any work is dispatched. The one method permitted to
+ * refuse to start -- delegates to syncBefore's `readinessGate` (pre-flight
+ * beads-health) variant, which is fatal by default, so a genuinely unusable
+ * store still aborts the run rather than reporting `ready: false` and
+ * continuing.
+ *
+ * @param {string} member
+ * @param {{ command: Function, fatal?: boolean, log?: Function, [key: string]: any }} opts
+ * @returns {Promise<{ ready: boolean, degraded?: object }>}
+ */
+export async function ensureReady(member, opts = {}) {
+    const outcome = await syncBefore(member, { ...opts, readinessGate: true });
+    return outcome.degraded ? { ready: false, degraded: outcome } : { ready: outcome.ok };
+}
+
+/**
+ * End-of-run: report the degradation ledger a terminal summary is built from.
+ *
+ * This adapter does not attempt a fresh publish here -- the ADR's "attempt
+ * publication for every view still marked unpublished" is already satisfied
+ * incrementally by this adapter's own retry contract: the NEXT syncAfter()
+ * bracket for a given member IS its queued retry (see the module-level
+ * "Structured outcomes" section above), and getDegradedSyncRecords() already
+ * retires a member's records the moment one of those retries lands. flush()
+ * is therefore a read of that ledger, not a second retry mechanism.
+ *
+ * @param {{ member?: string }} [filter]
+ * @returns {{ published: boolean, degradations: object[] }}
+ */
+export function flush(filter = {}) {
+    const degradations = getDegradedSyncRecords({ ...filter, pendingOnly: true });
+    return { published: degradations.length === 0, degradations };
+}
+
+/**
+ * Explicit remediation entry point (ADR Decision 2): "recovery ladder plus
+ * credential re-provisioning. Called by operators/tools and by ensureReady();
+ * never inline from a per-operation sync path."
+ *
+ * NOT YET WIRED (apra-fleet-417.5): this is the named seam only.
+ * apra-fleet-vkc.1 owns wiring the actual recovery ladder (dolt-recovery.mjs
+ * Path A / dolt-recovery-path-b.mjs Path B / dolt-recovery-tier2.mjs Tier 2)
+ * behind this entry point -- see the RECOVERY-LADDER DISPOSITION note in this
+ * file's header for why that wiring belongs here and not at call sites, and
+ * why it is deliberately not done in this bead. `capabilities().
+ * supportsRepair` stays `false` until vkc.1 lands.
+ *
+ * @param {string} member
+ * @returns {Promise<{ repaired: boolean, escalation?: string }>}
+ */
+export async function repair(member) {
+    void member;
+    return { repaired: false, escalation: 'not-implemented: recovery ladder wiring is owned by apra-fleet-vkc.1' };
+}
+
 export const DoltSync = {
     syncBefore,
     syncAfter,
     status,
+    refreshView,
+    ensureReady,
+    flush,
+    repair,
+    capabilities,
     getDegradedSyncRecords,
     clearDegradedSyncRecords,
 };

@@ -205,14 +205,33 @@ test('fatal:true restores the DoltDivergedError hard-abort for the call sites th
     clearDegradedSyncRecords();
 });
 
-test('healthGate:true implies fatal -- the pre-flight gate still aborts the run', async () => {
+test('readinessGate:true implies fatal -- the pre-flight gate still aborts the run', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({ 'bd dolt pull': [fail(REAL_DIVERGENCE_STDERR)] });
+    await assert.rejects(
+        () => DoltSync.syncBefore('local', { command, checkSyncRemoteConfigured: remoteConfigured, readinessGate: true }),
+        (err) => err instanceof DoltDivergedError && /beads DB diverged/.test(err.message),
+    );
+    clearDegradedSyncRecords();
+});
+
+test('the retired healthGate spelling is rejected rather than silently ignored', async () => {
     clearDegradedSyncRecords();
     const { command } = makeCommandMock({ 'bd dolt pull': [fail(REAL_DIVERGENCE_STDERR)] });
     await assert.rejects(
         () => DoltSync.syncBefore('local', { command, checkSyncRemoteConfigured: remoteConfigured, healthGate: true }),
-        (err) => err instanceof DoltDivergedError && /beads DB diverged/.test(err.message),
+        /healthGate is retired.*readinessGate/,
     );
     clearDegradedSyncRecords();
+});
+
+test('the retired skipPull spelling is rejected rather than silently ignored', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({});
+    await assert.rejects(
+        () => DoltSync.syncBefore('local', { command, checkSyncRemoteConfigured: remoteConfigured, skipPull: true }),
+        /skipPull is retired.*skipRefresh/,
+    );
 });
 
 // -----------------------------------------------------------------------------
@@ -287,4 +306,97 @@ test('the sync.remote pre-gate does NOT suppress the pull on a genuinely configu
     assert.equal(outcome.kind, 'synced');
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 1);
     clearDegradedSyncRecords();
+});
+
+// =============================================================================
+// apra-fleet-417.5 -- docs/adr-taskdb-backend-neutral-interface.md Decision 2:
+// the backend-neutral degraded.kind taxonomy, and the refreshView / ensureReady
+// / flush / repair / capabilities surface additions.
+// =============================================================================
+
+test('a degraded outcome carries a backend-neutral degradedKind alongside the adapter kind', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({
+        'bd dolt push': [fail(LIVE_2026_08_02_CREDENTIAL_STDERR)],
+        'bd dolt pull': [OK],
+    });
+    const outcome = await DoltSync.syncAfter('fleet-mac', {
+        command, checkSyncRemoteConfigured: remoteConfigured, sleep: async () => {},
+    });
+    assert.equal(outcome.kind, 'auth');
+    assert.equal(outcome.degradedKind, 'auth');
+    clearDegradedSyncRecords();
+});
+
+test('an unresolvable divergence maps to the neutral conflict-unresolvable kind', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({ 'bd dolt push': [fail(REAL_DIVERGENCE_STDERR)] });
+    const outcome = await DoltSync.syncAfter('local', { command, checkSyncRemoteConfigured: remoteConfigured });
+    assert.equal(outcome.degraded, true);
+    assert.equal(outcome.degradedKind, 'conflict-unresolvable');
+    clearDegradedSyncRecords();
+});
+
+test('capabilities() declares the Dolt/beads adapter as whole-state-publish with repair not yet wired', () => {
+    const caps = DoltSync.capabilities();
+    assert.equal(caps.wholeStatePublish, true);
+    assert.equal(caps.supportsRepair, false);
+    assert.equal(caps.supportsCoordinationLock, true);
+    assert.ok(Array.isArray(caps.kinds) && caps.kinds.includes('conflict-unresolvable'));
+});
+
+test('refreshView() reports fresh:true on a successful, non-fatal probe', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({ 'bd dolt pull': [OK] });
+    const result = await DoltSync.refreshView('local', { command, checkSyncRemoteConfigured: remoteConfigured });
+    assert.equal(result.fresh, true);
+    assert.equal(result.degraded, undefined);
+    clearDegradedSyncRecords();
+});
+
+test('refreshView() reports fresh:false (never throws) on an unresolved failure', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({ 'bd dolt pull': [fail(REAL_DIVERGENCE_STDERR)] });
+    const result = await DoltSync.refreshView('local', { command, checkSyncRemoteConfigured: remoteConfigured });
+    assert.equal(result.fresh, false);
+    assert.ok(result.degraded);
+    clearDegradedSyncRecords();
+});
+
+test('ensureReady() reports ready:true on a clean pre-flight probe', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({ 'bd dolt pull': [OK] });
+    const result = await DoltSync.ensureReady('local', { command, checkSyncRemoteConfigured: remoteConfigured });
+    assert.equal(result.ready, true);
+    clearDegradedSyncRecords();
+});
+
+test('ensureReady() is the one method permitted to refuse to start -- it still aborts on divergence', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({ 'bd dolt pull': [fail(REAL_DIVERGENCE_STDERR)] });
+    await assert.rejects(
+        () => DoltSync.ensureReady('local', { command, checkSyncRemoteConfigured: remoteConfigured }),
+        (err) => err instanceof DoltDivergedError,
+    );
+    clearDegradedSyncRecords();
+});
+
+test('flush() reports the pending degradation ledger without a separate retry mechanism', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({ 'bd dolt push': [fail(REAL_DIVERGENCE_STDERR)] });
+    await DoltSync.syncAfter('local', { command, checkSyncRemoteConfigured: remoteConfigured });
+    const report = DoltSync.flush();
+    assert.equal(report.published, false);
+    assert.equal(report.degradations.length, 1);
+    assert.equal(report.degradations[0].member, 'local');
+    clearDegradedSyncRecords();
+    const clean = DoltSync.flush();
+    assert.equal(clean.published, true);
+    assert.deepEqual(clean.degradations, []);
+});
+
+test('repair() is a named, unwired seam -- it never runs the recovery ladder itself', async () => {
+    const result = await DoltSync.repair('local');
+    assert.equal(result.repaired, false);
+    assert.match(result.escalation, /apra-fleet-vkc\.1/);
 });
