@@ -296,6 +296,42 @@ describe('VCSModule.classifyFailure -- provider split and inheritance', () => {
         assert.ok(!listVcsProviders().includes('test-azure-devops'));
     });
 
+    test('a provider may override kind precedence without touching classifyFailure', () => {
+        // Text that matches BOTH NO_REMOTE ("no remote") and TRANSIENT
+        // ("connection refused"). Under the default precedence TRANSIENT wins.
+        const ambiguous = 'error 1105: no remote configured -- connection refused';
+        assert.strictEqual(classifyFailure(ambiguous).kind, K.TRANSIENT);
+
+        // A dolt-shaped provider promotes NO_REMOTE to first, the way
+        // classifyDoltFailure orders it -- declared in the provider file, with
+        // no edit to classifyFailure.
+        registerVcsProvider({
+            name: 'test-no-remote-first',
+            extends: 'generic-git',
+            precedence: [
+                K.NO_REMOTE,
+                K.DIVERGED,
+                K.AUTH_EXPIRED,
+                K.AUTH_DENIED,
+                K.TRANSIENT,
+                K.UNSUPPORTED_OPERATION,
+            ],
+        });
+        try {
+            assert.strictEqual(
+                classifyFailure(ambiguous, { provider: 'test-no-remote-first' }).kind,
+                K.NO_REMOTE,
+            );
+            // Unambiguous texts are unaffected by the reordering.
+            assert.strictEqual(
+                classifyFailure('fatal: Authentication failed', { provider: 'test-no-remote-first' }).kind,
+                K.AUTH_EXPIRED,
+            );
+        } finally {
+            unregisterVcsProvider('test-no-remote-first');
+        }
+    });
+
     test('a malformed provider is rejected at registration, not inside the classifier', () => {
         assert.throws(() => registerVcsProvider({}), /ERROR: VCSModule/);
         assert.throws(() => registerVcsProvider({ name: 'bad-rules', rules: 'nope' }), /ERROR: VCSModule/);
