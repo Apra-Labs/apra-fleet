@@ -11,6 +11,12 @@ Usage:
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
   apra-fleet install --force           Stop a running server before installing
+  apra-fleet install --skip-running-check
+                                        Skip the running-process guard without stopping the
+                                        running instance (use when it targets a different
+                                        HOME/prefix -- the guard already auto-skips in that
+                                        case, this is a manual override for when it can't
+                                        confirm that on its own)
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
@@ -29,3 +35,9 @@ Options:
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
   --force                 Stop a running apra-fleet server before installing (SEA mode only).
+  --skip-running-check    Skip the running-process guard even if it can't confirm the
+                          running instance targets a different install root (SEA/npm
+                          global mode only). The guard already auto-skips when the
+                          running instance's install root is confirmed to differ from
+                          this install's target; use this flag to force-skip when that
+                          can't be determined, without stopping the other instance.
