@@ -77,6 +77,13 @@ runtime:
 - `Bash(mkdir *)`
 - `Bash(rm -rf ~/temp/.apra-fleet-tests*)`
 - `Bash(node dist/index.js *)`
+- `Bash(node:*)` -- covers the sandbox lock's
+  `node "<repo-root>/scripts/sandbox-lock.mjs" acquire|mark-server-started|
+  release` calls in `## Setup` and `## Teardown` (apra-fleet-egc.1). A
+  relative-prefix entry like `Bash(node scripts/sandbox-lock.mjs *)` does
+  NOT cover this: the invocation uses the absolute `<repo-root>/...` form
+  (see Conventions above), so only a broader `Bash(node:*)`-class entry
+  satisfies it.
 - `Bash(git clone *)`
 - `Bash(git -C ~/temp/.apra-fleet-tests* *)`
 - `Bash(node scripts/run-integ-suites.mjs *)` (for the
