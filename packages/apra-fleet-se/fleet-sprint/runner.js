@@ -1659,58 +1659,105 @@ function parseVcsCurlOutput(output) {
     return { status, body, bodyText };
 }
 
+// A PR-creation response is REACTIVE-auth-classified (as opposed to a
+// generic failure) when the token that raised it is stale/expired (401),
+// lacks the scope/permission GitHub requires (403), or -- because GitHub
+// sometimes answers a scope refusal with 404 instead of 403, to avoid
+// leaking whether a private repo exists to a token that cannot see it -- a
+// 404 whose body text itself names a scope/permission/authentication
+// refusal. Anything else (422 already-exists, 5xx, malformed body, a bare
+// 404 with no such text) is left exactly as it classified before this bead:
+// a plain failure, never retried.
+// @param {number|null} status
+// @param {string} errorText
+// @returns {boolean}
+const PR_AUTH_404_TEXT_RE = /not accessible by (this )?(integration|token|personal access token)|requires (authentication|additional scopes?)|insufficient (scope|permission)/i;
+function isPrAuthFailure(status, errorText) {
+    if (status === 401 || status === 403) return true;
+    if (status === 404 && PR_AUTH_404_TEXT_RE.test(String(errorText || ''))) return true;
+    return false;
+}
+
 // Mints a just-in-time push+pr credential for `member`, reads back the token
 // it deployed, builds the create-pull-request command through VCSModule (the
 // orchestrator-side command builder, apra-fleet-tfx.7), and dispatches it via
 // `command()` -- `member` is a dumb executor of a command this function (and
 // VCSModule) decided, never `gh`, never a server-side fallback. Returns the
 // same shape both PR-raising call sites need: { ok, alreadyExists, prUrl,
-// error }, mirroring the interpretation contract the reverted server-side
-// create-pull-request.ts tool used (2xx -> success; 422 "already exists" ->
-// idempotent success; anything else -> error).
+// error, authFailure }, mirroring the interpretation contract the reverted
+// server-side create-pull-request.ts tool used (2xx -> success; 422 "already
+// exists" -> idempotent success; anything else -> error).
+//
+// REACTIVE auth self-heal (apra-fleet-647.1.1.1): on an auth-classified
+// response (see isPrAuthFailure above), this re-provisions a push+pr
+// credential via provisionPrCapableAuthForMember, re-reads the token, and
+// retries the SAME PR-creation command exactly once -- bounded one-shot
+// semantics mirroring runGitStep/runDoltStep's onAuthFailure loop. If the
+// retry still fails, the failure (auth or not) is returned as-is; the raw
+// token is never logged, only `built.logSafeCommand`.
 // @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string }} opts
-// @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null }>}
+// @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean }>}
 async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix }) {
-    const { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
+    let { repo } = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
     if (!repo) {
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
-    const token = await readMemberVcsCredentialToken({ command, member });
-    const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token });
+    let token = await readMemberVcsCredentialToken({ command, member });
 
-    const res = await command(built.command, {
-        member_name: member,
-        silent: true,
-        failSoft: true,
-        label: `Raise PR to '${base}' via VCSModule (not merged)`,
-    });
-    if (!res || !res.ok) {
-        return { ok: false, alreadyExists: false, prUrl: null, error: (res && res.error) || 'execute_command failed' };
-    }
+    let authHealAttempted = false;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token });
 
-    const { status, body: respBody, bodyText } = parseVcsCurlOutput(res.output);
-    const [lo, hi] = built.interpret.successStatusRange;
-    if (status !== null && status >= lo && status <= hi) {
-        const prUrl = respBody && typeof respBody.html_url === 'string' ? respBody.html_url : null;
-        return { ok: true, alreadyExists: false, prUrl, error: null };
-    }
-
-    const errorMessages = [];
-    if (respBody && typeof respBody.message === 'string') errorMessages.push(respBody.message);
-    if (respBody && Array.isArray(respBody.errors)) {
-        for (const e of respBody.errors) {
-            if (e && typeof e.message === 'string') errorMessages.push(e.message);
+        const res = await command(built.command, {
+            member_name: member,
+            silent: true,
+            failSoft: true,
+            label: `Raise PR to '${base}' via VCSModule (not merged)`,
+        });
+        if (!res || !res.ok) {
+            return { ok: false, alreadyExists: false, prUrl: null, error: (res && res.error) || 'execute_command failed', authFailure: false };
         }
-    }
-    const errorText = errorMessages.join('; ') || bodyText || `HTTP ${status ?? '(unknown)'}`;
 
-    if (status === built.interpret.alreadyExistsStatus && new RegExp(built.interpret.alreadyExistsPattern, 'i').test(errorText)) {
-        const urlMatch = /https?:\/\/\S+/.exec(errorText);
-        const existingUrl = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : null;
-        return { ok: true, alreadyExists: true, prUrl: existingUrl, error: null };
-    }
+        const { status, body: respBody, bodyText } = parseVcsCurlOutput(res.output);
+        const [lo, hi] = built.interpret.successStatusRange;
+        if (status !== null && status >= lo && status <= hi) {
+            const prUrl = respBody && typeof respBody.html_url === 'string' ? respBody.html_url : null;
+            return { ok: true, alreadyExists: false, prUrl, error: null, authFailure: false };
+        }
 
-    return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}` };
+        const errorMessages = [];
+        if (respBody && typeof respBody.message === 'string') errorMessages.push(respBody.message);
+        if (respBody && Array.isArray(respBody.errors)) {
+            for (const e of respBody.errors) {
+                if (e && typeof e.message === 'string') errorMessages.push(e.message);
+            }
+        }
+        const errorText = errorMessages.join('; ') || bodyText || `HTTP ${status ?? '(unknown)'}`;
+
+        if (status === built.interpret.alreadyExistsStatus && new RegExp(built.interpret.alreadyExistsPattern, 'i').test(errorText)) {
+            const urlMatch = /https?:\/\/\S+/.exec(errorText);
+            const existingUrl = urlMatch ? urlMatch[0].replace(/[.,)]+$/, '') : null;
+            return { ok: true, alreadyExists: true, prUrl: existingUrl, error: null, authFailure: false };
+        }
+
+        if (isPrAuthFailure(status, errorText) && !authHealAttempted) {
+            authHealAttempted = true;
+            log(`${logPrefix}: PR creation returned an auth-classified failure (HTTP ${status ?? '(unknown)'}) for member '${member}'; re-provisioning a push+pr credential and retrying once (command: ${built.logSafeCommand}): ${errorText}`);
+            try {
+                const reprov = await provisionPrCapableAuthForMember({ fleetApi, command, member, log, logPrefix });
+                if (reprov.repo) repo = reprov.repo;
+                token = await readMemberVcsCredentialToken({ command, member });
+            } catch (healErr) {
+                log(`${logPrefix}: PR auth self-heal failed for member '${member}'; not retrying further: ${healErr.message}`);
+                return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}`, authFailure: true };
+            }
+            log(`${logPrefix}: PR auth self-heal completed for member '${member}'; retrying PR creation once.`);
+            continue;
+        }
+
+        return { ok: false, alreadyExists: false, prUrl: null, error: `HTTP ${status ?? '(unknown)'}: ${errorText}`, authFailure: isPrAuthFailure(status, errorText) };
+    }
 }
 
 // provision_vcs_auth returns plain human-readable text with no structured
@@ -4274,6 +4321,18 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     });
 
     if (!prResult.ok) {
+        if (prResult.authFailure) {
+            // apra-fleet-647.1.1.1: a PR auth failure survives the reactive
+            // one-shot self-heal+retry inside raiseVcsPrForMember (i.e. the
+            // credential is still no good after re-provisioning) -- degrade
+            // to a logged, non-throwing outcome instead of a CommandError, so
+            // finalizeAbort() -- whose whole job is to record a sprint abort
+            // -- can never itself be killed by the very auth failure it is
+            // trying to report. The branch is still pushed (`pushed: true`)
+            // even though the [ABORTED] PR could not be raised.
+            log(`finalizeAbort: [Publish Abort PR] failed with an auth failure that survived the reactive self-heal retry for branch '${branch}' -> '${baseBranch}': ${prResult.error} -- degrading (not throwing) so the abort can still be recorded.`);
+            return { prUrl: null, reason: 'pr-auth-failed', pushed: true, commitCount };
+        }
         throw new CommandError(
             `[Publish Abort PR Failed] VCSModule create-pull-request failed for branch '${branch}' -> '${baseBranch}': ${prResult.error}`,
             { details: { branch, baseBranch, error: prResult.error } }
