@@ -187,15 +187,35 @@ so if that overlay ever runs, the root 4-role `SKILL.md` silently clobbers the
 apra-fleet-se 8-role one. It did not run on the current machine, which is why
 the installed PM skill is intact.
 
-### Phase 1 -- push invariants into the tool layer
+### Phase 1 -- push invariants into the provider choke point
 
-Enforcement belongs in `src/tools/kb-*.ts`, not in the callers. This is what
-makes the non-deterministic PM flow safe without special-casing it: the
-guarantee holds regardless of who calls.
+**Enforcement belongs in `SqliteProvider.capture()`, not in `src/tools/kb-*.ts`.**
+Four call sites reach `provider.capture()` independently, and only one of them is
+the `kb_capture` tool:
 
-- `kb_capture` rejects an entry with zero `source_files`, and rejects
-  `source_files` entries that do not exist in the target repo. An entry that
-  cannot be checked must not be storable.
+```
+src/tools/kb-capture.ts:122     the MCP tool
+src/tools/kb-harvest.ts:134     the automatic writer
+src/tools/kb-import.ts:172      bible import (importMode)
+src/commands/kb-server.ts:139   HTTP POST /api/kb/capture
+```
+
+An invariant placed in the tool layer would be bypassed by three of the four.
+The codebase already solved this for the D1 clamp and documents the reasoning at
+`sqlite-provider.ts:666-671`:
+
+> general confidence clamp -- the ENFORCEMENT copy. The kb_capture tool handler
+> (kb-capture.ts) also clamps and returns a confidence_clamped UX flag to MCP
+> callers, but the HTTP /api/kb/capture [path bypasses it]. This block is the
+> single enforcement [point].
+
+New invariants follow that established pattern -- enforcement in the provider,
+optional UX flags in the handlers:
+
+- **Capture fails closed on an uncheckable basis.** `SqliteProvider.capture()`
+  rejects an entry with zero `source_files`, and rejects `source_files` that do
+  not exist in the target repo. Decided 2026-08-03: a KB entry nobody can check
+  has negative value, and `freshnessSweep()` can never stale it.
 - `kb_promote` requires a non-trivial `reason`. Promotion without a recorded
   evidence string is refused.
 - `kb_promote` refuses to promote an entry whose `source_files` no longer
@@ -204,13 +224,26 @@ guarantee holds regardless of who calls.
   `kb-import.ts` assumes human review; the default should make that possible
   rather than pre-empt it.
 
-Open question for review, called out rather than assumed: tightening
-`kb_capture` changes the contract for an existing automatic writer.
-`kb_harvest` frequently produces entries with no `source_files`. Options are
-(a) let those captures fail closed and accept that harvest yields less,
-(b) exempt `source='harvest'` from the rule since UNVERIFIED entries cannot
-reach the bible anyway. Recommendation is (a): a KB entry nobody can check has
-negative value, and harvest's precision is the real problem.
+**Import is NOT exempt from the source_files rule.** `importMode` exempts the
+confidence clamp only (`sqlite-provider.ts:710`). An unfalsifiable entry must
+not enter through any path, including a legacy bible. This is deliberate: it
+means re-importing today's `kb-canonical.json` drops its zero-`source_files`
+entries, which is the intended outcome.
+
+**Fail-closed must not break the batch.** `kb_harvest` loops over extracted
+learnings calling `provider.capture()` per entry (`kb-harvest.ts:117-142`) and
+is dispatched fire-and-forget with a bare `.catch()` at
+`execute-prompt.ts:811`. If a rejection throws, the first bad entry aborts the
+remaining ones and the whole harvest dies silently. Required behavior:
+
+- each capture is isolated -- a rejected entry is counted and the loop continues
+- the return payload gains a fourth counter alongside the existing three
+  (`kb-harvest.ts:144`): `{entries_captured, entries_updated, entries_skipped,
+  entries_rejected}`
+
+Expect `entries_rejected` to dominate at first. That is the correct signal, not
+a regression: harvest's regex extraction (`kb-harvest.ts:24-28`) frequently
+yields no file paths at all, and those entries were never checkable.
 
 ### Phase 2 -- engine-executed capture and promote
 
@@ -406,7 +439,12 @@ already exists (`kb-export.ts:104-110`) and de-fangs the destructive half of the
   SEA build fails loudly instead of silently disabling the KB.
 - Phase 1: per-invariant rejection tests (zero `source_files`, non-existent
   path, missing promote reason, stale-basis promote). Each must fail before the
-  fix and pass after.
+  fix and pass after. Because enforcement is in the provider, assert rejection
+  through EVERY call site, not just the tool: `kb_capture`, `kb_harvest`,
+  `kb_import`, and the HTTP `POST /api/kb/capture` path covered by
+  `tests/knowledge/kb-server.test.ts`. Add a batch-isolation test: a harvest
+  containing one rejectable and one valid entry must store the valid one and
+  report `entries_rejected: 1`.
 - Phase 2: engine-level tests that a schema payload results in the
   corresponding tool call, and that a malformed or unverifiable payload results
   in no call. Follow the two-repo pattern in
@@ -426,15 +464,15 @@ already exists (`kb-export.ts:104-110`) and de-fangs the destructive half of the
 - **Bible provenance (2026-08-03).** The bible records the commit it was
   exported from. This is a v2 file-format change with dual-shape import; see
   Phase 3a.
+- **Capture fails closed (2026-08-03).** No exemption for `source='harvest'`
+  or for `importMode`. An entry with no checkable basis is rejected on every
+  path. `kb_harvest` is expected to write materially fewer entries as a result;
+  its precision, not its volume, is the thing worth preserving. See Phase 1.
+- **Enforcement layer (2026-08-03).** Invariants go in
+  `SqliteProvider.capture()`, not the tool handlers, because three of the four
+  capture call sites bypass the tool layer. This follows the existing D1 clamp
+  precedent at `sqlite-provider.ts:666`.
 
 ## Open questions
 
-1. `kb_capture` strictness for `source='harvest'` -- fail closed (recommended)
-   or exempt. See Phase 1.
-
-   This is the one decision Phase 1 cannot be implemented without. Choosing
-   "fail closed" means `kb_harvest` will write materially fewer entries, since
-   its regex extraction frequently produces none. Choosing "exempt" keeps
-   harvest's current volume but leaves unfalsifiable entries in the KB, where
-   they cannot reach the bible but do dilute every `kb_list` and
-   `kb_session_prime` result. Decide before starting Phase 1.
+None blocking. All three questions raised during design are resolved above.
