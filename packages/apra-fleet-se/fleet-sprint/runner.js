@@ -4354,14 +4354,14 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
     if (unclosedVerifyIds.length > 0) {
         // apra-fleet-jfo.2: verify-routed beads (implementation-complete,
         // all children closed, awaiting real integration-test
-        // re-verification) have children themselves, so they are
-        // structurally excluded from `openAtGoalCount` above no matter their
-        // status -- do not let their absence from that count read as "done".
+        // re-verification) are decomposed parents, so they are excluded
+        // from `openAtGoalCount` above no matter their status -- do not let
+        // their absence from that count read as "done".
         lines.push(
             `${unclosedVerifyIds.length} verify-routed bead(s) are STILL OPEN and were never confirmed working ` +
             `against the deployed build this sprint (most likely because Deploy failed before IntegTest could ` +
             `attempt them): ${unclosedVerifyIds.join(', ')}. These do NOT count toward openAtGoalCount above ` +
-            `(bdListScoped excludes beads with children from that count), so do not treat 0 open-at-goal as ` +
+            `(decomposed-parent beads are excluded from that count), so do not treat 0 open-at-goal as ` +
             `evidence these are done -- treat each one as an open, unverified target when deciding PASS/FAIL.`
         );
     }
@@ -5448,19 +5448,37 @@ async function runSprintCycle(context) {
             }
         }
 
-        // Seed scopeIds with any target issue that has NO children of its own
-        // (a childless leaf target -- a sprint aimed at a single undecomposed
-        // issue). The BFS above only ever adds descendants, so without this the
-        // scope would be empty and every query would short-circuit to `[]`.
-        // Deliberately scoped to childless targets ONLY: a target that DOES
-        // have children keeps its own id out of scopeIds, so a pure grouping
-        // node is never counted as independently ready work. readyLeafBeads()'s
-        // decomposed-node guard is unaffected either way -- a target with
-        // children already appears in `parentIds` via its children's `.parent`.
+        // Seed scopeIds with every target issue's OWN id, unconditionally --
+        // the BFS above only ever adds descendants, so without this a
+        // childless leaf target's scope would be empty and every query would
+        // short-circuit to `[]`. This used to be conditional on the target
+        // having no children, on the theory that a target WITH children is a
+        // pure grouping node whose own status never matters -- but that is
+        // false: a target with pre-existing children (a verify-routed parent
+        // like the eft.52/vak shape, or this sprint's own apra-fleet-66u) can
+        // itself transition open->closed, and status-counting queries
+        // (closedCount) need to see that transition. Excluding it silently
+        // dropped the parent's own closure from the stall-detection progress
+        // score -- apra-fleet-66u.1's root cause: closedCountHistory stayed
+        // flat across the cycles where eft.52 and vak (both targets WITH
+        // children) closed for real, because their ids were never in
+        // scopeIds to begin with, so `bdListScoped('--status=closed --json')`
+        // could never count them no matter how fresh the read. This now
+        // matches classifyVerifySet()'s own (already-unconditional) BFS seed
+        // a few hundred lines up.
+        //
+        // A childful target is STILL excluded from dispatch (readyLeafBeads())
+        // and from the exit-gate open-at-goal counts (openAtGoal/stillOpen/
+        // finalOpenAtGoal, all post-filtered via decomposedParentIds() -- see
+        // below) -- both use the same structural "is this someone's .parent"
+        // check, independent of scopeIds membership, so widening scope here
+        // does not let a still-open childful target masquerade as done, and
+        // does not let it block dispatch as if it were a leaf. Whether it
+        // still needs to close before the sprint may exit is owned entirely
+        // by the separate, scope-independent stillOpenVerifyIds/verifyEverIds
+        // mechanism (apra-fleet-jfo) further down.
         for (const id of targetIssues) {
-            if (!childrenOf.has(id) || childrenOf.get(id).length === 0) {
-                scopeIds.add(id);
-            }
+            scopeIds.add(id);
         }
 
         if (scopeIds.size === 0) return [];
@@ -5485,28 +5503,33 @@ async function runSprintCycle(context) {
         return parseBdJson(filterRaw, filterLabel).filter((b) => b && scopeIds.has(b.id));
     }
 
-    // Returns this scope's ready beads minus any that have been decomposed into
-    // subtasks (i.e. are themselves someone else's `--parent`). A decomposed
-    // bead is a grouping node, not a leaf unit of work: per GRAPH-SEMANTICS.md
-    // its "done" status comes from its children closing, never from being
-    // worked directly. The check is STRUCTURAL (does this ready bead have
+    // The set of scope-member ids that are themselves someone else's
+    // `--parent` -- i.e. decomposed grouping nodes, not leaf units of work.
+    // Built from children of ANY status, not just open ones: once a decomposed
+    // bead's children all close they vanish from an open-only list, the parent
+    // stops looking like a parent, and it would wrongly re-enter leaf/ready
+    // treatment. bdListScoped('') is the no-extra-query path -- the
+    // already-fetched project-wide any-status dump filtered to scope, with no
+    // new bd command issued.
+    async function decomposedParentIds() {
+        const allAnyStatus = await bdListScoped('');
+        return new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
+    }
+
+    // Returns this scope's ready beads minus any decomposed parent (see
+    // decomposedParentIds() above). Per GRAPH-SEMANTICS.md a decomposed bead's
+    // "done" status comes from its children closing, never from being worked
+    // directly, so it must never be seeded to a doer even when bd's own
+    // `--ready` reports it. The check is STRUCTURAL (does this ready bead have
     // children?), not an issue_type check -- issue_type has no effect on
     // `--ready` inclusion, and a bead can be a leaf `type=task` or a decomposed
     // `type=bug`/`type=feature` parent, so only the has-children structure
-    // tells them apart. The child set is scope-filtered, so a child outside the
-    // sprint scope does not mark its parent as decomposed.
+    // tells them apart.
     async function readyLeafBeads() {
-        // The exclusion set must be built from children of ANY status, not just
-        // open ones: once a decomposed bead's children all close they vanish
-        // from an open-only list, the parent stops looking like a parent, and it
-        // re-enters doer seeding as a "leaf". bdListScoped('') is the
-        // no-extra-query path -- the already-fetched project-wide any-status
-        // dump filtered to scope, with no new bd command issued.
-        const [ready, allAnyStatus] = await Promise.all([
+        const [ready, parentIds] = await Promise.all([
             bdListScoped('--ready --json'),
-            bdListScoped(''),
+            decomposedParentIds(),
         ]);
-        const parentIds = new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
         return ready.filter((b) => !parentIds.has(b.id));
     }
 
@@ -6103,7 +6126,14 @@ async function runSprintCycle(context) {
 
     await updateDashboard();
 
-    let initialBeads = await bdListScoped('--ready --json');
+    // readyLeafBeads(), not raw bdListScoped('--ready --json'): bd's own
+    // `--ready` reports a decomposed childful target (e.g. this sprint's own
+    // --issue target once it has children) as ready too, which would make
+    // this pre-sprint gate never see an empty ready-set for the extremely
+    // common case of "open childful target, no blockers" -- silently
+    // disabling the stale-in_progress reclaim, the parent-child+blocks
+    // deadlock detector/auto-repair, and the "nothing to do" hard-fail below.
+    let initialBeads = await readyLeafBeads();
 
     // apra-fleet-jfo: a sprint whose scope has zero ready leaf work can still
     // be legitimate -- a pure-verify sprint aimed at an already-implemented
@@ -6138,7 +6168,7 @@ async function runSprintCycle(context) {
             reasonTag: 'Pre-sprint self-heal',
         });
         if (preSprintReclaimedIds.length > 0) {
-            initialBeads = await bdListScoped('--ready --json');
+            initialBeads = await readyLeafBeads();
         }
 
         if (initialBeads.length === 0) {
@@ -6188,7 +6218,7 @@ async function runSprintCycle(context) {
                     throw new Error(`${cycleMessage}\n\n(Auto-repair attempt itself failed: ${repairErr.message})`);
                 }
 
-                initialBeads = await bdListScoped('--ready --json');
+                initialBeads = await readyLeafBeads();
                 // Repair didn't unblock anything further -- one pass only, so
                 // fall through to the existing generic deadlock diagnostics
                 // below (do not loop, do not repair twice) when still empty.
@@ -6259,6 +6289,19 @@ async function runSprintCycle(context) {
     // score below: a bead cannot re-earn classification credit by
     // oscillating in and out of eligibility.
     const verifyEverIds = new Set();
+
+    // apra-fleet-66u.2: separate two different facts the stall-abort message
+    // used to conflate -- "closed count did not increase across N cycles"
+    // (a progress fact) versus "verify-routed beads were dispatched to Integ
+    // Test N times and produced ZERO closures" (a verifier fact). Only the
+    // second condition licenses the "the verifier may be failing" wording.
+    // verifyDispatchAttempts counts cycles where Integ Test was actually
+    // handed a non-empty verify set; verifyDispatchClosures counts how many
+    // of those cycles closed at least one of the beads it was handed (set at
+    // Cycle Evaluation, once `stillOpenVerifyIds` -- computed on live,
+    // correctly-scoped state per apra-fleet-66u.1's fix -- is available).
+    let verifyDispatchAttempts = 0;
+    let verifyDispatchClosures = 0;
 
     // apra-fleet-jfo D6: per-parent count of verify-fail bounces this sprint
     // (a gap bug filed under the parent, making it ineligible again). Capped
@@ -7935,7 +7978,14 @@ async function runSprintCycle(context) {
 
             await updateDashboard();
 
-            const stillOpen = await bdListScoped('--ready --json');
+            // readyLeafBeads(), not raw bdListScoped('--ready --json'): a
+            // childful --issue target that is still "ready" per bd's own
+            // definition (e.g. before its children exist yet, or between
+            // children closing and the next Route step routing it to verify)
+            // must not read as "work still pending" here -- it is never a
+            // dispatchable leaf, so it must not keep this loop from
+            // organically completing (apra-fleet-66u.1/66u.2 rework).
+            const stillOpen = await readyLeafBeads();
             lastStillOpenCount = stillOpen.length;  // Track for post-loop round-cap detection
 
             if (stillOpen.length === 0) {
@@ -8038,6 +8088,16 @@ async function runSprintCycle(context) {
             log('Skipping Deploy Phase (no deploy.md found, or the probe itself failed -- see prior log line)');
         }
 
+        // apra-fleet-66u.2: declared here, OUTSIDE the `if (hasPlaybook &&
+        // deployedThisCycle)` block below, so Cycle Evaluation's
+        // verifyDispatchAttempts/verifyDispatchClosures tracking can see it
+        // regardless of whether Integ Test actually ran this cycle -- an
+        // in-block `let` is unreachable once that block's scope ends, which
+        // is exactly what threw a ReferenceError here before this hoist.
+        // Defaults to empty so a cycle where Integ Test never dispatched (no
+        // playbook, or Deploy failed) correctly counts as "no verify
+        // dispatch attempt", not a crash.
+        let verifySetForIntegTest = [];
         if (hasPlaybook && deployedThisCycle) {
             phase(`Integ Test C${cycle}`);
             // apra-fleet-nwh.1: snapshot the running total BEFORE this
@@ -8055,15 +8115,16 @@ async function runSprintCycle(context) {
             // INCONCLUSIVE below instead of a false passed:false FAIL. Carries
             // {reason, message} for the note.
             let integInfraInconclusive = null;
-            // apra-fleet-jfo: declared here (not `const` inside the try block
-            // below) so the bounce-cap logic after the try/catch can still see
-            // the verify set even when the try block throws early -- a `const`
-            // inside `try {}` is block-scoped and unreachable once the block
-            // ends, which caused a live ReferenceError on any genuine FAIL path
-            // that reached the bounce-cap check. Defaults to empty so an
-            // early-thrown dispatch simply skips the bounce-cap block below
-            // (its `verifySetForIntegTest.length > 0` guard short-circuits).
-            let verifySetForIntegTest = [];
+            // apra-fleet-jfo: verifySetForIntegTest is now declared at the
+            // outer per-cycle scope (apra-fleet-66u.2, just above this `if`
+            // block) rather than here, so the bounce-cap logic after the
+            // try/catch AND Cycle Evaluation's dispatch-outcome tracking can
+            // both still see it even when the try block throws early or
+            // never runs at all. Reset to empty at the top of every dispatch
+            // attempt regardless -- an early-thrown dispatch simply skips the
+            // bounce-cap block below (its `verifySetForIntegTest.length > 0`
+            // guard short-circuits).
+            verifySetForIntegTest = [];
             let verifySetIdSet = new Set();
             try {
                 // integ-test-runner.md's contract requires "an explicit list of
@@ -8087,6 +8148,16 @@ async function runSprintCycle(context) {
                 // priority forever. The integ runner has bead-closing authority
                 // and pushBeads: true, so it owns verify-set closure.
                 ({ verifyIds: verifySetForIntegTest } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues));
+                // apra-fleet-66u.2: a bead can become verify-eligible AFTER
+                // this cycle's Route step already ran (e.g. its last child
+                // closes during THIS cycle's own Develop/Review, before
+                // Deploy/IntegTest) -- this classifyVerifySet call, not the
+                // Route step's, is what first discovers it. Feed it into
+                // verifyEverIds here too so the exit-gate's
+                // stillOpenVerifyIds safety net (further down) never has a
+                // same-cycle blind spot for a bead that was genuinely just
+                // dispatched to verify but not yet closed.
+                for (const id of verifySetForIntegTest) verifyEverIds.add(id);
                 verifySetIdSet = new Set(verifySetForIntegTest);
                 // Dedupe: a feature already in the verify set gets the stronger
                 // verify clause below (real evidence, gap filed under itself), not
@@ -8338,13 +8409,50 @@ async function runSprintCycle(context) {
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
         await doltPullBefore(orchestratorMember, { command, log });
-        const openAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
+        // A decomposed parent (any bead that is itself someone's --parent,
+        // including a childful --issue target) is excluded here the same way
+        // readyLeafBeads() excludes it from dispatch: its own "done" status
+        // comes from its children/verify-closure, never from being an
+        // undispatchable leaf sitting open at goal priority forever. Whether
+        // it must still close before the sprint may exit is owned entirely by
+        // the separate stillOpenVerifyIds/verifyEverIds mechanism below, which
+        // is scope- and structure-independent and does not have this blind
+        // spot for the child-not-yet-verify-routed case in between.
+        const [openAtGoalRaw, openAtGoalParentIds] = await Promise.all([
+            bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
+            decomposedParentIds(),
+        ]);
+        const openAtGoal = openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id));
 
         // Stall detection: track the closed-bead count for the WHOLE sprint
         // scope (not just goal-priority) so zero forward progress on ANY bead
-        // is caught.
-        const closedCount = (await bdListScoped('--status=closed --json')).length;
+        // is caught. `closedBeadsNow` is a genuinely fresh, correctly-scoped
+        // `bd list --status=closed` read (bdListScoped always issues a real
+        // command when a filter is passed) -- reused below instead of
+        // fetchAllBeadsShared()'s snapshot, which is NOT refreshed by this
+        // (or any other) bdListScoped call and can be stale by a full cycle
+        // in a topology with no dolt sync remote (doltPullBefore/After are
+        // both benign no-ops there, so nothing invalidates it): the integ
+        // runner's own `bd close` happens inside an agent() dispatch, never
+        // through the cache-invalidating command() wrapper.
+        const closedBeadsNow = await bdListScoped('--status=closed --json');
+        const closedIdsNow = new Set(closedBeadsNow.map((b) => b.id));
+        const closedCount = closedBeadsNow.length;
         closedCountHistory.push(closedCount);
+
+        // apra-fleet-66u.2: track whether THIS cycle's Integ Test dispatch (if
+        // any verify-routed beads were handed to it) actually closed any of
+        // them, on the same live, correctly-scoped state closedCount above
+        // just read. Feeds the stall-abort message below: "the verifier may
+        // be failing" is only warranted when it NEVER once closed anything it
+        // was asked to verify, not merely when the sprint later stalls for an
+        // unrelated reason.
+        if (verifySetForIntegTest.length > 0) {
+            verifyDispatchAttempts++;
+            const closedThisDispatch = verifySetForIntegTest.some((id) => closedIdsNow.has(id));
+            if (closedThisDispatch) verifyDispatchClosures++;
+        }
+
         // apra-fleet-jfo: a bead classified into the verify set this cycle is
         // real progress too -- it was implementation-complete work correctly
         // excluded from Plan/Develop, now awaiting real integration-test
@@ -8374,10 +8482,27 @@ async function runSprintCycle(context) {
                 ? ` Reopen-thrash detected on bead(s) [${thrashIds.join(', ')}] (reopened more than ${REOPEN_THRASH_LIMIT} times) -- ` +
                   `likely cause of the oscillation.`
                 : '';
-            const verifySuffix = verifyEverIds.size > 0
-                ? ` ${verifyEverIds.size} bead(s) were routed to verify this sprint but never closed -- the verifier ` +
-                  `may be failing rather than the sprint being genuinely out of work: ${[...verifyEverIds].join(', ')}.`
-                : '';
+            // apra-fleet-66u.2: report only the STILL-open verify-routed
+            // beads (verifyEverIds is monotone and never drops an id once
+            // closed, so dumping it directly names beads that may have
+            // closed cycles ago -- the exact wording that shipped in the
+            // real 2026-08-02 incident, which named apra-fleet-33c/jfo/gd0 as
+            // "never closed" when all three had closed back in Cycle 1). And
+            // only claim "the verifier may be failing" when Integ Test
+            // dispatches actually happened against a verify set and NEVER
+            // once closed anything -- if it closed something at some point,
+            // the stall has some other cause and the verifier-blame wording
+            // is actively misleading.
+            let verifySuffix = '';
+            if (verifyEverIds.size > 0) {
+                const stillOpenVerifyIdsForAbort = [...verifyEverIds].filter((id) => !closedIdsNow.has(id));
+                if (stillOpenVerifyIdsForAbort.length > 0) {
+                    verifySuffix = (verifyDispatchAttempts > 0 && verifyDispatchClosures === 0)
+                        ? ` ${stillOpenVerifyIdsForAbort.length} bead(s) were routed to verify this sprint but never closed -- the ` +
+                          `verifier may be failing rather than the sprint being genuinely out of work: ${stillOpenVerifyIdsForAbort.join(', ')}.`
+                        : ` ${stillOpenVerifyIdsForAbort.length} verify-routed bead(s) remain unclosed: ${stillOpenVerifyIdsForAbort.join(', ')}.`;
+                }
+            }
             throw new StalledSprintError(
                 `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress ` +
                 `(closed beads + verify-routed beads) in scope '${sprintFilter}'. Closed-count history: ` +
@@ -8507,23 +8632,24 @@ async function runSprintCycle(context) {
             await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
         }
 
-        // apra-fleet-jfo.2: verify-routed beads have children, so
-        // `bdListScoped`'s parent-filter structurally excludes them from
-        // `openAtGoal` no matter their status -- a cycle where Deploy fails
+        // apra-fleet-jfo.2: verify-routed beads are decomposed parents, so
+        // `openAtGoal` above (post-filtered via decomposedParentIds()) never
+        // includes them no matter their status -- a cycle where Deploy fails
         // (skipping IntegTest entirely, so no verify-routed bead ever gets a
         // chance to close) can therefore still read `openAtGoal.length === 0`
         // and exit here with those beads never actually re-verified. Check
         // their live status independently before allowing the count-based
         // exit to fire. Guarded on `verifyEverIds.size > 0` so a sprint that
         // never routed any bead to verify (the common case) pays no extra
-        // `bd list` dispatch here at all.
+        // `bd list` dispatch here at all. Uses a fresh scoped closed-list
+        // (apra-fleet-66u.2), not fetchAllBeadsShared()'s cache, which can be
+        // stale here for the same reason noted at the closedBeadsNow read
+        // above -- this check runs after the Re-Review block may have pushed
+        // further mutations this cycle.
         let stillOpenVerifyIds = [];
         if (verifyEverIds.size > 0) {
-            const beadsForVerifyCheck = await fetchAllBeadsShared();
-            stillOpenVerifyIds = [...verifyEverIds].filter((id) => {
-                const b = beadsForVerifyCheck.find((x) => x.id === id);
-                return b && b.status !== 'closed';
-            });
+            const closedIdsForExitCheck = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+            stillOpenVerifyIds = [...verifyEverIds].filter((id) => !closedIdsForExitCheck.has(id));
         }
 
         if (openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0) {
@@ -8563,23 +8689,28 @@ async function runSprintCycle(context) {
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
     await doltPullBefore(orchestratorMember, { command, log });
-    const finalOpenAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
-    const finalClosedCount = (await bdListScoped('--status=closed --json')).length;
+    const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
+        bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
+        decomposedParentIds(),
+        bdListScoped('--status=closed --json'),
+    ]);
+    const finalOpenAtGoal = finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id));
+    const finalClosedCount = finalClosedBeads.length;
     // apra-fleet-jfo.2: same structural blind spot as the per-cycle exit
-    // check -- verify-routed beads never appear in finalOpenAtGoal (they
-    // have children), so a sprint that exhausted MAX_CYCLES with Deploy
-    // failing every time could otherwise reach Final Review reporting
-    // "0 open bead(s)" while the verify-routed targets were never actually
-    // re-verified. Surface it as explicit evidence rather than leaving the
-    // Final Review to rubber-stamp PASS on an incomplete count. Guarded on
+    // check -- verify-routed beads are decomposed parents, so they never
+    // appear in finalOpenAtGoal (post-filtered via decomposedParentIds()),
+    // so a sprint that exhausted MAX_CYCLES with Deploy failing every time
+    // could otherwise reach Final Review reporting "0 open bead(s)" while
+    // the verify-routed targets were never actually re-verified. Surface it
+    // as explicit evidence rather than leaving the Final Review to
+    // rubber-stamp PASS on an incomplete count. Guarded on
     // `verifyEverIds.size > 0` -- see the per-cycle check above for why.
+    // Uses the same fresh finalClosedBeads read as finalClosedCount above,
+    // not fetchAllBeadsShared()'s cache (apra-fleet-66u.2).
     let finalUnclosedVerifyIds = [];
     if (verifyEverIds.size > 0) {
-        const finalBeadsForVerifyCheck = await fetchAllBeadsShared();
-        finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => {
-            const b = finalBeadsForVerifyCheck.find((x) => x.id === id);
-            return b && b.status !== 'closed';
-        });
+        const finalClosedIds = new Set(finalClosedBeads.map((b) => b.id));
+        finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => !finalClosedIds.has(id));
     }
 
     let finalVerdictResult;

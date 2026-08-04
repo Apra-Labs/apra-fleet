@@ -954,6 +954,20 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // --- integ test phase (apra-fleet-unw.17, A4: schema-validated) ---
             if (opts.agent === 'integ-test-runner') {
                 if (integHandler) return integHandler({ opts, tempDir, runCmd, epicBead });
+                // apra-fleet-66u.2: a real integ-test-runner closes the
+                // bead(s) named in its own "verification-closure: <ids>."
+                // prompt clause once it confirms they hold -- the default
+                // mock must do the same, or any scenario relying on this
+                // default (no integHandler override) can never see its own
+                // --issue target (a decomposed parent once it has children)
+                // actually close, which now genuinely blocks sprint
+                // completion (apra-fleet-66u.1 correctly requires it, via
+                // the pre-existing stillOpenVerifyIds/verifyEverIds gate).
+                const verifyMatch = opts.prompt.match(/verification-closure:\s*([^.]+)\./);
+                const verifyIds = verifyMatch ? verifyMatch[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+                for (const id of verifyIds) {
+                    await runCmd(`bd close ${id} --reason "Verified against the deployed build."`, tempDir);
+                }
                 return {
                     content: [{
                         text: JSON.stringify({
@@ -961,7 +975,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                             issuesCreated: 0,
                             passed: true,
                             bugsFiled: [],
-                            summary: 'All vitest e2e specs passed successfully.',
+                            summary: verifyIds.length > 0
+                                ? `All vitest e2e specs passed successfully. Verified and closed: ${verifyIds.join(', ')}.`
+                                : 'All vitest e2e specs passed successfully.',
                         })
                     }]
                 };
