@@ -403,6 +403,23 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // command()) failure deterministically, without depending on real
         // filesystem/process flakiness.
         commandFailurePattern = null,
+        // apra-fleet-23j.2: optional (cmd: string) => string|undefined
+        // override, checked BEFORE the real-exec fallback (and before
+        // `commandFailurePattern`, which can only express a fixed nonzero
+        // exit/message and so cannot simulate a transient bd/dolt failure --
+        // that shape is a NORMAL exit-0 stdout payload containing one of the
+        // isTransientBdCommandFailure() strings, not an MCP-level error).
+        // When it returns a string for a given command, that string is
+        // returned as normal exit-0 stdout (bypassing the real `bd` exec
+        // against tempDir) -- letting a scenario answer one specific bd-list
+        // call with a transient-failure shape (e.g. 'Command timed out after
+        // 120000ms of inactivity') on a chosen attempt (tracked via closure
+        // state in the caller) and fall through to the real exec (return
+        // undefined) on every other attempt, so runner.js's bdListWithRetry
+        // (apra-fleet-23j.1/23j.3) is exercised through bdListScoped's own
+        // real call sites end to end instead of only through a bare
+        // hand-rolled fake.
+        bdListInjector = null,
         // apra-fleet-unw2.4 (N4): per-member modeling. `commandLogDetailed`,
         // when provided, receives one `{ command, member }` entry per
         // executeCommand() call so a test can assert WHICH member each
@@ -680,6 +697,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 }
 
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
+            }
+
+            // apra-fleet-23j.2: see the `bdListInjector` option comment
+            // above. Checked before `commandFailurePattern` so a scenario
+            // combining both (unlikely, but not forbidden) gets the more
+            // specific transient-shape answer first.
+            if (bdListInjector) {
+                const injected = bdListInjector(opts.command);
+                if (injected !== undefined) {
+                    return mockCmdResult(0, injected, '');
+                }
             }
 
             // apra-fleet-unw.17, A4 acceptance criterion 5: deterministic
@@ -1191,6 +1219,9 @@ export async function runDevelopLoopScenario(tag, {
     planReviewerHandler,
     // apra-fleet-unw.17 additions:
     deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
+    // apra-fleet-23j.2: see buildMockFleetApi's `bdListInjector` option
+    // comment above.
+    bdListInjector,
     goal = 'P1/P2', maxCycles = 1,
     // Optional hook invoked with {tempDir, runCmd, epicBead, tasks} AFTER
     // setupMinimal() creates the epic/tasks but BEFORE the sprint runs --
@@ -1285,6 +1316,7 @@ export async function runDevelopLoopScenario(tag, {
             integHandler,
             finalReviewHandler,
             commandFailurePattern,
+            bdListInjector,
             commandLogDetailed,
             memberGitState,
             gitGhFailurePattern,
