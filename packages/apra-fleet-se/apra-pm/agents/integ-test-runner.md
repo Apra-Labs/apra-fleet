@@ -39,12 +39,29 @@ steps that are not written down.
 ## Step 0a -- Check permissions before running anything
 
 Read `integ-test-playbook.md`. Look for a `## Permissions` section. If found,
-verify each listed command prefix is allowed in your CLI's permission settings
-(`.claude/settings.json` `permissions.allow` on Claude Code; other providers keep
-the equivalent allowlist in their own config file). If any
-required prefix is absent from the allowlist, STOP immediately and return
-`passed: false` with notes listing every missing entry. Do NOT attempt to add
-the permissions yourself, and do NOT proceed while any are missing.
+verify each listed command prefix is covered by the MERGED effective
+permission set -- on Claude Code that means SOME entry in `permissions.allow`
+of EITHER `.claude/settings.json` (the team-committed, shared baseline) OR
+`.claude/settings.local.json` (the per-checkout, individual/gitignored file;
+this is the ONLY file the fleet's `compose_permissions` tool ever writes to
+for Claude Code members -- see `skills/fleet/permissions.md`). Claude Code
+merges `permissions.allow` from both files, so a grant in EITHER one counts
+as coverage; checking only `settings.json` misses every grant
+`compose_permissions` delivered. Other providers keep the equivalent
+allowlist in their own native config file. If any required prefix has no
+covering entry in either file, STOP immediately and return `passed: false`
+with notes listing every missing entry.
+
+Do NOT attempt to add the permissions yourself, by editing any file
+directly: `.claude/settings.json` is the team-committed baseline -- changes
+there require the team/a PR, never a self-edit. `.claude/settings.local.json`
+is the correct target for an individual/local grant, but it must be
+provisioned via the `compose_permissions` MCP tool (grant mode), NOT
+hand-edited either -- that tool is the provider-agnostic delivery mechanism
+(this repo supports non-Claude providers too: Gemini, AGY, OpenCode, Codex --
+each has its own native config path via the same tool). The correct
+escalation is to ask the orchestrator/operator to run `compose_permissions`
+with the missing grant. Do NOT proceed while any permissions are missing.
 
 ## Step 0b -- Run the playbook
 

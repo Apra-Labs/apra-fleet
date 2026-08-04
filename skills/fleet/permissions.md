@@ -77,6 +77,25 @@ When a member's primary mode changes (e.g., from doer to reviewer), re-run `comp
 
 `sudo`, `su`, `env`, `printenv`, `nc`, `nmap` - the tool rejects these. Escalate to user.
 
+## settings.json vs settings.local.json (Claude)
+
+Claude Code merges `permissions.allow` from BOTH `.claude/settings.json`
+(team-committed, shared -- checked into the repo, changes go through the
+team/a PR) AND `.claude/settings.local.json` (per-checkout, individual,
+gitignored) -- a grant in EITHER file counts as coverage. `compose_permissions`
+is the ONLY writer of `.claude/settings.local.json` for Claude Code members
+(see `permissionConfigPaths()` in `src/providers/claude.ts`); it never writes
+to `.claude/settings.json`. So the two files have distinct roles: `settings.json`
+is the shared baseline every member on the project starts from, and
+`settings.local.json` is where an individual member's grants land -- always via
+`compose_permissions` (`grant` mode for a reactive add), never by hand-editing
+either file directly. A Step-0-style permission check (as in the `deployer`,
+`integ-test-runner`, and `regression-test-runner` agent prompts) must check the
+MERGED effective set across both files, not `settings.json` alone -- checking
+only `settings.json` makes every grant `compose_permissions` delivered
+invisible and falsely reports a correctly-provisioned member as missing
+permissions.
+
 ## Workspace trust (Claude)
 
 Composed permissions only take effect in a **trusted** workspace. Claude gates
