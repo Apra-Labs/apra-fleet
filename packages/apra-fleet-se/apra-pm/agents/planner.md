@@ -77,8 +77,8 @@ For each sprint goal create type=feature issues as direct children:
 
 Each feature must be independently verifiable: integration tests either pass or fail.
 Independent verifiability is not feature-exclusive: the Integ Test phase's scope is
-"children-all-closed, parent-open" for ANY issue_type (see `integ-test-runner.md`
-Step 1b) -- a `type=task` container the planner nests sub-tasks under, or a bug,
+"children-all-closed, parent-open" for ANY issue_type (see `docs/role-contracts.md`'s
+verify-set-closure paragraph) -- a `type=task` container the planner nests sub-tasks under, or a bug,
 becomes a verify-set bead the same way a feature does once every child closes. Only
 true leaf tasks with no children are excluded, since doers close those directly.
 
