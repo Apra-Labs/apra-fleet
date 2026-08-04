@@ -93,7 +93,7 @@ function mockGlobalProcessDetection(exePath: string | null) {
   });
 }
 
-describe('install running-process guard is scoped to the install target — integration (apra-fleet-1aw.3)', () => {
+describe('install running-process guard is scoped to the install target - integration (apra-fleet-1aw.3)', () => {
   let dataDir: string;
   let installPrefixDir: string;
   let healthy: { server: Server; url: string } | null = null;
@@ -165,7 +165,7 @@ describe('install running-process guard is scoped to the install target — inte
     expect(scope.reason).toBeNull();
   });
 
-  it('case 3: ETXTBSY protection retained — guard fires when the running executable is under the install prefix, even though data dirs differ', async () => {
+  it('case 3: ETXTBSY protection retained - guard fires when the running executable is under the install prefix, even though data dirs differ', async () => {
     // No server.json in the (isolated) data dir this install targets.
     expect(fs.existsSync(path.join(dataDir, 'server.json'))).toBe(false);
     const runningExePath = path.join(installPrefixDir, 'apra-fleet');
