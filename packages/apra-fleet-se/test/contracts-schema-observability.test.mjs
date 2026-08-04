@@ -122,19 +122,21 @@ describe('directory exists but a specific expected role output file is missing',
 });
 
 describe('allowlist: roles with no legitimate output schema never warn', () => {
-    test('planner never warns even when the directory exists and planner-output.json is (and always was) absent', async () => {
-        // FIXTURES_DIR is a real, existing directory and has never had a
-        // planner-output.json (planner has no output schema by design --
-        // see test/contracts-schema-loader.test.mjs's AC3 test).
+    // KB trust pipeline Phase 2 (2026-08-03): the planner used to be the sole
+    // allow-listed role, on the layering proposal's reasoning that its output IS
+    // the beads DAG. It now has agents/schemas/planner-output.json so it can
+    // carry kb_captures, which means a MISSING planner-output.json is once again
+    // a real defect -- the exact inverse of what this used to assert.
+    test('planner now HAS an output schema and is no longer allow-listed', async () => {
         const wired = await importWired(FIXTURES_DIR);
         assert.ok(fs.statSync(FIXTURES_DIR).isDirectory());
-        assert.ok(!fs.existsSync(path.join(FIXTURES_DIR, 'planner-output.json')));
+        assert.ok(fs.existsSync(path.join(FIXTURES_DIR, 'planner-output.json')));
 
         const calls = await withCapturedWarnings(() => {
-            wired.warnIfVendorFileUnexpectedlyMissing('planner', 'planner-output');
+            wired.warnIfVendorFileUnexpectedlyMissing('planner', 'planner-output-that-does-not-exist');
         });
 
-        assert.strictEqual(calls.length, 0, `expected planner to be silently allow-listed, got: ${JSON.stringify(calls)}`);
+        assert.strictEqual(calls.length, 1, `expected planner to warn like any other role, got: ${JSON.stringify(calls)}`);
     });
 
     test('a non-allow-listed role in the same directory still warns (control case)', async () => {
@@ -147,8 +149,10 @@ describe('allowlist: roles with no legitimate output schema never warn', () => {
         assert.strictEqual(calls.length, 1, `expected exactly one warning, got: ${JSON.stringify(calls)}`);
     });
 
-    test('ROLES_WITHOUT_OUTPUT_SCHEMA is exactly {"planner"}', async () => {
+    test('ROLES_WITHOUT_OUTPUT_SCHEMA is empty -- every role now has an output contract', async () => {
+        // The mechanism is kept for a future legitimately schema-less role; the
+        // set being empty is the assertion that no role is currently exempt.
         const wired = await importWired(FIXTURES_DIR);
-        assert.deepStrictEqual([...wired.ROLES_WITHOUT_OUTPUT_SCHEMA], ['planner']);
+        assert.deepStrictEqual([...wired.ROLES_WITHOUT_OUTPUT_SCHEMA], []);
     });
 });
