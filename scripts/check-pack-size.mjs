@@ -49,30 +49,51 @@ export function parsePackJson(rawStdout) {
     throw new Error('empty input: expected JSON output from "npm pack --dry-run --json"');
   }
 
-  const start = rawStdout.indexOf('[');
   const end = rawStdout.lastIndexOf(']');
-  if (start === -1 || end === -1 || end < start) {
+  if (end === -1) {
     throw new Error(`could not locate a JSON array in input (no matching '[' / ']'): '${rawStdout.slice(0, 200)}'`);
   }
 
-  const jsonSlice = rawStdout.slice(start, end + 1);
-  let parsed;
-  try {
-    parsed = JSON.parse(jsonSlice);
-  } catch (err) {
-    throw new Error(`could not parse JSON array from input: ${err.message}`);
+  // Collect every '[' position at or before the final ']' and try each as a
+  // candidate array start, earliest first. This tolerates lifecycle-script
+  // (e.g. `prepare`) stdout noise that itself contains a bare '[' before the
+  // real JSON array -- e.g. an '[OK] ...' log line (CLAUDE.md's mandated
+  // ASCII checkmark) -- by skipping candidates that fail to parse as JSON
+  // rather than committing to the very first '['.
+  const starts = [];
+  for (let i = rawStdout.indexOf('['); i !== -1 && i <= end; i = rawStdout.indexOf('[', i + 1)) {
+    starts.push(i);
+  }
+  if (starts.length === 0) {
+    throw new Error(`could not locate a JSON array in input (no matching '[' / ']'): '${rawStdout.slice(0, 200)}'`);
   }
 
-  if (!Array.isArray(parsed) || parsed.length === 0) {
-    throw new Error(`expected a non-empty JSON array, got: '${jsonSlice.slice(0, 200)}'`);
+  let lastErr;
+  for (const start of starts) {
+    const jsonSlice = rawStdout.slice(start, end + 1);
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonSlice);
+    } catch (err) {
+      lastErr = new Error(`could not parse JSON array from input: ${err.message}`);
+      continue;
+    }
+
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      lastErr = new Error(`expected a non-empty JSON array, got: '${jsonSlice.slice(0, 200)}'`);
+      continue;
+    }
+
+    const entry = parsed[0];
+    if (!entry || typeof entry.unpackedSize !== 'number' || !Number.isFinite(entry.unpackedSize)) {
+      lastErr = new Error(`first entry in JSON array is missing a numeric 'unpackedSize': '${JSON.stringify(entry).slice(0, 200)}'`);
+      continue;
+    }
+
+    return entry;
   }
 
-  const entry = parsed[0];
-  if (!entry || typeof entry.unpackedSize !== 'number' || !Number.isFinite(entry.unpackedSize)) {
-    throw new Error(`first entry in JSON array is missing a numeric 'unpackedSize': '${JSON.stringify(entry).slice(0, 200)}'`);
-  }
-
-  return entry;
+  throw lastErr;
 }
 
 /**
