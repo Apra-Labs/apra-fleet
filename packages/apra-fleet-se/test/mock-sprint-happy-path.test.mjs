@@ -83,14 +83,20 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // configured sync.remote) a `bd dolt pull`. Whether that second entry
         // fires is environment-dependent (a real `bd config get` read, not a
         // scripted mock -- see doltPullBefore()'s own doc comment on the
-        // no-remote skip), so this asserts on the first GIT command's
-        // position rather than a fixed index, and that everything before it
-        // is exactly this gate's own bd command(s).
+        // no-remote skip). apra-fleet-fahx's pre-sprint permission-diff gate
+        // runs immediately after, reading deploy.md/integ-test-playbook.md/
+        // regression-test-playbook.md via three `node -e` probes before
+        // Sprint Setup -- setup()'s deploy.md has no `## Permissions` section,
+        // so the gate no-ops with zero member settings.json reads, but those
+        // three read-only probes still land in the log. So this asserts on
+        // the first GIT command's position rather than a fixed index, and
+        // that everything before it is exactly this gate's own bd
+        // command(s)/the permission-diff gate's node -e probes.
         const firstGitIdx = run1.commandLog.findIndex((c) => /^git /.test(c));
         check(firstGitIdx > 0, `Expected at least one pre-flight beads-health-gate command before the first git command, got commandLog: ${JSON.stringify(run1.commandLog)}`);
         check(
-            run1.commandLog.slice(0, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull'),
-            `Expected only the pre-flight beads-health gate's own bd command(s) before the first git command, got: ${JSON.stringify(run1.commandLog.slice(0, firstGitIdx))}`
+            run1.commandLog.slice(0, firstGitIdx).every((c) => c === 'bd config get sync.remote --json' || c === 'bd dolt pull' || c.startsWith('node -e ')),
+            `Expected only the pre-flight beads-health gate's own bd command(s)/the permission-diff gate's node -e probes before the first git command, got: ${JSON.stringify(run1.commandLog.slice(0, firstGitIdx))}`
         );
         // apra-fleet-co4: the branch-fetch succeeded (this mock's git/gh
         // interceptor succeeds by default), so Ensure Sprint Branch now also
