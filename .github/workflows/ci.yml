@@ -699,13 +699,7 @@ jobs:
             grep -E '\.(exe)$|sea-prep\.blob|sea-bundle\.cjs' pack-check.txt
             exit 1
           fi
-          PACK_SIZE=$(npm pack --dry-run 2>&1 | grep 'unpacked size' | grep -oE '[0-9]+(\.[0-9]+)? [kMG]B' | head -1)
-          echo "Unpacked size: $PACK_SIZE"
-          PACK_BYTES=$(npm pack --dry-run 2>&1 | grep 'unpacked size' | grep -oE '[0-9]+' | head -1)
-          if [ -n "$PACK_BYTES" ] && [ "$PACK_BYTES" -gt 10000000 ]; then
-            echo "::error::Pack unpacked size exceeds 10MB ($PACK_SIZE). Check for stale SEA artifacts in dist/."
-            exit 1
-          fi
+          node scripts/check-pack-size.mjs
           echo "Clean-pack guard passed"
 
       - name: Pack + install into a clean temp prefix (fleet-sprint smoke test)
