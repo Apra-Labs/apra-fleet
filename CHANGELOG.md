@@ -78,6 +78,78 @@ Tracked spend (priced dispatches only): $5.8641.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.0929 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 24 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- Dolt push reliability: auth/divergence classification, recovery ladder wiring, child-id create fix
+
+Sprint goal: fix a cluster of fleet-sprint reliability defects surfaced by
+real sprint runs -- a Dolt D-push credential failure being misclassified as
+data divergence and aborting the sprint instead of self-healing, an unused
+Dolt conflict-recovery ladder that was never actually wired into the push
+failure path, a `bd create` invocation that unconditionally combined `--id`
+and `--parent` and silently lost the pre-allocated child id on failure, and
+a sprint stall-detector reading closed-bead counts from a stale snapshot so
+a cycle's own Integ Test closures were never credited toward progress. Also
+in scope: test coverage for the VCS-auth preflight gate on read-side
+dispatch brackets, and the provider-agnostic VCSModule error-taxonomy epic
+this cluster builds on. **Code review found all six scoped items correctly
+implemented and fully covered by the passing unit/mock suites, but the
+sprint's own final verdict is FAIL**: Deploy failed at its permissions-check
+step in every cycle this sprint ran (the sandbox's command allowlist did not
+cover the two prefixes a prior sprint's deploy-runbook change now requires
+for its supervisor-start and smoke-test steps), so the three parent bugs
+routed to verify-against-a-deployed-build were never confirmed end-to-end
+and remain open. The deployer correctly stopped and reported the permission
+gap rather than working around it.
+
+What shipped:
+
+- A Dolt D-push rejection is now classified into a distinct credential
+  (`auth`) failure versus a genuine non-fast-forward divergence, checked
+  independently at both points a push can still fail (the first attempt, and
+  the re-push that follows a reconcile-pull) -- previously both were folded
+  into the same divergence error, so a lapsed credential aborted the sprint
+  with a misleading "diverged" message instead of self-healing. An
+  auth-classified push failure now triggers the same bounded, one-shot
+  credential self-heal used elsewhere in the sync layer before retrying.
+- The Dolt conflict-recovery ladder (scripted resolve-in-place, then
+  discard-and-re-bootstrap, then an agent-with-runbook last resort) is now
+  actually invoked from the D-push failure path at both divergence
+  terminals, instead of existing only as a module exercised by its own
+  tests. With no recovery hook supplied, prior degraded-by-default behavior
+  is unchanged -- the ladder only ever narrows an existing failure into a
+  resolved one.
+- Fixed a `bd create` call that combined `--id` and `--parent` in one
+  invocation, which the installed `bd` CLI rejects outright: the fix issues
+  `--id` alone and links the parent with a separate `bd update --parent`
+  call, verifying the reported parent matches what was requested before
+  trusting the create.
+- Fixed the sprint stall-detector's closed-bead count to be read fresh
+  immediately before each cycle's progress evaluation, rather than reused
+  from an earlier snapshot taken before that same cycle's own Integ Test
+  step could close verify-routed beads -- previously those same-cycle
+  closures were invisible to the stall detector's high-water-mark check,
+  producing a false stalled-abort even though real progress was made every
+  cycle.
+- New end-to-end test coverage for the VCS-auth preflight gate on read-side
+  dispatch brackets (planner, integ-test-runner, regression-test-runner),
+  pinning that a preflight failure degrades silently rather than aborting
+  the dispatch.
+
+Carried forward: the three P1/P2 bugs verify-routed to a deployed build
+(the Dolt credential-classification fix, the `bd create` id/parent fix, and
+the stall-detector freshness fix) remain open pending a deploy run once the
+sandbox's permissions allowlist is updated to cover the deploy runbook's
+newer supervisor-start and smoke-test steps. A full regression pass run
+after the final verdict (informational only, does not gate this sprint)
+filed/reconfirmed several parent-less carry-over bugs, including a
+smoke-harness port-cleanup gap in the toy-sprint deploy path.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $20.5559.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 42 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- install --force stop-confirmation fix (closes prior sprint's deploy-gate carry-over)
