@@ -92,10 +92,12 @@ session labels carry the same task-id suffix for searchability.
 ### Exit check scoped to open leaf work
 
 `parseBlockers()` in leaf mode (`{ rootIds, leaf: true, includeFeatures }`) counts
-only open `type=task` (plus `type=feature` when integ tests run) inside the sprint
-subtree, excluding the root goals. Roots close at Harvest, so counting them would
-make `goalMet` unreachable in-loop; leaf-scoping keeps the exit and no-progress
-checks meaningful. Unrelated open issues elsewhere in the beads DB never affect
+open `type=task` leaves plus any open verify-set bead -- a bead of ANY issue_type
+(feature, bug, or task-with-children) whose children are ALL closed while it is
+still open (children-all-closed, parent-open) -- inside the sprint subtree,
+excluding the root goals. Roots close at Harvest, so counting them would make
+`goalMet` unreachable in-loop; leaf-scoping keeps the exit and no-progress checks
+meaningful. Unrelated open issues elsewhere in the beads DB never affect
 `goalMet`.
 
 ### CI pipeline task dedup guard

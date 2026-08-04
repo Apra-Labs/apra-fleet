@@ -105,18 +105,22 @@ the prior verdicts so it does not move goalposts round to round.
 
 Change the exit/no-progress signal from ROOTS-ONLY to SUBTREE LEAF-SCOPED:
 - Count open `type=task` under the subtree at priority <= threshold, EXCLUDING roots.
-- Also count open `type=feature` under the subtree ONLY when `integTestEnabled` (only
-  then does anything close features in-loop; otherwise counting them re-breaks
+- Also count open verify-set beads under the subtree ONLY when `integTestEnabled` --
+  a verify-set bead is a parent of ANY issue_type (feature, bug, or
+  task-with-children) whose children are ALL closed while it is still open
+  (children-all-closed, parent-open), not a `type=feature`-only gate (only then does
+  anything close verify-set beads in-loop; otherwise counting them re-breaks
   reachability).
-- Add `issue_type` (`t`) to the exit-check open extract (2781) and the `countBeadsBlockers`
+- Add `issue_type` (short field "t") to the exit-check open extract (2781) and the `countBeadsBlockers`
   extract (1643). Implement the leaf-aware counter so `parseBlockers` is not left as dead
   code (generalize it or replace both call sites and migrate its tests). Roots still close
   at Harvest (2969-2972); `goalMet` now becomes reachable when the last leaf closes, and
   `prevOpenIds`/`currentOpenIds` shrink cycle-to-cycle so the no-progress guard is a real
   deadlock detector again.
 - Rewrite `test/exit-check-roots-scope.test.mjs` to the inverted (leaf/subtree) semantics:
-  roots excluded; open non-root task counts as a blocker; feature counted only when
-  includeFeatures=true. Keep `shell-dispatch.test.mjs` / `merged-parser-index.test.mjs`
+  roots excluded; open non-root task counts as a blocker; a parent-of-any-type verify-set
+  bead counted only when includeFeatures=true (the flag name is historical; it is not
+  restricted to `type=feature`). Keep `shell-dispatch.test.mjs` / `merged-parser-index.test.mjs`
   green.
 - Fix the stale header comment at 88-89 to match (it already says "subtree").
 
