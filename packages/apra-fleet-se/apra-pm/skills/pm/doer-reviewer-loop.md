@@ -187,6 +187,9 @@ order. For each task: bd show <id> to read its description and acceptance criter
 bd update <id> --claim to claim it; implement the work; run fast tests; commit as
 identity pm-doer (git -c user.name='pm-doer' -c user.email='doer@pm.local' commit);
 then bd close <id>. Never close a type=feature or type=bug issue -- only type=task.
+(Verify-set beads -- a parent of ANY issue_type whose children are all closed while
+it is still open -- are closed later by integ-test-runner, not by you; this is not a
+feature-only path.)
 If your scope reaches the VERIFY checkpoint, run it -- build, linter, and full test
 suite -- then stop. Otherwise stop after the last task in <task scope>. If a task is
 blocked, leave it open, add a blocker note (bd update <id> --notes="blocked: ..."),
