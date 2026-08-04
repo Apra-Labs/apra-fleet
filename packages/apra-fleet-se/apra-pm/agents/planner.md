@@ -76,11 +76,14 @@ For each sprint goal create type=feature issues as direct children:
   `bd dep add <sprint-id> <feature-id>`; see the graph-semantics section above)
 
 Each feature must be independently verifiable: integration tests either pass or fail.
-Independent verifiability is not feature-exclusive: the Integ Test phase's scope is
-"children-all-closed, parent-open" for ANY issue_type (see `docs/role-contracts.md`'s
-verify-set-closure paragraph) -- a `type=task` container the planner nests sub-tasks under, or a bug,
-becomes a verify-set bead the same way a feature does once every child closes. Only
-true leaf tasks with no children are excluded, since doers close those directly.
+This bead-graph rule is not feature-exclusive and applies regardless of who or
+what later verifies it: a bead with children only closes once every child is
+closed AND it is independently verified -- for ANY issue_type, not just
+type=feature. A `type=task` container you nest sub-tasks under, or a bug,
+becomes a verify-gated unit the same way a feature does, the moment it has
+children. Only true leaf beads (no children) close directly. Keep this in mind
+when deciding whether to nest sub-tasks under a task/bug at all, versus making
+them independent siblings.
 
 ## Step 3 -- Decompose features into tasks
 
