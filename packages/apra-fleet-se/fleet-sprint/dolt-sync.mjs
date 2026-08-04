@@ -699,7 +699,18 @@ export async function doltPushAfter(member, opts = {}) {
         return { ok: true, member, pushed: true, reconciled: true };
     }
 
-    // Still rejected after the one bounded reconcile.
+    if (push.kind === 'auth') {
+        // apra-fleet-spp.3: same mislabel class as the first-push/pull paths,
+        // just reached via the post-reconcile re-push -- a credential that
+        // lapsed mid-reconcile is not a data divergence, so it must not be
+        // folded into DoltDivergedError below.
+        throw new DoltSyncError(
+            `[Dolt] D-push re-push after reconcile for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${push.error}`,
+            { member, doltOutput: push.error, details: { kind: 'auth', operation: 'push-reconcile-repush' } },
+        );
+    }
+
+    // Still rejected after the one bounded reconcile, and not an auth failure.
     return await surfaceDivergence(
         new DoltDivergedError(
             `[Dolt] D-push for member '${member}' still rejected after one reconcile pull -- refusing to retry further: ${push.error}`,
