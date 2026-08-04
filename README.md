@@ -178,7 +178,7 @@ for every option.
 
 ```mermaid
 flowchart LR
-    CP["Control Plane<br/>(Server, Engine, Supervisor)"] -->|Dispatch & Sync| M1["MacBook<br/>(Claude)"] & M2["Linux GPU<br/>(vLLM)"] & M3["Cloud VM<br/>(Codex)"] & M4["Windows<br/>(Copilot)"]
+    CP["Control Plane<br/>(Server, Engine, Supervisor)"] -->|Dispatch & Sync| M1["MacBook<br/>(Claude)"] & M2["Linux GPU<br/>(vLLM)"] & M3["Cloud VM<br/>(AGY)"] & M4["Windows<br/>(OpenCode)"]
 ```
 
 ## Explore with agents. Operate with programs.
