@@ -36,6 +36,10 @@ bug in its own right, not just a slow test.
 
 ## Permissions
 
+This list must stay in sync with the root `permissions.json` ledger (enforced
+by `tests/permissions-ledger-drift.test.ts`); see `skills/fleet/permissions.md`
+for how the ledger is actually delivered by `compose_permissions`.
+
 Commands below require coverage for these prefixes by SOME entry in
 `permissions.allow` of EITHER `.claude/settings.json` OR
 `.claude/settings.local.json` (where the fleet's compose_permissions tool

@@ -20,6 +20,10 @@ deploy the software onto the target; it does not run this file.)
 
 ## Permissions
 
+This list must stay in sync with the root `permissions.json` ledger (enforced
+by `tests/permissions-ledger-drift.test.ts`); see `skills/fleet/permissions.md`
+for how the ledger is actually delivered by `compose_permissions`.
+
 Commands below require the ability to run these command families:
 - `npm test ...` (e.g. `Bash(npm test*)`)
 - `npm run ...` (e.g. `Bash(npm run *)`)
