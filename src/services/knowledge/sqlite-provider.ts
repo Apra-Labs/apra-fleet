@@ -462,7 +462,15 @@ export class SqliteProvider implements MemoryProvider {
       for (const file of Object.keys(basis)) fileSet.add(file);
     }
 
-    const currentHashes = await computeFileHashBatch([...fileSet]);
+    // Anchor at the provider's own repo, the SAME root computeSourceFileHashes
+    // stored the basis against at capture time. Without this the two disagree
+    // whenever the process cwd is not the repo -- which is the normal case in
+    // the long-lived fleet server -- so every relative basis path would re-hash
+    // to a different value and prime would stale healthy entries on sight.
+    const currentHashes = await computeFileHashBatch(
+      [...fileSet],
+      this.repoPath !== undefined ? { cwd: this.repoPath } : undefined
+    );
 
     const staleIds: string[] = [];
     const unstaleIds: string[] = [];

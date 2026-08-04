@@ -253,3 +253,34 @@ describe('rejection reaches the kb_harvest call site without killing the batch',
     expect(out.entries_rejected).toBe(0);
   });
 });
+
+describe('capture-time and prime-time hashing agree on the same root', () => {
+  // Phase 1 gave the provider a repo root and anchored the capture-time basis
+  // at it. checkFreshness (prime time) re-hashed against process.cwd(), so the
+  // two disagreed whenever cwd is not the repo -- the normal case in the
+  // long-lived fleet server -- and prime staled healthy entries on sight.
+  it('does not stale a healthy entry at prime when cwd is not the repo', async () => {
+    const { id } = await provider.capture(entry({
+      title: 'Healthy basis entry',
+      content: 'A durable claim about realSymbol so prime actually retrieves it.',
+    }));
+
+    await provider.prime({ hint_symbols: ['realSymbol'] });
+
+    const stored = (await provider.query({ ids: [id], include_stale: true })).results[0];
+    expect(stored.stale).toBe(false);
+  });
+
+  it('still stales an entry whose basis really did change in the repo', async () => {
+    const { id } = await provider.capture(entry({
+      title: 'Basis that will change',
+      content: 'A durable claim about realSymbol so prime actually retrieves it.',
+    }));
+    fs.writeFileSync(path.join(repo, 'src', 'real.ts'), 'export const real = 999; // changed\n');
+
+    await provider.prime({ hint_symbols: ['realSymbol'] });
+
+    const stored = (await provider.query({ ids: [id], include_stale: true })).results[0];
+    expect(stored.stale).toBe(true);
+  });
+});
