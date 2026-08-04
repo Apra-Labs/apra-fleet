@@ -2,10 +2,6 @@
 
 ## Permissions
 
-This list must stay in sync with the root `permissions.json` ledger (enforced
-by `tests/permissions-ledger-drift.test.ts`); see `skills/fleet/permissions.md`
-for how the ledger is actually delivered by `compose_permissions`.
-
 Commands below require these prefixes in `.claude/settings.json` under `permissions.allow`:
 - `Bash(*apra-fleet-installer-* install *)`
 - `Bash(*apra-fleet* --version)`
