@@ -633,6 +633,88 @@ const FORBIDDEN_SYNC_TOKENS = [
     /\bD-pull\b/i,
 ];
 
+// =============================================================================
+// apra-fleet-ta3.2 -- unit coverage for apra-fleet-ta3.1's missing-remote-ref
+// guard in syncMemberAfter (G-push on a never-pushed sprint branch), plus a
+// regression guard on syncMemberBefore's pre-existing missing-remote-ref skip
+// (isMissingRemoteRefError() was factored out as a SHARED predicate in
+// ta3.1 -- case 4 below guards that refactor didn't change syncMemberBefore's
+// behavior). All four cases use an injected fake command() -- no real git, no
+// network.
+// =============================================================================
+
+test('(ta3.2-1) fresh branch: G-push on a never-pushed branch resolves { ok: true, pushed: true } and issues a real create-push for the branch', async () => {
+    const { command, calls } = makeCommandMock({
+        // First push is rejected with git's generic non-FF trailer (the root
+        // cause ta3.1 diagnoses: this same generic trailer is printed for a
+        // brand-new branch too, not just a genuine divergence) -> classified
+        // 'diverged', so syncMemberAfter attempts a pull --rebase to recover.
+        'git push': [fail(' ! [rejected] main -> main (non-fast-forward)'), OK],
+        // The rebase attempt fails with git's exact, unambiguous "branch does
+        // not exist on the remote" message -- this is what tells the guard
+        // there is nothing to rebase against, only a branch to create.
+        'git pull --rebase': [fail("fatal: couldn't find remote ref refs/heads/mybranch")],
+    });
+
+    const res = await syncMemberAfter('m1', { command, branch: 'mybranch', remote: 'origin' });
+
+    check(res.ok === true && res.pushed === true, `expected { ok: true, pushed: true }, got: ${JSON.stringify(res)}`);
+
+    const pushCalls = calls.filter((c) => c.cmd === 'git push origin mybranch');
+    check(pushCalls.length === 2, `expected the initial push plus one real create-push retry for 'mybranch', saw ${pushCalls.length} matching calls: ${JSON.stringify(calls.map((c) => c.cmd))}`);
+});
+
+test('(ta3.2-2) no blind rebase: the missing-remote-ref guard probes pull --rebase exactly once and never re-issues it (no blind repeat rebase before the create-push retry)', async () => {
+    const { command, calls } = makeCommandMock({
+        'git push': [fail(' ! [rejected] main -> main (non-fast-forward)'), OK],
+        'git pull --rebase': [fail("fatal: couldn't find remote ref refs/heads/mybranch")],
+    });
+
+    const res = await syncMemberAfter('m1', { command, branch: 'mybranch', remote: 'origin' });
+    check(res.ok === true, 'precondition: the fresh-branch path must still resolve ok');
+
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    check(rebaseCalls.length === 1, `expected 'git pull --rebase' issued exactly once (single probe, never blindly repeated), saw ${rebaseCalls.length}`);
+});
+
+test('(ta3.2-3) genuine divergence unchanged: remote branch exists, non-FF push -> exactly one pull --rebase then one re-push, still rejected -> GitDivergedError', async () => {
+    const { command, calls } = makeCommandMock({
+        // Single-entry queues repeat the same result on every call (see
+        // makeCommandMock's doc comment) -- both the initial push and the
+        // post-rebase re-push are rejected identically, as a genuine
+        // divergence would behave.
+        'git push': [fail(' ! [rejected] main -> main (non-fast-forward)')],
+        'git pull --rebase': [OK],
+    });
+
+    let err = null;
+    let res = null;
+    try {
+        res = await syncMemberAfter('m1', { command, branch: 'mybranch', remote: 'origin' });
+    } catch (e) {
+        err = e;
+    }
+    check(res === null, `expected no successful resolution for genuine divergence, got: ${JSON.stringify(res)}`);
+    check(err instanceof GitDivergedError, `expected GitDivergedError, got ${err && err.constructor.name}`);
+
+    const pushCalls = calls.filter((c) => c.cmd === 'git push origin mybranch');
+    const rebaseCalls = calls.filter((c) => /git pull --rebase/.test(c.cmd));
+    check(pushCalls.length === 2, `expected the initial push plus exactly one re-push after rebase, saw ${pushCalls.length}`);
+    check(rebaseCalls.length === 1, `expected exactly one pull --rebase, saw ${rebaseCalls.length}`);
+});
+
+test('(ta3.2-4) syncMemberBefore missing-remote-ref benign skip is unchanged by the shared isMissingRemoteRefError() refactor: returns { ok: true } and skips the ff-only merge', async () => {
+    const { command, calls } = makeCommandMock({
+        'git fetch': [fail("fatal: couldn't find remote ref refs/heads/mybranch")],
+    });
+
+    const res = await syncMemberBefore('m1', { command, branch: 'mybranch', remote: 'origin' });
+    check(res && res.ok === true, `expected { ok: true }, got: ${JSON.stringify(res)}`);
+
+    const mergeCalls = calls.filter((c) => /git merge --ff-only/.test(c.cmd));
+    check(mergeCalls.length === 0, `expected the ff-only merge to be skipped entirely on a benign missing-remote-ref fetch, saw ${mergeCalls.length} merge call(s)`);
+});
+
 test('(h) the vendored agent markdown tree contains NO orchestrator-side sync commands', () => {
     check(fs.existsSync(VENDOR_AGENTS_DIR), `vendored agents dir must exist at ${VENDOR_AGENTS_DIR}`);
     const mdFiles = fs.readdirSync(VENDOR_AGENTS_DIR).filter((f) => f.endsWith('.md'));
