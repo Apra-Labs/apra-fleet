@@ -139,6 +139,73 @@ export function parseBdJson(raw, commandLabel) {
 }
 
 // ---------------------------------------------------------------------------
+// bd-list transient-failure retry (apra-fleet-23j.1)
+// ---------------------------------------------------------------------------
+//
+// bdListScoped's two bd-list call sites used to feed raw command() output
+// straight into parseBdJson with no retry: a transient member-side bd/dolt
+// slowness ('Command timed out after Nms of inactivity' / 'Failed to execute
+// command on ...') is not JSON, so parseBdJson threw, and that throw escaped
+// runSprintCycle and killed the whole sprint run over what is often a
+// one-off blip. isTransientBdCommandFailure() names the two observed
+// shapes; anything else that fails to parse as JSON is a real bug (garbage
+// JSON), not a transient, and stays fatal on the FIRST attempt -- no retry.
+const BD_LIST_RETRY_DELAYS_MS = [0, 2000, 5000];
+
+/**
+ * @param {string} raw - raw text returned by `command()` for a `bd list ...`
+ *   invocation
+ * @returns {boolean} true if `raw` looks like one of the known transient
+ *   bd/dolt command-execution failures rather than a real (non-transient)
+ *   parse error
+ */
+export function isTransientBdCommandFailure(raw) {
+    const text = raw === undefined || raw === null ? '' : String(raw);
+    return /Command timed out after \d+ms/i.test(text) || /Failed to execute command on/i.test(text);
+}
+
+/**
+ * Bounded-retry wrapper around a `bd list ...` command() + parseBdJson pair,
+ * shared by BOTH bd-list call sites inside bdListScoped's closure
+ * (fetchAllBeadsShared and the filter query). Non-transient unparseable
+ * output throws immediately on the first attempt (no retry) with the
+ * existing [bd JSON Parse Error] message from parseBdJson. Transient output
+ * (see isTransientBdCommandFailure) is retried up to
+ * BD_LIST_RETRY_DELAYS_MS.length total attempts with backoff, logging each
+ * retry in the existing [Sync]-style tone (mirrors updateDashboard's
+ * degrade-and-continue tone, but this does NOT degrade: if every attempt is
+ * transient, the last attempt's failure still propagates -- scope
+ * resolution must never silently report "no beads in scope").
+ * @param {string} label - the `bd list ...` command string, used for both
+ *   the command() call and diagnostics
+ * @param {{ command: Function, member_name: string, log: Function }} opts
+ * @returns {Promise<any>} the parsed JSON
+ */
+async function bdListWithRetry(label, { command, member_name, log }) {
+    let lastErr;
+    for (let attempt = 0; attempt < BD_LIST_RETRY_DELAYS_MS.length; attempt++) {
+        if (BD_LIST_RETRY_DELAYS_MS[attempt] > 0) {
+            log(`[Sync] '${label}' hit a transient bd/dolt command failure; retrying in ${BD_LIST_RETRY_DELAYS_MS[attempt] / 1000}s (attempt ${attempt + 1}/${BD_LIST_RETRY_DELAYS_MS.length}): ${lastErr && lastErr.message}`);
+            if (!mockInstantRetryBackoff()) {
+                await new Promise((resolve) => setTimeout(resolve, BD_LIST_RETRY_DELAYS_MS[attempt]));
+            }
+        }
+        const raw = await command(label, { member_name, silent: true });
+        if (!isTransientBdCommandFailure(raw)) {
+            // Either valid JSON, or a non-transient parse error -- parseBdJson
+            // throws immediately for the latter (no retry), and that throw
+            // propagates out of this function unchanged.
+            return parseBdJson(raw, label);
+        }
+        const snippet = String(raw).length > 200 ? `${String(raw).slice(0, 200)}...` : String(raw);
+        lastErr = new Error(`transient bd/dolt command failure running '${label}': ${snippet}`);
+    }
+    // Exhausted every attempt and every one was transient -- still fatal;
+    // never resolve to a silent empty list.
+    throw lastErr;
+}
+
+// ---------------------------------------------------------------------------
 // Goal-priority helpers
 // ---------------------------------------------------------------------------
 //
@@ -5062,8 +5129,7 @@ async function runSprintCycle(context) {
         if (allBeadsSnapshot) return allBeadsSnapshot.beads;
         if (!allBeadsInFlight) {
             const allLabel = 'bd list --all --limit 0 --json';
-            allBeadsInFlight = command(allLabel, { member_name: orchestratorMember, silent: true })
-                .then((raw) => parseBdJson(raw, allLabel))
+            allBeadsInFlight = bdListWithRetry(allLabel, { command, member_name: orchestratorMember, log })
                 .then((beads) => {
                     allBeadsSnapshot = { beads };
                     return beads;
@@ -5149,8 +5215,8 @@ async function runSprintCycle(context) {
             filterArgs = `${rest} --assignee ${validated.assignee}`;
         }
         const filterLabel = `bd list ${filterArgs} --limit 0`;
-        const filterRaw = await command(filterLabel, { member_name: orchestratorMember, silent: true });
-        return parseBdJson(filterRaw, filterLabel).filter((b) => b && scopeIds.has(b.id));
+        const filtered = await bdListWithRetry(filterLabel, { command, member_name: orchestratorMember, log });
+        return filtered.filter((b) => b && scopeIds.has(b.id));
     }
 
     // The set of scope-member ids that are themselves someone else's

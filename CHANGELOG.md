@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint runner: bounded retry for transient bd-list failures
+
+`bdListScoped()`'s two `bd list` call sites (the shared full-DB snapshot fetch
+and its scope filter query) used to feed raw `command()` output straight into
+`parseBdJson()` with no retry, so a transient member-side bd/dolt slowness
+(`Command timed out after Nms of inactivity` / `Failed to execute command
+on ...`) made `parseBdJson` throw, and that throw escaped
+`runSprintCycle` and killed the whole sprint run over what is often a
+one-off blip.
+
+- Added `isTransientBdCommandFailure()`, a small exported classifier that
+  recognizes only the two observed transient shapes; any other unparseable
+  output is still treated as a real bug (garbage JSON) and stays fatal on
+  the first attempt, with the existing `[bd JSON Parse Error]` message.
+- Added a bounded-retry wrapper (`bdListWithRetry`, 3 total attempts with a
+  2s/5s backoff, logged in the existing `[Sync]`-style tone) now used by
+  both `bd list` call sites inside `bdListScoped`'s closure. If every
+  attempt is transient, the final attempt's failure still propagates --
+  scope resolution never silently degrades to "no beads in scope".
+
 ## [Unreleased] -- npm-install dependency-packaging fixes
 
 Sprint goal: unblock npm-installed (published-tarball, non-workspace) consumers
