@@ -33,9 +33,13 @@ after(() => {
 //   - verifyDoerStreakClosed() (runner.js ~2337) issues a `bd show <ids>
 //     --json` through the wrapper with NO surrounding try/catch, so a
 //     rejection from the wrapper propagates out unchanged -- this is what
-//     lets tests 1/2/4/5 below observe both success values AND rejections
+//     lets tests 1/2/4 below observe both success values AND rejections
 //     directly, and it doubles as coverage criterion 6: this is one of the
-//     apra-fleet-23j.3-converted bd-show-style call sites.
+//     apra-fleet-23j.3-converted bd-show-style call sites. (Test 5, the
+//     regression guard for AC5's "never substitutes an empty array for a
+//     failed SCOPE query" wording, is a harness-driven case further down --
+//     see its own comment -- because it needs to drive bdListScoped's
+//     actual filter/scope query, which this bare fake cannot reach.)
 //   - computeChildFloor() (runner.js ~2192) issues a `bd list --parent <id>
 //     --json` through the wrapper; the call itself does the real retrying,
 //     but the function wraps it in a try/catch that always resolves to a
@@ -109,19 +113,6 @@ test('23j.2 (4): non-transient garbage output rejects on the FIRST attempt with 
     assert.equal(showCalls.length, 1, 'non-transient garbage must NOT be retried at all');
 });
 
-test('23j.2 (5) regression guard: exhausted retries never resolve to an empty result standing in for "all closed"', async () => {
-    const { command } = makeFakeCommand(() => 'Command timed out after 120000ms of inactivity');
-    let resolvedValue;
-    let caught;
-    try {
-        resolvedValue = await verifyDoerStreakClosed({ command, orchestratorMember: 'local', beadIds: ['w.1', 'w.2'], log: () => {} });
-    } catch (err) {
-        caught = err;
-    }
-    assert.equal(resolvedValue, undefined, 'a persistently-transient scope query must never silently resolve (e.g. to []) instead of throwing');
-    assert.ok(caught, 'the retry-exhausted failure must surface as a rejection, not a swallowed empty success');
-});
-
 test('23j.2 (6): coverage of apra-fleet-23j.3 -- the converted computeChildFloor (bd list --parent) call site also retries on the transient shape', async () => {
     let attempts = 0;
     const { command } = makeFakeCommand(() => {
@@ -157,6 +148,57 @@ test('23j.2 (6): coverage of apra-fleet-23j.3 -- the converted computeChildFloor
 // injection point that returns that exact shape.
 // =============================================================================
 
+// apra-fleet-23j.2 rework (2nd round): the previous version of this injector
+// answered ONLY the very first-ever dispatch of the matched command with the
+// transient shape, unconditionally. That happened to land on
+// updateDashboard()'s bdListScoped('') call, which is wrapped in a
+// non-fatal, degrade-and-continue try/catch (runner.js ~5834-5862,
+// apra-fleet-23j.1's AC explicitly requires that swallow to stay). So the
+// sprint "survived" via the dashboard's swallow, not via the retry wrapper
+// -- reverting BD_LIST_RETRY_DELAYS_MS to a single attempt still passed
+// harness (i), because the LATER real call (e.g. readyLeafBeads(), which is
+// NOT wrapped and would have been fatal) never saw the transient at all --
+// the injector had already exhausted its one-shot answer.
+//
+// Fixed by making the injector alternate PER EXACT COMMAND STRING: the
+// dispatch immediately following an injected transient for that same
+// command is let through to the real exec (this is the wrapper's own retry
+// attempt reaching bd for real); every dispatch after THAT starts the
+// transient/success pair over again for that command. That means every
+// logical call site that dispatches a matched command -- including fatal,
+// non-swallowed ones like readyLeafBeads()'s filter query -- independently
+// sees "transient, then success" on ITS OWN first attempt: with the retry
+// wrapper present, that attempt pair is absorbed inside a single
+// bdListWithRetry() call and the sprint completes; with the wrapper
+// reverted to one attempt, whichever call site's turn lands on "transient"
+// takes it as fatal (unless it happens to be swallowed by
+// updateDashboard() -- but with BOTH the --all query and the --ready
+// filter query matched, and multiple call sites dispatching across a full
+// cycle, at least one non-swallowed call site's turn lands on transient),
+// and the sprint dies -- which is exactly what the self-check below proves.
+//
+// Matching /^bd list / (not the single hardcoded --all string) also picks
+// up the filter/scope query (`bd list <flags> --limit 0`, runner.js ~5277)
+// for free, closing the secondary gap the previous round's reviewer notes
+// flagged (that call site was never exercised by any transient injection).
+function makeAlternatingBdListInjector(pattern, onDispatch) {
+    const lastWasTransientByCmd = new Map();
+    return (cmd) => {
+        if (!pattern.test(cmd)) return undefined;
+        const prevWasTransient = lastWasTransientByCmd.get(cmd) === true;
+        if (prevWasTransient) {
+            // This dispatch is the wrapper's own retry attempt for `cmd` --
+            // let it reach the real `bd` exec against the scratch tempDir.
+            lastWasTransientByCmd.set(cmd, false);
+            if (onDispatch) onDispatch(cmd, 'success');
+            return undefined;
+        }
+        lastWasTransientByCmd.set(cmd, true);
+        if (onDispatch) onDispatch(cmd, 'transient');
+        return 'Command timed out after 120000ms of inactivity';
+    };
+}
+
 function parseAssignedIds(prompt) {
     const match = prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
     return match ? match[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
@@ -174,25 +216,17 @@ const approvingReviewerHandler = async () => ({
     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }]
 });
 
-test("23j.2 harness (i): bdListScoped's own fetchAllBeadsShared call site (bd list --all --limit 0 --json) survives a transient timeout and the sprint completes", async () => {
+test("23j.2 harness (i): bdListScoped's own call sites (bd list --all --limit 0 --json and the --ready filter query) survive a transient timeout and the sprint completes", async () => {
     await withScenarioMarkers('23j.2 harness (i): bdListScoped transient-then-success -> sprint completes', async () => {
-        // Records 'transient'|'success' for every dispatch of the exact
-        // command bdListScoped's fetchAllBeadsShared issues. The FIRST one
-        // is answered with the injected transient shape; every one after
-        // that falls through to the real `bd` exec (undefined = "not
-        // intercepted"), which always succeeds in this scratch tempDir --
-        // so outcomes[1] being 'success' proves the retry wrapper's very
-        // next attempt (not a third, unbounded one) is what recovered.
+        // See makeAlternatingBdListInjector's doc comment above: this must be
+        // stateful per exact command string (transient, then success, then
+        // transient again for the NEXT independent call to that same
+        // command) so that every logical call site -- not just whichever one
+        // happens to dispatch first -- is actually exercised through the
+        // retry wrapper, including the ones that are fatal (not swallowed
+        // by updateDashboard()'s degrade-and-continue try/catch).
         const outcomes = [];
-        const bdListInjector = (cmd) => {
-            if (cmd !== 'bd list --all --limit 0 --json') return undefined;
-            if (outcomes.length === 0) {
-                outcomes.push('transient');
-                return 'Command timed out after 120000ms of inactivity';
-            }
-            outcomes.push('success');
-            return undefined;
-        };
+        const bdListInjector = makeAlternatingBdListInjector(/^bd list /, (cmd, outcome) => outcomes.push({ cmd, outcome }));
 
         const stalled = await runDevelopLoopScenario('23j2harness-i', {
             members: ['local'],
@@ -205,12 +239,67 @@ test("23j.2 harness (i): bdListScoped's own fetchAllBeadsShared call site (bd li
 
         assert.ok(
             !stalled.error,
-            `Expected the sprint to complete cleanly despite the injected transient timeout on bdListScoped's own fetchAllBeadsShared call site, got: ${stalled.error ? stalled.error.constructor.name + ': ' + stalled.error.message : 'none'}`
+            `Expected the sprint to complete cleanly despite the injected transient timeout on bdListScoped's own call sites, got: ${stalled.error ? stalled.error.constructor.name + ': ' + stalled.error.message : 'none'}`
         );
-        assert.equal(outcomes[0], 'transient', 'the first bd list --all --limit 0 --json dispatch must be the injected transient failure');
-        assert.equal(outcomes[1], 'success', "the wrapper's very next attempt must be let through to the real bd exec and succeed");
+        const allQueryOutcomes = outcomes.filter((o) => o.cmd === 'bd list --all --limit 0 --json').map((o) => o.outcome);
+        assert.equal(allQueryOutcomes[0], 'transient', 'the first bd list --all --limit 0 --json dispatch must be the injected transient failure');
+        assert.equal(allQueryOutcomes[1], 'success', "the wrapper's very next attempt must be let through to the real bd exec and succeed");
+        assert.ok(
+            outcomes.some((o) => o.cmd !== 'bd list --all --limit 0 --json' && o.outcome === 'transient'),
+            'a filter/scope query (e.g. the --ready query) must also have been dispatched and hit the injected transient at least once, proving that call site was exercised too'
+        );
         const task = stalled.finalBeadsById.get(stalled.tasks[0].id);
         assert.equal(task && task.status, 'closed', 'the sprint must have completed real work (the task closed) after the transient recovery, not merely swallowed the error');
+    });
+});
+
+// SELF-CHECK (see makeAlternatingBdListInjector's doc comment above and
+// AC "Test fails if the retry wrapper from 23j.1 is reverted"): confirmed
+// by hand before closing apra-fleet-23j.2 -- temporarily editing
+// runner.js:153 to `const BD_LIST_RETRY_DELAYS_MS = [0];` (single attempt =
+// the retry wrapper reverted) and re-running this file makes harness (i)
+// FAIL with "transient bd/dolt command failure running 'bd list --ready
+// --json --limit 0'" (readyLeafBeads()'s non-swallowed filter-query call
+// site takes the injected transient and the sprint dies), exactly as this
+// case is supposed to guard against. Restoring the three-element array
+// makes it pass again (verified: full suite green). Not automated here
+// because mutating the module's internal retry-count constant from a test
+// would require exporting it purely for that purpose, which runner.js does
+// not otherwise need.
+
+test("23j.2 (5) regression guard: a persistently-transient SCOPE (filter) query never substitutes an empty array for a failed read -- the sprint fails loud instead", async () => {
+    await withScenarioMarkers('23j.2 (5): bdListScoped filter/scope query transient exhausted -> sprint fails loud', async () => {
+        // Unlike harness (ii) (which targets the --all query), this
+        // targets bdListScoped's SECOND query -- the caller's filter args
+        // (`bd list <flags> --limit 0`, runner.js ~5277, e.g. the --ready
+        // query readyLeafBeads() issues) -- because AC5's wording
+        // ("never substitutes an empty array for a failed SCOPE query") is
+        // about that filtered/scoped read, not the plain bd-show streak
+        // check the old version of this test (redundant with test 2) drove.
+        const bdListInjector = (cmd) => {
+            if (cmd === 'bd list --all --limit 0 --json') return undefined; // let the --all fetch succeed normally
+            if (!/^bd list .*--limit 0$/.test(cmd)) return undefined;
+            return 'Command timed out after 120000ms of inactivity';
+        };
+
+        const stalled = await runDevelopLoopScenario('23j2harness-v', {
+            members: ['local'],
+            taskSpecs: [{ title: 'Task: closes normally' }],
+            maxCycles: 1,
+            doerHandler: closingDoerHandler,
+            reviewerHandler: approvingReviewerHandler,
+            bdListInjector,
+        });
+
+        assert.ok(
+            stalled.error,
+            `Expected the sprint to fail loud when bdListScoped's filter/scope query is persistently transient (never silently resolve to an empty scope), got: ${stalled.error}`
+        );
+        assert.match(
+            stalled.error.message,
+            /transient bd\/dolt command failure/,
+            `Expected the retry-exhausted failure to surface as the sprint's own error, got: ${stalled.error.message}`
+        );
     });
 });
 
