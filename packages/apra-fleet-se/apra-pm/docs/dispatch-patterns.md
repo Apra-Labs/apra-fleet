@@ -316,10 +316,13 @@ branch emits the existing id without calling `bd create`.
 `parseBlockers(outputs, rootCount, openListIdx, threshold, opts)` takes an optional
 `opts` bag. In the exit-check leaf mode (`{ rootIds, leaf: true, includeFeatures }`)
 an open issue counts as a blocker only when it is inside the sprint subtree, at
-priority <= threshold, and is a `type=task` (or a `type=feature` when
-`includeFeatures` is set), EXCLUDING the root goals themselves. Omitting `opts`
-(the 4-arg form) keeps the historical whole-subtree count used by the
-pure-function tests.
+priority <= threshold, and is either a leaf `type=task`, or a verify-set bead --
+a bead of ANY issue_type (feature, bug, or task-with-children) whose children are
+ALL closed while it is still open (children-all-closed, parent-open) -- when
+`includeFeatures` is set, EXCLUDING the root goals themselves. `includeFeatures`
+is a historical name for "count verify-set beads too"; it is not restricted to
+`type=feature`. Omitting `opts` (the 4-arg form) keeps the historical whole-subtree
+count used by the pure-function tests.
 
 Both exit-check callsites pass leaf mode with `includeFeatures = integTestEnabled`:
 
@@ -327,8 +330,8 @@ Both exit-check callsites pass leaf mode with `includeFeatures = integTestEnable
 - The inline exit-check dispatch -- used by the goal-met decision.
 
 **Why this matters:** the root goals close only at Harvest (after the develop
-loop), and features close in-loop only when integration tests run. Counting roots
-(or untested features) would make `goalMet` unreachable in-loop and fire a false
-"no progress" abort on cycle 2. Leaf-scoping counts the work that actually closes
-during develop, so `goalMet` becomes reachable and the no-progress guard stays a
-real deadlock detector.
+loop), and verify-set beads close in-loop only when integration tests run, whatever
+their issue_type. Counting roots (or untested verify-set beads) would make `goalMet`
+unreachable in-loop and fire a false "no progress" abort on cycle 2. Leaf-scoping
+counts the work that actually closes during develop, so `goalMet` becomes reachable
+and the no-progress guard stays a real deadlock detector.
