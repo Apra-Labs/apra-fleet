@@ -24,6 +24,11 @@ const POST_DISPATCH_SYNC_RETRY_DELAYS_MS = [0, 5000, 15000];
 const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
+// apra-fleet-vkc.1: the dolt conflict recovery ladder (Path A -> Path B ->
+// Tier 2). syncMemberAfterOrdered() builds it and threads it through
+// DoltSync.syncAfter() so a wedged beads clone at the post-dispatch D-push
+// terminal attempts recovery before surfacing BEADS_SYNC_CONFLICT.
+import { buildDoltRecoveryLadder } from './dolt-recovery-tier2.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
 
@@ -1108,7 +1113,17 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     // advertise an unreachable close, exactly what the G-push-before-D-push
     // ordering above exists to prevent, and would erase the
     // BEADS_SYNC_CONFLICT terminal reason the dashboard reports.
-    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true });
+    //
+    // apra-fleet-vkc.1: before that fatal divergence surfaces, attempt the
+    // Path A -> Path B -> Tier 2 recovery ladder. Path A's resolve-in-place
+    // sql runtime is not injected here (runner.js has no live dolt sql-server
+    // client), so in production Path A is reached and cleanly self-defers to
+    // Path B (discard-and-re-bootstrap, which needs only `command`); Tier 2
+    // dispatches through `agent` when one is available. The ladder only fails
+    // the streak (DoltDivergedError -> BEADS_SYNC_CONFLICT) if every tier fails
+    // to close the clone.
+    const recover = buildDoltRecoveryLadder(member, { command, agent, log, model: resolveConflictModel });
+    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, recover });
     return { ok: true, member, gPush, dPush };
 }
 
