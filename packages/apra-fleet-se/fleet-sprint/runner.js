@@ -165,23 +165,24 @@ export function isTransientBdCommandFailure(raw) {
 }
 
 /**
- * Bounded-retry wrapper around a `bd list ...` command() + parseBdJson pair,
- * shared by BOTH bd-list call sites inside bdListScoped's closure
- * (fetchAllBeadsShared and the filter query). Non-transient unparseable
- * output throws immediately on the first attempt (no retry) with the
- * existing [bd JSON Parse Error] message from parseBdJson. Transient output
- * (see isTransientBdCommandFailure) is retried up to
+ * Bounded-retry wrapper around a `bd list ...` or `bd show ...` command()
+ * + parseBdJson pair, shared by multiple call sites (bdListScoped's
+ * fetchAllBeadsShared + filter query, computeChildFloor, getOpenBeadIdsByStatus,
+ * pending-rejected-newTask reconciliation, and integ-test bug-filed tracking).
+ * Non-transient unparseable output throws immediately on the first attempt
+ * (no retry) with the existing [bd JSON Parse Error] message from parseBdJson.
+ * Transient output (see isTransientBdCommandFailure) is retried up to
  * BD_LIST_RETRY_DELAYS_MS.length total attempts with backoff, logging each
  * retry in the existing [Sync]-style tone (mirrors updateDashboard's
  * degrade-and-continue tone, but this does NOT degrade: if every attempt is
  * transient, the last attempt's failure still propagates -- scope
  * resolution must never silently report "no beads in scope").
- * @param {string} label - the `bd list ...` command string, used for both
- *   the command() call and diagnostics
- * @param {{ command: Function, member_name: string, log: Function }} opts
+ * @param {string} label - the `bd list ...` or `bd show ...` command string,
+ *   used for both the command() call and diagnostics
+ * @param {{ command: Function, member_name: string, log?: Function }} opts
  * @returns {Promise<any>} the parsed JSON
  */
-async function bdListWithRetry(label, { command, member_name, log }) {
+async function bdListWithRetry(label, { command, member_name, log = () => {} }) {
     let lastErr;
     for (let attempt = 0; attempt < BD_LIST_RETRY_DELAYS_MS.length; attempt++) {
         if (BD_LIST_RETRY_DELAYS_MS[attempt] > 0) {
@@ -2191,8 +2192,7 @@ async function stageCommandBodyMemberSide({ command, member, content, label }) {
 export async function computeChildFloor({ command, member, parentId }) {
     try {
         const label = `bd list --parent ${parentId} --json`;
-        const raw = await command(label, { member_name: member, silent: true });
-        const beads = parseBdJson(raw, label);
+        const beads = await bdListWithRetry(label, { command, member_name: member });
         let max = 0;
         const prefix = `${parentId}.`;
         for (const b of beads) {
@@ -2341,8 +2341,7 @@ export async function verifyDoerStreakClosed({ command, orchestratorMember, bead
     // direct doltPullBefore() call.
     await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
     const label = `bd show ${beadIds.join(' ')} --json`;
-    const showRes = await command(label, { member_name: orchestratorMember, silent: true });
-    const showBeads = parseBdJson(showRes, label);
+    const showBeads = await bdListWithRetry(label, { command, member_name: orchestratorMember, log });
     const statusById = new Map(showBeads.map((b) => [b.id, b.status]));
     return beadIds.filter((id) => statusById.get(id) !== 'closed');
 }
@@ -6374,8 +6373,7 @@ async function runSprintCycle(context) {
                 for (const parentId of targetIssues) {
                     try {
                         const label = `bd list --parent ${parentId} --json`;
-                        const raw = await command(label, { member_name: orchestratorMember, silent: true });
-                        const children = parseBdJson(raw, label);
+                        const children = await bdListWithRetry(label, { command, member_name: orchestratorMember, log });
                         pendingRejectedNewTasks = reconcilePendingRejectedNewTasks(pendingRejectedNewTasks, children);
                     } catch (err) {
                         log(`[fleet-sprint] pending-rejected-newTask reconciliation against '${parentId}' children FAILED (non-fatal, list stays as-is): ${err.message}`);
@@ -8138,8 +8136,8 @@ async function runSprintCycle(context) {
             if (Array.isArray(integResult.bugsFiled) && integResult.bugsFiled.length > 0 && verifySetForIntegTest.length > 0) {
                 for (const bugId of integResult.bugsFiled) {
                     try {
-                        const bugShowRaw = await command(`bd show ${bugId} --json`, { member_name: orchestratorMember, silent: true });
-                        const bugBeads = parseBdJson(bugShowRaw, `bd show ${bugId} --json`);
+                        const bugLabel = `bd show ${bugId} --json`;
+                        const bugBeads = await bdListWithRetry(bugLabel, { command, member_name: orchestratorMember, log });
                         const parentId = Array.isArray(bugBeads) ? bugBeads[0]?.parent : bugBeads?.parent;
                         if (!parentId || !verifySetIdSet.has(parentId)) continue;
                         const gapCount = (verifyGapCounts.get(parentId) ?? 0) + 1;

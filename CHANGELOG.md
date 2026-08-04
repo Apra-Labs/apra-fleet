@@ -34,6 +34,34 @@ remote ref <branch>` message.
   unaffected -- it never matches this predicate and still takes the
   existing one-bounded-pull-rebase path.
 
+## [Unreleased] -- fleet-sprint runner: extend transient bd-command retry to remaining call sites
+
+Follow-on to the bounded-retry wrapper introduced for `bdListScoped`'s two
+`bd list` call sites (apra-fleet-23j.1): the same crash-on-transient-timeout
+pattern existed at four OTHER non-dashboard parseBdJson() call sites in
+runner.js that were feeding raw `command()` output straight into `parseBdJson`
+with no retry. All four now route through the shared `bdListWithRetry` helper:
+
+- `computeChildFloor` (line ~2195, id-allocation helper, `bd list --parent`)
+- `verifyDoerStreakClosed` (line ~2345, close verification, `bd show`)
+- pending-rejected-newTask reconciliation (line ~6378, `bd list --parent`)
+- integ-test bug-filed tracking (line ~8142, `bd show`)
+
+Each wrapped call site preserves its original error-handling behavior:
+`computeChildFloor`, the reconciliation loop, and the bug-filed tracking loop
+all sit inside try/catch blocks that log non-fatal failures; wrapping adds up
+to 7s of retry, then rethrows into the same catch. `verifyDoerStreakClosed`
+has no existing catch, so retry exhaustion throws immediately, same as
+before. `updateDashboard` remains untouched per acceptance criteria
+(apra-fleet-23j specification).
+
+- Updated `bdListWithRetry`'s JSDoc to reflect its use by six call sites,
+  both `bd list` and `bd show` commands.
+- Added `log = () => {}` as a default parameter inside the options destructure
+  to support callers (like `computeChildFloor`) that do not have a `log`
+  function in scope; the happy path never touches `log`, so callers without
+  it face no runtime overhead.
+
 ## [Unreleased] -- fleet-sprint runner: bounded retry for transient bd-list failures
 
 `bdListScoped()`'s two `bd list` call sites (the shared full-DB snapshot fetch
