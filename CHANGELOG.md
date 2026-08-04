@@ -2,6 +2,69 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- npm-install dependency-packaging fixes
+
+Sprint goal: unblock npm-installed (published-tarball, non-workspace) consumers
+by fixing a cluster of packaging gaps found while replaying the npm-publish
+gating sequence locally -- an incompatible transitive dependency that crashed
+any process resolving it on the supported Node runtime, a bundled workspace
+package that was shipped as source but never registered as an installable
+dependency, an install safety guard that blocked replays on any machine
+already running an unrelated server, and a package-size guard whose threshold
+check could never actually fire. All in-scope work closed; the sprint's own
+final verdict is FAIL (a reviewer dispatch stalled and could not be repaired
+before the sprint budget ran out), and a same-day regression pass could not
+run because the sandbox's permission allowlist did not cover the commands the
+regression playbook requires.
+
+What shipped:
+
+- The transitive dependency incompatible with the supported Node runtime is
+  now pinned via a workspace-root override, and the published package's own
+  dependency manifest was corrected in lockstep with that override -- an
+  override on the workspace root alone does not propagate to a downstream
+  npm-installed consumer's own dependency resolution, and a stale lockfile
+  can silently keep resolving the broken version even after the override is
+  added. Regression coverage now includes a test that packs, installs into a
+  clean non-workspace target, and imports the dependency from that installed
+  copy, not just from the source workspace's own `node_modules`.
+- A bundled workspace client package that ships as source is now also
+  registered as a real installable dependency (a `file:`-referenced entry),
+  not just listed in the package's shipped-files allowlist -- being present
+  on disk after install and being resolvable via standard module resolution
+  are two different things, and the gap was invisible in dev-mode testing
+  because workspace symlinking hides it there.
+- The `install` command's running-process safety guard is now scoped to
+  whether a detected running server is actually relevant to the install being
+  performed (recorded live in the install's own data directory, or running
+  from the exact prefix about to be overwritten), instead of refusing
+  whenever any apra-fleet process exists anywhere on the machine. An
+  unrelated server no longer blocks an isolated install replay, and the
+  guard falls back to non-blocking (with an informational note) rather than
+  silently reinstating the old global refusal when a running process's
+  executable path cannot be determined.
+- The npm-publish pipeline's package-size guard now reads the real byte count
+  from the packaging tool's structured/JSON output instead of pattern-matching
+  a human-readable size notice intended for terminal display -- the previous
+  regex extraction silently truncated the size to its leading digits, so the
+  size threshold could never actually fire regardless of true tarball size.
+
+Carried forward: one reviewer-proposed follow-up task was rejected before
+reaching issue creation because its title used characters outside the
+tracker's safe-character allowlist; the underlying finding (an equals-form
+CLI flag being silently ignored) was not lost but needs to be re-filed with a
+compliant title. The end-of-sprint regression pass is deferred pending an
+operator adding the missing sandbox command permissions; no new carry-over
+issues were filed by that (informational, non-gating) pass.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.8641.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0929 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 24 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- install --force stop-confirmation fix (closes prior sprint's deploy-gate carry-over)
 
 Sprint goal: continue the dispatch-stall/timeout reliability cluster by fixing
