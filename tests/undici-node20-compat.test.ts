@@ -31,10 +31,14 @@ describe('undici / Node 20 compatibility (apra-fleet-0v0 regression)', () => {
     // Walk the full `npm ls undici` output (root + all workspaces) rather
     // than trusting a single resolved copy -- this is what would catch a
     // transitive re-introduction that require.resolve() alone would miss.
+    // `shell: true` is required to resolve the `npm.cmd` shim on Windows
+    // (plain `execFileSync('npm', ...)` throws ENOENT there); every argument
+    // here is a static literal, never caller-controlled, so this carries no
+    // shell-injection risk. Same hazard/rationale as scripts/check-pack-size.mjs.
     const output = execFileSync(
       'npm',
       ['ls', 'undici', '--all', '--json'],
-      { cwd: repoRoot, encoding: 'utf8' }
+      { cwd: repoRoot, encoding: 'utf8', shell: true }
     );
     const tree = JSON.parse(output);
 
