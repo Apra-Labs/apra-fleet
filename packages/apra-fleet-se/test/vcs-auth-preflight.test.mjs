@@ -1,5 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
     createVcsAuthPreflightCallback,
@@ -7,6 +10,10 @@ import {
     syncMemberAfter,
 } from '../fleet-sprint/runner.js';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const RUNNER_PATH = path.join(__dirname, '..', 'fleet-sprint', 'runner.js');
+const runnerSource = fs.readFileSync(RUNNER_PATH, 'utf8');
 
 // =============================================================================
 // apra-fleet-glv.2: regression coverage for apra-fleet-glv's proactive VCS-
@@ -380,5 +387,231 @@ describe('runSprintCycle: the real withGitSync pushCode-gated preflight wiring',
             const doerClosed = [...result.finalBeadsById.values()].some((b) => b.status === 'closed');
             assert.ok(doerClosed, 'sanity check: the doer dispatch actually ran and closed its assigned task');
         });
+    });
+});
+
+// =============================================================================
+// apra-fleet-417.4: coverage for withGitSync's `needsVcsAuth` preflight
+// gating -- apra-fleet-647.1.1.2 extended the proactive preflight from a bare
+// `if (pushCode)` check to `needsVcsAuth = pushCode || pushBeads` (default),
+// so a READ-SIDE bracket that still mutates beads (planner, integ-test-
+// runner, regression-test-runner -- each D-pushes via `bd dolt push`, which
+// shells out to git and hits the exact same credential surface as `git
+// push`) gets the same proactive refresh a code-writing bracket always had,
+// while a genuinely pure read-only bracket (reviewer, plan-reviewer,
+// deployer) still gets none. This was landed with NO test pinning it (see
+// this bead's description) -- the suite above only ever exercised pushCode
+// (the doer) and the read-only default (reviewer), never a pushBeads:true
+// bracket that pushes NO code, which is the entire point of the widened
+// gate. The tests below close that gap.
+//
+// Same technique as the 'runSprintCycle: the real withGitSync pushCode-gated
+// preflight wiring' describe block above: withGitSync is an inner function
+// of runSprintCycle and cannot be imported directly, so the ONLY way to
+// assert its runtime gating behavior is end to end, via a real mock-sprint
+// cycle with `roleMap` pinning each role under test onto its OWN dedicated
+// member -- so "this member never got a preflight call" is a genuine
+// per-member runtime assertion, not a static source-code check.
+// =============================================================================
+describe('runSprintCycle: the real withGitSync needsVcsAuth (pushBeads-only) preflight wiring', () => {
+    // One dedicated member per role under test, so every assertion below is
+    // "did a preflight call/log line name THIS member", never ambiguous
+    // about which role produced it.
+    const ROLE_MEMBERS = {
+        planner: 'member-planner',
+        'integ-test-runner': 'member-integ',
+        'regression-test-runner': 'member-regression',
+        reviewer: 'member-readonly',
+        'plan-reviewer': 'member-readonly',
+        deployer: 'member-readonly',
+    };
+
+    const preflightLineFor = (member) =>
+        new RegExp(`\\[Sync\\] preflight: member '${member}' needs a fresh VCS credential before this dispatch \\(pushCode=false, pushBeads=true, needsVcsAuth=true\\)`);
+
+    test('(criteria 1 & 2, MUTATION CHECK target) a pushBeads:true READ-SIDE bracket (planner, integ-test-runner, regression-test-runner) emits the preflight log line AND calls provision_vcs_auth for its OWN member; a pure read-only bracket (reviewer, plan-reviewer, deployer) sharing one member emits NEITHER, for any of the three roles routed onto it', async () => {
+        await withScenarioMarkers('417.4 pushBeads-only preflight', async () => {
+            const vcsCalls = [];
+            const callTool = async (name, args) => {
+                if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+                if (name === 'provision_vcs_auth') {
+                    vcsCalls.push(args);
+                    return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+                }
+                return { content: [{ text: 'ok' }] };
+            };
+
+            const result = await runDevelopLoopScenario('417_4pushbeads', {
+                members: ['member-doer'],
+                roleMap: {
+                    planner: [ROLE_MEMBERS.planner],
+                    'integ-test-runner': [ROLE_MEMBERS['integ-test-runner']],
+                    'regression-test-runner': [ROLE_MEMBERS['regression-test-runner']],
+                    reviewer: [ROLE_MEMBERS.reviewer],
+                    'plan-reviewer': [ROLE_MEMBERS['plan-reviewer']],
+                    deployer: [ROLE_MEMBERS.deployer],
+                },
+                withRunbooks: true,
+                withRegressionPlaybook: true,
+                taskSpecs: [{ title: 'Task: exercise the pushBeads-only preflight gating' }],
+                callTool,
+                reviewerHandler: async () => ({
+                    content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
+                }),
+            });
+
+            assert.ok(!result.error, `scenario should not abort: ${result.error ? result.error.message : ''}`);
+
+            // --- criterion 1: each pushBeads:true read-side role dispatched
+            //     to its own member, and THAT member got a preflight. If
+            //     runner.js's needsVcsAuth gate is ever reverted from
+            //     `pushCode || pushBeads` to plain `if (pushCode)` (the
+            //     bead's stated MUTATION CHECK), every assertion in this
+            //     block fails: none of these three roles ever sets
+            //     pushCode:true.
+            for (const role of ['planner', 'integ-test-runner', 'regression-test-runner']) {
+                const member = ROLE_MEMBERS[role];
+                assert.ok(
+                    result.dispatched.some((d) => d.agent === role && d.member === member),
+                    `expected role '${role}' to have actually dispatched to its dedicated member '${member}', got: ${JSON.stringify(result.dispatched.map((d) => ({ agent: d.agent, member: d.member })))}`,
+                );
+                assert.ok(
+                    result.logs.some((l) => preflightLineFor(member).test(l)),
+                    `expected a '[Sync] preflight:' log line for pushBeads:true role '${role}' (member '${member}'), got logs: ${JSON.stringify(result.logs.filter((l) => l.includes('[Sync] preflight')))}`,
+                );
+                assert.ok(
+                    vcsCalls.some((c) => c.member_name === member),
+                    `expected a provision_vcs_auth call for pushBeads:true role '${role}' (member '${member}'), got calls: ${JSON.stringify(vcsCalls)}`,
+                );
+            }
+
+            // --- criterion 2: the shared read-only member (reviewer +
+            //     plan-reviewer + deployer, all dispatched to it this
+            //     scenario) never triggers a preflight log line or a
+            //     provision_vcs_auth call, despite handling three different
+            //     roles across the cycle.
+            for (const role of ['reviewer', 'plan-reviewer', 'deployer']) {
+                assert.ok(
+                    result.dispatched.some((d) => d.agent === role && d.member === ROLE_MEMBERS[role]),
+                    `sanity check: expected read-only role '${role}' to have actually dispatched to '${ROLE_MEMBERS[role]}'`,
+                );
+            }
+            assert.ok(
+                !result.logs.some((l) => l.includes('[Sync] preflight') && l.includes(`'${ROLE_MEMBERS.reviewer}'`)),
+                `expected NO '[Sync] preflight:' log line naming the read-only member '${ROLE_MEMBERS.reviewer}', got: ${JSON.stringify(result.logs.filter((l) => l.includes('[Sync] preflight')))}`,
+            );
+            assert.ok(
+                !vcsCalls.some((c) => c.member_name === ROLE_MEMBERS.reviewer),
+                `expected NO provision_vcs_auth call for the read-only member '${ROLE_MEMBERS.reviewer}', got: ${JSON.stringify(vcsCalls)}`,
+            );
+
+            const doerClosed = [...result.finalBeadsById.values()].some((b) => b.status === 'closed');
+            assert.ok(doerClosed, 'sanity check: the doer dispatch actually ran and closed its assigned task');
+        });
+    });
+
+    test('(criterion 4) a preflight FAILURE at a pushBeads:true read-side bracket is logged and swallowed -- the dispatch still runs and the sprint still completes', async () => {
+        await withScenarioMarkers('417.4 preflight failure swallowed', async () => {
+            const vcsCalls = [];
+            const callTool = async (name, args) => {
+                if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+                if (name === 'provision_vcs_auth') {
+                    if (args.member_name === ROLE_MEMBERS.planner) {
+                        throw new Error('provision_vcs_auth: fleet server unreachable (injected)');
+                    }
+                    vcsCalls.push(args);
+                    return { content: [{ text: `Provisioned.\n  expiresAt: ${farFutureExpiry()}` }] };
+                }
+                return { content: [{ text: 'ok' }] };
+            };
+
+            const result = await runDevelopLoopScenario('417_4preflightfail', {
+                members: ['member-doer'],
+                roleMap: {
+                    planner: [ROLE_MEMBERS.planner],
+                    reviewer: [ROLE_MEMBERS.reviewer],
+                    'plan-reviewer': [ROLE_MEMBERS['plan-reviewer']],
+                    deployer: [ROLE_MEMBERS.deployer],
+                },
+                taskSpecs: [{ title: 'Task: exercise a swallowed preflight failure' }],
+                callTool,
+                reviewerHandler: async () => ({
+                    content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
+                }),
+            });
+
+            assert.ok(!result.error, `a preflight failure must never abort the sprint: ${result.error ? result.error.message : ''}`);
+            assert.ok(
+                result.dispatched.some((d) => d.agent === 'planner' && d.member === ROLE_MEMBERS.planner),
+                'the planner dispatch itself must still run despite its own preflight mint failing',
+            );
+            assert.ok(
+                result.logs.some((l) => l.includes(`preflight: provision_vcs_auth failed for member '${ROLE_MEMBERS.planner}'`) && l.includes('fleet server unreachable (injected)')),
+                `expected a swallowed-failure log entry naming '${ROLE_MEMBERS.planner}', got: ${JSON.stringify(result.logs.filter((l) => l.includes('preflight')))}`,
+            );
+            const doerClosed = [...result.finalBeadsById.values()].some((b) => b.status === 'closed');
+            assert.ok(doerClosed, 'sanity check: the sprint ran to completion (doer closed its task) despite the swallowed preflight failure');
+        });
+    });
+});
+
+// =============================================================================
+// apra-fleet-417.4, criterion 3: the `needsVcsAuth` DEFAULT is pinned to
+// exactly `pushCode || pushBeads` at withGitSync's own signature (a source
+// assertion, since withGitSync cannot be imported), and its OR semantics are
+// unit-mirrored across the full truth table -- including the one combination
+// no CURRENT runner.js call site exercises: an explicit `needsVcsAuth: true`
+// override with BOTH pushCode:false and pushBeads:false. withGitSync's own
+// doc comment (just above its definition) describes this shape as reserved
+// for "a bracket that will raise a PR (or otherwise needs a fresh
+// credential) even with pushCode:false and pushBeads:false" -- no such
+// bracket exists in runner.js today (grep for `needsVcsAuth: true` across
+// the file finds none), so it cannot be driven end to end via the mock-
+// sprint harness the way criteria 1/2/4 above are. The mirror below is tied
+// back to the real source by the regex assertion immediately preceding it:
+// if the two ever diverge (e.g. the real signature is edited but this mirror
+// is not), that assertion fails first, so the mirror can never quietly test
+// something the real function no longer does. Given that tie, ordinary JS
+// default-parameter semantics (an explicitly-passed value always wins over a
+// default) are what guarantee the override behaves identically in the real
+// withGitSync.
+// =============================================================================
+describe('withGitSync needsVcsAuth default: pinned to the source, OR semantics unit-mirrored', () => {
+    test("withGitSync's signature computes needsVcsAuth as exactly `pushCode || pushBeads` by default", () => {
+        assert.match(
+            runnerSource,
+            /async function withGitSync\(member, pushCode, dispatchFn, \{ pushBeads = false, needsVcsAuth = pushCode \|\| pushBeads,/,
+            "withGitSync's needsVcsAuth default must stay exactly `pushCode || pushBeads` (apra-fleet-647.1.1.2) -- reverting to a plain `pushCode` check (or any other expression) silently drops the preflight for every pushBeads-only bracket (planner, integ-test-runner, regression-test-runner).",
+        );
+    });
+
+    // Mirrors withGitSync's exact default-parameter destructuring, pinned to
+    // the source by the assertion above.
+    function computeNeedsVcsAuth(pushCode, { pushBeads = false, needsVcsAuth = pushCode || pushBeads } = {}) {
+        return needsVcsAuth;
+    }
+
+    test('OR truth table -- both false: a pure read-only bracket (reviewer/plan-reviewer/deployer) computes needsVcsAuth=false', () => {
+        assert.equal(computeNeedsVcsAuth(false, {}), false);
+    });
+
+    test('OR truth table -- pushCode:true, pushBeads:false: a code-writing-only bracket still computes needsVcsAuth=true (pre-existing pushCode gate, unchanged)', () => {
+        assert.equal(computeNeedsVcsAuth(true, { pushBeads: false }), true);
+    });
+
+    test('OR truth table -- pushCode:false, pushBeads:true: the apra-fleet-647.1.1.2 fix itself -- a read-side-but-beads-pushing bracket (planner/integ-test-runner/regression-test-runner) computes needsVcsAuth=true even though it never touches code', () => {
+        assert.equal(computeNeedsVcsAuth(false, { pushBeads: true }), true);
+    });
+
+    test('OR truth table -- both true: a bracket that pushes both code and beads (doer/harvester) computes needsVcsAuth=true', () => {
+        assert.equal(computeNeedsVcsAuth(true, { pushBeads: true }), true);
+    });
+
+    test('(criterion 3) an explicit needsVcsAuth:true override still triggers the preflight even with pushCode:false AND pushBeads:false -- the one combination no current runner.js call site exercises, reserved for a bracket that must proactively refresh credentials for a reason other than pushing code/beads (e.g. it will raise a PR)', () => {
+        assert.equal(computeNeedsVcsAuth(false, { pushBeads: false, needsVcsAuth: true }), true);
+    });
+
+    test('an explicit needsVcsAuth:false override suppresses the preflight even when the default alone would have computed true (pushBeads:true)', () => {
+        assert.equal(computeNeedsVcsAuth(false, { pushBeads: true, needsVcsAuth: false }), false);
     });
 });
