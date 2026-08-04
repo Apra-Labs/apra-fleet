@@ -110,3 +110,74 @@ describe('execute_prompt auto-harvest repo_path wiring (apra-fleet-tm7.2)', () =
     expect(mockKbHarvest.mock.calls[0][0].repo_path).not.toBeUndefined();
   });
 });
+
+/**
+ * apra-fleet-4wz.8: the auto-harvest result used to be discarded entirely, so
+ * entries_rejected -- the fail-closed signal -- was invisible on the highest
+ * volume KB writer. Rejections are EXPECTED to dominate here (harvest's regex
+ * extraction frequently yields no file paths at all, and an entry with no basis
+ * is refused by design), so the count must be observable rather than silently
+ * swallowed.
+ */
+describe('auto-harvest reports its counters (apra-fleet-4wz.8)', () => {
+  let tmpDir: string;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-kb-harvest-counters-'));
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errSpy.mockRestore();
+    restoreRegistry();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function logged(): string {
+    return errSpy.mock.calls.map(c => c.join(' ')).join('\n');
+  }
+
+  it('logs the rejected count so the fail-closed signal is visible', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'counters-visible', workFolder: tmpDir, os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+    mockKbHarvest.mockResolvedValue(JSON.stringify({
+      entries_captured: 1, entries_updated: 0, entries_skipped: 0, entries_rejected: 7,
+    }));
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    await flushMicrotasks();
+
+    expect(logged()).toContain('rejected=7');
+    expect(logged()).toContain('captured=1');
+  });
+
+  it('stays quiet when the harvest produced nothing at all', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'counters-quiet', workFolder: tmpDir, os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+    mockKbHarvest.mockResolvedValue(JSON.stringify({
+      entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0,
+    }));
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    await flushMicrotasks();
+
+    expect(logged()).not.toContain('auto-harvest: captured=');
+  });
+
+  it('a non-JSON harvest payload never breaks the fire-and-forget path', async () => {
+    const member = makeTestLocalAgent({ friendlyName: 'counters-garbage', workFolder: tmpDir, os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+    mockKbHarvest.mockResolvedValue('not json at all');
+
+    await expect(
+      executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 })
+    ).resolves.toBeDefined();
+    await flushMicrotasks();
+  });
+});
