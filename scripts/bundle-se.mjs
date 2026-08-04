@@ -79,7 +79,7 @@
 // the two @apralabs/* workspace packages below (apra-fleet-7pm.12).
 
 import { build } from 'esbuild';
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -149,6 +149,25 @@ await build({
   minify: false, // keep readable for debugging
   // cli.mjs's own shebang (#!/usr/bin/env node) is preserved by esbuild
   // automatically when it is the first line of the entry point.
+  //
+  // ESM output + a bundled CJS dependency needs a real `require` in scope.
+  // esbuild rewrites CJS `require(...)` calls into its own `__require` shim,
+  // and that shim's fallback THROWS -- `Dynamic require of "node:assert" is
+  // not supported` -- for any call it could not resolve statically. undici
+  // (pulled in transitively by @apralabs/apra-fleet-client's HTTP transport)
+  // does exactly that at runtime from lib/dispatcher/client.js, so every
+  // invocation of the bundled binary died on startup before parsing a single
+  // flag. The shim's first branch is `typeof require !== "undefined" ?
+  // require : <throwing fallback>`, so defining a genuine createRequire-backed
+  // `require` at module scope makes it take the working branch instead. This
+  // is the canonical esbuild ESM/CJS interop fix, not a workaround for undici
+  // specifically: any future CJS dep doing a dynamic require is covered.
+  banner: {
+    js: [
+      "import { createRequire as __apraCreateRequire } from 'node:module';",
+      'const require = __apraCreateRequire(import.meta.url);',
+    ].join('\n'),
+  },
   metafile: true,
 });
 
@@ -159,8 +178,25 @@ copyFileSync(
 );
 console.log('Copied fleet-sprint/runner.js -> dist/fleet-sprint-runner.mjs');
 
-for (const name of ['contracts.mjs', 'errors.mjs', 'viewer-extensions.mjs']) {
-  copyFileSync(join(sePackageRoot, 'fleet-sprint', name), join(distDir, name));
+// Copy EVERY .mjs sibling of runner.js, not a hand-maintained subset.
+// runner.js is never bundled (it is read from disk as text by
+// engine.executeFile(), see above), so its relative './x.mjs' imports must be
+// satisfied by real files sitting next to dist/fleet-sprint-runner.mjs. This
+// list used to be the literal three ['contracts.mjs', 'errors.mjs',
+// 'viewer-extensions.mjs'], which silently went stale as siblings were added:
+// conflict-ladder.mjs and sprint-lock.mjs both became runner imports and
+// neither was copied, so the packaged binary died at startup with
+// ERR_MODULE_NOT_FOUND for dist/conflict-ladder.mjs on the very first sprint.
+// Nothing caught it because the dynamic-require crash masked it -- the binary
+// never got far enough to load the runner at all.
+//
+// Scanning the directory removes the failure mode rather than patching this
+// instance of it: a new sibling is copied automatically the moment it exists.
+// The cost of over-copying (a few KB for a sibling nothing imports yet) is
+// trivial next to shipping a binary that cannot start.
+const siblingDir = join(sePackageRoot, 'fleet-sprint');
+for (const name of readdirSync(siblingDir).filter((f) => f.endsWith('.mjs')).sort()) {
+  copyFileSync(join(siblingDir, name), join(distDir, name));
   console.log(`Copied fleet-sprint/${name} -> dist/${name}`);
 }
 
