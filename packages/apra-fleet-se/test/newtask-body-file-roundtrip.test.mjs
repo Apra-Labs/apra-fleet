@@ -107,6 +107,12 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         assert.match(createCmd, /^bd create /);
         assert.match(createCmd, /--body-file "/, 'description must be passed via --body-file, not inline');
         assert.ok(!createCmd.includes('APRA_FLEET_BD_MOCK=off'), 'description text must never be interpolated inline into the bd command string');
+        // apra-fleet-mrj: the null-allocator path (no explicit id granted) must
+        // let bd derive the id via --parent, and must NOT carry --id -- the
+        // mirror image of the explicit-id path below, which carries --id only
+        // and links the parent edge with a separate `bd update --parent`.
+        assert.match(createCmd, /--parent parent-1(\s|$)/, 'the null-allocator path must carry --parent so bd derives the id');
+        assert.ok(!createCmd.includes('--id '), `the null-allocator path must NOT carry --id: ${createCmd}`);
         // The staged file the bd command was handed must contain the
         // description VERBATIM, '=' and '&' intact.
         assert.strictEqual(await readBodyOf(createCmd), description);
