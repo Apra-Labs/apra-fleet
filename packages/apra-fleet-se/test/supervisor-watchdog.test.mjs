@@ -229,7 +229,7 @@ describe('watchdog -- PID-reuse guard', () => {
             isAlive: () => true,
             readCmdline: () => null, // e.g. no /proc on this platform
         });
-        assert.equal(isChildAlive(123, '--viewer-port 9000'), true);
+        assert.equal(await isChildAlive(123, '--viewer-port 9000'), true);
     });
 
     test('a dead PID number is never alive regardless of marker', async () => {
@@ -237,7 +237,7 @@ describe('watchdog -- PID-reuse guard', () => {
             isAlive: () => false,
             readCmdline: () => 'anything --viewer-port 9000',
         });
-        assert.equal(isChildAlive(123, '--viewer-port 9000'), false);
+        assert.equal(await isChildAlive(123, '--viewer-port 9000'), false);
     });
 });
 

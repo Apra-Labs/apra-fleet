@@ -52,7 +52,7 @@ export function parseViewerPortFromCmdline(cmdline) {
  *   ledger: { get: (sprintId: string) => { childPid: number|null }|undefined },
  *   spawner: { adopt: (pid: number, port: number) => void },
  *   reconciler: { reconcile: () => Promise<{ released: string[], retained: string[] }> },
- *   readCmdline?: (pid: number) => string|null,
+ *   readCmdline?: (pid: number) => string|null|Promise<string|null>,
  *   logger?: { log?: Function, warn?: Function, error?: Function },
  * }} deps
  * @returns {{
@@ -108,7 +108,7 @@ export function createReadopter(deps = {}) {
                 unresolved.push(sprintId);
                 continue;
             }
-            const cmdline = readCmdline(pid);
+            const cmdline = await readCmdline(pid);
             const port = parseViewerPortFromCmdline(cmdline);
             if (port == null) {
                 logWarn(

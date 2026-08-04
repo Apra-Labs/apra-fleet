@@ -42,7 +42,8 @@
 
 import http from 'node:http';
 import fs from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { isPidAlive } from './reconcile.mjs';
 import { getTerminalRunStatePath, getRunningRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { writeJsonFileAtomic } from '@apralabs/apra-fleet-workflow/viewer/debounced-writer';
@@ -66,38 +67,47 @@ export const WATCHDOG_DEFAULT_INTERVAL_MS = 5000;
  *
  * apra-fleet CI incident (2026-08-04, run 30880131689): the windows-latest CI
  * job deterministically misclassified a genuinely-healthy child as
- * running-unresponsive. Root cause is NOT a classifier logic bug: the
- * PID-reuse guard's Windows command-line read (readCmdlineViaWmic, falling
- * back to readCmdlineViaCim above) is a synchronous `spawnSync()` external
- * process call, executed for every live-PID sprint BEFORE that sprint's HTTP
- * probe is even sent (classifySprint() calls isChildAlive() synchronously,
- * then `await`s probeHttp()). Because Array.prototype.map() invokes each
- * classifySprint() call synchronously up to its first await, ALL of a given
- * classifyAll() pass's synchronous readCmdline calls run back-to-back and
- * BLOCK the whole Node.js event loop -- including the already-dispatched
- * HTTP request/response processing for an earlier sprint in the same pass --
- * for their combined duration.
+ * running-unresponsive. Root cause: the PID-reuse guard's Windows
+ * command-line read (readCmdlineViaWmic, falling back to readCmdlineViaCim)
+ * used a SYNCHRONOUS `spawnSync()` external process call, executed for every
+ * live-PID sprint BEFORE that sprint's HTTP probe was even sent
+ * (classifySprint() called isChildAlive() synchronously, then `await`ed
+ * probeHttp()). Because Array.prototype.map() invokes each classifySprint()
+ * call synchronously up to its first await, ALL of a given classifyAll()
+ * pass's synchronous readCmdline calls ran back-to-back and BLOCKED the
+ * whole Node.js event loop -- including already-dispatched HTTP
+ * request/response processing for an earlier sprint in the same pass -- for
+ * their combined duration. Measured on a dev box: `wmic` alone costs ~400ms
+ * per call; the `Get-CimInstance` PowerShell fallback costs over 1.2s per
+ * call. This starvation is not CI-only: the same production supervisor log
+ * this fix's own investigation reviewed showed a live "[watchdog] tick
+ * skipped: previous classifyAll() still in flight" line minutes after the
+ * CI-only timeout band-aid (a prior revision of this constant) had already
+ * landed, confirming the blocking read starves the event loop in real runs
+ * too, not just on a loaded CI runner.
  *
- * Measured on this dev box: `wmic` alone costs ~400ms per call; the
- * `Get-CimInstance` PowerShell fallback (used when `wmic` is slow/absent,
- * which GitHub's windows-latest runner images have been observed to be, as
- * wmic is deprecated and being phased out of Windows) costs over 1.2s per
- * call. supervisor-lifecycle.test.mjs's four-status test triggers two such
- * reads per classifyAll() pass (healthy + hung both have a resolvable
- * --viewer-port marker) -- on a loaded/slow CI runner that is comfortably
- * enough combined blocking time to blow the previous flat 1500ms HTTP
- * timeout before the event loop is ever freed to process the healthy child's
- * already-arrived response, which is exactly the ~3.5s deterministic failure
- * window CI showed. This is a platform/CI-runner timing constraint, not a
- * real defect in the healthy/unresponsive distinction itself, so only the
- * probe's timing budget is widened here (CI + win32 only) -- the classifier
- * still requires an actual HTTP answer within the (now larger) window and a
- * truly-hung child (no HTTP server at all) still times out and still
- * classifies running-unresponsive, never running-healthy.
+ * Fix (this revision): `readCmdlineViaWmic`/`readCmdlineViaCim`/
+ * `readCmdlineViaPs` now use `child_process.execFile` via
+ * `util.promisify` (same pattern as `scripts/lib/exec-bd.mjs`'s
+ * `execBdAsync`) instead of `spawnSync`, and `readProcessCmdline` /
+ * `makeChildPidProbe()`'s returned probe / `classifySprint()`'s call site
+ * are all async now (see their doc comments) -- so a cmdline read never
+ * blocks the event loop, and one sprint's PID-reuse-guard read can no longer
+ * starve another sprint's already-in-flight HTTP probe within the same
+ * `classifyAll()` pass. With the root cause (event-loop starvation) fixed
+ * rather than timed around, the timeout goes back to a single flat value on
+ * every platform -- the previous CI-only 6000ms carve-out is removed
+ * entirely rather than kept as a "just in case" margin, so CI stays exposed
+ * to (i.e. is not blind to) any future regression in this same class of bug.
  */
-export const WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS = (
-    process.platform === 'win32' && (process.env.CI || process.env.GITHUB_ACTIONS)
-) ? 6000 : 1500;
+export const WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS = 1500;
+
+/** Promise-based `child_process.execFile`, used by the Windows/POSIX cmdline
+ * readers below instead of `spawnSync` so a PID-reuse-guard read never blocks
+ * the Node.js event loop (see WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS's doc comment
+ * for the incident this fixes). Mirrors `scripts/lib/exec-bd.mjs`'s
+ * `promisify(execFile)` precedent. */
+const execFileAsync = promisify(execFile);
 
 /** Default launch-failed window (ms, i.e. 60 seconds). A child exiting within
  * this window from its reservedAt timestamp is classified launch-failed. */
@@ -106,14 +116,17 @@ export const WATCHDOG_DEFAULT_LAUNCH_FAILED_WINDOW_MS = 60000;
 /**
  * `ps`-based command-line reader for POSIX platforms with no `/proc` (macOS,
  * and a fallback for any other POSIX system where the `/proc` read fails).
+ * Uses `execFile` (via `execFileAsync`), not `spawnSync` -- POSIX `ps` is
+ * fast and rarely the bottleneck, but this is converted for consistency with
+ * the Windows readers below (see WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS's doc
+ * comment for why blocking reads matter here at all).
  * @param {number} pid
- * @returns {string|null}
+ * @returns {Promise<string|null>}
  */
-function readCmdlineViaPs(pid) {
+async function readCmdlineViaPs(pid) {
     try {
-        const r = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' });
-        if (r.error || r.status !== 0) return null;
-        const out = (r.stdout || '').trim();
+        const { stdout } = await execFileAsync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' });
+        const out = (stdout || '').trim();
         return out.length > 0 ? out : null;
     } catch {
         return null;
@@ -125,17 +138,16 @@ function readCmdlineViaPs(pid) {
  * get CommandLine`). WMIC's output is a header line ("CommandLine") followed
  * by the value line(s); we drop the header and join the rest.
  * @param {number} pid
- * @returns {string|null}
+ * @returns {Promise<string|null>}
  */
-function readCmdlineViaWmic(pid) {
+async function readCmdlineViaWmic(pid) {
     try {
-        const r = spawnSync(
+        const { stdout } = await execFileAsync(
             'wmic',
             ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'],
             { encoding: 'utf-8' },
         );
-        if (r.error || r.status !== 0) return null;
-        const lines = (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        const lines = (stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
         // First non-empty line is the "CommandLine" header; the rest is the value.
         if (lines.length < 2) return null;
         const value = lines.slice(1).join(' ').trim();
@@ -150,17 +162,16 @@ function readCmdlineViaWmic(pid) {
  * fallback where WMIC is unavailable (WMIC is deprecated/absent on some
  * modern Windows builds; CIM is the supported replacement).
  * @param {number} pid
- * @returns {string|null}
+ * @returns {Promise<string|null>}
  */
-function readCmdlineViaCim(pid) {
+async function readCmdlineViaCim(pid) {
     try {
-        const r = spawnSync(
+        const { stdout } = await execFileAsync(
             'powershell',
             ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
             { encoding: 'utf-8' },
         );
-        if (r.error || r.status !== 0) return null;
-        const out = (r.stdout || '').trim();
+        const out = (stdout || '').trim();
         return out.length > 0 ? out : null;
     } catch {
         return null;
@@ -177,10 +188,16 @@ function readCmdlineViaCim(pid) {
  * Returns `null` when the command line cannot be read on the current
  * platform (missing tool, permission denied, or the pid is gone) -- callers
  * treat `null` as "cannot verify", never as a false negative.
+ *
+ * Async (previously synchronous via `spawnSync`): the Windows readers in
+ * particular cost 400ms-1.2s+ per call, and running them synchronously
+ * blocked the whole Node.js event loop -- including an already-dispatched
+ * HTTP probe for another sprint in the same `classifyAll()` pass. See
+ * WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS's doc comment for the full incident.
  * @param {number} pid
- * @returns {string|null}
+ * @returns {Promise<string|null>}
  */
-export function readProcessCmdline(pid) {
+export async function readProcessCmdline(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return null;
     if (process.platform === 'linux') {
         try {
@@ -194,7 +211,7 @@ export function readProcessCmdline(pid) {
         return readCmdlineViaPs(pid);
     }
     if (process.platform === 'win32') {
-        return readCmdlineViaWmic(pid) ?? readCmdlineViaCim(pid);
+        return (await readCmdlineViaWmic(pid)) ?? (await readCmdlineViaCim(pid));
     }
     return readCmdlineViaPs(pid);
 }
@@ -215,16 +232,23 @@ export function readProcessCmdline(pid) {
  * NOT our child (=> the sprint is PID-gone -> crashed/finished, never reported
  * as a healthy/unresponsive live sprint that happens to share a PID).
  *
- * @param {{ readCmdline?: (pid: number) => string|null, isAlive?: (pid: number) => boolean }} [deps]
- * @returns {(pid: number, marker?: string|number|null) => boolean}
+ * Async (the returned probe and `readCmdline` may both return a Promise):
+ * `readProcessCmdline`'s Windows implementation now shells out via
+ * `child_process.execFile` rather than `spawnSync` (see
+ * WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS's doc comment), so this never blocks the
+ * event loop. `await`ing a plain (non-Promise) return value from an injected
+ * synchronous `readCmdline`/`isAlive` test double is a no-op, so existing
+ * synchronous test doubles keep working unchanged.
+ * @param {{ readCmdline?: (pid: number) => string|null|Promise<string|null>, isAlive?: (pid: number) => boolean|Promise<boolean> }} [deps]
+ * @returns {(pid: number, marker?: string|number|null) => Promise<boolean>}
  */
 export function makeChildPidProbe(deps = {}) {
     const readCmdline = deps.readCmdline ?? readProcessCmdline;
     const isAlive = deps.isAlive ?? isPidAlive;
-    return (pid, marker) => {
-        if (!isAlive(pid)) return false;
+    return async (pid, marker) => {
+        if (!(await isAlive(pid))) return false;
         if (marker === undefined || marker === null || marker === '') return true;
-        const cmd = readCmdline(pid);
+        const cmd = await readCmdline(pid);
         if (cmd == null) return true; // cannot verify -> best-effort existence
         return cmd.includes(String(marker));
     };
@@ -469,7 +493,7 @@ export function defaultRecordTerminalError({ sprintId, childPid, env, logger, de
  * @param {{
  *   ledger: { list: () => Array<{ sprintId: string, childPid: number|null }> },
  *   resolvePort?: (sprintId: string) => number|undefined,
- *   isChildAlive?: (pid: number, marker?: string|number|null) => boolean,
+ *   isChildAlive?: (pid: number, marker?: string|number|null) => boolean|Promise<boolean>,
  *   probeHttp?: (port: number) => Promise<boolean>|boolean,
  *   hasTerminalState?: (sprintId: string, branch?: string|null) => object|boolean|null,
  *   recordTerminalError?: (info: { sprintId: string, childPid: number|null, env: NodeJS.ProcessEnv, logger: object }) => void,
@@ -682,7 +706,7 @@ export function createWatchdog(deps = {}) {
         // existence-only liveness rather than fabricating a status.
         const marker = Number.isInteger(port) ? `--viewer-port ${port}` : null;
 
-        const pidAlive = childPid != null && isChildAlive(childPid, marker);
+        const pidAlive = childPid != null && (await isChildAlive(childPid, marker));
 
         if (pidAlive) {
             // PID alive: the HTTP signal splits healthy vs unresponsive. A hung

@@ -82,6 +82,22 @@ function makeControllableProbe() {
     };
 }
 
+/**
+ * Flushes the microtask queue via a macrotask boundary (setImmediate fires
+ * only after every currently-queued microtask has run). Needed because
+ * classifySprint() now `await`s isChildAlive() (apra-fleet-se watchdog async
+ * conversion: readProcessCmdline/makeChildPidProbe() are async so a Windows
+ * cmdline read never blocks the event loop) BEFORE it reaches probeHttp() --
+ * even when the injected isChildAlive is a plain synchronous function, an
+ * `await` on it still defers to the microtask queue for one tick. Tests below
+ * that used to assert on `probe.totalCalls`/`pendingCount` immediately after
+ * calling start()/fireTick() (relying on the OLD fully-synchronous-up-to-
+ * probeHttp behavior) now need to flush past that extra await first.
+ */
+function flushMicrotasks() {
+    return new Promise((resolve) => setImmediate(resolve));
+}
+
 /** Captures the interval callback + intervalMs a test-injected setIntervalFn receives, without scheduling any real timer. */
 function makeManualIntervalScheduler() {
     let tickFn = null;
@@ -139,6 +155,7 @@ describe('watchdog interval reentrancy guard (apra-fleet-eft.4.9.3)', () => {
         // start()'s initial prime is a DIRECT classifyAll() call, not gated by
         // the interval guard -- resolve its 3 probes so start() can settle.
         const startPromise = wd.start();
+        await flushMicrotasks(); // let each classifySprint's `await isChildAlive()` resolve so it reaches probeHttp()
         assert.strictEqual(probe.totalCalls, 3, 'initial prime should probe all 3 sprints');
         probe.resolveAll(true);
         await startPromise;
@@ -148,6 +165,7 @@ describe('watchdog interval reentrancy guard (apra-fleet-eft.4.9.3)', () => {
         // new classifyAll() pass. Its 3 probes are deliberately left
         // UNRESOLVED -- this is the "classifyAll() still running" window.
         scheduler.fireTick();
+        await flushMicrotasks();
         assert.strictEqual(probe.totalCalls, 6, 'tick A must run a real classifyAll() (3 more probe calls, 3+3=6 total)');
         assert.strictEqual(probe.pendingCount, 3, 'tick A left exactly 3 probes pending (still in flight)');
 
@@ -186,6 +204,7 @@ describe('watchdog interval reentrancy guard (apra-fleet-eft.4.9.3)', () => {
         });
 
         const startPromise = wd.start();
+        await flushMicrotasks(); // let each classifySprint's `await isChildAlive()` resolve so it reaches probeHttp()
         probe.resolveAll(true); // initial prime: both sprints healthy
         await startPromise;
         assert.deepStrictEqual(
@@ -195,6 +214,7 @@ describe('watchdog interval reentrancy guard (apra-fleet-eft.4.9.3)', () => {
 
         // Tick A fires and starts classifyAll() -- leave it pending.
         scheduler.fireTick();
+        await flushMicrotasks();
         assert.strictEqual(probe.pendingCount, 2, 'tick A left 2 probes pending');
 
         // With the reentrancy guard, a second fireTick() here is a no-op (see
@@ -243,19 +263,21 @@ describe('watchdog interval reentrancy guard (apra-fleet-eft.4.9.3)', () => {
         });
 
         const startPromise = wd.start();
+        await flushMicrotasks(); // let each classifySprint's `await isChildAlive()` resolve so it reaches probeHttp()/recordTerminalError()
         probe.resolveAll(true);
         await startPromise;
         assert.deepStrictEqual(recordedCalls, [crashedId], 'the crashed sprint is recorded exactly once on the initial prime');
 
         // Fire two ticks back to back while the running sprints' probes are
         // still unresolved (simulating an overlap attempt); the crashed
-        // sprint's own path has no async delay before its recordedCrashes
-        // check, so it is classified/recorded within tick A's synchronous
-        // setup regardless -- this asserts the ALREADY-recorded guard holds
-        // and no duplicate history/log entry is ever produced by the
+        // sprint's own path now also awaits isChildAlive() (one microtask
+        // tick) before its recordedCrashes check, but that delay is uniform
+        // across both ticks -- this still asserts the ALREADY-recorded guard
+        // holds and no duplicate history/log entry is ever produced by the
         // (correctly skipped) tick B.
         scheduler.fireTick();
         scheduler.fireTick();
+        await flushMicrotasks();
         probe.resolveAll(true);
         await new Promise((r) => setImmediate(r));
 
