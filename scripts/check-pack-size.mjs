@@ -159,7 +159,18 @@ export function parseThresholdFlag(argv) {
   return n;
 }
 
-function parseThresholdArg(argv) {
+/**
+ * Resolve the threshold to use: an explicitly-supplied `--threshold`/
+ * `--threshold=` flag wins, then the `PACK_SIZE_THRESHOLD` env var, then
+ * {@link DEFAULT_THRESHOLD_BYTES}. Mirrors parseThresholdFlag's loud-failure
+ * behavior: an explicitly supplied but unparseable/non-positive value (via
+ * flag or env) throws rather than silently falling back to the default.
+ *
+ * @param {string[]} argv
+ * @returns {number}
+ * @throws {Error} if an explicitly supplied flag or env value is invalid.
+ */
+export function parseThresholdArg(argv) {
   const fromFlag = parseThresholdFlag(argv);
   if (fromFlag !== undefined) return fromFlag;
 
