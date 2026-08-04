@@ -4854,11 +4854,37 @@ async function runSprintCycle(context) {
 
     // Member mapping resolution
     const physicalMembers = validated.members;
+
+    // A member named in ANY roleMap value is a "specialist" for whatever
+    // role(s) named it -- e.g. a member pinned to roleMap.reviewer has been
+    // deliberately reserved for review. Without this, a role the caller left
+    // UNMAPPED falls back to raw array position (physicalMembers[0], or "all
+    // members" for doer/reviewer), which can silently hand that specialist's
+    // dedicated machine an unrelated role (or vice versa) purely because of
+    // where it happens to sit in `members` -- not because anyone intended it.
+    // Members named in NO roleMap value ("generalists") are therefore the
+    // correct default pool for any unmapped role: they are, by construction,
+    // the members nobody has already committed to something specific.
+    // If every member is a specialist (no generalists exist), there is no
+    // safer pool to prefer, so this degrades to the original physicalMembers
+    // fallback -- unchanged behavior in that case, and also unchanged
+    // whenever roleMap is absent entirely (every member is a generalist).
+    const roleMapSpecialists = new Set();
+    if (validated.roleMap) {
+        for (const list of Object.values(validated.roleMap)) {
+            if (Array.isArray(list)) for (const m of list) roleMapSpecialists.add(m);
+        }
+    }
+    const unmappedRoleFallbackPool = (() => {
+        const generalists = physicalMembers.filter((m) => !roleMapSpecialists.has(m));
+        return generalists.length > 0 ? generalists : physicalMembers;
+    })();
+
     const getMemberForRole = (role) => {
         if (validated.roleMap && validated.roleMap[role] && validated.roleMap[role].length > 0) {
             return validated.roleMap[role][0];
         }
-        return physicalMembers[0];
+        return unmappedRoleFallbackPool[0];
     };
 
     const getMembersForRole = (role) => {
@@ -4869,9 +4895,9 @@ async function runSprintCycle(context) {
         // (ROLE_DOER/ROLE_REVIEWER), which is exactly what every call site
         // passes -- a capitalized literal here would silently never match.
         if (role === ROLE_DOER || role === ROLE_REVIEWER) {
-            return physicalMembers; // All members act as Doers/Reviewers by default
+            return unmappedRoleFallbackPool; // generalists act as Doers/Reviewers by default
         }
-        return [physicalMembers[0]];
+        return [unmappedRoleFallbackPool[0]];
     };
 
     // Uses the canonical ROLE_ORCHESTRATOR constant, not a literal -- see its

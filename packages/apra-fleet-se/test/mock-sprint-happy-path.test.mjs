@@ -484,3 +484,49 @@ test('mock sprint: multi-member doer pool distributes work and ensures branch on
         check(multiDoerStreakCalls.length === 1, `Expected exactly 1 streak-assignment dispatch in the multi-doer scenario (single dev round), got ${multiDoerStreakCalls.length}`);
     });
 });
+
+// Regression test for the specialist/generalist roleMap-fallback fix:
+// getMemberForRole/getMembersForRole used to fall back to raw
+// physicalMembers (or physicalMembers[0]) for any role NOT explicitly named
+// in roleMap, with no awareness that some OTHER member had already been
+// deliberately reserved for a different role via roleMap. With members
+// ['alice', 'jack'] and roleMap: { reviewer: ['alice'] } (doer left
+// unmapped), the pre-fix pool for 'doer' was the FULL member list --
+// 'alice', already dedicated to reviewer, could receive a doer dispatch
+// purely because of array order. Post-fix, the unmapped-role fallback pool
+// excludes any member named in some other roleMap value, so 'jack' (named
+// nowhere) is the only doer, and 'alice' never leaves her reviewer lane.
+test('mock sprint: unmapped role (doer) never routes to a member specialized elsewhere (reviewer) via roleMap', async () => {
+    await withScenarioMarkers('specialist-generalist doer/reviewer split', async () => {
+        console.log('Running mock sprint scenario (specialist reviewer + generalist doer)...');
+        const result = await runDevelopLoopScenario('specialistgen', {
+            members: ['alice', 'jack'],
+            roleMap: { reviewer: ['alice'] },
+            taskSpecs: [
+                { title: 'Task: Implement registerMember in client.js' },
+                { title: 'Task: Implement listMembers in client.js' },
+            ],
+            reviewerHandler: async () => ({
+                content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Both look good.', reopenIds: [], newTasks: [] }) }]
+            }),
+        });
+        check(!result.error, `Specialist/generalist scenario did not complete: ${result.error ? result.error.message : ''}`);
+
+        const doerCalls = result.dispatched.filter((d) => d.agent === 'doer');
+        check(doerCalls.length > 0, `Expected at least one doer dispatch, got ${doerCalls.length}`);
+        const doerMembers = new Set(doerCalls.map((d) => d.member));
+        check(
+            !doerMembers.has('alice'),
+            `Expected 'alice' (reviewer specialist via roleMap) to NEVER receive a doer dispatch, got doer members: ${JSON.stringify([...doerMembers])}`
+        );
+        check(doerMembers.has('jack'), `Expected 'jack' (unmapped generalist) to receive doer dispatches, got: ${JSON.stringify([...doerMembers])}`);
+
+        // 'reviewer' IS explicitly mapped to 'alice' -- this half already
+        // worked pre-fix (explicit roleMap entries were always exclusive),
+        // pinned here so both directions of the split travel together.
+        const reviewCalls = result.dispatched.filter((d) => d.agent === 'reviewer');
+        const reviewMembers = new Set(reviewCalls.map((d) => d.member));
+        check(reviewMembers.has('alice'), `Expected 'alice' to receive reviewer dispatches, got: ${JSON.stringify([...reviewMembers])}`);
+        check(!reviewMembers.has('jack'), `Expected 'jack' to never receive a reviewer dispatch, got: ${JSON.stringify([...reviewMembers])}`);
+    });
+});
