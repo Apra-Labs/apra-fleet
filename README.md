@@ -167,32 +167,19 @@ for every option.
   <img src="assets/marketing/fleet-stack-light.svg" alt="apra-fleet layered architecture stack: dependencies from OS primitives up to autonomous engineering orchestrators" width="100%">
 </picture>
 
-### Fleet Dispatch Topology
-
-<table>
-<tr>
-<td width="50%" valign="top">
+**Component Docs:** [fleet-sprint](packages/apra-fleet-se/fleet-sprint/docs/README.md) | [auto-sprint.js](packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) | [apra-fleet-client](packages/apra-fleet-client/docs/overview.md) | [apra-pm](packages/apra-fleet-se/apra-pm/README.md) | [apra-fleet-mcp](docs/mcp-tools.md) | [Agent Roles](packages/apra-fleet-se/docs/role-contracts.md)
 
 - **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet.
 - **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
 - **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, and per-activity persistent state.
 - **Supervisor**: always-on layer -- launch & stop sprints over HTTP, member reservation ledger, crash watchdog, run history.
 
-</td>
-<td width="50%" valign="top">
+### Fleet Dispatch Topology
 
 ```mermaid
-flowchart TD
-    CP["Control Plane<br/>(Server, Engine, Supervisor)"]
-    CP --> M1["MacBook (Claude)"]
-    CP --> M2["Linux GPU (vLLM)"]
-    CP --> M3["Cloud VM (Codex)"]
-    CP --> M4["Windows (Copilot)"]
+flowchart LR
+    CP["Control Plane<br/>(Server, Engine, Supervisor)"] -->|Dispatch & Sync| M1["MacBook<br/>(Claude)"] & M2["Linux GPU<br/>(vLLM)"] & M3["Cloud VM<br/>(Codex)"] & M4["Windows<br/>(Copilot)"]
 ```
-
-</td>
-</tr>
-</table>
 
 ## Explore with agents. Operate with programs.
 
