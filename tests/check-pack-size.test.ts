@@ -1,8 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { parsePackJson } from '../scripts/check-pack-size.mjs';
+import { parsePackJson, parseThresholdFlag } from '../scripts/check-pack-size.mjs';
 
 // Tests for apra-fleet-0v0.2: harden scripts/check-pack-size.mjs's JSON
 // extraction against a leading '[' in lifecycle-script stdout.
+//
+// Also apra-fleet-0v0.3: check-pack-size.mjs accepts the '--threshold=N'
+// equals form (not just space-separated) and fails loudly rather than
+// silently falling back to DEFAULT_THRESHOLD_BYTES when an explicitly
+// supplied threshold is unparseable/non-positive.
 
 describe('parsePackJson', () => {
   it('parses a clean JSON array with no lifecycle-script noise', () => {
@@ -45,5 +50,30 @@ describe('parsePackJson', () => {
   it('throws on empty/whitespace-only input', () => {
     expect(() => parsePackJson('')).toThrow(/empty input/);
     expect(() => parsePackJson('   ')).toThrow(/empty input/);
+  });
+});
+
+describe('parseThresholdFlag', () => {
+  it('returns undefined when --threshold is not present', () => {
+    expect(parseThresholdFlag([])).toBeUndefined();
+    expect(parseThresholdFlag(['-'])).toBeUndefined();
+  });
+
+  it('accepts the space-separated form', () => {
+    expect(parseThresholdFlag(['--threshold', '5000000'])).toBe(5000000);
+  });
+
+  it('apra-fleet-0v0.3: accepts the "=" form', () => {
+    expect(parseThresholdFlag(['--threshold=5000000'])).toBe(5000000);
+  });
+
+  it('throws (does not silently fall back) on a non-numeric value in either form', () => {
+    expect(() => parseThresholdFlag(['--threshold', 'abc'])).toThrow(/invalid --threshold value/);
+    expect(() => parseThresholdFlag(['--threshold=abc'])).toThrow(/invalid --threshold value/);
+  });
+
+  it('throws on a non-positive value in either form', () => {
+    expect(() => parseThresholdFlag(['--threshold', '0'])).toThrow(/invalid --threshold value/);
+    expect(() => parseThresholdFlag(['--threshold=-5'])).toThrow(/invalid --threshold value/);
   });
 });

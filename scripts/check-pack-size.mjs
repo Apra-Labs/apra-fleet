@@ -116,15 +116,57 @@ export function checkPackSize(unpackedSize, thresholdBytes) {
   };
 }
 
-function parseThresholdArg(argv) {
-  const idx = argv.indexOf('--threshold');
-  if (idx !== -1 && argv[idx + 1] !== undefined) {
-    const n = Number(argv[idx + 1]);
-    if (Number.isFinite(n) && n > 0) return n;
+/**
+ * Parse an explicitly-supplied threshold value, accepting both the
+ * space-separated ('--threshold 5000000') and '='-joined
+ * ('--threshold=5000000') spellings. Unlike the previous implementation,
+ * this never silently falls through to DEFAULT_THRESHOLD_BYTES when the
+ * flag IS present but its value is unparseable/non-positive -- it throws
+ * instead, so callers can fail loudly rather than running the guard at an
+ * unintended threshold.
+ *
+ * @param {string[]} argv
+ * @returns {number|undefined} the parsed threshold, or undefined if the
+ *   flag was not supplied at all (caller should fall back to the env var
+ *   or DEFAULT_THRESHOLD_BYTES).
+ * @throws {Error} if the flag was supplied with an unparseable or
+ *   non-positive value.
+ */
+export function parseThresholdFlag(argv) {
+  let rawValue;
+  let found = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--threshold') {
+      found = true;
+      rawValue = argv[i + 1];
+      break;
+    }
+    if (a.startsWith('--threshold=')) {
+      found = true;
+      rawValue = a.slice('--threshold='.length);
+      break;
+    }
   }
+
+  if (!found) return undefined;
+
+  const n = Number(rawValue);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`invalid --threshold value: '${rawValue}' (must be a positive, finite number)`);
+  }
+  return n;
+}
+
+function parseThresholdArg(argv) {
+  const fromFlag = parseThresholdFlag(argv);
+  if (fromFlag !== undefined) return fromFlag;
+
   if (process.env.PACK_SIZE_THRESHOLD) {
     const n = Number(process.env.PACK_SIZE_THRESHOLD);
     if (Number.isFinite(n) && n > 0) return n;
+    throw new Error(`invalid PACK_SIZE_THRESHOLD env value: '${process.env.PACK_SIZE_THRESHOLD}' (must be a positive, finite number)`);
   }
   return DEFAULT_THRESHOLD_BYTES;
 }
@@ -169,7 +211,15 @@ function getRawInput(argv) {
 
 function main() {
   const argv = process.argv.slice(2);
-  const thresholdBytes = parseThresholdArg(argv);
+
+  let thresholdBytes;
+  try {
+    thresholdBytes = parseThresholdArg(argv);
+  } catch (err) {
+    console.error(`::error::${err.message}`);
+    process.exit(1);
+    return;
+  }
 
   let rawStdout;
   try {
