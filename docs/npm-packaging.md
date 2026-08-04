@@ -278,6 +278,23 @@ case. Schema resolution still finds the `dist/agents/schemas/` directory
 `packages/apra-fleet-se/docs/cli-reference.md` for the full schema- and
 server-resolution order.
 
+**`@apralabs/apra-fleet-client` must be a real root `dependencies` entry, not
+just a shipped `files` path.** Shipping a package's source under the `files`
+allowlist makes it present on disk in an npm install, but that alone does not
+make it resolvable via standard Node module resolution -- a bare specifier
+import (`import('@apralabs/apra-fleet-client/...')`) only resolves if the
+package is registered as a dependency (here, a `file:` dependency pointing at
+the shipped subdirectory) so that npm's installer creates the corresponding
+`node_modules/@apralabs/apra-fleet-client` entry. In a git-checkout dev tree
+this distinction is invisible because npm workspaces symlinks every
+workspace package into `node_modules/@apralabs/...` regardless of whether the
+root `dependencies` block lists it -- so a missing `dependencies` entry only
+surfaces as a failure for a real npm-installed (non-workspace) consumer,
+never in dev-mode testing. Any workspace package that ships as source via
+`files` and is imported at runtime by shipped code needs both: the `files`
+entry (so the bytes are present) and a root `dependencies` entry (so Node's
+resolver can find them).
+
 Note: the SEA/installed-binary delivery mode (`apra-fleet workflow <name>`,
 see `docs/authoring-workflows.md`) adds a further tier to both resolution
 orders ahead of the ones described above -- `APRA_FLEET_SE_SCHEMAS_DIR`
@@ -372,7 +389,17 @@ Steps in order:
    `packages/apra-fleet-se/bin/cli.mjs`, `packages/apra-fleet-se/fleet-sprint/runner.js`,
    `packages/apra-fleet-se/workflow.json`, `dist/agents/schemas/`)
 8. **Clean-pack guard** -- rejects `*.exe`, `sea-prep.blob`, `sea-bundle.cjs`
-   in the pack output; fails if unpacked size exceeds 10 MB
+   in the pack output; fails if unpacked size exceeds 10 MB. The size check
+   is implemented by `scripts/check-pack-size.mjs`, which parses `npm pack
+   --dry-run --json` for the real byte count rather than scraping npm's
+   human-readable notice line (`npm notice unpacked size: 4.1 MB`) with a
+   regex -- a plain `grep -oE '[0-9]+'` against that human-readable string
+   only ever captures the leading digits before the decimal point (e.g. `4`
+   out of `4.1 MB`), which is off by six orders of magnitude and made the
+   10 MB threshold comparison permanently unable to fire regardless of
+   actual tarball size. Any guard that needs to compare against a real size
+   or count must be pointed at a tool's structured/JSON output, never at a
+   human-readable notice line meant for terminal display.
 9. **Pack + install into a clean temp prefix (fleet-sprint smoke test)**
    (apra-fleet-3ns.2 / apra-fleet-3ns.2.2, updated by apra-fleet-fyc.2.1) --
    packs a real tarball, `npm install`s it into a fresh non-workspace prefix

@@ -44,12 +44,32 @@ function makeFsMock() {
   vi.mocked(fs.copyFileSync).mockImplementation(() => {});
 }
 
+// Executable path reported for the running server. Under the mocked home's
+// install prefix (BIN_DIR = <home>/.apra-fleet/bin), so the scoped guard
+// (apra-fleet-1aw, src/cli/install-guard.ts) classifies it as relevant to this
+// install and the guard still fires.
+const runningExePath = `${mockHome}/.apra-fleet/bin/apra-fleet`;
+
+/**
+ * Answer the executable-path lookups install-guard.ts issues for a running
+ * server (Linux: readlink /proc/<pid>/exe, macOS: ps -o comm=, Windows:
+ * Get-Process ... "<pid>|<path>"). Returns null for unrelated commands so
+ * callers can fall through to their own handling.
+ */
+function exeLookupResult(c: string, exePath: string = runningExePath): string | null {
+  if (c.startsWith('readlink -f /proc/') || c.startsWith('ps -p ')) return `${exePath}\n`;
+  if (c.startsWith('powershell')) return `5678|${exePath}\n`;
+  return null;
+}
+
 // Make pgrep -x succeed (server running) on Linux, fail on others
 function mockServerRunning() {
   vi.mocked(execSync).mockImplementation((cmd: any) => {
     const c = cmd.toString();
     if (c === 'pgrep -x apra-fleet') return '5678\n' as any;
     if (c.startsWith('tasklist')) return '"apra-fleet.exe","5678","Console","1","14,000 K"\n' as any;
+    const exe = exeLookupResult(c);
+    if (exe !== null) return exe as any;
     return '' as any;
   });
 }
@@ -130,9 +150,11 @@ describe('install --force (#96)', () => {
       const c = cmd.toString();
       if (c === 'pgrep -x apra-fleet') {
         if (killed) throw Object.assign(new Error('no match'), { status: 1 });
-        return 'apra-fleet' as any;
+        return '5678\n' as any;
       }
       if (c === 'pkill -x apra-fleet') { killCalls.push(c); killed = true; return '' as any; }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
       return '' as any;
     });
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -157,6 +179,8 @@ describe('install --force (#96)', () => {
           : '"apra-fleet.exe","5678","Console","1","14,000 K"\n' as any;
       }
       if (c.startsWith('taskkill')) { killCalls.push(c); killed = true; return '' as any; }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
       return '' as any;
     });
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -176,9 +200,11 @@ describe('install --force (#96)', () => {
       const c = cmd.toString();
       if (c === 'pgrep -x apra-fleet') {
         if (killed) throw Object.assign(new Error('no match'), { status: 1 });
-        return 'apra-fleet' as any;
+        return '5678\n' as any;
       }
       if (c === 'pkill -x apra-fleet') { killed = true; return '' as any; }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
       return '' as any;
     });
     const logLines: string[] = [];
@@ -239,6 +265,8 @@ describe('install --force still-running after kill (apra-fleet-l7n.3.2)', () => 
       // pkill (SIGTERM and SIGKILL escalation) "succeeds" as a command but
       // never actually terminates the process in this scenario.
       if (c === 'pkill -x apra-fleet' || c === 'pkill -9 -x apra-fleet') return '' as any;
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
       return '' as any;
     });
     const logLines: string[] = [];
@@ -267,6 +295,8 @@ describe('install --force still-running after kill (apra-fleet-l7n.3.2)', () => 
         return '5678\n' as any;
       }
       if (c === 'pkill -x apra-fleet') { killed = true; return '' as any; }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
       return '' as any;
     });
     const logLines: string[] = [];
@@ -329,6 +359,8 @@ describe('install --force ETXTBSY regression: survives first SIGTERM (apra-fleet
         seq.push('kill:sigkill');
         return '' as any;
       }
+      const exe = exeLookupResult(c);
+      if (exe !== null) return exe as any;
       return '' as any;
     });
     vi.mocked(fs.copyFileSync).mockImplementation(() => { seq.push('copyFileSync'); });
@@ -417,5 +449,141 @@ describe('isApraFleetRunning / killApraFleet helpers (#96)', () => {
     vi.mocked(execSync).mockImplementation((cmd: any) => { calls.push(cmd.toString()); return '' as any; });
     killApraFleet();
     expect(calls).toContain('taskkill /F /IM apra-fleet.exe');
+  });
+});
+
+// --- apra-fleet-1aw: the guard is scoped to THIS install, not to the OS-global
+// process name. An apra-fleet server that is neither recorded live in the data
+// dir being targeted nor running from the install prefix being written must not
+// block the install (that is what made ci.yml's clean-temp-prefix install step
+// unreplayable on any box already running a fleet server).
+describe('install running-server guard is scoped to the install target (apra-fleet-1aw)', () => {
+  const originalDataDir = process.env.APRA_FLEET_DATA_DIR;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    delete process.env.APRA_FLEET_DATA_DIR;
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    if (originalDataDir === undefined) delete process.env.APRA_FLEET_DATA_DIR;
+    else process.env.APRA_FLEET_DATA_DIR = originalDataDir;
+    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+  });
+
+  /** Running server whose executable lives at `exePath` (Linux shape). */
+  function mockUnrelatedServerRunning(exePath: string) {
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') return '5678\n' as any;
+      const exe = exeLookupResult(c, exePath);
+      if (exe !== null) return exe as any;
+      return '' as any;
+    });
+  }
+
+  it('unrelated running server (different data dir AND different prefix) — install completes without --force and without killing it', async () => {
+    // No server.json in the targeted data dir, and the running binary lives
+    // outside the install prefix: nothing to do with this install.
+    mockUnrelatedServerRunning('/opt/other-prefix/bin/apra-fleet');
+    const logLines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args) => { logLines.push(args.join(' ')); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const log = logLines.join('\n');
+    expect(log).toContain('unrelated apra-fleet server');
+    expect(log).toContain('5678');
+    expect(log).not.toContain('Stopped running server.');
+    // The unrelated server was never signalled.
+    const cmds = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
+    expect(cmds).not.toContain('pkill -x apra-fleet');
+    expect(cmds).not.toContain('pkill -9 -x apra-fleet');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('running server whose executable path cannot be resolved is treated as unrelated (never silently reinstates the global refusal)', async () => {
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const c = cmd.toString();
+      if (c === 'pgrep -x apra-fleet') return '5678\n' as any;
+      return '' as any; // readlink yields nothing
+    });
+    const logLines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args) => { logLines.push(args.join(' ')); });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(logLines.join('\n')).toContain('executable path could not be determined');
+
+    exitSpy.mockRestore();
+  });
+
+  it('live server recorded in the SAME data dir — guard still fires with the existing error and exit 1', async () => {
+    mockUnrelatedServerRunning('/opt/other-prefix/bin/apra-fleet');
+    // server.json in the targeted data dir records a live pid (this process).
+    const prevRead = vi.mocked(fs.readFileSync).getMockImplementation()!;
+    vi.mocked(fs.readFileSync).mockImplementation((p: any, ...rest: any[]) => {
+      const ps = p.toString();
+      if (ps.includes('server.json')) {
+        return JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:9999/mcp' }) as any;
+      }
+      return prevRead(p, ...rest);
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).toContain('apra-fleet is currently running');
+    expect(errText).toContain('recorded live in the data dir');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('running server whose executable is under the install prefix — guard still fires even when the data dirs differ', async () => {
+    process.env.APRA_FLEET_DATA_DIR = '/tmp/some-isolated-data-dir';
+    mockUnrelatedServerRunning(`${mockHome}/.apra-fleet/bin/apra-fleet`);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).toContain('apra-fleet is currently running');
+    expect(errText).toContain('inside the install prefix being written');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('a sibling prefix that merely shares a name prefix does not count as "under" the install prefix', async () => {
+    mockUnrelatedServerRunning(`${mockHome}/.apra-fleet/bin-old/apra-fleet`);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none'])).resolves.toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
   });
 });

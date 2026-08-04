@@ -110,3 +110,35 @@ freshly spawned child process (not just the parent test process) against the
 supported Node version -- a version pin with no test guarding it can drift
 right back to an incompatible version the next time a transitive dependency
 is bumped elsewhere in the tree.
+
+**A root-level override pin is necessary but not sufficient.** Two failure
+modes can leave a package manager override silently inert even though the
+pin is present in the workspace root's `package.json`:
+
+- The override never propagates to a non-root install. A package manager's
+  `overrides`/`resolutions` field constrains dependency resolution for the
+  workspace root's own install; it says nothing about what version a
+  downstream consumer resolves when *they* install the published package
+  into their own tree. If the published package's own `dependencies` still
+  names the unconstrained (broken) version range, an npm-installed consumer
+  gets that broken version regardless of what the source repo's root
+  override says. The override must be paired with actually publishing the
+  corrected version range in the published package's own dependency
+  manifest, not just in the monorepo root used to build it.
+- The lockfile can fall out of sync with the override. Adding or changing an
+  `overrides` entry without regenerating the lockfile leaves the lockfile's
+  recorded resolution unchanged; a clean, reproducible install (`npm ci`,
+  which trusts the lockfile rather than re-resolving) can then install the
+  pre-override version even though `package.json` says otherwise. Whenever
+  an override is added or changed, the lockfile must be regenerated in the
+  same change and the regenerated lockfile must be the one asserted against
+  in tests and CI.
+
+Because of both gaps, a regression test that only imports the dependency
+from the source workspace's own `node_modules` is not sufficient evidence
+that the pin holds -- it can pass purely because the workspace root's
+override was honored, while every downstream npm-installed consumer still
+gets the broken version. The regression coverage needs a second leg that
+builds the actual publishable artifact (e.g. `npm pack`), installs it into a
+clean, non-workspace target, and imports the dependency from *that*
+installed copy before the pin can be trusted end to end.

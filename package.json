@@ -85,6 +85,7 @@
   ],
   "license": "Apache-2.0",
   "dependencies": {
+    "@apralabs/apra-fleet-client": "file:packages/apra-fleet-client",
     "@inquirer/password": "^5.0.11",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "ajv": "^8.12.0",

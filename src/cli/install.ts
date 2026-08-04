@@ -20,6 +20,7 @@ import {
 import { transformAgentForOpenCode } from './agent-transform.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
+import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -951,13 +952,28 @@ Options:
   }
 
   // --- Running-process guard (SEA + npm modes -- dev mode runs via node, not a managed binary) ---
-  if ((isSea() || isNpmGlobalInstall()) && isApraFleetRunning()) {
+  //
+  // isApraFleetRunning() is OS-global on purpose (waitForApraFleetToStop() and
+  // uninstall.ts depend on that). It is only the cheap first filter here:
+  // classifyRunningServer() then decides whether the running server is actually
+  // relevant to THIS install -- recorded live in the target data dir, or running
+  // from the install prefix we are about to overwrite (ETXTBSY). An unrelated
+  // server (isolated HOME/APRA_FLEET_DATA_DIR/prefix, e.g. ci.yml's clean temp
+  // prefix step) no longer blocks the install. See apra-fleet-1aw.
+  const runningScope = (isSea() || isNpmGlobalInstall()) && isApraFleetRunning()
+    ? classifyRunningServer(BIN_DIR)
+    : null;
+  if (runningScope && !runningScope.relevant) {
+    console.log(`\n  Note: an unrelated apra-fleet server is running -- ${runningScope.detail}.\n  It is not associated with this install (data dir ${getInstallDataDir()}, prefix ${BIN_DIR}), so it is left running.\n`);
+  }
+  if (runningScope?.relevant) {
     if (!force) {
       const killHint = process.platform === 'win32'
         ? '    taskkill /F /IM apra-fleet.exe'
         : '    pkill -x apra-fleet';
       console.error(`
 Error: apra-fleet is currently running. Stop the server before installing.
+  (${runningScope.detail})
 
   Run with --force to stop it automatically:
     apra-fleet install --force
