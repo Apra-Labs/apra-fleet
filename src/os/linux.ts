@@ -289,6 +289,10 @@ export class LinuxCommands implements OsCommands {
     return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
   }
 
+  wrapPidCapture(command: string): string {
+    return pidWrapUnix(command);
+  }
+
   // --- Git ---
 
   gitCurrentBranch(folder: string): string {

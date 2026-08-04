@@ -6,7 +6,8 @@ import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult } from '../types.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
-import { setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getAgentOS } from '../utils/agent-helpers.js';
+import { getOsCommands } from '../os/index.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -174,6 +175,29 @@ export async function execCommand(
     if (entry) entry.activeChannels = Math.max(0, entry.activeChannels - 1);
   }
 
+  // Remote PID captured from the FLEET_PID marker (see execute-command.ts's
+  // wrapPidCapture), if the wrapped command emits one. A closed/rejected SSH
+  // channel does NOT kill the remote process it started (unlike a local
+  // child_process, an ssh2 exec channel closing has no effect on the far
+  // side) -- apra-fleet-kwx fixed this for LocalStrategy via a local
+  // child.pid tree-kill; killRemoteTree below is the same fix for the SSH
+  // path, using the marker PID instead of a local handle.
+  let capturedPid: number | undefined;
+  function killRemoteTree() {
+    if (capturedPid === undefined) return;
+    try {
+      const killCmd = getOsCommands(getAgentOS(agent)).killPid(capturedPid);
+      // Best-effort, fire-and-forget on a FRESH channel -- the timed-out
+      // command's own channel may itself be wedged and must not be relied
+      // on to carry the kill.
+      client.exec(killCmd, (err, killStream) => {
+        if (err) return;
+        killStream.on('data', () => {});
+        killStream.stderr?.on('data', () => {});
+      });
+    } catch { /* best-effort; connection may already be gone */ }
+  }
+
   return new Promise<SSHExecResult>((resolve, reject) => {
     let settled = false;
     function settle(fn: () => void) {
@@ -190,6 +214,7 @@ export async function execCommand(
     function resetInactivityTimer() {
       clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(() => {
+        killRemoteTree();
         settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
       }, timeoutMs);
       inactivityTimer.unref();
@@ -200,6 +225,7 @@ export async function execCommand(
     let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
     if (maxTotalMs !== undefined) {
       maxTotalTimer = setTimeout(() => {
+        killRemoteTree();
         settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
       }, maxTotalMs);
       maxTotalTimer.unref();
@@ -231,6 +257,7 @@ export async function execCommand(
           const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
           if (m) {
             const pid = parseInt(m[1], 10);
+            capturedPid = pid;
             setStoredPid(agent.id, pid);
             onPidCaptured?.(pid);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
@@ -289,6 +316,7 @@ export async function execCommand(
 
       if (abortSignal) {
         const onAbort = () => {
+          killRemoteTree();
           try { stream.close(); } catch { /* best-effort */ }
           settle(() => reject(new Error('Command aborted by client')));
         };
