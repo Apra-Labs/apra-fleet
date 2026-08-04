@@ -31,10 +31,15 @@ describe('undici / Node 20 compatibility (apra-fleet-0v0 regression)', () => {
     // Walk the full `npm ls undici` output (root + all workspaces) rather
     // than trusting a single resolved copy -- this is what would catch a
     // transitive re-introduction that require.resolve() alone would miss.
+    // shell: true required on Windows -- npm resolves to the npm.cmd shim,
+    // and Node's execFileSync cannot exec a .cmd/.bat file without a shell
+    // (see src/cli/install.ts and scripts/lib/exec-bd.mjs for the same
+    // convention elsewhere in this codebase). Safe here: no user-controlled
+    // input reaches the args array.
     const output = execFileSync(
       'npm',
       ['ls', 'undici', '--all', '--json'],
-      { cwd: repoRoot, encoding: 'utf8' }
+      { cwd: repoRoot, encoding: 'utf8', shell: true }
     );
     const tree = JSON.parse(output);
 
