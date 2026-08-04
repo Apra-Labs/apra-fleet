@@ -698,6 +698,23 @@ export async function checkMemberTopology({ members, getIdentity, mode = 'legacy
 // behavior change.
 
 /**
+ * True when `error` is git's exact "the named ref does not exist on the
+ * remote" message (`fatal: couldn't find remote ref <branch>`), as opposed
+ * to any other fetch/pull/rebase failure. This is the ONE place that text is
+ * matched (apra-fleet-ta3.1): syncMemberBefore's pre-dispatch fetch and
+ * syncMemberAfter's post-push pull-rebase both hit this exact message for
+ * the identical underlying reason -- a brand-new local branch that has never
+ * been pushed to `remote` yet, so there is nothing there to fetch/rebase
+ * against -- and both treat it as a benign no-op via this shared predicate
+ * rather than each carrying its own copy of the regex.
+ * @param {string} error - the raw git stderr/stdout of a failed command
+ * @returns {boolean}
+ */
+export function isMissingRemoteRefError(error) {
+    return /couldn't find remote ref/i.test(error || '');
+}
+
+/**
  * Classify a failed git command's output into the failure classes the sync
  * brackets route differently. Thin adapter over VCSModule.classifyFailure()
  * + toGitVerdict(), mapping the neutral kind taxonomy onto this module's
@@ -864,7 +881,7 @@ export async function syncMemberBefore(member, opts = {}) {
         // remote to pull, so the bracket's pull half is a no-op, not an error.
         // Only this precise git message may be treated as
         // branch-doesn't-exist; anything else must still surface.
-        if (/couldn't find remote ref/i.test(fetch.error || '')) {
+        if (isMissingRemoteRefError(fetch.error)) {
             log(`[Sync] G-pull for member '${member}': branch '${branch}' does not exist on '${remote}' yet (not pushed); skipping pull (nothing to sync down).`);
             return { ok: true, member };
         }
@@ -1008,6 +1025,49 @@ export async function syncMemberAfter(member, opts = {}) {
         label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
     });
     if (!rebase.ok) {
+        // Missing-remote-ref guard (apra-fleet-ta3.1). ROOT CAUSE: the
+        // initial push above can be classified 'diverged' even when
+        // `remote` has NO such branch at all -- git's non-fast-forward
+        // rejection trailers ("failed to push some refs", "[rejected]") are
+        // GENERIC: they are also the trailer git prints for other push
+        // rejections (a transient/hook/auth hiccup that classifyGitFailure
+        // could not otherwise pin down before hitting one of those generic
+        // strings), and nothing in that first push's own error text can
+        // distinguish "the remote branch exists and truly diverged" from
+        // "the remote branch does not exist yet". The only place that
+        // distinction becomes observable is here: `git pull --rebase`
+        // against a nonexistent remote branch fails with the SAME exact,
+        // unambiguous "couldn't find remote ref <branch>" message
+        // syncMemberBefore already treats as benign (see
+        // isMissingRemoteRefError() above) -- so this is not a divergence to
+        // reconcile, it is a brand-new local branch that has simply never
+        // been pushed. Skip the doomed rebase/conflict machinery entirely
+        // and retry a plain push, which creates the branch on `remote`.
+        if (isMissingRemoteRefError(rebase.error)) {
+            log(`[Sync] G-push pull-rebase for member '${member}': branch '${branch}' does not exist on '${remote}' yet (never pushed) -- nothing to rebase against; retrying the push directly to create it.`);
+            const createPush = await runGitStep({
+                command, member, cmd: pushCmd,
+                label: `G-push retry (create missing remote branch) for '${member}'`, log, maxTransientRetries, onAuthFailure, provider,
+            });
+            if (createPush.ok) {
+                return { ok: true, member, pushed: true, rebased: false };
+            }
+            if (createPush.kind === 'diverged') {
+                // The branch now exists on the remote -- a concurrent writer
+                // must have published it between our rebase attempt and this
+                // retry. That IS a genuine divergence; the single-writer
+                // invariant is violated and this must not be retried further.
+                throw new GitDivergedError(
+                    `[Sync] G-push for member '${member}' was rejected on retry after a missing-remote-ref rebase skip -- another writer published '${branch}' first; the single-writer token invariant is violated: ${createPush.error}`,
+                    { member, gitOutput: createPush.error, operation: 'push' },
+                );
+            }
+            throw new GitSyncError(
+                `[Sync] G-push retry (create missing remote branch) for member '${member}' failed: ${createPush.error}`,
+                { member, gitOutput: createPush.error },
+            );
+        }
+
         // Tier 1 scripted detection: confirm from git's own porcelain status --
         // not from this failing command's exit code/message classification --
         // whether the rebase actually left unmerged paths, and if so restore a

@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- fleet-sprint runner: G-push creates a never-pushed sprint branch instead of failing pull-rebase
+
+`syncMemberAfter`'s G-push bracket could fail live with `[Sync] G-push
+pull-rebase for member '<member>' failed: fatal: couldn't find remote ref
+<branch>` for a sprint branch that had never been pushed to `origin` at all.
+Root cause: the initial `git push` for a brand-new local branch can be
+classified `'diverged'` even when the remote has no such branch, because
+git's non-fast-forward rejection trailers (`failed to push some refs`,
+`[rejected]`) are generic -- they are the same trailer text git prints for
+other push rejections too, so nothing in that first push's own error output
+can distinguish "the remote branch exists and truly diverged" from "the
+remote branch does not exist yet". That distinction only becomes observable
+one step later, when the resulting `git pull --rebase` against a
+nonexistent remote branch fails with the exact, unambiguous `couldn't find
+remote ref <branch>` message.
+
+- Factored the `couldn't find remote ref` match (previously inlined only in
+  `syncMemberBefore`'s pre-dispatch fetch) into one shared, exported
+  predicate, `isMissingRemoteRefError()`, now used by both
+  `syncMemberBefore` and `syncMemberAfter`.
+- `syncMemberAfter`'s pull-rebase-failure branch now checks this predicate
+  BEFORE running the Tier 1/Tier 2 conflict-ladder machinery: when the
+  remote genuinely has no such branch, there is nothing to rebase against,
+  so the rebase/conflict path is skipped entirely and the push is retried
+  directly, creating the branch on `origin`. If that retry is itself
+  rejected as `'diverged'`, a concurrent writer published the branch first
+  -- that IS a genuine divergence and still raises `GitDivergedError`
+  exactly as before, with no weakening of the single-writer invariant.
+  Genuine non-fast-forward divergence against an EXISTING remote branch is
+  unaffected -- it never matches this predicate and still takes the
+  existing one-bounded-pull-rebase path.
+
 ## [Unreleased] -- fleet-sprint runner: bounded retry for transient bd-list failures
 
 `bdListScoped()`'s two `bd list` call sites (the shared full-DB snapshot fetch
