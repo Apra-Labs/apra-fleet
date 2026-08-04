@@ -54,6 +54,68 @@ interface CanonicalEntry {
   updated_at: string;
 }
 
+/**
+ * KB-TRUST PHASE 3a: the v2 bible envelope. kb_import accepts BOTH this and the
+ * legacy bare array, selecting on Array.isArray -- an older bible must keep
+ * importing unchanged.
+ */
+interface CanonicalBible {
+  version: 2;
+  provenance: {
+    /** 40-char HEAD sha, or null when the repo has no commits or git is absent. */
+    commit: string | null;
+    branch: string | null;
+    entry_count: number;
+  };
+  entries: CanonicalEntry[];
+}
+
+/**
+ * Resolve HEAD, degrading gracefully to null rather than throwing: a repo with
+ * no commits yet, a non-repo directory, or a machine without git must still be
+ * able to export a bible.
+ */
+function resolveHeadCommit(repoPath: string): string | null {
+  return gitOrNull(repoPath, ['rev-parse', 'HEAD']);
+}
+
+function resolveBranch(repoPath: string): string | null {
+  return gitOrNull(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+}
+
+/**
+ * True when an existing bible already carries exactly these entries. Compares
+ * the ENTRIES only, never the provenance envelope, so a moved HEAD alone never
+ * counts as a change. Accepts both bible shapes: a legacy bare array compares
+ * equal to the same entries, so upgrading a v1 file in place only happens when
+ * its entries actually differ.
+ */
+function entriesUnchanged(outPath: string, nextEntriesJson: string): boolean {
+  if (!fs.existsSync(outPath)) return false;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+    const existing = Array.isArray(parsed)
+      ? parsed
+      : (parsed && Array.isArray(parsed.entries) ? parsed.entries : null);
+    if (existing === null) return false;
+    return asciiSafeStringify(existing) === nextEntriesJson;
+  } catch {
+    return false;
+  }
+}
+
+function gitOrNull(repoPath: string, args: string[]): string | null {
+  if (!isGitRepo(repoPath)) return null;
+  try {
+    const out = execFileSync('git', args, {
+      cwd: repoPath, encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 // ASCII-safe stringify: JSON.stringify already escapes the JSON-mandatory
 // characters (quotes, control chars) but leaves ordinary non-ASCII text
 // (e.g. an em-dash or accented letter that made it into a captured title or
@@ -207,7 +269,42 @@ export async function kbExport(input: KbExportInput): Promise<string> {
   }
   const fileName = scope === 'global' ? 'kb-canonical-global.json' : 'kb-canonical.json';
   const outPath = path.join(fleetDir, fileName);
-  fs.writeFileSync(outPath, asciiSafeStringify(canonical) + '\n', 'utf-8');
+
+  // KB-TRUST PHASE 3a: the bible records the commit it was exported from, so a
+  // later audit can date its entries against the tree they were verified on.
+  // Before this, a bible harvested from other repositories was indistinguishable
+  // from a real one.
+  //
+  // THE COMMIT, NOT A TIMESTAMP. Entries are sorted by id above "so re-exports
+  // produce meaningful diffs"; an exported_at timestamp would defeat exactly
+  // that, producing a diff on every export even when no entry changed and
+  // turning the git history into noise. A commit sha changes only when the tree
+  // the entries were verified against changes, which is the signal worth
+  // recording. entry_count is derivable but cheap, and makes truncation visible
+  // in a diff -- precisely the failure mode of apra-fleet-ong.
+  //
+  // ENTRIES-UNCHANGED IS A NO-OP. Auto-committing the bible moves HEAD, so
+  // re-reading HEAD on the next export would record a DIFFERENT commit, rewrite
+  // the file, and commit again -- an export that never converges and produces
+  // exactly the git-history noise recording a commit (rather than a timestamp)
+  // exists to avoid. When the entry set is unchanged the file is left exactly as
+  // it is, which also keeps the recorded commit honest: it names the tree those
+  // entries were last verified against, not the commit that stored them.
+  const nextEntriesJson = asciiSafeStringify(canonical);
+  if (entriesUnchanged(outPath, nextEntriesJson)) {
+    return JSON.stringify({ exported: canonical.length, path: outPath, scope, committed: false });
+  }
+
+  const bible: CanonicalBible = {
+    version: 2,
+    provenance: {
+      commit: resolveHeadCommit(repoPath),
+      branch: resolveBranch(repoPath),
+      entry_count: canonical.length,
+    },
+    entries: canonical,
+  };
+  fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
 
   const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope);
 

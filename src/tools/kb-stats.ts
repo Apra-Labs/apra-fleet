@@ -62,16 +62,27 @@ export async function kbStats(input: KbStatsInput): Promise<string> {
         const raw = fs.readFileSync(biblePath, 'utf-8');
         const parsed = JSON.parse(raw) as unknown;
 
-        if (Array.isArray(parsed)) {
+        // KB-TRUST PHASE 3a: the bible has two shapes -- a legacy bare array and
+        // the v2 { version, provenance, entries } envelope. Handle BOTH: reading
+        // only the array shape would silently report present:false and a drift
+        // of every live CONFIRMED entry against a perfectly good v2 bible, and
+        // this block degrades quietly by design, so that would never be noticed.
+        const entries = Array.isArray(parsed)
+          ? parsed
+          : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { entries?: unknown }).entries))
+            ? (parsed as { entries: unknown[] }).entries
+            : null;
+
+        if (entries !== null) {
           let newest: string | null = null;
-          for (const entry of parsed) {
+          for (const entry of entries) {
             const updatedAt = (entry as BibleEntryShape)?.updated_at;
             if (typeof updatedAt === 'string' && (!newest || updatedAt > newest)) newest = updatedAt;
           }
           const drift = newest === null
             ? liveConfirmed.length
             : liveUpdatedAts.filter(u => u > (newest as string)).length;
-          bible = { present: true, entries: parsed.length, drift };
+          bible = { present: true, entries: entries.length, drift };
         }
       } catch {
         // Malformed/unreadable bible file: leave the absent-shape fallback

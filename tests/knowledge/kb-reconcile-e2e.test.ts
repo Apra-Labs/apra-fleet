@@ -286,7 +286,8 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     expect(exportReport.exported).toBeGreaterThanOrEqual(1);
 
     const canonicalPath = path.join(fleetDir, 'kb-canonical.json');
-    const canonical = JSON.parse(fs.readFileSync(canonicalPath, 'utf-8')) as { id: string }[];
+    // KB-TRUST PHASE 3a: the bible is now a v2 envelope; entries live under .entries.
+    const canonical = (JSON.parse(fs.readFileSync(canonicalPath, 'utf-8')) as { entries: { id: string }[] }).entries;
     const canonicalIds = canonical.map(e => e.id);
 
     expect(canonicalIds).toContain(bContraId);          // winner: exported

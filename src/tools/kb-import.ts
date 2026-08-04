@@ -126,7 +126,22 @@ export async function kbImport(input: KbImportInput): Promise<string> {
   } catch {
     throw new Error('kb_import: bible file is not valid JSON: ' + biblePath);
   }
-  if (!Array.isArray(parsed)) {
+  // KB-TRUST PHASE 3a: the bible has TWO on-disk shapes and must accept both.
+  //
+  //   v1 (legacy): a bare JSON array of entries.
+  //   v2:          { version, provenance: {commit, branch, entry_count}, entries }
+  //
+  // Selection is on Array.isArray, exactly as the design specifies. This import
+  // side ships BEFORE the export side starts writing v2 -- a v2 bible fed to an
+  // older apra-fleet throws the not-a-JSON-array error below, which is expected
+  // and acceptable, but it means the reader must never lag the writer.
+  const bibleEntries = Array.isArray(parsed)
+    ? parsed
+    : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { entries?: unknown }).entries))
+      ? (parsed as { entries: unknown[] }).entries
+      : null;
+
+  if (bibleEntries === null) {
     throw new Error('kb_import: bible file is not a JSON array of entries: ' + biblePath);
   }
 
@@ -141,7 +156,7 @@ export async function kbImport(input: KbImportInput): Promise<string> {
   let flagged = 0;
   let rejected = 0;
 
-  for (const candidate of parsed) {
+  for (const candidate of bibleEntries) {
     // Malformed entry -> tolerate and skip individually.
     if (!isValidBibleEntry(candidate)) {
       skipped++;

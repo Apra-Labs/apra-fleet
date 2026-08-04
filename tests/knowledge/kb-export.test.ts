@@ -93,7 +93,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     const result = JSON.parse(await kbExport({ repo_path: tmpDir }));
     expect(result.exported).toBe(1);
 
-    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8'));
+    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
     expect(written).toHaveLength(1);
     expect(written[0].id).toBe(a.id);
     expect(written[0].title).toBe('Entry A knowledge');
@@ -104,7 +104,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     await provider.promote(id, 'confirmed for test: basis checked in fixture');
 
     await kbExport({ repo_path: tmpDir });
-    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8'));
+    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
 
     expect(written).toHaveLength(1);
     expect(Object.keys(written[0]).sort()).toEqual(
@@ -128,7 +128,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     }
 
     await kbExport({ repo_path: tmpDir });
-    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8'));
+    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
 
     const writtenIds = written.map((e: { id: string }) => e.id);
     const expectedSorted = [...ids].sort();
@@ -149,7 +149,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
     const result = JSON.parse(await kbExport({ repo_path: tmpDir }));
     expect(result.exported).toBe(0);
 
-    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8'));
+    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
     expect(written).toEqual([]);
   });
 
@@ -172,7 +172,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       expect(raw[i]).toBeLessThanOrEqual(127);
     }
     const parsed = JSON.parse(raw.toString('utf-8'));
-    expect(parsed[0].title).toContain('caf' + eAcute);
+    expect(parsed.entries[0].title).toContain('caf' + eAcute);
   });
 
   it('rejects a repo_path that does not exist', async () => {
@@ -198,7 +198,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       const result = JSON.parse(await kbExport({}));
       expect(result.exported).toBe(1);
 
-      const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8'));
+      const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
       expect(written).toHaveLength(1);
     });
 
@@ -242,7 +242,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       expect(result.scope).toBe('project');
       expect(result.exported).toBe(1);
 
-      const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8'));
+      const written = JSON.parse(fs.readFileSync(path.join(tmpDir, '.fleet', 'kb-canonical.json'), 'utf-8')).entries;
       expect(written).toHaveLength(1);
       expect(written[0].id).toBe(id);
       expect(fs.existsSync(path.join(tmpDir, '.fleet', 'kb-canonical-global.json'))).toBe(false);
@@ -264,7 +264,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
 
       const outPath = path.join(tmpDir, '.fleet', 'kb-canonical-global.json');
       expect(fs.existsSync(outPath)).toBe(true);
-      const written = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+      const written = JSON.parse(fs.readFileSync(outPath, 'utf-8')).entries;
       expect(written).toHaveLength(1);
       expect(written[0].id).toBe(globalId);
       expect(written[0].title).toBe('Global bible entry');
@@ -281,7 +281,7 @@ describe('kb_export (T3.4, F8b, D8)', () => {
       expect(result.exported).toBe(0);
 
       const outPath = path.join(tmpDir, '.fleet', 'kb-canonical-global.json');
-      const written = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+      const written = JSON.parse(fs.readFileSync(outPath, 'utf-8')).entries;
       expect(written).toEqual([]);
     });
 
