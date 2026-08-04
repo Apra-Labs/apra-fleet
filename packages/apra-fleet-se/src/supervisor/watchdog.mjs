@@ -61,8 +61,43 @@ export const WATCHDOG_STATUS = Object.freeze({
 /** Default watchdog probe interval (ms). Overridable via createWatchdog opts. */
 export const WATCHDOG_DEFAULT_INTERVAL_MS = 5000;
 
-/** Default timeout (ms) for a single child HTTP reachability probe. */
-export const WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS = 1500;
+/**
+ * Default timeout (ms) for a single child HTTP reachability probe.
+ *
+ * apra-fleet CI incident (2026-08-04, run 30880131689): the windows-latest CI
+ * job deterministically misclassified a genuinely-healthy child as
+ * running-unresponsive. Root cause is NOT a classifier logic bug: the
+ * PID-reuse guard's Windows command-line read (readCmdlineViaWmic, falling
+ * back to readCmdlineViaCim above) is a synchronous `spawnSync()` external
+ * process call, executed for every live-PID sprint BEFORE that sprint's HTTP
+ * probe is even sent (classifySprint() calls isChildAlive() synchronously,
+ * then `await`s probeHttp()). Because Array.prototype.map() invokes each
+ * classifySprint() call synchronously up to its first await, ALL of a given
+ * classifyAll() pass's synchronous readCmdline calls run back-to-back and
+ * BLOCK the whole Node.js event loop -- including the already-dispatched
+ * HTTP request/response processing for an earlier sprint in the same pass --
+ * for their combined duration.
+ *
+ * Measured on this dev box: `wmic` alone costs ~400ms per call; the
+ * `Get-CimInstance` PowerShell fallback (used when `wmic` is slow/absent,
+ * which GitHub's windows-latest runner images have been observed to be, as
+ * wmic is deprecated and being phased out of Windows) costs over 1.2s per
+ * call. supervisor-lifecycle.test.mjs's four-status test triggers two such
+ * reads per classifyAll() pass (healthy + hung both have a resolvable
+ * --viewer-port marker) -- on a loaded/slow CI runner that is comfortably
+ * enough combined blocking time to blow the previous flat 1500ms HTTP
+ * timeout before the event loop is ever freed to process the healthy child's
+ * already-arrived response, which is exactly the ~3.5s deterministic failure
+ * window CI showed. This is a platform/CI-runner timing constraint, not a
+ * real defect in the healthy/unresponsive distinction itself, so only the
+ * probe's timing budget is widened here (CI + win32 only) -- the classifier
+ * still requires an actual HTTP answer within the (now larger) window and a
+ * truly-hung child (no HTTP server at all) still times out and still
+ * classifies running-unresponsive, never running-healthy.
+ */
+export const WATCHDOG_DEFAULT_HTTP_TIMEOUT_MS = (
+    process.platform === 'win32' && (process.env.CI || process.env.GITHUB_ACTIONS)
+) ? 6000 : 1500;
 
 /** Default launch-failed window (ms, i.e. 60 seconds). A child exiting within
  * this window from its reservedAt timestamp is classified launch-failed. */
