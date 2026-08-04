@@ -309,7 +309,7 @@ scenario.
    checkable outcome, so the toy sprint's planner has no scope to invent.
 3. Provision LLM credentials for the `toy-doer` member -- without this,
    step 4's Planner dispatch fails auth. Use the CLI auth path documented
-   in `docs/tools-infrastructure.md` ("apra-fleet auth (CLI)"), not the
+   in `docs/mcp-tools.md` ("apra-fleet auth (CLI)"), not the
    MCP `provision_llm_auth` flow: `regression-test-runner` has no MCP
    tools available (see "Adding new features to this test" below).
 

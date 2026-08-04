@@ -1,6 +1,6 @@
 <!-- llm-context: This document explains the internal architecture of apra-fleet  -- the MCP server, member registry, SSH transport, session management, and how tools are dispatched. Read this when a user asks how fleet works under the hood, or when debugging connectivity or session issues. -->
 <!-- keywords: MCP server, member registry, SSH, transport, session, tool dispatch, child process, local member, remote member, architecture -->
-<!-- see-also: ../README.md (getting started), tools-infrastructure.md (tool details), vocabulary.md (terminology) -->
+<!-- see-also: ../README.md (getting started), mcp-tools.md (tool details), vocabulary.md (terminology) -->
 
 # Architecture
 
@@ -299,7 +299,7 @@ build the manifest differently.
 
 The PM skill and its role agent definitions (planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner, ci-watcher, harvester), plus their shared `agents/schemas/` and `agents/_shared/` assets, live in this monorepo at `packages/apra-fleet-se/apra-pm/`. At build time, `scripts/dist-pm.mjs` copies the skill and agent files into `dist/` (and `scripts/gen-sea-config.mjs` embeds them as SEA assets for the standalone binary), so all three install paths -- dev-mode, npm, and SEA binary -- carry the same set. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`); `uninstall` removes that directory in the same pass. For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation. Claude installs additionally get the `auto-sprint-args` skill (the args contract for the `/auto-sprint` workflow), written to `~/.claude/skills/auto-sprint-args`.
 
-Remote fleet members do not share the operator's home directory, so `register_member`, `update_member`, and (starting with the first dispatch after an orchestrator upgrade) `execute_prompt` each independently hash-diff the canonical agent set against the remote box and push anything missing or stale. See [docs/tools-lifecycle.md](tools-lifecycle.md) and [docs/tools-work.md](tools-work.md) for the per-tool behavior.
+Remote fleet members do not share the operator's home directory, so `register_member`, `update_member`, and (starting with the first dispatch after an orchestrator upgrade) `execute_prompt` each independently hash-diff the canonical agent set against the remote box and push anything missing or stale. See [docs/mcp-tools.md](mcp-tools.md) for per-tool behavior details.
 
 ## Key Design Decisions
 
@@ -335,18 +335,18 @@ Two members cannot share the same working directory on the same device. For remo
 
 ## Tools
 
-The tools break into natural groups. Each group has detailed documentation:
+The tools break into natural groups in **[mcp-tools.md](mcp-tools.md)**:
 
-**[Lifecycle](tools-lifecycle.md)**  -- `register_member`, `list_members`, `update_member`, `remove_member`, `shutdown_server`
+**[Lifecycle](mcp-tools.md#1-lifecycle-tools)**  -- `register_member`, `list_members`, `update_member`, `remove_member`, `shutdown_server`
 Manage the fleet roster and server lifecycle. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of auth credentials on the member.
 
-**[Work](tools-work.md)**  -- `send_files`, `execute_prompt`, `execute_command`, `reset_session`
+**[Work](mcp-tools.md#2-work-tools)**  -- `send_files`, `execute_prompt`, `execute_command`, `reset_session`
 The core workflow. Push files to a member, run prompts against it, run shell commands directly, manage conversation sessions.
 
-**[Infrastructure](tools-infrastructure.md)**  -- `provision_llm_auth`, `setup_ssh_key`, `update_llm_cli`
+**[Infrastructure](mcp-tools.md#3-infrastructure-tools)**  -- `provision_llm_auth`, `setup_ssh_key`, `update_llm_cli`
 One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy API key for any provider), migrate from password to key auth, update the LLM CLI on members.
 
-**[Observability](tools-observability.md)**  -- `fleet_status`, `member_detail`
+**[Observability](mcp-tools.md#4-observability-tools)**  -- `fleet_status`, `member_detail`
 Two-layer monitoring. `fleet_status` gives a quick summary table across all members with fleet-aware busy detection (distinguishes between Claude processes serving this member vs unrelated Claude activity). `member_detail` drills into one member with connectivity, CLI version, session state, and system resource metrics.
 
 ## Cross-Platform Support

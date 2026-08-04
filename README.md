@@ -160,43 +160,39 @@ for every option.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    subgraph ControlPlane["Control plane (your machine)"]
-        S[Fleet server MCP or HTTP]
-        W[Workflow engine]
-        SUP[Supervisor - ledger, watchdog, dashboard]
-    end
-    subgraph Members["Fleet members (any device, anywhere)"]
-        M1[MacBook - Claude]
-        M2[Linux GPU box - local vLLM]
-        M3[Cloud VM - Codex plus Gemini]
-        M4[Windows tower - Copilot]
-    end
-    S ---|dispatch, files, credentials| M1
-    S --- M2
-    S --- M3
-    S --- M4
-    W --> S
-    SUP --> W
-```
-
-- **Fleet server**: the control plane. Registers members, dispatches
-  commands and prompts, moves files, brokers credentials. Speaks MCP, so
-  any MCP-capable agent can drive a fleet.
-- **Members**: real machines running provider CLIs. The server composes
-  provider-native permissions before every dispatch; unattended modes are
-  scoped, never blanket.
-- **Workflow engine**: runs workflow programs with phases, retries, turn
-  budgets, resumable sessions, and per-activity persistent state.
-- **Supervisor**: the always-on layer -- launch and stop sprints over HTTP,
-  member reservation ledger (no two workflows fight over a machine),
-  crash watchdog, run history.
+### Layered Architecture
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/marketing/workflow-memory-dark.svg">
-  <img src="assets/marketing/workflow-memory-light.svg" alt="Workflow memory and resumability in apra-fleet: stateless prompt chains vs durable workflows with atomic journal replay." width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/marketing/fleet-stack-dark.svg">
+  <img src="assets/marketing/fleet-stack-light.svg" alt="apra-fleet layered architecture stack: dependencies from OS primitives up to autonomous engineering orchestrators" width="100%">
 </picture>
+
+### Fleet Dispatch Topology
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+- **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet.
+- **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
+- **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, and per-activity persistent state.
+- **Supervisor**: always-on layer -- launch & stop sprints over HTTP, member reservation ledger, crash watchdog, run history.
+
+</td>
+<td width="50%" valign="top">
+
+```mermaid
+flowchart TD
+    CP["Control Plane<br/>(Server, Engine, Supervisor)"]
+    CP --> M1["MacBook (Claude)"]
+    CP --> M2["Linux GPU (vLLM)"]
+    CP --> M3["Cloud VM (Codex)"]
+    CP --> M4["Windows (Copilot)"]
+```
+
+</td>
+</tr>
+</table>
 
 ## Explore with agents. Operate with programs.
 
