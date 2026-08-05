@@ -362,7 +362,15 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
         assert.ok(htmlRes.headers['content-type'].includes('text/html'));
         const prefix = `/sprints/${sprintId}/live`;
         assert.ok(htmlRes.body.includes(`'${prefix}/events'`), htmlRes.body);
-        assert.ok(!htmlRes.body.includes(String(childPort)), 'the real child port must never leak into the served HTML');
+        // Boundary-aware, not a bare substring check: childPort is an
+        // OS-assigned ephemeral port (an arbitrary integer), and a raw
+        // .includes() can coincidentally match its digits inside an
+        // unrelated number already on the page (a PID, timestamp, byte
+        // count) -- a false-positive flake with zero real leak, since the
+        // rewrite (src/supervisor/proxy.mjs) never touches or embeds the
+        // port at all. Assert the port never appears as a standalone number.
+        const portLeakPattern = new RegExp(`(?<!\\d)${childPort}(?!\\d)`);
+        assert.ok(!portLeakPattern.test(htmlRes.body), 'the real child port must never leak into the served HTML');
 
         // SSE: the first event must arrive before the (never-ending) stream
         // closes -- proving incremental, non-buffered delivery through the
