@@ -43,6 +43,8 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
         assert.deepEqual(onDisk.reservations['sprint-a'].issueRoots, ['apra-fleet-x']);
 
         // A fresh ledger reloads EXACTLY from disk (restart fidelity).
+        // apra-fleet-3i3.2: branch/base/goal are now always-present fields
+        // (defaulting to null when the claim() call, as here, omits them).
         const reloaded = createLedger({ filePath });
         await reloaded.start();
         assert.deepEqual(reloaded.get('sprint-a'), {
@@ -50,6 +52,15 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
             issueRoots: ['apra-fleet-x'],
             childPid: 4321,
             reservedAt: '2026-07-18T00:00:00.000Z',
+            branch: null,
+            base: null,
+            goal: null,
+            // apra-fleet-k7b.3: null until recordExit() is called.
+            exitCode: null,
+            signal: null,
+            exitedAt: null,
+            // apra-fleet-ou7.1: null unless claim() is given a logPath.
+            logPath: null,
         });
 
         await fsp.rm(dir, { recursive: true, force: true });
@@ -161,6 +172,90 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
+    // apra-fleet-ou7.1: claim() accepts (and persists) a logPath -- the
+    // spawner's per-sprint raw stdout/stderr log file path, recorded at the
+    // SAME claim() call that sets childPid.
+    test('claim() persists a logPath, and it survives a reload', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+        await ledger.claim('sprint-a', {
+            members: ['alice'], issueRoots: ['apra-fleet-x'], childPid: 4321,
+            logPath: '/home/x/.apra-fleet-se/logs/sprint-a.log',
+        });
+        assert.equal(ledger.get('sprint-a').logPath, '/home/x/.apra-fleet-se/logs/sprint-a.log');
+
+        const reloaded = createLedger({ filePath });
+        await reloaded.start();
+        assert.equal(reloaded.get('sprint-a').logPath, '/home/x/.apra-fleet-se/logs/sprint-a.log');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('claim() without a logPath defaults it to null (unchanged prior behavior)', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+        assert.equal(ledger.get('sprint-a').logPath, null);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    // apra-fleet-k7b.3: recordExit() persists the detached child's own exit
+    // code/signal/timestamp onto its still-held reservation (does NOT
+    // release it -- that stays reconcile.mjs's/force-release's job).
+    test('recordExit annotates the reservation with exitCode/signal/exitedAt, both axes preserved, and persists across reload', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath, now: () => '2026-07-30T21:25:50.000Z' });
+        await ledger.start();
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'], childPid: 4321 });
+
+        const updated = await ledger.recordExit('sprint-a', { exitCode: 1, signal: null });
+        assert.equal(updated.exitCode, 1);
+        assert.equal(updated.signal, null);
+        assert.equal(updated.exitedAt, '2026-07-30T21:25:50.000Z');
+        // Both reservation axes (and childPid) are untouched.
+        assert.deepEqual(updated.members, ['alice']);
+        assert.deepEqual(updated.issueRoots, ['apra-fleet-x']);
+        assert.equal(updated.childPid, 4321);
+
+        const reloaded = createLedger({ filePath });
+        await reloaded.start();
+        const r = reloaded.get('sprint-a');
+        assert.equal(r.exitCode, 1);
+        assert.equal(r.signal, null);
+        assert.equal(r.exitedAt, '2026-07-30T21:25:50.000Z');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('recordExit accepts an explicit "at" timestamp and a non-null signal (killed by SIGKILL)', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+
+        const updated = await ledger.recordExit('sprint-a', { exitCode: null, signal: 'SIGKILL', at: '2026-07-30T21:30:00.000Z' });
+        assert.equal(updated.exitCode, null);
+        assert.equal(updated.signal, 'SIGKILL');
+        assert.equal(updated.exitedAt, '2026-07-30T21:30:00.000Z');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('recordExit rejects a sprintId with no held reservation', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath });
+        await ledger.start();
+        await assert.rejects(() => ledger.recordExit('no-such-sprint', { exitCode: 0 }), /holds no reservation/);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
     test('double-claim of a live sprint is rejected; list()/get() return clones', async () => {
         const dir = await tmpDir();
         const filePath = path.join(dir, LEDGER_FILENAME);
@@ -202,6 +297,82 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
         await ledger.start();
         assert.equal(ledger.size, 0);
         assert.deepEqual(ledger.toDocument(), emptyLedgerDocument());
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('ledger -- apra-fleet-3i3.2 launch metadata (branch/base/goal)', () => {
+    test('claim() persists branch/base/goal and a fresh ledger reloads them exactly', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const ledger = createLedger({ filePath, now: () => '2026-07-30T00:00:00.000Z' });
+        await ledger.start();
+
+        const r = await ledger.claim('sprint-meta', {
+            members: ['alice'],
+            issueRoots: ['apra-fleet-y'],
+            childPid: 555,
+            branch: 'feat/my-topic',
+            base: 'main',
+            goal: 'P1/P2',
+        });
+        assert.equal(r.branch, 'feat/my-topic');
+        assert.equal(r.base, 'main');
+        assert.equal(r.goal, 'P1/P2');
+
+        const onDisk = JSON.parse(await fsp.readFile(filePath, 'utf-8'));
+        assert.equal(onDisk.reservations['sprint-meta'].branch, 'feat/my-topic');
+        assert.equal(onDisk.reservations['sprint-meta'].base, 'main');
+        assert.equal(onDisk.reservations['sprint-meta'].goal, 'P1/P2');
+
+        const reloaded = createLedger({ filePath });
+        await reloaded.start();
+        const got = reloaded.get('sprint-meta');
+        assert.equal(got.branch, 'feat/my-topic');
+        assert.equal(got.base, 'main');
+        assert.equal(got.goal, 'P1/P2');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('claim() omitting branch/base/goal defaults them to null (goal is optional at launch)', async () => {
+        const dir = await tmpDir();
+        const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME) });
+        await ledger.start();
+        const r = await ledger.claim('sprint-nogoal', { members: ['a'], issueRoots: ['r'], childPid: 1 });
+        assert.equal(r.branch, null);
+        assert.equal(r.base, null);
+        assert.equal(r.goal, null);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a pre-existing on-disk entry written before branch/base/goal existed still loads, defaulting them to null', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        // Simulate a legacy document from before apra-fleet-3i3.2: no
+        // branch/base/goal keys on the reservation at all.
+        const legacyDoc = {
+            version: LEDGER_VERSION,
+            reservations: {
+                'legacy-sprint': {
+                    members: ['carol'],
+                    issueRoots: ['r-legacy'],
+                    childPid: 42,
+                    reservedAt: '2026-01-01T00:00:00.000Z',
+                },
+            },
+            scopeFreshness: { lastSyncedAt: null },
+        };
+        await fsp.writeFile(filePath, JSON.stringify(legacyDoc), 'utf-8');
+
+        const ledger = createLedger({ filePath });
+        await assert.doesNotReject(() => ledger.start());
+        const got = ledger.get('legacy-sprint');
+        assert.deepEqual(got.members, ['carol']);
+        assert.equal(got.branch, null);
+        assert.equal(got.base, null);
+        assert.equal(got.goal, null);
+
         await fsp.rm(dir, { recursive: true, force: true });
     });
 });
@@ -374,6 +545,89 @@ describe('ledger -- server reservation client (apra-fleet-eft.10.3)', () => {
         assert.deepEqual(ledger.get('sprint-a').members, ['alice']);
         assert.equal(await ledger.release('sprint-a'), true);
         assert.equal(ledger.get('sprint-a'), undefined);
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+// apra-fleet-ed4.1: persist()'s tmp-write-then-rename step now routes through
+// the shared renameWithRetry() helper (rename-with-retry.mjs), injectable via
+// deps.renameRetry -- same fake-fs/fake-sleep pattern as
+// supervisor-id-allocator.test.mjs's apra-fleet-cvb.5 coverage, proving THIS
+// call site (not just the helper in isolation) is wired up.
+describe('ledger -- persist() rename retries transient EPERM/EBUSY (apra-fleet-ed4.1)', () => {
+    /** A fake fs.rename() that fails N times with `code`, then delegates to the real rename. */
+    function flakyRenameFs(realFs, code, failCount) {
+        let calls = 0;
+        return {
+            mkdir: realFs.mkdir.bind(realFs),
+            readFile: realFs.readFile.bind(realFs),
+            writeFile: realFs.writeFile.bind(realFs),
+            async rename(src, dst) {
+                calls += 1;
+                if (calls <= failCount) {
+                    const err = new Error(`simulated ${code}`);
+                    err.code = code;
+                    throw err;
+                }
+                return realFs.rename(src, dst);
+            },
+            get renameCalls() { return calls; },
+        };
+    }
+
+    test('retry-then-succeed: a transient EPERM on rename() does not drop the claimed reservation', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const fakeFs = flakyRenameFs(fsp, 'EPERM', 2);
+        const sleeps = [];
+        const ledger = createLedger({
+            filePath, fs: fakeFs, renameRetry: { sleep: async (ms) => { sleeps.push(ms); } },
+        });
+        await ledger.start();
+
+        const r = await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+        assert.deepEqual(r.members, ['alice']);
+        assert.equal(fakeFs.renameCalls, 3, 'rename must be retried until it succeeds (1 + 2 retries)');
+        assert.equal(sleeps.length, 2, 'a bounded backoff sleep is injected between retries, never a real wall-clock wait');
+
+        // The reservation is actually durable on disk, not just in memory.
+        const onDisk = JSON.parse(await fsp.readFile(filePath, 'utf-8'));
+        assert.deepEqual(onDisk.reservations['sprint-a'].members, ['alice']);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('retry-then-succeed: a transient EBUSY on rename() does not drop the claimed reservation', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const fakeFs = flakyRenameFs(fsp, 'EBUSY', 1);
+        const ledger = createLedger({ filePath, fs: fakeFs, renameRetry: { sleep: async () => {} } });
+        await ledger.start();
+
+        await ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] });
+        assert.equal(fakeFs.renameCalls, 2, 'rename must be retried after a single transient EBUSY');
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('non-retryable passthrough: a non-EPERM/EBUSY rename error rejects claim() immediately without retry', async () => {
+        const dir = await tmpDir();
+        const filePath = path.join(dir, LEDGER_FILENAME);
+        const fakeFs = flakyRenameFs(fsp, 'ENOSPC', 5);
+        const ledger = createLedger({
+            filePath, fs: fakeFs,
+            renameRetry: { sleep: async () => { throw new Error('must not sleep/retry for a non-transient error'); } },
+        });
+        await ledger.start();
+
+        await assert.rejects(
+            () => ledger.claim('sprint-a', { members: ['alice'], issueRoots: ['apra-fleet-x'] }),
+            (err) => err.code === 'ENOSPC',
+        );
+        assert.equal(fakeFs.renameCalls, 1, 'a non-transient error must not be retried');
+        // No half-claim -- the reservation never committed to memory either.
+        assert.equal(ledger.get('sprint-a'), undefined);
+
         await fsp.rm(dir, { recursive: true, force: true });
     });
 });

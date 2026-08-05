@@ -6,7 +6,8 @@ import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult } from '../types.js';
 import { decryptPassword } from '../utils/crypto.js';
 import { verifyHostKey, replaceKnownHost, HostKeyMismatchError } from './known-hosts.js';
-import { setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
+import { setStoredPid, clearStoredPid, getAgentOS } from '../utils/agent-helpers.js';
+import { getOsCommands } from '../os/index.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -14,6 +15,14 @@ interface PoolEntry {
   client: Client;
   lastUsed: number;
   timer: ReturnType<typeof setTimeout>;
+  // apra-fleet-9zz.1: count of execCommand() calls currently in flight on
+  // this connection (incremented before client.exec() is issued, decremented
+  // when that call's promise settles -- see execCommand below). A provisional
+  // stall-detector entry (stall-detector.ts) only refreshes the idle timer
+  // incidentally via the poller's own tail probes, not via this activity
+  // directly, so a long-running exec could otherwise sit through an idle-timer
+  // fire with no other signal that the connection is still genuinely in use.
+  activeChannels: number;
 }
 
 const pool = new Map<string, PoolEntry>();
@@ -26,6 +35,20 @@ function poolKey(agent: Agent): string {
 function cleanupEntry(key: string): void {
   const entry = pool.get(key);
   if (entry) {
+    if (entry.activeChannels > 0) {
+      // apra-fleet-9zz.1: a channel opened by execCommand (or an exec call
+      // about to open one) is still live on this connection -- ending it here
+      // would reap a genuinely active command out from under a caller that is
+      // still waiting on its result. Re-arm the idle timer instead of
+      // reaping; execCommand decrements activeChannels when the in-flight
+      // call actually settles, so a later idle-timer fire with no active
+      // channels left reaps normally.
+      clearTimeout(entry.timer);
+      const timer = setTimeout(() => cleanupEntry(key), IDLE_TIMEOUT);
+      timer.unref();
+      entry.timer = timer;
+      return;
+    }
     try { entry.client.end(); } catch {}
     clearTimeout(entry.timer);
     pool.delete(key);
@@ -49,6 +72,8 @@ export function getSSHConfig(agent: Agent): ConnectConfig {
     port: agent.port,
     username: agent.username,
     readyTimeout: 15000,
+    keepaliveInterval: 15000,
+    keepaliveCountMax: 3,
     hostVerifier: (key: Buffer) => {
       return verifyHostKey(agent.host!, agent.port!, key);
     },
@@ -70,7 +95,7 @@ function connectClient(config: ConnectConfig, key: string): Promise<Client> {
     client.on('ready', () => {
       const timer = setTimeout(() => cleanupEntry(key), IDLE_TIMEOUT);
       timer.unref();
-      pool.set(key, { client, lastUsed: Date.now(), timer });
+      pool.set(key, { client, lastUsed: Date.now(), timer, activeChannels: 0 });
 
       client.on('close', () => {
         pool.delete(key);
@@ -130,7 +155,48 @@ export async function execCommand(
   abortSignal?: AbortSignal,
 ): Promise<SSHExecResult> {
   const { client, warning } = await connectWithTOFU(agent);
-  resetIdleTimer(poolKey(agent));
+  const key = poolKey(agent);
+  resetIdleTimer(key);
+
+  // apra-fleet-9zz.1: mark this call as an active channel on the pool entry
+  // BEFORE issuing client.exec() -- covers both the in-flight exec request
+  // and the channel it opens -- so cleanupEntry's idle-timer reap can see it
+  // and never end the connection out from under it (see cleanupEntry above).
+  // connectWithTOFU/connectClient always populates the pool entry before
+  // returning (pool.set() runs before the 'ready' promise resolves), so this
+  // entry is guaranteed to exist here.
+  const poolEntry = pool.get(key);
+  if (poolEntry) poolEntry.activeChannels += 1;
+  let channelReleased = false;
+  function releaseChannel(): void {
+    if (channelReleased) return;
+    channelReleased = true;
+    const entry = pool.get(key);
+    if (entry) entry.activeChannels = Math.max(0, entry.activeChannels - 1);
+  }
+
+  // Remote PID captured from the FLEET_PID marker (see execute-command.ts's
+  // wrapPidCapture), if the wrapped command emits one. A closed/rejected SSH
+  // channel does NOT kill the remote process it started (unlike a local
+  // child_process, an ssh2 exec channel closing has no effect on the far
+  // side) -- apra-fleet-kwx fixed this for LocalStrategy via a local
+  // child.pid tree-kill; killRemoteTree below is the same fix for the SSH
+  // path, using the marker PID instead of a local handle.
+  let capturedPid: number | undefined;
+  function killRemoteTree() {
+    if (capturedPid === undefined) return;
+    try {
+      const killCmd = getOsCommands(getAgentOS(agent)).killPid(capturedPid);
+      // Best-effort, fire-and-forget on a FRESH channel -- the timed-out
+      // command's own channel may itself be wedged and must not be relied
+      // on to carry the kill.
+      client.exec(killCmd, (err, killStream) => {
+        if (err) return;
+        killStream.on('data', () => {});
+        killStream.stderr?.on('data', () => {});
+      });
+    } catch { /* best-effort; connection may already be gone */ }
+  }
 
   return new Promise<SSHExecResult>((resolve, reject) => {
     let settled = false;
@@ -139,6 +205,7 @@ export async function execCommand(
       settled = true;
       clearTimeout(inactivityTimer);
       if (maxTotalTimer) clearTimeout(maxTotalTimer);
+      releaseChannel();
       fn();
     }
 
@@ -147,6 +214,7 @@ export async function execCommand(
     function resetInactivityTimer() {
       clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(() => {
+        killRemoteTree();
         settle(() => reject(new Error(`Command timed out after ${timeoutMs}ms of inactivity`)));
       }, timeoutMs);
       inactivityTimer.unref();
@@ -157,6 +225,7 @@ export async function execCommand(
     let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
     if (maxTotalMs !== undefined) {
       maxTotalTimer = setTimeout(() => {
+        killRemoteTree();
         settle(() => reject(new Error(`Command exceeded max total time of ${maxTotalMs}ms`)));
       }, maxTotalMs);
       maxTotalTimer.unref();
@@ -188,6 +257,7 @@ export async function execCommand(
           const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
           if (m) {
             const pid = parseInt(m[1], 10);
+            capturedPid = pid;
             setStoredPid(agent.id, pid);
             onPidCaptured?.(pid);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');
@@ -246,6 +316,7 @@ export async function execCommand(
 
       if (abortSignal) {
         const onAbort = () => {
+          killRemoteTree();
           try { stream.close(); } catch { /* best-effort */ }
           settle(() => reject(new Error('Command aborted by client')));
         };

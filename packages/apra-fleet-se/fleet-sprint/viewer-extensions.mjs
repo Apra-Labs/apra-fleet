@@ -37,13 +37,27 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * lost even though it is no longer used for nesting. Multiple top-level
  * roots (tasks with no in-dataset parent) render as multiple top-level
  * rows -- this is expected, not an error, whenever a sprint targets more
- * than one independent top-level item at once.
+ * than one independent top-level item at once. apra-fleet-eft.52.1.2: those
+ * TOP-LEVEL roots are ordered by status urgency first (In-progress -> Open
+ * -> Blocked -> Closed, priority-then-id breaking ties within a status);
+ * this is non-recursive -- each root's own children keep their existing
+ * natural DAG order (see `childrenOf[nodeId].slice().sort()` in
+ * `renderNode`), unaffected by their parent's status.
  *
- * The panel always shows two top-level sections: "Sprint" (the containment
+ * The panel shows up to two top-level sections: "Sprint" (the containment
  * tree above, built from `sprintTasks`) and "Backlog" (`backlogTasks` --
  * open/deferred beads the sprint is certainly NOT addressing this run,
  * which may belong to an entirely different epic or never have gone
- * through a planning phase at all).
+ * through a planning phase at all). Each section (header + body) is
+ * rendered ONLY when that section has at least one task (apra-fleet-eft.89):
+ * an empty `sprintTasks`/`backlogTasks` array skips its section entirely
+ * rather than showing a header with a "No sprint tasks."/"No backlog
+ * items." placeholder row. This lets a caller that only ever supplies one
+ * of the two lists (e.g. the supervisor's viewer, which always calls
+ * `renderBeadsHtml([], tasks, ...)`) render a single, focused section with
+ * no always-empty sibling section cluttering the panel. The 6-column
+ * header row and outer `<table>` wrapper always render regardless of which
+ * (if either) section has content.
  *
  * apra-fleet-k7s: unlike Sprint (nested by `parent` containment), Backlog
  * has no shared parent/epic to nest under -- what it DOES sometimes have is
@@ -68,9 +82,10 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * well-formed bd data, but is not assumed) guarantees every task in the
  * input is rendered exactly once, never silently dropped.
  *
- * apra-fleet-4p5: every tree node that has children (and the two
- * top-level "Sprint"/"Backlog" section headers themselves) renders a
- * `[-]`/`[+]` toggle (a `.tree-toggle` span carrying a `data-toggle-id`,
+ * apra-fleet-4p5: every tree node that has children (and either top-level
+ * "Sprint"/"Backlog" section header that is actually rendered, per the
+ * conditional-section rule above) renders a `[-]`/`[+]` toggle (a
+ * `.tree-toggle` span carrying a `data-toggle-id`,
  * same round-trip-through-the-DOM pattern the `bead-desc` `data-bead-id`
  * attribute already uses) so a user can fold away a subtree. A node id in
  * `collapsedIds` is rendered collapsed: its own row still shows (with the
@@ -92,6 +107,26 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     sprintTasks = sprintTasks || [];
     backlogTasks = backlogTasks || [];
+
+    // apra-fleet-eft.52.1.3: a server-computed `placement` flag ('sprint' |
+    // 'backlog') on a task is AUTHORITATIVE for which section it renders in --
+    // runner.js decides Sprint vs Backlog by goal membership (goal-priority
+    // band + a blocks-edge exception), not this browser-side view, and never
+    // by hiding a row with CSS. When any task carries `placement`, re-derive
+    // both section lists from the flag so a below-goal top-level item lands in
+    // the Backlog container even if it arrived in the sprintTasks array (and
+    // vice versa). Tasks with no `placement` (every pre-existing caller and
+    // fixture) are left in whichever array the caller passed them -- this
+    // normalization is a no-op for them, so behavior is unchanged.
+    const anyPlacement = sprintTasks.some((t) => t && t.placement) || backlogTasks.some((t) => t && t.placement);
+    if (anyPlacement) {
+        const all = sprintTasks.concat(backlogTasks);
+        // A flag-less item defaults to Sprint (in-scope work of unknown rank
+        // is sprint work, mirroring runner.js's server-side default).
+        sprintTasks = all.filter((t) => t && t.placement !== 'backlog');
+        backlogTasks = all.filter((t) => t && t.placement === 'backlog');
+    }
+
     // Accept a Set (the browser-side embed's long-lived collapse state) or
     // a plain array (e.g. a future caller reconstructing it from
     // persisted/serialized state) -- never throws on either shape.
@@ -182,6 +217,22 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         return statusBadge(node.status);
     }
 
+    // apra-fleet-eft.52.1.2: rank used to order Sprint's TOP-LEVEL roots only
+    // (see sprintRootSort below) -- in-progress work surfaces first, closed
+    // work sinks to the bottom. Mirrors statusBadgeForNode's 'open' +
+    // ready===false ==> effectively-blocked distinction above, so a root
+    // row's rank always agrees with its own rendered status badge. Anything
+    // outside these four (e.g. 'deferred', or a future/unrecognized status)
+    // ranks after 'closed' rather than throwing or being treated as one of
+    // the four.
+    const STATUS_ORDER = { in_progress: 0, open: 1, blocked: 2, closed: 3 };
+    function statusRank(node) {
+        const status = (node.status || '').toString().toLowerCase();
+        const effective = (status === 'open' && node.ready === false) ? 'blocked' : status;
+        const rank = STATUS_ORDER[effective];
+        return typeof rank === 'number' ? rank : STATUS_ORDER.closed + 1;
+    }
+
     function priorityBadge(priority) {
         const label = (typeof priority === 'number' && Number.isFinite(priority)) ? 'P' + priority : 'P?';
         return '<span style="color: #a1a1aa; font-size: 10px;">' + label + '</span>';
@@ -196,6 +247,23 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     function modelBadge(metadata) {
         const model = metadata && metadata.model;
         return '<span style="color: #a1a1aa; font-size: 10px;">' + (model ? escapeHtml(model) : 'n/a') + '</span>';
+    }
+
+    // apra-fleet supervisor's Backlog view (src/supervisor/backlog.mjs) has no
+    // containment tree of its own to hang a partial-claim annotation off (its
+    // beads-tree nests by `blocks` edges, not `parent`), so it attaches the
+    // annotation directly onto the flat row object it hands this renderer as
+    // `node.partialClaim`. Every fleet-sprint caller leaves this field
+    // undefined, so this is a no-op there -- same "defensive, never throws on
+    // an absent/unrecognized field" rule the badge builders above already
+    // follow.
+    function partialClaimAnnotationHtml(partialClaim) {
+        if (!partialClaim) return '';
+        const sprintLabel = partialClaim.sprints.length === 0
+            ? 'an active sprint'
+            : partialClaim.sprints.map((s) => (partialClaim.sprints.length > 1 ? s.sprintId + ' (' + s.count + ')' : s.sprintId)).join(', ');
+        const text = partialClaim.claimedCount + ' of ' + partialClaim.totalCount + ' children claimed by ' + sprintLabel + '; ' + partialClaim.freeCount + ' free';
+        return '<div data-partial-claim="true" style="margin-top: 4px; font-size: 10px; color: #f59e0b; font-style: italic;">' + escapeHtml(text) + '</div>';
     }
 
     // apra-fleet-eft.27.2: descriptions are no longer inlined into the
@@ -249,8 +317,19 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
             'style="cursor: pointer; display: inline-block; width: 16px; user-select: none; color: #a1a1aa;">' + label + '</span>';
     }
 
-    function sectionHeaderRow(label, sectionKey, collapsed) {
-        return '<tr><td colspan="6" style="padding: 10px 8px 4px; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; color: #a1a1aa; border-bottom: 1px solid rgba(255,255,255,0.1);">' +
+    // apra-fleet-eft.52.1.1: `variant` distinguishes the Backlog header from
+    // the Sprint header, both in DOM (a stable `backlog-header`/
+    // `backlog-section` class not present on Sprint) and visually (a muted
+    // band + more prominent header), so the two regions are no longer
+    // rendered via an identical, indistinguishable code path.
+    function sectionHeaderRow(label, sectionKey, collapsed, variant) {
+        const isBacklog = variant === 'backlog';
+        const rowClass = isBacklog ? 'section-header backlog-section' : 'section-header';
+        const cellStyle = isBacklog
+            ? 'padding: 10px 8px; font-size: 12px; font-weight: bold; letter-spacing: 0.5px; text-transform: uppercase; color: #e4e4e7; background: rgba(161,161,170,0.12); border-top: 1px solid rgba(255,255,255,0.15); border-bottom: 1px solid rgba(255,255,255,0.15);'
+            : 'padding: 10px 8px 4px; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; color: #a1a1aa; border-bottom: 1px solid rgba(255,255,255,0.1);';
+        const headerClass = isBacklog ? ' backlog-header' : '';
+        return '<tr class="' + rowClass + '"><td colspan="6" class="section-header-cell' + headerClass + '" style="' + cellStyle + '">' +
             treeToggleHtml(sectionKey, true, collapsed) + ' ' + escapeHtml(label) + '</td></tr>';
     }
 
@@ -285,9 +364,30 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         }
     });
 
+    // apra-fleet-eft.52.1.2: TOP-LEVEL Sprint roots only are primarily
+    // ordered by status urgency (statusRank above) -- In-progress -> Open ->
+    // Blocked -> Closed -- falling back to the existing priority-then-id
+    // ordering only to break ties within the same status. This is
+    // deliberately NOT applied recursively: `childrenOf[nodeId]` in
+    // renderNode below keeps its own unrelated (natural DAG / id) order, so
+    // a subtree's hierarchy stays legible rather than being scrambled by
+    // status.
+    function sprintRootSort(aId, bId) {
+        const a = map[aId];
+        const b = map[bId];
+        const ra = statusRank(a);
+        const rb = statusRank(b);
+        if (ra !== rb) return ra - rb;
+        const pa = (typeof a.priority === 'number' && Number.isFinite(a.priority)) ? a.priority : 99;
+        const pb = (typeof b.priority === 'number' && Number.isFinite(b.priority)) ? b.priority : 99;
+        if (pa !== pb) return pa - pb;
+        return String(aId).localeCompare(String(bId));
+    }
+
     const roots = sprintTasks
         .filter((t) => !(t.parent !== undefined && t.parent !== null && map[t.parent]))
-        .map((t) => t.id);
+        .map((t) => t.id)
+        .sort(sprintRootSort);
 
     function renderNode(nodeId, depth, rendered) {
         if (rendered.has(nodeId)) return ''; // cycle-guard: never render twice
@@ -314,12 +414,17 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
             const blockers = node.blockedBy.slice().sort().map((id) => '#' + escapeHtml(id)).join(', ');
             extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">blocked by: ' + blockers + '</div>';
         }
+        extraBlockedByHtml += partialClaimAnnotationHtml(node.partialClaim);
 
         const children = (childrenOf[nodeId] || []).slice().sort();
         const isCollapsed = children.length > 0 && collapsedIds.has(String(nodeId));
         const toggleHtml = treeToggleHtml(nodeId, children.length > 0, isCollapsed);
 
-        let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
+        // data-bead-id round-trips the raw (unescaped) id back via HTML entity
+        // decoding, same convention as .bead-desc's data-bead-id / .tree-toggle's
+        // data-toggle-id above -- lets a host page (e.g. the supervisor's Launch
+        // Sprint form) wire row click-to-select without parsing rendered text.
+        let html = '<tr data-bead-id="' + safeId + '" style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + toggleHtml + prefix + '#' + safeId + '</td>' +
             '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(node.status) + ';">' + titleHtml + extraBlockedByHtml + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(node.issue_type, node.title) + '</td>' +
@@ -405,12 +510,13 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
             const blockers = node.blockedBy.slice().sort().map((id) => '#' + escapeHtml(id)).join(', ');
             extraBlockedByHtml = '<div style="margin-top: 4px; font-size: 10px; color: #71717a;">blocked by: ' + blockers + '</div>';
         }
+        extraBlockedByHtml += partialClaimAnnotationHtml(node.partialClaim);
 
         const children = (backlogChildrenOf[nodeId] || []).slice().sort(priorityThenId);
         const isCollapsed = children.length > 0 && collapsedIds.has(String(nodeId));
         const toggleHtml = treeToggleHtml(nodeId, children.length > 0, isCollapsed);
 
-        let html = '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
+        let html = '<tr data-bead-id="' + safeId + '" style="border-bottom: 1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding: 8px; padding-left: ' + (8 + indent) + 'px; vertical-align: top; width: 110px; color: ' + titleColor(node.status) + ';">' + toggleHtml + prefix + '#' + safeId + '</td>' +
             '<td style="padding: 8px; vertical-align: top; color: ' + titleColor(node.status) + ';">' + titleHtml + extraBlockedByHtml + '</td>' +
             '<td style="padding: 8px; vertical-align: top; width: 90px;">' + typeBadge(node.issue_type, node.title) + '</td>' +
@@ -440,12 +546,18 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     // not just direct children -- there is no safety-net concern here
     // (unlike node-level collapse) since a section's rows have nowhere
     // else in the output they could spuriously reappear.
+    //
+    // apra-fleet-eft.89: a section (header + body) is only emitted when it
+    // has at least one task -- an empty sprintTasks/backlogTasks list skips
+    // that entire section (no header, no "No sprint tasks."/"No backlog
+    // items." placeholder row), rather than always rendering both. This
+    // keeps a caller that only ever supplies one of the two lists (e.g. the
+    // supervisor's renderBeadsHtml([], tasks, ...)) from showing an
+    // always-empty sibling section.
     const sprintCollapsed = collapsedIds.has('section:sprint');
-    html += sectionHeaderRow('Sprint', 'section:sprint', sprintCollapsed);
-    if (!sprintCollapsed) {
-        if (sprintTasks.length === 0) {
-            html += emptySectionRow('No sprint tasks.');
-        } else {
+    if (sprintTasks.length > 0) {
+        html += sectionHeaderRow('Sprint', 'section:sprint', sprintCollapsed);
+        if (!sprintCollapsed) {
             const rendered = new Set();
             roots.forEach((rootId) => {
                 html += renderNode(rootId, 0, rendered);
@@ -462,11 +574,9 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
     }
 
     const backlogCollapsed = collapsedIds.has('section:backlog');
-    html += sectionHeaderRow('Backlog', 'section:backlog', backlogCollapsed);
-    if (!backlogCollapsed) {
-        if (backlogTasks.length === 0) {
-            html += emptySectionRow('No backlog items.');
-        } else {
+    if (backlogTasks.length > 0) {
+        html += sectionHeaderRow('Backlog', 'section:backlog', backlogCollapsed, 'backlog');
+        if (!backlogCollapsed) {
             // Roots (items with no in-set blocker, or whose blocker isn't
             // part of this backlog dataset) are sorted priority-then-id for
             // stable, scannable ordering; any item nested under a blocker
@@ -486,6 +596,14 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
                 }
             });
         }
+    }
+
+    // Both lists empty: neither section rendered above, so the table would
+    // otherwise be just the 6-column header row with no body at all. That
+    // is well-formed on its own, but a single graceful placeholder row
+    // reads better than a header with nothing under it.
+    if (sprintTasks.length === 0 && backlogTasks.length === 0) {
+        html += emptySectionRow('No tasks to display.');
     }
 
     html += '</table>';

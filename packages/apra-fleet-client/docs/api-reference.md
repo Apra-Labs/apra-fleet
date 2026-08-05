@@ -153,6 +153,15 @@ before the server's own deadline has a chance to fire.
   (letting `McpClient` fall back to its own `DEFAULT_REQUEST_TIMEOUT_MS`).
 - Otherwise returns `hintSeconds * 1000 + 30_000` -- a 30-second grace
   margin (`TIMEOUT_GRACE_MS`) added on top of the server-facing hint.
+- This single-budget shape (rather than `max_total_s * 2`) relies on the
+  server sharing ONE `max_total_s` deadline across an original dispatch
+  attempt and any single retry it runs internally (e.g. a fresh-session
+  retry after an SSH inactivity exception) -- a retry's own budget is capped
+  to whatever remains of `max_total_s` since the dispatch started, and
+  skipped once that remainder is exhausted (`src/tools/execute-prompt.ts`,
+  apra-fleet-y8q.1). Without that server-side sharing, a retry could burn a
+  second full budget and this client timeout would fire before the server's
+  own clean retry-and-report path ever got a chance.
 
 ### `class ApraFleet`
 

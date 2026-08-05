@@ -57,6 +57,17 @@ COPILOT-INSTRUCTIONS.md
 /auto-sprint-*.log
 /auto-sprint-*.err.log
 
+# Fleet-sprint orchestrator run artifacts left in repo root
+/fleet-sprint-eft-*.log*
+
+# Fleet log dumps (e.g. .fleet-log-win-excerpt.txt) -- local debug artifacts, never commit
+.fleet-log-*
+
+# Fleet orchestrator review and plan scaffold outputs -- per-round reviewer/planner scratch, never commit
+.fleet-review-output.json
+.fleet-review-verdict*.json
+.fleet-plan-review-output.json
+
 # Per-file integration-test progress state (scripts/run-integ-suites.mjs)
 /integ-suite-status.json
 /integ-suite-status.json.tmp

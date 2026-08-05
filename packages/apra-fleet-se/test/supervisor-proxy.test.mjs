@@ -56,6 +56,23 @@ describe('proxy -- rewriteChildHtml', () => {
     test('is a no-op on non-string input', () => {
         assert.strictEqual(rewriteChildHtml(undefined, '/p'), undefined);
     });
+
+    // apra-fleet-04g.1: the generic on-demand-detail route (beads task-tree
+    // descriptions, any other extension) and the activity tree's full-output
+    // route were never included in the rewrite list, so the child's absolute
+    // fetch() call resolved against the SUPERVISOR's own origin (no such
+    // route there) instead of re-entering the proxy -- a 404 on every single
+    // expand, live-observed as "(description unavailable)" / "failed to load
+    // (retry?)".
+    test('rewrites the generic extension-detail and activity-output fetch calls', () => {
+        const prefix = livePrefixFor('sprint-x');
+        const html = "fetch('/extensions/beads/detail/' + id); fetch('/activities/' + id + '/output')";
+        const out = rewriteChildHtml(html, prefix);
+        assert.ok(out.includes("'" + prefix + "/extensions/beads/detail/'"), out);
+        assert.ok(out.includes("'" + prefix + "/activities/'"), out);
+        assert.ok(!out.includes("'/extensions/"), 'must not leave a bare /extensions/ path');
+        assert.ok(!out.includes("'/activities/"), 'must not leave a bare /activities/ path');
+    });
 });
 
 describe('proxy -- livePrefixFor', () => {
@@ -97,6 +114,12 @@ describe('proxy -- HTTP passthrough + no port leak', () => {
             } else if (req.url.startsWith('/state')) {
                 res.writeHead(200, { 'content-type': 'application/json' });
                 res.end(JSON.stringify({ ok: true }));
+            } else if (req.url === '/extensions/beads/detail/apra-fleet-9oo') {
+                res.writeHead(200, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ id: 'apra-fleet-9oo', text: 'the real description', updatedAt: null }));
+            } else if (req.url === '/activities/act-1/output') {
+                res.writeHead(200, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ command: 'the full untruncated output' }));
             } else {
                 res.writeHead(404);
                 res.end();
@@ -126,6 +149,22 @@ describe('proxy -- HTTP passthrough + no port leak', () => {
         const res = await getText(sup.port, '/sprints/s1/live/state');
         assert.strictEqual(res.status, 200);
         assert.deepStrictEqual(JSON.parse(res.body), { ok: true });
+    });
+
+    // apra-fleet-04g.1: these two routes did not exist at all before the fix --
+    // the beads task-tree "expand description" and activity tree "more..."
+    // both 404'd through the proxy even though the child served them fine
+    // directly.
+    test('GET /sprints/:id/live/extensions/:extId/detail/:itemId proxies through to the child', async () => {
+        const res = await getText(sup.port, '/sprints/s1/live/extensions/beads/detail/apra-fleet-9oo');
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.body), { id: 'apra-fleet-9oo', text: 'the real description', updatedAt: null });
+    });
+
+    test('GET /sprints/:id/live/activities/:activityId/output proxies through to the child', async () => {
+        const res = await getText(sup.port, '/sprints/s1/live/activities/act-1/output');
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.body), { command: 'the full untruncated output' });
     });
 });
 

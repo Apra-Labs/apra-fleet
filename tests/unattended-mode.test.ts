@@ -219,5 +219,45 @@ describe('execute_prompt: dangerously_skip_permissions removed', () => {
     const mainCmd = mockExecCommand.mock.calls[1][0];
     expect(mainCmd).toContain('--permission-mode auto');
   });
+
+  it('passes --dangerously-skip-permissions for AGY member when unattended="dangerous"', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-dangerous', llmProvider: 'agy', unattended: 'dangerous' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: 'FLEET_SESSION_ID:sess-agy-dangerous\nresult done',
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({
+      member_id: member.id,
+      prompt: 'do something',
+      resume: false,
+      timeout_s: 5,
+    });
+
+    const mainCmd = mockExecCommand.mock.calls[1][0];
+    expect(mainCmd).toContain('--dangerously-skip-permissions');
+  });
+
+  it('does NOT pass --dangerously-skip-permissions for AGY member when unattended="auto"', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-auto', llmProvider: 'agy', unattended: 'auto' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: 'FLEET_SESSION_ID:sess-agy-auto\nresult done',
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({
+      member_id: member.id,
+      prompt: 'do something',
+      resume: false,
+      timeout_s: 5,
+    });
+
+    const mainCmd = mockExecCommand.mock.calls[1][0];
+    expect(mainCmd).not.toContain('--dangerously-skip-permissions');
+  });
 });
 

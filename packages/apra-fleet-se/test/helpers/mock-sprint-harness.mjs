@@ -91,6 +91,73 @@ export function isSpawnFailure(err) {
     return err.code === undefined || err.code === 'ENOENT';
 }
 
+// apra-fleet-tfx.8: the Publish PR / finalizeAbort PR-raising call sites now
+// mint a just-in-time push+pr credential via `args.callTool('provision_vcs_auth',
+// ...)` (ApraFleet.provisionVcsAuth) immediately before building/dispatching
+// VCSModule's create-pull-request command -- so every mock-sprint scenario
+// that reaches PR creation needs a working `callTool`, not just the small
+// subset that opted in for self-heal/preflight coverage (apra-fleet-eft.75.3).
+// This default answers 'provision_vcs_auth' with the same shape the real
+// production tool returns on success (a leading check-mark line plus an
+// 'expiresAt:' metadata line, see src/tools/provision-vcs-auth.ts and
+// runner.js's parseExpiresAtFromProvisionText()) and, for any other tool
+// name, a generic success -- so it never masks a genuinely-unexpected tool
+// call as a failure. A scenario that needs to observe a provisioning
+// failure, or assert on the exact provision_vcs_auth call args, still passes
+// its own `callTool` override (see vcs-auth-preflight.test.mjs /
+// vcs-auth-self-heal.test.mjs for that pattern applied directly against the
+// exported callback factories).
+//
+// apra-fleet-tfx.8.4 fix: wiring `callTool` by default here (previously only
+// opt-in) also activates createMcpChildIdAllocatorClient/dolt_push_mutex's
+// MCP client whenever a scenario mints a new child bead or acquires the push
+// mutex -- BOTH of those, unlike provision_vcs_auth/member_reservation/
+// stop_prompt, are read through parseCoordinationToolResult(), which
+// JSON.parse()s the tool's text and THROWS on anything that isn't valid JSON
+// (see runner.js). The old generic `✅ mock <name>` text is plain prose, not
+// JSON, so any scenario that reaches one of these two tools (e.g. a reviewer
+// newTasks response gets id-allocated via `bd create`) would fail every
+// allocate/acquire call with "returned a non-JSON response" -- a real
+// regression this default callTool must not silently mask. Answer both with
+// valid, minimal JSON so the allocator/mutex client's own null-token/
+// null-childId fallback paths take over exactly as they did when callTool was
+// unwired (id derivation still falls back to `bd create --parent` locally;
+// the mutex is effectively a no-op grant).
+export function defaultMockCallTool() {
+    return async (name, toolArgs) => {
+        // apra-fleet-647.1.2.1: provisionVcsAuthForMember now resolves the
+        // member's provider via VCSModule.resolveProvider() -- a
+        // 'member_detail' call BEFORE every provision_vcs_auth call -- so
+        // this default must answer it with a registered 'github' provider
+        // (the only provider any mock-sprint scenario configures today) or
+        // every self-heal/preflight/PR-raise call site would start throwing
+        // a "no registered VCS provider" ERROR: for every scenario that
+        // relies on this default rather than its own callTool override.
+        if (name === 'member_detail') {
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        }
+        if (name === 'provision_vcs_auth') {
+            const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+            return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+        }
+        if (name === 'child_id_allocator') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'allocate') {
+                return { content: [{ text: JSON.stringify({ childId: null, token: null }) }] };
+            }
+            return { content: [{ text: JSON.stringify({ confirmed: true, released: true }) }] };
+        }
+        if (name === 'dolt_push_mutex') {
+            const action = toolArgs && toolArgs.action;
+            if (action === 'acquire') {
+                return { content: [{ text: JSON.stringify({ granted: true, token: `mock-dolt-mutex-${Date.now()}` }) }] };
+            }
+            return { content: [{ text: JSON.stringify({ released: true }) }] };
+        }
+        return { content: [{ text: `✅ mock ${name}` }] };
+    };
+}
+
 // Same (cmd, cwd) => Promise<{ err, stdout, stderr }> signature as always,
 // but `bd ...` commands are now routed through the record/replay layer in
 // ./bd-replay.mjs (APRA_FLEET_BD_MOCK: replay recorded real-bd responses by
@@ -328,6 +395,14 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         deployHandler = null,
         integHandler = null,
         finalReviewHandler = null,
+        // apra-fleet-417.4: optional (opts, tempDir, runCmd, epicBead) =>
+        // result override for the 'regression-test-runner' dispatch, mirroring
+        // deployHandler/integHandler above. Only reachable when the scenario
+        // has actually written regression-test-playbook.md into tempDir (see
+        // runDevelopLoopScenario's `withRegressionPlaybook` option) -- the
+        // real runner.js phase probes for that file and skips the dispatch
+        // entirely otherwise, same as deploy.md/integ-test-playbook.md.
+        regressionHandler = null,
         // Optional (cmd: string) => boolean predicate: when it returns
         // true for a given executeCommand() invocation, the mock returns a
         // nonzero-exit result (apra-fleet-1cb.1: normal data, no isError --
@@ -395,7 +470,22 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // classifier existed. A scenario exercising the non-hosted path
         // (e.g. a `file://` sandbox mirror) overrides this explicitly.
         originUrl = 'https://github.com/mock-org/mock-repo.git',
+        // apra-fleet-647.1.1.3: stateful VCSModule create-pull-request REST
+        // response override -- an array of `{ status: number, body?: object
+        // }` consumed ONE PER curl POST /pulls call (the last entry sticks
+        // once the queue is down to one, same one-per-call/sticky-last
+        // convention as dolt-sync-brackets.test.mjs's makeCommandMock), so a
+        // scenario can simulate e.g. a 401 on the first PR-creation attempt
+        // and a 201 on the retry after the reactive auth self-heal -- the
+        // "dedicated handler" the comment on the default curl POST /pulls
+        // branch below already asks for, since prExistsState's fixed
+        // 201-then-422 shape cannot express an auth failure. Checked BEFORE
+        // gitGhFailurePattern/prExistsState, so it fully overrides the
+        // default simulation when provided; omitted (the default), the
+        // existing 201/already-exists-422 behavior is completely unchanged.
+        prCurlResponseQueue = null,
     } = options;
+    const prCurlResponseQueueLocal = prCurlResponseQueue ? [...prCurlResponseQueue] : null;
 
     let planRound = 0;
     let reviewRound = 0;
@@ -513,13 +603,64 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 return mockCmdResult(1, '', '');
             }
 
-            // git/gh commands (apra-fleet-unw.14's branch-ensure/push/PR
+            // apra-fleet-tfx.8: VCSModule's create-pull-request path never
+            // dispatches `gh`. Two new non-git-prefixed call sites feed the
+            // PR-raising flow instead, both intercepted here BEFORE the
+            // generic git/gh block below so they never fall through to a real
+            // exec() against tempDir (which has no such credential file and
+            // no live network):
+            //   1. the just-provisioned git-credential-helper SCRIPT
+            //      ($HOME/.fleet-git-credential-<label>), read back by
+            //      readMemberVcsCredentialToken() to learn the token
+            //      provision_vcs_auth deployed -- answered with a fixed mock
+            //      'password=' line, mirroring the real script's protocol/
+            //      host/username/password output.
+            //   2. VCSModule's `curl -sS -X POST ... /pulls` REST call itself
+            //      -- answered with a fake JSON body + trailing HTTP status
+            //      line (mirroring buildCreatePrCommand's `-w '\n%{http_code}'`),
+            //      reusing the SAME prExistsState idempotency simulation the
+            //      old `gh pr create` mock used to provide.
+            if (/^\$HOME\/\.fleet-git-credential-/.test(opts.command)) {
+                return mockCmdResult(0, 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n', '');
+            }
+            if (/^curl -sS -X POST\b/.test(opts.command) && /\/pulls\b/.test(opts.command)) {
+                if (prCurlResponseQueueLocal && prCurlResponseQueueLocal.length > 0) {
+                    const next = prCurlResponseQueueLocal.length > 1 ? prCurlResponseQueueLocal.shift() : prCurlResponseQueueLocal[0];
+                    const resolved = typeof next === 'function' ? next() : next;
+                    const bodyText = resolved.body !== undefined ? JSON.stringify(resolved.body) : '';
+                    return mockCmdResult(0, `${bodyText}\n${resolved.status}`, '');
+                }
+                if (gitGhFailurePattern && gitGhFailurePattern.test(opts.command)) {
+                    // A curl invocation itself still exits 0 even when the
+                    // REST call fails -- this branch exists only for tests
+                    // that want to simulate a genuine spawn-level failure of
+                    // the curl command itself (rare; most "PR create failed"
+                    // scenarios instead want a non-2xx/non-already-exists
+                    // HTTP status, which prExistsState below cannot express,
+                    // so those scenarios should prefer a dedicated handler).
+                    return mockCmdResult(1, '', gitGhFailureMessage || `mock curl failure (injected) for: ${opts.command}`);
+                }
+                const headMatch = /"head":"([^"]*)"/.exec(opts.command);
+                const branch = headMatch ? headMatch[1] : null;
+                if (branch && prExistsState.has(branch)) {
+                    const body = JSON.stringify({
+                        message: 'Validation Failed',
+                        errors: [{ message: `A pull request already exists for ${branch}. https://github.com/mock-org/mock-repo/pull/1` }],
+                    });
+                    return mockCmdResult(0, `${body}\n422`, '');
+                }
+                if (branch) prExistsState.add(branch);
+                const body = JSON.stringify({ number: 101, html_url: 'https://github.com/mock-org/mock-repo/pull/101' });
+                return mockCmdResult(0, `${body}\n201`, '');
+            }
+
+            // git/gh commands (apra-fleet-unw.14's branch-ensure/push
             // steps) are intercepted rather than run for real: tempDir is a
             // bare `bd init` scratch directory, not a git repo with an
-            // 'origin' remote, so there is nothing real to git-fetch/push/
-            // gh-pr-create against here. This keeps the mock hermetic while
-            // still exercising and asserting on runner.js's dispatch of
-            // these commands.
+            // 'origin' remote, so there is nothing real to git-fetch/push
+            // against here. This keeps the mock hermetic while still
+            // exercising and asserting on runner.js's dispatch of these
+            // commands.
             if (/^(git|gh)\s/.test(opts.command)) {
                 // apra-fleet-unw2.9 (N11): injectable git/gh failure takes
                 // priority over the PR-exists simulation below -- a test
@@ -538,32 +679,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // classification probe with `originUrl` (a hosted GitHub URL
                 // by default -- see the option comment above) so this mock's
                 // command() intercept has a real answer for the ONE git/gh
-                // command besides `gh pr create` itself that the runner now
-                // reads the mocked stdout of, rather than falling through to
-                // the generic 'ok (mocked...)' text below (which is not a
-                // real URL and would misclassify as non-hosted).
+                // command the runner reads the mocked stdout of, rather than
+                // falling through to the generic 'ok (mocked...)' text below
+                // (which is not a real URL and would misclassify as
+                // non-hosted).
                 if (/^git remote get-url origin\b/.test(opts.command)) {
                     return mockCmdResult(0, originUrl, '');
-                }
-
-                // apra-fleet-unw2.9 (N11): idempotent `gh pr create`
-                // simulation -- the first `gh pr create --head "<branch>"`
-                // for a given branch records that branch into
-                // `prExistsState` and succeeds; a SECOND `gh pr create` for
-                // the SAME branch (simulating a re-run of finalization
-                // against a branch that already has an open PR) fails with
-                // an "already exists" message, mirroring the real `gh`
-                // CLI's behaviour for this case.
-                const prCreateMatch = /^gh pr create\b.*--head "([^"]+)"/.exec(opts.command);
-                if (prCreateMatch) {
-                    const branch = prCreateMatch[1];
-                    if (prExistsState.has(branch)) {
-                        // apra-fleet-1cb.1: `gh pr create` failing because a PR
-                        // already exists is a nonzero CLI exit, not an MCP-level
-                        // isError -- matching src/tools/execute-command.ts.
-                        return mockCmdResult(1, '', `GraphQL: a pull request for branch "${branch}" already exists: https://github.com/mock-org/mock-repo/pull/1 (createPullRequest)`);
-                    }
-                    prExistsState.add(branch);
                 }
 
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
@@ -655,7 +776,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // explicit session id string, a cross-cycle dispatch carries
             // `false`. Purely additive (a new object key); no existing
             // assertion reads/compares the whole `dispatched` entry shape.
-            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id, resume: opts.resume });
+            // apra-fleet-eft.79: also record the resolved `model` each dispatch
+            // carried -- lets a worklist test assert per-streak tier values
+            // (e.g. a standard streak resumed after a cheap streak dispatches
+            // with model=standard). Purely additive, same rationale as the
+            // `resume` key above.
+            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id, resume: opts.resume, model: opts.model });
             await sleep(DELAY_MS);
 
             // --- plan phase: planner ---
@@ -868,6 +994,20 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // --- integ test phase (apra-fleet-unw.17, A4: schema-validated) ---
             if (opts.agent === 'integ-test-runner') {
                 if (integHandler) return integHandler({ opts, tempDir, runCmd, epicBead });
+                // apra-fleet-66u.2: a real integ-test-runner closes the
+                // bead(s) named in its own "verification-closure: <ids>."
+                // prompt clause once it confirms they hold -- the default
+                // mock must do the same, or any scenario relying on this
+                // default (no integHandler override) can never see its own
+                // --issue target (a decomposed parent once it has children)
+                // actually close, which now genuinely blocks sprint
+                // completion (apra-fleet-66u.1 correctly requires it, via
+                // the pre-existing stillOpenVerifyIds/verifyEverIds gate).
+                const verifyMatch = opts.prompt.match(/verification-closure:\s*([^.]+)\./);
+                const verifyIds = verifyMatch ? verifyMatch[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+                for (const id of verifyIds) {
+                    await runCmd(`bd close ${id} --reason "Verified against the deployed build."`, tempDir);
+                }
                 return {
                     content: [{
                         text: JSON.stringify({
@@ -875,7 +1015,34 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                             issuesCreated: 0,
                             passed: true,
                             bugsFiled: [],
-                            summary: 'All vitest e2e specs passed successfully.',
+                            summary: verifyIds.length > 0
+                                ? `All vitest e2e specs passed successfully. Verified and closed: ${verifyIds.join(', ')}.`
+                                : 'All vitest e2e specs passed successfully.',
+                        })
+                    }]
+                };
+            }
+
+            // --- regression test phase (apra-fleet-417.4: schema-validated) ---
+            //
+            // Once-per-sprint, informational, only dispatched when
+            // regression-test-playbook.md exists in tempDir (see
+            // runDevelopLoopScenario's `withRegressionPlaybook` option). Not
+            // reached by any existing scenario that omits that flag -- the
+            // real probeFileExists('regression-test-playbook.md') check in
+            // runner.js skips the phase entirely without it, same as the
+            // Deploy/Integ phases above without deploy.md/integ-test-
+            // playbook.md.
+            if (opts.agent === 'regression-test-runner') {
+                if (regressionHandler) return regressionHandler({ opts, tempDir, runCmd, epicBead });
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            passed: true,
+                            suitePassed: true,
+                            smokePassed: true,
+                            bugsFiled: [],
+                            summary: 'Mock regression pass: full suite and sandbox smoke test both green.',
                         })
                     }]
                 };
@@ -985,6 +1152,7 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
             base_branch: 'main',
             goal: 'P1/P2',
             max_cycles: 5,
+            callTool: defaultMockCallTool(),
         }, true);
 
         // bd list hides closed issues by default -- pass --all so the final
@@ -1056,6 +1224,12 @@ export async function runDevelopLoopScenario(tag, {
     planReviewerHandler,
     // apra-fleet-unw.17 additions:
     deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
+    // apra-fleet-417.4: optional (opts, tempDir, runCmd, epicBead) => result
+    // override for the 'regression-test-runner' dispatch -- see
+    // buildMockFleetApi's option comment above. Paired with
+    // `withRegressionPlaybook` below (writes regression-test-playbook.md so
+    // the real probe finds it and the phase actually dispatches).
+    regressionHandler,
     goal = 'P1/P2', maxCycles = 1,
     // Optional hook invoked with {tempDir, runCmd, epicBead, tasks} AFTER
     // setupMinimal() creates the epic/tasks but BEFORE the sprint runs --
@@ -1066,6 +1240,11 @@ export async function runDevelopLoopScenario(tag, {
     // deploy.md / integ-test-playbook.md are NOT written by setupMinimal();
     // set true to write them (enabling the Deploy/Integ phases).
     withRunbooks = false,
+    // apra-fleet-417.4: regression-test-playbook.md is NOT written by
+    // setupMinimal() or withRunbooks (it is a wholly separate, once-per-
+    // sprint phase with its own probe); set true to write it (enabling the
+    // Regression Test phase, and pairing with `regressionHandler` above).
+    withRegressionPlaybook = false,
     // apra-fleet-unw2.9 (N11) additions: see buildMockFleetApi's option
     // comments above. `branchOverride` lets a scenario force a specific
     // branch name (rather than the tag-derived default) -- used by the
@@ -1073,6 +1252,9 @@ export async function runDevelopLoopScenario(tag, {
     // separate scenario runs against the exact SAME branch to simulate a
     // re-run of finalization.
     gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
+    // apra-fleet-647.1.1.3: see buildMockFleetApi's `prCurlResponseQueue`
+    // option comment above.
+    prCurlResponseQueue,
     // apra-fleet-eft.64.1: optional override for the mocked `git remote
     // get-url origin` stdout -- see buildMockFleetApi's `originUrl` option
     // comment above. Lets a scenario simulate a non-hosted remote (e.g.
@@ -1093,11 +1275,27 @@ export async function runDevelopLoopScenario(tag, {
     // createMemberSessionGuard()'s `stop_prompt` call end-to-end, rather than
     // only unit-testing the guard helper in isolation.
     callTool,
+    // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
+    // args (validateArgs: doer_worklist_mode 'resume'|'batch',
+    // resume_model_switch boolean, worklist_effort_budget positive number) --
+    // used by the worklist mock-sprint scenarios.
+    doerWorklistMode, resumeModelSwitch, worklistEffortBudget,
+    // apra-fleet-glv.2: optional `args.roleMap` passthrough (validateArgs:
+    // object mapping role -> member[], see runner.js's getMemberForRole/
+    // getMembersForRole). Lets a scenario pin a specific role (e.g.
+    // 'reviewer') onto a member DIFFERENT from the default doer member, so a
+    // test can assert per-role behavior (such as the VCS-auth preflight's
+    // pushCode gating) against a member that provably never receives a
+    // code-writing dispatch.
+    roleMap,
 }) {
     const { tempDir, epicBead, tasks } = await setupMinimal(tag, taskSpecs);
     if (withRunbooks) {
         await fs.writeFile(path.join(tempDir, 'deploy.md'), '# Deploy\nrun `npm publish`');
         await fs.writeFile(path.join(tempDir, 'integ-test-playbook.md'), '# Integ Test\nRun `vitest e2e`');
+    }
+    if (withRegressionPlaybook) {
+        await fs.writeFile(path.join(tempDir, 'regression-test-playbook.md'), '# Regression\nRun the full suite, then the sandbox smoke test, then Teardown.');
     }
     if (beforeSprint) {
         await beforeSprint({ tempDir, runCmd, epicBead, tasks });
@@ -1133,6 +1331,7 @@ export async function runDevelopLoopScenario(tag, {
             deployHandler,
             integHandler,
             finalReviewHandler,
+            regressionHandler,
             commandFailurePattern,
             commandLogDetailed,
             memberGitState,
@@ -1140,6 +1339,7 @@ export async function runDevelopLoopScenario(tag, {
             gitGhFailureMessage,
             prExistsState,
             ...(originUrl !== undefined ? { originUrl } : {}),
+            ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
         });
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         workflow.on('log', (e) => logs.push(e.msg));
@@ -1165,7 +1365,11 @@ export async function runDevelopLoopScenario(tag, {
                 goal,
                 max_cycles: maxCycles,
                 ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
-                ...(callTool !== undefined ? { callTool } : {}),
+                callTool: callTool !== undefined ? callTool : defaultMockCallTool(),
+                ...(doerWorklistMode !== undefined ? { doer_worklist_mode: doerWorklistMode } : {}),
+                ...(resumeModelSwitch !== undefined ? { resume_model_switch: resumeModelSwitch } : {}),
+                ...(worklistEffortBudget !== undefined ? { worklist_effort_budget: worklistEffortBudget } : {}),
+                ...(roleMap !== undefined ? { roleMap } : {}),
             }, true);
         } catch (err) {
             error = err;
@@ -1227,14 +1431,19 @@ export async function runDevelopLoopScenario(tag, {
 // failure (the agent never ran / never came back) can be assumed to have
 // mutated nothing.
 //
-// Also excludes an AgentDispatchError whose reason is 'max_turns_exhausted':
-// that is the resumable partial-work case -- the agent DID run and may have
-// committed/closed beads before running out of turns -- so this harness's own
-// post-run bead-state read still needs to reflect real state, same exclusion
-// runner.js's own isNoMutationDispatchFailure makes.
+// Also excludes an AgentDispatchError whose reason says the agent PROVABLY RAN
+// -- 'max_turns_exhausted' (the resumable partial-work case: the agent DID run
+// and may have committed/closed beads before running out of turns) and, per
+// apra-fleet-9ta.2, 'watchdog_timeout' (the prompt was DELIVERED to an
+// alive-but-silent member; only the RESULT was lost, so the turn may have
+// created the whole DAG). In both cases this harness's own post-run bead-state
+// read still needs to reflect real state -- the same exclusion set runner.js's
+// own isNoMutationDispatchFailure makes.
+const AGENT_RAN_DISPATCH_REASONS = new Set(['max_turns_exhausted', 'watchdog_timeout']);
+
 export function isNoMutationTerminalDispatchError(err) {
     if (!err) return false;
-    if (err instanceof AgentDispatchError && err.details && err.details.reason === 'max_turns_exhausted') {
+    if (err instanceof AgentDispatchError && err.details && AGENT_RAN_DISPATCH_REASONS.has(err.details.reason)) {
         return false;
     }
     return err instanceof AgentDispatchError || err instanceof FleetTransportError;

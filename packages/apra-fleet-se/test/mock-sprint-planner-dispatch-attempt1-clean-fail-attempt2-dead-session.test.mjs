@@ -192,6 +192,24 @@ test('mock sprint: Planner retry attempt 1 fails cleanly (dispatch_failed) as a 
             threwLines.length === 5,
             `Expected one "Planner dispatch threw" log line per attempt (5 total), got ${threwLines.length}: ${JSON.stringify(scenario.logs)}`
         );
+        // The MIXED ORDERING is this file's stated reason for existing, but
+        // until now no assertion pinned it -- every other check here would
+        // pass byte-identically if the handler returned the attempt-2+
+        // payload on all five attempts. runner.js interpolates err.message
+        // (carrying the handler's content[0].text verbatim) into each
+        // "Planner dispatch threw" line, so threwLines preserves the
+        // per-attempt distinction. Swap the plannerHandler branches and
+        // these two fail -- that is the point. (Added when
+        // mock-sprint-planner-dispatch-dead-pid.test.mjs, the uniform
+        // all-attempts-dead variant, was retired as a strict subset.)
+        check(
+            /clean AGENT_DISPATCH_FAILED-class failure/.test(threwLines[0]),
+            `Attempt 1 must be the DISTINCT clean pre-condition failure, got: ${threwLines[0]}`
+        );
+        check(
+            threwLines.slice(1).every((m) => /reused interactive session now targets a dead launch-time process/.test(m)),
+            `Attempts 2-5 must each be the dead-session failure: ${JSON.stringify(threwLines.slice(1))}`
+        );
         const waitingLines = scenario.logs.filter((m) => /waiting \d+s before retry attempt/.test(m));
         check(
             waitingLines.length === 4,

@@ -4,7 +4,7 @@
 // owning them.
 //
 // This module is the single source of truth (application-side) for:
-//   1. The eight sprint-role name strings (lowercase, matching the
+//   1. The nine sprint-role name strings (lowercase, matching the
 //      `name:` frontmatter of packages/apra-fleet-se/apra-pm/agents/*.md exactly).
 //   2. An ajv-compatible JSON schema for every role's structured verdict --
 //      as of apra-fleet-unw.22, LOADED from packages/apra-fleet-se/apra-pm/agents/schemas/
@@ -49,8 +49,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Exact lowercase strings, one per `name:` frontmatter field in
 // packages/apra-fleet-se/apra-pm/agents/*.md. Order matches the SKILL.md taxonomy:
 // sprint-core roles first (planner, plan-reviewer, doer, reviewer), then
-// lifecycle-support roles (deployer, integ-test-runner, ci-watcher,
-// harvester).
+// lifecycle-support roles (deployer, integ-test-runner, regression-test-runner,
+// ci-watcher, harvester). regression-test-runner (once-per-sprint informational
+// regression pass, see agents/regression-test-runner.md) sits right after
+// integ-test-runner (per-cycle feature closure) since the two split what used
+// to be a single "Integ Test" phase.
 export const ROLES = Object.freeze([
     'planner',
     'plan-reviewer',
@@ -58,6 +61,7 @@ export const ROLES = Object.freeze([
     'reviewer',
     'deployer',
     'integ-test-runner',
+    'regression-test-runner',
     'ci-watcher',
     'harvester',
 ]);
@@ -117,8 +121,11 @@ export function validateRole(role) {
 // written literal in section 3) -- unchanged from before apra-fleet-bun.
 const PACKAGE_ROOT = path.join(__dirname, '..');
 const REPO_ROOT = path.join(PACKAGE_ROOT, '..', '..');
-const DIST_BUNDLED_SCHEMAS_DIR = path.join(REPO_ROOT, 'dist', 'agents', 'schemas');
-const PACKAGE_LOCAL_SCHEMAS_DIR = path.join(PACKAGE_ROOT, 'apra-pm', 'agents', 'schemas');
+// Exported (not just module-local) so a drift guard test can compare the two
+// real candidate directories on disk without re-deriving this path math --
+// see test/contracts-schema-dist-staleness-guard.test.mjs (apra-fleet-spp.2).
+export const DIST_BUNDLED_SCHEMAS_DIR = path.join(REPO_ROOT, 'dist', 'agents', 'schemas');
+export const PACKAGE_LOCAL_SCHEMAS_DIR = path.join(PACKAGE_ROOT, 'apra-pm', 'agents', 'schemas');
 
 function isDirectory(candidate) {
     try {
@@ -451,10 +458,14 @@ const FALLBACK_deployerReport = {
 
 // Fallback for role "integ-test-runner". Canonical source:
 // packages/apra-fleet-se/apra-pm/agents/schemas/integ-test-runner-output.json.
-// apra-fleet-eft.66.1: `deployedSha` added (optional) alongside the vendor/
-// apra-pm bump to commit 844112e -- validatePart2Evidence (runner.js) reads
-// it as the primary part-2 SHA-freshness evidence source, falling back to
-// the legacy PART2_SHA summary marker only when this field is absent.
+// `deployedSha` (optional) is a VESTIGIAL field, kept only to mirror the
+// vendored integ-test-runner-output.json, which keeps it for backward
+// compatibility with pre-split agent builds that still emit it. Nothing
+// reads it any more: the eft.66.1 engine-side consumer
+// (validatePart2Evidence) was removed with the integ/regression split, since
+// the per-cycle Integ Test phase no longer runs the part-2 smoke test whose
+// freshness it attested. Do not add new consumers -- if a phase needs deploy
+// provenance, model it explicitly rather than reviving this field.
 const FALLBACK_integReport = {
     $id: 'integReport',
     type: 'object',
@@ -468,8 +479,61 @@ const FALLBACK_integReport = {
             type: 'string',
             description: "The deploy-verified git commit part 2 (smoke test) actually ran against. Optional for backward compatibility, but an orchestrator that supplied a deployed SHA in the dispatch prompt treats a missing or mismatching value as INCONCLUSIVE evidence (never a pass). See integ-test-runner.md 'Part-2 evidence freshness'.",
         },
+        // apra-fleet-jfo: verify-set (any issue_type, all children closed) closure
+        // reporting. Both optional for backward compatibility -- absent on a
+        // dispatch that named no verify-set ids. Mirrors
+        // integ-test-runner-output.json; keep the two in sync.
+        verifySetClosed: { type: 'array', items: { type: 'string' } },
+        verifySetLeftOpen: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: { id: { type: 'string' }, reason: { type: 'string' } },
+                required: ['id', 'reason'],
+            },
+        },
+        // apra-fleet: out-of-scope test failures observed and cross-linked/filed
+        // per integ-test-runner.md Step 1c. Mirrors integ-test-runner-output.json;
+        // keep the two in sync.
+        observedFailures: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    test: { type: 'string' },
+                    cause: { type: 'string' },
+                    beadId: { type: 'string' },
+                },
+                required: ['test', 'cause', 'beadId'],
+            },
+        },
     },
     required: ['featuresClosed', 'issuesCreated', 'passed', 'bugsFiled', 'summary'],
+};
+
+// Fallback for role "regression-test-runner". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/regression-test-runner-output.json.
+// This result is informational (never gates the current sprint's PASS/FAIL
+// verdict) -- see agents/regression-test-runner.md.
+const FALLBACK_regressionReport = {
+    $id: 'regressionReport',
+    type: 'object',
+    properties: {
+        passed: { type: 'boolean' },
+        suitePassed: { type: 'boolean' },
+        smokePassed: { type: 'boolean' },
+        bugsFiled: { type: 'array', items: { type: 'string' } },
+        summary: { type: 'string' },
+        smokeEvidence: {
+            type: 'object',
+            properties: {
+                versionStdout: { type: 'string' },
+                canaryStatus: { type: 'string' },
+                toyRepoHeadSha: { type: 'string' },
+            },
+        },
+    },
+    required: ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary'],
 };
 
 // Fallback for role "ci-watcher". Canonical source:
@@ -508,13 +572,16 @@ export const finalVerdict = {
     properties: {
         verdict: { type: 'string', enum: ['PASS', 'FAIL'] },
         notes: { type: 'string' },
-        // Stabilization log iteration 5: on FAIL, the final reviewer's
-        // actionable findings must land in BEADS (the only artifact the
-        // NEXT sprint's planner reads) -- notes alone only reach the PR
-        // body and the analysis doc. Same item shape as reviewerVerdict's
-        // newTasks; validated by the same validateNewTask() allowlist and
-        // created by the orchestrator (the reviewer never touches bd
-        // itself). Optional so a PASS needs no boilerplate.
+        // Stabilization log iteration 5, widened 2026-08: the final reviewer's
+        // actionable findings must land in BEADS (the only artifact the NEXT
+        // sprint's planner reads) -- notes alone only reach the PR body and
+        // the analysis doc. This is NOT gated to FAIL: a PASS run can still
+        // surface secondary findings (e.g. a real defect that doesn't block
+        // this epic's own acceptance criteria) that would otherwise be lost
+        // prose with no follow-up mechanism. Same item shape as
+        // reviewerVerdict's newTasks; validated by the same validateNewTask()
+        // allowlist and created by the orchestrator (the reviewer never
+        // touches bd itself). Optional so a clean PASS needs no boilerplate.
         newTasks: {
             type: 'array',
             items: {
@@ -525,6 +592,26 @@ export const finalVerdict = {
                     priority: { type: 'string' },
                 },
                 required: ['title', 'description', 'priority'],
+            },
+        },
+        // Beads the review found should be reopened -- e.g. a task closed on
+        // insufficient evidence, or a defect in already-closed work this diff
+        // did not actually fix. Unlike reviewerVerdict's per-round reopenIds
+        // (a flat id list sharing one blanket `notes` across every reopened
+        // id), the Final Review's reopens can span unrelated beads with
+        // unrelated causes, so each entry carries its OWN reason -- the
+        // orchestrator appends it as a durable note on that specific bead
+        // (never a blanket broadcast). Optional so a clean PASS needs no
+        // boilerplate.
+        reopenIds: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+                required: ['id', 'reason'],
             },
         },
     },
@@ -545,6 +632,7 @@ export const reviewerVerdict = resolveOutputSchema('reviewer', OUTPUT_SCHEMA_MAJ
 export const doerReport = resolveOutputSchema('doer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_doerReport);
 export const deployerReport = resolveOutputSchema('deployer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_deployerReport);
 export const integReport = resolveOutputSchema('integ-test-runner', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_integReport);
+export const regressionReport = resolveOutputSchema('regression-test-runner', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_regressionReport);
 export const ciReport = resolveOutputSchema('ci-watcher', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_ciReport);
 export const harvesterReport = resolveOutputSchema('harvester', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_harvesterReport);
 
@@ -559,6 +647,7 @@ export const FALLBACK_SCHEMAS = Object.freeze({
     doerReport: FALLBACK_doerReport,
     deployerReport: FALLBACK_deployerReport,
     integReport: FALLBACK_integReport,
+    regressionReport: FALLBACK_regressionReport,
     ciReport: FALLBACK_ciReport,
     harvesterReport: FALLBACK_harvesterReport,
 });
@@ -572,6 +661,7 @@ export const ROLE_FOR_SCHEMA_NAME = Object.freeze({
     doerReport: 'doer',
     deployerReport: 'deployer',
     integReport: 'integ-test-runner',
+    regressionReport: 'regression-test-runner',
     ciReport: 'ci-watcher',
     harvesterReport: 'harvester',
 });
@@ -586,6 +676,7 @@ export const SCHEMAS = Object.freeze({
     streakAssignment,
     deployerReport,
     integReport,
+    regressionReport,
     ciReport,
     harvesterReport,
     finalVerdict,
@@ -678,6 +769,7 @@ const INPUT_SCHEMA_MAJOR_VERSIONS = Object.freeze({
     reviewer: 2,
     deployer: 1,
     'integ-test-runner': 2,
+    'regression-test-runner': 1,
     'ci-watcher': 2,
     harvester: 1,
 });

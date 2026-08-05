@@ -31,24 +31,65 @@ not improvise deploy steps that are not written down in the runbook.
 ## Step 0 -- Check permissions before running anything
 
 Read `deploy.md`. Look for a `## Permissions` section. If found, verify each
-listed command prefix is allowed in your CLI's permission settings -- on Claude
-Code that is `.claude/settings.json` (`permissions.allow`); other providers keep
-the equivalent allowlist in their own config file:
+listed command prefix is covered by the MERGED effective permission set --
+on Claude Code that means SOME entry in `permissions.allow` of EITHER
+`.claude/settings.json` (the team-committed, shared baseline) OR
+`.claude/settings.local.json` (the per-checkout, individual/gitignored file;
+this is the ONLY file the fleet's `compose_permissions` tool ever writes to
+for Claude Code members -- see `skills/fleet/permissions.md`). Claude Code
+merges `permissions.allow` from both files, so a grant in EITHER one counts
+as coverage; checking only `settings.json` misses every grant
+`compose_permissions` delivered. A broader prefix entry counts as coverage
+too -- e.g. `Bash(docker:*)` covers `docker compose`. Other providers keep
+the equivalent allowlist in their own native config file (see
+`src/providers/*.ts`).
+
+Run the merge MECHANICALLY, in one command, rather than reading each file
+separately and merging by eye -- two sequential `cat`s invite stopping at the
+first (often-empty) file and never getting to the second, which silently
+reports a real grant as missing (observed live, apra-fleet: `settings.json`
+legitimately carries no `permissions.allow` in this repo's convention -- every
+grant lives in `settings.local.json` -- so a by-eye read that stops at the
+first empty file always concludes "nothing is granted" even when it is):
 
 ```bash
-cat .claude/settings.json   # Claude Code; use your provider's settings file otherwise
+node -e '
+const fs = require("fs");
+const allow = new Set();
+for (const f of [".claude/settings.json", ".claude/settings.local.json"]) {
+  try {
+    const d = JSON.parse(fs.readFileSync(f, "utf8"));
+    for (const p of d.permissions?.allow ?? []) allow.add(p);
+  } catch {}
+}
+console.log(JSON.stringify([...allow], null, 2));
+'   # Claude Code -- prints the ALREADY-MERGED effective allowlist as one list;
+    # use your provider's native config file(s) otherwise
 ```
 
-If any required command prefix is absent from the allowlist, STOP immediately
-and return `deployed: false` with notes listing every missing entry, e.g.:
+Check every required command prefix against this one merged list. If any
+required command prefix has no covering entry in it, STOP immediately and
+return `deployed: false` with notes listing every missing entry, e.g.:
 
-  Missing permissions in the CLI permission settings (.claude/settings.json on Claude Code):
+  Missing permissions in the merged CLI permission settings (.claude/settings.json
+  + .claude/settings.local.json on Claude Code -- neither file covers these):
     Bash(docker *)
     Bash(docker-compose *)
-  Add these to the permissions allowlist and re-trigger the sprint.
+  Ask the orchestrator/operator to run compose_permissions with the missing
+  grant(s), then re-trigger the sprint.
 
-Do NOT attempt to add the permissions yourself -- that is the team's responsibility.
-Do NOT proceed past Step 0 if any permissions are missing.
+Do NOT attempt to add the permissions yourself, by editing any file directly:
+- `.claude/settings.json` is the team-committed baseline -- changes there
+  require the team/a PR, never a self-edit.
+- `.claude/settings.local.json` is the correct target for an individual/local
+  grant, but it must be provisioned via the `compose_permissions` MCP tool
+  (grant mode), NOT hand-edited either -- that tool is the provider-agnostic
+  delivery mechanism (this repo supports non-Claude providers too: Gemini,
+  AGY, OpenCode, Codex -- each has its own native config path via the same
+  tool).
+The correct escalation when a required permission is missing from the merged
+effective set is: ask the orchestrator/operator to run `compose_permissions`
+with the missing grant. Do NOT proceed past Step 0 if any permissions are missing.
 
 ## deploy.md operations
 

@@ -123,24 +123,44 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         );
         // apra-fleet-eft.64.1: the Publish PR step now resolves+classifies
         // `git remote get-url origin` (isHostedGithubRemote()) BEFORE
-        // deciding whether to attempt `gh pr create` -- this mock's origin
+        // deciding whether to attempt PR creation -- this mock's origin
         // is a hosted GitHub URL by default (see mock-sprint-harness.mjs's
-        // `originUrl` option), so the existing `gh pr create` path is still
-        // exercised, just with this extra probe command in between.
-        const pushIdx = run1.commandLog.length - 3;
-        const originUrlIdx = run1.commandLog.length - 2;
+        // `originUrl` option), so the PR-raise path is still exercised, just
+        // with this extra probe command in between.
+        // apra-fleet-tfx.8/tfx.8.4: the reverted gh-based `gh pr create` path
+        // is gone. raiseVcsPrForMember() now (1) re-derives 'owner/repo' via
+        // its OWN `git remote get-url origin` call (provisionPrCapableAuthForMember
+        // -> provisionVcsAuthForMember), (2) reads back the just-provisioned
+        // push+pr credential's token from the git-credential-helper script,
+        // then (3) dispatches VCSModule's `curl ... /pulls` create-pull-
+        // request command -- so the last 5 commandLog entries are: push,
+        // the classification probe, the repo-derivation probe (a SECOND
+        // `git remote get-url origin`), the credential-token read, and the
+        // curl POST itself.
+        const pushIdx = run1.commandLog.length - 5;
+        const originUrlIdx = run1.commandLog.length - 4;
+        const repoDerivationUrlIdx = run1.commandLog.length - 3;
+        const credReadIdx = run1.commandLog.length - 2;
         const prIdx = run1.commandLog.length - 1;
         check(
             run1.commandLog[pushIdx] && run1.commandLog[pushIdx].startsWith(`git push -u origin ${RUN1_BRANCH}`),
-            `Expected third-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
+            `Expected fifth-to-last commandLog entry to be the branch push, got: ${JSON.stringify(run1.commandLog[pushIdx])}`
         );
         check(
             run1.commandLog[originUrlIdx] === 'git remote get-url origin',
-            `Expected second-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
+            `Expected fourth-to-last commandLog entry to be the origin-remote classification probe, got: ${JSON.stringify(run1.commandLog[originUrlIdx])}`
         );
         check(
-            run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('gh pr create') && run1.commandLog[prIdx].includes('--base "main"') && run1.commandLog[prIdx].includes(`--head "${RUN1_BRANCH}"`),
-            `Expected last commandLog entry to be the PR-raise (not merge) command, got: ${JSON.stringify(run1.commandLog[prIdx])}`
+            run1.commandLog[repoDerivationUrlIdx] === 'git remote get-url origin',
+            `Expected third-to-last commandLog entry to be the JIT push+pr credential's own repo-derivation probe, got: ${JSON.stringify(run1.commandLog[repoDerivationUrlIdx])}`
+        );
+        check(
+            run1.commandLog[credReadIdx] && run1.commandLog[credReadIdx].startsWith('$HOME/.fleet-git-credential-'),
+            `Expected second-to-last commandLog entry to be the just-provisioned credential-token read, got: ${JSON.stringify(run1.commandLog[credReadIdx])}`
+        );
+        check(
+            run1.commandLog[prIdx] && run1.commandLog[prIdx].startsWith('curl -sS -X POST') && run1.commandLog[prIdx].includes('/pulls') && run1.commandLog[prIdx].includes('"base":"main"') && run1.commandLog[prIdx].includes(`"head":"${RUN1_BRANCH}"`),
+            `Expected last commandLog entry to be the VCSModule PR-raise (not merge) command, got: ${JSON.stringify(run1.commandLog[prIdx])}`
         );
         // apra-fleet-eft.8.x (syncMemberBefore/G-pull) legitimately issues
         // `git merge --ff-only <remote>/<branch>` to bring a member's own
@@ -352,9 +372,22 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // title/body must include the final verdict. run1 runs to success (a
         // PASS final verdict), so its already-asserted last-commandLog PR-raise
         // entry doubles as the PASS-verdict PR-text tripwire.
+        // apra-fleet-tfx.8.4: the PR is now raised via VCSModule's REST
+        // `curl ... /pulls` command, whose title/body are JSON string fields
+        // inside the `-d '{...}'` payload, not `gh pr create`'s `--title`/
+        // `--body` flags -- match the new JSON shape.
         check(
-            run1.commandLog[prIdx] && /--title "[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]) && /--body "[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]),
+            run1.commandLog[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(run1.commandLog[prIdx]) && /Final Verdict: PASS/.test(run1.commandLog[prIdx]),
             `Expected the PR title AND body to include the PASS verdict, got: ${run1.commandLog[prIdx]}`
+        );
+
+        // apra-fleet-eft.1.3 regression (folded in from the former
+        // mock-sprint-abort-pr.test.mjs 'abortprpass' scenario, which spent a
+        // whole extra runOnce() sprint on this single negative): a successful
+        // sprint's PR must never carry the abort path's [ABORTED] prefix.
+        check(
+            run1.commandLog[prIdx] && !run1.commandLog[prIdx].includes('[ABORTED]'),
+            `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${run1.commandLog[prIdx]}`
         );
     });
 });
@@ -449,5 +482,51 @@ test('mock sprint: multi-member doer pool distributes work and ensures branch on
         // one-bead fallback).
         const multiDoerStreakCalls = multiDoer.dispatched.filter((d) => d.prompt.includes('Ready bead ids:'));
         check(multiDoerStreakCalls.length === 1, `Expected exactly 1 streak-assignment dispatch in the multi-doer scenario (single dev round), got ${multiDoerStreakCalls.length}`);
+    });
+});
+
+// Regression test for the specialist/generalist roleMap-fallback fix:
+// getMemberForRole/getMembersForRole used to fall back to raw
+// physicalMembers (or physicalMembers[0]) for any role NOT explicitly named
+// in roleMap, with no awareness that some OTHER member had already been
+// deliberately reserved for a different role via roleMap. With members
+// ['alice', 'jack'] and roleMap: { reviewer: ['alice'] } (doer left
+// unmapped), the pre-fix pool for 'doer' was the FULL member list --
+// 'alice', already dedicated to reviewer, could receive a doer dispatch
+// purely because of array order. Post-fix, the unmapped-role fallback pool
+// excludes any member named in some other roleMap value, so 'jack' (named
+// nowhere) is the only doer, and 'alice' never leaves her reviewer lane.
+test('mock sprint: unmapped role (doer) never routes to a member specialized elsewhere (reviewer) via roleMap', async () => {
+    await withScenarioMarkers('specialist-generalist doer/reviewer split', async () => {
+        console.log('Running mock sprint scenario (specialist reviewer + generalist doer)...');
+        const result = await runDevelopLoopScenario('specialistgen', {
+            members: ['alice', 'jack'],
+            roleMap: { reviewer: ['alice'] },
+            taskSpecs: [
+                { title: 'Task: Implement registerMember in client.js' },
+                { title: 'Task: Implement listMembers in client.js' },
+            ],
+            reviewerHandler: async () => ({
+                content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Both look good.', reopenIds: [], newTasks: [] }) }]
+            }),
+        });
+        check(!result.error, `Specialist/generalist scenario did not complete: ${result.error ? result.error.message : ''}`);
+
+        const doerCalls = result.dispatched.filter((d) => d.agent === 'doer');
+        check(doerCalls.length > 0, `Expected at least one doer dispatch, got ${doerCalls.length}`);
+        const doerMembers = new Set(doerCalls.map((d) => d.member));
+        check(
+            !doerMembers.has('alice'),
+            `Expected 'alice' (reviewer specialist via roleMap) to NEVER receive a doer dispatch, got doer members: ${JSON.stringify([...doerMembers])}`
+        );
+        check(doerMembers.has('jack'), `Expected 'jack' (unmapped generalist) to receive doer dispatches, got: ${JSON.stringify([...doerMembers])}`);
+
+        // 'reviewer' IS explicitly mapped to 'alice' -- this half already
+        // worked pre-fix (explicit roleMap entries were always exclusive),
+        // pinned here so both directions of the split travel together.
+        const reviewCalls = result.dispatched.filter((d) => d.agent === 'reviewer');
+        const reviewMembers = new Set(reviewCalls.map((d) => d.member));
+        check(reviewMembers.has('alice'), `Expected 'alice' to receive reviewer dispatches, got: ${JSON.stringify([...reviewMembers])}`);
+        check(!reviewMembers.has('jack'), `Expected 'jack' to never receive a reviewer dispatch, got: ${JSON.stringify([...reviewMembers])}`);
     });
 });

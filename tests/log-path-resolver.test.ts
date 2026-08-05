@@ -84,15 +84,21 @@ describe('resolveSessionLogPath', () => {
     }).not.toThrow();
   });
 
-  it('throws error for agy (unsupported log polling)', () => {
-    expect(() => {
-      resolveSessionLogPath(
-        'agy',
-        'session-123',
-        '/tmp/project',
-        '/home/user'
-      );
-    }).toThrow('Unsupported log polling for provider: agy');
+  it('resolves AGY log path with session brain directory structure', () => {
+    const result = resolveSessionLogPath(
+      'agy',
+      'session-agy-123',
+      '/tmp/project',
+      '/home/user'
+    );
+    const expected = join('/home/user', '.gemini', 'antigravity-cli', 'brain', 'session-agy-123', '.system_generated', 'logs', 'transcript.jsonl');
+    expect(result).toBe(expected);
+  });
+
+  it('resolves AGY log directory', () => {
+    const dir = resolveSessionLogDir('agy', '/tmp/project', '/home/user');
+    const expected = join('/home/user', '.gemini', 'antigravity-cli', 'brain');
+    expect(dir).toBe(expected);
   });
 
   it('throws error for unknown provider', () => {

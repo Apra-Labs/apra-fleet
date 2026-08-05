@@ -2,6 +2,494 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- npm-install dependency-packaging fixes
+
+Sprint goal: unblock npm-installed (published-tarball, non-workspace) consumers
+by fixing a cluster of packaging gaps found while replaying the npm-publish
+gating sequence locally -- an incompatible transitive dependency that crashed
+any process resolving it on the supported Node runtime, a bundled workspace
+package that was shipped as source but never registered as an installable
+dependency, an install safety guard that blocked replays on any machine
+already running an unrelated server, and a package-size guard whose threshold
+check could never actually fire. All in-scope work closed; the sprint's own
+final verdict is FAIL (a reviewer dispatch stalled and could not be repaired
+before the sprint budget ran out), and a same-day regression pass could not
+run because the sandbox's permission allowlist did not cover the commands the
+regression playbook requires.
+
+What shipped:
+
+- `undici` is now pinned to `^7.29.0` (via a workspace-root override, kept in
+  lockstep with the published package's own dependency manifest and a
+  regenerated lockfile) to restore Node 20 compatibility -- the newer 8.x
+  line throws `webidl.util.markAsUncloneable is not a function` inside
+  Node 20's older Web IDL internals as soon as anything requires it, crashing
+  the CLI, the supervisor subprocess, and dozens of integration test files
+  outright. A root-level override alone does not propagate to a downstream
+  npm-installed consumer's own dependency resolution, and a stale lockfile
+  can silently keep resolving the broken version even after the override is
+  added -- both gaps are now covered by a test that packs the CLI, installs
+  it into a clean non-workspace target, and imports `undici` from that
+  installed copy, not just from the source workspace's own `node_modules`.
+- `@apralabs/apra-fleet-client` (the bundled fleet-server client used by the
+  fleet-sprint engine) is now also registered as a real installable
+  dependency (a `file:`-referenced entry), not just listed in the package's
+  shipped-files allowlist -- being present on disk after install and being
+  resolvable via standard module resolution are two different things, and
+  the gap was invisible in dev-mode testing because workspace symlinking
+  hides it there. npm-installed users previously hit a silent
+  `could not resolve the fleet server` warning and fell back to a degraded,
+  no-op dolt-mutex/id-allocator path for every real sprint.
+- The `install` command's running-process safety guard is now scoped to
+  whether a detected running server is actually relevant to the install being
+  performed (recorded live in the install's own data directory, or running
+  from the exact prefix about to be overwritten), instead of refusing
+  whenever any apra-fleet process exists anywhere on the machine. An
+  unrelated server no longer blocks an isolated install replay, and the
+  guard falls back to non-blocking (with an informational note) rather than
+  silently reinstating the old global refusal when a running process's
+  executable path cannot be determined.
+- The npm-publish pipeline's Clean-pack size guard now reads the real byte
+  count from `npm pack --dry-run --json` instead of pattern-matching npm's
+  human-readable `unpacked size: 4.1 MB`-style notice line -- the previous
+  regex extraction only ever captured the leading digits before the decimal
+  point, so the 10 MB threshold comparison could never actually fire
+  regardless of true tarball size. The new guard also accepts both
+  `--threshold N` and `--threshold=N` forms and fails loudly on a malformed
+  threshold value instead of silently ignoring it.
+
+Carried forward: the `@apralabs/apra-fleet-client` resolvability fix above
+ships without an automated test that packs the CLI, installs it into a clean
+non-workspace project, and asserts end-to-end that `apra-fleet workflow
+fleet-sprint` resolves the fleet server with no warning -- that verification
+coverage is still outstanding and the parent bug it closes remains open
+pending it. Separately, one reviewer-proposed follow-up task was rejected
+before reaching issue creation because its title used characters outside the
+tracker's safe-character allowlist; the underlying finding (the pack-size
+guard's equals-form threshold handling) was fixed directly in this sprint's
+work regardless, so nothing is outstanding from that rejection. The
+end-of-sprint regression pass is deferred pending
+an operator adding the missing sandbox command permissions; no new
+carry-over issues were filed by that (informational, non-gating) pass.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.8641.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0929 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 24 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- Dolt push reliability: auth/divergence classification, recovery ladder wiring, child-id create fix
+
+Sprint goal: fix a cluster of fleet-sprint reliability defects surfaced by
+real sprint runs -- a Dolt D-push credential failure being misclassified as
+data divergence and aborting the sprint instead of self-healing, an unused
+Dolt conflict-recovery ladder that was never actually wired into the push
+failure path, a `bd create` invocation that unconditionally combined `--id`
+and `--parent` and silently lost the pre-allocated child id on failure, and
+a sprint stall-detector reading closed-bead counts from a stale snapshot so
+a cycle's own Integ Test closures were never credited toward progress. Also
+in scope: test coverage for the VCS-auth preflight gate on read-side
+dispatch brackets, and the provider-agnostic VCSModule error-taxonomy epic
+this cluster builds on. **Code review found all six scoped items correctly
+implemented and fully covered by the passing unit/mock suites, but the
+sprint's own final verdict is FAIL**: Deploy failed at its permissions-check
+step in every cycle this sprint ran (the sandbox's command allowlist did not
+cover the two prefixes a prior sprint's deploy-runbook change now requires
+for its supervisor-start and smoke-test steps), so the three parent bugs
+routed to verify-against-a-deployed-build were never confirmed end-to-end
+and remain open. The deployer correctly stopped and reported the permission
+gap rather than working around it.
+
+What shipped:
+
+- A Dolt D-push rejection is now classified into a distinct credential
+  (`auth`) failure versus a genuine non-fast-forward divergence, checked
+  independently at both points a push can still fail (the first attempt, and
+  the re-push that follows a reconcile-pull) -- previously both were folded
+  into the same divergence error, so a lapsed credential aborted the sprint
+  with a misleading "diverged" message instead of self-healing. An
+  auth-classified push failure now triggers the same bounded, one-shot
+  credential self-heal used elsewhere in the sync layer before retrying.
+- The Dolt conflict-recovery ladder (scripted resolve-in-place, then
+  discard-and-re-bootstrap, then an agent-with-runbook last resort) is now
+  actually invoked from the D-push failure path at both divergence
+  terminals, instead of existing only as a module exercised by its own
+  tests. With no recovery hook supplied, prior degraded-by-default behavior
+  is unchanged -- the ladder only ever narrows an existing failure into a
+  resolved one.
+- Fixed a `bd create` call that combined `--id` and `--parent` in one
+  invocation, which the installed `bd` CLI rejects outright: the fix issues
+  `--id` alone and links the parent with a separate `bd update --parent`
+  call, verifying the reported parent matches what was requested before
+  trusting the create.
+- Fixed the sprint stall-detector's closed-bead count to be read fresh
+  immediately before each cycle's progress evaluation, rather than reused
+  from an earlier snapshot taken before that same cycle's own Integ Test
+  step could close verify-routed beads -- previously those same-cycle
+  closures were invisible to the stall detector's high-water-mark check,
+  producing a false stalled-abort even though real progress was made every
+  cycle.
+- New end-to-end test coverage for the VCS-auth preflight gate on read-side
+  dispatch brackets (planner, integ-test-runner, regression-test-runner),
+  pinning that a preflight failure degrades silently rather than aborting
+  the dispatch.
+
+Carried forward: the three P1/P2 bugs verify-routed to a deployed build
+(the Dolt credential-classification fix, the `bd create` id/parent fix, and
+the stall-detector freshness fix) remain open pending a deploy run once the
+sandbox's permissions allowlist is updated to cover the deploy runbook's
+newer supervisor-start and smoke-test steps. A full regression pass run
+after the final verdict (informational only, does not gate this sprint)
+filed/reconfirmed several parent-less carry-over bugs, including a
+smoke-harness port-cleanup gap in the toy-sprint deploy path.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $20.5559.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 42 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- install --force stop-confirmation fix (closes prior sprint's deploy-gate carry-over)
+
+Sprint goal: continue the dispatch-stall/timeout reliability cluster by fixing
+the two items a prior sprint in this same cluster had to carry forward after
+its own deploy gate failed -- `install --force`/`update` could fail with
+`ETXTBSY` (text file is busy) when it copied the new binary over a still-running
+old server process, and it printed a "stopped running server" success message
+unconditionally rather than only once termination was actually confirmed. All
+scope work is now implemented, tested, and verified; the sprint's final verdict
+is PASS.
+
+What shipped:
+
+- `install --force`/`update` now polls the old server process's liveness over
+  a bounded grace window after sending the initial termination signal, and
+  escalates to a harder kill signal (with a second, shorter poll window) if
+  the process is still alive once the window elapses. The binary copy is only
+  attempted once the old process is confirmed gone, closing the `ETXTBSY`
+  failure that could occur when a fixed sleep wasn't long enough for a
+  mid-request singleton to exit.
+- The "Stopped running server." success message is now gated on that same
+  confirmed-termination check instead of being printed unconditionally. If
+  the old process is still detected running after both the initial signal and
+  the escalation, install now reports a clear, actionable error (including
+  the manual command to finish stopping it for the current platform) and
+  exits non-zero, instead of asserting a stop that didn't actually happen.
+
+No items are carried forward from this cycle. An end-of-sprint regression
+pass could not run: the sandbox's permission allowlist did not cover the
+commands the regression playbook requires, so the pass stopped at its own
+permissions check before either its real-bd suite or its smoke test could
+execute. This is informational and does not carry over any new bead; the
+permissions gap needs to be resolved by an operator before a regression pass
+can be attempted.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $5.3687.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0695 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- Dispatch-layer stall/timeout reliability hardening
+
+Sprint goal: dedupe and fix a cluster of dispatch-stall and max_turns-exhaustion
+incidents traced to a stall detector that could not actually cancel a hung
+dispatch, a client timeout budget that didn't account for the server's own
+retry, and several related latent hazards found while investigating the same
+incident cluster. **Goal work fully landed and code-quality-approved, but the
+sprint's own final verdict is FAIL** -- the deploy gate failed before the smoke
+test could run, and that failure was confirmed to be a genuine pre-existing
+defect, not an environment fluke (see below).
+
+What shipped:
+
+- A confirmed stall now cancels the in-flight MCP dispatch itself (via an
+  `AbortController` threaded through the same abort-signal path remote
+  strategies already accept), instead of only killing the remote process and
+  leaving the client to wait out its own independent hard deadline.
+- The client's dispatch timeout budget now shares a single derivation with
+  the server's own inactivity-timeout retry, so the client can no longer time
+  out before the server's own retry-and-report-cleanly path gets a chance to
+  run.
+- Workspace-trust detection now also classifies an exit-0/empty-stdout
+  dispatch against a never-trusted workspace as `workspace_not_trusted`
+  (previously only a nonzero exit code triggered this), gated to
+  self-heal-and-retry exactly once.
+- The SSH connection pool's idle-reap path now re-verifies a channel is
+  genuinely idle immediately before closing it, closing a latent risk that a
+  provisional (not-yet-polled) stall-tracking entry's channel could be reaped
+  while still live; SSH connections also now configure keepalive so a
+  silently dropped connection is detected rather than left as a phantom pool
+  entry.
+- The supervisor watchdog's periodic tick now has a reentrancy guard, so an
+  overlapping tick (possible once per-tick liveness checks take longer than
+  the tick interval) is skipped rather than racing the in-flight tick on
+  shared state.
+- `finalizeAbort()`'s own git operations now go through the same
+  self-heal-and-retry-once pattern already used elsewhere, so a stale
+  credential encountered during abort cleanup no longer silently drops a
+  PR-lookup step from the terminal history record.
+- The sprint cost-analysis report now gives Integ Test its own line (previously
+  folded into "overhead"), and dispatches that exhaust their turn ceiling or
+  time out now report their real partial cost rather than an undefined/zero
+  figure.
+- The orchestrator no longer automatically classifies a max_turns/timeout
+  streak as failed when every bead it was assigned is already closed -- it is
+  now classified as a successful streak that overran its own VERIFY step, and
+  no wasted resume dispatch is triggered. Paired with a strengthened doer
+  contract stating that the moment its last assigned bead closes, its only
+  next action is emitting the VERIFY result.
+- `undici` is now pinned to the 7.x line workspace-wide via package-manager
+  overrides, fixing a Node 20 incompatibility that broke child-process-spawn
+  tests independent of any application code.
+
+However, the sprint fails its own deploy gate: `install --force` failed with
+`ETXTBSY` (text file is busy) while copying the new binary over a still-running
+server process, and the smoke test never ran as a result. This was confirmed to
+be a genuine, pre-existing latent defect in the installer's stop-then-copy
+sequence (it waits a fixed short delay and unconditionally reports the old
+server stopped, without verifying the process actually exited before copying
+over it) rather than caused by this sprint's own changes -- but it still blocks
+release and is tracked as carried-forward work (see below).
+
+Carried forward to a future sprint:
+
+- Make `install --force`/`update` verify the old server process has actually
+  exited (polling liveness, escalating if needed) before copying the new
+  binary, instead of assuming success after a fixed delay.
+- Gate the installer's "stopped running server" message on confirmed
+  termination instead of asserting it unconditionally.
+- An end-of-sprint regression pass could not run at all: the sandbox's
+  permission allowlist did not cover the commands the regression playbook
+  requires, so the pass stopped at its own permissions check before either
+  its real-bd suite or its smoke test could execute. This is informational
+  and does not carry over any new bead.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $4.1194.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1562 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 10 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- fleet-sprint runner error-classification correctness
+
+Sprint goal: fix a cluster of error-classification defects in the
+`fleet-sprint` runner so that abort handling, terminal-record reporting,
+post-dispatch teardown skipping, and reviewer contract enforcement each ask
+the narrow question they are actually meant to answer, instead of a single
+blanket "is this a `WorkflowError`" check sweeping routine, non-terminal
+failures into a false aborted-sprint verdict. **Goal met -- sprint verdict is
+PASS.**
+
+What shipped:
+
+- The runner's abort classification is now a curated, explicit list of
+  typed error classes (stalled sprint, plan rejection, reviewer contract
+  violation, budget exceeded, git/dolt divergence, pre-sprint validation
+  failure) rather than every `WorkflowError` subclass -- so ordinary
+  dispatch/sync failures each phase already retries or soft-fails on no
+  longer masquerade as a full sprint abort with a spurious push and
+  `[ABORTED]` PR.
+- Terminal-record reporting (so the supervisor watchdog can classify a
+  finished run as FINISHED-with-a-reason instead of CRASHED) was split out
+  as its own, deliberately broader check from the narrower abort-worthy
+  check, since every typed failure needs a terminal record but only a
+  genuine abort needs the push-and-PR treatment.
+- Post-dispatch sync teardown is no longer skipped for a dispatch failure
+  where the agent provably ran (turn-limit exhaustion, or a local dispatch
+  watchdog abandoning an in-flight call whose remote member kept running) --
+  only genuinely no-mutation dispatch failures skip teardown now.
+- A reviewer verdict's `replanIds` are now required to be a subset of its
+  `reopenIds`; a `replanIds` entry that silently falls outside that set is
+  both flagged as a reviewer contract violation and logged explicitly
+  instead of being silently dropped.
+- The Final Review LLM-auth self-heal path now short-circuits on success
+  instead of falling through into a redundant second dispatch, and a
+  heal-retry that itself throws degrades through the same generic failure
+  ladder as every other Final Review failure.
+- Plan-reviewer dispatch failures are now marked and retried distinctly from
+  a genuine plan rejection, so a transport/infra failure while soliciting a
+  plan-reviewer verdict is never misreported as the plan itself having been
+  rejected.
+- Publish's branch push is now fail-soft with a bounded retry; a push that
+  still fails after retries is logged and skips PR creation and target-issue
+  closure, but the sprint's already-computed PASS/FAIL verdict is still
+  returned rather than being downgraded into a run failure -- so a caller
+  reading the run's status can no longer assume a successful sprint verdict
+  implies its branch was actually pushed or a PR was raised; `pushed:false`
+  now distinguishes that case.
+- A table-driven contract test enumerates every error class against both
+  classification predicates (including wrapped-divergence and
+  null/undefined edge cases), plus end-to-end harness assertions for each of
+  the four routing outcomes (abort record, rethrow-with-no-record,
+  teardown-skip, teardown-run), so future edits to this area have a single
+  place to pin new rows rather than relying on scattered individual
+  assertions.
+
+Carried forward to a future sprint:
+
+- One open task to update two pre-existing exit-classification tests for a
+  concurrently-landed watchdog "launch failed" reclassification (a fast
+  child exit within a configurable window of reservation now classifies
+  differently than a plain crash); this runner-error-classification sprint's
+  own file footprint did not need to touch those two files.
+- Four regression findings surfaced by this sprint's end-of-sprint
+  regression pass (informational; did not gate this sprint's verdict): a
+  bd-replay recording drift in a stalled-planner-session test; a shared,
+  non-exclusive smoke-test sandbox path that let two concurrent regression
+  runs collide and destroy each other's in-progress state; a growing list of
+  real-bd integration-suite files exceeding their single-file time budget;
+  and a single real-bd suite timeout in the publish-push-failure test.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $9.4498.
+Remaining budget: unknown/unbounded.
+Pricing source: all 13 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- Dispatch-layer reliability: max_turns detection, busy-lock self-heal, AGY output capture
+
+Sprint goal: make `execute_prompt`'s terminal-signal handling truthful and
+self-healing, closing three independent dispatch-layer reliability gaps.
+**Goal met -- sprint verdict is PASS.**
+
+What shipped:
+
+- **Reliable max-turns detection.** A Claude CLI can signal "hit the turn
+  limit" through more than one transcript channel depending on version and
+  stream shape -- a result event's `terminal_reason` field, that event's
+  `subtype`, a distinct standalone terminal event (which can arrive instead
+  of any result event when a hard-timeout kill truncates the stream first),
+  or a plain-text fallback with no result event at all. Detection now
+  recognizes every one of these channels and normalizes them through a
+  single shared classifier used by every call site, so a turn-limit
+  termination always surfaces the existing `max_turns_exhausted` reason
+  promptly instead of occasionally falling through to a generic exit-code
+  classification and sitting dead until the hard dispatch ceiling.
+- **Stall detector cross-checks OS mtime against content parsing.** The
+  transcript-freshness poll now also reads the transcript file's own
+  filesystem last-modified time as an independent signal alongside its
+  existing content-timestamp scan, and only calls a session stalled when
+  *both* signals agree the transcript is frozen -- a strict superset of the
+  prior content-only check that can only convert a would-be false stall
+  into recognized activity, never the reverse, while still catching a
+  genuinely dead session within the configured inactivity window (a couple
+  of minutes by default) instead of the much longer hard ceiling. Threshold
+  is configurable and documented.
+- **Busy-lock self-heal.** `execute_prompt`'s in-flight lock can outlive the
+  process it was guarding (a reaped child whose cleanup handler never fires,
+  or an interactive session's process dying post-registration), which used
+  to wedge a member permanently -- every dispatch kept returning `busy`
+  even though the member was actually idle. A busy rejection now first
+  verifies the locked session's process is actually alive (local signal
+  check, a fresh independent remote liveness round trip, or the session
+  registry's last-known pid for interactive sessions) and self-heals
+  (releases the lock, warns, proceeds) only on a definitive dead-pid
+  reading -- any ambiguity is conservatively still treated as busy, so a
+  dispatch that hasn't finished starting up can never be raced.
+- **AGY (Antigravity) provider captures real response output.** Previously
+  an AGY dispatch always returned an empty result. The provider now
+  extracts both the reply text and, when the CLI's transcript exposes one,
+  a session id -- pinned against a recorded-shape CLI output fixture, no
+  live AGY dispatch involved in the test.
+- All four fixes are covered by deterministic, fixture/mock-based regression
+  tests (no real CLI or credentials). No MCP tool schema, response contract,
+  or reason-enum values changed.
+
+Carried forward: a pre-existing Node/undici incompatibility
+(`webidl.util.markAsUncloneable is not a function`) that crashes a chunk of
+the real (non-mocked) integration suite and the sandbox smoke test's CLI
+startup was confirmed present on the base branch as well (not a regression
+from this sprint) and filed as a standalone follow-up for a future sprint.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $9.5894.
+Remaining budget: unknown/unbounded.
+Pricing source: all 16 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+## [Unreleased] -- fleet-sprint stabilization: run identity, dolt coordination, Windows fixes
+
+Sprint goal: stabilize the always-on multi-sprint supervisor by fixing the
+run-identity/termination-classification gaps, wiring cross-sprint Dolt
+coordination end to end for the standalone CLI launch path, closing a
+Windows shell-invocation and a class of Windows entrypoint-guard defects,
+and reconciling the reviewer's newTask allowlist with the planner's
+verification-task convention. **Goal not fully met -- sprint verdict is
+FAIL**, for release-process reasons rather than code-quality ones.
+
+What shipped and is genuinely solid:
+
+- Supervisor run-identity threaded into the sprint child's own engine
+  run-state, so the watchdog/dashboard/history layer reports the engine's
+  own terminal reason (and, where present, its verdict) truthfully instead
+  of inferring an outcome from process liveness alone; a mismerge-able Dolt
+  conflict is now its own distinct terminal classification carrying the
+  conflict dump forward; child exit code/signal/time are recorded into the
+  ledger the moment the child process exits, independent of whatever the
+  engine itself manages to persist.
+- Per-sprint child stdout/stderr is teed to a log file, served and linked
+  from the dashboard, so a sprint's raw output stays traceable even when it
+  crashes before reporting anything structured.
+- The dolt-push mutex and child-id allocator (previously supervisor-only)
+  are now also hosted on the fleet MCP server and wired end to end
+  (`--service-url` threaded through the standalone CLI launch path), closing
+  the coordination gap for sprints launched outside the supervisor. The
+  thin client wrapper other packages use to call fleet MCP tools was
+  updated in lockstep so it cannot silently drift from what the server
+  actually accepts.
+- Reviewer newTask title allowlist now accepts square brackets (reconciling
+  with the `[test]` verification-task convention), and a rejected newTask is
+  resurfaced into the next planning dispatch rather than silently dropped.
+- Fixed a class of Windows entrypoint-guard scripts whose "is this the
+  directly-run script" check compared `import.meta.url` against a
+  hand-built `file://` string, which never matches on Windows (a native
+  path vs. a properly-encoded URL), so the affected verification scripts
+  previously exited 0 having verified nothing -- a false-pass, not a crash.
+  Also fixed a Windows `bd` invocation
+  path that threw ENOENT when spawned without a shell, without reintroducing
+  the shell-injection surface a naive `{ shell: true }` fix would have
+  opened.
+- The full local unit/build suite is green, and the real (non-mocked)
+  integration suite passed 142/142 files with zero failures on its final
+  runs this sprint.
+
+Why the sprint still failed:
+
+- **The deploy step never executed in any cycle** -- a required permissions
+  allowlist was missing from the local tool-permission configuration, so no
+  deploy command ran and nothing was verified as actually deployable.
+- **The integration playbook's smoke-test scenario completed in zero of
+  four attempted cycles** -- each run stopped at the credential-provisioning
+  step because no live provider credential was available to the runner,
+  which is an environment/credential gap rather than a product defect, but
+  it means there is no end-to-end evidence of a real planner dispatch,
+  closure, or version-flag assertion against any deployed build this
+  sprint. The real (non-mocked) functional suite was independently green.
+- **Scope was not complete**: a number of P1 items remain open, carried
+  forward to a future sprint -- a launch-failure fast path and
+  diagnose-before-relaunch gate in the supervisor; wiring or decommissioning
+  the existing Dolt conflict-recovery ladder; routing persona-proposed bead
+  creation through the shared id allocator instead of direct creation;
+  requiring machine-checkable dedup evidence before a new bead is created;
+  adding the deploy-required permissions allowlist; and provisioning a
+  runner credential so the smoke-test scenario can actually complete.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $37.2433.
+Remaining budget: unknown/unbounded.
+Pricing source: all 78 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
 ## [Unreleased] -- `auto-sprint` CLI workflow renamed to `fleet-sprint`
 
 **BREAKING (CLI surface).** apra-fleet's own product sprint workflow is now

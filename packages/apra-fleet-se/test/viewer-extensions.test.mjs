@@ -221,6 +221,70 @@ describe('renderBeadsHtml: containment tree (parent-based nesting, blocks-deps a
     });
 });
 
+// apra-fleet-eft.52.1.2: Sprint's TOP-LEVEL rows are primarily ordered by
+// status urgency (In-progress -> Open -> Blocked -> Closed), falling back to
+// priority-then-id only to break ties within a status. This is explicitly
+// NON-recursive: a nested child list under one of those roots keeps its
+// existing natural DAG order, unaffected by its parent's (or its own)
+// status.
+describe('renderBeadsHtml: Sprint top-level status ordering (apra-fleet-eft.52.1.2)', () => {
+    const childPrefix = String.fromCharCode(0x2514, 0x2500) + ' ';
+
+    test('top-level roots with all four statuses render in order In-progress, Open, Blocked, Closed, regardless of input order', () => {
+        const tasks = [
+            { id: 'ROOT-CLOSED', title: '[impl] closed root', status: 'closed', priority: 1, dependencies: [] },
+            { id: 'ROOT-BLOCKED', title: '[impl] blocked root', status: 'open', ready: false, priority: 1, dependencies: [] },
+            { id: 'ROOT-OPEN', title: '[impl] open root', status: 'open', priority: 1, dependencies: [] },
+            { id: 'ROOT-INPROGRESS', title: '[impl] in-progress root', status: 'in_progress', priority: 1, dependencies: [] },
+        ];
+        const html = renderBeadsHtml(tasks);
+
+        const posInProgress = html.indexOf('>#ROOT-INPROGRESS</td>');
+        const posOpen = html.indexOf('>#ROOT-OPEN</td>');
+        const posBlocked = html.indexOf('>#ROOT-BLOCKED</td>');
+        const posClosed = html.indexOf('>#ROOT-CLOSED</td>');
+
+        assert.ok(posInProgress < posOpen, 'in-progress root must render before the open root');
+        assert.ok(posOpen < posBlocked, 'open root must render before the blocked root');
+        assert.ok(posBlocked < posClosed, 'blocked root must render before the closed root');
+    });
+
+    test('within the same status, roots still fall back to priority-then-id ordering', () => {
+        const tasks = [
+            { id: 'LOW', title: '[impl] low priority', status: 'open', priority: 4, dependencies: [] },
+            { id: 'HIGH', title: '[impl] high priority', status: 'open', priority: 1, dependencies: [] },
+        ];
+        const html = renderBeadsHtml(tasks);
+        assert.ok(html.indexOf('>#HIGH</td>') < html.indexOf('>#LOW</td>'), 'P1 root must sort before P4 root within the same status');
+    });
+
+    test('the status sort is non-recursive: a nested child list keeps its original DAG order, not a status-based order', () => {
+        const tasks = [
+            { id: 'EPIC', title: '[bug] epic', status: 'open', dependencies: [] },
+            { id: 'EPIC.1', parent: 'EPIC', title: '[impl] closed child', status: 'closed', dependencies: [] },
+            { id: 'EPIC.2', parent: 'EPIC', title: '[impl] in-progress child', status: 'in_progress', dependencies: [] },
+        ];
+        const html = renderBeadsHtml(tasks);
+        // Children keep their existing (natural DAG / id) order -- EPIC.1
+        // before EPIC.2 -- even though EPIC.2 (in-progress) would sort ahead
+        // of EPIC.1 (closed) under the top-level status rule.
+        assert.ok(html.indexOf(childPrefix + '#EPIC.1</td>') < html.indexOf(childPrefix + '#EPIC.2</td>'), 'children must remain in natural order, not be re-sorted by status');
+    });
+
+    test('the Backlog section ordering is unaffected by the Sprint status sort', () => {
+        const sprintTasks = [{ id: 'S1', title: '[impl] sprint root', status: 'closed', dependencies: [] }];
+        const backlogTasks = [
+            { id: 'B-low', title: '[bug] low priority backlog item', status: 'in_progress', priority: 4 },
+            { id: 'B-high', title: '[bug] high priority backlog item', status: 'closed', priority: 1 },
+        ];
+        const html = renderBeadsHtml(sprintTasks, backlogTasks);
+        // Backlog keeps its own priority-then-id ordering (P1 before P4),
+        // even though B-low's status (in_progress) would outrank B-high's
+        // (closed) under Sprint's status rule -- Backlog does not use it.
+        assert.ok(html.indexOf('#B-high') < html.indexOf('#B-low'), 'Backlog must still sort P1 before P4, unaffected by status');
+    });
+});
+
 describe('renderBeadsHtml: status/type badges are defensive (never blank, never throw)', () => {
     test('in_progress (bd\'s real status string, underscore) gets its accent-colored badge, not the generic fallback', () => {
         const html = renderBeadsHtml([{ id: 1, title: '[impl] active work', status: 'in_progress', dependencies: [] }]);
@@ -286,13 +350,36 @@ describe('renderBeadsHtml: status/type badges are defensive (never blank, never 
 });
 
 describe('renderBeadsHtml: Sprint / Backlog two-section layout', () => {
-    test('always renders both a Sprint and a Backlog section header, even when both are empty', () => {
+    // apra-fleet-eft.89: a section header + its body only render when that
+    // section actually has at least one task -- an empty list skips the
+    // section entirely (no header, no "No sprint tasks."/"No backlog
+    // items." placeholder row), rather than always showing both.
+    test('when both sprintTasks and backlogTasks are empty, neither section header renders, but the output stays well-formed', () => {
         assert.doesNotThrow(() => renderBeadsHtml());
         const html = renderBeadsHtml();
+        assert.ok(!html.includes('Sprint'));
+        assert.ok(!html.includes('Backlog'));
+        assert.ok(!html.includes('No sprint tasks.'));
+        assert.ok(!html.includes('No backlog items.'));
+        // The 6-column header row and table wrapper still always render.
+        assert.ok(html.includes('<th style="padding: 8px;">ID</th>'));
+        assert.ok(html.includes('<table'));
+    });
+
+    test('sprintTasks populated, backlogTasks empty: only the Sprint section renders, no Backlog header/row', () => {
+        const html = renderBeadsHtml([{ id: 'S1', title: '[impl] in the sprint', status: 'open', dependencies: [] }], []);
         assert.ok(html.includes('Sprint'));
+        assert.ok(!html.includes('Backlog'));
+        assert.ok(!html.includes('No backlog items.'));
+        assert.ok(html.includes('#S1'));
+    });
+
+    test('backlogTasks populated, sprintTasks empty: only the Backlog section renders, no Sprint header/row', () => {
+        const html = renderBeadsHtml([], [{ id: 'B1', title: '[impl] in the backlog', status: 'open' }]);
+        assert.ok(!html.includes('Sprint'));
         assert.ok(html.includes('Backlog'));
-        assert.ok(html.includes('No sprint tasks.'));
-        assert.ok(html.includes('No backlog items.'));
+        assert.ok(!html.includes('No sprint tasks.'));
+        assert.ok(html.includes('#B1'));
     });
 
     test('backlog items render flat (no indentation-based nesting) and sorted by priority then id', () => {
@@ -406,10 +493,11 @@ describe('renderBeadsHtml: collapsible/expandable tree nodes and sections (apra-
     test('a childless node renders no toggle control of its own (just an invisible spacer)', () => {
         const html = renderBeadsHtml([{ id: 'leaf', title: 'no children here', status: 'open' }]);
         assert.ok(!html.includes('data-toggle-id="leaf"'));
-        // The two section headers (Sprint/Backlog) always carry their own
-        // toggle regardless of content -- exactly 2 `.tree-toggle` controls
-        // exist here, both belonging to the sections, none to the leaf node.
-        assert.strictEqual((html.match(/class="tree-toggle"/g) || []).length, 2);
+        // Only the Sprint section has content here (backlogTasks is empty,
+        // so the Backlog section is skipped entirely per apra-fleet-eft.89)
+        // -- exactly 1 `.tree-toggle` control exists, belonging to the
+        // Sprint section header, none to the leaf node.
+        assert.strictEqual((html.match(/class="tree-toggle"/g) || []).length, 1);
     });
 
     test('a node id present in collapsedIds renders its [+] toggle and hides its children rows entirely', () => {
@@ -474,6 +562,42 @@ describe('renderBeadsHtml: collapsible/expandable tree nodes and sections (apra-
         const html = renderBeadsHtml([{ id: 'S1', title: 'a sprint task', status: 'open' }], [{ id: 'B1', title: 'a backlog task', status: 'open' }]);
         assert.ok(html.includes('data-toggle-id="section:sprint"'));
         assert.ok(html.includes('data-toggle-id="section:backlog"'));
+    });
+
+    test('the Backlog header carries a distinct, stable CSS class and muted-band styling not present on the Sprint header (apra-fleet-eft.52.1.1)', () => {
+        const html = renderBeadsHtml([{ id: 'S1', title: 'a sprint task', status: 'open' }], [{ id: 'B1', title: 'a backlog task', status: 'open' }]);
+        const sprintHeaderRow = html.slice(html.lastIndexOf('<tr', html.indexOf('data-toggle-id="section:sprint"')), html.indexOf('data-toggle-id="section:sprint"') + 50);
+        const backlogHeaderRow = html.slice(html.lastIndexOf('<tr', html.indexOf('data-toggle-id="section:backlog"')), html.indexOf('data-toggle-id="section:backlog"') + 50);
+        assert.ok(backlogHeaderRow.includes('backlog-section'), 'Backlog header row must carry a distinct backlog-section class');
+        assert.ok(backlogHeaderRow.includes('backlog-header'), 'Backlog header cell must carry a distinct backlog-header class');
+        assert.ok(!sprintHeaderRow.includes('backlog-section'), 'Sprint header row must NOT carry the backlog-section class');
+        assert.ok(!sprintHeaderRow.includes('backlog-header'), 'Sprint header cell must NOT carry the backlog-header class');
+        // Differing style band: Backlog gets a background fill the Sprint header lacks.
+        assert.ok(backlogHeaderRow.includes('background:'), 'Backlog header must have a distinct background/muted-band style');
+        assert.ok(!sprintHeaderRow.includes('background:'), 'Sprint header must not share the Backlog muted-band background');
+    });
+
+    test('the Backlog header toggle still reflects collapsed/expanded state, on top of its distinct backlog class (apra-fleet-eft.52.1.1)', () => {
+        const sprintTasks = [{ id: 'S1', title: 'a sprint task', status: 'open' }];
+        const backlogTasks = [{ id: 'B1', title: 'a backlog task', status: 'open' }];
+
+        const expandedHtml = renderBeadsHtml(sprintTasks, backlogTasks);
+        const expandedBacklogRow = expandedHtml.slice(
+            expandedHtml.lastIndexOf('<tr', expandedHtml.indexOf('data-toggle-id="section:backlog"')),
+            expandedHtml.indexOf('data-toggle-id="section:backlog"') + 200
+        );
+        assert.ok(expandedBacklogRow.includes('backlog-header'), 'expanded Backlog header row must still carry its distinct class');
+        assert.ok(expandedBacklogRow.includes('[-]'), 'expanded Backlog header toggle must show [-]');
+        assert.ok(!expandedBacklogRow.includes('[+]'), 'expanded Backlog header toggle must not show [+]');
+
+        const collapsedHtml = renderBeadsHtml(sprintTasks, backlogTasks, new Set(['section:backlog']));
+        const collapsedBacklogRow = collapsedHtml.slice(
+            collapsedHtml.lastIndexOf('<tr', collapsedHtml.indexOf('data-toggle-id="section:backlog"')),
+            collapsedHtml.indexOf('data-toggle-id="section:backlog"') + 200
+        );
+        assert.ok(collapsedBacklogRow.includes('backlog-header'), 'collapsed Backlog header row must still carry its distinct class');
+        assert.ok(collapsedBacklogRow.includes('[+]'), 'collapsed Backlog header toggle must show [+]');
+        assert.ok(!collapsedBacklogRow.includes('[-]'), 'collapsed Backlog header toggle must not show [-]');
     });
 
     test('collapsing the Sprint section hides every sprint row, but leaves Backlog untouched', () => {

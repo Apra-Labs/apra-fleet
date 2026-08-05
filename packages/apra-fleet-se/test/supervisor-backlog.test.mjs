@@ -4,12 +4,15 @@ import assert from 'node:assert';
 import {
     createBacklog,
     buildBacklogTree,
+    buildChildIndex,
+    expandScopeInMemory,
     renderBacklogTreeHtml,
+    renderBacklogPanelHtml,
     formatPartialClaim,
     parentIdOf,
     normalizeBead,
 } from '../src/supervisor/backlog.mjs';
-import { createScopeGuard } from '../src/supervisor/scope-overlap.mjs';
+import { createScopeGuard, expandScope } from '../src/supervisor/scope-overlap.mjs';
 import { createDashboard, renderIndexPageHtml } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 
@@ -118,6 +121,84 @@ describe('backlog -- buildBacklogTree', () => {
     });
 });
 
+describe('backlog -- expandScopeInMemory equivalence with expandScope() (apra-fleet-c4s)', () => {
+    // The same tracker shape supervisor-scope-overlap.test.mjs-style fixtures
+    // use: epic E -> c1..c5, one of which (c2) has its own grandchildren.
+    const beads = [
+        normalizeBead(trackerBead('E', 'Epic', null, 'epic')),
+        normalizeBead(trackerBead('c1', 'C1', 'E')),
+        normalizeBead(trackerBead('c2', 'C2', 'E')),
+        normalizeBead(trackerBead('c3', 'C3', 'E')),
+        normalizeBead(trackerBead('c4', 'C4', 'E')),
+        normalizeBead(trackerBead('c5', 'C5', 'E')),
+        normalizeBead(trackerBead('g1', 'G1', 'c2')),
+        normalizeBead(trackerBead('g2', 'G2', 'c2')),
+        normalizeBead(trackerBead('f0', 'Free root', null)),
+    ];
+    const childIndex = buildChildIndex(beads);
+
+    /** Subprocess-shaped listChildren stub backed by the SAME fixture, for the old expandScope(). */
+    function listChildrenFromFixture(parentId) {
+        return Promise.resolve((childIndex.get(parentId) ?? []).slice());
+    }
+
+    test('same roots + same beads list -> IDENTICAL claimed-id set as the subprocess-based expandScope()', async () => {
+        for (const roots of [['E'], ['c2'], ['c1', 'c3'], ['f0'], ['c2', 'c4'], ['does-not-exist']]) {
+            const oldResult = await expandScope(roots, listChildrenFromFixture);
+            const newResult = expandScopeInMemory(roots, childIndex);
+            assert.deepEqual([...newResult].sort(), [...oldResult].sort(),
+                `expandScopeInMemory(${JSON.stringify(roots)}) must match expandScope() exactly`);
+        }
+    });
+
+    test('expandScopeInMemory is a synchronous pure Set/Map traversal (no subprocess/IO)', () => {
+        // Calling it returns a plain Set directly, not a Promise -- proving no
+        // async subprocess spawn (unlike expandScope(), which is async and
+        // awaits one `bd list --parent` call per discovered node).
+        const scope = expandScopeInMemory(['c2'], childIndex);
+        assert.ok(scope instanceof Set, 'must return a Set synchronously, not a Promise');
+        assert.deepEqual([...scope].sort(), ['c2', 'g1', 'g2']);
+    });
+});
+
+describe('backlog -- createBacklog production default computes claimed scope in-memory (apra-fleet-c4s)', () => {
+    const allBeads = [
+        trackerBead('E', 'Epic', null, 'epic'),
+        trackerBead('c1', 'C1', 'E'),
+        trackerBead('c2', 'C2', 'E'),
+        trackerBead('c3', 'C3', 'E'),
+        trackerBead('f0', 'Free', null),
+    ];
+
+    test('buildClaimedBy() with no expandScope override expands live subtrees off listAllBeads(), zero extra bd calls', async () => {
+        let listAllBeadsCalls = 0;
+        const backlog = createBacklog({
+            ledger: fakeLedger([{ sprintId: 's1', issueRoots: ['E'] }]),
+            listAllBeads: () => { listAllBeadsCalls += 1; return allBeads; },
+            // Deliberately NOT injecting `expandScope` -- exercises the
+            // production default (in-memory) path.
+        });
+        const claimedBy = await backlog.buildClaimedBy();
+        // E's live subtree (via the same allBeads fixture) is E,c1,c2,c3.
+        assert.deepEqual([...claimedBy.keys()].sort(), ['E', 'c1', 'c2', 'c3']);
+        assert.equal(listAllBeadsCalls, 1, 'buildClaimedBy() must fetch beads at most once when not given a pre-fetched list');
+    });
+
+    test('buildTree() and buildBacklogTasks() each fetch listAllBeads() exactly ONCE per call (no duplicate bulk fetch)', async () => {
+        let listAllBeadsCalls = 0;
+        const backlog = createBacklog({
+            ledger: fakeLedger([{ sprintId: 's1', issueRoots: ['c1'] }]),
+            listAllBeads: () => { listAllBeadsCalls += 1; return allBeads; },
+        });
+        await backlog.buildTree();
+        assert.equal(listAllBeadsCalls, 1, 'buildTree() must call listAllBeads() exactly once');
+
+        listAllBeadsCalls = 0;
+        await backlog.buildBacklogTasks();
+        assert.equal(listAllBeadsCalls, 1, 'buildBacklogTasks() must call listAllBeads() exactly once');
+    });
+});
+
 describe('backlog -- formatPartialClaim', () => {
     test('matches the "N of M children claimed by <sprint>; K free" shape', () => {
         const text = formatPartialClaim({
@@ -179,6 +260,81 @@ describe('backlog -- renderBacklogTreeHtml', () => {
         const html = renderBacklogTreeHtml(tree);
         assert.ok(!html.includes('<script>x</script>'));
         assert.ok(!html.includes('<img src=x>'));
+    });
+});
+
+// apra-fleet-eft.89.3 (verifying apra-fleet-eft.89.1/89.2): renderBacklogPanelHtml()
+// always calls the shared renderBeadsHtml([], tasks, ...) with an EMPTY
+// sprintTasks -- so, per 89.1's "only render a section that actually has
+// content" fix, the panel must show a Backlog section but never an
+// always-empty Sprint sibling section/placeholder. This is the supervisor-
+// side half of eft.89 (fleet-sprint's own empty-Backlog-drop side is covered
+// in viewer-extensions.test.mjs's "Sprint / Backlog two-section layout"
+// describe block).
+describe('backlog -- renderBacklogPanelHtml: Sprint section is gone, Backlog + filter header remain (apra-fleet-eft.89.3)', () => {
+    const tasks = [
+        { id: 'B1', title: '[bug] a backlog item', status: 'open', issue_type: 'bug', priority: 2 },
+        { id: 'B2', title: '[impl] another backlog item', status: 'open', issue_type: 'task', priority: 1 },
+    ];
+    const filterOptions = { type: ['bug', 'task'], status: ['open'], priority: [1, 2], model: [] };
+
+    // renderBacklogPanelHtml() also embeds the client-side script's source
+    // text (via .toString()) inside its own <script> tags, which itself
+    // carries doc-comments that happen to mention the word "Sprint" (e.g.
+    // "the supervisor's Launch Sprint form") -- that embedded JS SOURCE TEXT
+    // is not rendered UI and must not be mistaken for an actual Sprint
+    // section header. Assertions about what's actually shown to the operator
+    // are therefore scoped to the server-rendered table markup only, i.e.
+    // everything before the first <script> tag.
+    function renderedTableMarkup(html) {
+        const idx = html.indexOf('<script>');
+        return idx === -1 ? html : html.slice(0, idx);
+    }
+
+    test('renders the backlog rows and the injected filter header, without a Sprint section or "No sprint tasks." placeholder', () => {
+        const html = renderBacklogPanelHtml(tasks, filterOptions);
+        const tableMarkup = renderedTableMarkup(html);
+
+        // The redundant, always-empty Sprint sub-view must be gone entirely.
+        assert.ok(!tableMarkup.includes('Sprint'), 'no "Sprint" section header may render -- fleet-sprint\'s renderBeadsHtml is always called with an empty sprintTasks here');
+        assert.ok(!tableMarkup.includes('No sprint tasks.'), 'no empty-Sprint placeholder row may render either');
+
+        // The backlog rows themselves must still be present.
+        assert.ok(html.includes('data-bead-id="B1"'));
+        assert.ok(html.includes('data-bead-id="B2"'));
+        assert.ok(html.includes('#B1'));
+        assert.ok(html.includes('#B2'));
+    });
+
+    test('the injected filter header (6-column header row) is still swapped in on top of the shared table markup', () => {
+        const html = renderBacklogPanelHtml(tasks, filterOptions);
+
+        // injectFilterHeader() + injectRowCheckboxes() still ran: the plain-
+        // label header row is replaced by the interactive one carrying
+        // data-filter-field controls, and every data row still gets its
+        // select checkbox -- neither post-processing pass depended on the
+        // now-removed Sprint section.
+        assert.ok(html.includes('data-filter-field="q"'), 'the ID column\'s free-text search control must still be present');
+        assert.ok(html.includes('data-filter-field="type"'));
+        assert.ok(html.includes('data-filter-field="status"'));
+        assert.ok(html.includes('data-filter-field="priority"'));
+        assert.ok(html.includes('data-filter-field="model"'));
+        // The header row itself still has exactly 6 <th> cells (ID/Title/
+        // Type/Status/Pri/Model), same shape as the plain header it replaced.
+        const headerRowMatch = html.match(/<tr[^>]*>\s*(?:<th[^>]*>[\s\S]*?<\/th>\s*){6}<\/tr>/);
+        assert.ok(headerRowMatch, 'the swapped-in header row must still have exactly 6 <th> cells');
+        assert.ok(html.includes('bead-select-checkbox'), 'row checkboxes must still be injected');
+        // The outer <table> wrapper renderBeadsHtml() always emits is unchanged.
+        assert.ok(html.includes('<table'));
+    });
+
+    test('an empty backlog still renders the filter header and table wrapper, with no Sprint section', () => {
+        const html = renderBacklogPanelHtml([], { type: [], status: [], priority: [], model: [] });
+        const tableMarkup = renderedTableMarkup(html);
+        assert.ok(!tableMarkup.includes('Sprint'));
+        assert.ok(!tableMarkup.includes('No sprint tasks.'));
+        assert.ok(html.includes('<table'));
+        assert.ok(html.includes('data-filter-field="q"'));
     });
 });
 

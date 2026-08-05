@@ -305,3 +305,17 @@ describe('Azure DevOps provider', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('provisionVcsAuthSchema git_access', () => {
+  it('accepts push+pr', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    const result = provisionVcsAuthSchema.safeParse({ member_id: 'a', provider: 'github', git_access: 'push+pr' });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an unknown git_access level', async () => {
+    const { provisionVcsAuthSchema } = await import('../src/tools/provision-vcs-auth.js');
+    const result = provisionVcsAuthSchema.safeParse({ member_id: 'a', provider: 'github', git_access: 'bogus' });
+    expect(result.success).toBe(false);
+  });
+});

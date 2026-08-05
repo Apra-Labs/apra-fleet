@@ -38,10 +38,8 @@
 // out of scope for this reservation check.
 // =============================================================================
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
+import { validateIssueId } from '../../fleet-sprint/runner.js';
+import { execBdAsync } from '../../../../scripts/lib/exec-bd.mjs';
 
 /**
  * Default `listChildren`: return the DIRECT child bead ids of a single parent
@@ -53,7 +51,15 @@ const execFileAsync = promisify(execFile);
  * @returns {Promise<string[]>}
  */
 export async function bdListChildren(parentId) {
-    const { stdout } = await execFileAsync('bd', ['list', '--parent', parentId, '--json', '--limit', '0']);
+    // Routed through the shared execBdAsync() helper (apra-fleet-xuo.2), which
+    // resolves the platform `bd` command directly (`bd.cmd` on win32) instead
+    // of shelling out via `{ shell: true }` -- so no shell is invoked at all,
+    // and no shell metacharacter in `parentId` can reach one. validateIssueId()
+    // below is kept as defense in depth (letters/digits/'.'/'_'/'-' -only
+    // charset, same as the launch API boundary's runner.js ISSUE_ID_PATTERN)
+    // in case some future caller forgets to validate upstream.
+    validateIssueId(parentId);
+    const { stdout } = await execBdAsync(['list', '--parent', parentId, '--json', '--limit', '0']);
     const text = stdout && stdout.trim() ? stdout : '[]';
     let rows;
     try {

@@ -792,6 +792,90 @@ test('doltPullBefore: an auth-classified D-pull heals once via onAuthFailure and
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2, 'pull retried exactly once after self-heal');
 });
 
+// -----------------------------------------------------------------------------
+// apra-fleet-647.1.3.3: an 'unknown'-classified `bd dolt` failure gets the
+// SAME bounded one-shot self-heal + single retry as 'auth', rather than
+// failing immediately. 'diverged' remains excluded -- never retried.
+// -----------------------------------------------------------------------------
+const NOVEL_DOLT_ERROR = 'some totally novel bd dolt failure the classifier has never seen before';
+
+test('doltPushAfter: self-heal success -- an UNKNOWN-classified D-push heals once via onAuthFailure and the single bounded retry succeeds', async () => {
+    assert.equal(classifyDoltFailure(NOVEL_DOLT_ERROR), 'unknown', 'precondition: injected error must classify as unknown');
+    const { command, calls } = makeCommandMock({
+        'bd dolt push': [fail(NOVEL_DOLT_ERROR), OK],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async (info) => {
+        healCalls += 1;
+        assert.equal(info.member, 'memberA');
+        assert.equal(info.error, NOVEL_DOLT_ERROR);
+    };
+    const checkSyncRemoteConfigured = async () => true;
+    const res = await doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
+    assert.deepEqual(res, { ok: true, member: 'memberA', pushed: true, reconciled: false });
+    assert.equal(healCalls, 1, 'expected exactly one self-heal call');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push retried exactly once after self-heal');
+});
+
+test('doltPushAfter: self-heal called but the retry STILL fails on an UNKNOWN failure -- typed DoltSyncError still surfaces, self-heal called exactly once, no unbounded loop', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt push': [fail(NOVEL_DOLT_ERROR)], // single-entry queue -> same failure every call
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+    const checkSyncRemoteConfigured = async () => true;
+    await assert.rejects(
+        () => doltPushAfter('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
+        (err) => err instanceof DoltSyncError && !(err instanceof DoltDivergedError),
+    );
+    assert.equal(healCalls, 1, 'self-heal must be invoked EXACTLY ONCE (bounded, never a loop)');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'exactly one bounded retry after self-heal');
+});
+
+test('doltPushAfter: omitting onAuthFailure preserves pre-existing behavior on an unknown-classified failure -- no retry, single attempt', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt push': [fail(NOVEL_DOLT_ERROR)],
+    });
+    const checkSyncRemoteConfigured = async () => true;
+    await assert.rejects(
+        () => doltPushAfter('memberA', { command, checkSyncRemoteConfigured }), // no onAuthFailure injected
+        DoltSyncError,
+    );
+    assert.equal(
+        calls.filter((c) => c.cmd.includes('bd dolt push')).length,
+        1,
+        'no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt',
+    );
+});
+
+test('doltPullBefore: an unknown-classified D-pull heals once via onAuthFailure and the retry succeeds', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt pull': [fail(NOVEL_DOLT_ERROR), OK],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+    const checkSyncRemoteConfigured = async () => true;
+    const res = await doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured });
+    assert.deepEqual(res, { ok: true, member: 'memberA' });
+    assert.equal(healCalls, 1);
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 2, 'pull retried exactly once after self-heal');
+});
+
+test('doltPullBefore: a DIVERGED D-pull is still never retried/self-healed even when onAuthFailure is provided', async () => {
+    const { command, calls } = makeCommandMock({
+        'bd dolt pull': [fail('error: failed to push some refs to origin/main; Updates were rejected because the remote contains work that you do not have locally.')],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+    const checkSyncRemoteConfigured = async () => true;
+    await assert.rejects(
+        () => doltPullBefore('memberA', { command, onAuthFailure, checkSyncRemoteConfigured }),
+        DoltDivergedError,
+    );
+    assert.equal(healCalls, 0, 'a diverged failure must never invoke onAuthFailure self-heal');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 1, 'diverged must not be retried at all, bounded to a single attempt');
+});
+
 test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-only roles do not', () => {
     const src = fs.readFileSync(RUNNER_PATH, 'utf8');
     const sites = withGitSyncCallTexts(src);
@@ -812,7 +896,12 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // withGitSync(...) brackets in the develop loop -- the scoped planner
     // dispatch (mutating: pushBeads:true) and the scoped plan-review dispatch
     // (read-side: no pushBeads).
-    assert.equal(sites.length, 18, `expected 18 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 18 -> 20 (integ/regression split): the new once-per-sprint Regression
+    // Test phase added two withGitSync(...) brackets -- its dispatch and its
+    // max_turns resume -- both read-side (pushCode:false) but BOTH mutating
+    // (pushBeads:true): the runner files parent-less
+    // `[regression][carry-over]` bug beads that must reach the shared remote.
+    assert.equal(sites.length, 20, `expected 20 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch
@@ -828,16 +917,21 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // apra-fleet-eft.68.1: the in-cycle SCOPED replan's planner dispatch is a
     // ninth pushBeads:true bracket (it mutates beads by re-scoping the flagged
     // subtree); the paired scoped plan-review is read-side (no pushBeads).
+    // 9 -> 11 (integ/regression split): the once-per-sprint
+    // regression-test-runner is a fifth beads-mutating role (it files
+    // parent-less carry-over bug beads), and like the doer/integ runner it
+    // has TWO pushBeads:true sites -- dispatch and same-session resume.
     assert.equal(
         pushBeadsSites.length,
-        9,
-        `expected exactly 9 withGitSync(...) brackets with pushBeads:true (planner+resume, doer+resume, integ+resume, harvester+resume, scoped-replan planner), found ${pushBeadsSites.length}`,
+        11,
+        `expected exactly 11 withGitSync(...) brackets with pushBeads:true (planner+resume, doer+resume, integ+resume, regression+resume, harvester+resume, scoped-replan planner), found ${pushBeadsSites.length}`,
     );
 
     const roleMarkers = [
         { name: 'planner', re: /getMemberForRole\('planner'\)|agentType:\s*'planner'/ },
         { name: 'doer', re: /agentType:\s*'doer'/ },
         { name: 'integ-test-runner', re: /getMemberForRole\('integ-test-runner'\)|agentType:\s*'integ-test-runner'/ },
+        { name: 'regression-test-runner', re: /getMemberForRole\('regression-test-runner'\)|agentType:\s*'regression-test-runner'/ },
         { name: 'harvester', re: /getMemberForRole\('harvester'\)|agentType:\s*'harvester'/ },
     ];
     for (const { name, re } of roleMarkers) {

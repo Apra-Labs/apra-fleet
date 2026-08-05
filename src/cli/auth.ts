@@ -106,6 +106,45 @@ async function parseTokenArgs(
 }
 
 // ---------------------------------------------------------------------------
+// resolveAmbientClaudeCredential: pick the ambient Claude Code credential a
+// runner's own real session already has, for seeding a sandboxed dispatcher's
+// persistent secret store (integ-test-playbook.md "Test scenario" step 3a).
+//
+// apra-fleet-04g.4/04g.5: step 3a's own inline shell script previously
+// checked $REAL_HOME/.claude/.credentials.json FIRST and only fell back to
+// CLAUDE_CODE_OAUTH_TOKEN when the file yielded an empty result -- so a live,
+// freshly-exported env token was silently ignored whenever the file existed
+// with ANY accessToken, even an EXPIRED one (observed 2026-07-29: expired
+// file token won over a valid env token, breaking Planner dispatch auth).
+// Per the playbook's own documented precedence ("its CLAUDE_CODE_OAUTH_TOKEN
+// env var if set, else the ... file"), the env var must win. This function is
+// the single, unit-testable source of truth for that order (fix candidate
+// (a) from apra-fleet-04g.4's report) -- previously this logic only existed
+// as an untested inline bash/`node -e` snippet in the markdown playbook.
+export function resolveAmbientClaudeCredential(
+  env: NodeJS.ProcessEnv = process.env,
+  realHome: string = env.REAL_HOME || os.homedir(),
+): string {
+  const envToken = env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (envToken) return envToken;
+
+  const credPath = path.join(realHome, '.claude', '.credentials.json');
+  if (!fs.existsSync(credPath)) return '';
+  try {
+    const parsed = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
+    const oauth = parsed?.claudeAiOauth;
+    if (oauth && typeof oauth.accessToken === 'string' && oauth.accessToken) {
+      // Session-shape fields only -- refreshToken/refreshTokenExpiresAt are
+      // deliberately stripped so nothing seeded from this can rotate the
+      // runner's real credentials (see integ-test-playbook.md step 3a note).
+      const { refreshToken, refreshTokenExpiresAt, ...probeSafe } = oauth;
+      return JSON.stringify(probeSafe);
+    }
+  } catch { /* malformed file -- treat as no ambient credential */ }
+  return '';
+}
+
+// ---------------------------------------------------------------------------
 // --oauth: write token to provider credential file
 // ---------------------------------------------------------------------------
 
@@ -252,6 +291,34 @@ async function handleOAuth(args: string[]): Promise<void> {
 // (apra-fleet-eft.48.8), instead of writing a provider credential file.
 // ---------------------------------------------------------------------------
 
+// apra-fleet-vak.1: unlike parseClaudeOAuthSecret (used for the
+// credentials-FILE path), the env-var path must store ONLY the bare access
+// token string -- it must never synthesize expiresAt/scopes fields, since
+// those belong to the credentials-file session shape, not an env var value.
+// If the resolved secret is a full claudeAiOauth JSON object (or the nested
+// { claudeAiOauth: { accessToken } } wrapper matching the on-disk
+// credentials-file shape), extract just its accessToken. Otherwise pass the
+// secret through unchanged (a bare token, or a non-JSON/invalid-JSON string
+// that merely starts with '{').
+export function extractBearerTokenFromSecret(secret: string): string {
+  const trimmed = secret.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.accessToken === 'string') {
+          return parsed.accessToken;
+        }
+        const nested = (parsed as Record<string, unknown>).claudeAiOauth;
+        if (nested && typeof nested === 'object' && typeof (nested as Record<string, unknown>).accessToken === 'string') {
+          return (nested as Record<string, unknown>).accessToken as string;
+        }
+      }
+    } catch { /* fall through to verbatim pass-through */ }
+  }
+  return secret;
+}
+
 async function provisionEnvVarForMember(provider: string, token: string, memberName: string): Promise<void> {
   if (provider !== 'claude') {
     console.error(`✗ --member provisioning currently only supports provider "claude" (CLAUDE_CODE_OAUTH_TOKEN). Got "${provider}".`);
@@ -271,8 +338,9 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
   try {
     const { encryptPassword } = await import('../utils/crypto.js');
     const { updateAgent } = await import('../services/registry.js');
+    const bearerToken = extractBearerTokenFromSecret(token);
     const updated = updateAgent(agentOrError.id, {
-      encryptedEnvVars: { ...agentOrError.encryptedEnvVars, [envVarName]: encryptPassword(token) },
+      encryptedEnvVars: { ...agentOrError.encryptedEnvVars, [envVarName]: encryptPassword(bearerToken) },
     });
     if (!updated) {
       console.error(`✗ Failed to update member "${memberName}" -- not found in registry.`);

@@ -26,6 +26,7 @@
 // =============================================================================
 
 import { readProcessCmdline } from './watchdog.mjs';
+import { withTimestamps } from './log-timestamp.mjs';
 
 /**
  * Extracts the `--viewer-port <N>` value from a process command line string
@@ -51,7 +52,7 @@ export function parseViewerPortFromCmdline(cmdline) {
  *   ledger: { get: (sprintId: string) => { childPid: number|null }|undefined },
  *   spawner: { adopt: (pid: number, port: number) => void },
  *   reconciler: { reconcile: () => Promise<{ released: string[], retained: string[] }> },
- *   readCmdline?: (pid: number) => string|null,
+ *   readCmdline?: (pid: number) => string|null|Promise<string|null>,
  *   logger?: { log?: Function, warn?: Function, error?: Function },
  * }} deps
  * @returns {{
@@ -73,7 +74,8 @@ export function createReadopter(deps = {}) {
         throw new TypeError('createReadopter requires a reconciler with a reconcile() method');
     }
     const readCmdline = deps.readCmdline ?? readProcessCmdline;
-    const logger = deps.logger ?? console;
+    // apra-fleet-k7b.2: ISO-timestamp-prefix every log line from this module.
+    const logger = withTimestamps(deps.logger ?? console);
     const log = (...a) => logger.log?.(...a);
     const logWarn = (...a) => (logger.warn ?? logger.log)?.(...a);
 
@@ -106,7 +108,7 @@ export function createReadopter(deps = {}) {
                 unresolved.push(sprintId);
                 continue;
             }
-            const cmdline = readCmdline(pid);
+            const cmdline = await readCmdline(pid);
             const port = parseViewerPortFromCmdline(cmdline);
             if (port == null) {
                 logWarn(

@@ -144,14 +144,15 @@ test(
                 // branch-ensure loop (eft.58.1) -- its first mutation is
                 // `git checkout -B <branch>` off a freshly-fetched base/
                 // sprint-branch ref. A diverged D-pull must abort before that
-                // ever fires, and before any `gh pr create` (finalization/
-                // abort-path PR raise).
+                // ever fires, and before any VCSModule PR-raise dispatch
+                // (finalization/abort-path `curl ... /pulls` create-PR call,
+                // which replaced the retired `gh pr create` command).
                 const ensureBranchCommands = commandLog.filter((c) => c.startsWith('git checkout -B'));
                 assert.strictEqual(
                     ensureBranchCommands.length, 0,
                     `expected zero ensure-branch (\`git checkout -B\`) commands to have run, got: ${JSON.stringify(commandLog)}`,
                 );
-                const prCommands = commandLog.filter((c) => c.startsWith('gh pr create'));
+                const prCommands = commandLog.filter((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
                 assert.strictEqual(
                     prCommands.length, 0,
                     `expected zero PR-raise commands to have run, got: ${JSON.stringify(commandLog)}`,

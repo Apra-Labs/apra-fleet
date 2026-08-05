@@ -183,19 +183,59 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
     });
 
     test('GET / returns 200 with the Sprint Stack, Backlog, and Launch Sprint markers', async () => {
-        const res = await httpGet(port, '/');
+        // apra-fleet-04g.3.1: unlike /api/health above, the '/' route renders
+        // the full dashboard (renderBeadsHtml over real bd), which on first
+        // hit under CPU contention (e.g. --test-concurrency=8) can exceed the
+        // per-request scaledTimeout(5000) in httpGet. Retry via the same
+        // waitFor() pattern used for the /api/health boot-check above until
+        // the route answers 200, then run the body-marker assertions once
+        // against that response -- this tolerates first-render latency
+        // without weakening any assertion below.
+        //
+        // apra-fleet-33c.1: the package's plain `npm test` script (unlike
+        // scripts/run-tests.mjs's test:unit/test:integration/test:record
+        // modes) invokes `node --test --test-concurrency=8 ...` directly
+        // without exporting APRA_FLEET_TEST_CONCURRENCY, so scaledTimeout()
+        // silently fell back to its unscaled 15s baseMs even though the
+        // suite really was running 8-wide -- starving this real-subprocess
+        // boot under contention and making `npm test` non-deterministic.
+        // Pass the concurrency explicitly (matching the --test-concurrency
+        // value both the plain `test` script and run-tests.mjs use) so this
+        // boot-check always gets the full contention-aware budget regardless
+        // of which script invoked the suite or whether that env var is set.
+        const res = await waitFor(async () => {
+            try {
+                const attempt = await httpGet(port, '/');
+                return attempt.status === 200 ? attempt : false;
+            } catch {
+                return false;
+            }
+        }, { timeoutMs: scaledTimeout(15000, { concurrency: 8 }), label: 'GET / to render the dashboard' });
         assert.equal(res.status, 200, res.body);
         assert.ok(res.headers['content-type'].includes('text/html'), res.headers['content-type']);
-        assert.ok(res.body.includes('<h1>Sprint Stack</h1>'), 'expected the Sprint Stack section');
-        assert.ok(res.body.includes('<h1>Backlog</h1>'), 'expected the Backlog section');
+        // supervisor-viewer-parity: section labels are now `.panel-header`
+        // text inside a Sprints/Backlog tab layout (matching apra-fleet-
+        // workflow's per-sprint viewer chrome -- see dashboard.mjs's
+        // DASHBOARD_CSS), not standalone <h1> tags; the page's one <h1> is
+        // the page title.
+        assert.ok(res.body.includes('class="panel-header">Sprint Stack</div>'), 'expected the Sprint Stack section');
+        assert.ok(res.body.includes('class="panel-header">Backlog</div>'), 'expected the Backlog section');
         assert.ok(res.body.includes('id="backlog"'), 'expected the Backlog seam-rendered container');
-        assert.ok(res.body.includes('<h1>Launch Sprint</h1>'), 'expected the Launch Sprint form section');
+        assert.ok(res.body.includes('id="backlog-table"'), 'expected the rich beads-tree table container (renderBeadsHtml)');
+        assert.ok(res.body.includes('class="panel-header"'), 'expected launch-sprint panel-header markup');
+        assert.ok(res.body.includes('>Launch Sprint</div>'), 'expected the Launch Sprint form section');
+        assert.ok(res.body.includes('id="tab-sprints"') && res.body.includes('id="tab-backlog"'), 'expected the Sprints/Backlog tabs');
 
-        // Section order per eft.6.1/6.3: stack, then Backlog, then the form.
-        const stackIdx = res.body.indexOf('<h1>Sprint Stack</h1>');
-        const backlogIdx = res.body.indexOf('<h1>Backlog</h1>');
-        const launchIdx = res.body.indexOf('<h1>Launch Sprint</h1>');
-        assert.ok(stackIdx < backlogIdx && backlogIdx < launchIdx, 'expected Sprint Stack, then Backlog, then Launch Sprint');
+        // supervisor-viewer-parity (quick-tasks follow-up): Launch Sprint now
+        // lives in the Backlog tab, below the backlog table -- launching
+        // starts from picking rows out of the Backlog, so the two share a
+        // tab. Sprint Stack (its own tab) still renders first in raw
+        // document order, then Backlog, then Launch Sprint within it.
+        const stackIdx = res.body.indexOf('id="sprint-stack"');
+        const backlogIdx = res.body.indexOf('id="backlog"');
+        const launchIdx = res.body.indexOf('id="launch-form"');
+        assert.ok(stackIdx < backlogIdx, 'expected Sprint Stack before the Backlog tab');
+        assert.ok(backlogIdx < launchIdx, 'expected Launch Sprint after the Backlog table, within the Backlog tab');
     });
 
     test('POST /api/sprints reaches the real sprint controller (validation error, not 404)', async () => {

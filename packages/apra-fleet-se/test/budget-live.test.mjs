@@ -86,7 +86,7 @@ test('mockCmdResult/isSpawnFailure: nonzero exit is non-error data, spawn failur
 // A fixed usage shape dispatched on every mock LLM call, so every priced
 // activity contributes a known, nonzero cost regardless of which model it
 // was priced against.
-const USAGE = { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 };
+const USAGE = { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 };
 
 /**
  * Minimal, hermetic single-bead sprint scaffold: one epic, one task with a

@@ -109,17 +109,36 @@ export function isBootstrapEmptyDbFailure(output) {
 }
 
 /**
- * Naive (dependency-free) check for a non-empty `sync.remote` under a
- * top-level `sync:` block in a config.yaml's raw text. Deliberately not a
- * full YAML parse (no yaml dependency in this package) -- Path B only ever
- * needs a yes/no guard on this one field, and callers/tests can inject their
- * own `readConfig` for anything more precise.
+ * Naive (dependency-free) check for a non-empty `sync.remote` in a
+ * config.yaml's raw text. Deliberately not a full YAML parse (no yaml
+ * dependency in this package) -- Path B only ever needs a yes/no guard on
+ * this one field, and callers/tests can inject their own `readConfig` for
+ * anything more precise.
+ *
+ * Recognizes BOTH forms `bd` itself writes for this key -- verified against
+ * a real bd-managed config.yaml (this repo's own .beads/config.yaml uses the
+ * flat form exclusively; the nested form was this function's original,
+ * untested assumption and never actually matched real output):
+ *   - flat dotted key, one line:  sync.remote: "git+https://...\"" or
+ *     sync.remote: git+https://... (quoted or bare scalar)
+ *   - nested block:               sync:\n  remote: git+https://...
+ * Without matching the flat form, this guard always reported false against
+ * every real config.yaml in this codebase, permanently blocking Path B
+ * behind a false "no sync.remote set" escalation to Tier 2 (apra-fleet-vkc.1
+ * post-review fix, found via a live manufactured-conflict test on
+ * fleet-win-dev1 -- not caught earlier because the existing tests only ever
+ * injected the nested form as a mock).
  *
  * @param {string} raw
  * @returns {boolean}
  */
 export function hasSyncRemoteInYaml(raw) {
     const text = String(raw == null ? '' : raw);
+    const flatMatch = text.match(/^sync\.remote:\s*(.*)$/m);
+    if (flatMatch) {
+        const value = flatMatch[1].trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1').trim();
+        if (value.length > 0) return true;
+    }
     const syncBlockMatch = text.match(/^sync:\s*\n((?:[ \t]+.*\n?)*)/m);
     if (!syncBlockMatch) return false;
     return /remote:\s*\S+/.test(syncBlockMatch[1]);

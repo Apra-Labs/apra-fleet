@@ -66,6 +66,28 @@ test('checkMemberTopology: disagreeing identity signals refuse to start, naming 
     );
 });
 
+// apra-fleet-hee.2: the legacy-mode topology-mismatch error text used to
+// falsely claim "This runner has no cross-member bd/git sync layer this
+// round" -- stale, since the --sync (synced-mode) escape hatch exists (see
+// the 'checkMemberTopology (synced)' tests below). apra-fleet-hee.1 fixed the
+// message to name --sync instead; this test pins that fix so it cannot
+// silently regress back to the stale claim.
+test('checkMemberTopology (legacy mismatch): error names the --sync escape hatch, not the stale "no cross-member sync layer" claim', async () => {
+    const topoMismatch = await checkMemberTopology({
+        members: ['m1', 'm2'],
+        getIdentity: async (m) => (m === 'm1' ? 'aaaaaaa' : 'bbbbbbb'),
+    });
+    check(!topoMismatch.ok, 'Topology check MUST refuse to start when member identity signals disagree');
+    check(
+        topoMismatch.message.includes('--sync'),
+        `Legacy-mode mismatch message must name the --sync escape hatch, got: ${topoMismatch.message}`
+    );
+    check(
+        !topoMismatch.message.includes('no cross-member bd/git sync layer'),
+        `Legacy-mode mismatch message must NOT contain the stale "no cross-member bd/git sync layer" claim, got: ${topoMismatch.message}`
+    );
+});
+
 test('checkMemberTopology: an unresolvable identity signal refuses to start, naming the failing member', async () => {
     const topoErr = await checkMemberTopology({
         members: ['m1', 'm2'],

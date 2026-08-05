@@ -5,10 +5,11 @@ import { CodexProvider } from '../src/providers/codex.js';
 import { CopilotProvider } from '../src/providers/copilot.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { getProvider } from '../src/providers/index.js';
-import { buildResumeFlag, buildSessionIdFlag } from '../src/providers/provider.js';
+import { buildResumeFlag, buildSessionIdFlag, isMaxTurnsResponse } from '../src/providers/provider.js';
+import { isMaxTurnsSignal } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// --- Helpers -----------------------------------------------------------------
 
 function makeResult(stdout: string, code = 0): SSHExecResult {
   return { stdout, stderr: '', code };
@@ -19,7 +20,7 @@ const BASE_OPTS = {
   b64Prompt: 'aGVsbG8=',  // base64 of "hello"
 };
 
-// ─── ClaudeProvider ───────────────────────────────────────────────────────────
+// --- ClaudeProvider -----------------------------------------------------------
 
 describe('ClaudeProvider', () => {
   const p = new ClaudeProvider();
@@ -176,6 +177,79 @@ describe('ClaudeProvider', () => {
     expect(resp.terminalReason).toBeUndefined();
   });
 
+  // apra-fleet-iuc.1 / apra-fleet-ekm: the CLI signals max_turns inconsistently.
+  // A result event carrying ONLY `subtype: error_max_turns` (no terminal_reason)
+  // must still normalize to terminalReason 'max_turns', or the session is missed
+  // and run to a hard timeout + cold restart.
+  it('normalizes terminalReason to max_turns when only subtype=error_max_turns is present (no terminal_reason)', () => {
+    const payload = JSON.stringify({
+      type: 'result',
+      subtype: 'error_max_turns',
+      result: 'stopped after max turns',
+      session_id: 'sid-mt-sub',
+    });
+    const resp = p.parseResponse(makeResult(payload, 1));
+    expect(resp.subtype).toBe('error_max_turns');
+    expect(resp.terminalReason).toBe('max_turns');
+    expect(isMaxTurnsResponse(resp)).toBe(true);
+  });
+
+  // A standalone `type: max_turns_reached` transcript event that PRECEDES the
+  // terminating result event (which itself has neither subtype nor terminal_reason)
+  // must still be caught -- this is the exact ekm forensic miss.
+  it('catches a standalone max_turns_reached JSONL event that precedes a bare result event', () => {
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-mt-evt' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'working...' }] } }),
+      JSON.stringify({ type: 'max_turns_reached' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'partial', session_id: 'sid-mt-evt' }),
+    ].join('\n');
+    const resp = p.parseResponse(makeResult(stream, 1));
+    expect(resp.terminalReason).toBe('max_turns');
+    expect(isMaxTurnsResponse(resp)).toBe(true);
+  });
+
+  // JSON-array transcript form with subtype-only signal normalizes too.
+  it('normalizes terminalReason to max_turns for a JSON-array transcript with subtype-only signal', () => {
+    const events = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'thinking' }] } },
+      { type: 'result', subtype: 'error_max_turns', result: 'stopped', session_id: 'sid-mt-arr' },
+    ];
+    const resp = p.parseResponse(makeResult(JSON.stringify(events), 1));
+    expect(resp.terminalReason).toBe('max_turns');
+    expect(isMaxTurnsResponse(resp)).toBe(true);
+  });
+
+  // A standalone max_turns_reached event with NO terminating result event at all
+  // (transcript truncated by a hard-timeout kill) must not lose the signal.
+  it('preserves max_turns in the plain-text fallback when no result event terminates the stream', () => {
+    const stream = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sid-mt-trunc' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'still going' }] } }),
+      JSON.stringify({ type: 'max_turns_reached' }),
+    ].join('\n');
+    const resp = p.parseResponse(makeResult(stream, 143));
+    expect(resp.terminalReason).toBe('max_turns');
+    expect(isMaxTurnsResponse(resp)).toBe(true);
+  });
+
+  it('isMaxTurnsSignal recognizes each turn-limit channel and rejects unrelated events', () => {
+    expect(isMaxTurnsSignal({ terminal_reason: 'max_turns' })).toBe(true);
+    expect(isMaxTurnsSignal({ subtype: 'error_max_turns' })).toBe(true);
+    expect(isMaxTurnsSignal({ type: 'max_turns_reached' })).toBe(true);
+    expect(isMaxTurnsSignal({ stop_reason: 'max_turns' })).toBe(true);
+    expect(isMaxTurnsSignal({ type: 'result', subtype: 'success' })).toBe(false);
+    expect(isMaxTurnsSignal(null)).toBe(false);
+    expect(isMaxTurnsSignal(undefined)).toBe(false);
+  });
+
+  it('isMaxTurnsResponse keys off either normalized terminalReason or raw subtype', () => {
+    expect(isMaxTurnsResponse({ result: '', isError: true, raw: '', terminalReason: 'max_turns' })).toBe(true);
+    expect(isMaxTurnsResponse({ result: '', isError: true, raw: '', subtype: 'error_max_turns' })).toBe(true);
+    expect(isMaxTurnsResponse({ result: 'ok', isError: false, raw: '', subtype: 'success' })).toBe(false);
+    expect(isMaxTurnsResponse(undefined)).toBe(false);
+  });
+
   // apra-fleet-eft.28.6: server-side output-extraction loss. The final
   // `type:result` event can come back with session_id present but an EMPTY
   // result field, even though the assistant reply (incl. tool output) is fully
@@ -244,7 +318,7 @@ describe('ClaudeProvider', () => {
 
   it('maps model tiers', () => {
     expect(p.modelForTier('cheap')).toBe('haiku');
-    expect(p.modelForTier('mid')).toBe('sonnet');
+    expect(p.modelForTier('standard')).toBe('sonnet');
     expect(p.modelForTier('premium')).toBe('opus');
   });
 
@@ -293,7 +367,7 @@ describe('ClaudeProvider', () => {
   });
 });
 
-// ─── GeminiProvider ───────────────────────────────────────────────────────────
+// --- GeminiProvider -----------------------------------------------------------
 
 describe('GeminiProvider', () => {
   const p = new GeminiProvider();
@@ -370,20 +444,20 @@ describe('GeminiProvider', () => {
     expect(resp.isError).toBe(true);
   });
 
-  it('parses response with non-zero exit code — sessionId is undefined', () => {
+  it('parses response with non-zero exit code -- sessionId is undefined', () => {
     const resp = p.parseResponse(makeResult(JSON.stringify({ response: 'error output' }), 1));
     expect(resp.isError).toBe(true);
     expect(resp.sessionId).toBeUndefined();
   });
 
-  it('parses non-JSON response with zero exit code — sessionId is undefined', () => {
+  it('parses non-JSON response with zero exit code -- sessionId is undefined', () => {
     const resp = p.parseResponse(makeResult('raw text output'));
     expect(resp.result).toBe('raw text output');
     expect(resp.sessionId).toBeUndefined();
     expect(resp.isError).toBe(false);
   });
 
-  it('parses non-JSON response with non-zero exit code — sessionId is undefined', () => {
+  it('parses non-JSON response with non-zero exit code -- sessionId is undefined', () => {
     const resp = p.parseResponse(makeResult('error text', 1));
     expect(resp.result).toBe('error text');
     expect(resp.sessionId).toBeUndefined();
@@ -486,7 +560,7 @@ describe('GeminiProvider', () => {
 
   it('maps model tiers', () => {
     expect(p.modelForTier('cheap')).toBe('gemini-3.5-flash-lite');
-    expect(p.modelForTier('mid')).toBe('gemini-3.5-flash');
+    expect(p.modelForTier('standard')).toBe('gemini-3.5-flash');
     expect(p.modelForTier('premium')).toBe('gemini-3.1-pro-preview');
   });
 
@@ -548,7 +622,7 @@ describe('GeminiProvider', () => {
   });
 });
 
-// ─── CodexProvider ────────────────────────────────────────────────────────────
+// --- CodexProvider ------------------------------------------------------------
 
 describe('CodexProvider', () => {
   const p = new CodexProvider();
@@ -604,7 +678,7 @@ describe('CodexProvider', () => {
 
   it('maps model tiers', () => {
     expect(p.modelForTier('cheap')).toBe('gpt-5.4-mini');
-    expect(p.modelForTier('mid')).toBe('gpt-5.4');
+    expect(p.modelForTier('standard')).toBe('gpt-5.4');
     expect(p.modelForTier('premium')).toBe('gpt-5.4');
   });
 
@@ -615,7 +689,7 @@ describe('CodexProvider', () => {
     expect(tiers.premium).toBe('gpt-5.4');
   });
 
-  it('parses NDJSON response — extracts last assistant message', () => {
+  it('parses NDJSON response -- extracts last assistant message', () => {
     const ndjson = [
       JSON.stringify({ type: 'start' }),
       JSON.stringify({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Working...' }] }),
@@ -627,7 +701,7 @@ describe('CodexProvider', () => {
     expect(resp.sessionId).toBeUndefined();
   });
 
-  it('parses NDJSON response — marks error when error event present', () => {
+  it('parses NDJSON response -- marks error when error event present', () => {
     const ndjson = [
       JSON.stringify({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Starting...' }] }),
       JSON.stringify({ type: 'error', message: 'quota exceeded' }),
@@ -659,7 +733,7 @@ describe('CodexProvider', () => {
   });
 });
 
-// ─── CopilotProvider ─────────────────────────────────────────────────────────
+// --- CopilotProvider ---------------------------------------------------------
 
 describe('CopilotProvider', () => {
   const p = new CopilotProvider();
@@ -755,7 +829,7 @@ describe('CopilotProvider', () => {
 
   it('maps model tiers', () => {
     expect(p.modelForTier('cheap')).toBe('claude-haiku-4-5');
-    expect(p.modelForTier('mid')).toBe('claude-sonnet-4-5');
+    expect(p.modelForTier('standard')).toBe('claude-sonnet-4-5');
     expect(p.modelForTier('premium')).toBe('claude-opus-4-5');
   });
 
@@ -790,7 +864,7 @@ describe('CopilotProvider', () => {
   });
 });
 
-// ─── getProvider factory ──────────────────────────────────────────────────────
+// --- getProvider factory ------------------------------------------------------
 
 describe('getProvider factory', () => {
   it('returns ClaudeProvider by default (undefined)', () => {
@@ -823,7 +897,7 @@ describe('getProvider factory', () => {
   });
 
   it('throws TypeError for unknown provider strings (no silent fallback)', () => {
-    // Cast to bypass TS — registry JSON could yield arbitrary strings at runtime
+    // Cast to bypass TS -- registry JSON could yield arbitrary strings at runtime
     expect(() => getProvider('bogus' as any)).toThrow(TypeError);
     expect(() => getProvider('bogus' as any)).toThrow(/Unknown LLM provider "bogus"/);
   });
@@ -840,7 +914,7 @@ describe('getProvider factory', () => {
   });
 });
 
-// ─── buildResumeFlag shared helper ───────────────────────────────────────────
+// --- buildResumeFlag shared helper -------------------------------------------
 
 describe('buildResumeFlag', () => {
   it('returns empty string when no sessionId and no fallback', () => {
@@ -861,7 +935,7 @@ describe('buildResumeFlag', () => {
   });
 });
 
-// ─── buildSessionIdFlag shared helper ────────────────────────────────────────
+// --- buildSessionIdFlag shared helper ----------------------------------------
 
 describe('buildSessionIdFlag', () => {
   it('returns --session-id with sanitized and quoted ID', () => {
@@ -874,7 +948,7 @@ describe('buildSessionIdFlag', () => {
   });
 });
 
-// ─── Cross-OS consistency (Linux buildPromptCommand vs Windows resumeFlag) ──
+// --- Cross-OS consistency (Linux buildPromptCommand vs Windows resumeFlag) --
 
 describe('cross-OS session flag consistency', () => {
   it('Claude: buildPromptCommand and resumeFlag produce consistent flags for new session', () => {
@@ -914,7 +988,7 @@ describe('cross-OS session flag consistency', () => {
   });
 });
 
-// ─── Claude dispatch: resume with no stored ID ─────────────────────────────
+// --- Claude dispatch: resume with no stored ID -----------------------------
 
 describe('Claude dispatch: resume with no stored session ID', () => {
   it('produces --session-id (fresh), not -c, when resume=true but no stored ID', () => {
@@ -927,7 +1001,7 @@ describe('Claude dispatch: resume with no stored session ID', () => {
   });
 });
 
-// ─── Backwards compatibility ──────────────────────────────────────────────────
+// --- Backwards compatibility --------------------------------------------------
 
 describe('backwards compatibility', () => {
   it('member without llmProvider uses ClaudeProvider', () => {
@@ -1000,7 +1074,28 @@ describe('AgyProvider', () => {
 
   it('modelTiers and modelForTier return correct mappings', () => {
     expect(p.modelForTier('cheap')).toBe('gemini-3.5-flash-lite');
-    expect(p.modelForTier('mid')).toBe('gemini-3.5-flash');
+    expect(p.modelForTier('standard')).toBe('gemini-3.5-flash');
     expect(p.modelForTier('premium')).toBe('claude-sonnet-4.6');
+  });
+
+  it('permissionConfigPaths returns .gemini/antigravity-cli/settings.json', () => {
+    expect(p.permissionConfigPaths()).toEqual(['.gemini/antigravity-cli/settings.json']);
+  });
+
+  it('composePermissionConfig produces AGY native permission rule objects', () => {
+    const claudeAllow = ['Read', 'Write', 'Edit', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(bd:*)', 'Agent'];
+    const configs = p.composePermissionConfig('doer', claudeAllow);
+    expect(configs).toHaveLength(1);
+    const cfg = configs[0] as Record<string, any>;
+    expect(cfg.permissions).toBeDefined();
+    expect(cfg.permissions.allow).toEqual([
+      { action: 'read_file', target: '*' },
+      { action: 'write_file', target: '*' },
+      { action: 'command', target: 'git' },
+      { action: 'command', target: 'npm' },
+      { action: 'command', target: 'bd' },
+      { action: 'invoke_subagent', target: '*' },
+      { action: 'send_message', target: '*' },
+    ]);
   });
 });

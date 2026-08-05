@@ -40,6 +40,32 @@ Also read any requirementsFile or design docs mentioned in your task.
 Run `git log --oneline -10` to understand what the codebase already has.
 Read key source files to understand existing conventions and structure.
 
+Also check for carry-over regression failures left by a previous sprint:
+
+```bash
+bd search "[carry-over]"
+```
+
+A prior sprint's Regression Test phase files its failures as STANDALONE,
+PARENT-LESS beads titled `[regression][carry-over] <description>` -- deliberately
+outside any sprint's scope tree, so a regression failure never blocks the sprint
+that found it. That also means nothing pulls them into a new sprint automatically:
+you are the only discovery point. Read each open one (`bd show <id>`), and for any
+that is in scope for this sprint's goals, adopt it by parenting it under the sprint
+goal (`bd update <id> --parent <sprint-id>`) so it becomes real, gated sprint work.
+Leave the rest parent-less for a later sprint; do not close a carry-over bead you
+are not adopting.
+
+Two things about that search, both verified against the real `bd` CLI:
+
+- It matches the `[carry-over]` tag anywhere in the title, so the doubled
+  `[regression][carry-over] ...` prefix the runner files under is found
+  correctly -- you do not need to quote, escape, or search for `[regression]`
+  separately.
+- It EXCLUDES closed issues by default, which is what you want: a carry-over
+  that a previous sprint already adopted and fixed will not resurface here. Add
+  `--status all` only if you are auditing history rather than scoping work.
+
 ## Step 2 -- Decompose sprint goals into features
 
 For each sprint goal create type=feature issues as direct children:
@@ -50,6 +76,14 @@ For each sprint goal create type=feature issues as direct children:
   `bd dep add <sprint-id> <feature-id>`; see the graph-semantics section above)
 
 Each feature must be independently verifiable: integration tests either pass or fail.
+This bead-graph rule is not feature-exclusive and applies regardless of who or
+what later verifies it: a bead with children only closes once every child is
+closed AND it is independently verified -- for ANY issue_type, not just
+type=feature. A `type=task` container you nest sub-tasks under, or a bug,
+becomes a verify-gated unit the same way a feature does, the moment it has
+children. Only true leaf beads (no children) close directly. Keep this in mind
+when deciding whether to nest sub-tasks under a task/bug at all, versus making
+them independent siblings.
 
 ## Step 3 -- Decompose features into tasks
 

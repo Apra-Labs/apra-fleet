@@ -98,7 +98,10 @@ const TEST_CONCURRENCY = 8;
 // this set casually -- it exists to avoid inflating the tests' own
 // hang-detecting timeouts, which would risk re-masking the eft.28 hang.
 const ISOLATED_LANE_FILES = new Set([
-  'mock-sprint-planner-dispatch-dead-pid.test.mjs',
+  // Was mock-sprint-planner-dispatch-dead-pid.test.mjs; that file was retired
+  // as a strict assertion subset, and the lane follows the surviving
+  // dolt-heavy planner-retry-ladder test rather than being dropped.
+  'mock-sprint-planner-dispatch-attempt1-clean-fail-attempt2-dead-session.test.mjs',
   'mock-sprint-planner-dispatch-stalled-session.test.mjs',
 ]);
 const ISOLATED_LANE_CONCURRENCY = 1;

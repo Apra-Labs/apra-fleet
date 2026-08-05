@@ -51,6 +51,16 @@ export interface ParsedResponse {
   terminalReason?: string;
 }
 
+// apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a
+// parsed response as turn-limit terminated. The claude provider normalizes
+// terminalReason to 'max_turns' when the transcript carried the signal via any
+// channel, but we also accept the raw `error_max_turns` subtype directly so
+// callers cannot regress by keying off only one field.
+export function isMaxTurnsResponse(parsed: ParsedResponse | undefined | null): boolean {
+  if (!parsed) return false;
+  return parsed.terminalReason === 'max_turns' || parsed.subtype === 'error_max_turns';
+}
+
 export interface RegisterMcpEndpointOptions {
   /** e.g. http://<host>:<port>/mcp?member=<member-uuid> */
   url: string;
@@ -81,6 +91,10 @@ export interface EnsureWorkspaceTrustedResult {
   /** Human-readable detail for logging/audit (apra-fleet-eft.40.1: "log distinctly
    *  when it SEEDS trust vs finds it already present"). */
   detail: string;
+  /** apra-fleet-9oo: names from the project's .mcp.json that this call just ADDED to
+   *  projects[<key>].enabledMcpjsonServers (empty/absent when nothing was added).
+   *  Optional so the non-Claude no-op adapters need no change. */
+  mcpServersSeeded?: string[];
 }
 
 export interface ProviderAdapter {
@@ -122,7 +136,7 @@ export interface ProviderAdapter {
 
   // Model tier mapping
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string>;
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string;
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string;
   modelFlag(model: string): string;
 
   // Error classification

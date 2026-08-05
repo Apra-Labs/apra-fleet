@@ -107,6 +107,12 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         assert.match(createCmd, /^bd create /);
         assert.match(createCmd, /--body-file "/, 'description must be passed via --body-file, not inline');
         assert.ok(!createCmd.includes('APRA_FLEET_BD_MOCK=off'), 'description text must never be interpolated inline into the bd command string');
+        // apra-fleet-mrj: the null-allocator path (no explicit id granted) must
+        // let bd derive the id via --parent, and must NOT carry --id -- the
+        // mirror image of the explicit-id path below, which carries --id only
+        // and links the parent edge with a separate `bd update --parent`.
+        assert.match(createCmd, /--parent parent-1(\s|$)/, 'the null-allocator path must carry --parent so bd derives the id');
+        assert.ok(!createCmd.includes('--id '), `the null-allocator path must NOT carry --id: ${createCmd}`);
         // The staged file the bd command was handed must contain the
         // description VERBATIM, '=' and '&' intact.
         assert.strictEqual(await readBodyOf(createCmd), description);
@@ -209,5 +215,114 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         // command was handed -- proving it was carried as inert data (base64
         // in the staging command, then decoded member-side), never executed.
         assert.strictEqual(await readBodyOf(createCmd), description);
+    });
+
+    // apra-fleet-xuo.7.1: `bd create` rejects `--id` and `--parent` together
+    // ("Error: cannot specify both --id and --parent flags"), so the
+    // allocator-minted explicit-id path must carry ONLY `--id` on the create
+    // (the `<parentId>.<seq>` id encodes the hierarchy) and then record the
+    // real parent edge with a separate `bd update --parent`. Issuing both
+    // flags on one create failed every reviewer newTask and left zero child
+    // beads under the shared parent while the sprint still reported success.
+    test('an allocator-granted explicit child id creates with --id only, then links the parent edge, then confirms', async () => {
+        const { command, calls } = makeMemberEmulatingCommand();
+        const allocatorCalls = [];
+        const grantingAllocator = {
+            async allocate(parentId, opts) {
+                allocatorCalls.push({ fn: 'allocate', parentId, opts });
+                return { childId: 'parent-1.3', token: 'tok-1' };
+            },
+            async confirm(token) { allocatorCalls.push({ fn: 'confirm', token }); return true; },
+            async release(token) { allocatorCalls.push({ fn: 'release', token }); return true; },
+        };
+
+        const result = await createChildBeadWithAllocatedId({
+            command,
+            allocator: grantingAllocator,
+            member: 'local',
+            title: 'Follow-up task',
+            description: 'A reviewer-proposed follow-up.',
+            priority: 'P2',
+            parentId: 'parent-1',
+        });
+
+        assert.strictEqual(result.childId, 'parent-1.3');
+        // Three dispatches: member-side staging, bd create, bd update (link).
+        assert.strictEqual(calls.length, 3, `expected staging + create + parent-link dispatches, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
+        const createCmd = calls[1].cmd;
+        assert.match(createCmd, /^bd create /);
+        assert.match(createCmd, /--id parent-1\.3(\s|$)/, 'the create must carry the allocator-minted explicit id');
+        assert.ok(!createCmd.includes('--parent'), `the create must NOT carry --parent alongside --id: ${createCmd}`);
+        const linkCmd = calls[2].cmd;
+        assert.strictEqual(linkCmd, 'bd update parent-1.3 --parent parent-1', 'the explicit parent edge must be recorded by a separate bd update');
+
+        assert.deepStrictEqual(
+            allocatorCalls.map((c) => c.fn),
+            ['allocate', 'confirm'],
+            'a successful create+link must confirm the reservation and never release it',
+        );
+    });
+
+    // The parent edge is NOT best-effort: if the link dispatch fails, the
+    // reservation is released and the error propagates (persistNewTaskBestEffort
+    // then degrades to parent-bead notes) rather than silently leaving a child
+    // that `bd show` records no PARENT for.
+    test('a failing parent-link dispatch releases the reservation and rethrows', async () => {
+        const calls = [];
+        const command = async (cmd) => {
+            calls.push(cmd);
+            if (/^node -e "/.test(cmd)) return path.join(os.tmpdir(), 'body-does-not-matter.txt');
+            if (cmd.startsWith('bd update ')) throw new Error('simulated link failure');
+            return '';
+        };
+        const allocatorCalls = [];
+        const grantingAllocator = {
+            async allocate() { return { childId: 'parent-1.4', token: 'tok-2' }; },
+            async confirm(token) { allocatorCalls.push({ fn: 'confirm', token }); return true; },
+            async release(token) { allocatorCalls.push({ fn: 'release', token }); return true; },
+        };
+
+        await assert.rejects(
+            () => createChildBeadWithAllocatedId({
+                command,
+                allocator: grantingAllocator,
+                member: 'local',
+                title: 'Follow-up task',
+                description: 'A reviewer-proposed follow-up.',
+                priority: 'P2',
+                parentId: 'parent-1',
+            }),
+            /simulated link failure/,
+        );
+        assert.deepStrictEqual(allocatorCalls.map((c) => c.fn), ['release'], 'a failed link must release, never confirm');
+    });
+
+    // Defense in depth: an allocated id that does not sit under the requested
+    // parent can no longer be rescued by a `--parent` flag on the create, so it
+    // must be refused loudly instead of creating an unparented bead.
+    test('an allocated id outside the parent namespace is refused and released', async () => {
+        const calls = [];
+        const command = async (cmd) => { calls.push(cmd); return ''; };
+        const allocatorCalls = [];
+        const roqueAllocator = {
+            async allocate() { return { childId: 'somewhere-else.1', token: 'tok-3' }; },
+            async confirm(token) { allocatorCalls.push({ fn: 'confirm', token }); return true; },
+            async release(token) { allocatorCalls.push({ fn: 'release', token }); return true; },
+        };
+
+        await assert.rejects(
+            () => createChildBeadWithAllocatedId({
+                command,
+                allocator: roqueAllocator,
+                member: 'local',
+                title: 'Follow-up task',
+                description: 'A reviewer-proposed follow-up.',
+                priority: 'P2',
+                parentId: 'parent-1',
+            }),
+            /is not a child of parent/,
+        );
+        assert.deepStrictEqual(calls, [], 'no bd command may be dispatched for an out-of-namespace id');
+        assert.deepStrictEqual(allocatorCalls.map((c) => c.fn), ['release']);
     });
 });

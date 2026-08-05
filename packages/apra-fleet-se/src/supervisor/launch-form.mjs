@@ -11,14 +11,20 @@
 // renders the server's response (including 400 field errors and 409 member-
 // overlap conflicts) legibly.
 //
-// SINGLE-ROOT CONSTRAINT: POST /api/sprints (api.mjs's validateLaunchRequest)
-// accepts exactly one `issue` root per launch -- issueRoots is always a
-// single-element array. The Backlog tree lets the operator click MULTIPLE rows
-// (a true multi-select, toggling each row's highlight), but submission is only
-// valid with EXACTLY one row selected; buildLaunchRequestBody() below returns a
-// clear client-side validation error (not a server round-trip) for zero or
-// more-than-one selections, so the operator is steered to a single root without
-// this module inventing a multi-root launch semantics the server doesn't have.
+// FORM-LEVEL SINGLE-ROOT CONSTRAINT (a client-side UX choice, NOT a server
+// limitation): apra-fleet-ymf.1 taught POST /api/sprints (api.mjs's
+// validateLaunchRequest) to accept the SAME comma-separated multi-root
+// `issue` form the CLI's `--issue` flag already did (e.g.
+// `{"issue": "epic-1,epic-2"}`), splitting and validating each id and
+// forwarding a multi-element `issueRoots` array. This form does NOT expose
+// that yet: the Backlog tree lets the operator click MULTIPLE rows (a true
+// multi-select, toggling each row's highlight), but submission here is still
+// only valid with EXACTLY one row selected -- buildLaunchRequestBody() below
+// returns a clear client-side validation error (not a server round-trip) for
+// zero or more-than-one selections. Multi-root launches remain reachable via
+// a direct POST /api/sprints call (or the CLI); wiring this form's multi-
+// select through to a comma-joined `issue` is tracked separately, not folded
+// into ymf.1's server-side fix.
 //
 // TESTABLE WITHOUT A DOM: buildLaunchRequestBody() and formatLaunchError() are
 // plain, side-effect-free functions -- unit-testable directly from Node -- and
@@ -37,8 +43,17 @@
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { ROLES } from '../../fleet-sprint/contracts.mjs';
 
-/** The goal selector offers EXACTLY these three values (acceptance criterion). */
-export const GOAL_OPTIONS = Object.freeze(['P1', 'P1+P2', 'P1+P2+P3']);
+/**
+ * The goal selector offers EXACTLY these three values (acceptance criterion).
+ * MUST be slash-separated to match runner.js's GOAL_PATTERN
+ * (`/^P[1-3](\/P[1-3]){0,2}$/`, fleet-sprint/runner.js:249) -- api.mjs
+ * forwards this string verbatim into the launched child's `--goal` argv with
+ * no server-side reformatting, so a '+'-joined value here fails the child's
+ * own Arg Contract check instantly (observed: every real launch through this
+ * form died in ~100ms with "[Arg Contract] Invalid goal ... must match
+ * /^P[1-3](\/P[1-3]){0,2}$/").
+ */
+export const GOAL_OPTIONS = Object.freeze(['P1', 'P1/P2', 'P1/P2/P3']);
 
 /**
  * `roleMap`'s application-level pseudo-role (see fleet-sprint/runner.js's
@@ -54,7 +69,8 @@ export const FORM_ROLE_OPTIONS = Object.freeze([...ROLES, ORCHESTRATOR_ROLE]);
  * Pure client-side validation + request-body construction for the Launch
  * Sprint form. Never talks to the network -- callers POST `result.body` to
  * POST /api/sprints themselves. See the module doc for why exactly one
- * selected issue root is required.
+ * selected issue root is required HERE, even though the server itself
+ * (apra-fleet-ymf.1) now accepts a comma-separated multi-root `issue`.
  *
  * @param {{
  *   selectedRoots: string[],
@@ -63,6 +79,7 @@ export const FORM_ROLE_OPTIONS = Object.freeze([...ROLES, ORCHESTRATOR_ROLE]);
  *   goal: string,
  *   branch: string,
  *   base: string,
+ *   overrideRelaunchGate?: boolean,
  * }} input
  * @returns {{ ok: true, body: object }|{ ok: false, error: string }}
  */
@@ -75,7 +92,8 @@ export function buildLaunchRequestBody(input) {
     if (roots.length > 1) {
         return {
             ok: false,
-            error: 'Select exactly one issue -- launching multiple issue roots in a single sprint is not yet supported.',
+            error: 'Select exactly one issue -- this form launches one issue root at a time. '
+                + '(The API itself accepts a comma-separated multi-root issue via a direct POST /api/sprints call or the CLI\'s --issue flag.)',
         };
     }
     const members = Array.isArray(opts.members) ? opts.members.filter((m) => typeof m === 'string' && m.length > 0) : [];
@@ -96,6 +114,14 @@ export function buildLaunchRequestBody(input) {
     const body = { issue: roots[0], members, branch, base, goal: opts.goal };
     if (opts.roleMap && typeof opts.roleMap === 'object' && Object.keys(opts.roleMap).length > 0) {
         body.roleMap = opts.roleMap;
+    }
+    // apra-fleet-gey.2: only sent when explicitly checked -- the server-side
+    // relaunch gate (api.mjs's launch()) treats ANY other value (undefined,
+    // false) as "no override", so omitting it here when unchecked changes
+    // nothing about the request the server sees versus before this gate
+    // existed.
+    if (opts.overrideRelaunchGate === true) {
+        body.overrideRelaunchGate = true;
     }
     return { ok: true, body };
 }
@@ -141,6 +167,7 @@ export function formatLaunchError(status, errJson) {
  */
 function clientScriptSource() {
     const roleOptionsJson = JSON.stringify(FORM_ROLE_OPTIONS);
+    const goalOptionsJson = JSON.stringify(GOAL_OPTIONS);
     return `
 (function () {
     var selectedRoots = [];
@@ -150,6 +177,11 @@ function clientScriptSource() {
     var form = document.getElementById('launch-sprint-form');
     var backlogEl = document.getElementById('backlog');
     var roleOptions = ${roleOptionsJson};
+    // buildLaunchRequestBody (embedded below via .toString()) references
+    // the module-level GOAL_OPTIONS by name -- it must exist in this
+    // closure's scope under that exact identifier, same as roleOptions
+    // above stands in for FORM_ROLE_OPTIONS.
+    var GOAL_OPTIONS = ${goalOptionsJson};
 
     function renderSelectedIssues() {
         selectedIssuesEl.textContent = selectedRoots.length > 0
@@ -158,19 +190,68 @@ function clientScriptSource() {
     }
     renderSelectedIssues();
 
-    if (backlogEl) {
-        backlogEl.addEventListener('click', function (ev) {
-            var li = ev.target.closest ? ev.target.closest('li[data-bead-id]') : null;
-            if (!li) return;
-            var id = li.getAttribute('data-bead-id');
-            var idx = selectedRoots.indexOf(id);
-            if (idx === -1) {
-                selectedRoots.push(id);
-                li.style.outline = '2px solid #60a5fa';
-            } else {
-                selectedRoots.splice(idx, 1);
-                li.style.outline = '';
+    // apra-fleet supervisor-viewer-parity: the Backlog panel now renders via
+    // fleet-sprint's renderBeadsHtml() (<tr data-bead-id="...">) plus
+    // backlog.mjs's own injectRowCheckboxes() post-process, which adds an
+    // <input class="bead-select-checkbox" data-bead-id="..."> to each row --
+    // selection is driven by THAT checkbox (not a whole-row click) so it
+    // never conflicts with opening a row's .tree-toggle or .bead-desc.
+    //
+    // window.__fleetSeLaunch.isSelected() is a tiny, deliberate cross-script
+    // hook: backlog.mjs's own embedded client script re-renders #backlog-table
+    // (collapse/expand, filter changes) independently of this one, and reads
+    // it to re-check/re-highlight rows a fresh innerHTML would otherwise
+    // silently drop -- without the two scripts sharing a closure.
+    window.__fleetSeLaunch = {
+        isSelected: function (id) { return selectedRoots.indexOf(id) !== -1; },
+    };
+
+    function setSelected(id, checked) {
+        var idx = selectedRoots.indexOf(id);
+        if (checked && idx === -1) selectedRoots.push(id);
+        else if (!checked && idx !== -1) selectedRoots.splice(idx, 1);
+    }
+
+    // A row's nesting depth is encoded in its first <td>'s inline
+    // padding-left (renderBeadsHtml: '8 + indent' px, indent = depth * 20) --
+    // reading it back lets cascade walk the SAME tree the renderer built
+    // without duplicating its parent/child derivation logic.
+    function rowDepth(tr) {
+        var td = tr.querySelector('td');
+        var n = td ? parseInt(td.style.paddingLeft, 10) : NaN;
+        return isNaN(n) ? 0 : n;
+    }
+
+    // Selecting (or deselecting) a row also selects/deselects every VISIBLE
+    // descendant row directly below it in document order (any row whose
+    // depth is greater than this row's, until a row at the same-or-shallower
+    // depth appears) -- "selection of parent in the visual tree => all
+    // children get selected as well". Collapsed (not currently rendered)
+    // descendants are unaffected, same as they are invisible to any other
+    // interaction on this page.
+    function cascadeToDescendants(tr, checked) {
+        var depth = rowDepth(tr);
+        var next = tr.nextElementSibling;
+        while (next && next.matches && next.matches('tr[data-bead-id]') && rowDepth(next) > depth) {
+            var childCb = next.querySelector('.bead-select-checkbox');
+            if (childCb && childCb.checked !== checked) {
+                childCb.checked = checked;
+                setSelected(childCb.getAttribute('data-bead-id'), checked);
+                next.classList.toggle('bead-row-selected', checked);
             }
+            next = next.nextElementSibling;
+        }
+    }
+
+    if (backlogEl) {
+        backlogEl.addEventListener('change', function (ev) {
+            var cb = ev.target;
+            if (!cb || !cb.classList || !cb.classList.contains('bead-select-checkbox')) return;
+            var id = cb.getAttribute('data-bead-id');
+            var row = cb.closest('tr[data-bead-id]');
+            setSelected(id, cb.checked);
+            if (row) row.classList.toggle('bead-row-selected', cb.checked);
+            if (row) cascadeToDescendants(row, cb.checked);
             renderSelectedIssues();
         });
     }
@@ -246,6 +327,7 @@ function clientScriptSource() {
             var goal = document.getElementById('launch-goal').value;
             var branch = document.getElementById('launch-branch').value;
             var base = document.getElementById('launch-base').value;
+            var overrideGateEl = document.getElementById('launch-override-gate');
             var result = buildLaunchRequestBody({
                 selectedRoots: selectedRoots,
                 members: members,
@@ -253,6 +335,7 @@ function clientScriptSource() {
                 goal: goal,
                 branch: branch,
                 base: base,
+                overrideRelaunchGate: overrideGateEl ? overrideGateEl.checked : false,
             });
             if (!result.ok) {
                 resultEl.style.color = '#ef4444';
@@ -270,11 +353,12 @@ function clientScriptSource() {
             }).then(function (r) {
                 if (r.status === 201) {
                     resultEl.style.color = '#22c55e';
-                    resultEl.textContent = 'Launched sprint ' + r.json.sprintId + '.';
+                    resultEl.textContent = 'Launched sprint ' + r.json.sprintId + '.'
+                        + (r.json.buildVersionWarning ? ' Warning: ' + r.json.buildVersionWarning : '');
                     selectedRoots = [];
                     renderSelectedIssues();
-                    document.querySelectorAll('#backlog li[data-bead-id]').forEach(function (li) {
-                        li.style.outline = '';
+                    document.querySelectorAll('#backlog tr[data-bead-id]').forEach(function (tr) {
+                        tr.classList.remove('bead-row-selected');
                     });
                 } else {
                     resultEl.style.color = '#ef4444';
@@ -311,6 +395,8 @@ export function renderLaunchFormHtml() {
         '<div style="margin-bottom:8px;"><label>Goal: <select id="launch-goal">' + goalOptionsHtml + '</select></label></div>' +
         '<div style="margin-bottom:8px;"><label>Branch: <input id="launch-branch" type="text" placeholder="feat/my-topic"/></label></div>' +
         '<div style="margin-bottom:8px;"><label>Base branch: <input id="launch-base" type="text" placeholder="main" value="main"/></label></div>' +
+        '<div style="margin-bottom:8px;"><label><input id="launch-override-gate" type="checkbox"/> ' +
+        'Override relaunch gate (the prior incarnation of this issue ended in a reason flagged as unsafe to retry blindly)</label></div>' +
         '<button type="submit">Launch Sprint</button>' +
         '</form>' +
         '<div id="launch-result" style="margin-top: 8px; font-size: 13px;"></div>' +

@@ -3,6 +3,7 @@
     "allow": [
       "Read", "Write", "Edit", "Glob", "Grep",
       "Bash(git:*)",
+      "Bash(bd:*)", "Bash(bd *)",
       "Bash(which:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
       "Bash(mkdir:*)", "Bash(cp:*)", "Bash(mv:*)", "Bash(rm:*)",
       "Bash(find:*)", "Bash(wc:*)", "Bash(sort:*)", "Bash(diff:*)",

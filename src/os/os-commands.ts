@@ -52,6 +52,17 @@ export interface OsCommands {
   // --- Shell ---
   wrapInWorkFolder(folder: string, command: string): string;
 
+  /**
+   * Wrap a command so it echoes its own root PID (the `FLEET_PID:<pid>`
+   * marker already understood by ssh.ts/strategy.ts's stdout scanners) before
+   * running. Lets a caller that needs to tree-kill a stuck remote command
+   * (apra-fleet-kwx's LocalStrategy fix, mirrored for SSH members) recover a
+   * PID to kill even for a plain command that has no PID protocol of its own
+   * (unlike buildAgentPromptCommand's provider launches, which already emit
+   * this marker).
+   */
+  wrapPidCapture(command: string): string;
+
   // --- Prompt building ---
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string;
 

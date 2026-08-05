@@ -1,0 +1,215 @@
+<svg width="1212" height="740" viewBox="34 14 1212 740" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Who writes what in a fleet-sprint: seven human-authored artifacts on the left feed the seven automated sprint phases on the right, so no phase runs on nothing." preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <!-- Background Gradient Dark -->
+    <linearGradient id="awBgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080C14"/>
+      <stop offset="50%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#060911"/>
+    </linearGradient>
+
+    <!-- Glass Panel Gradient -->
+    <linearGradient id="awPanelDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <!-- Cyber Grid Pattern Dark -->
+    <pattern id="awGridDark" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E293B" stroke-width="1" opacity="0.4"/>
+      <circle cx="40" cy="40" r="1.5" fill="#334155" opacity="0.5"/>
+    </pattern>
+
+    <!-- Gold Glow Filter -->
+    <filter id="awGlowGold" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Base Canvas -->
+  <rect width="1280" height="780" fill="url(#awBgDark)"/>
+  <rect width="1280" height="780" fill="url(#awGridDark)"/>
+
+  <!-- Eyebrow Pill Badge -->
+  <g transform="translate(50, 30)">
+    <rect x="0" y="0" width="212" height="28" rx="14" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="16" cy="14" r="4" fill="#FBBF24" filter="url(#awGlowGold)"/>
+    <text x="30" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="800" letter-spacing="1.0" fill="#FBBF24">WHO WRITES WHAT</text>
+  </g>
+
+  <!-- Main Title -->
+  <text x="50" y="105" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="28" font-weight="900" fill="#F8FAFC">Every automated phase is anchored to a human-authored artifact</text>
+  <!-- Subtitle -->
+  <text x="50" y="138" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="500" fill="#94A3B8">No phase runs on nothing.</text>
+
+  <!-- LEFT COLUMN: human-authored artifacts -->
+  <rect x="50" y="170" width="470" height="494" rx="14" fill="url(#awPanelDark)" stroke="#334155" stroke-width="1.5"/>
+  <rect x="50" y="170" width="470" height="38" rx="14" fill="#1E293B"/>
+  <rect x="50" y="194" width="470" height="14" fill="#1E293B"/>
+  <line x1="50" y1="208" x2="520" y2="208" stroke="#334155" stroke-width="1"/>
+  <circle cx="74" cy="189" r="5" fill="#FBBF24" filter="url(#awGlowGold)"/>
+  <text x="88" y="189" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">You write these once (and maintain them)</text>
+
+  <!-- Left row 1: beads epic + child issues -->
+  <g>
+    <rect x="68" y="220" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="246" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="246" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">1</text>
+    <text x="110" y="242" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#F8FAFC">beads epic + child issues</text>
+    <text x="110" y="259" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8">with acceptance criteria</text>
+  </g>
+  <!-- Left row 2: deploy.md -->
+  <g>
+    <rect x="68" y="282" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="308" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="308" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">2</text>
+    <text x="110" y="313" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#F8FAFC">deploy.md</text>
+  </g>
+  <!-- Left row 3: integ-test-playbook.md -->
+  <g>
+    <rect x="68" y="344" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="370" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="370" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">3</text>
+    <text x="110" y="375" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#F8FAFC">integ-test-playbook.md</text>
+  </g>
+  <!-- Left row 4: regression-test-playbook.md -->
+  <g>
+    <rect x="68" y="406" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="432" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="432" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">4</text>
+    <text x="110" y="437" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#F8FAFC">regression-test-playbook.md</text>
+  </g>
+  <!-- Left row 5: CLI permission allowlist -->
+  <g>
+    <rect x="68" y="468" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="494" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="494" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">5</text>
+    <text x="110" y="499" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#F8FAFC">CLI permission allowlist</text>
+  </g>
+  <!-- Left row 6: requirements file -->
+  <g>
+    <rect x="68" y="530" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="556" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="556" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">6</text>
+    <text x="110" y="552" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#F8FAFC">requirements file</text>
+    <text x="110" y="569" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8">(optional)</text>
+  </g>
+  <!-- Left row 7: bd remember entries -->
+  <g>
+    <rect x="68" y="592" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="618" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">7</text>
+    <text x="110" y="614" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#F8FAFC">bd remember entries</text>
+    <text x="110" y="631" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8">(optional)</text>
+  </g>
+
+  <!-- RIGHT COLUMN: automated sprint phases (shifted 60px left of its original x=700 so the
+       full-height spine and its rotated label have real breathing room before the canvas edge,
+       instead of being cramped against it) -->
+  <rect x="640" y="170" width="500" height="494" rx="14" fill="url(#awPanelDark)" stroke="#F59E0B" stroke-width="1.5"/>
+  <rect x="640" y="170" width="500" height="38" rx="14" fill="#1E293B"/>
+  <rect x="640" y="194" width="500" height="14" fill="#1E293B"/>
+  <line x1="640" y1="208" x2="1140" y2="208" stroke="#F59E0B" stroke-width="1"/>
+  <circle cx="664" cy="189" r="5" fill="#FBBF24" filter="url(#awGlowGold)"/>
+  <text x="678" y="189" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#FBBF24">fleet-sprint executes against them, every sprint</text>
+
+  <!-- Right row A: Plan -->
+  <g>
+    <rect x="658" y="220" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="678" cy="246" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="678" y="246" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">A</text>
+    <text x="700" y="242" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Plan</text>
+    <text x="700" y="260" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">reviewed task DAG, per-task criteria</text>
+  </g>
+  <!-- Right row B: Develop + Review -->
+  <g>
+    <rect x="658" y="282" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="678" cy="308" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="678" y="308" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">B</text>
+    <text x="700" y="304" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Develop + Review</text>
+    <text x="700" y="322" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">code commits, reviews</text>
+  </g>
+  <!-- Right row C: Deploy -->
+  <g>
+    <rect x="658" y="344" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="678" cy="370" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="678" y="370" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">C</text>
+    <text x="700" y="366" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Deploy</text>
+    <text x="700" y="384" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">runbook executed literally, smoke test gates it</text>
+  </g>
+  <!-- Right row D: Integration test -->
+  <g>
+    <rect x="658" y="406" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="678" cy="432" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="678" y="432" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">D</text>
+    <text x="700" y="428" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Integration test</text>
+    <text x="700" y="446" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">evidence-based closure, bugs filed</text>
+  </g>
+  <!-- Right row E: Regression pass -->
+  <g>
+    <rect x="658" y="468" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="678" cy="494" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="678" y="494" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">E</text>
+    <text x="700" y="490" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Regression pass</text>
+    <text x="700" y="508" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">once per sprint, informational</text>
+  </g>
+  <!-- Right row F: Permission precheck -->
+  <g>
+    <rect x="658" y="530" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="678" cy="556" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="678" y="556" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">F</text>
+    <text x="700" y="552" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Permission precheck</text>
+    <text x="700" y="570" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">agents stop and report, never self-grant</text>
+  </g>
+  <!-- Right row G: Harvest + PR -->
+  <g>
+    <rect x="658" y="592" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="678" cy="618" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="678" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">G</text>
+    <text x="700" y="614" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Harvest + PR</text>
+    <text x="700" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">docs, changelog, pull request</text>
+  </g>
+
+  <!-- Connectors: left artifacts -> right phases (left to right); right-side landing points
+       shifted -60px to track the right column's new position -->
+  <g fill="none" stroke-width="1.6" stroke-dasharray="4 4">
+    <path d="M 502 236 C 552 236, 578 237, 648 237" stroke="#F59E0B"/>
+    <path d="M 502 246 C 552 246, 578 308, 648 308" stroke="#F59E0B"/>
+    <path d="M 502 256 C 552 256, 578 427, 648 427" stroke="#F59E0B"/>
+    <path d="M 502 308 C 552 308, 578 370, 648 370" stroke="#F59E0B"/>
+    <path d="M 502 370 C 552 370, 578 437, 648 437" stroke="#F59E0B"/>
+    <path d="M 502 432 C 552 432, 578 494, 648 494" stroke="#F59E0B"/>
+    <path d="M 502 494 C 552 494, 578 556, 648 556" stroke="#F59E0B"/>
+    <path d="M 502 556 C 552 556, 578 255, 648 255" stroke="#64748B" stroke-opacity="0.9"/>
+  </g>
+  <g stroke="none">
+    <polygon points="658,237 648,232 648,242" fill="#F59E0B"/>
+    <polygon points="658,308 648,303 648,313" fill="#F59E0B"/>
+    <polygon points="658,427 648,422 648,432" fill="#F59E0B"/>
+    <polygon points="658,370 648,365 648,375" fill="#F59E0B"/>
+    <polygon points="658,437 648,432 648,442" fill="#F59E0B"/>
+    <polygon points="658,494 648,489 648,499" fill="#F59E0B"/>
+    <polygon points="658,556 648,551 648,561" fill="#F59E0B"/>
+    <polygon points="658,255 648,250 648,260" fill="#64748B"/>
+  </g>
+
+  <!-- Row 7 -> full-height spine spanning every right-hand phase; spine and its rotated label
+       shifted -60px so both clear the right column's new right edge (1140) and the canvas edge
+       with real breathing room instead of the original ~16px -->
+  <path d="M 502 618 C 542 618, 572 654, 602 654 L 1156 654" fill="none" stroke="#F59E0B" stroke-width="1.6" stroke-dasharray="4 4"/>
+  <path d="M 1156 654 L 1156 216" fill="none" stroke="#F59E0B" stroke-width="2"/>
+  <path d="M 1156 216 L 1134 216" fill="none" stroke="#F59E0B" stroke-width="2"/>
+  <path d="M 1156 654 L 1134 654" fill="none" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="1124,216 1134,211 1134,221" fill="#F59E0B"/>
+  <polygon points="1124,654 1134,649 1134,659" fill="#F59E0B"/>
+  <circle cx="1156" cy="435" r="4" fill="#F59E0B"/>
+  <text transform="translate(1170, 435) rotate(90)" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="16.5" font-weight="700" fill="#FBBF24">all roles, via the bd prime session hook</text>
+
+  <!-- Bottom annotation strip -->
+  <rect x="50" y="690" width="1166" height="48" rx="12" fill="#F59E0B" fill-opacity="0.12" stroke="#F59E0B" stroke-width="1.2"/>
+  <circle cx="74" cy="714" r="5" fill="#FBBF24" filter="url(#awGlowGold)"/>
+  <text x="92" y="714" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5">
+    <tspan font-weight="800" fill="#FBBF24">Every automated phase on the right is anchored to a human-authored artifact on the left.</tspan>
+    <tspan dx="8" font-weight="600" fill="#E2E8F0">No phase runs on nothing.</tspan>
+  </text>
+</svg>

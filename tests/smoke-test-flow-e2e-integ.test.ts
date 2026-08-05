@@ -186,7 +186,7 @@ describe.skipIf(!BD_AVAILABLE)(
       // ---- Test scenario steps 3-5 surrogate: real D-push/D-pull sync brackets ----
       // Full LLM-driven `apra-fleet workflow fleet-sprint` dispatch is out of
       // scope for a hermetic vitest suite (no network, no LLM credentials --
-      // see docs/tools-infrastructure.md and this same constraint already
+      // see docs/mcp-tools.md and this same constraint already
       // documented in tests/check-toy-doer-credentials.test.ts). What IS
       // exercised here for real is the exact mechanism that would carry the
       // sprint's writes to the sandbox-local remote: the real,

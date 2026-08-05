@@ -134,7 +134,7 @@ export class GeminiProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'gemini-3.5-flash-lite';
     if (tier === 'premium') return 'gemini-3.1-pro-preview';
     return 'gemini-3.5-flash';

@@ -6,7 +6,7 @@ import os from 'node:os';
 
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
-import { createReconciler, registerReservationRoutes, SprintNotFoundError } from '../src/supervisor/reconcile.mjs';
+import { createReconciler, registerReservationRoutes, SprintNotFoundError, killPid } from '../src/supervisor/reconcile.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 
 // apra-fleet-eft.5.4 -- restart reconciliation (PID probe -> release both axes,
@@ -157,6 +157,172 @@ describe('reconcile -- force-release', () => {
             (err) => err instanceof SprintNotFoundError && err.code === 'SPRINT_NOT_FOUND',
         );
         await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-3i3.3: force-release echoes back the released entry\'s branch/base/goal (read BEFORE release() erases the entry), enabling a caller to reconstruct the original launch request', async () => {
+        const dir = await tmpDir();
+        const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME), now: () => '2026-07-18T00:00:00.000Z' });
+        await ledger.start();
+        await ledger.claim('wedged', {
+            members: ['m1', 'm2'],
+            issueRoots: ['root-w'],
+            childPid: 999,
+            branch: 'feat/restart-me',
+            base: 'main',
+            goal: 'P1/P2',
+        });
+        const history = createHistory({ filePath: path.join(dir, HISTORY_FILENAME), now: () => '2026-07-18T02:00:00.000Z' });
+        await history.start();
+        const reconciler = createReconciler({ ledger, history });
+
+        const audit = await reconciler.forceRelease('wedged', { reason: 'restarted via Sprint Stack Restart button' });
+        assert.equal(audit.branch, 'feat/restart-me');
+        assert.equal(audit.base, 'main');
+        assert.equal(audit.goal, 'P1/P2');
+        // Still gone from the ledger, same as before this bead.
+        assert.equal(ledger.get('wedged'), undefined);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('apra-fleet-3i3.3: a pre-3i3.2 legacy entry with no persisted branch/base/goal echoes null for each, never a fabricated value', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await seed(dir, [
+            { sprintId: 'legacy', members: ['m1'], issueRoots: ['root-l'], childPid: 555 },
+        ]);
+        const reconciler = createReconciler({ ledger, history });
+
+        const audit = await reconciler.forceRelease('legacy', { reason: 'op' });
+        assert.equal(audit.branch, null);
+        assert.equal(audit.base, null);
+        assert.equal(audit.goal, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('reconcile -- apra-fleet-3i3.1 force-release also kills the live child', () => {
+    test('an injected killPid is invoked with the reservation childPid, and its result is returned', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await seed(dir, [
+            { sprintId: 'wedged', members: ['m1'], issueRoots: ['root-w'], childPid: 777 },
+        ]);
+        const killedPids = [];
+        const reconciler = createReconciler({
+            ledger, history,
+            killPid: (pid) => { killedPids.push(pid); return true; },
+        });
+
+        const result = await reconciler.forceRelease('wedged', { reason: 'operator stop' });
+        assert.deepEqual(killedPids, [777]);
+        assert.equal(result.childPid, 777);
+        assert.equal(result.killed, true);
+        // Reservation still released exactly as before.
+        assert.equal(ledger.get('wedged'), undefined);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('no recorded childPid: killPid is never called, and `killed` is null (nothing to kill)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await seed(dir, [
+            { sprintId: 'no-pid', members: ['m1'], issueRoots: ['root-n'], childPid: null },
+        ]);
+        let called = false;
+        const reconciler = createReconciler({ ledger, history, killPid: () => { called = true; return true; } });
+
+        const result = await reconciler.forceRelease('no-pid');
+        assert.equal(called, false);
+        assert.equal(result.childPid, null);
+        assert.equal(result.killed, null);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('with NO killPid injected, force-release still releases the reservation and never sends a real signal (safe default)', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await seed(dir, [
+            // A deliberately low/system-adjacent pid to prove the default
+            // NEVER attempts a real process.kill -- this must stay safe even
+            // if such a pid happens to be alive on the test host.
+            { sprintId: 'low-pid', members: ['m1'], issueRoots: ['root-l'], childPid: 5 },
+        ]);
+        const reconciler = createReconciler({ ledger, history });
+
+        const result = await reconciler.forceRelease('low-pid');
+        assert.equal(result.childPid, 5);
+        assert.equal(result.killed, false); // safe no-op default: never actually kills
+        assert.equal(ledger.get('low-pid'), undefined);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    test('a kill failure never blocks the reservation release', async () => {
+        const dir = await tmpDir();
+        const { ledger, history } = await seed(dir, [
+            { sprintId: 'unkillable', members: ['m1'], issueRoots: ['root-u'], childPid: 888 },
+        ]);
+        const reconciler = createReconciler({ ledger, history, killPid: () => false });
+
+        const result = await reconciler.forceRelease('unkillable');
+        assert.equal(result.killed, false);
+        assert.equal(ledger.get('unkillable'), undefined);
+
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+});
+
+describe('reconcile -- killPid() real implementation', () => {
+    // process.kill is stubbed in every case below -- this suite must NEVER
+    // send a real signal to a real pid, deterministic-existence assumptions
+    // about high/reserved pid numbers are exactly the kind of test-host-
+    // dependent flakiness (or worse, an actual kill of an unrelated process)
+    // this module's whole safe-default design (see reconcile.mjs's module
+    // doc) exists to avoid.
+    test('a successful signal delivery returns true', () => {
+        const realKill = process.kill;
+        let calledWith = null;
+        process.kill = (pid, signal) => { calledWith = { pid, signal }; };
+        try {
+            assert.equal(killPid(4242), true);
+            assert.deepEqual(calledWith, { pid: 4242, signal: 'SIGKILL' });
+        } finally {
+            process.kill = realKill;
+        }
+    });
+
+    test('ESRCH (already gone) is treated as a successful kill', () => {
+        const realKill = process.kill;
+        process.kill = () => { const err = new Error('no such process'); err.code = 'ESRCH'; throw err; };
+        try {
+            assert.equal(killPid(4242), true);
+        } finally {
+            process.kill = realKill;
+        }
+    });
+
+    test('a non-ESRCH failure (e.g. EPERM) returns false, never throws', () => {
+        const realKill = process.kill;
+        process.kill = () => { const err = new Error('not permitted'); err.code = 'EPERM'; throw err; };
+        try {
+            assert.equal(killPid(4242), false);
+        } finally {
+            process.kill = realKill;
+        }
+    });
+
+    test('an invalid pid returns false without calling process.kill at all', () => {
+        const realKill = process.kill;
+        let called = false;
+        process.kill = () => { called = true; };
+        try {
+            assert.equal(killPid(0), false);
+            assert.equal(killPid(-1), false);
+            assert.equal(killPid(1.5), false);
+            assert.equal(called, false);
+        } finally {
+            process.kill = realKill;
+        }
     });
 });
 

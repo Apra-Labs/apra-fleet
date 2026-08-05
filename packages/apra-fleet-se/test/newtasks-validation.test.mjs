@@ -151,6 +151,35 @@ describe('validateNewTask', () => {
         assert.match(result.reason, /description/);
     });
 
+    test('sanitizes em-dash, curly quotes, and ellipsis in description to ASCII equivalents -- apra-fleet-04g.2', () => {
+        // The description below embeds em-dash, curly single quotes, curly
+        // double quotes, and a horizontal ellipsis via JS unicode escapes so
+        // this source file itself stays ASCII-only, while still exercising
+        // sanitizeNewTaskDescription()'s normalization at runtime -- this is
+        // the exact 04g.2 repro (an em-dash silently blocking canary closure).
+        const result = validateNewTask({
+            title: 'Safe title',
+            description: 'Reviewer said \u2014 \u2018looks good\u2019 \u201Cship it\u201D\u2026',
+            priority: 'P2',
+        });
+        assert.strictEqual(result.ok, true);
+        assert.strictEqual(result.description, "Reviewer said -- 'looks good' \"ship it\"...");
+    });
+
+    test('still rejects a description containing an unhandled non-ASCII character (e.g. emoji)', () => {
+        // \u{1F600} (grinning face emoji) via a JS unicode escape keeps the
+        // source ASCII-only while exercising fail-closed behaviour: emoji is
+        // not in sanitizeNewTaskDescription()'s substitution table, so it must
+        // still be rejected after normalization.
+        const result = validateNewTask({
+            title: 'Safe title',
+            description: 'Reviewer reaction: \u{1F600}',
+            priority: 'P2',
+        });
+        assert.strictEqual(result.ok, false);
+        assert.match(result.reason, /description/);
+    });
+
     test('rejects empty title/description', () => {
         assert.strictEqual(validateNewTask({ title: '', description: 'x.', priority: 'P2' }).ok, false);
         assert.strictEqual(validateNewTask({ title: 'x', description: '', priority: 'P2' }).ok, false);
@@ -160,5 +189,43 @@ describe('validateNewTask', () => {
         assert.doesNotThrow(() => validateNewTask({}));
         assert.doesNotThrow(() => validateNewTask({ title: 123, description: null, priority: undefined }));
         assert.strictEqual(validateNewTask({}).ok, false);
+    });
+
+    test('accepts square brackets in title (apra-fleet-19o.1 -- planner [test] convention)', () => {
+        const result = validateNewTask({
+            title: '[test] Fix race condition in auth handler',
+            description: 'Ensure proper locking mechanisms.',
+            priority: 'P1',
+        });
+        assert.strictEqual(result.ok, true);
+        assert.strictEqual(result.title, '[test] Fix race condition in auth handler');
+    });
+
+    test('accepts complex title with square brackets', () => {
+        const result = validateNewTask({
+            title: '[test] [blocker] Validate auth flow (v2)',
+            description: 'Test description.',
+            priority: 'P2',
+        });
+        assert.strictEqual(result.ok, true);
+        assert.strictEqual(result.title, '[test] [blocker] Validate auth flow (v2)');
+    });
+
+    test('still rejects genuinely unsafe characters ($ and backtick) in title', () => {
+        const unsafeChars = [
+            'Title with $(injection)',
+            'Title with `backtick`',
+            'Title with "quote',
+            'Title with backslash\\',
+        ];
+        for (const title of unsafeChars) {
+            const result = validateNewTask({
+                title,
+                description: 'Safe description.',
+                priority: 'P1',
+            });
+            assert.strictEqual(result.ok, false, `expected title "${title}" to be rejected`);
+            assert.match(result.reason, /title/);
+        }
     });
 });

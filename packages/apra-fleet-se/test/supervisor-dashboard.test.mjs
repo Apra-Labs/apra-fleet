@@ -8,6 +8,7 @@ import {
     renderSprintStackHtml,
     renderSprintSection,
     statusBadge,
+    formatStopError,
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
@@ -107,6 +108,50 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(!html.includes('<xss>'));
         assert.ok(!html.includes('<role>'));
     });
+
+    test('apra-fleet-3i3.1: renders a Stop button and a per-row inline result element, both keyed by sprintId', () => {
+        const html = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: 0,
+            members: [],
+        });
+        assert.ok(html.includes('btn-stop-sprint'));
+        assert.ok(html.includes('data-sprint-id="sprint-1"'));
+        assert.ok(html.includes('stop-result'));
+        assert.ok(/Stop</.test(html));
+    });
+
+    test('apra-fleet-3i3.3: renders a Restart button and a per-row inline result element, both keyed by sprintId', () => {
+        const html = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: 0,
+            members: [],
+        });
+        assert.ok(html.includes('btn-restart-sprint'));
+        assert.ok(html.includes('restart-result'));
+        assert.ok(/Restart</.test(html));
+    });
+});
+
+describe('dashboard -- apra-fleet-3i3.1 formatStopError', () => {
+    test('surfaces the server error message verbatim (e.g. a 404 for an already-gone sprint)', () => {
+        const msg = formatStopError(404, { error: "no live reservation for sprint 'x'" });
+        assert.ok(msg.includes("no live reservation for sprint 'x'"));
+    });
+
+    test('never throws on a missing/malformed error body', () => {
+        assert.doesNotThrow(() => formatStopError(500, null));
+        assert.doesNotThrow(() => formatStopError(500, undefined));
+        assert.ok(formatStopError(500, {}).length > 0);
+    });
 });
 
 describe('dashboard -- createDashboard', () => {
@@ -176,6 +221,32 @@ describe('dashboard -- createDashboard', () => {
         assert.equal(view2.branch, null);
         assert.equal(view2.goal, null);
         assert.equal(view2.members[0].role, null);
+    });
+
+    test('apra-fleet-3i3.2: default getSprintMeta derives branch/goal from ledger.get() when the caller injects nothing', async () => {
+        const ledgerWithMeta = {
+            list: () => [{ sprintId: 's1', members: ['alice'], issueRoots: [], childPid: 1 }],
+            get: (id) => (id === 's1' ? { branch: 'feat/persisted', base: 'main', goal: 'P1/P2' } : undefined),
+        };
+        const dashboard = createDashboard({
+            ledger: ledgerWithMeta,
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(),
+        });
+        const [view] = await dashboard.buildSprintViews();
+        assert.equal(view.branch, 'feat/persisted');
+        assert.equal(view.goal, 'P1/P2');
+    });
+
+    test('apra-fleet-3i3.2: default getSprintMeta is a safe no-op against a ledger stub that only implements list()', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(),
+        });
+        const [view] = await dashboard.buildSprintViews();
+        assert.equal(view.branch, null);
+        assert.equal(view.goal, null);
     });
 
     test('a throwing getSprintMeta/expandScope for one sprint does not take down the whole page (isolated fallback)', async () => {
@@ -258,5 +329,38 @@ describe('dashboard -- renderIndexPageHtml', () => {
         assert.doesNotThrow(() => renderIndexPageHtml());
         assert.doesNotThrow(() => renderIndexPageHtml(null));
         assert.doesNotThrow(() => renderIndexPageHtml([]));
+    });
+
+    test('apra-fleet-3i3.1: embeds the Stop button client script (formatStopError + force-release wiring)', () => {
+        const html = renderIndexPageHtml([{
+            sprintId: 'sprint-1', branch: 'feat/x', goal: 'P1', status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [], beadCount: 0, members: [],
+        }]);
+        // The exact code under test (formatStopError) is embedded verbatim
+        // via .toString() -- same convention launch-form.mjs's
+        // formatLaunchError/buildLaunchRequestBody use.
+        assert.ok(html.includes('formatStopError'));
+        assert.ok(html.includes('/force-release'));
+        assert.ok(html.includes('btn-stop-sprint'));
+        assert.ok(html.includes('confirm('));
+    });
+
+    test('apra-fleet-3i3.3: embeds the Restart button client script (force-release THEN /api/sprints relaunch wiring, via formatLaunchError for the relaunch step)', () => {
+        const html = renderIndexPageHtml([{
+            sprintId: 'sprint-1', branch: 'feat/x', goal: 'P1', status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [], beadCount: 0, members: [],
+        }]);
+        // Both the release step's error formatter (shared with Stop) and the
+        // relaunch step's error formatter (shared with the Launch Sprint
+        // form, per this bead's acceptance criterion) are embedded verbatim.
+        assert.ok(html.includes('formatStopError'));
+        assert.ok(html.includes('formatLaunchError'));
+        assert.ok(html.includes('btn-restart-sprint'));
+        // Restart is a two-step flow: release first (no separate manual Stop
+        // required), THEN relaunch via the same validated launch endpoint.
+        assert.ok(html.includes('/force-release'));
+        assert.ok(html.includes("fetch('/api/sprints'"));
+        assert.ok(html.includes('audit.branch'));
+        assert.ok(html.includes('audit.issueRoots'));
     });
 });

@@ -49,7 +49,7 @@ export class OpenCodeProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'premium') return 'opencode/nemotron-3-ultra-free';
     if (tier === 'cheap') return 'opencode/north-mini-code-free';
     return 'opencode/deepseek-v4-flash-free';

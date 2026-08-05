@@ -66,7 +66,7 @@ describe('pollLogFile', () => {
     expect(result.error).toContain('not found');
   });
 
-  describe('Claude — timestamp extraction from assistant entries', () => {
+  describe('Claude -- timestamp extraction from assistant entries', () => {
     it('extracts timestamp from the last assistant entry', async () => {
       const stdout = jsonLines(
         { type: 'user', timestamp: '2026-05-05T10:00:00.000Z' },
@@ -139,6 +139,39 @@ describe('pollLogFile', () => {
       expect(result.lastTimestamp).toBe('2026-05-05T10:07:00.000Z');
     });
 
+    // apra-fleet-979: the raw-tail fallback must not mistake a "timestamp"
+    // key embedded (JSON-escaped) inside a tool_result's content for a
+    // genuine transcript-entry timestamp. When a tool_result's content is
+    // itself JSON-serialized into a string field, any "timestamp" key inside
+    // that payload appears with its opening quote backslash-escaped
+    // (`\"timestamp\"`) -- never as a bare `"timestamp"` the way a real
+    // top-level transcript-entry key would. Pre-fix, RAW_TIMESTAMP_RE had no
+    // lookbehind and matched this embedded form too, letting a stale/future
+    // value inside tool output spuriously advance lastActivityAt and mask a
+    // real stall.
+    it('does not advance lastActivityAt from a "timestamp" embedded in tool_result content', async () => {
+      // No line here parses as complete JSON (trailing padding keeps it
+      // unterminated), and the only "timestamp" text in the tail is the
+      // escaped/embedded one carrying a future-dated (fake) value.
+      const stdout =
+        '{"type":"user","message":{"content":[{"type":"tool_result","content":"blah \\"timestamp":"2099-01-01T00:00:00.000Z","note":"fake"}]}}' +
+        'x'.repeat(200);
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBeNull();
+    });
+
+    it('still picks up a genuine top-level transcript-entry timestamp even when an embedded fake timestamp follows it in the same raw tail', async () => {
+      const stdout =
+        '{"type":"user","timestamp":"2026-05-05T10:07:00.000Z","message":{"content":[{"type":"tool_result","content":"blah \\"timestamp":"2099-01-01T00:00:00.000Z","note":"fake"}]}}' +
+        'x'.repeat(200);
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBe('2026-05-05T10:07:00.000Z');
+    });
+
     it('skips partial/unparseable lines at start of tail', async () => {
       const stdout = 'partial-json-line\n' + jsonLines(
         { type: 'assistant', timestamp: '2026-05-05T10:05:00.000Z' },
@@ -175,7 +208,7 @@ describe('pollLogFile', () => {
     });
   });
 
-  describe('Gemini — lastUpdated extraction from $set lines', () => {
+  describe('Gemini -- lastUpdated extraction from $set lines', () => {
     beforeEach(() => {
       mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'gemini' }));
     });
@@ -256,6 +289,92 @@ describe('pollLogFile', () => {
       const result = await pollLogFile('member-1', '/log.jsonl');
       expect(result.lastTimestamp).toBeNull();
       expect(result.error).toContain('SSH timeout');
+    });
+  });
+
+  // apra-fleet-iuc.2: the transcript file's own OS mtime, fetched independently
+  // of the content-based read above, so a content-parsing gap never has to be
+  // the sole determinant of "is this session dead."
+  describe('mtime cross-check (apra-fleet-iuc.2)', () => {
+    it('parses mtimeMs from unix `stat -c %Y` output (seconds -> ms)', async () => {
+      mockExecCommand.mockImplementation(async (cmd: string) => {
+        if (cmd.includes('stat -c')) {
+          return { stdout: '1700000000\n', stderr: '', code: 0 };
+        }
+        return { stdout: '', stderr: '', code: 0 };
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.mtimeMs).toBe(1_700_000_000_000);
+    });
+
+    it('parses mtimeMs from the PowerShell LastWriteTimeUtc command on Windows (already ms)', async () => {
+      mockGetAgentOS.mockReturnValue('windows');
+      mockExecCommand.mockImplementation(async (cmd: string) => {
+        if (cmd.includes('LastWriteTimeUtc')) {
+          return { stdout: '1700000000000\n', stderr: '', code: 0 };
+        }
+        return { stdout: '', stderr: '', code: 0 };
+      });
+
+      const result = await pollLogFile('member-1', 'C:\\logs\\log.jsonl');
+      expect(result.mtimeMs).toBe(1_700_000_000_000);
+    });
+
+    it('is null (not an error) when the file does not exist yet', async () => {
+      mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.mtimeMs).toBeNull();
+      expect(result.error).toBeUndefined();
+    });
+
+    it('is null (never throws) when the stat command itself throws', async () => {
+      mockExecCommand.mockImplementation(async (cmd: string) => {
+        if (cmd.includes('stat -c')) throw new Error('ssh dropped mid-stat');
+        const stdout = jsonLines({ type: 'user', timestamp: '2026-05-05T10:00:00.000Z' });
+        return { stdout, stderr: '', code: 0 };
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      // The content-based read is unaffected by the stat failure.
+      expect(result.lastTimestamp).toBe('2026-05-05T10:00:00.000Z');
+      expect(result.mtimeMs).toBeNull();
+      expect(result.error).toBeUndefined();
+    });
+
+    it('is null for non-finite/non-positive stat output rather than a bogus timestamp', async () => {
+      mockExecCommand.mockImplementation(async (cmd: string) => {
+        if (cmd.includes('stat -c')) return { stdout: 'not-a-number\n', stderr: '', code: 0 };
+        return { stdout: '', stderr: '', code: 0 };
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.mtimeMs).toBeNull();
+    });
+  });
+
+  describe('AGY -- timestamp extraction from created_at entries', () => {
+    it('extracts created_at ISO timestamp from AGY entries', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'agy' }));
+      const stdout = jsonLines(
+        { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', created_at: '2026-08-05T05:00:00.000Z' },
+        { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', created_at: '2026-08-05T05:01:00.000Z' },
+      );
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/brain/session-1/logs/transcript.jsonl');
+      expect(result.lastTimestamp).toBe('2026-08-05T05:01:00.000Z');
+      expect(result.error).toBeUndefined();
+    });
+
+    it('textually recovers created_at from partial line in raw tail', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'agy' }));
+      const stdout = '...truncated line...\n{"step_index":2,"source":"MODEL","created_at":"2026-08-05T05:02:30.000Z"}';
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/brain/session-1/logs/transcript.jsonl');
+      expect(result.lastTimestamp).toBe('2026-08-05T05:02:30.000Z');
     });
   });
 });

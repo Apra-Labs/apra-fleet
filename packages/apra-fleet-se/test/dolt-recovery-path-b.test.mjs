@@ -155,6 +155,29 @@ test('hasSyncRemoteInYaml recognizes a present vs absent sync.remote', () => {
     check(hasSyncRemoteInYaml('') === false, 'empty text');
 });
 
+test('hasSyncRemoteInYaml recognizes the flat dotted-key form bd itself actually writes (apra-fleet-vkc.1 post-review fix)', () => {
+    // This is the REAL format: this repo's own .beads/config.yaml, and every
+    // bd-managed clone tested live on fleet-win-dev1, use this flat form
+    // exclusively -- never the nested block the pre-fix regex only matched.
+    // Before this fix, Path B's Windows-gotcha-#1 guard always rejected a
+    // real bd config.yaml with a false "no sync.remote set", permanently
+    // blocking Path B behind an immediate Tier 2 escalation.
+    check(
+        hasSyncRemoteInYaml('sync.remote: "git+https://github.com/Apra-Labs/apra-fleet.git"\n') === true,
+        'quoted flat form (bd\'s actual output) detected',
+    );
+    check(
+        hasSyncRemoteInYaml('sync.remote: git+https://github.com/Apra-Labs/apra-fleet.git\n') === true,
+        'unquoted flat form detected',
+    );
+    check(hasSyncRemoteInYaml('sync.remote: ""\n') === false, 'empty quoted flat value is not present');
+    check(hasSyncRemoteInYaml('sync.remote:\n') === false, 'empty flat value is not present');
+    check(
+        hasSyncRemoteInYaml('# comment\nissue-prefix: ""\nsync.remote: "origin"\n') === true,
+        'flat form still detected amid other config lines (matches this repo\'s real config.yaml shape)',
+    );
+});
+
 // --- Windows gotcha #2: leftover empty DB retry -----------------------------
 test('Path B recovers from the leftover-empty-DB bootstrap failure via exactly one bounded retry (Windows gotcha #2)', async () => {
     const fx = makeFixture({ bootstrapEmptyDbThenOk: true });

@@ -23,7 +23,7 @@ describe('ROLES', () => {
         assert.ok(Object.isFrozen(ROLES));
     });
 
-    test('contains exactly the eight canonical, lowercase role names', () => {
+    test('contains exactly the nine canonical, lowercase role names', () => {
         assert.deepStrictEqual(ROLES, [
             'planner',
             'plan-reviewer',
@@ -31,6 +31,7 @@ describe('ROLES', () => {
             'reviewer',
             'deployer',
             'integ-test-runner',
+            'regression-test-runner',
             'ci-watcher',
             'harvester',
         ]);
@@ -147,6 +148,22 @@ const FIXTURES = {
             summary: 'x',
         },
     },
+    regressionReport: {
+        valid: {
+            passed: false,
+            suitePassed: true,
+            smokePassed: false,
+            bugsFiled: ['BD-42'],
+            summary: 'Suite passed; smoke test canary assertion failed, filed BD-42 as a carry-over bug.',
+        },
+        invalid: {
+            passed: false,
+            suitePassed: 'true', // wrong type
+            smokePassed: false,
+            bugsFiled: ['BD-42'],
+            summary: 'x',
+        },
+    },
     ciReport: {
         valid: { status: 'green', notes: '' },
         invalid: { status: 'yellow', notes: 'not a real status' },
@@ -162,7 +179,7 @@ const FIXTURES = {
 };
 
 describe('verdict schemas', () => {
-    test('SCHEMAS and VALIDATORS export exactly the nine documented verdict names', () => {
+    test('SCHEMAS and VALIDATORS export exactly the ten documented verdict names', () => {
         const expected = [
             'planReviewerVerdict',
             'reviewerVerdict',
@@ -170,6 +187,7 @@ describe('verdict schemas', () => {
             'streakAssignment',
             'deployerReport',
             'integReport',
+            'regressionReport',
             'ciReport',
             'harvesterReport',
             'finalVerdict',

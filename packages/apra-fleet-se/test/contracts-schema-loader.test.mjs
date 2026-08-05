@@ -218,7 +218,7 @@ describe('fallback shim against contracts.mjs\'s real, unoverridden resolveSchem
         // export below must hold the same shape -- this is exactly what
         // "shim" means.
         const real = await import('../fleet-sprint/contracts.mjs');
-        for (const name of ['planReviewerVerdict', 'reviewerVerdict', 'doerReport', 'deployerReport', 'integReport', 'ciReport', 'harvesterReport']) {
+        for (const name of ['planReviewerVerdict', 'reviewerVerdict', 'doerReport', 'deployerReport', 'integReport', 'regressionReport', 'ciReport', 'harvesterReport']) {
             assert.ok(real.SCHEMAS[name], `expected SCHEMAS.${name} to be defined`);
             assert.strictEqual(real.SCHEMAS[name].type, 'object');
             assert.ok(Array.isArray(real.SCHEMAS[name].required) && real.SCHEMAS[name].required.length > 0);

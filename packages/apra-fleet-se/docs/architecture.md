@@ -156,7 +156,7 @@ double-quoted `bd create "..."` shell command. Because sprint members run
 mixed shells (POSIX and Windows) with no single reliably-safe escaping
 scheme, `validateNewTask()` uses an **allowlist**, not escaping:
 `priority` must match `^P[0-4]$`; `title`/`description` must match
-`^[A-Za-z0-9 .,:;!?()'_/-]+$` (notably excluding backtick, `$`, double-quote,
+`^[A-Za-z0-9 .,:;!?()'_/\[\]-]+$` (notably excluding backtick, `$`, double-quote,
 and backslash -- the characters that can break out of or smuggle commands
 through a double-quoted shell argument). A rejected `newTask` is logged,
 recorded in `rejectedNewTasks` (surfaced later in the final-review prompt and
@@ -236,6 +236,21 @@ Tracked across the whole sprint (not reset per cycle):
   reopened more than 3 times is flagged as "thrashing" in the
   `StalledSprintError` message, so a human reading the failure can see
   *which* bead(s) are oscillating, not just that the sprint stalled.
+
+**The closed count fed into `closedCountHistory` must be read fresh, not
+reused from an earlier snapshot taken the same cycle.** A cycle's Integ Test
+step can itself close verify-routed beads as its very last action; if the
+count appended to `closedCountHistory` for that cycle was computed from a
+bead-state read taken *before* that step ran, those closures are invisible
+to the high-water-mark check even though they are genuine progress -- the
+history looks flat across consecutive cycles despite real work landing in
+each one, and the sprint can trip `StalledSprintError` while insisting "the
+verifier may be failing" when the verifier in fact succeeded every time and
+the bookkeeping simply never looked again after it ran. Cycle Evaluation
+therefore re-queries live closed-bead state for the scope directly (rather
+than reusing whatever the cycle's earlier bead-state fetch already had in
+hand) immediately before computing that cycle's entry, so a same-cycle
+closure is always credited in the cycle it actually happened.
 
 ## Budget tracking
 
@@ -356,6 +371,50 @@ of every subsequent cycle, a non-destructive `git checkout <branch>`
 deliberately not a `checkout -B ... origin/<base>`, which would discard any
 work already committed to the branch.
 
+## VCS provider abstraction (VCSModule)
+
+Git- and Dolt-backed sync both eventually have to interpret a failed shell
+command's raw stderr and decide what kind of failure it was. That
+interpretation used to live as GitHub-specific regex lists inlined in the
+runner itself, which meant every new git host (Azure DevOps, Bitbucket,
+GitLab, a self-hosted/generic remote) meant editing the runner's own source.
+VCSModule replaces that with a provider-agnostic seam:
+
+- **`classifyFailure(text, provider)`** maps raw command output to a
+  provider-neutral `kind` -- the same taxonomy the Dolt sync layer's
+  `auth`/divergence split above draws from (`auth`, `transient`,
+  `conflict-resolvable`, `conflict-unresolvable`, `unknown`, ...) -- so
+  downstream code (self-heal triggers, retry policy, typed error selection)
+  never pattern-matches host-specific text itself. Only the raw text is
+  host-specific; the `kind` it resolves to never is.
+- **A provider registry**, one file per provider (GitHub and a generic-git
+  fallback ship built in; Azure DevOps/Bitbucket/GitLab are structured as
+  drop-in additions), each exporting a descriptor of failure-text patterns
+  plus a `capabilities()` table declaring which failure kinds that provider
+  can ever produce. Adding a provider is adding one file to the registry and
+  registering it -- not editing the runner's dispatch/classification logic.
+  A synthetic/unregistered provider still classifies correctly through the
+  generic-git fallback rather than falling through to `unknown` by default.
+- **The member registry, not a hardcoded literal, decides which provider
+  applies.** A member's configured VCS provider is resolved from its
+  registration and threaded into every classification and PR-creation call
+  site for that member, rather than every call site assuming GitHub.
+- **Self-heal is wired at every auth-classified boundary**, not just the
+  git-push path: both call sites that create a pull request (the orchestrator
+  side, since PR creation is never a server-side act on a repo -- see the
+  server/repo-boundary ADR) and the Dolt D-push path above trigger the same
+  bounded, one-shot `provision_vcs_auth` re-provisioning callback on an
+  `auth`-classified failure before giving up, so a lapsed credential self-
+  heals uniformly regardless of which surface first observed it.
+- **A classification miss is the failure mode this abstraction exists to
+  close**, not a cosmetic one: a git failure that can't be classified falls
+  through to `unknown`, and `unknown` at this layer is never retried and never
+  self-healed -- it aborts the sprint immediately. Every provider's
+  descriptor is therefore reviewed specifically for coverage of that
+  provider's real auth-failure text (not just the generic OpenSSH/git text
+  that happens to port across hosts), because the cost of a miss is a false
+  sprint-fatal abort on what is usually a routine, recoverable token expiry.
+
 ## Orchestrator-bracketed git sync (`synced` mode)
 
 In `synced` mode, every dispatch that reads or writes git-tracked state is
@@ -408,9 +467,10 @@ optional hardening:
   only sees the siblings it already has), so both mint the same id and their
   D-pushes then hard-conflict on that row.
 
-Two supervisor-owned, globally-shared coordination primitives address these
-directly (owned by the supervisor because a per-sprint-process lock cannot
-coordinate across independently detached sprint processes):
+Two globally-shared coordination primitives address these directly (a
+per-sprint-process lock cannot coordinate across independently detached
+sprint processes, so both need a process that every sprint can already
+reach):
 
 - **A global Dolt push mutex** -- serializes every cross-sprint `bd dolt
   push` so at most one sprint is ever mid-push at a time, granted strictly
@@ -419,8 +479,80 @@ coordinate across independently detached sprint processes):
   under a shared parent synchronously (no `await` before the counter
   advances, so two concurrent same-parent creations can never race on the
   same counter read), and hands each creator an explicit, pre-decided,
-  distinct id to pass to `bd create --id <childId>` -- so two sprints
-  creating siblings under the same parent always target different rows.
+  distinct id to pass to `bd create` -- so two sprints creating siblings
+  under the same parent always target different rows. The `bd` CLI rejects a
+  `bd create` invocation that combines `--id` and `--parent` in the same
+  call, so the creator issues `--id` alone (the id the allocator already
+  decided) and links the bead to its parent with a separate, immediately
+  following `bd update <id> --parent <parentId>` call -- two calls, not one,
+  are the correct sequence here, not a workaround. If the allocator itself
+  returns no id (allocator unreachable/degraded), the creator falls back to
+  a plain `bd create --parent <parentId>` (no `--id`) and accepts whatever
+  id `bd` assigns, rather than failing the create outright. Either way, the
+  child's reported parent is verified against the id that was actually
+  requested before the creation is trusted -- a mismatch is treated as a
+  failed create, not silently accepted.
+
+### Two coordination hosts, not one -- and why
+
+Both primitives exist in **two independent implementations that must stay
+semantically identical**, not because of duplication oversight but because
+neither host alone can reach every launch topology:
+
+- The **supervisor** (`fleet-se serve`) hosts the original mutex/allocator
+  (`src/supervisor/dolt-mutex.mjs`, `src/supervisor/id-allocator.mjs`) over
+  its own HTTP routes, reachable by any sprint launched *through* the
+  supervisor via `--service-url`. This covers supervisor-launched sprints
+  only.
+- The **fleet MCP server** hosts a from-scratch TypeScript re-statement of
+  the same semantics (`src/services/sprint-coordination.ts`, exposed as the
+  `dolt-push-mutex` and `child-id-allocator` MCP tools). This covers the
+  standalone/detached-binary CLI launch path (`packages/apra-fleet-se/
+  bin/cli.mjs`), which has no supervisor to reach at all -- but which
+  already hard-requires a connection to the shared fleet MCP HTTP singleton
+  (it refuses to self-spawn a private stdio server), making that server the
+  one genuine cross-process coordination point for that topology.
+
+This is a deliberate, forced trade-off, not an oversight: the fleet server
+is TypeScript compiled with `allowJs` off from a `rootDir` that excludes the
+supervisor's `.mjs` sources, and the root package's dependency direction
+runs the opposite way (through `@apralabs/apra-fleet-client`, never
+importing the supervisor directly) -- so importing the supervisor's modules
+from the server would introduce a workspace build cycle. Extracting a third
+shared workspace package is the architecturally-right end state but is
+tracked as separate follow-up work, not bundled into this coordination fix.
+**Any behavioral change to the mutex or allocator's semantics (FIFO
+ordering, lease/reclaim behavior, synchronous seq assignment, atomic
+persistence) must be mirrored in both files by hand** -- there is no shared
+module enforcing this today.
+
+The one genuinely new piece in the MCP-hosted copy is the **transport
+adaptation**: the supervisor's HTTP acquire route can long-poll (it simply
+does not answer until the caller owns the mutex), but an MCP tool call
+cannot block indefinitely. The MCP-hosted mutex is therefore **ticketed**:
+`acquire` enqueues the real underlying `acquire()` promise exactly once and
+parks it server-side under a ticket id, returning `{ granted: false, ticket
+}` after a bounded wait; the caller re-polls with that ticket. The
+underlying waiter stays enqueued across every poll -- a naive
+cancel-and-retry-on-timeout loop would silently send a timed-out waiter to
+the back of the FIFO queue and destroy the fairness guarantee this whole
+mechanism exists to provide. A ticket whose underlying grant is reclaimed
+out from under it (lease expiry or a dead-pid probe, independent of the
+ticket's own release/cancel path) is cleaned up via an explicit
+`onReclaim()` subscription -- otherwise, on an always-on fleet server,
+reclaimed-but-never-cleaned-up ticket entries would accumulate for the
+life of the process.
+
+`packages/apra-fleet-se/bin/cli.mjs` threads `--service-url` end-to-end so
+the standalone CLI path actually engages this coordination (rather than the
+tools existing but going unused): every code-writing dispatch that would
+mutate beads or push Dolt state resolves its mutex/allocator client against
+that URL, and `packages/apra-fleet-client` (`api.mjs`'s `doltPushMutex()`
+and `childIdAllocator()`) is the thin wrapper both the supervisor path and
+the standalone path call through -- it is kept in lockstep with the MCP
+tool schemas as a hard requirement, not optional cleanup, precisely because
+a drifted client would silently give one of these two call sites a stale or
+inconsistent view of what the server actually accepts.
 
 **D-push conflict policy is mechanical, not judgment-based**: whichever
 D-push loses a race (the remote moved first) reconciles with exactly one
@@ -438,10 +570,15 @@ skip, not a sync failure, and is distinguished from a real divergence at two
 independent layers so neither can silently misclassify the other:
 
 - **`classifyDoltFailure()`** pattern-matches a failed `bd dolt` command's raw
-  output into `no-remote` / `diverged` / `transient` / `unknown`, checking
-  `no-remote` first (a "nothing configured" message must never be misread as
-  a retryable transient failure) and `diverged` next (a real conflict must
-  never be masked by an overlapping transient-sounding word in its message).
+  output into `no-remote` / `diverged` / `auth` / `transient` /
+  `remote-unreachable` / `unknown`, checking `no-remote` first (a "nothing
+  configured" message must never be misread as a retryable transient
+  failure), `diverged` next (a real conflict must never be masked by an
+  overlapping transient-sounding word in its message), and `auth` as its own
+  branch distinct from both (a credential failure -- e.g. "could not read
+  Username", "Device not configured" -- must never be folded into `diverged`;
+  see "Push failures are classified before they are retried" below for why
+  that distinction matters at the D-push terminals specifically).
 - **A direct bd-level `sync.remote` check** queries `bd config get
   sync.remote --json` on the member directly, independent of what Dolt's own
   internal remote wiring reports. This closes a gap the stderr-pattern
@@ -475,9 +612,38 @@ fleet-sprint driving a canary to closure with zero pushes reaching the real
 remote) is the only evidence that actually closes it, not passing mocked/unit
 coverage of the classifier and the bd-level check in isolation.
 
+**Push failures are classified before they are retried, not folded together.**
+A D-push rejection reaching this layer is first sorted into a distinct
+`kind` -- `auth` (a git-credential failure, e.g. "could not read Username",
+"Device not configured", or another credential-shaped error text) versus a
+genuine non-fast-forward divergence -- at both terminals where a push can
+still fail: the first push attempt, and the re-push that follows the single
+reconcile-pull. This classification happens independently at each terminal
+because the two failures can occur in either order in the same run (a real
+conflict on the first push, then a credential failure on the retry, or vice
+versa) and folding both into one "diverged" bucket produces a misleading
+abort: nothing to reconcile, but the sprint reports itself as having lost a
+data race instead of having a broken credential. An `auth`-classified
+failure triggers the same one-shot reactive credential self-heal
+(`provision_vcs_auth` for that member) used elsewhere in the sync layer
+before the push is retried; a push rejection is only ever treated as a real
+divergence -- and only then handed to the reconcile-pull-then-retry path
+below -- once the credential path has been ruled out.
+
 **Conflict recovery ladder** (dispatched only when the mutex/allocator still
 leave a clone genuinely wedged -- e.g. a conflict introduced before the
-serialization primitives existed, or an operational failure):
+serialization primitives existed, or an operational failure). The ladder is
+wired directly into the D-push failure path itself -- invoked at both of the
+divergence terminals described above (the reconcile-pull discovering the
+clone still can't cleanly reconcile, and a re-push still being rejected
+after that reconcile) -- rather than existing as a standalone module only
+exercised by its own tests. With no recovery hook supplied, a divergence
+still surfaces exactly as it did before the ladder was wired in (degraded-by-
+default is preserved); the ladder only ever narrows an existing failure into
+a resolved one, it never changes behavior when it isn't invoked. The same
+composed ladder also backs the sync layer's explicit `repair()` entry point,
+so an operator-triggered repair and an in-flight push failure both escalate
+through identical stages:
 
 1. **Path A (scripted, resolve-in-place)** -- gated behind two deterministic
    checks (every conflicted table is on an allowlist; exactly one conflicting
@@ -503,6 +669,81 @@ serialization primitives existed, or an operational failure):
    decided the same way as the git ladder's Tier 2: a mechanical
    re-verification (clean conflict state, a genuinely successful push), never
    the agent's own claim.
+
+## Run identity: truthful termination classification
+
+Process-liveness signals alone cannot distinguish two genuinely different
+situations: "the engine finished and recorded why" versus "something killed
+the process before it could record anything." Inferring a sprint's outcome
+from PID-liveness alone (PID gone -> assume crashed unless a terminal state
+file happened to exist) collapses both into the same generic
+CRASHED-sounding classification whenever the terminal-state read races the
+process exit, or the two disagree for any other reason -- which is why the
+supervisor instead threads one **run-id** from itself into the sprint child's
+own engine run-state at spawn time, so the watchdog/dashboard/history layer
+can key its own state to the same identity the engine uses internally
+across consecutive supervisor-launched sprints (rather than the supervisor
+guessing at a mapping). On top of that shared identity:
+
+- The watchdog's FINISHED classification now copies the engine's own
+  `terminalReason` (and, where present, `extensions.terminal.verdict`)
+  **verbatim** into its log line and the persisted `sprint-history.json`
+  FINISHED event, rather than re-deriving or paraphrasing a reason. A
+  PID-gone sprint with no persisted terminal state is classified CRASHED,
+  carrying a `terminalReason` that says explicitly no terminal state was
+  ever persisted -- so an operator reading history can distinguish "the
+  engine told us why it stopped" from "we never heard from it again."
+- The spawner records the child process's actual exit code, signal, and
+  exit time into the ledger the moment the child process exits -- this is
+  independent of (and does not wait for) whatever the engine itself
+  manages to persist, so even a child that dies before writing any terminal
+  state still leaves a mechanically-observed exit record.
+- An unmergeable Dolt conflict (`DOLT_DIVERGED`, see "Dolt sync discipline"
+  above) is classified as its own terminal state -- `BEADS_SYNC_CONFLICT` --
+  distinct from a generic failure, and carries the captured conflict dump
+  forward into history rather than discarding it once the sprint aborts.
+
+The throughline is the same "never trust a claim, verify mechanically"
+pattern used elsewhere in this runner (see "The doer's own claimed status is
+never trusted" above): a sprint's recorded outcome is now built from signals
+the supervisor observes or the engine explicitly persists, never inferred
+from the absence of a process.
+
+## Per-sprint stdio capture
+
+Each sprint child's stdout/stderr is teed to a per-sprint log file (in
+addition to whatever the child would otherwise write), and the supervisor
+dashboard serves and links that file per sprint. This exists specifically so
+a sprint's raw output is traceable after the fact even when the child never
+reaches a point where it can report anything structured back to the
+supervisor (e.g. it dies before its first heartbeat) -- previously that
+output was only visible if an operator happened to be attached to the
+child's own process at the time. A non-zero-exit child is required to still
+leave a traceable log/ledger entry rather than vanishing silently; this
+invariant is verified end-to-end (not just at the unit level) by the
+integration suite.
+
+## newTask allowlist and rejected-task resurfacing
+
+The `validateNewTask()` character allowlist (see "newTask validation
+(injection defense)" above) was extended to accept square brackets, so a
+reviewer-proposed task titled with the `[test]` convention (see the
+graph-semantics doc's "Marking a task as verification work" rule) no longer
+gets rejected purely for using the same bracket convention every other
+consumer of that prefix relies on.
+
+A newTask can still be rejected for other allowlist violations (backticks,
+`$`, quotes, backslash -- the actual injection-relevant characters). Rather
+than letting a rejected proposal simply vanish once logged, the runner now
+**resurfaces** rejected newTasks into the next planning dispatch, so the
+planner gets a chance to either reformulate the proposal in allowlist-safe
+terms or explicitly decide not to pursue it -- a rejection is surfaced as
+future planning input, not silently dropped. A resurfaced task is cleared
+from the pending-resurface set once resubmitted, **title-independently**:
+clearing must not require the resubmission to reuse the exact original
+title verbatim (a planner reformulating a previously-rejected proposal will
+usually change the wording), or a task that already made it back through
+would resurface again to a following cycle in error.
 
 ## Determinism
 
@@ -683,6 +924,39 @@ children are still alive, two mechanisms make restart survivable:
   tracked identically to a freshly-spawned one (the watchdog can probe it,
   the sprints API can proxy its live state). Sprints are only expected to
   survive a *supervisor-process* restart, not a full machine restart.
+
+**Manual force-release (operator recovery, no restart required)**: the two
+mechanisms above only release a wedged reservation at supervisor *startup*.
+Nothing releases a ledger entry during normal runtime -- not even the
+watchdog: it is deliberately observe-only and never mutates the ledger on a
+`crashed` classification (an operator-attention signal, not an
+auto-remediation trigger). So a sprint whose child died (or was killed)
+leaves its member(s) and issue-scope root 409-blocked for any new launch
+until either the supervisor restarts, or an operator explicitly clears it:
+
+```
+POST /api/reservations/:sprintId/force-release
+Body (optional): { "by": "<operator/reason tag>", "reason": "<free text>" }
+```
+
+- Releases **both ledger axes** (member set + issue-scope root) for that
+  sprint id in one call, unconditionally -- no live child or reachable port
+  required, unlike `POST /api/sprints/:id/stop` (which proxies to the
+  child's own `/stop` and 409s with "no reachable child" if the child is
+  already dead -- exactly the case this route exists for).
+- Records a `force-released` event in the durable event history (sprint id,
+  members, issue roots, `by`, `reason`, timestamp), so a manual recovery is
+  auditable after the fact, not silent.
+- 404s if the sprint id has no active ledger entry (already released, or
+  never claimed).
+- **Only touches the supervisor's own local ledger.** It does NOT touch the
+  separate, fleet-server-side per-member `reservedBy` field described below
+  ("Server-side member reservation") -- that is a different store, keyed
+  differently (by branch name, not the ledger's `sprintId`), and requires
+  its own recovery call: `mcp__apra-fleet__member_reservation` with
+  `action: "force_release"` and the member name. A crashed sprint can leave
+  either axis wedged independently of the other -- check both if a relaunch
+  still 409s after force-releasing one.
 
 An operator-facing HTTP surface (members with live-reservation overlay,
 backlog, sprint CRUD, a proxy for each child's own cooperative stop endpoint)

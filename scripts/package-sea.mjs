@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * package-sea.mjs — Generate SEA blob and inject into Node binary
+ * package-sea.mjs -- Generate SEA blob and inject into Node binary
  *
  * Steps:
  * 1. Run `node --experimental-sea-config` to generate blob
@@ -54,7 +54,7 @@ export function runPostjectFiltered(command, options = {}, deps = {}) {
   return { status: result.status, error: result.error, filteredStderr };
 }
 
-function reportAndCheckPostjectResult(result) {
+export function reportAndCheckPostjectResult(result) {
   if (result.filteredStderr) {
     process.stderr.write(result.filteredStderr.endsWith('\n') ? result.filteredStderr : `${result.filteredStderr}\n`);
   }
@@ -127,7 +127,7 @@ function main() {
         execSync(`"${rcedit}" "${outputBinary}" --set-icon "${icoPath}"`, { stdio: 'inherit', shell: true });
         console.log('  Icon injection succeeded');
       } else {
-        console.error('WARNING: rcedit not found — icon not replaced. Install with: npm install -g rcedit');
+        console.error('WARNING: rcedit not found -- icon not replaced. Install with: npm install -g rcedit');
       }
     }
   }

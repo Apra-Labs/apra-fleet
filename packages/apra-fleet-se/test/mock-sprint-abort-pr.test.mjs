@@ -10,8 +10,6 @@ import {
     setup,
     teardown,
     buildMockFleetApi,
-    runOnce,
-    runDevelopLoopScenario,
     withScenarioMarkers,
 } from './helpers/mock-sprint-harness.mjs';
 
@@ -42,42 +40,96 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // =============================================================================
 
 // Builds a minimal, hermetic mock `command(cmd, opts)` for finalizeAbort()'s
-// four call sites (`git fetch origin`, `git rev-list --count`, `git push`,
-// `gh pr create`). Mirrors the exact return-value CONTRACT finalizeAbort()
-// actually relies on (see FleetWorkflow.command() in
-// apra-fleet-workflow/src/workflow/index.mjs): a non-failSoft call (fetch,
-// rev-list, push) resolves to a plain string (or throws on failure); a
-// failSoft call (gh pr create) resolves to `{ ok, output, error }` and never
-// throws.
-function buildMockCommand({ commitCount, pushShouldFail = false, ghOutcome = 'created', ghUrl = 'https://github.com/mock-org/mock-repo/pull/99' } = {}) {
+// call sites (`git fetch origin`, `git rev-list --count`, `git push`, the
+// `git remote get-url origin` repo-derivation probe, the just-provisioned
+// git-credential-helper token read, and the VCSModule `curl ... /pulls`
+// create-pull-request dispatch -- apra-fleet-tfx.8/tfx.8.4: the `gh pr
+// create` call sites are gone). Mirrors the exact return-value CONTRACT
+// finalizeAbort() actually relies on (see FleetWorkflow.command() in
+// apra-fleet-workflow/src/workflow/index.mjs, and note the apra-fleet-5d5.1
+// update below): whether a call resolves to a plain string/throws, or to
+// `{ ok, output, error }` and never throws, is driven by `opts.failSoft` --
+// NOT by which git subcommand it is. The VCSModule call sites (credential
+// read, curl POST, and the repo-derivation `git remote get-url origin`) are
+// ALWAYS dispatched with failSoft:true (see provisionVcsAuthForMember/
+// readMemberVcsCredentialToken/raiseVcsPrForMember in runner.js). As of
+// apra-fleet-5d5.1, finalizeAbort()'s own fetch/rev-list/push calls are
+// routed through runGitStep() (for the provision_vcs_auth self-heal-and-
+// retry-once path), which itself ALWAYS forces `failSoft: true` on the
+// underlying command() call -- so this mock must branch on `opts.failSoft`
+// exactly as the real production command() does, rather than assuming a
+// fixed shape per subcommand.
+function buildMockCommand({ commitCount, pushShouldFail = false, prOutcome = 'created', prUrl = 'https://github.com/mock-org/mock-repo/pull/99' } = {}) {
     const log = [];
-    const command = async (cmd) => {
+    const command = async (cmd, opts = {}) => {
         log.push(cmd);
+        const failSoft = !!opts.failSoft;
+        const ok = (output) => (failSoft ? { ok: true, output, error: null } : output);
+        const fail = (error) => {
+            if (failSoft) return { ok: false, output: '', error };
+            throw new Error(error);
+        };
         if (/^git fetch origin\b/.test(cmd)) {
-            return '';
+            return ok('');
         }
         if (/^git rev-list --count\b/.test(cmd)) {
-            return String(commitCount);
+            return ok(String(commitCount));
         }
         if (/^git push\b/.test(cmd)) {
             if (pushShouldFail) {
-                throw new Error('mock git push failure: fatal: unable to access remote');
+                return fail('mock git push failure: fatal: unable to access remote');
             }
-            return 'To mock-remote\n * [new branch] (mocked)';
+            return ok('To mock-remote\n * [new branch] (mocked)');
         }
-        if (/^gh pr create\b/.test(cmd)) {
-            if (ghOutcome === 'already-exists') {
-                return {
-                    ok: false,
-                    output: '',
-                    error: `GraphQL: a pull request for branch already exists: ${ghUrl} (createPullRequest)`,
-                };
+        // provisionPrCapableAuthForMember (provisionVcsAuthForMember) derives
+        // 'owner/repo' from this probe BEFORE minting the push+pr credential.
+        if (/^git remote get-url origin\b/.test(cmd)) {
+            return ok('https://github.com/mock-org/mock-repo.git');
+        }
+        // readMemberVcsCredentialToken reads back the just-provisioned
+        // git-credential-helper script's deployed token.
+        if (/^\$HOME\/\.fleet-git-credential-/.test(cmd)) {
+            return ok('protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n');
+        }
+        // VCSModule's buildCreatePrCommand: a curl POST to .../pulls, with
+        // `-w '\n%{http_code}'` appended (see parseVcsCurlOutput in runner.js).
+        if (/^curl -sS -X POST\b/.test(cmd) && /\/pulls\b/.test(cmd)) {
+            if (prOutcome === 'already-exists') {
+                const body = JSON.stringify({
+                    message: 'Validation Failed',
+                    errors: [{ message: `A pull request already exists for this branch. ${prUrl}` }],
+                });
+                return ok(`${body}\n422`);
             }
-            return { ok: true, output: `${ghUrl}\n`, error: null };
+            const body = JSON.stringify({ number: 101, html_url: prUrl });
+            return ok(`${body}\n201`);
         }
         throw new Error(`buildMockCommand: unexpected command dispatched in this scenario: '${cmd}'`);
     };
     return { command, log };
+}
+
+// apra-fleet-tfx.8.4: finalizeAbort()'s PR-raising call sites now mint a
+// just-in-time push+pr credential via `callTool('provision_vcs_auth', ...)`
+// (ApraFleet.provisionVcsAuth) BEFORE building/dispatching the VCSModule
+// create-pull-request command -- so every scenario below that expects the PR
+// to actually be raised (as opposed to the callTool-absent graceful
+// degradation path, apra-fleet-tfx.8.1) must supply a working `callTool`.
+// Mirrors mock-sprint-harness.mjs's defaultMockCallTool() exactly.
+function mockAbortCallTool() {
+    return async (name, toolArgs) => {
+        // apra-fleet-647.1.2.1: provisionVcsAuthForMember resolves the
+        // member's provider via VCSModule.resolveProvider() (a
+        // 'member_detail' call) BEFORE every provision_vcs_auth call.
+        if (name === 'member_detail') {
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        }
+        if (name === 'provision_vcs_auth') {
+            const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+            return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+        }
+        return { content: [{ text: `✅ mock ${name}` }] };
+    };
 }
 
 // -----------------------------------------------------------------------
@@ -88,8 +140,8 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
     const branch = 'auto-sprint/abort-commits-exist';
     const { command, log } = buildMockCommand({
         commitCount: 2,
-        ghOutcome: 'created',
-        ghUrl: 'https://github.com/mock-org/mock-repo/pull/101',
+        prOutcome: 'created',
+        prUrl: 'https://github.com/mock-org/mock-repo/pull/101',
     });
     const logs = [];
     const error = new SprintPlanRejectedError('Plan rejected after 3 rounds', {
@@ -105,6 +157,7 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
         member: 'local',
         command,
         log: (m) => logs.push(m),
+        callTool: mockAbortCallTool(),
     });
 
     check(result.commitCount === 2, `Expected commitCount 2, got: ${JSON.stringify(result)}`);
@@ -117,14 +170,14 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
         `Expected a 'git push -u origin ${branch}' command to be dispatched, command log: ${JSON.stringify(log)}`
     );
 
-    const prCmd = log.find((c) => c.startsWith('gh pr create'));
-    check(!!prCmd, `Expected a 'gh pr create' command to be dispatched, command log: ${JSON.stringify(log)}`);
+    const prCmd = log.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+    check(!!prCmd, `Expected a VCSModule 'curl ... /pulls' create-pull-request command to be dispatched, command log: ${JSON.stringify(log)}`);
     check(
-        prCmd.includes(`--title "Auto-sprint [ABORTED]: ${branch}"`),
-        `Expected the [ABORTED] PR title prefix to appear EXACTLY, got: ${prCmd}`
+        prCmd.includes(`"title":"Auto-sprint [ABORTED]: ${branch}"`),
+        `Expected the [ABORTED] PR title prefix to appear EXACTLY in the JSON payload, got: ${prCmd}`
     );
     check(
-        prCmd.includes('--base "main"') && prCmd.includes(`--head "${branch}"`),
+        prCmd.includes('"base":"main"') && prCmd.includes(`"head":"${branch}"`),
         `Expected the PR to target base 'main' from head '${branch}', got: ${prCmd}`
     );
     check(
@@ -142,10 +195,10 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
 });
 
 // -----------------------------------------------------------------------
-// (b) same abort, but zero commits beyond base -> no `gh pr create` call at
-// all (a zero-commit-abort is not worth an empty-diff PR).
+// (b) same abort, but zero commits beyond base -> no create-pull-request
+// call at all (a zero-commit-abort is not worth an empty-diff PR).
 // -----------------------------------------------------------------------
-test('finalizeAbort: 0 commits beyond base -> no gh pr create call, zero-commit-abort reason', async () => {
+test('finalizeAbort: 0 commits beyond base -> no create-pull-request call, zero-commit-abort reason', async () => {
     const branch = 'auto-sprint/abort-zero-commits';
     const { command, log } = buildMockCommand({ commitCount: 0 });
     const logs = [];
@@ -158,6 +211,7 @@ test('finalizeAbort: 0 commits beyond base -> no gh pr create call, zero-commit-
         member: 'local',
         command,
         log: (m) => logs.push(m),
+        callTool: mockAbortCallTool(),
     });
 
     check(result.commitCount === 0, `Expected commitCount 0, got: ${JSON.stringify(result)}`);
@@ -166,7 +220,7 @@ test('finalizeAbort: 0 commits beyond base -> no gh pr create call, zero-commit-
     check(result.reason === 'zero-commit-abort', `Expected reason 'zero-commit-abort', got: ${JSON.stringify(result)}`);
 
     check(!log.some((c) => c.startsWith('git push')), `Expected NO 'git push' call for a zero-commit abort, command log: ${JSON.stringify(log)}`);
-    check(!log.some((c) => c.startsWith('gh pr create')), `Expected NO 'gh pr create' call for a zero-commit abort, command log: ${JSON.stringify(log)}`);
+    check(!log.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')), `Expected NO create-pull-request call for a zero-commit abort, command log: ${JSON.stringify(log)}`);
     check(
         logs.some((m) => m.includes('0 commits beyond') && m.includes('no [ABORTED] PR raised')),
         `Expected a logged message explaining the zero-commit-abort policy, logs: ${JSON.stringify(logs)}`
@@ -233,8 +287,8 @@ test('mock sprint: a zero-commit sprint-abort dispatches no gh pr create but sti
             `Expected zero doer dispatches (no commits possible), got: ${JSON.stringify(scenario.dispatched.map((d) => d.agent))}`
         );
         check(
-            !scenario.commandLog.some((c) => c.startsWith('gh pr create')),
-            `Expected NO 'gh pr create' dispatch for a zero-commit abort, commandLog: ${JSON.stringify(scenario.commandLog)}`
+            !scenario.commandLog.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')),
+            `Expected NO create-pull-request dispatch for a zero-commit abort, commandLog: ${JSON.stringify(scenario.commandLog)}`
         );
 
         const terminalState = scenario.states.find((e) => e.namespace === 'terminal');
@@ -251,15 +305,16 @@ test('mock sprint: a zero-commit sprint-abort dispatches no gh pr create but sti
 });
 
 // -----------------------------------------------------------------------
-// (c) `gh pr create` returning "already exists" is swallowed (not thrown);
-// the existing PR's URL is parsed out of the error text and surfaced.
+// (c) VCSModule's create-pull-request curl call returning HTTP 422 "already
+// exists" is swallowed (not thrown); the existing PR's URL is parsed out of
+// the response body and surfaced.
 // -----------------------------------------------------------------------
 test('finalizeAbort: gh pr create "already exists" is swallowed, existing PR URL surfaced, no throw', async () => {
     const branch = 'auto-sprint/abort-idempotent-pr';
     const { command, log } = buildMockCommand({
         commitCount: 1,
-        ghOutcome: 'already-exists',
-        ghUrl: 'https://github.com/mock-org/mock-repo/pull/55',
+        prOutcome: 'already-exists',
+        prUrl: 'https://github.com/mock-org/mock-repo/pull/55',
     });
     const logs = [];
     const error = new SprintPlanRejectedError('Plan rejected after 3 rounds', { notes: null });
@@ -274,21 +329,22 @@ test('finalizeAbort: gh pr create "already exists" is swallowed, existing PR URL
             member: 'local',
             command,
             log: (m) => logs.push(m),
+            callTool: mockAbortCallTool(),
         });
     } catch (err) {
         thrown = err;
     }
 
-    check(thrown === null, `Expected finalizeAbort() NOT to throw on an "already exists" gh pr create failure, got: ${thrown ? thrown.message : ''}`);
+    check(thrown === null, `Expected finalizeAbort() NOT to throw on an "already exists" (422) create-pull-request response, got: ${thrown ? thrown.message : ''}`);
     check(result.reason === 'already-exists', `Expected reason 'already-exists', got: ${JSON.stringify(result)}`);
     check(result.pushed === true, `Expected pushed:true (the branch push itself succeeded before the idempotent PR-create), got: ${JSON.stringify(result)}`);
     check(
         result.prUrl === 'https://github.com/mock-org/mock-repo/pull/55',
-        `Expected the EXISTING PR's URL to be parsed out of the gh error text and surfaced, got: ${JSON.stringify(result)}`
+        `Expected the EXISTING PR's URL to be parsed out of the 422 response body and surfaced, got: ${JSON.stringify(result)}`
     );
     check(
-        log.some((c) => c.startsWith('gh pr create')),
-        `Expected a 'gh pr create' command to still have been dispatched, command log: ${JSON.stringify(log)}`
+        log.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')),
+        `Expected a VCSModule 'curl ... /pulls' create-pull-request command to still have been dispatched, command log: ${JSON.stringify(log)}`
     );
     check(
         logs.some((m) => m.includes('already exists') && m.includes('idempotent success')),
@@ -296,39 +352,368 @@ test('finalizeAbort: gh pr create "already exists" is swallowed, existing PR URL
     );
 });
 
-// -----------------------------------------------------------------------
-// (d) regression: the ordinary PASS/FAIL Publish PR step (runSprintCycle's
-// own finalization, a separate code path from the abort-path finalizeAbort()
-// above) is unaffected -- normal (non-"[ABORTED]") PRs are still raised for
-// both a successful sprint and an explicit final FAIL verdict.
-// -----------------------------------------------------------------------
-test('regression: a successful (PASS) sprint still raises a normal, non-[ABORTED] PR', async () => {
-    await withScenarioMarkers('abortprpass', async () => {
-        console.log('Running mock sprint scenario (PASS/FAIL finalization regression check: PASS side)...');
-        const passRun = await runOnce('abortprpass');
-        check(passRun.result && passRun.result.status === 'success', `Expected the PASS regression run to succeed, got: ${JSON.stringify(passRun.result)}`);
-        const prCmd = passRun.commandLog.find((c) => c.startsWith('gh pr create'));
-        check(!!prCmd, `Expected a 'gh pr create' command to be dispatched, commandLog: ${JSON.stringify(passRun.commandLog)}`);
-        check(!prCmd.includes('[ABORTED]'), `A successful sprint's PR must NOT carry the [ABORTED] prefix, got: ${prCmd}`);
-    });
+// =============================================================================
+// apra-fleet-5d5.1 -- finalizeAbort()'s own git ops (fetch/rev-list/push) now
+// get the SAME provision_vcs_auth self-heal-and-retry-once treatment as the
+// main withGitSync dispatch bracket (runGitStep's onAuthFailure, runner.js
+// ~line 616), instead of silently swallowing a mid-abort auth failure with no
+// self-heal (live: apra-fleet-l7n Cycle 3 abort hit exactly this).
+//
+// A tiny scripted command() mock: pass a map from cmd-substring -> a queue of
+// results (each `{ ok, output, error }`). Mirrors makeCommandMock in
+// git-sync-brackets.test.mjs -- finalizeAbort()'s fetch/rev-list/push calls
+// now ALWAYS go through runGitStep(), which itself always forces
+// `failSoft: true` on the underlying command() call, so this mock can return
+// the `{ ok, output, error }` shape unconditionally (matching production's
+// real command() under failSoft:true) rather than branching on opts.
+// =============================================================================
+function makeQueuedAbortCommandMock(script) {
+    const calls = [];
+    const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]));
+    const command = async (cmd, opts = {}) => {
+        calls.push({ cmd, opts });
+        for (const [key, queue] of queues) {
+            if (cmd.includes(key)) {
+                const next = queue.length > 1 ? queue.shift() : queue[0];
+                return next;
+            }
+        }
+        return { ok: true, output: '', error: null };
+    };
+    return { command, calls };
+}
+
+const QOK = (output = '') => ({ ok: true, output, error: null });
+const qfail = (error) => ({ ok: false, output: '', error });
+
+// apra-fleet-tfx.8.4: every (5d5.1) scenario below that expects finalizeAbort()
+// to reach the PR-raising step (result.reason === 'aborted-pr-created') must
+// answer the VCSModule call sites too -- the repo-derivation `git remote
+// get-url origin` probe, the just-provisioned credential-token read, and the
+// curl POST create-pull-request dispatch itself -- plus supply a `callTool`
+// so the just-in-time push+pr credential mint (provision_vcs_auth) succeeds.
+const VCS_MODULE_SCRIPT = (prUrl) => ({
+    'git remote get-url origin': [QOK('https://github.com/mock-org/mock-repo.git')],
+    '.fleet-git-credential-': [QOK('protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n')],
+    '/pulls': [QOK(`${JSON.stringify({ number: 101, html_url: prUrl })}\n201`)],
 });
 
-test('regression: an explicit final FAIL verdict still raises a normal, non-[ABORTED] PR', async () => {
-    await withScenarioMarkers('abortprfail', async () => {
-        console.log('Running mock sprint scenario (PASS/FAIL finalization regression check: FAIL side)...');
-        const failRun = await runDevelopLoopScenario('abortprfail', {
-            members: ['local'],
-            taskSpecs: [{ title: 'Task: PASS/FAIL finalization regression (FAIL side)' }],
-            maxCycles: 1,
-            finalReviewHandler: async () => ({
-                content: [{ text: JSON.stringify({ verdict: 'FAIL', notes: 'Explicit test-injected FAIL for the eft.1.3 regression check.' }) }]
-            }),
-        });
-        check(!failRun.error, `Expected the FAIL regression scenario not to throw: ${failRun.error ? failRun.error.message : ''}`);
-        check(failRun.result && failRun.result.status === 'failed', `Expected a FAIL final verdict to produce status:'failed', got: ${JSON.stringify(failRun.result)}`);
-        const prCmd = failRun.commandLog.find((c) => c.startsWith('gh pr create'));
-        check(!!prCmd, `A FAIL verdict must still publish a PR, commandLog: ${JSON.stringify(failRun.commandLog)}`);
-        check(prCmd.includes('FAIL'), `Expected the PR title/body to include the FAIL verdict, got: ${prCmd}`);
-        check(!prCmd.includes('[ABORTED]'), `An ordinary FAIL-verdict PR must NOT carry the [ABORTED] prefix, got: ${prCmd}`);
+test('(5d5.1) an auth-classified git fetch failure heals once via onAuthFailure and the retry succeeds', async () => {
+    const branch = 'auto-sprint/abort-fetch-auth-heal';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [
+            qfail("fatal: could not read Username for 'https://github.com': Device not configured"),
+            QOK(''),
+        ],
+        'git rev-list --count': [QOK('2')],
+        'git push': [QOK('To mock-remote\n * [new branch] (mocked)')],
+        ...VCS_MODULE_SCRIPT('https://github.com/mock-org/mock-repo/pull/201'),
     });
+    let healCalls = 0;
+    const onAuthFailure = async (info) => {
+        healCalls += 1;
+        check(info.member === 'local', 'onAuthFailure receives the member');
+        check(/could not read Username/.test(info.error), 'onAuthFailure receives the raw error text');
+    };
+
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        onAuthFailure,
+        callTool: mockAbortCallTool(),
+    });
+
+    check(result.reason === 'aborted-pr-created', `expected the abort to still complete successfully after self-heal, got: ${JSON.stringify(result)}`);
+    check(healCalls === 1, `expected exactly one self-heal call, got ${healCalls}`);
+    check(
+        calls.filter((c) => c.cmd.startsWith('git fetch origin')).length === 2,
+        `expected fetch retried exactly once after self-heal (bounded, not a loop), saw ${calls.filter((c) => c.cmd.startsWith('git fetch origin')).length}`,
+    );
+});
+
+test('(5d5.1) an auth-classified git push failure heals once via onAuthFailure and the retry succeeds', async () => {
+    const branch = 'auto-sprint/abort-push-auth-heal';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [QOK('')],
+        'git rev-list --count': [QOK('3')],
+        'git push': [
+            qfail('remote: Invalid username or token.'),
+            QOK('To mock-remote\n * [new branch] (mocked)'),
+        ],
+        ...VCS_MODULE_SCRIPT('https://github.com/mock-org/mock-repo/pull/202'),
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        onAuthFailure,
+        callTool: mockAbortCallTool(),
+    });
+
+    check(result.reason === 'aborted-pr-created', `expected the abort to still complete successfully after self-heal, got: ${JSON.stringify(result)}`);
+    check(result.pushed === true, `expected pushed:true once the retried push succeeds, got: ${JSON.stringify(result)}`);
+    check(healCalls === 1, `expected exactly one self-heal call, got ${healCalls}`);
+    check(
+        calls.filter((c) => c.cmd.startsWith('git push')).length === 2,
+        `expected push retried exactly once after self-heal, saw ${calls.filter((c) => c.cmd.startsWith('git push')).length}`,
+    );
+});
+
+test('(5d5.1) self-heal invoked but the retry STILL fails: finalizeAbort() still throws (falls back to the existing "no PR lookup" log path), self-heal called exactly once, no infinite loop', async () => {
+    const branch = 'auto-sprint/abort-push-auth-still-fails';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [QOK('')],
+        'git rev-list --count': [QOK('1')],
+        // Single-entry queue -> makeQueuedAbortCommandMock returns the same
+        // failure on every call, so both the first attempt and the post-heal
+        // retry fail identically.
+        'git push': [qfail('remote: Invalid username or token.')],
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+
+    let thrown = null;
+    try {
+        await finalizeAbort({
+            error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+            branch,
+            baseBranch: 'main',
+            member: 'local',
+            command,
+            onAuthFailure,
+        });
+    } catch (e) {
+        thrown = e;
+    }
+
+    check(thrown !== null, 'expected finalizeAbort() to throw when the retry after self-heal still fails');
+    check(/git push/.test(thrown.message), `expected the thrown error to name the failing git push, got: ${thrown.message}`);
+    check(healCalls === 1, `self-heal must be invoked EXACTLY ONCE (bounded, never a loop), got ${healCalls}`);
+    check(
+        calls.filter((c) => c.cmd.startsWith('git push')).length === 2,
+        `expected exactly one bounded retry after self-heal (2 total push attempts), saw ${calls.filter((c) => c.cmd.startsWith('git push')).length}`,
+    );
+});
+
+test('(5d5.1) omitting onAuthFailure preserves the pre-existing throw-on-auth-failure behavior (no heal, single attempt)', async () => {
+    const branch = 'auto-sprint/abort-push-auth-no-heal-wired';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [QOK('')],
+        'git rev-list --count': [QOK('1')],
+        'git push': [qfail('remote: Invalid username or token.')],
+    });
+
+    let thrown = null;
+    try {
+        await finalizeAbort({
+            error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+            branch,
+            baseBranch: 'main',
+            member: 'local',
+            command, // no onAuthFailure injected
+        });
+    } catch (e) {
+        thrown = e;
+    }
+
+    check(thrown !== null, 'expected finalizeAbort() to still throw on an auth failure with no self-heal wired');
+    check(
+        calls.filter((c) => c.cmd.startsWith('git push')).length === 1,
+        `no self-heal retry may occur when onAuthFailure is not provided -- expected a single push attempt, saw ${calls.filter((c) => c.cmd.startsWith('git push')).length}`,
+    );
+});
+
+test('(5d5.1) the happy path (git ops succeed first try) is unaffected -- no self-heal call at all', async () => {
+    const branch = 'auto-sprint/abort-happy-path-unaffected';
+    const { command, calls } = makeQueuedAbortCommandMock({
+        'git fetch origin': [QOK('')],
+        'git rev-list --count': [QOK('2')],
+        'git push': [QOK('To mock-remote\n * [new branch] (mocked)')],
+        ...VCS_MODULE_SCRIPT('https://github.com/mock-org/mock-repo/pull/203'),
+    });
+    let healCalls = 0;
+    const onAuthFailure = async () => { healCalls += 1; };
+
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        onAuthFailure,
+        callTool: mockAbortCallTool(),
+    });
+
+    check(result.reason === 'aborted-pr-created', `expected a normal successful abort, got: ${JSON.stringify(result)}`);
+    check(healCalls === 0, `expected NO self-heal call on the happy path, got ${healCalls}`);
+    check(calls.filter((c) => c.cmd.startsWith('git fetch origin')).length === 1, 'fetch dispatched exactly once');
+    check(calls.filter((c) => c.cmd.startsWith('git push')).length === 1, 'push dispatched exactly once');
+});
+
+// =============================================================================
+// apra-fleet-647.1.1.1 -- REACTIVE auth self-heal for the two VCSModule PR
+// call sites (raiseVcsPrForMember, shared by finalizeAbort's [ABORTED] PR and
+// the ordinary Publish PR step). On an auth-classified PR response (401, 403,
+// or a 404 whose body explains a token-scope refusal) the PR call site now
+// re-provisions a push+pr credential (provisionPrCapableAuthForMember) and
+// retries the SAME create-pull-request command exactly once, mirroring the
+// bounded runGitStep/runDoltStep onAuthFailure semantics. A non-auth PR
+// failure (422 already-exists, 5xx, malformed) is untouched.
+// =============================================================================
+
+// Like buildMockCommand above, but the `/pulls` create-pull-request response
+// and the deployed credential token are each drawn from their own queue (one
+// entry consumed per successive call; the last entry repeats once exhausted),
+// so a scenario can script "first attempt fails, retry succeeds" or "both
+// attempts fail identically". `pullsQueue` entries are raw curl stdout
+// (`"<json body>\n<status>"`, matching parseVcsCurlOutput's contract).
+function buildMockCommandForPrRetry({ commitCount = 1, pullsQueue, credQueue } = {}) {
+    const log = [];
+    let pullsCallIndex = 0;
+    let credCallIndex = 0;
+    const command = async (cmd, opts = {}) => {
+        log.push(cmd);
+        const failSoft = !!opts.failSoft;
+        const ok = (output) => (failSoft ? { ok: true, output, error: null } : output);
+        const fail = (error) => {
+            if (failSoft) return { ok: false, output: '', error };
+            throw new Error(error);
+        };
+        if (/^git fetch origin\b/.test(cmd)) return ok('');
+        if (/^git rev-list --count\b/.test(cmd)) return ok(String(commitCount));
+        if (/^git push\b/.test(cmd)) return ok('To mock-remote\n * [new branch] (mocked)');
+        if (/^git remote get-url origin\b/.test(cmd)) return ok('https://github.com/mock-org/mock-repo.git');
+        if (/^\$HOME\/\.fleet-git-credential-/.test(cmd)) {
+            const queue = credQueue || ['protocol=https\nhost=github.com\nusername=x-access-token\npassword=mock-vcs-module-token\n'];
+            const idx = Math.min(credCallIndex, queue.length - 1);
+            credCallIndex += 1;
+            return ok(queue[idx]);
+        }
+        if (/^curl -sS -X POST\b/.test(cmd) && /\/pulls\b/.test(cmd)) {
+            const idx = Math.min(pullsCallIndex, pullsQueue.length - 1);
+            pullsCallIndex += 1;
+            return ok(pullsQueue[idx]);
+        }
+        return fail(`buildMockCommandForPrRetry: unexpected command dispatched in this scenario: '${cmd}'`);
+    };
+    return { command, log };
+}
+
+function mockAbortCallToolCounting() {
+    let provisionVcsAuthCalls = 0;
+    const callTool = async (name, toolArgs) => {
+        if (name === 'member_detail') {
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        }
+        if (name === 'provision_vcs_auth') {
+            provisionVcsAuthCalls += 1;
+            const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+            return { content: [{ text: `✅ Mock ${toolArgs && toolArgs.provider} credentials deployed on "${toolArgs && toolArgs.member_name}"\n  expiresAt: ${expiresAt}\n` }] };
+        }
+        return { content: [{ text: `✅ mock ${name}` }] };
+    };
+    return { callTool, counts: () => ({ provisionVcsAuthCalls }) };
+}
+
+const PR_401_BODY = `${JSON.stringify({ message: 'Bad credentials' })}\n401`;
+const PR_403_BODY = `${JSON.stringify({ message: 'Resource not accessible by integration' })}\n403`;
+const PR_500_BODY = `${JSON.stringify({ message: 'Internal Server Error' })}\n500`;
+const PR_SUCCESS_BODY = (prUrl) => `${JSON.stringify({ number: 101, html_url: prUrl })}\n201`;
+
+test('(647.1.1.1) finalizeAbort PR call: a 401 heals once via provision_vcs_auth and the retry succeeds', async () => {
+    const branch = 'auto-sprint/abort-pr-401-heal';
+    const prUrl = 'https://github.com/mock-org/mock-repo/pull/301';
+    const { command, log } = buildMockCommandForPrRetry({
+        commitCount: 1,
+        pullsQueue: [PR_401_BODY, PR_SUCCESS_BODY(prUrl)],
+    });
+    const { callTool, counts } = mockAbortCallToolCounting();
+    const logs = [];
+
+    const result = await finalizeAbort({
+        error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+        branch,
+        baseBranch: 'main',
+        member: 'local',
+        command,
+        log: (m) => logs.push(m),
+        callTool,
+    });
+
+    check(result.reason === 'aborted-pr-created', `expected the abort PR to succeed after the reactive self-heal retry, got: ${JSON.stringify(result)}`);
+    check(result.prUrl === prUrl, `expected the retried PR's URL to be returned, got: ${JSON.stringify(result)}`);
+    check(counts().provisionVcsAuthCalls === 2, `expected provision_vcs_auth called twice (initial JIT mint + one reactive heal), got ${counts().provisionVcsAuthCalls}`);
+    check(log.filter((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')).length === 2, `expected the create-pull-request curl dispatched exactly twice (original + one bounded retry), command log: ${JSON.stringify(log)}`);
+    check(logs.some((m) => m.includes('auth-classified failure') && m.includes('HTTP 401')), `expected a logged auth-classified-failure message naming HTTP 401, logs: ${JSON.stringify(logs)}`);
+    check(!logs.some((m) => m.includes('mock-vcs-module-token')), `no log line may ever carry the raw token, logs: ${JSON.stringify(logs)}`);
+});
+
+test('(647.1.1.1) finalizeAbort PR call: a 403 that still fails after the retry is degraded/logged, NOT thrown out of finalizeAbort', async () => {
+    const branch = 'auto-sprint/abort-pr-403-still-fails';
+    const { command, log } = buildMockCommandForPrRetry({
+        commitCount: 1,
+        pullsQueue: [PR_403_BODY], // repeats -- both attempts fail identically
+    });
+    const { callTool, counts } = mockAbortCallToolCounting();
+    const logs = [];
+
+    let thrown = null;
+    let result = null;
+    try {
+        result = await finalizeAbort({
+            error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+            branch,
+            baseBranch: 'main',
+            member: 'local',
+            command,
+            log: (m) => logs.push(m),
+            callTool,
+        });
+    } catch (e) {
+        thrown = e;
+    }
+
+    check(thrown === null, `expected finalizeAbort() NOT to throw on a PR auth failure that survives the retry, got: ${thrown ? thrown.message : ''}`);
+    check(result !== null && result.reason === 'pr-auth-failed', `expected a degraded 'pr-auth-failed' reason, got: ${JSON.stringify(result)}`);
+    check(result.pushed === true, `expected pushed:true -- the branch push already succeeded before the PR attempt, got: ${JSON.stringify(result)}`);
+    check(result.prUrl === null, `expected prUrl:null since the PR itself was never raised, got: ${JSON.stringify(result)}`);
+    check(counts().provisionVcsAuthCalls === 2, `expected exactly one reactive heal attempt (2 total provision_vcs_auth calls: JIT mint + one heal), got ${counts().provisionVcsAuthCalls}`);
+    check(log.filter((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')).length === 2, `expected exactly one bounded retry (2 total create-pull-request attempts), command log: ${JSON.stringify(log)}`);
+    check(logs.some((m) => m.includes('degrading') || m.includes('degraded')), `expected a logged message noting the degrade-not-throw outcome, logs: ${JSON.stringify(logs)}`);
+});
+
+test('(647.1.1.1) finalizeAbort PR call: a non-auth failure (5xx) keeps today\'s throw-CommandError behavior exactly, with no self-heal call', async () => {
+    const branch = 'auto-sprint/abort-pr-5xx-no-heal';
+    const { command, log } = buildMockCommandForPrRetry({
+        commitCount: 1,
+        pullsQueue: [PR_500_BODY],
+    });
+    const { callTool, counts } = mockAbortCallToolCounting();
+
+    let thrown = null;
+    try {
+        await finalizeAbort({
+            error: new SprintPlanRejectedError('Plan rejected', { notes: null }),
+            branch,
+            baseBranch: 'main',
+            member: 'local',
+            command,
+            callTool,
+        });
+    } catch (e) {
+        thrown = e;
+    }
+
+    check(thrown !== null, 'expected finalizeAbort() to still throw a CommandError for a non-auth (5xx) PR failure');
+    check(/Publish Abort PR Failed/.test(thrown.message), `expected the existing '[Publish Abort PR Failed]' message, got: ${thrown.message}`);
+    check(counts().provisionVcsAuthCalls === 1, `expected NO reactive heal for a non-auth failure -- only the initial JIT mint, got ${counts().provisionVcsAuthCalls} provision_vcs_auth calls`);
+    check(log.filter((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls')).length === 1, `expected the create-pull-request curl dispatched exactly once (no retry for a non-auth failure), command log: ${JSON.stringify(log)}`);
 });

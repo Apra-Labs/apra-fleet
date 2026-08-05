@@ -35,8 +35,10 @@ const STRUCTURED_ROLES = [
   'reviewer',
   'deployer',
   'integ-test-runner',
+  'regression-test-runner',
   'ci-watcher',
   'harvester',
+  'backlog-groomer',
 ];
 
 /**

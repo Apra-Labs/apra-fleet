@@ -362,14 +362,21 @@ export async function runWorkflow(argv: string[], depsOverride?: Partial<Workflo
     return 1;
   }
 
-  // --- R9: an old binary has no workflow assets at all -- say so, actionably.
+  // --- R9: a genuinely malformed/truncated install has no workflow assets at
+  // all (no workflow runtime, no built-in workflows) -- say so, actionably.
+  // A properly-packaged release (npm install, standalone binary, or a
+  // git-clone dev checkout) always has these assets, so this path is DEAD in
+  // the common case; it exists only to give an incomplete/corrupted install a
+  // clear next step, without assuming the reader has any build/SEA tooling
+  // available (they may be a plain npm-install user with none of that).
   if (!deps.exists(path.join(deps.workflowsDir, name)) && !deps.hasWorkflowAssets()) {
     deps.error(
-      `Error: this apra-fleet binary was built without the workflow subsystem assets ` +
-        `(no workflow runtime / built-in workflows in its embedded manifest), so ` +
+      `Error: this apra-fleet install is missing its workflow subsystem assets ` +
+        `(no workflow runtime / built-in workflows found), so ` +
         `workflow "${name}" cannot be resolved or self-healed.\n` +
-        `       Rebuild the binary ('npm run build:binary') or reinstall a current release ` +
-        `('apra-fleet update'), then run 'apra-fleet install' again.`,
+        `       This usually means the install is incomplete or corrupted. Reinstall with ` +
+        `'apra-fleet update', or re-run 'npm install -g @apralabs/apra-fleet' (or re-download ` +
+        `the standalone binary), then run 'apra-fleet install' again.`,
     );
     return 1;
   }

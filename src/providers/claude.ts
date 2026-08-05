@@ -10,6 +10,29 @@ import { escapeDoubleQuoted } from '../os/os-commands.js';
 
 const execFileAsync = promisify(execFile);
 
+// apra-fleet-iuc.1 / apra-fleet-ekm: reliable max_turns detection in the CLI
+// transcript. A max_turns-terminated session must ALWAYS classify as max_turns,
+// but the Claude Code CLI signals it INCONSISTENTLY across versions/streams:
+//   - the `type:result` event's `subtype` is `error_max_turns`, and/or
+//   - that same event carries `terminal_reason: "max_turns"`, and/or
+//   - a distinct transcript event of `type: "max_turns_reached"` is emitted
+//     (with no result-event terminal_reason at all).
+// The old parser recorded ONLY `terminal_reason`, so a transcript that carried
+// the signal solely via `subtype`/the standalone event was silently missed --
+// the ekm forensics show one such session run to a 38.5-min hard timeout + cold
+// restart because it was never classified. Detect ANY of these signals on ANY
+// transcript event so the result the parser returns always normalizes to
+// terminalReason 'max_turns' when the session was turn-limit terminated.
+export function isMaxTurnsSignal(obj: any): boolean {
+  if (!obj || typeof obj !== 'object') return false;
+  return (
+    obj.terminal_reason === 'max_turns' ||
+    obj.subtype === 'error_max_turns' ||
+    obj.type === 'max_turns_reached' ||
+    obj.stop_reason === 'max_turns'
+  );
+}
+
 export class ClaudeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'claude';
   readonly processName = 'claude';
@@ -126,8 +149,13 @@ export class ClaudeProvider implements ProviderAdapter {
         .join('');
     };
 
-    const fromEvent = (obj: any, assistantFallback: string): ParsedResponse | null => {
+    const fromEvent = (obj: any, assistantFallback: string, maxTurnsSeen: boolean): ParsedResponse | null => {
       if (obj.type !== 'result') return null;
+      // Normalize terminalReason to 'max_turns' whenever the transcript carried
+      // the turn-limit signal via ANY channel (this event's terminal_reason,
+      // this or a preceding event's subtype/standalone max_turns_reached event)
+      // so downstream classification (execute-prompt) is version-independent.
+      const maxTurns = maxTurnsSeen || isMaxTurnsSignal(obj);
       return {
         // Prefer the event's own result text; only when it is missing OR blank
         // do we substitute the harvested assistant text. The final `?? raw`
@@ -139,7 +167,7 @@ export class ClaudeProvider implements ProviderAdapter {
         raw,
         usage: extractUsage(obj.usage),
         subtype: obj.subtype,
-        terminalReason: obj.terminal_reason,
+        terminalReason: obj.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
       };
     };
 
@@ -148,13 +176,16 @@ export class ClaudeProvider implements ProviderAdapter {
       if (Array.isArray(parsed)) {
         // JSON array of events (some Claude Code versions collect JSONL into an array)
         let assistantText = '';
+        let maxTurnsSeen = false;
         for (const obj of parsed) {
           assistantText += assistantTextOf(obj);
-          const r = fromEvent(obj, assistantText);
+          maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
+          const r = fromEvent(obj, assistantText, maxTurnsSeen);
           if (r) return r;
         }
       } else {
         // Single object - old Claude Code format
+        const maxTurns = isMaxTurnsSignal(parsed);
         return {
           result: parsed.result ?? parsed.response ?? raw,
           sessionId: parsed.session_id,
@@ -162,26 +193,37 @@ export class ClaudeProvider implements ProviderAdapter {
           raw,
           usage: extractUsage(parsed.usage),
           subtype: parsed.subtype,
-          terminalReason: parsed.terminal_reason,
+          terminalReason: parsed.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
         };
       }
     } catch { /* not valid JSON - try line-by-line JSONL below */ }
 
     // JSONL format (Claude Code 2.1.113+): one JSON object per line
     let assistantText = '';
+    let maxTurnsSeen = false;
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
         const obj = JSON.parse(trimmed);
         assistantText += assistantTextOf(obj);
-        const r = fromEvent(obj, assistantText);
+        maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
+        const r = fromEvent(obj, assistantText, maxTurnsSeen);
         if (r) return r;
       } catch { /* skip non-JSON lines */ }
     }
 
-    // Fallback: plain text output
-    return { result: raw, sessionId: undefined, isError: result.code !== 0, raw, usage: undefined };
+    // Fallback: plain text output. A stream that emitted a standalone
+    // max_turns_reached event but no terminating `type:result` event still
+    // reaches here -- preserve the turn-limit signal so it is never lost.
+    return {
+      result: raw,
+      sessionId: undefined,
+      isError: result.code !== 0,
+      raw,
+      usage: undefined,
+      terminalReason: maxTurnsSeen ? 'max_turns' : undefined,
+    };
   }
 
   supportsResume(): boolean {
@@ -209,9 +251,9 @@ export class ClaudeProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'haiku';
-    if (tier === 'mid') return 'sonnet';
+    if (tier === 'standard') return 'sonnet';
     return 'opus';
   }
 
@@ -313,18 +355,47 @@ export class ClaudeProvider implements ProviderAdapter {
     const homeFile = isWindows ? '$env:USERPROFILE\\.claude.json' : '$HOME/.claude.json';
     const tmpFile = isWindows ? '$env:USERPROFILE\\.claude.json.fleet-trust-tmp' : '$HOME/.claude.json.fleet-trust-tmp';
 
+    // apra-fleet-9oo: the project's .mcp.json lives in the MEMBER's work folder, not on
+    // the orchestrator host, so it must be read through the same execCommand channel --
+    // never local node:fs. It rides along in the SAME read command as ~/.claude.json:
+    // one round-trip, and (crucially) the already-satisfied case still costs exactly one
+    // exec, so the "no write when nothing to do" contract is observable as before.
+    const mcpFile = `${key}/.mcp.json`;
+    const SPLIT = '---FLEET_MCP_SPLIT---';
+
     const readCmd = isWindows
-      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue`
-      : `cat "${homeFile}" 2>/dev/null || true`;
+      ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue; Write-Output "${SPLIT}"; Get-Content -Raw "${mcpFile}" -ErrorAction SilentlyContinue`
+      : `cat "${homeFile}" 2>/dev/null || true; echo "${SPLIT}"; cat "${mcpFile}" 2>/dev/null || true`;
     const readResult = await execCommand(readCmd, 10000);
+
+    // Substring split (not line-split): if ~/.claude.json has no trailing newline the
+    // marker glues onto its closing brace, and only a substring split separates cleanly.
+    // No marker at all -> treat the whole payload as ~/.claude.json with no .mcp.json.
+    const rawStdout = readResult.stdout;
+    const splitIdx = rawStdout.indexOf(SPLIT);
+    const homeRaw = (splitIdx === -1 ? rawStdout : rawStdout.slice(0, splitIdx)).trim();
+    const mcpRaw = (splitIdx === -1 ? '' : rawStdout.slice(splitIdx + SPLIT.length)).trim();
 
     let existing: Record<string, unknown> = {};
     try {
-      const parsed = JSON.parse(readResult.stdout.trim());
+      const parsed = JSON.parse(homeRaw);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
     } catch {
       // File missing, empty, or not JSON -- a member that has never run Claude
       // interactively has no ~/.claude.json at all yet. Start from an empty object.
+    }
+
+    // A missing / unparseable / server-less .mcp.json is NOT an error: seed nothing
+    // extra and fall through to the pre-existing trust-only behaviour.
+    let declaredServers: string[] = [];
+    try {
+      const mcpParsed = JSON.parse(mcpRaw);
+      const servers = mcpParsed?.mcpServers;
+      if (servers && typeof servers === 'object' && !Array.isArray(servers)) {
+        declaredServers = Object.keys(servers);
+      }
+    } catch {
+      // no .mcp.json (or garbage in it) -- trust-only path.
     }
 
     const rawProjects = existing.projects;
@@ -336,15 +407,36 @@ export class ClaudeProvider implements ProviderAdapter {
       ? rawEntry as Record<string, unknown>
       : {};
 
-    if (existingEntry.hasTrustDialogAccepted === true) {
+    // apra-fleet-9oo: trust and MCP-server enablement are computed INDEPENDENTLY, because
+    // an already-trusted member (hasTrustDialogAccepted true) can still be missing its
+    // enabledMcpjsonServers entries -- the old unconditional early return here is exactly
+    // why members never got project MCP servers auto-approved. Short-circuit only when
+    // BOTH are already satisfied.
+    const trustNeeded = existingEntry.hasTrustDialogAccepted !== true;
+
+    const enabled = Array.isArray(existingEntry.enabledMcpjsonServers)
+      ? (existingEntry.enabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
+      : [];
+    const disabled = Array.isArray(existingEntry.disabledMcpjsonServers)
+      ? (existingEntry.disabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
+      : [];
+    // Union-merge, deny wins: keep every existing entry in its existing order, append
+    // only names that are missing (in .mcp.json declaration order, so re-runs are
+    // byte-identical), and NEVER add a name a human explicitly disabled.
+    const serversToAdd = declaredServers.filter(n => !enabled.includes(n) && !disabled.includes(n));
+
+    if (!trustNeeded && serversToAdd.length === 0) {
       console.error(`[claude] workspace trust: already present for "${key}"`);
-      return { seeded: false, detail: `already trusted: ${key}` };
+      return { seeded: false, detail: `already trusted: ${key}`, mcpServersSeeded: [] };
     }
 
     // MERGE: preserve every sibling field already on the project entry (history,
     // allowedTools, etc.) and every other project's entry in the file -- never replace
-    // the entry, or the file, wholesale.
-    const mergedProjects = { ...projects, [key]: { ...existingEntry, hasTrustDialogAccepted: true } };
+    // the entry, or the file, wholesale. Note enabledMcpjsonServers is only written when
+    // something is actually being added -- an absent array is never "tidied" into [].
+    const mergedEntry: Record<string, unknown> = { ...existingEntry, hasTrustDialogAccepted: true };
+    if (serversToAdd.length > 0) mergedEntry.enabledMcpjsonServers = [...enabled, ...serversToAdd];
+    const mergedProjects = { ...projects, [key]: mergedEntry };
     const merged = { ...existing, projects: mergedProjects };
     const contentStr = JSON.stringify(merged, null, 2);
 
@@ -356,8 +448,15 @@ export class ClaudeProvider implements ProviderAdapter {
       : `cat > "${tmpFile}" << 'FLEET_TRUST_EOF'\n${contentStr}\nFLEET_TRUST_EOF\nmv "${tmpFile}" "${homeFile}"`;
     await execCommand(writeCmd, 10000);
 
-    console.error(`[claude] workspace trust: seeded for "${key}"`);
-    return { seeded: true, detail: `seeded trust: ${key}` };
+    const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
+    // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --
+    // `detail` already encodes that distinction, so log it verbatim rather than
+    // hard-coding "seeded" for the already-trusted/servers-only case.
+    const detail = trustNeeded
+      ? `seeded trust: ${key}${mcpNote}`
+      : `already trusted: ${key}${mcpNote}`;
+    console.error(`[claude] workspace trust: ${detail}`);
+    return { seeded: trustNeeded, detail, mcpServersSeeded: serversToAdd };
   }
 }
 

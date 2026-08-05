@@ -1,0 +1,1692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fleet-sprint: What It Does, What You Bring, and How You Watch It Work</title>
+<style>
+  /* ------------------------------------------------------------------
+     Design tokens -- pulled directly from assets/marketing/*.svg
+       canvas   #FFFFFF -> #F8FAFC -> #F1F5F9   (bgHeroLight stops)
+       dark     #080C14 -> #0F172A -> #060911   (bgHeroDark stops)
+       ink      #0F172A / #334155 / #64748B     (title / tagline / caption)
+       line     #CBD5E1 (46 uses) + #E2E8F0 grid hairline
+       amber    #F59E0B stroke, #D97706 dot, #B45309 label, #FEF3C7 pill fill
+       shadow   feDropShadow dx0 dy4 stdDeviation8 #0F172A @ 0.08
+     ------------------------------------------------------------------ */
+
+  :root {
+    color-scheme: light dark;
+
+    --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+    --canvas-0:      #FFFFFF;
+    --canvas-1:      #F8FAFC;
+    --canvas-2:      #F1F5F9;
+
+    --panel:         #FFFFFF;
+    --panel-2:       #F8FAFC;
+    --panel-sunk:    rgba(15, 23, 42, 0.035);
+    --panel-edge:    rgba(15, 23, 42, 0.07);
+    --hairline:      rgba(15, 23, 42, 0.08);
+    --row-tint:      rgba(15, 23, 42, 0.022);
+    --hover-tint:    rgba(15, 23, 42, 0.04);
+
+    --ink:           #0F172A;
+    --ink-2:         #334155;
+    --muted:         #64748B;
+
+    --amber:         #F59E0B;
+    --amber-mid:     #D97706;
+    --amber-deep:    #B45309;
+    --amber-tint:    #FEF3C7;
+    --amber-wash:    rgba(245, 158, 11, 0.07);
+    --amber-edge:    rgba(245, 158, 11, 0.30);
+
+    --grid-line:     rgba(15, 23, 42, 0.032);
+    --glow:          rgba(245, 158, 11, 0.10);
+    --paper-wash:    rgba(245, 158, 11, 0.030);
+
+    --title-grad:    linear-gradient(100deg, #0F172A 0%, #1E293B 100%);
+
+    /* feDropShadow dy=4 stdDeviation=8 -> CSS blur ~= 2 * stdDeviation */
+    --shadow-card:   0 4px 16px rgba(15, 23, 42, 0.08);
+    --shadow-lift:   0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 22px rgba(15, 23, 42, 0.08);
+    --shadow-soft:   0 1px 2px rgba(15, 23, 42, 0.04);
+
+    --maxw:          1400px;
+    --measure:       1320px;  /* prose runs the same width as the graphics */
+
+    /* 8px spacing scale */
+    --s-1: 8px;  --s-2: 16px; --s-3: 24px; --s-4: 32px;
+    --s-5: 48px; --s-6: 72px; --s-7: 104px;
+  }
+
+  /* Dark tokens: applied by system preference, and by an explicit
+     data-theme="dark" on <html> (so the pairing can also be forced). */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --canvas-0:    #080C14;
+      --canvas-1:    #0F172A;
+      --canvas-2:    #060911;
+
+      --panel:       #101A2E;
+      --panel-2:     #1E293B;
+      --panel-sunk:  rgba(148, 163, 184, 0.07);
+      --panel-edge:  #24334A;
+      --hairline:    #1E293B;
+      --row-tint:    rgba(148, 163, 184, 0.045);
+      --hover-tint:  rgba(148, 163, 184, 0.08);
+
+      --ink:         #F8FAFC;
+      --ink-2:       #CBD5E1;
+      --muted:       #94A3B8;
+
+      --amber:       #F59E0B;
+      --amber-mid:   #FBBF24;
+      --amber-deep:  #FBBF24;
+      --amber-tint:  rgba(245, 158, 11, 0.15);
+      --amber-wash:  rgba(245, 158, 11, 0.06);
+      --amber-edge:  rgba(245, 158, 11, 0.35);
+
+      --grid-line:   rgba(148, 163, 184, 0.045);
+      --glow:        rgba(245, 158, 11, 0.14);
+      --paper-wash:  rgba(245, 158, 11, 0.014);
+
+      --title-grad:  linear-gradient(100deg, #FFFFFF 0%, #CBD5E1 100%);
+
+      --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.45);
+      --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 26px rgba(0, 0, 0, 0.45);
+      --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --canvas-0:    #080C14;
+    --canvas-1:    #0F172A;
+    --canvas-2:    #060911;
+
+    --panel:       #101A2E;
+    --panel-2:     #1E293B;
+    --panel-sunk:  rgba(148, 163, 184, 0.07);
+    --panel-edge:  #24334A;
+    --hairline:    #1E293B;
+    --row-tint:    rgba(148, 163, 184, 0.045);
+    --hover-tint:  rgba(148, 163, 184, 0.08);
+
+    --ink:         #F8FAFC;
+    --ink-2:       #CBD5E1;
+    --muted:       #94A3B8;
+
+    --amber-mid:   #FBBF24;
+    --amber-deep:  #FBBF24;
+    --amber-tint:  rgba(245, 158, 11, 0.15);
+    --amber-wash:  rgba(245, 158, 11, 0.06);
+    --amber-edge:  rgba(245, 158, 11, 0.35);
+
+    --grid-line:   rgba(148, 163, 184, 0.045);
+    --glow:        rgba(245, 158, 11, 0.14);
+    --paper-wash:  rgba(245, 158, 11, 0.014);
+
+    --title-grad:  linear-gradient(100deg, #FFFFFF 0%, #CBD5E1 100%);
+
+    --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.45);
+    --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 26px rgba(0, 0, 0, 0.45);
+    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    color: var(--ink-2);
+    font-family: var(--font-sans);
+    font-size: 18.5px;
+    font-weight: 400;
+    line-height: 1.9;
+    letter-spacing: 0.001em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+
+    background-color: var(--canvas-1);
+    /* the hero's amber core glow, its 40px cyber grid (much softer here, so it
+       reads as texture behind prose), over the three-stop canvas gradient.
+       The flat amber wash warms the whole sheet so it reads as paper rather
+       than a cold slate UI surface. */
+    background-image:
+      radial-gradient(58% 42% at 82% 2%, var(--glow) 0%, rgba(245, 158, 11, 0) 68%),
+      linear-gradient(var(--paper-wash), var(--paper-wash)),
+      repeating-linear-gradient(to right,  var(--grid-line) 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(to bottom, var(--grid-line) 0 1px, transparent 1px 40px),
+      linear-gradient(140deg, var(--canvas-0) 0%, var(--canvas-1) 58%, var(--canvas-2) 100%);
+    background-attachment: fixed;
+  }
+
+  .wrap {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 0 40px 128px;
+  }
+
+  /* ---------- Masthead ---------- */
+
+  header.masthead { padding: var(--s-7) 0 0; }
+
+  /* Eyebrow pill -- the hero's "AGENT FLEET PLATFORM" badge:
+     rx 14, #FEF3C7 fill, #F59E0B 1.2 stroke, 10px/800/1.8 #B45309 */
+  .eyebrow,
+  h2 .num {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 16px 6px 13px;
+    border-radius: 999px;
+    background: var(--amber-tint);
+    border: 1.2px solid var(--amber-edge);
+    color: var(--amber-deep);
+    -webkit-text-fill-color: var(--amber-deep);
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .eyebrow::before,
+  h2 .num::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--amber-mid);
+    flex: none;
+  }
+
+  /* Display face: system-ui 900, tight tracking, gradient text fill --
+     the exact treatment of the 56px/900 "apra-fleet" title in the hero. */
+  h1 {
+    margin: var(--s-3) 0 0;
+    font-size: clamp(34px, 5vw, 52px);
+    font-weight: 900;
+    letter-spacing: -1.5px;
+    line-height: 1.08;
+    color: var(--ink);
+    background: var(--title-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-wrap: balance;
+    max-width: 19ch;
+  }
+
+  /* Subhead role: 19px / 600 / #334155 -- the hero tagline. */
+  .deck {
+    text-align: left;
+    margin: var(--s-3) 0 0;
+    font-size: 19px;
+    font-weight: 600;
+    line-height: 1.55;
+    letter-spacing: -0.1px;
+    color: var(--ink-2);
+    text-wrap: pretty;
+    max-width: 56ch;
+  }
+
+  /* ---------- Table of contents ---------- */
+
+  nav.toc {
+    margin: var(--s-6) auto 0;
+    padding: 26px 28px 22px;
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 18px;
+    box-shadow: var(--shadow-lift);
+  }
+  nav.toc h2 {
+    display: block;
+    margin: 0 0 var(--s-2);
+    padding: 0;
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+    color: var(--muted);
+    -webkit-text-fill-color: var(--muted);
+    background: none;
+    border: 0;
+  }
+  nav.toc ol {
+    margin: 0;
+    padding: 0;
+    max-width: none;
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 2px 32px;
+    counter-reset: toc;
+  }
+  nav.toc li { counter-increment: toc; margin: 0; }
+  nav.toc a {
+    display: flex;
+    gap: 10px;
+    padding: 10px 12px;
+    margin: 0 -12px;
+    border-radius: 10px;
+    color: var(--ink-2);
+    text-decoration: none;
+    font-size: 15.5px;
+    font-weight: 600;
+    line-height: 1.45;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  nav.toc a::before {
+    content: counter(toc);
+    flex: none;
+    width: 1.35em;
+    color: var(--amber-deep);
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  nav.toc a:hover { background: var(--hover-tint); color: var(--ink); }
+
+  /* ---------- Sections & typography ---------- */
+
+  section { padding-top: 0; }
+
+  h2 {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--s-2);
+    margin: var(--s-7) 0 var(--s-3);
+    font-size: clamp(27px, 3.1vw, 35px);
+    font-weight: 900;
+    letter-spacing: -0.9px;
+    line-height: 1.18;
+    color: var(--ink);
+    background: var(--title-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-wrap: balance;
+    scroll-margin-top: var(--s-4);
+  }
+  h2 .num { align-self: flex-start; }
+
+  /* Amber tick hung in the left gutter: gives the eye a rhythm of entry
+     points when scanning a long section, without adding page furniture. */
+  h3 {
+    position: relative;
+    margin: var(--s-5) 0 var(--s-2);
+    font-size: 21px;
+    font-weight: 800;
+    letter-spacing: -0.35px;
+    line-height: 1.32;
+    color: var(--ink);
+    text-wrap: balance;
+    scroll-margin-top: var(--s-4);
+  }
+  h3::before {
+    content: "";
+    position: absolute;
+    left: -26px;
+    top: 0.52em;
+    width: 12px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--amber);
+  }
+  h3 code { font-size: 0.82em; }
+
+  /* Prose sets flush both edges. A loose right rag is what made the body copy
+     read as unfinished, so paragraphs and list items justify with automatic
+     hyphenation -- hyphens keep the inter-word gaps tight enough that no
+     rivers open up at this measure. Headings, the deck and code stay ragged. */
+  section > p, section > ul > li, section > ol > li, footer.sources p {
+    text-align: justify;
+    text-justify: inter-word;
+    hyphens: auto;
+    -webkit-hyphens: auto;
+    hyphenate-limit-chars: 7 4 3;
+    overflow-wrap: break-word;
+  }
+
+  p { margin: 0 0 26px; }
+
+  /* Lead-in paragraph of each section: a larger, darker entry point so a
+     section opens instead of starting flat. */
+  section > h2 + p {
+    font-size: 19.5px;
+    line-height: 1.68;
+    color: var(--ink);
+    letter-spacing: -0.11px;
+  }
+
+  ul, ol { padding-left: 1.45em; margin: 0 0 var(--s-3); }
+  li { margin-bottom: 15px; padding-left: 2px; }
+  li::marker { color: var(--amber-deep); font-weight: 700; }
+  ol > li { padding-left: 6px; }
+
+  strong { color: var(--ink); font-weight: 700; }
+  em { color: inherit; }
+
+  a {
+    color: var(--amber-deep);
+    text-decoration-color: var(--amber-edge);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+  a:hover { text-decoration-color: var(--amber); }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.83em;
+    background: var(--panel-sunk);
+    border-radius: 6px;
+    padding: 2px 5px;
+    color: var(--ink);
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+
+  pre {
+    margin: 0 0 var(--s-4);
+    padding: 26px 28px;
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-left: 3px solid var(--amber);
+    border-radius: 16px;
+    box-shadow: var(--shadow-card);
+    overflow-x: auto;
+    line-height: 1.72;
+  }
+  pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-size: 13.75px;
+    white-space: pre;
+    color: var(--ink-2);
+  }
+  pre .cm { color: var(--muted); }
+
+  /* ---------- Figures ---------- */
+
+  figure { margin: var(--s-5) 0 var(--s-5); padding: 0; }
+  figure .frame {
+    border: 1px solid var(--panel-edge);
+    border-radius: 18px;
+    overflow: hidden;
+    background: var(--panel);
+    box-shadow: var(--shadow-lift);
+    line-height: 0;
+  }
+  figure svg, figure img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+  }
+  figcaption {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-top: 14px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: 0.2px;
+    line-height: 1.5;
+  }
+  figcaption::before {
+    content: "";
+    flex: none;
+    width: 18px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--amber);
+  }
+
+  /* light/dark artwork pairing, matching the -light / -dark asset convention */
+  .art-dark { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .art-light { display: none; }
+    :root:not([data-theme="light"]) .art-dark  { display: block; }
+  }
+  :root[data-theme="dark"] .art-light { display: none; }
+  :root[data-theme="dark"] .art-dark  { display: block; }
+  :root[data-theme="light"] .art-light { display: block; }
+  :root[data-theme="light"] .art-dark  { display: none; }
+
+  /* ---------- Callout ---------- */
+
+  .callout {
+    margin: var(--s-4) auto var(--s-4);
+    padding: 24px 28px;
+    background:
+      linear-gradient(105deg, var(--amber-wash) 0%, rgba(245, 158, 11, 0) 62%),
+      var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-left: 3px solid var(--amber);
+    border-radius: 16px;
+    box-shadow: var(--shadow-card);
+  }
+  .callout p { margin-bottom: 0; }
+
+  /* ---------- Table ---------- */
+
+  .table-scroll {
+    overflow-x: auto;
+    border-radius: 18px;
+    box-shadow: var(--shadow-lift);
+    background: var(--panel);
+    margin: 0 0 var(--s-4);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 760px;
+    font-size: 15.5px;
+    line-height: 1.66;
+  }
+  thead th {
+    text-align: left;
+    padding: 20px 30px;
+    background: var(--panel-2);
+    color: var(--ink);
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--hairline);
+    white-space: nowrap;
+  }
+  thead th:first-child { color: var(--amber-deep); }
+  tbody td {
+    padding: 22px 30px;
+    border-bottom: 1px solid var(--hairline);
+    vertical-align: top;
+    width: 50%;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:nth-child(even) td { background: var(--row-tint); }
+  tbody td:first-child { box-shadow: inset -1px 0 0 var(--hairline); }
+  tbody td code { white-space: nowrap; }
+
+  /* ---------- Footer ---------- */
+
+  footer.sources {
+    margin-top: var(--s-7);
+    padding-top: var(--s-4);
+    border-top: 1px solid var(--hairline);
+    font-size: 14.5px;
+    color: var(--muted);
+    line-height: 1.75;
+  }
+  footer.sources code { white-space: normal; }
+
+  /* ---------- Reading measure ----------
+     Everything shares one left edge. Prose is held to ~70ch (a fixed px value,
+     because `ch` resolves against each element's own font-size and would let
+     headings escape the column); figures and the wide comparison table bleed
+     out to the full content width. Declared last so it wins over the margin
+     shorthands above. */
+  .measure, h1, .deck, h2, h3,
+  section > p, section > ul, section > ol, section > pre,
+  .callout, footer.sources p {
+    max-width: var(--measure);
+    margin-left: auto;
+    margin-right: auto;
+  }
+  /* One width for everything: prose, code, figures and the table all run the
+     full content column, so nothing is inset relative to anything else. */
+  nav.toc, section > pre, figure, .table-scroll {
+    max-width: var(--measure);
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  @media (max-width: 900px) {
+    :root { --s-7: 72px; --s-6: 56px; }
+    .wrap { padding: 0 28px 88px; }
+  }
+
+  @media (max-width: 640px) {
+    :root { --s-7: 56px; --s-6: 44px; --s-5: 36px; }
+    body { font-size: 16.5px; }
+    .wrap { padding: 0 20px 72px; }
+    header.masthead { padding-top: 56px; }
+    nav.toc { padding: 20px; }
+    pre { padding: 20px; }
+    .callout { padding: 20px 22px; }
+  }
+
+  /* ---------- Print / PDF ----------
+     Force the light palette (dark pages print badly), drop the fixed grid
+     background, let prose fill the sheet, and keep figures, code blocks and
+     table rows from being sliced across a page break. */
+  @page { size: A4 landscape; margin: 14mm 15mm 16mm; }
+
+  @media print {
+    :root, :root[data-theme="dark"], :root[data-theme="light"] {
+      --canvas-0:#FFFFFF; --canvas-1:#FFFFFF; --canvas-2:#FFFFFF;
+      --panel:#FFFFFF; --panel-2:#F8FAFC;
+      --panel-sunk:rgba(15,23,42,.05); --panel-edge:#CBD5E1; --hairline:#E2E8F0;
+      --row-tint:rgba(15,23,42,.03); --hover-tint:transparent;
+      --ink:#0F172A; --ink-2:#334155; --muted:#64748B;
+      --amber:#F59E0B; --amber-mid:#D97706; --amber-deep:#B45309; --amber-tint:#FEF3C7;
+      --amber-wash:rgba(245,158,11,.10); --amber-edge:#F59E0B;
+      --grid-line:transparent; --glow:transparent; --paper-wash:transparent;
+      --shadow-card:none; --shadow-lift:none; --shadow-soft:none;
+      --measure:100%; --maxw:100%;
+      --s-7:34px; --s-6:26px; --s-5:22px; --s-4:16px;
+    }
+    html, body { background:#FFFFFF !important; }
+    body {
+      background-image:none !important;
+      background-attachment:scroll !important;
+      font-size:10.2pt;
+      line-height:1.5;
+      color:#334155;
+    }
+    .wrap { max-width:none; padding:0; }
+
+    /* gradient-clipped headings would print as invisible text */
+    h1, h2 {
+      background:none !important;
+      -webkit-text-fill-color:var(--ink) !important;
+      color:var(--ink) !important;
+    }
+    h1 { font-size:26pt; }
+    h2 { font-size:17pt; margin-top:0; }
+    h3 { font-size:12.5pt; }
+    section > h2 + p { font-size:11pt; }
+
+    /* one section per sheet, and never slice an element in half */
+    header.masthead { padding-top:0; }
+    nav.toc { break-after:page; box-shadow:none; }
+    section { break-before:page; }
+    h2, h3 { break-after:avoid; }
+    figure, .table-scroll, .callout, pre, li, tr, img, svg { break-inside:avoid; }
+    figure { margin:18px 0 20px; }
+    figcaption { font-size:8pt; }
+    footer.sources { break-before:page; font-size:9pt; }
+
+    /* always the light artwork, whatever the viewer's OS theme is */
+    .art-light { display:block !important; }
+    .art-dark  { display:none  !important; }
+
+    /* the h3 tick lives in a left gutter that the printed page does not have */
+    h3::before { display:none; }
+    .frame, pre, .callout, .table-scroll, nav.toc { box-shadow:none !important; }
+    a { color:var(--amber-deep); text-decoration:underline; }
+    table { min-width:0; font-size:9.5pt; }
+    thead { display:table-header-group; }
+    thead th, tbody td { padding:10px 14px; }
+    pre code { font-size:8.6pt; }
+    code { font-size:0.88em; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="measure"><span class="eyebrow">Fleet-sprint getting started</span></div>
+  <h1>fleet-sprint: What It Does, What You Bring, and How You Watch It Work</h1>
+  <p class="deck">A first-look guide for teams that have a git repo, a backlog in Azure DevOps, and Claude Code already working &mdash; and have never touched apra-fleet.</p>
+
+  <nav class="toc">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#s1">What fleet-sprint does</a></li>
+      <li><a href="#s2">What you need before you start</a></li>
+      <li><a href="#s3">How do I run it</a></li>
+      <li><a href="#s4">How do I know what's happening</a></li>
+      <li><a href="#s5">How do architecture decisions and conventions get communicated</a></li>
+      <li><a href="#s6">What fleet-sprint actually does for you vs. what you still own</a></li>
+    </ol>
+  </nav>
+</header>
+
+<!-- ===================== SECTION 1 ===================== -->
+<section>
+  <h2 id="s1"><span class="num">Section 1</span>What fleet-sprint does</h2>
+
+  <p>fleet-sprint is a program that runs a full development cycle on your codebase without a person driving each step. You give it a scoped batch of work (a set of issues with clear acceptance criteria), a git branch to work on, and at least one registered machine running an AI coding agent. It then runs, in a loop, until the work is done or it hits a limit you set:</p>
+
+  <ol>
+    <li><strong>Plan.</strong> An AI "planner" reads your issues and breaks them into small, concrete tasks &mdash; each with written acceptance criteria and an explicit dependency order. A second AI ("plan-reviewer") checks that plan for coverage, task size, and testability before anything is built. The plan is not a document; it is written directly into the issue tracker, so every later step reads the same source of truth.</li>
+    <li><strong>Develop and review.</strong> An AI "doer" implements the tasks &mdash; real code, real commits on your branch, one commit per task. After each round, a separate AI "reviewer" diffs the branch against the acceptance criteria and either approves or sends specific tasks back with reasons. The reviewer can reopen tasks; the engine (deterministic code, not an AI) applies every state change, so nothing is closed on an AI's say-so alone.</li>
+    <li><strong>Deploy and integration-test</strong> (only if you provide the runbooks &mdash; see Section 2). A "deployer" follows your written deploy instructions to stand the software up, and an "integration test runner" follows your written test playbook to verify features end-to-end against the running software. Features are only marked done on passing evidence; failures become new bug issues that feed the next cycle.</li>
+    <li><strong>Evaluate.</strong> The engine looks at real issue-tracker state and decides: done, or run another cycle (up to a ceiling you set, default 5).</li>
+  </ol>
+
+  <p>When the loop ends, a finalization pass runs: a reviewer renders an evidence-based <strong>PASS or FAIL verdict</strong> for the whole sprint, a "harvester" writes durable documentation and a changelog entry (including a cost breakdown), an optional once-per-sprint regression pass runs your regression playbook, and the engine pushes the branch and <strong>opens a pull request</strong> whose title and body state the verdict plainly. It never merges the PR &mdash; that is always a human decision.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="34 14 1224 672" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="One fleet-sprint run end to end: your inputs feed a plan, develop, deploy, integration test cycle that loops until the goal is met or max cycles is reached, then emits a final verdict, a harvest of docs and cost, and a pushed branch with an open pull request." preserveAspectRatio="xMidYMid meet" class="art-light">
+  <defs>
+    <!-- Background Gradient Light -->
+    <linearGradient id="plBgLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#F1F5F9"/>
+    </linearGradient>
+
+    <!-- Soft Drop Shadow Filter -->
+    <filter id="plShadowLight" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+
+    <!-- Cyber Grid Pattern Light -->
+    <pattern id="plGridLight" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#E2E8F0" stroke-width="1" opacity="0.45"/>
+      <circle cx="40" cy="40" r="1.5" fill="#CBD5E1" opacity="0.5"/>
+    </pattern>
+
+    <!-- Amber Core Glow -->
+    <radialGradient id="plGlowLight" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.16"/>
+      <stop offset="60%" stop-color="#F59E0B" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Base Canvas -->
+  <rect width="1280" height="700" fill="url(#plBgLight)"/>
+  <rect width="1280" height="700" fill="url(#plGridLight)"/>
+  <rect width="1280" height="700" fill="url(#plGlowLight)"/>
+
+  <!-- TOP HEADER BLOCK -->
+  <g transform="translate(50, 30)">
+    <rect x="0" y="0" width="272" height="28" rx="14" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="16" cy="14" r="4" fill="#D97706"/>
+    <text x="30" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="800" letter-spacing="1.4" fill="#B45309">FLEET-SPRINT PIPELINE</text>
+  </g>
+
+  <text x="50" y="108" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="30" font-weight="900" fill="#0F172A">One fleet-sprint run, end to end</text>
+  <text x="50" y="142" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="500" fill="#64748B">Each stage writes real state: commits, issue closures, filed bugs.</text>
+
+  <!-- LEFT COLUMN: YOUR INPUTS -->
+  <g transform="translate(50, 190)">
+    <rect x="0" y="0" width="240" height="256" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#plShadowLight)"/>
+
+    <!-- Panel Header Bar -->
+    <rect x="0" y="0" width="240" height="38" rx="12" fill="#F1F5F9"/>
+    <rect x="0" y="24" width="240" height="14" fill="#F1F5F9"/>
+    <line x1="0" y1="38" x2="240" y2="38" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="24" cy="19" r="5" fill="#D97706"/>
+    <text x="40" y="19" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Your inputs</text>
+
+    <rect x="16" y="52" width="208" height="36" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="120" y="70" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#334155" text-anchor="middle">issues + acceptance criteria</text>
+
+    <rect x="16" y="100" width="208" height="36" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="120" y="118" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" fill="#334155" text-anchor="middle">deploy.md</text>
+
+    <rect x="16" y="148" width="208" height="36" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="120" y="166" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="700" fill="#334155" text-anchor="middle">test playbooks</text>
+
+    <rect x="16" y="196" width="208" height="36" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="120" y="214" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="700" fill="#334155" text-anchor="middle">branch name</text>
+  </g>
+
+  <!-- INTAKE ARROW -->
+  <line x1="294" y1="283" x2="310" y2="283" stroke="#D97706" stroke-width="2" stroke-dasharray="4 4"/>
+  <polygon points="320,283 310,278 310,288" fill="#D97706"/>
+
+  <!-- CYCLE LOOP CONTAINER -->
+  <rect x="300" y="190" width="735" height="360" rx="14" fill="#F59E0B" fill-opacity="0.05" stroke="#F59E0B" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <text x="320" y="214" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="800" letter-spacing="1.4" fill="#B45309">CYCLE LOOP</text>
+  <text x="1015" y="214" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B" text-anchor="end">loops until goal met or max cycles</text>
+
+  <!-- STAGE 1: PLAN -->
+  <g transform="translate(320, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <circle cx="20" cy="20" r="9" fill="#D97706"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#FFFFFF" text-anchor="middle">1</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Plan</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#64748B" text-anchor="middle">planner + plan-reviewer</text>
+  </g>
+  <line x1="478" y1="283" x2="490" y2="283" stroke="#D97706" stroke-width="2"/>
+  <polygon points="500,283 490,278 490,288" fill="#D97706"/>
+
+  <!-- STAGE 2: DEVELOP -->
+  <g transform="translate(500, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <circle cx="20" cy="20" r="9" fill="#D97706"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#FFFFFF" text-anchor="middle">2</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Develop</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#64748B" text-anchor="middle">doer + reviewer</text>
+  </g>
+  <line x1="658" y1="283" x2="670" y2="283" stroke="#D97706" stroke-width="2"/>
+  <polygon points="680,283 670,278 670,288" fill="#D97706"/>
+
+  <!-- STAGE 3: DEPLOY -->
+  <g transform="translate(680, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <circle cx="20" cy="20" r="9" fill="#D97706"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#FFFFFF" text-anchor="middle">3</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Deploy</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#64748B" text-anchor="middle">deployer (needs deploy.md)</text>
+  </g>
+  <line x1="838" y1="283" x2="850" y2="283" stroke="#D97706" stroke-width="2"/>
+  <polygon points="860,283 850,278 850,288" fill="#D97706"/>
+
+  <!-- STAGE 4: INTEGRATION TEST -->
+  <g transform="translate(860, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <circle cx="20" cy="20" r="9" fill="#D97706"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#FFFFFF" text-anchor="middle">4</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Integration Test</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#64748B" text-anchor="middle">test runner (needs playbook)</text>
+  </g>
+
+  <!-- STAGE 4 -> DECISION -->
+  <line x1="937.5" y1="326" x2="937.5" y2="374" stroke="#D97706" stroke-width="2"/>
+  <polygon points="937.5,382 932.5,372 942.5,372" fill="#D97706"/>
+
+  <!-- DECISION DIAMOND -->
+  <polygon points="937.5,382 1015.5,430 937.5,478 859.5,430" fill="#FEF3C7" stroke="#D97706" stroke-width="2"/>
+  <text x="937.5" y="426" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309" text-anchor="middle">goal met or</text>
+  <text x="937.5" y="442" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309" text-anchor="middle">max cycles?</text>
+
+  <!-- NO PATH: RETURN TO PLAN -->
+  <path d="M 855 430 L 410 430 Q 397.5 430 397.5 417 L 397.5 336" fill="none" stroke="#D97706" stroke-width="2" stroke-dasharray="4 4"/>
+  <polygon points="397.5,326 392.5,336 402.5,336" fill="#D97706"/>
+  <text x="850" y="418" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="800" fill="#B45309" text-anchor="end">no</text>
+  <text x="626" y="420" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#B45309" text-anchor="middle">run another cycle</text>
+
+  <!-- LOOP ANNOTATION -->
+  <circle cx="322" cy="518" r="4" fill="#D97706"/>
+  <text x="336" y="518" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="700" fill="#475569">each stage writes real state: commits, issue closures, filed bugs</text>
+
+  <!-- YES PATH: EXIT RIGHT AND UP -->
+  <path d="M 1020 430 L 1044 430 L 1044 294 L 1047 294" fill="none" stroke="#D97706" stroke-width="2"/>
+  <polygon points="1055,294 1045,289 1045,299" fill="#D97706"/>
+  <text x="1036" y="452" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="800" fill="#B45309" text-anchor="middle">yes</text>
+
+  <!-- FINAL COLUMN: VERDICT -->
+  <g transform="translate(1040, 250)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <text x="102.5" y="26" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Final verdict</text>
+    <rect x="31" y="36" width="68" height="26" rx="8" fill="#D1FAE5" stroke="#059669" stroke-width="1.2"/>
+    <text x="65" y="49" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#047857" text-anchor="middle">PASS</text>
+    <rect x="107" y="36" width="68" height="26" rx="8" fill="#EF4444" fill-opacity="0.10" stroke="#EF4444" stroke-width="1.2"/>
+    <text x="141" y="49" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#EF4444" text-anchor="middle">FAIL</text>
+  </g>
+
+  <line x1="1142.5" y1="338" x2="1142.5" y2="352" stroke="#D97706" stroke-width="2"/>
+  <polygon points="1142.5,360 1137.5,350 1147.5,350" fill="#D97706"/>
+
+  <!-- FINAL COLUMN: REGRESSION PASS -->
+  <g transform="translate(1040, 360)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Regression pass</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B" text-anchor="middle">once per sprint, informational</text>
+  </g>
+
+  <line x1="1142.5" y1="448" x2="1142.5" y2="462" stroke="#D97706" stroke-width="2"/>
+  <polygon points="1142.5,470 1137.5,460 1147.5,460" fill="#D97706"/>
+
+  <!-- FINAL COLUMN: HARVEST -->
+  <g transform="translate(1040, 470)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Harvest</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B" text-anchor="middle">docs + changelog + cost</text>
+  </g>
+
+  <line x1="1142.5" y1="558" x2="1142.5" y2="572" stroke="#D97706" stroke-width="2"/>
+  <polygon points="1142.5,580 1137.5,570 1147.5,570" fill="#D97706"/>
+
+  <!-- FINAL COLUMN: PUSH + PR -->
+  <g transform="translate(1040, 580)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#0F172A" text-anchor="middle">Push branch + open PR</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#B45309" text-anchor="middle">never auto-merged</text>
+  </g>
+</svg>
+      <svg viewBox="34 14 1224 672" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="One fleet-sprint run end to end: your inputs feed a plan, develop, deploy, integration test cycle that loops until the goal is met or max cycles is reached, then emits a final verdict, a harvest of docs and cost, and a pushed branch with an open pull request." preserveAspectRatio="xMidYMid meet" class="art-dark">
+  <defs>
+    <!-- Background Gradient Dark -->
+    <linearGradient id="plBgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080C14"/>
+      <stop offset="50%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#060911"/>
+    </linearGradient>
+
+    <!-- Glass Panel Gradient -->
+    <linearGradient id="plPanelDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <!-- Cyber Grid Pattern Dark -->
+    <pattern id="plGridDark" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E293B" stroke-width="1" opacity="0.4"/>
+      <circle cx="40" cy="40" r="1.5" fill="#334155" opacity="0.5"/>
+    </pattern>
+
+    <!-- Gold Glow Filter -->
+    <filter id="plGlowGold" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Base Canvas -->
+  <rect width="1280" height="700" fill="url(#plBgDark)"/>
+  <rect width="1280" height="700" fill="url(#plGridDark)"/>
+
+  <!-- TOP HEADER BLOCK -->
+  <g transform="translate(50, 30)">
+    <rect x="0" y="0" width="272" height="28" rx="14" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="16" cy="14" r="4" fill="#FBBF24" filter="url(#plGlowGold)"/>
+    <text x="30" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="800" letter-spacing="1.4" fill="#FBBF24">FLEET-SPRINT PIPELINE</text>
+  </g>
+
+  <text x="50" y="108" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="30" font-weight="900" fill="#F8FAFC">One fleet-sprint run, end to end</text>
+  <text x="50" y="142" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="500" fill="#94A3B8">Each stage writes real state: commits, issue closures, filed bugs.</text>
+
+  <!-- LEFT COLUMN: YOUR INPUTS -->
+  <g transform="translate(50, 190)">
+    <rect x="0" y="0" width="240" height="256" rx="12" fill="url(#plPanelDark)" stroke="#334155" stroke-width="1.5"/>
+
+    <!-- Panel Header Bar -->
+    <rect x="0" y="0" width="240" height="38" rx="12" fill="#1E293B"/>
+    <rect x="0" y="24" width="240" height="14" fill="#1E293B"/>
+    <line x1="0" y1="38" x2="240" y2="38" stroke="#334155" stroke-width="1"/>
+    <circle cx="24" cy="19" r="5" fill="#FBBF24" filter="url(#plGlowGold)"/>
+    <text x="40" y="19" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Your inputs</text>
+
+    <rect x="16" y="52" width="208" height="36" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <text x="120" y="70" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#CBD5E1" text-anchor="middle">issues + acceptance criteria</text>
+
+    <rect x="16" y="100" width="208" height="36" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <text x="120" y="118" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" fill="#CBD5E1" text-anchor="middle">deploy.md</text>
+
+    <rect x="16" y="148" width="208" height="36" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <text x="120" y="166" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="700" fill="#CBD5E1" text-anchor="middle">test playbooks</text>
+
+    <rect x="16" y="196" width="208" height="36" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <text x="120" y="214" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="700" fill="#CBD5E1" text-anchor="middle">branch name</text>
+  </g>
+
+  <!-- INTAKE ARROW -->
+  <line x1="294" y1="283" x2="310" y2="283" stroke="#F59E0B" stroke-width="2" stroke-dasharray="4 4"/>
+  <polygon points="320,283 310,278 310,288" fill="#F59E0B"/>
+
+  <!-- CYCLE LOOP CONTAINER -->
+  <rect x="300" y="190" width="735" height="360" rx="14" fill="#F59E0B" fill-opacity="0.05" stroke="#F59E0B" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <text x="320" y="214" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="800" letter-spacing="1.4" fill="#FBBF24">CYCLE LOOP</text>
+  <text x="1015" y="214" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8" text-anchor="end">loops until goal met or max cycles</text>
+
+  <!-- STAGE 1: PLAN -->
+  <g transform="translate(320, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#0F172A" stroke="#F59E0B" stroke-width="1.5"/>
+    <circle cx="20" cy="20" r="9" fill="#F59E0B"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#0F172A" text-anchor="middle">1</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC" text-anchor="middle">Plan</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#94A3B8" text-anchor="middle">planner + plan-reviewer</text>
+  </g>
+  <line x1="478" y1="283" x2="490" y2="283" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="500,283 490,278 490,288" fill="#F59E0B"/>
+
+  <!-- STAGE 2: DEVELOP -->
+  <g transform="translate(500, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#0F172A" stroke="#F59E0B" stroke-width="1.5"/>
+    <circle cx="20" cy="20" r="9" fill="#F59E0B"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#0F172A" text-anchor="middle">2</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC" text-anchor="middle">Develop</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#94A3B8" text-anchor="middle">doer + reviewer</text>
+  </g>
+  <line x1="658" y1="283" x2="670" y2="283" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="680,283 670,278 670,288" fill="#F59E0B"/>
+
+  <!-- STAGE 3: DEPLOY -->
+  <g transform="translate(680, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#0F172A" stroke="#F59E0B" stroke-width="1.5"/>
+    <circle cx="20" cy="20" r="9" fill="#F59E0B"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#0F172A" text-anchor="middle">3</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC" text-anchor="middle">Deploy</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#94A3B8" text-anchor="middle">deployer (needs deploy.md)</text>
+  </g>
+  <line x1="838" y1="283" x2="850" y2="283" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="860,283 850,278 850,288" fill="#F59E0B"/>
+
+  <!-- STAGE 4: INTEGRATION TEST -->
+  <g transform="translate(860, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#0F172A" stroke="#F59E0B" stroke-width="1.5"/>
+    <circle cx="20" cy="20" r="9" fill="#F59E0B"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#0F172A" text-anchor="middle">4</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC" text-anchor="middle">Integration Test</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#94A3B8" text-anchor="middle">test runner (needs playbook)</text>
+  </g>
+
+  <!-- STAGE 4 -> DECISION -->
+  <line x1="937.5" y1="326" x2="937.5" y2="374" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="937.5,382 932.5,372 942.5,372" fill="#F59E0B"/>
+
+  <!-- DECISION DIAMOND -->
+  <polygon points="937.5,382 1015.5,430 937.5,478 859.5,430" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="2" filter="url(#plGlowGold)"/>
+  <text x="937.5" y="426" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24" text-anchor="middle">goal met or</text>
+  <text x="937.5" y="442" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24" text-anchor="middle">max cycles?</text>
+
+  <!-- NO PATH: RETURN TO PLAN -->
+  <path d="M 855 430 L 410 430 Q 397.5 430 397.5 417 L 397.5 336" fill="none" stroke="#F59E0B" stroke-width="2" stroke-dasharray="4 4"/>
+  <polygon points="397.5,326 392.5,336 402.5,336" fill="#F59E0B"/>
+  <text x="850" y="418" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="800" fill="#FBBF24" text-anchor="end">no</text>
+  <text x="626" y="420" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#FBBF24" text-anchor="middle">run another cycle</text>
+
+  <!-- LOOP ANNOTATION -->
+  <circle cx="322" cy="518" r="4" fill="#FBBF24"/>
+  <text x="336" y="518" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="700" fill="#CBD5E1">each stage writes real state: commits, issue closures, filed bugs</text>
+
+  <!-- YES PATH: EXIT RIGHT AND UP -->
+  <path d="M 1020 430 L 1044 430 L 1044 294 L 1047 294" fill="none" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="1055,294 1045,289 1045,299" fill="#F59E0B"/>
+  <text x="1036" y="452" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="800" fill="#FBBF24" text-anchor="middle">yes</text>
+
+  <!-- FINAL COLUMN: VERDICT -->
+  <g transform="translate(1040, 250)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="url(#plPanelDark)" stroke="#334155" stroke-width="1.5"/>
+    <text x="102.5" y="26" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC" text-anchor="middle">Final verdict</text>
+    <rect x="31" y="36" width="68" height="26" rx="8" fill="#10B981" fill-opacity="0.15" stroke="#10B981" stroke-width="1.2"/>
+    <text x="65" y="49" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#34D399" text-anchor="middle">PASS</text>
+    <rect x="107" y="36" width="68" height="26" rx="8" fill="#EF4444" fill-opacity="0.15" stroke="#EF4444" stroke-width="1.2"/>
+    <text x="141" y="49" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FCA5A5" text-anchor="middle">FAIL</text>
+  </g>
+
+  <line x1="1142.5" y1="338" x2="1142.5" y2="352" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="1142.5,360 1137.5,350 1147.5,350" fill="#F59E0B"/>
+
+  <!-- FINAL COLUMN: REGRESSION PASS -->
+  <g transform="translate(1040, 360)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="url(#plPanelDark)" stroke="#334155" stroke-width="1.5"/>
+    <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC" text-anchor="middle">Regression pass</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8" text-anchor="middle">once per sprint, informational</text>
+  </g>
+
+  <line x1="1142.5" y1="448" x2="1142.5" y2="462" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="1142.5,470 1137.5,460 1147.5,460" fill="#F59E0B"/>
+
+  <!-- FINAL COLUMN: HARVEST -->
+  <g transform="translate(1040, 470)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="url(#plPanelDark)" stroke="#334155" stroke-width="1.5"/>
+    <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC" text-anchor="middle">Harvest</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8" text-anchor="middle">docs + changelog + cost</text>
+  </g>
+
+  <line x1="1142.5" y1="558" x2="1142.5" y2="572" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="1142.5,580 1137.5,570 1147.5,570" fill="#F59E0B"/>
+
+  <!-- FINAL COLUMN: PUSH + PR -->
+  <g transform="translate(1040, 580)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="url(#plPanelDark)" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#F8FAFC" text-anchor="middle">Push branch + open PR</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#FBBF24" text-anchor="middle">never auto-merged</text>
+  </g>
+</svg>
+    </div>
+  </figure>
+
+  <p>Concretely, after a run finishes, here is what has changed in your world:</p>
+
+  <ul>
+    <li>Your repo has a new branch with a series of reviewed commits and an open PR against the base branch you chose.</li>
+    <li>Your issue tracker (beads &mdash; see Section 2) has the sprint's issues decomposed, worked, and closed-with-evidence or left open with filed bugs explaining why.</li>
+    <li>A sprint analysis document is committed to the branch (under <code>sprint-logs/</code>), and the run's raw log is retained on disk.</li>
+  </ul>
+
+  <p>What it is <em>not</em>: it does not invent product scope (the planner is explicitly forbidden from adding work beyond the issues you gave it), it does not merge its own PRs, and it does not know how to deploy or verify your software unless you write down how (Section 2).</p>
+</section>
+
+<!-- ===================== SECTION 2 ===================== -->
+<section>
+  <h2 id="s2"><span class="num">Section 2</span>What you need before you start</h2>
+
+  <p>This is the honest part. fleet-sprint automates execution; it does not automate knowing your project. Four things are yours to build first, and none of them are generated for you.</p>
+
+  <h3 id="s2-1">2.1 Your Azure DevOps epics need equivalents in beads</h3>
+
+  <p>fleet-sprint tracks all work in <strong>beads</strong> (<code>bd</code>), a git-friendly issue tracker: the data lives in your repo clone and syncs through your existing git remote, no extra server. That is where the sprint's plan gets written, where acceptance criteria live, and where closure evidence is recorded. For this guide, that is all you need to know about beads internals.</p>
+
+  <p>Before a sprint can run, the work in scope must exist there: one epic bead as the sprint root, with the in-scope features/stories as its children (created or linked with <code>--parent</code> &mdash; the engine resolves a sprint's scope by following parent links from the root id you launch with).</p>
+
+  <p>Getting your backlog in is better than we expected: beads itself ships a native Azure DevOps integration. <code>bd ado sync --pull-only</code> bulk-pulls work items from an AzDevOps org/project (configured via <code>bd config</code> or env vars: organization, project, PAT), <code>bd ado pull</code> fetches specific items, and a generic <code>bd import</code> accepts JSONL for anything else &mdash; all verified against the beads CLI and its documentation. Two honest caveats. First, this is upstream beads functionality, not something apra-fleet adds or wraps &mdash; apra-fleet knows Azure DevOps only as a git host (PAT provisioning for push/PR); validate the sync against your own org before relying on it. Second, an imported work item is not automatically sprint-ready: most AzDevOps items lack the concrete acceptance criteria every sprint role depends on &mdash; the planner decomposes from them, the doer is instructed to <em>skip</em> beads without them rather than guess, and the reviewer diffs against them. So the real work is curation, not transcription: parent the in-scope items under one root and write down what "done" looks like for each. One epic with 3-8 well-described children is enough for a first sprint.</p>
+
+  <h3 id="s2-2">2.2 Write <code>deploy.md</code> &mdash; fleet-sprint cannot write it for you</h3>
+
+  <p><code>deploy.md</code> lives at your repo root and is a literal runbook: the deployer agent reads it and executes it, command by command. Its contract (from the deployer's own role definition):</p>
+
+  <ul>
+    <li><code>## Deploy</code> &mdash; the commands to deploy/stand up the software, in order.</li>
+    <li><code>## Smoke test</code> &mdash; one command; exit code 0 means healthy.</li>
+    <li><code>## Permissions</code> (optional but recommended) &mdash; the command prefixes the agent needs allowed in its CLI permission settings. The deployer checks this <em>before running anything</em> and stops with a clear report if your allowlist is missing entries, rather than failing mid-deploy.</li>
+  </ul>
+
+  <p>The deployer is explicitly forbidden from improvising: if <code>deploy.md</code> is absent, the deploy and integration-test phases are <strong>skipped cleanly</strong> &mdash; the sprint still runs, but nothing gets verified against a running system. If a step fails, it stops and reports the exact command and output; it never "works around" your deploy process.</p>
+
+  <p>Why you must write it: fleet-sprint has no idea whether your app is a Docker compose stack, an IIS site, a Kubernetes deployment, or <code>npm start</code> &mdash; and guessing at deployment is exactly the class of action you do not want an autonomous agent doing. Minimum viable version: the commands you already run by hand to start the app locally, plus one curl or CLI call that proves it is up.</p>
+
+  <h3 id="s2-3">2.3 Write an integration test playbook and a regression test playbook</h3>
+
+  <p>These are <strong>instruction files a human writes</strong>, not test code. They tell the test-runner agents how to verify the software works. If you have zero automated tests today &mdash; which is our assumption about you &mdash; that is workable: a playbook can start life as written-down manual verification steps (commands to run, outputs to check), and grow more automated over time.</p>
+
+  <p><strong><code>integ-test-playbook.md</code></strong> (repo root) &mdash; read every cycle by the integration test runner after a successful deploy. It describes how to exercise the deployed software and how to judge pass/fail. The runner closes a feature only when its tests pass, files a bug bead (with expected vs actual, output, and repro steps) when they fail, and never writes or fixes code itself. Note the division of labor: per-feature <em>test code</em> is written during the sprint by the doer (the planner creates a <code>[test]</code> task for every feature); the playbook is the stable, environment-level "how do we run and verify things here" document. Minimum viable version: a <code>## Permissions</code> section, how to reach the deployed app (URL/port/paths), and how to run and interpret whatever checks exist &mdash; even if that is three curl commands and what their responses should contain.</p>
+
+  <p><strong><code>regression-test-playbook.md</code></strong> (repo root) &mdash; run <strong>once per sprint</strong>, near the end, by a separate regression runner that owns a sandbox lifecycle (<code>## Setup</code>, a test scenario, <code>## Teardown</code> &mdash; teardown always runs, pass or fail). Its job is proving <em>existing</em> functionality still works. Two honest softeners for a team starting from zero: (a) its result is explicitly informational &mdash; it never gates the sprint's PASS/FAIL verdict; failures are filed as standalone "carry-over" bugs for a future sprint; and (b) if the file is absent, the phase is skipped with a warning. So you can defer this one &mdash; but a sprint with no regression pass has no systematic check that it didn't break what already worked, and with no unit tests either, your only safety nets are the reviewer's diff reading and your own PR review. Plan to add it by your second or third sprint.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="34 14 1212 740" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Who writes what in a fleet-sprint: seven human-authored artifacts on the left feed the seven automated sprint phases on the right, so no phase runs on nothing." preserveAspectRatio="xMidYMid meet" class="art-light">
+  <defs>
+    <!-- Background Gradient Light -->
+    <linearGradient id="awBgLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#F1F5F9"/>
+    </linearGradient>
+
+    <!-- Soft Drop Shadow Filter -->
+    <filter id="awShadowLight" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+
+    <!-- Cyber Grid Pattern Light -->
+    <pattern id="awGridLight" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#E2E8F0" stroke-width="1" opacity="0.45"/>
+      <circle cx="40" cy="40" r="1.5" fill="#CBD5E1" opacity="0.5"/>
+    </pattern>
+  </defs>
+
+  <!-- Base Canvas -->
+  <rect width="1280" height="780" fill="url(#awBgLight)"/>
+  <rect width="1280" height="780" fill="url(#awGridLight)"/>
+
+  <!-- Eyebrow Pill Badge -->
+  <g transform="translate(50, 30)">
+    <rect x="0" y="0" width="212" height="28" rx="14" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="16" cy="14" r="4" fill="#D97706"/>
+    <text x="30" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="800" letter-spacing="1.0" fill="#B45309">WHO WRITES WHAT</text>
+  </g>
+
+  <!-- Main Title -->
+  <text x="50" y="105" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="28" font-weight="900" fill="#0F172A">Every automated phase is anchored to a human-authored artifact</text>
+  <!-- Subtitle -->
+  <text x="50" y="138" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="500" fill="#64748B">No phase runs on nothing.</text>
+
+  <!-- LEFT COLUMN: human-authored artifacts -->
+  <rect x="50" y="170" width="470" height="494" rx="14" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#awShadowLight)"/>
+  <rect x="50" y="170" width="470" height="38" rx="14" fill="#F1F5F9"/>
+  <rect x="50" y="194" width="470" height="14" fill="#F1F5F9"/>
+  <line x1="50" y1="208" x2="520" y2="208" stroke="#CBD5E1" stroke-width="1"/>
+  <circle cx="74" cy="189" r="5" fill="#D97706"/>
+  <text x="88" y="189" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">You write these once (and maintain them)</text>
+
+  <!-- Left row 1: beads epic + child issues -->
+  <g>
+    <rect x="68" y="220" width="434" height="52" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="88" cy="246" r="11" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1"/>
+    <text x="88" y="246" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#475569">1</text>
+    <text x="110" y="242" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#0F172A">beads epic + child issues</text>
+    <text x="110" y="259" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B">with acceptance criteria</text>
+  </g>
+  <!-- Left row 2: deploy.md -->
+  <g>
+    <rect x="68" y="282" width="434" height="52" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="88" cy="308" r="11" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1"/>
+    <text x="88" y="308" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#475569">2</text>
+    <text x="110" y="313" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#0F172A">deploy.md</text>
+  </g>
+  <!-- Left row 3: integ-test-playbook.md -->
+  <g>
+    <rect x="68" y="344" width="434" height="52" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="88" cy="370" r="11" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1"/>
+    <text x="88" y="370" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#475569">3</text>
+    <text x="110" y="375" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#0F172A">integ-test-playbook.md</text>
+  </g>
+  <!-- Left row 4: regression-test-playbook.md -->
+  <g>
+    <rect x="68" y="406" width="434" height="52" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="88" cy="432" r="11" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1"/>
+    <text x="88" y="432" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#475569">4</text>
+    <text x="110" y="437" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#0F172A">regression-test-playbook.md</text>
+  </g>
+  <!-- Left row 5: CLI permission allowlist -->
+  <g>
+    <rect x="68" y="468" width="434" height="52" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="88" cy="494" r="11" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1"/>
+    <text x="88" y="494" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#475569">5</text>
+    <text x="110" y="499" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#0F172A">CLI permission allowlist</text>
+  </g>
+  <!-- Left row 6: requirements file -->
+  <g>
+    <rect x="68" y="530" width="434" height="52" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="88" cy="556" r="11" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1"/>
+    <text x="88" y="556" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#475569">6</text>
+    <text x="110" y="552" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#0F172A">requirements file</text>
+    <text x="110" y="569" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B">(optional)</text>
+  </g>
+  <!-- Left row 7: bd remember entries -->
+  <g>
+    <rect x="68" y="592" width="434" height="52" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="88" cy="618" r="11" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1"/>
+    <text x="88" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#475569">7</text>
+    <text x="110" y="614" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#0F172A">bd remember entries</text>
+    <text x="110" y="631" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B">(optional)</text>
+  </g>
+
+  <!-- RIGHT COLUMN: automated sprint phases -->
+  <rect x="700" y="170" width="500" height="494" rx="14" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#awShadowLight)"/>
+  <rect x="700" y="170" width="500" height="38" rx="14" fill="#FEF3C7"/>
+  <rect x="700" y="194" width="500" height="14" fill="#FEF3C7"/>
+  <line x1="700" y1="208" x2="1200" y2="208" stroke="#F59E0B" stroke-width="1"/>
+  <circle cx="724" cy="189" r="5" fill="#D97706"/>
+  <text x="738" y="189" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#B45309">fleet-sprint executes against them, every sprint</text>
+
+  <!-- Right row A: Plan -->
+  <g>
+    <rect x="718" y="220" width="464" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#awShadowLight)"/>
+    <circle cx="738" cy="246" r="11" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="246" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309">A</text>
+    <text x="760" y="242" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Plan</text>
+    <text x="760" y="260" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#64748B">reviewed task DAG, per-task criteria</text>
+  </g>
+  <!-- Right row B: Develop + Review -->
+  <g>
+    <rect x="718" y="282" width="464" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#awShadowLight)"/>
+    <circle cx="738" cy="308" r="11" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="308" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309">B</text>
+    <text x="760" y="304" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Develop + Review</text>
+    <text x="760" y="322" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#64748B">code commits, reviews</text>
+  </g>
+  <!-- Right row C: Deploy -->
+  <g>
+    <rect x="718" y="344" width="464" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#awShadowLight)"/>
+    <circle cx="738" cy="370" r="11" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="370" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309">C</text>
+    <text x="760" y="366" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Deploy</text>
+    <text x="760" y="384" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#64748B">runbook executed literally, smoke test gates it</text>
+  </g>
+  <!-- Right row D: Integration test -->
+  <g>
+    <rect x="718" y="406" width="464" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#awShadowLight)"/>
+    <circle cx="738" cy="432" r="11" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="432" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309">D</text>
+    <text x="760" y="428" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Integration test</text>
+    <text x="760" y="446" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#64748B">evidence-based closure, bugs filed</text>
+  </g>
+  <!-- Right row E: Regression pass -->
+  <g>
+    <rect x="718" y="468" width="464" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#awShadowLight)"/>
+    <circle cx="738" cy="494" r="11" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="494" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309">E</text>
+    <text x="760" y="490" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Regression pass</text>
+    <text x="760" y="508" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#64748B">once per sprint, informational</text>
+  </g>
+  <!-- Right row F: Permission precheck -->
+  <g>
+    <rect x="718" y="530" width="464" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#awShadowLight)"/>
+    <circle cx="738" cy="556" r="11" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="556" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309">F</text>
+    <text x="760" y="552" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Permission precheck</text>
+    <text x="760" y="570" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#64748B">agents stop and report, never self-grant</text>
+  </g>
+  <!-- Right row G: Harvest + PR -->
+  <g>
+    <rect x="718" y="592" width="464" height="52" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#awShadowLight)"/>
+    <circle cx="738" cy="618" r="11" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309">G</text>
+    <text x="760" y="614" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Harvest + PR</text>
+    <text x="760" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#64748B">docs, changelog, pull request</text>
+  </g>
+
+  <!-- Connectors: left artifacts -> right phases (left to right) -->
+  <g fill="none" stroke-width="1.6" stroke-dasharray="4 4">
+    <path d="M 502 236 C 562 236, 598 237, 708 237" stroke="#D97706"/>
+    <path d="M 502 246 C 562 246, 598 308, 708 308" stroke="#D97706"/>
+    <path d="M 502 256 C 562 256, 598 427, 708 427" stroke="#D97706"/>
+    <path d="M 502 308 C 562 308, 598 370, 708 370" stroke="#D97706"/>
+    <path d="M 502 370 C 562 370, 598 437, 708 437" stroke="#D97706"/>
+    <path d="M 502 432 C 562 432, 598 494, 708 494" stroke="#D97706"/>
+    <path d="M 502 494 C 562 494, 598 556, 708 556" stroke="#D97706"/>
+    <path d="M 502 556 C 562 556, 598 255, 708 255" stroke="#64748B" stroke-opacity="0.9"/>
+  </g>
+  <g stroke="none">
+    <polygon points="718,237 708,232 708,242" fill="#D97706"/>
+    <polygon points="718,308 708,303 708,313" fill="#D97706"/>
+    <polygon points="718,427 708,422 708,432" fill="#D97706"/>
+    <polygon points="718,370 708,365 708,375" fill="#D97706"/>
+    <polygon points="718,437 708,432 708,442" fill="#D97706"/>
+    <polygon points="718,494 708,489 708,499" fill="#D97706"/>
+    <polygon points="718,556 708,551 708,561" fill="#D97706"/>
+    <polygon points="718,255 708,250 708,260" fill="#64748B"/>
+  </g>
+
+  <!-- Row 7 -> full-height spine spanning every right-hand phase -->
+  <path d="M 502 618 C 542 618, 572 654, 662 654 L 1216 654" fill="none" stroke="#D97706" stroke-width="1.6" stroke-dasharray="4 4"/>
+  <path d="M 1216 654 L 1216 216" fill="none" stroke="#D97706" stroke-width="2"/>
+  <path d="M 1216 216 L 1194 216" fill="none" stroke="#D97706" stroke-width="2"/>
+  <path d="M 1216 654 L 1194 654" fill="none" stroke="#D97706" stroke-width="2"/>
+  <polygon points="1184,216 1194,211 1194,221" fill="#D97706"/>
+  <polygon points="1184,654 1194,649 1194,659" fill="#D97706"/>
+  <circle cx="1216" cy="435" r="4" fill="#D97706"/>
+  <text transform="translate(1230, 435) rotate(90)" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#B45309">all roles, via the bd prime session hook</text>
+
+  <!-- Bottom annotation strip -->
+  <rect x="50" y="690" width="1166" height="48" rx="12" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1.2"/>
+  <circle cx="74" cy="714" r="5" fill="#D97706"/>
+  <text x="92" y="714" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5">
+    <tspan font-weight="800" fill="#B45309">Every automated phase on the right is anchored to a human-authored artifact on the left.</tspan>
+    <tspan dx="8" font-weight="600" fill="#334155">No phase runs on nothing.</tspan>
+  </text>
+</svg>
+      <svg viewBox="34 14 1212 740" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Who writes what in a fleet-sprint: seven human-authored artifacts on the left feed the seven automated sprint phases on the right, so no phase runs on nothing." preserveAspectRatio="xMidYMid meet" class="art-dark">
+  <defs>
+    <!-- Background Gradient Dark -->
+    <linearGradient id="awBgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080C14"/>
+      <stop offset="50%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#060911"/>
+    </linearGradient>
+
+    <!-- Glass Panel Gradient -->
+    <linearGradient id="awPanelDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <!-- Cyber Grid Pattern Dark -->
+    <pattern id="awGridDark" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E293B" stroke-width="1" opacity="0.4"/>
+      <circle cx="40" cy="40" r="1.5" fill="#334155" opacity="0.5"/>
+    </pattern>
+
+    <!-- Gold Glow Filter -->
+    <filter id="awGlowGold" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Base Canvas -->
+  <rect width="1280" height="780" fill="url(#awBgDark)"/>
+  <rect width="1280" height="780" fill="url(#awGridDark)"/>
+
+  <!-- Eyebrow Pill Badge -->
+  <g transform="translate(50, 30)">
+    <rect x="0" y="0" width="212" height="28" rx="14" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="16" cy="14" r="4" fill="#FBBF24" filter="url(#awGlowGold)"/>
+    <text x="30" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="800" letter-spacing="1.0" fill="#FBBF24">WHO WRITES WHAT</text>
+  </g>
+
+  <!-- Main Title -->
+  <text x="50" y="105" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="28" font-weight="900" fill="#F8FAFC">Every automated phase is anchored to a human-authored artifact</text>
+  <!-- Subtitle -->
+  <text x="50" y="138" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="500" fill="#94A3B8">No phase runs on nothing.</text>
+
+  <!-- LEFT COLUMN: human-authored artifacts -->
+  <rect x="50" y="170" width="470" height="494" rx="14" fill="url(#awPanelDark)" stroke="#334155" stroke-width="1.5"/>
+  <rect x="50" y="170" width="470" height="38" rx="14" fill="#1E293B"/>
+  <rect x="50" y="194" width="470" height="14" fill="#1E293B"/>
+  <line x1="50" y1="208" x2="520" y2="208" stroke="#334155" stroke-width="1"/>
+  <circle cx="74" cy="189" r="5" fill="#FBBF24" filter="url(#awGlowGold)"/>
+  <text x="88" y="189" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">You write these once (and maintain them)</text>
+
+  <!-- Left row 1: beads epic + child issues -->
+  <g>
+    <rect x="68" y="220" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="246" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="246" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">1</text>
+    <text x="110" y="242" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#F8FAFC">beads epic + child issues</text>
+    <text x="110" y="259" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8">with acceptance criteria</text>
+  </g>
+  <!-- Left row 2: deploy.md -->
+  <g>
+    <rect x="68" y="282" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="308" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="308" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">2</text>
+    <text x="110" y="313" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#F8FAFC">deploy.md</text>
+  </g>
+  <!-- Left row 3: integ-test-playbook.md -->
+  <g>
+    <rect x="68" y="344" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="370" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="370" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">3</text>
+    <text x="110" y="375" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#F8FAFC">integ-test-playbook.md</text>
+  </g>
+  <!-- Left row 4: regression-test-playbook.md -->
+  <g>
+    <rect x="68" y="406" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="432" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="432" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">4</text>
+    <text x="110" y="437" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#F8FAFC">regression-test-playbook.md</text>
+  </g>
+  <!-- Left row 5: CLI permission allowlist -->
+  <g>
+    <rect x="68" y="468" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="494" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="494" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">5</text>
+    <text x="110" y="499" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#F8FAFC">CLI permission allowlist</text>
+  </g>
+  <!-- Left row 6: requirements file -->
+  <g>
+    <rect x="68" y="530" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="556" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="556" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">6</text>
+    <text x="110" y="552" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#F8FAFC">requirements file</text>
+    <text x="110" y="569" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8">(optional)</text>
+  </g>
+  <!-- Left row 7: bd remember entries -->
+  <g>
+    <rect x="68" y="592" width="434" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="88" cy="618" r="11" fill="#1E293B" stroke="#475569" stroke-width="1"/>
+    <text x="88" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#94A3B8">7</text>
+    <text x="110" y="614" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5" font-weight="800" fill="#F8FAFC">bd remember entries</text>
+    <text x="110" y="631" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#94A3B8">(optional)</text>
+  </g>
+
+  <!-- RIGHT COLUMN: automated sprint phases -->
+  <rect x="700" y="170" width="500" height="494" rx="14" fill="url(#awPanelDark)" stroke="#F59E0B" stroke-width="1.5"/>
+  <rect x="700" y="170" width="500" height="38" rx="14" fill="#1E293B"/>
+  <rect x="700" y="194" width="500" height="14" fill="#1E293B"/>
+  <line x1="700" y1="208" x2="1200" y2="208" stroke="#F59E0B" stroke-width="1"/>
+  <circle cx="724" cy="189" r="5" fill="#FBBF24" filter="url(#awGlowGold)"/>
+  <text x="738" y="189" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#FBBF24">fleet-sprint executes against them, every sprint</text>
+
+  <!-- Right row A: Plan -->
+  <g>
+    <rect x="718" y="220" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="738" cy="246" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="246" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">A</text>
+    <text x="760" y="242" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Plan</text>
+    <text x="760" y="260" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">reviewed task DAG, per-task criteria</text>
+  </g>
+  <!-- Right row B: Develop + Review -->
+  <g>
+    <rect x="718" y="282" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="738" cy="308" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="308" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">B</text>
+    <text x="760" y="304" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Develop + Review</text>
+    <text x="760" y="322" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">code commits, reviews</text>
+  </g>
+  <!-- Right row C: Deploy -->
+  <g>
+    <rect x="718" y="344" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="738" cy="370" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="370" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">C</text>
+    <text x="760" y="366" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Deploy</text>
+    <text x="760" y="384" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">runbook executed literally, smoke test gates it</text>
+  </g>
+  <!-- Right row D: Integration test -->
+  <g>
+    <rect x="718" y="406" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="738" cy="432" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="432" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">D</text>
+    <text x="760" y="428" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Integration test</text>
+    <text x="760" y="446" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">evidence-based closure, bugs filed</text>
+  </g>
+  <!-- Right row E: Regression pass -->
+  <g>
+    <rect x="718" y="468" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="738" cy="494" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="494" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">E</text>
+    <text x="760" y="490" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Regression pass</text>
+    <text x="760" y="508" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">once per sprint, informational</text>
+  </g>
+  <!-- Right row F: Permission precheck -->
+  <g>
+    <rect x="718" y="530" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="738" cy="556" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="556" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">F</text>
+    <text x="760" y="552" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Permission precheck</text>
+    <text x="760" y="570" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">agents stop and report, never self-grant</text>
+  </g>
+  <!-- Right row G: Harvest + PR -->
+  <g>
+    <rect x="718" y="592" width="464" height="52" rx="8" fill="#0F172A" stroke="#334155" stroke-width="1"/>
+    <circle cx="738" cy="618" r="11" fill="#F59E0B" fill-opacity="0.15" stroke="#F59E0B" stroke-width="1"/>
+    <text x="738" y="618" dominant-baseline="central" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#FBBF24">G</text>
+    <text x="760" y="614" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#F8FAFC">Harvest + PR</text>
+    <text x="760" y="632" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="600" fill="#94A3B8">docs, changelog, pull request</text>
+  </g>
+
+  <!-- Connectors: left artifacts -> right phases (left to right) -->
+  <g fill="none" stroke-width="1.6" stroke-dasharray="4 4">
+    <path d="M 502 236 C 562 236, 598 237, 708 237" stroke="#F59E0B"/>
+    <path d="M 502 246 C 562 246, 598 308, 708 308" stroke="#F59E0B"/>
+    <path d="M 502 256 C 562 256, 598 427, 708 427" stroke="#F59E0B"/>
+    <path d="M 502 308 C 562 308, 598 370, 708 370" stroke="#F59E0B"/>
+    <path d="M 502 370 C 562 370, 598 437, 708 437" stroke="#F59E0B"/>
+    <path d="M 502 432 C 562 432, 598 494, 708 494" stroke="#F59E0B"/>
+    <path d="M 502 494 C 562 494, 598 556, 708 556" stroke="#F59E0B"/>
+    <path d="M 502 556 C 562 556, 598 255, 708 255" stroke="#64748B" stroke-opacity="0.9"/>
+  </g>
+  <g stroke="none">
+    <polygon points="718,237 708,232 708,242" fill="#F59E0B"/>
+    <polygon points="718,308 708,303 708,313" fill="#F59E0B"/>
+    <polygon points="718,427 708,422 708,432" fill="#F59E0B"/>
+    <polygon points="718,370 708,365 708,375" fill="#F59E0B"/>
+    <polygon points="718,437 708,432 708,442" fill="#F59E0B"/>
+    <polygon points="718,494 708,489 708,499" fill="#F59E0B"/>
+    <polygon points="718,556 708,551 708,561" fill="#F59E0B"/>
+    <polygon points="718,255 708,250 708,260" fill="#64748B"/>
+  </g>
+
+  <!-- Row 7 -> full-height spine spanning every right-hand phase -->
+  <path d="M 502 618 C 542 618, 572 654, 662 654 L 1216 654" fill="none" stroke="#F59E0B" stroke-width="1.6" stroke-dasharray="4 4"/>
+  <path d="M 1216 654 L 1216 216" fill="none" stroke="#F59E0B" stroke-width="2"/>
+  <path d="M 1216 216 L 1194 216" fill="none" stroke="#F59E0B" stroke-width="2"/>
+  <path d="M 1216 654 L 1194 654" fill="none" stroke="#F59E0B" stroke-width="2"/>
+  <polygon points="1184,216 1194,211 1194,221" fill="#F59E0B"/>
+  <polygon points="1184,654 1194,649 1194,659" fill="#F59E0B"/>
+  <circle cx="1216" cy="435" r="4" fill="#F59E0B"/>
+  <text transform="translate(1230, 435) rotate(90)" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#FBBF24">all roles, via the bd prime session hook</text>
+
+  <!-- Bottom annotation strip -->
+  <rect x="50" y="690" width="1166" height="48" rx="12" fill="#F59E0B" fill-opacity="0.12" stroke="#F59E0B" stroke-width="1.2"/>
+  <circle cx="74" cy="714" r="5" fill="#FBBF24" filter="url(#awGlowGold)"/>
+  <text x="92" y="714" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5">
+    <tspan font-weight="800" fill="#FBBF24">Every automated phase on the right is anchored to a human-authored artifact on the left.</tspan>
+    <tspan dx="8" font-weight="600" fill="#E2E8F0">No phase runs on nothing.</tspan>
+  </text>
+</svg>
+    </div>
+  </figure>
+
+  <h3 id="s2-4">2.4 Register at least one fleet member</h3>
+
+  <p>A <strong>member</strong> is a real machine (or just a separate folder on your machine) with a provider CLI &mdash; for you, Claude Code &mdash; and a working directory containing a clone of your repo. The fleet server dispatches all agent work to members.</p>
+
+  <figure>
+    <div class="frame">
+      <img class="art-light" src="../assets/marketing/fleet-topology-light.svg" alt="apra-fleet topology: a control plane dispatching agent work to registered members across machines and providers." loading="lazy">
+      <img class="art-dark" src="../assets/marketing/fleet-topology-dark.svg" alt="apra-fleet topology: a control plane dispatching agent work to registered members across machines and providers." loading="lazy">
+    </div>
+    <figcaption>assets/marketing/fleet-topology-{light,dark}.svg</figcaption>
+  </figure>
+
+  <p>fleet-sprint is not yet published to the npm registry, so install from the binary distribution:</p>
+
+<pre><code>git clone https://github.com/Apra-Labs/apra-fleet &amp;&amp; cd apra-fleet
+npm install &amp;&amp; npm run build:binary   <span class="cm"># -&gt; dist/apra-fleet-installer-&lt;platform&gt;-&lt;arch&gt;[.exe]</span>
+dist/apra-fleet-installer-win-x64.exe install --force
+~/.apra-fleet/bin/apra-fleet start</code></pre>
+
+  <p>The installer is a single self-contained executable: running it unpacks the fleet runtime into <code>~/.apra-fleet/</code> and puts the <code>apra-fleet</code> binary on disk at <code>~/.apra-fleet/bin</code>. Substitute your own platform/arch in the installer filename (<code>darwin-arm64</code>, <code>linux-x64</code>, <code>win-x64</code>).</p>
+
+  <p>Then load the fleet MCP server in Claude Code (<code>/mcp</code>) and register members conversationally &mdash; registration is driven through your agent in plain language, e.g. "Register a local member called <code>dev1</code>, work folder <code>C:\work\myapp</code>." Registration validates connectivity and that the CLI is present; remote machines work over SSH, with passwords collected out-of-band (never typed into the chat).</p>
+
+  <p>One member is enough to start, and a single-member sprint avoids the multi-clone topology questions entirely. You will also want git credentials provisioned for the member so it can push the branch and open the PR &mdash; apra-fleet's <code>provision_vcs_auth</code> supports GitHub, Bitbucket, and <strong>Azure DevOps</strong> (org URL + PAT), so an AzDevOps-hosted git repo is fully supported.</p>
+
+  <h3 id="s2-5">2.5 Scale sideways: one member per sprint, several sprints at once</h3>
+
+  <p>The way to get more work done in parallel is <strong>more sprints, not more agents inside one sprint</strong>. Register several members and run a separate sprint on each &mdash; one member, one branch, one slice of the backlog per sprint. Three members running three independent sprints is a configuration that gets real daily use.</p>
+
+  <p>The supervisor is built for exactly this: it holds a reservation ledger over members and issue scopes, refuses a launch whose member or issue scope collides with an already-running sprint (HTTP 409 naming the conflict), and shows a member as <em>reserved</em> in the launch form while it is busy. Each sprint gets its own branch, its own PR, and its own dashboard, so the runs stay independent all the way to review.</p>
+
+  <p>Assigning several doers to a <em>single</em> sprint is a different thing, and an untested one &mdash; the launch form will let you tick several members for one sprint, but that configuration has not been exercised in practice, so treat it as experimental. Start with one member per sprint and add sprints, not doers.</p>
+</section>
+
+<!-- ===================== SECTION 3 ===================== -->
+<section>
+  <h2 id="s3"><span class="num">Section 3</span>How do I run it</h2>
+
+  <p>Not by invoking a CLI directly. The supported entry point is the <strong>always-on supervisor</strong> (<code>fleet-se serve</code>), a small local HTTP service (default port 8787) that owns a reservation ledger &mdash; it knows which members and which issue scopes are already claimed by a running sprint, and refuses launches that would collide (an HTTP 409 naming the conflicting sprint). Launching a sprint is one POST:</p>
+
+<pre><code>POST http://127.0.0.1:8787/api/sprints
+{
+  "issue":   "myapp-epic-1",          <span class="cm">// your epic bead id (comma-separate for multiple roots)</span>
+  "members": ["dev1"],                <span class="cm">// registered member name(s)</span>
+  "branch":  "sprint/checkout-v2",    <span class="cm">// the branch the sprint develops on (created if absent)</span>
+  "base":    "main",                  <span class="cm">// what the branch forks from and the PR targets</span>
+  "goal":    "P1/P2",                 <span class="cm">// optional: priority ceiling for "done"</span>
+  "maxCycles": 5,                     <span class="cm">// optional</span>
+  "budget":  25,                      <span class="cm">// optional: USD ceiling for the run</span>
+  "requirementsFile": "docs/checkout-v2-requirements.md"   <span class="cm">// optional, see Section 5</span>
+}</code></pre>
+
+  <p>The request is validated before anything spawns (malformed issue ids, branch names, or empty member lists are rejected with a 400 naming the field), then the sprint starts as a detached child process and the response gives you a <code>sprintId</code>, the child's dashboard port, and the path to its raw log file. <code>POST /api/sprints/&lt;id&gt;/stop</code> stops it cooperatively. There is also a launch form in the supervisor's web dashboard that submits through this exact same endpoint, so point-and-click and API launches can never diverge.</p>
+
+  <div class="callout">
+    <p>A useful guard worth knowing on day one: if a previous run of the same epic ended in a failure the engine classifies as deterministic (it would just happen again), a relaunch is refused with a 409 until you either fix the cause or pass an explicit override flag. The system prefers telling you "this will fail again" over silently burning another run.</p>
+  </div>
+</section>
+
+<!-- ===================== SECTION 4 ===================== -->
+<section>
+  <h2 id="s4"><span class="num">Section 4</span>How do I know what's happening</h2>
+
+  <p>Open the supervisor's page in a browser (<code>http://localhost:8787</code>). It renders three things, and they answer the three questions stakeholders actually ask:</p>
+
+  <ul>
+    <li><strong>What is running right now?</strong> One section per live sprint: branch, goal, a four-state health badge from the supervisor's watchdog, the members and issue scope it has claimed, and a link into that sprint's live view, its raw log, and Stop and Restart controls.</li>
+    <li><strong>What is free to work on?</strong> The full backlog rendered as a tree, minus whatever running sprints have claimed, recomputed live &mdash; so two sprints can never be pointed at the same work by accident.</li>
+    <li><strong>How do I start another one?</strong> The launch form (issue picker fed from the backlog, member and role assignment, goal, branch naming).</li>
+  </ul>
+
+  <figure>
+    <div class="frame">
+      <img src="../assets/marketing/supervisor-sprints.png" alt="Supervisor index, Sprints tab: the running sprint with its health badge, branch, goal, claimed bead scope and members, plus per-sprint Open live view, Raw log, Stop and Restart controls." loading="lazy">
+    </div>
+    <figcaption>assets/marketing/supervisor-sprints.png &mdash; supervisor index, Sprints tab (http://localhost:8787)</figcaption>
+  </figure>
+
+  <figure>
+    <div class="frame">
+      <img src="../assets/marketing/supervisor-backlog.png" alt="Supervisor index, Backlog tab: the bead backlog as a filterable table with search and type, status, priority and model filters, each row showing its issue type, status, priority and assigned model tier." loading="lazy">
+    </div>
+    <figcaption>assets/marketing/supervisor-backlog.png &mdash; supervisor index, Backlog tab</figcaption>
+  </figure>
+
+  <figure>
+    <div class="frame">
+      <img src="../assets/marketing/supervisor-launch-form.png" alt="The Launch Sprint panel at the foot of the Backlog tab: a member list with a role dropdown per member, a goal selector, branch and base-branch fields, an override-relaunch-gate checkbox and a Launch Sprint button." loading="lazy">
+    </div>
+    <figcaption>assets/marketing/supervisor-launch-form.png &mdash; the Launch Sprint panel, at the foot of the Backlog tab</figcaption>
+  </figure>
+
+  <figure>
+    <div class="frame">
+      <img src="../assets/marketing/sprint-live-view.png" alt="A sprint's live view: activity tree of commands and agent dispatches grouped by sprint cycle and phase, each row timestamped with its duration, model tier and success, failed or running status, above a header showing activity count, dollars spent, tokens and uptime." loading="lazy">
+    </div>
+    <figcaption>assets/marketing/sprint-live-view.png &mdash; a sprint's live view, Activity Tree tab</figcaption>
+  </figure>
+
+  <p>Clicking into a live sprint gives the per-sprint dashboard: phases and agent dispatches streaming in as they happen, <strong>token and dollar cost totals</strong> accruing live, a Stop button, a live rendering of the beads work graph (which tasks exist, which are in progress, which closed) and &mdash; at the end &mdash; a <strong>verdict badge</strong> (PASS in green, FAIL in red) with a direct <strong>link to the opened PR</strong>. Every sprint's raw output is also captured to a per-sprint log file linked from the dashboard, so even a run that crashes before reporting anything structured leaves a traceable trail.</p>
+
+  <p>A non-engineer can get real signal from a glance: how many sprints are running, whether any health badge is red, what the spend is so far, and &mdash; once finished &mdash; PASS or FAIL and a PR link. The deliverable a human ultimately reviews is that PR: reviewed commits, a verdict stated plainly in the PR title/body, an updated changelog with a cost breakdown, and a written sprint analysis document committed under <code>sprint-logs/</code> on the branch.</p>
+</section>
+
+<!-- ===================== SECTION 5 ===================== -->
+<section>
+  <h2 id="s5"><span class="num">Section 5</span>How do architecture decisions and conventions get communicated</h2>
+
+  <p>There is no dedicated "architecture decision record" input to fleet-sprint. Here is what actually exists, verified against the code and the shipped role contracts, ordered by reach:</p>
+
+  <ol>
+    <li><strong><code>bd remember</code> &mdash; durable knowledge that reaches every role.</strong> Beads has a persistent-memory store: <code>bd remember --key &lt;key&gt; "&lt;one or two sentences&gt;"</code> writes an entry into the shared beads database, and <code>bd prime</code> (beads' context-recovery command) prints every stored memory in a "Persistent Memories" section, searchable via <code>bd memories &lt;keyword&gt;</code>. The delivery path: beads' convention &mdash; used by this repo itself, whose checked-in <code>.claude/settings.json</code> is exactly this &mdash; is a Claude Code <code>SessionStart</code> hook that runs <code>bd prime</code>, so <em>every</em> agent session opened in the repo gets the memories as session context. Since each dispatched sprint role (planner, doer, reviewer, test runners) runs as a Claude Code session inside the member's working copy, a repo carrying that hook delivers your recorded conventions to all of them. Two verified caveats: the fleet-sprint engine does <strong>not</strong> run <code>bd prime</code> or inject memories into dispatch prompts itself (the hook in your repo is the whole mechanism &mdash; check in <code>.claude/settings.json</code> with the <code>SessionStart</code> hook, as this repo does), and it is a Claude Code/Codex hook convention; other provider CLIs handle session context differently. For standing direction like "all new endpoints go through the gateway service" or "no new runtime dependencies without approval", this is the closest thing to a real cross-role channel that exists.</li>
+    <li><strong>The requirements file (<code>requirementsFile</code> on the launch request).</strong> The one explicit per-sprint channel: the engine reads the file and pastes its content verbatim into the <strong>planner's</strong> prompt. Use it for sprint-specific technical direction that should shape decomposition. Honest limit: it reaches the planner (and is readable by the harvester), not every doer &mdash; direction that implementers must follow needs mechanism 1 or 3.</li>
+    <li><strong>Bead descriptions and acceptance criteria.</strong> The highest-fidelity channel to the agents writing the code: the planner must give every task concrete acceptance criteria, the doer implements to them, the reviewer diffs against them. If a constraint matters for a specific piece of work, state it in that epic/feature bead's description and the planner carries it down into task criteria.</li>
+    <li><strong>The repo itself, including <code>CLAUDE.md</code>.</strong> The planner's contract tells it to read key source files "to understand existing conventions and structure", and the reviewer explicitly checks for consistency "with existing patterns and conventions" &mdash; your codebase's existing shape is an input. And because roles run as Claude Code sessions in your repo, a project <code>CLAUDE.md</code> (Claude Code's native project-instructions file) is loaded for every session &mdash; a Claude Code feature rather than a fleet-sprint one, but a real place to pin style rules and hard "never do X" constraints.</li>
+    <li><strong>The runbooks.</strong> <code>deploy.md</code> and the playbooks encode operational decisions (how we deploy, what "healthy" means, what we verify) as enforced behavior, since agents execute them literally.</li>
+  </ol>
+
+  <div class="callout">
+    <p>Rule of thumb: durable cross-cutting conventions -&gt; <code>bd remember</code> plus the <code>bd prime</code> session hook (and <code>CLAUDE.md</code> as belt-and-suspenders); sprint-scoped direction -&gt; the requirements file; per-work-item constraints -&gt; bead acceptance criteria.</p>
+  </div>
+</section>
+
+<!-- ===================== SECTION 6 ===================== -->
+<section>
+  <h2 id="s6"><span class="num">Section 6</span>What fleet-sprint actually does for you vs. what you still own</h2>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">fleet-sprint does this for you</th>
+          <th scope="col">You still own this</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Decomposes your epics into a reviewed task graph with dependencies and per-task model tiers (cost routing)</td>
+          <td>Curating the epic and its children in beads with real acceptance criteria &mdash; including pulling your AzDevOps backlog across (beads' own <code>bd ado sync</code> / <code>bd import</code> do the transport; the curation is yours)</td>
+        </tr>
+        <tr>
+          <td>Implements tasks: real commits on a branch, one per task, build/lint/unit checks run before each commit</td>
+          <td>Having a repo that builds; deciding product scope; recording architecture direction (bd remember, requirements file, bead descriptions, CLAUDE.md)</td>
+        </tr>
+        <tr>
+          <td>Independent AI code review against acceptance criteria, with reopen/redo loops applied deterministically by the engine</td>
+          <td>Final human review of the PR &mdash; the PR is never auto-merged, and the verdict is advice, not authority</td>
+        </tr>
+        <tr>
+          <td>Deploys and smoke-tests &mdash; by literally executing your runbook</td>
+          <td>Writing and maintaining <code>deploy.md</code>; keeping the CLI permission allowlist current (agents stop and report rather than self-granting)</td>
+        </tr>
+        <tr>
+          <td>Integration-verifies features with evidence, closes only what passes, files structured bugs for what fails</td>
+          <td>Writing <code>integ-test-playbook.md</code> (can start as manual verification steps) and deciding what "verified" means for your product</td>
+        </tr>
+        <tr>
+          <td>Once-per-sprint regression pass with sandbox lifecycle and carry-over bug filing</td>
+          <td>Writing <code>regression-test-playbook.md</code>; accepting that with zero existing tests, early sprints have thin regression coverage</td>
+        </tr>
+        <tr>
+          <td>Live dashboard: activity tree, cost in USD, health watchdog, stop control, raw logs</td>
+          <td>Watching it occasionally, and acting on a red badge or a FAIL verdict</td>
+        </tr>
+        <tr>
+          <td>Cost governance: per-task model tiers, optional USD budget ceiling, cost block written into the changelog</td>
+          <td>Setting the budget; paying the bill</td>
+        </tr>
+        <tr>
+          <td>Opens the PR with a plain PASS/FAIL verdict and a committed sprint analysis</td>
+          <td>Merging (or not), and everything that happens after merge &mdash; your CI, your release process</td>
+        </tr>
+        <tr>
+          <td>Guards against operational foot-guns: member/scope reservation conflicts, deterministic-failure relaunch refusal, validated launches</td>
+          <td>Running the supervisor and fleet server; registering members; provisioning git and LLM credentials</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>The pattern in that table is consistent: <strong>fleet-sprint automates execution and verification against artifacts you author.</strong> Teams that invest a day or two in sharp acceptance criteria, an honest <code>deploy.md</code>, and a first-cut playbook get an autonomous loop that produces reviewable PRs with evidence attached. Teams that skip the authoring get a system that &mdash; to its credit &mdash; stops and tells them exactly which file or criterion is missing, rather than pretending. Start with one epic, one member, one sprint, and a small budget ceiling, and judge it by the first PR it opens.</p>
+</section>
+
+<footer class="sources">
+  <p>Sources: this document was drafted from the apra-fleet repository's README, <code>docs/architecture.md</code>, <code>packages/apra-fleet-se/docs/overview.md</code> and <code>architecture.md</code>, <code>packages/apra-fleet-se/fleet-sprint/docs/README.md</code>, the agent role contracts under <code>packages/apra-fleet-se/apra-pm/agents/</code>, and the supervisor API in <code>packages/apra-fleet-se/src/supervisor/api.mjs</code>. The Azure DevOps import claims were checked against the beads project's documentation (DeepWiki, gastownhall/beads) and confirmed against the installed <code>bd</code> CLI (<code>bd ado --help</code>, <code>bd import --help</code>). The <code>bd remember</code>/<code>bd prime</code> delivery path was verified against <code>bd prime</code>'s actual output and this repo's checked-in <code>.claude/settings.json</code> hook. Claims about what agents refuse to do (improvising deploys, inventing scope, self-granting permissions) are taken from the role contracts verbatim.</p>
+</footer>
+
+</div>
+</body>
+</html>

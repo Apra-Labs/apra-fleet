@@ -297,6 +297,10 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `Set-Location "${escapeWindowsArg(folder)}"; ${command}`;
   }
 
+  wrapPidCapture(command: string): string {
+    return `Write-Output "FLEET_PID:$pid"; ${command}`;
+  }
+
   // --- Git ---
 
   gitCurrentBranch(folder: string): string {

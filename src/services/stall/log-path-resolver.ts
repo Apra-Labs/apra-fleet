@@ -29,6 +29,10 @@ export function resolveSessionLogDir(
     return join(home, '.gemini', 'tmp', projectName, 'chats');
   }
 
+  if (provider === 'agy') {
+    return join(home, '.gemini', 'antigravity-cli', 'brain');
+  }
+
   return null;
 }
 
@@ -51,7 +55,12 @@ export function resolveSessionLogPath(
     return join(home, '.gemini', 'tmp', projectName, 'chats', `${sessionId}.jsonl`);
   }
 
-  if (provider === 'agy' || provider === 'codex' || provider === 'copilot') {
+  if (provider === 'agy') {
+    // AGY: ~/.gemini/antigravity-cli/brain/<sessionId>/.system_generated/logs/transcript.jsonl
+    return join(home, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+  }
+
+  if (provider === 'codex' || provider === 'copilot') {
     throw new Error(`Unsupported log polling for provider: ${provider}`);
   }
 
