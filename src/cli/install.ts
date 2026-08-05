@@ -684,6 +684,19 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
   execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
 }
 
+/** Is `cmd` resolvable on PATH? Used before shelling out to a provider's own
+ *  CLI (e.g. `claude`) so a missing binary degrades to a clear warning
+ *  instead of install crashing with a raw "Command failed" error. */
+function isCommandAvailable(cmd: string): boolean {
+  try {
+    const checkCmd = process.platform === 'win32' ? `where ${cmd}` : `command -v ${cmd}`;
+    execSync(checkCmd, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function isApraFleetRunning(): boolean {
   try {
     if (process.platform === 'win32') {
@@ -1077,10 +1090,19 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
   if (transport === 'http') {
     if (llm === 'claude') {
-      try {
-        run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
-      } catch { /* not registered */ }
-      run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+      if (!isCommandAvailable('claude')) {
+        console.warn(
+          `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
+          `  Install Claude Code (https://claude.com/claude-code), then re-run 'apra-fleet install'\n` +
+          `  to register apra-fleet with it, or register manually with:\n` +
+          `    claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`
+        );
+      } else {
+        try {
+          run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+        } catch { /* not registered */ }
+        run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+      }
     } else if (llm === 'gemini') {
       mergeGeminiConfig(paths, { httpUrl: fleetUrl });
     } else if (llm === 'codex') {
@@ -1103,15 +1125,23 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js'), 'run', '--transport', 'stdio'] };
 
     if (llm === 'claude') {
-      try {
-        run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
-      } catch { /* not registered */ }
-
       // Build the claude MCP command from the actual mcpConfig structure.
       // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
       const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
       const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
-      run(cmd);
+      if (!isCommandAvailable('claude')) {
+        console.warn(
+          `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
+          `  Install Claude Code (https://claude.com/claude-code), then re-run 'apra-fleet install'\n` +
+          `  to register apra-fleet with it, or register manually with:\n` +
+          `    ${cmd}`
+        );
+      } else {
+        try {
+          run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+        } catch { /* not registered */ }
+        run(cmd);
+      }
     } else if (llm === 'gemini') {
       mergeGeminiConfig(paths, mcpConfig);
     } else if (llm === 'codex') {

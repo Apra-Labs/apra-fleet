@@ -66,6 +66,40 @@ describe('runInstall multi-provider', () => {
     );
   });
 
+  it('degrades gracefully (warns, does not throw, does not run claude mcp add) when the claude CLI is not on PATH', async () => {
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      const cmdStr = cmd.toString();
+      if (cmdStr.includes('where claude') || cmdStr === 'command -v claude') {
+        throw new Error('command not found');
+      }
+      return Buffer.from('');
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(runInstall([])).resolves.not.toThrow();
+
+    // Never attempted to actually register or remove the MCP server
+    const claudeMcpCalls = vi.mocked(execSync).mock.calls.filter(c => c[0].toString().includes('claude mcp'));
+    expect(claudeMcpCalls).toHaveLength(0);
+
+    // Warned clearly instead of crashing silently or swallowing the gap
+    expect(warnSpy.mock.calls.some(c => c.join(' ').includes("'claude' CLI was not found on PATH"))).toBe(true);
+
+    // Install still completed the rest of its steps (e.g. Claude settings written)
+    const claudeSettings = path.join(mockHome, '.claude', 'settings.json');
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
+      expect.stringContaining(claudeSettings),
+      expect.any(String)
+    );
+
+    warnSpy.mockRestore();
+    // Restore the default no-throw implementation -- beforeEach only calls
+    // clearAllMocks() (clears call history), not resetAllMocks(), so a
+    // custom mockImplementation set here would otherwise leak into every
+    // later test in this file.
+    vi.mocked(execSync).mockImplementation(() => Buffer.from(''));
+  });
+
   it('installs for Gemini when --llm gemini is passed', async () => {
     await runInstall(['--llm', 'gemini']);
     
