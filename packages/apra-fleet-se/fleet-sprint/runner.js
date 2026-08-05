@@ -1115,14 +1115,31 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     // BEADS_SYNC_CONFLICT terminal reason the dashboard reports.
     //
     // apra-fleet-vkc.1: before that fatal divergence surfaces, attempt the
-    // Path A -> Path B -> Tier 2 recovery ladder. Path A's resolve-in-place
-    // sql runtime is not injected here (runner.js has no live dolt sql-server
-    // client), so in production Path A is reached and cleanly self-defers to
-    // Path B (discard-and-re-bootstrap, which needs only `command`); Tier 2
-    // dispatches through `agent` when one is available. The ladder only fails
-    // the streak (DoltDivergedError -> BEADS_SYNC_CONFLICT) if every tier fails
+    // Path A -> Tier 2 recovery ladder (Path B deliberately disabled here --
+    // see below). Path A's resolve-in-place sql runtime is not injected here
+    // (runner.js has no live dolt sql-server client), so in production Path A
+    // is reached and cleanly self-defers; Tier 2 dispatches through `agent`
+    // when one is available. The ladder only fails the streak
+    // (DoltDivergedError -> BEADS_SYNC_CONFLICT) if every enabled tier fails
     // to close the clone.
-    const recover = buildDoltRecoveryLadder(member, { command, agent, log, model: resolveConflictModel });
+    //
+    // Path B (discard-and-re-bootstrap) is explicitly disabled
+    // (enablePathB: false) at THIS call site -- post-review fix, apra-fleet-
+    // vkc.1. syncMemberAfterOrdered() wraps an arbitrary, possibly
+    // multi-command agent dispatch (a doer/reviewer/planner streak), so there
+    // is no single well-defined `pendingMutation` this bracket could capture
+    // and replay. Without one, Path B's "replay the one pending mutation"
+    // step (dolt-recovery-path-b.mjs step 6) is a no-op, so firing it here
+    // would discard whatever bead mutations the dispatch just made on
+    // `member` and still report the D-push as recovered -- silent data loss
+    // masquerading as success. Path A (safe, gated, zero data loss when it
+    // fires) and Tier 2 (records + escalates, never discards) remain wired;
+    // only the unsafe fallback is turned off. See buildDoltRecoveryLadder's
+    // own doc comment (dolt-recovery-tier2.mjs) for the general hazard this
+    // guards against, and DoltSync.repair() for an explicit, operator-driven
+    // entry point where a real pendingMutation and member-scoped
+    // readConfig/removePath/listLocalState CAN be supplied deliberately.
+    const recover = buildDoltRecoveryLadder(member, { command, agent, log, model: resolveConflictModel, enablePathB: false });
     const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, recover });
     return { ok: true, member, gPush, dPush };
 }

@@ -131,3 +131,43 @@ test('with NO recover callback wired, doltPushAfter() propagates the divergence 
         (err) => err instanceof DoltDivergedError,
     );
 });
+
+// =============================================================================
+// Post-review fix (apra-fleet-vkc.1): runner.js's syncMemberAfterOrdered()
+// wires the ladder with enablePathB:false and NO readConfig/removePath/
+// listLocalState injected -- exactly the production call-site shape. Without
+// this flag, Path B would fall through to its fs-backed defaults (plain Node
+// `fs` calls with no member argument), discarding and re-bootstrapping
+// whatever process is RUNNING the test/orchestrator, not the wedged member,
+// and reporting `pushed:true` while silently losing the mutation that
+// triggered the divergence. This test proves that shape never touches local
+// state and instead escalates cleanly to Tier 2.
+// =============================================================================
+
+test('runner.js production wiring (enablePathB:false, no fs seams injected): a real divergence never touches local fs and escalates straight to Tier 2', async () => {
+    const { command, calls } = makeQueuedCommand({
+        'bd dolt push': [fail(DIVERGENCE_STDERR)],
+        'bd dolt pull': [OK],
+    });
+
+    let dispatched = 0;
+    const agent = async () => { dispatched += 1; return { ok: true }; };
+
+    // The EXACT opts shape runner.js:syncMemberAfterOrdered passes -- no sql
+    // runtime (Path A self-defers), no readConfig/removePath/listLocalState
+    // (would only matter if Path B ran), enablePathB:false.
+    const recover = buildDoltRecoveryLadder('fleet-mac', { command, agent, log: () => {}, enablePathB: false });
+
+    await assert.rejects(
+        () => doltPushAfter('fleet-mac', { command, checkSyncRemoteConfigured: remoteConfigured, recover }),
+        (err) => err instanceof DoltDivergedError,
+    );
+
+    assert.equal(dispatched, 1, 'expected Tier 2 to dispatch the recovery agent once');
+
+    // The load-bearing proof Path B never ran ANY of its steps: no bootstrap
+    // and no push-republish command was ever issued beyond the ordinary D-push
+    // bracket's own pull/push (both already queued above and consumed).
+    const bootstrapCalls = calls.filter((c) => c.cmd.includes('bd bootstrap'));
+    assert.equal(bootstrapCalls.length, 0, 'Path B must never issue a bootstrap command when enablePathB:false');
+});

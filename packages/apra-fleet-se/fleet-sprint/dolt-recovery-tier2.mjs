@@ -290,8 +290,21 @@ export async function recoverDoltConflict(opts = {}) {
  *     is therefore genuinely REACHED and invoked (no silent dead module), and
  *     becomes able to resolve-in-place the moment a sql runtime is injected.
  *   - Path B (discard-and-re-bootstrap) needs only command() plus the fs-backed
- *     defaults it already ships (readConfig/removePath/listLocalState), so it
- *     runs for real with just the injected command().
+ *     defaults it already ships (readConfig/removePath/listLocalState) to RUN
+ *     -- but "runs" is not "runs correctly here". Those defaults are plain
+ *     Node `fs` calls against whatever process invokes them; without injected
+ *     member-scoped readConfig/removePath/listLocalState (routed through
+ *     command()), Path B discards and re-bootstraps THE CALLING PROCESS's
+ *     local `.beads/*`, not `member`'s. A caller composing this for a
+ *     specific `member` (anything other than "repair my own local clone")
+ *     MUST inject member-scoped fs functions, or set `enablePathB: false` to
+ *     keep Path B out of the ladder entirely (falls straight to Tier 2 when
+ *     Path A can't resolve). See runner.js's syncMemberAfterOrdered() call
+ *     site (apra-fleet-vkc.1 post-review fix) for why it does the latter: it
+ *     wraps an arbitrary, possibly-multi-command agent dispatch, so there is
+ *     no single well-defined `pendingMutation` it could capture and replay --
+ *     Path B firing there would silently discard whatever the dispatch just
+ *     did on `member`, then report the D-push as recovered.
  *   - Tier 2 needs an injected agent() to dispatch; without one the wedged
  *     state is still recorded (never silently dropped) but not dispatched.
  *
@@ -302,6 +315,7 @@ export async function recoverDoltConflict(opts = {}) {
  *   readMetadata?: Function, writeMetadata?: Function,
  *   dataDir?: string, remote?: string, branch?: string,
  *   allowlistTables?: string[], resolveStrategy?: '--theirs'|'--ours',
+ *   enablePathB?: boolean,
  *   readConfig?: Function, removePath?: Function, listLocalState?: Function,
  *   configPath?: string, removePaths?: string[], embeddedDataDir?: string,
  *   pendingMutation?: { description: string, cmd: string } | null,
@@ -315,6 +329,7 @@ export function buildDoltRecoveryLadder(member, opts = {}) {
         command,
         sql, spawnSqlServer, allocatePort, readMetadata, writeMetadata,
         dataDir, remote, branch, allowlistTables, resolveStrategy,
+        enablePathB = true,
         readConfig, removePath, listLocalState, configPath, removePaths, embeddedDataDir,
         pendingMutation, agent, log = () => {}, model, clonePath, runbookPath,
     } = opts;
@@ -322,16 +337,24 @@ export function buildDoltRecoveryLadder(member, opts = {}) {
     if (typeof command !== 'function') {
         throw new Error('buildDoltRecoveryLadder requires an injected command() in opts');
     }
+    const pathB = enablePathB
+        ? () => recoverDoltConflictPathB({
+            member, command, readConfig, removePath, listLocalState,
+            configPath, removePaths, embeddedDataDir, pendingMutation, log,
+        })
+        : async () => {
+            log(`[Dolt] Path B for member '${member}': disabled at this call site (enablePathB:false) -- ` +
+                `discard-and-re-bootstrap needs a specific member-scoped pendingMutation to replay safely, ` +
+                `which this caller cannot provide. Falling through to Tier 2 without touching any local state.`);
+            return { ok: false, reason: 'Path B disabled for this call site (enablePathB:false)' };
+        };
     return async () => recoverDoltConflict({
         member,
         pathA: () => recoverDoltConflictPathA({
             member, command, sql, spawnSqlServer, allocatePort, readMetadata, writeMetadata,
             dataDir, remote, branch, allowlistTables, resolveStrategy, log,
         }),
-        pathB: () => recoverDoltConflictPathB({
-            member, command, readConfig, removePath, listLocalState,
-            configPath, removePaths, embeddedDataDir, pendingMutation, log,
-        }),
+        pathB,
         agent, log, model, clonePath, runbookPath,
     });
 }
