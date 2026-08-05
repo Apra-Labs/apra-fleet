@@ -382,6 +382,28 @@ function buildTranscriptFleetApi(tempDir, epicBead, dispatchLog) {
 
             // --- integ test phase ---
             if (opts.agent === 'integ-test-runner') {
+                // apra-fleet-66u.4: mirror the real integ-test-runner agent's
+                // documented contract (runner.js's own dispatch prompt --
+                // "...await verification-closure: <ids>. For each, verify
+                // ... close it (bd close) ...", buildable via runner.js's
+                // verifyClause) by actually closing every verify-routed bead
+                // id the prompt names, the same way the `doer` handler above
+                // extracts and closes its own "Assigned bead ids". Without
+                // this, a scenario whose epic/parent bead becomes
+                // verify-eligible (all children closed) never gets that bead
+                // closed by this mock, so apra-fleet-jfo.2's
+                // stillOpenVerifyIds exit gate correctly refuses to let the
+                // sprint exit -- runner.js then (correctly, by design) loops
+                // Deploy/IntegTest with zero forward progress until it
+                // stall-aborts. That is not a runner.js staleness bug; it is
+                // this mock never performing the side effect its own prompt
+                // asked for. See the apra-fleet-66u.4 bd comment for the
+                // full diagnosis.
+                const verifyMatch = opts.prompt.match(/await verification-closure: ([^.]+)\./);
+                const verifyIds = verifyMatch ? verifyMatch[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+                for (const id of verifyIds) {
+                    await runCmd(`bd close ${id}`, tempDir);
+                }
                 return {
                     content: [{
                         text: JSON.stringify({

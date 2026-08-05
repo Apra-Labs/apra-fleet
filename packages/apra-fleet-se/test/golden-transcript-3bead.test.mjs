@@ -342,6 +342,18 @@ function build3BeadFleetApi(tempDir, epicBead, dispatchLog) {
 
             // --- integ test phase ---
             if (opts.agent === 'integ-test-runner') {
+                // apra-fleet-66u.4: same fix as the identical handler in
+                // golden-transcript.test.mjs -- close every verify-routed
+                // bead id the prompt names (the epic bead, once all three
+                // sibling tasks close), mirroring the real integ-test-runner
+                // agent's documented contract and the `doer` handler's own
+                // "Assigned bead ids" extraction/close above. See the
+                // apra-fleet-66u.4 bd comment for the full diagnosis.
+                const verifyMatch = opts.prompt.match(/await verification-closure: ([^.]+)\./);
+                const verifyIds = verifyMatch ? verifyMatch[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+                for (const id of verifyIds) {
+                    await runCmd(`bd close ${id}`, tempDir);
+                }
                 return {
                     content: [{
                         text: JSON.stringify({
