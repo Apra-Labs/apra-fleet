@@ -63,11 +63,24 @@ win in this release is that they now survive things that used to kill them:
   turns that were mostly running tools (as opposed to talking) -- exactly
   the kind of turn a coding agent spends most of its time in. It now
   watches all activity, not just chat output, and will kill a genuinely
-  stuck dispatch instead of leaving it to hang.
+  stuck dispatch instead of leaving it to hang. Stall detection also now
+  cross-checks the transcript file's own OS-level modification time against
+  its content timestamps, so a slow-writing (but still working) process is
+  no longer mistaken for a stuck one.
 - **Sync failures no longer masquerade as dispatch failures.** A git/Dolt
   push hiccup after a successful LLM turn no longer triggers a full,
   wasteful re-dispatch of that turn -- the two failure modes are now
-  distinguished and handled separately.
+  distinguished and handled separately. A credential/auth failure is also
+  now told apart from a genuine data-divergence conflict, so a lapsed token
+  triggers the existing auth self-heal instead of exhausting the divergence
+  retry ladder against a wall it can't actually fix.
+- **A wedged beads clone can now recover itself.** When two clones'
+  histories genuinely conflict (not just "remote moved first," which was
+  already handled), apra-fleet now attempts a graduated recovery -- resolve
+  the conflict in place if it's simple enough, fall back to a clean
+  re-bootstrap from the shared remote if not, and escalate to an agent with
+  a runbook only if both of those fail -- instead of the sprint simply
+  aborting on the spot.
 - Sprints now run against a **shared fleet safely** -- concurrent sprints
   can no longer collide over the same member or the same issue-scope
   subtree, and simultaneous git/Dolt writes across members are
@@ -75,7 +88,26 @@ win in this release is that they now survive things that used to kill them:
 - Windows build fix: `npm run build:binary` was silently producing nothing
   on Windows (a path-comparison bug in the packaging script never matched);
   this is fixed, so Windows users can once again build their own binary
-  from source.
+  from source. Windows reliability was hardened more broadly this release
+  too -- a watchdog event-loop-starvation bug (from a blocking process
+  read) is fixed, and several scripts that previously only worked correctly
+  from a bash-style shell now resolve and invoke `bd`/`npm` correctly on
+  native Windows as well.
+- A real npm install now actually works end to end: the fleet-sprint engine
+  and its workspace files are shipped in the published tarball, and
+  `@apralabs/apra-fleet-client` now resolves for a genuine npm install
+  (previously it silently only worked from a dev workspace checkout,
+  quietly degrading every npm-installed sprint's dolt-mutex/id-allocator
+  coordination to a no-op).
+
+### Integ Test and Regression Test are now separate phases
+
+Previously a single "Integ Test" phase tried to do double duty: verify
+just-closed work every cycle, and also catch broader regressions. These are
+now split -- Integ Test stays scoped to verifying the current cycle's closed
+features, and a new once-per-sprint **Regression Test** phase runs the full
+regression suite separately, filing carry-over bugs for anything it finds
+without aborting the sprint over a regression-phase failure.
 
 ### An always-on, multi-sprint supervisor service (preview)
 
@@ -83,8 +115,23 @@ win in this release is that they now survive things that used to kill them:
 concurrently against a shared fleet, with a live dashboard (running
 sprints, history, a backlog tree), member/issue-scope reservations so
 sprints can't step on each other, and orchestrator-managed git+Dolt sync.
+This release adds:
 
-**This is a preview, not yet fully proven end-to-end** -- the full
+- Per-sprint **Stop** and **Restart** controls (Restart releases the old
+  reservation and relaunches the same scope from the dashboard).
+- Launching a sprint against multiple issue roots at once (comma-separated),
+  with a scope guard that refuses to launch a sprint whose member or issue
+  scope overlaps one already running.
+- A relaunch guard that refuses to silently resume a prior sprint
+  incarnation against a stale build.
+- Dashboard cost totals now include failed-but-token-consuming dispatches
+  and break out a distinct integ-test-runner line, so the total reported
+  actually matches spend.
+- Viewer parity with fleet-sprint's own dashboard -- Sprints/Backlog tabs,
+  goal-based placement, and quick-task actions (rename, move to Launch
+  Sprint, filters, multi-select).
+
+**This is still a preview, not yet fully proven end-to-end** -- the full
 plan-develop-review-harvest cycle has not yet passed cleanly against a live
 smoke test in this release. Unit and build coverage is solid, and a real
 amount of hardening landed (see above), but treat multi-sprint supervisor
@@ -97,7 +144,8 @@ mode as experimental for now if you're relying on unattended runs.
 - Tags aren't just labels: `compose_permissions` can now merge permission
   profiles by tag (e.g. a `gpu` tag pulls in a GPU-specific profile) instead
   of only the fixed doer/reviewer roles, and `list_members` can filter by
-  tag.
+  tag. `register_member` now runs `compose_permissions` automatically for a
+  new member's role/tags rather than requiring a separate manual call.
 - You can now register a member with `llm_provider: none` for machines that
   only run commands or host services and never dispatch to an LLM (GPU
   nodes, relay-only members, etc). *(Currently supported at registration
@@ -127,6 +175,9 @@ sprints:
   interruption -- not only when the dashboard happened to be open.
 - The dashboard page title correctly reads "Fleet-Sprint" rather than the
   old "Auto-Sprint" label.
+- A per-sprint log file (stdout/stderr) is now captured and linked directly
+  from the dashboard, so a failed run's raw output is one click away
+  instead of a manual log hunt.
 
 ## Known issues
 
@@ -140,6 +191,12 @@ sprints:
 - Hub-spoke cloud migration (`apra-fleet join` / `apra-fleet spoke`) is
   early groundwork in this release -- the shared API contract and identity
   model landed, but end-to-end spoke mode is not yet usable.
+- An automated `permissions.json` ledger (auto-seeded from playbook-declared
+  permissions, with a drift guard) was prototyped this cycle and then
+  reverted pending a broader design pass -- see
+  `docs/missing-grant-recovery-and-playbook-evolution.md`. Until that lands,
+  granting a role's permissions is still a manual `settings.json` /
+  `settings.local.json` edit.
 
 ## Upgrade
 
