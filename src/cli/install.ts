@@ -17,7 +17,7 @@ import {
   PROVIDER_STANDARD_MODELS,
   ProviderInstallConfig
 } from './config.js';
-import { transformAgentForOpenCode } from './agent-transform.js';
+import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transform.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
 import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
@@ -104,7 +104,7 @@ export function isNpmGlobalInstall(): boolean {
 function getSeaAsset(key: string): string {
   const sea = require('node:sea');
   const buf = sea.getAsset(key);
-  // getAsset returns ArrayBuffer — decode to string
+  // getAsset returns ArrayBuffer - decode to string
   return new TextDecoder().decode(buf);
 }
 
@@ -153,7 +153,7 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Find project root — works for both tsc (dist/cli/install.js) and esbuild (dist/sea-bundle.cjs)
+// Find project root - works for both tsc (dist/cli/install.js) and esbuild (dist/sea-bundle.cjs)
 function findProjectRoot(): string {
   let dir = __dirname;
   for (let i = 0; i < 5; i++) {
@@ -163,7 +163,7 @@ function findProjectRoot(): string {
   throw new Error('Cannot find project root (version.json not found)');
 }
 
-// Collect files recursively — used by dev-mode manifest generation
+// Collect files recursively - used by dev-mode manifest generation
 function collectFilesRec(dir: string, base: string, rootBase?: string): Record<string, string> {
   const effectiveRootBase = rootBase ?? base;
   const results: Record<string, string> = {};
@@ -387,7 +387,7 @@ export function buildDevManifest(root: string): AssetManifest {
 }
 
 let _manifestOverride: AssetManifest | null = null;
-/** Inject a manifest for tests — avoids SEA asset extraction. Pass null to restore default. */
+/** Inject a manifest for tests - avoids SEA asset extraction. Pass null to restore default. */
 export function _setManifestOverride(m: AssetManifest | null): void { _manifestOverride = m; }
 
 /**
@@ -581,10 +581,23 @@ function mergePermissions(paths: ProviderInstallConfig, extraPerms: string[] = [
   writeConfig(paths, settings);
 }
 
-function configureStatusline(paths: ProviderInstallConfig, scriptPath: string): void {
+function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, llm?: LlmProvider): void {
   const settings = readConfig(paths);
-  // Windows: Claude Code can't execute .sh directly — prefix with bash
-  const command = process.platform === 'win32' ? `bash "${scriptPath}"` : scriptPath;
+  let command: string;
+
+  if (process.platform === 'win32') {
+    if (llm === 'agy') {
+      const gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+      const bashBin = fs.existsSync(gitBash) ? `"${gitBash}"` : 'bash';
+      const formattedScriptPath = scriptPath.replace(/\\/g, '/');
+      command = `${bashBin} "${formattedScriptPath}"`;
+    } else {
+      command = `bash "${scriptPath}"`;
+    }
+  } else {
+    command = scriptPath;
+  }
+
   settings.statusLine = {
     type: 'command',
     command,
@@ -676,7 +689,7 @@ export function isApraFleetRunning(): boolean {
     if (process.platform === 'win32') {
       const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe' });
       const currentPid = process.pid.toString();
-      // Each CSV line: "apra-fleet.exe","<PID>","..." — exclude the current installer process
+      // Each CSV line: "apra-fleet.exe","<PID>","..." - exclude the current installer process
       return out.split('\n').some(line => {
         const match = line.match(/"apra-fleet\.exe","(\d+)"/);
         return match !== null && match[1] !== currentPid;
@@ -784,7 +797,7 @@ export function writeAgyWorkspaceOverlays(workFolder: string): void {
 }
 
 export async function runInstall(args: string[]): Promise<void> {
-  // --help / -h guard — must come first, before any side effects (#142)
+  // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`apra-fleet install
 
@@ -794,7 +807,7 @@ Usage:
   apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
   apra-fleet install --skill all       Same as bare install (all skills)
   apra-fleet install --skill fleet     Install fleet skill only
-  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
+  apra-fleet install --skill pm        Install PM skill (also installs fleet -- PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
@@ -807,7 +820,7 @@ Usage:
 Options:
   --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy, opencode.
                           Defaults to claude. Note: --llm gemini shows a warning about sequential
-                          dispatch — Gemini does not support background agents, so fleet operations
+                          dispatch -- Gemini does not support background agents, so fleet operations
                           run sequentially rather than in parallel.
   --transport <mode>      MCP transport to use: http (default) or stdio. HTTP uses the singleton
                           fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
@@ -860,7 +873,7 @@ Options:
       if (nextArg && !nextArg.startsWith('--') && (nextArg === 'all' || nextArg === 'fleet' || nextArg === 'pm' || nextArg === 'none')) {
         skillMode = nextArg;
       } else {
-        // --skill with no value → install both (backwards-compat)
+        // --skill with no value - install both (backwards-compat)
         skillMode = 'all';
       }
     }
@@ -948,7 +961,7 @@ Options:
   if (serviceStep) totalSteps++;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
-    console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
+    console.warn(`\n- Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
   }
 
   // --- Running-process guard (SEA + npm modes -- dev mode runs via node, not a managed binary) ---
@@ -1050,7 +1063,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     mergeHooksConfig(paths, installedHooksConfig, llm);
 
     const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
-    configureStatusline(paths, statuslineScript);
+    configureStatusline(paths, statuslineScript, llm);
 
     const standardModel = PROVIDER_STANDARD_MODELS[llm] ?? PROVIDER_STANDARD_MODELS['claude'];
     writeDefaultModel(paths, standardModel);
@@ -1114,7 +1127,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
 
   // --- Step 6: Install fleet skill (optional) ---
   if (skillMode === 'pm') {
-    console.warn(`\n⚠ Note: PM skill depends on fleet skill — installing fleet skill first.\n`);
+    console.warn(`\n- Note: PM skill depends on fleet skill - installing fleet skill first.\n`);
   }
   if (installFleet) {
     console.log(`  [6/${totalSteps}] Installing fleet skill...`);
@@ -1296,7 +1309,11 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     // as a fallback), preserving this branch's no-dist/agents rule, and it
     // recurses into _shared/ and schemas/ which the old flat readdir missed.
     for (const { relPath, content: rawContent } of loadAgentAssets()) {
-      const content = llm === 'opencode' ? transformAgentForOpenCode(rawContent, relPath) : rawContent;
+      const content = llm === 'opencode'
+        ? transformAgentForOpenCode(rawContent, relPath)
+        : llm === 'agy'
+        ? transformAgentForAgy(rawContent, relPath)
+        : rawContent;
       writeAssetFile(path.join(agentsDestDir, relPath), content);
     }
   }
@@ -1354,7 +1371,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
   }
 
   // --- Beads install step ---
-  // shell:true required on Windows — npm global packages install as .cmd wrappers
+  // shell:true required on Windows - npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
   const beadsStep = serviceStep ? totalSteps - 1 : totalSteps;
   console.log(`  [${beadsStep}/${totalSteps}] Installing Beads task tracker...`);
@@ -1362,14 +1379,14 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
     // Check if already installed
     try {
       execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true });
-      // already installed — skip
+      // already installed - skip
     } catch {
-      // not installed — install it
+      // not installed - install it
       execFileSync('npm', ['install', '-g', '@beads/bd@1.0.4'], { stdio: 'inherit', shell: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install
-    console.warn('  ⚠ Beads install skipped — npm not available or install failed');
+    console.warn('  - Beads install skipped - npm not available or install failed');
   }
 
   // OpenCode uses --dangerously-skip-permissions and per-agent permission: frontmatter;

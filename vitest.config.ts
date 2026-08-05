@@ -8,5 +8,6 @@ export default defineConfig({
     setupFiles: ['tests/setup.ts'],
     globalSetup: ['tests/global-setup.ts'],
     fileParallelism: false,  // Tests share registry.json in temp dir (unique per run, see global-setup.ts)
+    teardownTimeout: 1000,
   },
 });

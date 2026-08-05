@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { transformAgentForOpenCode } from '../src/cli/agent-transform.js';
+import { transformAgentForOpenCode, transformAgentForAgy } from '../src/cli/agent-transform.js';
 
 const DOER_SOURCE = `---
 name: doer
@@ -120,5 +120,32 @@ tools: [Read, Edit, FutureTool, Write, Bash]
     const noFm = '# Just a markdown file\nNo frontmatter here.';
     const result = transformAgentForOpenCode(noFm, 'test.md');
     expect(result).toBe(noFm);
+  });
+});
+
+describe('transformAgentForAgy', () => {
+  it('transforms doer.md with XML auto_approve permission rules', () => {
+    const result = transformAgentForAgy(DOER_SOURCE, 'doer.md');
+    expect(result).toContain('<rule>');
+    expect(result).toContain('<auto_approve>');
+    expect(result).toContain('<permission action="read_file" target="*" />');
+    expect(result).toContain('<permission action="write_file" target="*" />');
+    expect(result).toContain('<permission action="command" target="*" />');
+    expect(result).toContain('</auto_approve>');
+    expect(result).toContain('</rule>');
+    expect(result).toContain('# Plan Execution');
+  });
+
+  it('transforms planner.md with read and write rules without edit capability', () => {
+    const result = transformAgentForAgy(PLANNER_SOURCE, 'planner.md');
+    expect(result).toContain('<permission action="read_file" target="*" />');
+    expect(result).toContain('<permission action="write_file" target="*" />');
+    expect(result).toContain('# Plan Generation');
+  });
+
+  it('returns non-frontmatter files unchanged', () => {
+    const raw = '# Plain Agent\nNo frontmatter.';
+    const result = transformAgentForAgy(raw, 'plain.md');
+    expect(result).toBe(raw);
   });
 });

@@ -56,11 +56,12 @@ export class AgyProvider implements ProviderAdapter {
   buildPromptCommand(opts: PromptOptions): string {
     const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier, agentName } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    const normalizedFolder = folder.replace(/\\/g, '/');
+    const fullPromptPath = path.posix.join(normalizedFolder, promptFile);
+    let instruction = `Your task is described in ${fullPromptPath}. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-
 
     // Write per-workspace model override before launching agy.
     const tier = inputTier ?? this.resolveTierFromModel(model);
@@ -72,10 +73,12 @@ export class AgyProvider implements ProviderAdapter {
     }
     cmd += ` -p "${instruction}"`;
 
-    // Only pass --conversation when resuming an existing session. For fresh sessions,
-    // agy ignores the UUID we pass and creates its own -- use folder lookup instead.
-    if (sessionId && resuming) {
-      cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
+    if (resuming) {
+      if (sessionId) {
+        cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
+      } else {
+        cmd += ` --continue`;
+      }
     }
 
     if (unattended === 'dangerous') {
@@ -102,6 +105,11 @@ export class AgyProvider implements ProviderAdapter {
 
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout;
+    let extractedSessionId: string | undefined;
+    const sessionMatch = raw.match(/FLEET_SESSION_ID:([^\r\n]+)/);
+    if (sessionMatch) {
+      extractedSessionId = sessionMatch[1].trim();
+    }
 
     // Primary path: extract response from the transcript JSONL that agy writes after
     // completing its task. This is more reliable than PTY/ANSI capture because agy
@@ -115,14 +123,6 @@ export class AgyProvider implements ProviderAdapter {
       const section = raw.substring(startIdx + startMarker.length, endIdx);
       const lines = section.split('\n').map(l => l.trim()).filter(Boolean);
       let lastResponse = '';
-      // apra-fleet-qmb: the transcript's conversation id (the same id the
-      // agy-transcript-reader.js folder-based lookup resolved via
-      // last_conversations.json) is the closest thing agy exposes to a
-      // fleet-facing session id -- captured here, when present, so a resumed
-      // dispatch can pass it back via --conversation instead of always
-      // minting/ignoring one. Not every transcript entry carries it (only
-      // seen on the session-establishing entry in practice), so keep the
-      // FIRST value seen rather than letting a later entry without it clear it.
       let sessionId: string | undefined;
       for (const line of lines) {
         try {
@@ -143,7 +143,7 @@ export class AgyProvider implements ProviderAdapter {
       if (lastResponse) {
         return {
           result: lastResponse,
-          sessionId,
+          sessionId: sessionId ?? extractedSessionId,
           isError: result.code !== 0,
           raw,
           usage: undefined,
@@ -155,11 +155,12 @@ export class AgyProvider implements ProviderAdapter {
     console.error('[agy] warning: transcript markers not found -- falling back to raw ANSI-stripped output');
     const stripped = stripAnsi(raw)
       .replace(/^FLEET_PID:\d+\r?\n/m, '')
+      .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
       .replace(/\r/g, '')
       .trim();
     return {
       result: stripped,
-      sessionId: undefined,
+      sessionId: extractedSessionId,
       isError: result.code !== 0,
       raw,
       usage: undefined,
