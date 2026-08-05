@@ -29,9 +29,16 @@ describe('npm-packed install resolves undici 7.x (apra-fleet-0v0.6 regression)',
 
   let result: PackInstallResult | undefined;
 
+  // Explicit timeout: cleanup recursively deletes a full npm-installed
+  // node_modules tree via fs.rmSync, which can exceed vitest's default 10s
+  // hookTimeout on Windows CI runners (slower filesystem I/O, antivirus
+  // scanning) even though the test itself already passed -- observed live
+  // on windows-latest for commit de48e98c (the assertion passed in 83.5s;
+  // only this hook timed out). 30s matches the margin the test body itself
+  // is given (see the 5-minute test-level timeout below).
   afterAll(() => {
     result?.cleanup();
-  });
+  }, 30_000);
 
   it(
     'installs the packed tarball into a fresh consumer project and resolves undici to 7.x with no markAsUncloneable crash',

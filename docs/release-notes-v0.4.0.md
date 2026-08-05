@@ -197,6 +197,13 @@ sprints:
   `docs/missing-grant-recovery-and-playbook-evolution.md`. Until that lands,
   granting a role's permissions is still a manual `settings.json` /
   `settings.local.json` edit.
+- `apra-fleet install` (default `--llm claude`) registers its MCP server by
+  shelling out to `claude mcp add`. If the `claude` CLI is not yet on your
+  PATH when you run install, this fails hard instead of degrading
+  gracefully. Install Claude Code first, then run `apra-fleet install` (or
+  re-run it after installing Claude Code) -- or pass `--llm <provider>` /
+  `--transport http` for a setup that does not require the `claude` binary
+  at install time. A graceful-degrade fix is planned as a follow-up.
 
 ## Upgrade
 
