@@ -246,7 +246,7 @@ TypeScript output:
 **apra-fleet-fyc.2 (post apra-fleet-kuh.5): the fleet-sprint engine now ships
 as source, not a bundle.** `scripts/bundle-se.mjs` and the `build:se` script
 have been retired -- there is no longer an esbuild step that produces
-`dist/fleet-sprint.mjs` or `dist/fleet-sprint-runner.mjs`, and the root
+the old esbuild bundle output (formerly under `dist/`, now retired), and the root
 `bin` field no longer has a `fleet-sprint` entry (see 7.2 below). Instead,
 `package.json`'s `files` allowlist ships the engine's source directories
 directly, unbundled:

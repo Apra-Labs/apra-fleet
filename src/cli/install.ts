@@ -812,6 +812,12 @@ Usage:
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
   apra-fleet install --force           Stop a running server before installing
+  apra-fleet install --skip-running-check
+                                        Skip the running-process guard without stopping the
+                                        running instance (the guard already auto-skips an
+                                        unrelated server -- this is a manual override for
+                                        when it flags a running instance as relevant but
+                                        you know it is safe to proceed anyway)
   apra-fleet install --llm <provider>  Target LLM provider: claude (default), gemini, codex, copilot, agy, opencode
   apra-fleet install --transport http  Register MCP server with HTTP transport (default)
   apra-fleet install --transport stdio Register MCP server with stdio transport (legacy)
@@ -829,7 +835,13 @@ Options:
   --workflows <mode>      Which workflow assets to install: all (default) or none. Installs
                           ~/.apra-fleet/node_modules (workflow runtime), /schemas (agent role
                           schemas), and /workflows/{fleet-sprint,hello-world} (built-in workflows).
-  --force                 Stop a running apra-fleet server before installing (SEA mode only).`);
+  --force                 Stop a running apra-fleet server before installing (SEA mode only).
+  --skip-running-check    Force-skip the running-process guard without stopping the other
+                          instance (SEA/npm global mode only). The guard already proceeds
+                          on its own when the running server is unrelated to this install
+                          (a different data dir and a different install prefix); use this
+                          flag to override it when it flags a running instance as relevant
+                          but you are certain it is safe to proceed anyway.`);
     process.exit(0);
     return;
   }
@@ -912,6 +924,11 @@ Options:
   // Parse --force flag
   const force = args.includes('--force');
 
+  // Parse --skip-running-check flag (apra-fleet-fyc.2.5.1): explicit opt-out of the
+  // running-process guard below, for cases where the caller already knows the running
+  // instance and the new install target are unrelated (e.g. scripted isolated-prefix CI).
+  const skipRunningCheck = args.includes('--skip-running-check');
+
   // Parse --transport flag (default: http)
   type TransportMode = 'http' | 'stdio';
   let transport: TransportMode = 'http';
@@ -939,7 +956,7 @@ Options:
 
   // Reject unknown flags to catch typos early
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows='];
-  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--transport', '--help', '-h']);
+  const knownFlagExact = new Set(['--llm', '--skill', '--no-skill', '--workflows', '--force', '--skip-running-check', '--transport', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -973,6 +990,12 @@ Options:
   // from the install prefix we are about to overwrite (ETXTBSY). An unrelated
   // server (isolated HOME/APRA_FLEET_DATA_DIR/prefix, e.g. ci.yml's clean temp
   // prefix step) no longer blocks the install. See apra-fleet-1aw.
+  //
+  // --skip-running-check (apra-fleet-fyc.2.5.1) is a manual override for the rare
+  // case classifyRunningServer's own signals (data-dir marker, install-prefix match)
+  // can't be resolved (e.g. a running process's executable path can't be read at
+  // all) -- it bypasses the block WITHOUT stopping the other instance. It never
+  // widens what --force is allowed to do; only what proceeds without asking.
   const runningScope = (isSea() || isNpmGlobalInstall()) && isApraFleetRunning()
     ? classifyRunningServer(BIN_DIR)
     : null;
@@ -980,6 +1003,9 @@ Options:
     console.log(`\n  Note: an unrelated apra-fleet server is running -- ${runningScope.detail}.\n  It is not associated with this install (data dir ${getInstallDataDir()}, prefix ${BIN_DIR}), so it is left running.\n`);
   }
   if (runningScope?.relevant) {
+    if (skipRunningCheck) {
+      console.log(`\n  Note: --skip-running-check set -- proceeding despite a relevant running instance (${runningScope.detail}). It is left running; installing over it may still fail (e.g. ETXTBSY) if it holds the binary open.\n`);
+    } else {
     if (!force) {
       const killHint = process.platform === 'win32'
         ? '    taskkill /F /IM apra-fleet.exe'
@@ -993,6 +1019,9 @@ Error: apra-fleet is currently running. Stop the server before installing.
 
   Or stop it manually:
 ${killHint}
+
+  If you are certain it is safe to proceed without stopping it, pass
+  --skip-running-check to bypass this check.
 `);
       process.exit(1);
     }
@@ -1007,6 +1036,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       process.exit(1);
     }
     console.log('  Stopped running server.');
+    }
   }
 
   console.log(`\nInstalling Apra Fleet ${serverVersion} for ${paths.name}...\n`);

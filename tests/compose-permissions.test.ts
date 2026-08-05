@@ -17,6 +17,7 @@ import { GeminiProvider } from '../src/providers/gemini.js';
 import type { SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 
@@ -238,12 +239,13 @@ describe('composePermissions -- Copilot proactive', () => {
 // ---------------------------------------------------------------------------
 
 describe('composePermissions -- Claude reactive grant', () => {
-  it('reads existing settings.local.json and merges new grants', async () => {
+  it('reads existing settings.json and merges new grants (apra-fleet-mf7)', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
 
     const existing = JSON.stringify({ permissions: { allow: ['Read', 'Write', 'Bash(git:*)'] } });
-    // First call is the read of existing settings.local.json
+    // First call is the read of existing settings.json -- the file deploy.md's
+    // Step 0 (and every other permission checker) actually reads.
     mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
     // mkdir + write calls
     mockExecCommand.mockResolvedValue(OK);
@@ -260,13 +262,23 @@ describe('composePermissions -- Claude reactive grant', () => {
     expect(result).toContain('Bash(docker-compose:*)');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
-    // Should have read the existing file
-    expect(allCmds.some(cmd => cmd.includes('cat .claude/settings.local.json'))).toBe(true);
+    // Should have read the existing settings.json (the checker's source), not settings.local.json
+    expect(allCmds.some(cmd => cmd.includes('cat .claude/settings.json'))).toBe(true);
 
-    // Write command should include both old and new permissions
     const writes = allCmds.filter(cmd => cmd.includes('cat >'));
+
+    // The grant must land in settings.json -- the file every permission checker reads --
+    // merged with the pre-existing allow list, not overwritten.
+    const settingsJsonWrite = writes.find(cmd => cmd.includes('.claude/settings.json'))!;
+    expect(settingsJsonWrite).toBeDefined();
+    expect(settingsJsonWrite).toContain('Read');
+    expect(settingsJsonWrite).toContain('Write');
+    expect(settingsJsonWrite).toContain('Bash(git:*)');
+    expect(settingsJsonWrite).toContain('Bash(docker:*)');
+
+    // settings.local.json (personal/machine-local overrides: mcpServers disable,
+    // skillOverrides) is still delivered separately, unaffected by this fix.
     const writeCmd = writes.find(cmd => cmd.includes('.claude/settings.local.json'))!;
-    expect(writeCmd).toContain('Read');
     expect(writeCmd).toContain('Bash(docker:*)');
   });
 
@@ -283,6 +295,96 @@ describe('composePermissions -- Claude reactive grant', () => {
     expect(result).toContain('Cannot auto-grant');
     expect(result).toContain('Bash(sudo:*)');
     expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-mf7.2 -- verifies apra-fleet-mf7.1: the grant lands in the exact
+// file deploy.md's (and every other role's) Step 0 permission check reads,
+// pre-existing entries survive, there are no duplicates, and a simulated
+// Step 0 check (reading deploy.md's own ## Permissions prefixes back out of
+// the written settings.json) actually finds every granted prefix.
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- apra-fleet-mf7.2: grant lands in .claude/settings.json and a Step 0 check sees it', () => {
+  it('dedupes: granting an already-present permission does not create a duplicate entry', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    const existing = JSON.stringify({ permissions: { allow: ['Read', 'Write', 'Bash(git:*)', 'Bash(docker:*)'] } });
+    mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue(OK);
+
+    // Grant a permission that is already present.
+    const result = await composePermissions({
+      member_id: member.id,
+      role: 'doer',
+      grant: ['Bash(docker:*)'],
+    });
+    expect(result).toContain('Granted');
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writes = allCmds.filter(cmd => cmd.includes('cat >'));
+    const settingsJsonWrite = writes.find(cmd => cmd.includes('.claude/settings.json'))!;
+    expect(settingsJsonWrite).toBeDefined();
+
+    const heredocBody = settingsJsonWrite.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0];
+    const written = JSON.parse(heredocBody);
+    const allow: string[] = written.permissions.allow;
+
+    // Pre-existing entries preserved...
+    expect(allow).toEqual(expect.arrayContaining(['Read', 'Write', 'Bash(git:*)', 'Bash(docker:*)']));
+    // ...and no duplicates anywhere in the merged list.
+    const counts = new Map<string, number>();
+    for (const p of allow) counts.set(p, (counts.get(p) ?? 0) + 1);
+    for (const [perm, count] of counts) {
+      expect(count, `"${perm}" should appear exactly once, appeared ${count} times`).toBe(1);
+    }
+    // Specifically, the re-granted permission is not duplicated.
+    expect(allow.filter(p => p === 'Bash(docker:*)').length).toBe(1);
+  });
+
+  it('a simulated deploy.md Step 0 check reads the exact settings.json the grant wrote and finds every required prefix', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // Start from a settings.json with none of deploy.md's required prefixes yet
+    // (mirrors the apra-fleet-mf7 bug report: only pre-existing baseline entries).
+    const existing = JSON.stringify({ permissions: { allow: ['Bash(bd *)', 'Bash(npm test*)'] } });
+    mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue(OK);
+
+    // Extract deploy.md's own '## Permissions' Bash(...) requirements -- the exact
+    // list deployer's Step 0 checks for -- and grant exactly those.
+    const deployMd = fs.readFileSync(path.join(process.cwd(), 'deploy.md'), 'utf-8');
+    const permsSection = deployMd.split(/^## Permissions$/m)[1]?.split(/^## /m)[0] ?? '';
+    const required = [...permsSection.matchAll(/^- `(Bash\([^)]+\))`/gm)].map(m => m[1]);
+    expect(required.length).toBeGreaterThan(0);
+
+    const result = await composePermissions({
+      member_id: member.id,
+      role: 'doer',
+      grant: required,
+      grant_reason: 'deploy.md Step 0 requirements',
+    });
+    expect(result).toContain('Granted');
+
+    // Simulate deployer's Step 0: `cat .claude/settings.json` and check every
+    // required prefix is present -- read back the SAME file the grant delivered to.
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writes = allCmds.filter(cmd => cmd.includes('cat >'));
+    const settingsJsonWrite = writes.find(cmd => cmd.includes('.claude/settings.json') && !cmd.includes('.claude/settings.local.json'))!;
+    expect(settingsJsonWrite).toBeDefined();
+
+    const heredocBody = settingsJsonWrite.split("'FLEET_PERMS_EOF'\n")[1].split('\nFLEET_PERMS_EOF')[0];
+    const written = JSON.parse(heredocBody);
+    const allow: string[] = written.permissions.allow;
+
+    for (const req of required) {
+      expect(allow, `deploy.md requires ${req} but it is missing from the written .claude/settings.json`).toContain(req);
+    }
+    // Pre-existing baseline entries must also survive the merge.
+    expect(allow).toEqual(expect.arrayContaining(['Bash(bd *)', 'Bash(npm test*)']));
   });
 });
 

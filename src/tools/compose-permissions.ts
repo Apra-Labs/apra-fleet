@@ -288,8 +288,12 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     let allow: string[];
 
     if (provider.name === 'claude') {
-      // Claude: read existing allow list and merge
-      const readResult = await strategy.execCommand('cat .claude/settings.local.json 2>/dev/null || echo "{}"', 5000);
+      // Claude: read existing allow list from .claude/settings.json -- this is the
+      // file deploy.md's Step 0 (and every other role's Permissions gate) actually
+      // reads, so it must be both the merge source and the delivery target. Reading
+      // from settings.local.json here would silently drop grants a checker can never
+      // see (apra-fleet-mf7).
+      const readResult = await strategy.execCommand('cat .claude/settings.json 2>/dev/null || echo "{}"', 5000);
       let current: any;
       try {
         current = JSON.parse(readResult.stdout.trim());
@@ -304,6 +308,17 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       allow = [...expanded];
     }
 
+    if (provider.name === 'claude') {
+      // Deliver the merged allow list to .claude/settings.json -- the single
+      // authoritative source every Claude permission checker reads. deliverConfigFile
+      // deep-merges against whatever settings.json already contains (project-committed
+      // baseline entries included), so nothing is lost.
+      await deliverConfigFile(strategy, agent.os ?? 'linux', '.claude/settings.json', { permissions: { allow } });
+    }
+
+    // Personal/machine-local config (mcpServers disable, skillOverrides, and -- for
+    // non-Claude providers -- the native permission config) still goes through the
+    // provider's own config paths as before.
     const configs = provider.composePermissionConfig(mode, allow);
     const paths = provider.permissionConfigPaths();
     for (let i = 0; i < paths.length; i++) {

@@ -239,6 +239,85 @@ describe('install --force (#96)', () => {
   });
 });
 
+describe('install --skip-running-check (apra-fleet-fyc.2.5.1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(true);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+    Object.defineProperty(process, 'platform', { value: process.platform, configurable: true });
+  });
+
+  it('relevant running server (install-prefix match) + --skip-running-check: proceeds without exit(1), does not kill anything', async () => {
+    mockServerRunning(); // runningExePath is under BIN_DIR -- classifyRunningServer() reports relevant: true
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(runInstall(['--skill', 'none', '--skip-running-check'])).resolves.toBeUndefined();
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).not.toContain('apra-fleet is currently running');
+    const logText = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(logText).toContain('--skip-running-check set');
+    // Unlike --force, --skip-running-check must never stop the other instance.
+    const calls = vi.mocked(execSync).mock.calls.map(c => c[0].toString());
+    expect(calls).not.toContain('pkill -x apra-fleet');
+    expect(calls).not.toContain('taskkill /F /IM apra-fleet.exe');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it('no running server + --skip-running-check: installs normally (flag is a no-op when the guard would not have fired anyway)', async () => {
+    mockServerNotRunning();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+
+    await expect(runInstall(['--skill', 'none', '--skip-running-check'])).resolves.toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+
+  it('relevant running server, no --skip-running-check and no --force: still blocks with exit 1, and the hint mentions --skip-running-check', async () => {
+    mockServerRunning();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runInstall(['--skill', 'none'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errText = errorSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errText).toContain('apra-fleet is currently running');
+    expect(errText).toContain('--skip-running-check');
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('--skip-running-check is accepted as a known flag (does not trip the unknown-flag rejection)', async () => {
+    mockServerNotRunning();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runInstall(['--skill', 'none', '--skip-running-check'])).resolves.toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+});
+
 describe('install --force still-running after kill (apra-fleet-l7n.3.2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

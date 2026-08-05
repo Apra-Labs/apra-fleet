@@ -276,6 +276,70 @@ Tracked spend (priced dispatches only): $4.1194.
 Remaining budget: unknown/unbounded.
 Integ-test-runner spend: $0.1562 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
 Pricing source: all 10 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+
+## [Unreleased] -- npm-publish CI gating repointed to the unified entry point, install running-process guard scoping, permission-gate consistency
+
+Sprint goal: repoint the npm-publish CI job's gating steps off a retired
+build artifact so the release pipeline no longer fails outright, plus close
+out a small isolated batch of leftover follow-ups (an install false-positive,
+a permission-delivery mismatch, and a regression-sandbox concurrency hazard).
+**Goal met -- sprint verdict is PASS.**
+
+What shipped:
+
+- The npm-publish CI job's shebang check, dry-run pack verification, and
+  pack+install smoke test now all target the unified packaged entry point
+  (rather than a bundle artifact retired by an earlier sprint), and exercise
+  a real `npm install` + install + `apra-fleet workflow fleet-sprint --help`
+  path end to end. A redundant separate runner-import smoke script was
+  removed as no longer necessary once the packaged CLI's own entry point
+  already statically imports the full runtime import graph.
+- `docs/npm-packaging.md` (the as-built packaging reference) was reworded so
+  its own static drift-detection check no longer false-positives on
+  explanatory prose describing a retired path.
+- The npm-publish gating sequence can now be replayed locally end to end, on
+  a clean checkout, before ever pushing a release tag -- see
+  `tests/integration/npm-publish-gate.sh` and the release playbook.
+- A new `--skip-running-check` flag lets a caller force-skip the pre-install
+  running-process guard without stopping the other instance (distinct from
+  `--force`, which kills whatever is running) -- for the rare case the
+  guard's own relevance check (a live instance recorded for the install's
+  target data dir, or a running binary under the install prefix being
+  written -- see the prior npm-install-dependency-packaging sprint's
+  `classifyRunningServer`, which already auto-skips an unrelated instance)
+  flags a running instance as relevant but the caller knows it's safe to
+  proceed anyway.
+- `compose_permissions`' reactive grant mode (mid-sprint permission escalation)
+  now reads and writes the same project-level settings file every role's
+  Step 0 permission gate actually reads, instead of a personal/machine-local
+  file the gate never sees -- closing a gap where a grant call reported
+  success but the permission was never actually usable.
+- A regression-test sandbox that lives at one fixed, well-known path (by
+  design, to avoid needing a hand-off file between its setup/test/teardown
+  phases) now has its own mutual-exclusion lock, so a second concurrent run
+  can no longer destroy a first run's in-progress sandbox.
+- A runnable simulation of the permission Step 0/0a gate lets a human or
+  agent confirm ahead of time that a dispatch will not be stopped by a
+  missing permission, against the real project settings file and playbook
+  requirements.
+
+Carried forward to a future sprint:
+
+- An end-of-sprint regression pass (informational; did not gate this
+  sprint's verdict) surfaced: a stale integration-suite status file blocking
+  the real-bd suite from running at all with no self-heal; a stale orphaned
+  smoke-test server/sandbox left behind by a prior run's incomplete
+  teardown, with no version check to detect it; and a reconfirmed
+  pre-existing bd-replay recording-drift issue in a stalled-planner-session
+  test. All three carry over as pre-existing breakage for a future sprint to
+  pick up.
+
+#### Sprint cost analysis
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $4.2510.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1085 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 15 priced dispatch(es) used real per-member rates (get_member_model_pricing).
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 
 ## [Unreleased] -- fleet-sprint runner error-classification correctness
