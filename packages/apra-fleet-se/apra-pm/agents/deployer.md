@@ -44,13 +44,32 @@ too -- e.g. `Bash(docker:*)` covers `docker compose`. Other providers keep
 the equivalent allowlist in their own native config file (see
 `src/providers/*.ts`).
 
+Run the merge MECHANICALLY, in one command, rather than reading each file
+separately and merging by eye -- two sequential `cat`s invite stopping at the
+first (often-empty) file and never getting to the second, which silently
+reports a real grant as missing (observed live, apra-fleet: `settings.json`
+legitimately carries no `permissions.allow` in this repo's convention -- every
+grant lives in `settings.local.json` -- so a by-eye read that stops at the
+first empty file always concludes "nothing is granted" even when it is):
+
 ```bash
-cat .claude/settings.json 2>/dev/null; cat .claude/settings.local.json 2>/dev/null   # Claude Code; use your provider's config file(s) otherwise
+node -e '
+const fs = require("fs");
+const allow = new Set();
+for (const f of [".claude/settings.json", ".claude/settings.local.json"]) {
+  try {
+    const d = JSON.parse(fs.readFileSync(f, "utf8"));
+    for (const p of d.permissions?.allow ?? []) allow.add(p);
+  } catch {}
+}
+console.log(JSON.stringify([...allow], null, 2));
+'   # Claude Code -- prints the ALREADY-MERGED effective allowlist as one list;
+    # use your provider's native config file(s) otherwise
 ```
 
-If any required command prefix has no covering entry in EITHER file, STOP
-immediately and return `deployed: false` with notes listing every missing
-entry, e.g.:
+Check every required command prefix against this one merged list. If any
+required command prefix has no covering entry in it, STOP immediately and
+return `deployed: false` with notes listing every missing entry, e.g.:
 
   Missing permissions in the merged CLI permission settings (.claude/settings.json
   + .claude/settings.local.json on Claude Code -- neither file covers these):
