@@ -13,6 +13,7 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 // contract.
 import { runCmd } from './helpers/bd-replay.mjs';
 import { extractVerifyIds } from './helpers/verify-clause.mjs';
+import { StalledSprintError } from '../fleet-sprint/errors.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -723,6 +724,77 @@ test('golden transcript: mock sprint happy-path dispatch sequence matches the co
         'file (review the diff before committing it):\n' +
         '  UPDATE_GOLDEN=1 node --test test/golden-transcript.test.mjs\n' +
         'or: npm run update-golden -w @apralabs/apra-fleet-se'
+    );
+});
+
+// =============================================================================
+// apra-fleet-66u.5: pins the apra-fleet-66u.4 fix (the mock
+// integ-test-runner handler above now issues `bd close` for every
+// verify-routed bead named in its dispatch prompt) on THIS file's
+// mock-sprint/golden-transcript path specifically -- the 2026-08-04
+// recurrence of the apra-fleet-66u false-stall regression happened here,
+// not on the already-covered real-sprint develop-loop harness (see
+// apra-fleet-66u.3's test/66u-stall-progress-credit.test.mjs).
+//
+// This scenario's single task closes under the epic (setup() above), making
+// the epic itself a childful verify-routed target once that one child
+// closes -- exactly the same shape as 66u.3(a)'s epic-closes-via-Integ-Test
+// case, but driven through this file's real runner.js dispatch (not the
+// mock-sprint-harness's runDevelopLoopScenario()). Without the 66u.4 fix,
+// the mock integ-test-runner handler above would never close the epic, so
+// runner.js's stillOpenVerifyIds exit gate would keep looping Deploy/
+// IntegTest with zero forward progress in closedCount/verifyEverIds until
+// staleCycles hit STALL_CYCLE_LIMIT and runner.js threw StalledSprintError
+// (the exact "Closed-count history: [3,3,3] ... the verifier may be
+// failing" shape from the real incident) -- which engine.executeFile()
+// rejects `runGoldenScenario()`'s promise with, caught below.
+//
+// MUTATION CHECK: reverting apra-fleet-66u.4's `for (const id of verifyIds)
+// { await runCmd(...) }` loop in buildTranscriptFleetApi()'s
+// integ-test-runner handler above (restoring the old canned
+// {featuresClosed, passed:true}-only response) makes this test's `caught`
+// assertion fail: it throws a StalledSprintError instead of completing.
+test('golden transcript: Integ Test closing the childful epic in the same cycle it becomes verify-eligible credits progress and avoids a false stall (apra-fleet-66u.5)', async () => {
+    let caught = null;
+    let transcript = null;
+    let result = null;
+    try {
+        ({ transcript, result } = await runGoldenScenario('golden-progress'));
+    } catch (err) {
+        caught = err;
+    }
+
+    // Named assertion #1: no false-stall abort fired.
+    assert.ok(
+        !(caught instanceof StalledSprintError),
+        'Expected no false-stall abort on the mock golden sprint\'s same-cycle ' +
+        `Integ Test closure of the childful epic, got: ${caught ? caught.message : 'none'}`
+    );
+    if (caught) throw caught;
+
+    // Named assertion #2: the sprint reached success (not merely "did not
+    // throw" -- confirms the whole runner.js cycle loop actually exited
+    // cleanly via the goal-priority + verify-set completion path).
+    assert.strictEqual(
+        result.status, 'success',
+        `Expected the golden mock sprint to complete successfully, got: ${JSON.stringify(result)}`
+    );
+
+    // Named assertion #3: this run genuinely exercised the same-cycle
+    // verify-closure path apra-fleet-66u.4 fixed -- an integ-test-runner
+    // dispatch actually named the epic in its verification-closure clause
+    // (proves the scenario reaches the childful-target-becomes-verify-
+    // eligible shape, not merely a scenario that happens to avoid it).
+    const integPrompts = transcript.filter((e) => e.kind === 'prompt' && e.agentType === 'integ-test-runner');
+    assert.ok(integPrompts.length > 0, 'Expected at least one integ-test-runner dispatch in the golden transcript');
+    const epicPlaceholder = '<BEAD:epic-fleet-member-management-apis>';
+    const verifyDispatch = integPrompts.find(
+        (e) => e.prompt.includes('verification-closure:') && e.prompt.includes(epicPlaceholder)
+    );
+    assert.ok(
+        verifyDispatch,
+        `Expected an integ-test-runner dispatch naming the epic (${epicPlaceholder}) in its ` +
+        `verification-closure clause -- got prompts: ${JSON.stringify(integPrompts.map((e) => e.prompt))}`
     );
 });
 

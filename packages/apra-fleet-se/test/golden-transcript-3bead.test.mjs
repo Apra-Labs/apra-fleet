@@ -13,6 +13,7 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 // contract.
 import { runCmd } from './helpers/bd-replay.mjs';
 import { extractVerifyIds } from './helpers/verify-clause.mjs';
+import { StalledSprintError } from '../fleet-sprint/errors.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -498,7 +499,26 @@ async function run3BeadScenario(tag) {
             }
         });
 
-        return { artifacts, result };
+        // apra-fleet-66u.5: the FULL normalized dispatch log, kept separate
+        // from `artifacts` above (which is deliberately the order-sensitive-
+        // only projection this file's committed GOLDEN_PATH snapshot pins --
+        // see header comment). This full log is never compared against a
+        // committed snapshot; it exists only so a test can inspect
+        // non-order-sensitive dispatch content (e.g. the integ-test-runner's
+        // verification-closure clause) without widening the snapshot's scope.
+        const dispatchLogNormalized = dispatchLog.map((entry, index) => {
+            const normalized = { seq: index, kind: entry.kind, member: entry.member };
+            if (entry.kind === 'command') {
+                normalized.command = normalizeText(entry.command, idMap, tempDir);
+            } else {
+                normalized.agentType = entry.agentType;
+                normalized.label = entry.label;
+                normalized.prompt = normalizeText(entry.prompt, idMap, tempDir);
+            }
+            return normalized;
+        });
+
+        return { artifacts, result, dispatchLog: dispatchLogNormalized };
     } finally {
         await teardown(tempDir);
     }
@@ -602,6 +622,66 @@ test('golden transcript (3-bead): streak-assignment prompt + reviewer bead-id li
         'If this divergence is an INTENTIONAL prompt change, regenerate the golden ' +
         'file (review the diff before committing it):\n' +
         '  UPDATE_GOLDEN=1 node --test test/golden-transcript-3bead.test.mjs'
+    );
+});
+
+// =============================================================================
+// apra-fleet-66u.5: pins the apra-fleet-66u.4 fix (build3BeadFleetApi's
+// integ-test-runner handler above now issues `bd close` for every
+// verify-routed bead named in its dispatch prompt) on THIS file's 3-bead
+// mock-sprint/golden-transcript path -- see the identical-purpose test in
+// golden-transcript.test.mjs for the full false-stall regression writeup.
+// Here the epic becomes a childful verify-routed target once all THREE
+// sibling tasks close (rather than one, as in the single-bead file), so
+// this also exercises the fix under the file's genuine parallel-streak
+// shape.
+//
+// MUTATION CHECK: reverting apra-fleet-66u.4's `for (const id of verifyIds)
+// { await runCmd(...) }` loop in build3BeadFleetApi()'s integ-test-runner
+// handler above (restoring the old canned {featuresClosed, passed:true}-
+// only response) makes this test's `caught` assertion fail: it throws a
+// StalledSprintError instead of completing.
+// =============================================================================
+test('golden transcript (3-bead): Integ Test closing the childful epic in the same cycle it becomes verify-eligible credits progress and avoids a false stall (apra-fleet-66u.5)', async () => {
+    let caught = null;
+    let dispatchLog = null;
+    let result = null;
+    try {
+        ({ dispatchLog, result } = await run3BeadScenario('golden-3bead-prog'));
+    } catch (err) {
+        caught = err;
+    }
+
+    // Named assertion #1: no false-stall abort fired.
+    assert.ok(
+        !(caught instanceof StalledSprintError),
+        'Expected no false-stall abort on the mock golden 3-bead sprint\'s same-cycle ' +
+        `Integ Test closure of the childful epic, got: ${caught ? caught.message : 'none'}`
+    );
+    if (caught) throw caught;
+
+    // Named assertion #2: the sprint reached success (not merely "did not
+    // throw" -- confirms the whole runner.js cycle loop actually exited
+    // cleanly via the goal-priority + verify-set completion path).
+    assert.strictEqual(
+        result.status, 'success',
+        `Expected the golden 3-bead mock sprint to complete successfully, got: ${JSON.stringify(result)}`
+    );
+
+    // Named assertion #3: this run genuinely exercised the same-cycle
+    // verify-closure path apra-fleet-66u.4 fixed -- an integ-test-runner
+    // dispatch actually named the epic in its verification-closure clause
+    // once all three sibling tasks closed.
+    const integPrompts = dispatchLog.filter((e) => e.kind === 'prompt' && e.agentType === 'integ-test-runner');
+    assert.ok(integPrompts.length > 0, 'Expected at least one integ-test-runner dispatch in the 3-bead dispatch log');
+    const epicPlaceholder = '<BEAD:epic-fleet-member-management-apis-3-bead>';
+    const verifyDispatch = integPrompts.find(
+        (e) => e.prompt.includes('verification-closure:') && e.prompt.includes(epicPlaceholder)
+    );
+    assert.ok(
+        verifyDispatch,
+        `Expected an integ-test-runner dispatch naming the epic (${epicPlaceholder}) in its ` +
+        `verification-closure clause -- got prompts: ${JSON.stringify(integPrompts.map((e) => e.prompt))}`
     );
 });
 
