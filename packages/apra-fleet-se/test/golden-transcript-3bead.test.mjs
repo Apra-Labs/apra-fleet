@@ -12,6 +12,7 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 // replaced; see test/helpers/bd-replay.mjs for the APRA_FLEET_BD_MOCK
 // contract.
 import { runCmd } from './helpers/bd-replay.mjs';
+import { extractVerifyIds } from './helpers/verify-clause.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -349,8 +350,11 @@ function build3BeadFleetApi(tempDir, epicBead, dispatchLog) {
                 // agent's documented contract and the `doer` handler's own
                 // "Assigned bead ids" extraction/close above. See the
                 // apra-fleet-66u.4 bd comment for the full diagnosis.
-                const verifyMatch = opts.prompt.match(/await verification-closure: ([^.]+)\./);
-                const verifyIds = verifyMatch ? verifyMatch[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+                //
+                // apra-fleet-spp.5: extraction now delegates to the shared
+                // extractVerifyIds() helper (test/helpers/verify-clause.mjs)
+                // -- see the identical fix/comment in golden-transcript.test.mjs.
+                const verifyIds = extractVerifyIds(opts.prompt);
                 for (const id of verifyIds) {
                     await runCmd(`bd close ${id}`, tempDir);
                 }

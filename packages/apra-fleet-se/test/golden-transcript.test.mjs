@@ -12,6 +12,7 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 // replaced; see test/helpers/bd-replay.mjs for the APRA_FLEET_BD_MOCK
 // contract.
 import { runCmd } from './helpers/bd-replay.mjs';
+import { extractVerifyIds } from './helpers/verify-clause.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -99,6 +100,44 @@ test('mockCmdResult/isSpawnFailure: nonzero exit is non-error data, spawn failur
     assert.strictEqual(isSpawnFailure({ code: 'ENOENT' }), true);
     assert.strictEqual(isSpawnFailure({ code: 1 }), false);
     assert.strictEqual(isSpawnFailure({ code: 127 }), false);
+});
+
+// apra-fleet-spp.5: direct regression coverage for extractVerifyIds()
+// (test/helpers/verify-clause.mjs), the parser both this file's and
+// golden-transcript-3bead.test.mjs's integ-test-runner mock handlers use to
+// find the bead id(s) named in runner.js's "...await verification-closure:
+// <ids>. For each, verify..." prompt clause. A capture anchored on the first
+// '.' (this file's pre-fix regex) truncates a dotted, decomposed-child bead
+// id -- e.g. apra-fleet-xyz.1, this project's standard child-id form -- down
+// to its parent prefix (apra-fleet-xyz), which would make the mock `bd
+// close` the WRONG bead. This test feeds a prompt naming exactly one dotted
+// id and asserts the parser (and, simulating the handler's own `for (const
+// id of verifyIds)` loop, the resulting close list) yields exactly that
+// dotted id, untruncated.
+test('extractVerifyIds: a dotted decomposed-child verify id is preserved, not truncated at its first dot', () => {
+    const prompt =
+        'Additionally, these bead(s) have ALL their children closed and await ' +
+        'verification-closure: apra-fleet-xyz.1. For each, verify against the ' +
+        'deployed build per the playbook.';
+
+    const verifyIds = extractVerifyIds(prompt);
+    assert.deepStrictEqual(verifyIds, ['apra-fleet-xyz.1']);
+
+    // Simulate the mock handler's own close loop to assert exactly this
+    // dotted id -- not a truncated 'apra-fleet-xyz' -- is what gets closed.
+    const closed = [];
+    for (const id of verifyIds) closed.push(id);
+    assert.deepStrictEqual(closed, ['apra-fleet-xyz.1']);
+
+    // Multiple ids, one of which is dotted, comma-separated -- confirms the
+    // dot-tolerance holds alongside normal split-on-comma behavior.
+    const multiPrompt =
+        'await verification-closure: apra-fleet-abc, apra-fleet-xyz.1, apra-fleet-def.2.3. For each, verify ' +
+        'against the deployed build.';
+    assert.deepStrictEqual(
+        extractVerifyIds(multiPrompt),
+        ['apra-fleet-abc', 'apra-fleet-xyz.1', 'apra-fleet-def.2.3']
+    );
 });
 
 async function setup(tempDirSuffix) {
@@ -399,8 +438,14 @@ function buildTranscriptFleetApi(tempDir, epicBead, dispatchLog) {
                 // this mock never performing the side effect its own prompt
                 // asked for. See the apra-fleet-66u.4 bd comment for the
                 // full diagnosis.
-                const verifyMatch = opts.prompt.match(/await verification-closure: ([^.]+)\./);
-                const verifyIds = verifyMatch ? verifyMatch[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+                //
+                // apra-fleet-spp.5: extraction now delegates to the shared
+                // extractVerifyIds() helper (test/helpers/verify-clause.mjs)
+                // instead of an inline /([^.]+)\./ capture, which truncated
+                // a dotted verify id (e.g. apra-fleet-eft.52, this project's
+                // standard decomposed-child form) at its first '.' and would
+                // have made this mock `bd close` the WRONG bead.
+                const verifyIds = extractVerifyIds(opts.prompt);
                 for (const id of verifyIds) {
                     await runCmd(`bd close ${id}`, tempDir);
                 }
