@@ -114,7 +114,7 @@ describe('resolveModelForTier', () => {
     const agent = makeTestAgent({ modelTiers: undefined });
 
     expect(resolveModelForTier(agent, 'cheap', claude)).toBe(claude.modelForTier('cheap'));
-    expect(resolveModelForTier(agent, 'mid', claude)).toBe(claude.modelForTier('mid'));
+    expect(resolveModelForTier(agent, 'standard', claude)).toBe(claude.modelForTier('standard'));
     expect(resolveModelForTier(agent, 'premium', claude)).toBe(claude.modelForTier('premium'));
   });
 });

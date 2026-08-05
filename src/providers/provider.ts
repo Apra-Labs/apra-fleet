@@ -136,7 +136,7 @@ export interface ProviderAdapter {
 
   // Model tier mapping
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string>;
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string;
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string;
   modelFlag(model: string): string;
 
   // Error classification

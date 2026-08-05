@@ -119,7 +119,7 @@ export class CodexProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'gpt-5.4-mini';
     return 'gpt-5.4';
   }

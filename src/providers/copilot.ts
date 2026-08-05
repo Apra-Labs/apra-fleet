@@ -110,9 +110,9 @@ export class CopilotProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'claude-haiku-4-5';
-    if (tier === 'mid') return 'claude-sonnet-4-5';
+    if (tier === 'standard') return 'claude-sonnet-4-5';
     return 'claude-opus-4-5';
   }
 

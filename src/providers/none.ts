@@ -69,7 +69,7 @@ export class NoneProvider implements ProviderAdapter {
     return { cheap: '', standard: '', premium: '' };
   }
 
-  modelForTier(_tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(_tier: 'cheap' | 'standard' | 'premium'): string {
     return '';
   }
 

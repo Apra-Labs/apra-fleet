@@ -157,6 +157,35 @@ describe('composePermissions -- Gemini proactive', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AGY proactive compose
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- AGY proactive', () => {
+  it('delivers settings.json with AGY native permission rule objects for doer', async () => {
+    const member = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(result).toContain('agy-doer');
+    expect(result).toContain('agy');
+    expect(result).toContain('.gemini/antigravity-cli/settings.json');
+
+    const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    const writes = allCmds.filter(cmd => cmd.includes('cat >'));
+
+    expect(writes.some(cmd => cmd.includes('.gemini/antigravity-cli/settings.json'))).toBe(true);
+
+    const settingsWrite = writes.find(cmd => cmd.includes('.gemini/antigravity-cli/settings.json'))!;
+    expect(settingsWrite).toContain('"action": "read_file"');
+    expect(settingsWrite).toContain('"action": "write_file"');
+    expect(settingsWrite).toContain('"action": "command"');
+    expect(settingsWrite).toContain('"target": "git"');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Codex proactive compose
 // ---------------------------------------------------------------------------
 
@@ -256,7 +285,7 @@ describe('composePermissions -- Claude reactive grant', () => {
 
     expect(result).toContain('Granted');
     expect(result).toContain('Bash(docker:*)');
-    // co-occurrence: docker → docker-compose + docker buildx
+    // co-occurrence: docker -> docker-compose + docker buildx
     expect(result).toContain('Bash(docker-compose:*)');
 
     const allCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
@@ -333,12 +362,12 @@ describe('composePermissions -- Gemini reactive grant', () => {
 });
 
 // ---------------------------------------------------------------------------
-// No llmProvider → defaults to Claude
+// No llmProvider -> defaults to Claude
 // ---------------------------------------------------------------------------
 
 describe('composePermissions -- no llmProvider defaults to Claude', () => {
   it('treats member with no llmProvider as Claude', async () => {
-    // makeTestAgent without llmProvider → undefined
+    // makeTestAgent without llmProvider -> undefined
     const member = makeTestAgent({ friendlyName: 'legacy-member', os: 'linux' });
     delete (member as any).llmProvider;
     addAgent(member);

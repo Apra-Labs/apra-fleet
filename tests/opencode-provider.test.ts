@@ -74,7 +74,7 @@ describe('OpenCodeProvider core methods', () => {
 
   it('modelForTier returns correct model', () => {
     expect(p.modelForTier('cheap')).toBe('opencode/north-mini-code-free');
-    expect(p.modelForTier('mid')).toBe('opencode/deepseek-v4-flash-free');
+    expect(p.modelForTier('standard')).toBe('opencode/deepseek-v4-flash-free');
     expect(p.modelForTier('premium')).toBe('opencode/nemotron-3-ultra-free');
   });
 

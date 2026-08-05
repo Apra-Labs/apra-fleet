@@ -126,12 +126,13 @@ export class AgyProvider implements ProviderAdapter {
       let sessionId: string | undefined;
       for (const line of lines) {
         try {
-          const entry = JSON.parse(line) as { type?: string; status?: string; content?: string; conversation_id?: string };
+          const entry = JSON.parse(line) as { type?: string; source?: string; status?: string; content?: string; conversation_id?: string };
           if (sessionId === undefined && typeof entry.conversation_id === 'string' && entry.conversation_id.trim()) {
             sessionId = entry.conversation_id.trim();
           }
+          const isModelTurn = entry.source === 'MODEL' || entry.type === 'PLANNER_RESPONSE' || entry.type === 'GENERIC' || entry.type === 'MODEL_RESPONSE';
           if (
-            entry.type === 'PLANNER_RESPONSE' &&
+            isModelTurn &&
             entry.status === 'DONE' &&
             typeof entry.content === 'string' &&
             entry.content.trim()
@@ -154,6 +155,7 @@ export class AgyProvider implements ProviderAdapter {
     // Fallback: ANSI-strip stdout (covers cases where transcript is missing or incomplete)
     console.error('[agy] warning: transcript markers not found -- falling back to raw ANSI-stripped output');
     const stripped = stripAnsi(raw)
+      .replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '')
       .replace(/^FLEET_PID:\d+\r?\n/m, '')
       .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
       .replace(/\r/g, '')
@@ -191,7 +193,7 @@ export class AgyProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'gemini-3.5-flash-lite';
     if (tier === 'premium') return 'claude-sonnet-4.6';
     return 'gemini-3.5-flash';
@@ -210,7 +212,8 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
+    const agyAllow = convertClaudeAllowToAgyPermissions(allow);
+    return [{ permissions: { allow: agyAllow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
   }
 
   supportsOAuthCopy(): boolean {
@@ -308,4 +311,55 @@ export class AgyProvider implements ProviderAdapter {
     // 3a). No-op.
     return { seeded: false, detail: 'agy: no per-project trust concept -- machine-global config' };
   }
+}
+
+export interface AgyPermissionRule {
+  action: 'command' | 'read_file' | 'write_file' | 'mcp' | 'read_url' | 'execute_url' | 'custom' | 'invoke_subagent' | 'send_message';
+  target: string;
+}
+
+export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissionRule[] {
+  const rules: AgyPermissionRule[] = [];
+  const added = new Set<string>();
+
+  const addRule = (action: AgyPermissionRule['action'], target: string) => {
+    const key = `${action}:${target}`;
+    if (!added.has(key)) {
+      added.add(key);
+      rules.push({ action, target });
+    }
+  };
+
+  for (const item of allow) {
+    if (item === 'Read' || item === 'Glob' || item === 'Grep') {
+      addRule('read_file', '*');
+    } else if (item === 'Write' || item === 'Edit') {
+      addRule('write_file', '*');
+    } else if (item === 'Agent') {
+      addRule('invoke_subagent', '*');
+      addRule('send_message', '*');
+    } else if (item.startsWith('Bash(')) {
+      const match = item.match(/^Bash\(([^:*]+)(?::|\s|\*|\))/);
+      if (match && match[1]) {
+        const cmdName = match[1].trim();
+        addRule('command', cmdName === '*' ? '*' : cmdName);
+      } else {
+        addRule('command', '*');
+      }
+    } else if (item === 'Bash') {
+      addRule('command', '*');
+    } else if (item.startsWith('Mcp(')) {
+      const match = item.match(/^Mcp\(([^)]+)\)/);
+      addRule('mcp', match ? match[1] : '*');
+    } else if (item === 'Mcp') {
+      addRule('mcp', '*');
+    } else if (item === 'Web' || item === 'Fetch' || item === 'WebSearch') {
+      addRule('read_url', '*');
+    } else {
+      console.warn(`[agy] warning: unmapped permission token "${item}"`);
+      addRule('custom', item);
+    }
+  }
+
+  return rules;
 }

@@ -251,9 +251,9 @@ export class ClaudeProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'haiku';
-    if (tier === 'mid') return 'sonnet';
+    if (tier === 'standard') return 'sonnet';
     return 'opus';
   }
 

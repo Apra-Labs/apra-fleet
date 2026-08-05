@@ -66,7 +66,7 @@ describe('pollLogFile', () => {
     expect(result.error).toContain('not found');
   });
 
-  describe('Claude — timestamp extraction from assistant entries', () => {
+  describe('Claude -- timestamp extraction from assistant entries', () => {
     it('extracts timestamp from the last assistant entry', async () => {
       const stdout = jsonLines(
         { type: 'user', timestamp: '2026-05-05T10:00:00.000Z' },
@@ -208,7 +208,7 @@ describe('pollLogFile', () => {
     });
   });
 
-  describe('Gemini — lastUpdated extraction from $set lines', () => {
+  describe('Gemini -- lastUpdated extraction from $set lines', () => {
     beforeEach(() => {
       mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'gemini' }));
     });
@@ -351,6 +351,30 @@ describe('pollLogFile', () => {
 
       const result = await pollLogFile('member-1', '/log.jsonl');
       expect(result.mtimeMs).toBeNull();
+    });
+  });
+
+  describe('AGY -- timestamp extraction from created_at entries', () => {
+    it('extracts created_at ISO timestamp from AGY entries', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'agy' }));
+      const stdout = jsonLines(
+        { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', created_at: '2026-08-05T05:00:00.000Z' },
+        { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', created_at: '2026-08-05T05:01:00.000Z' },
+      );
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/brain/session-1/logs/transcript.jsonl');
+      expect(result.lastTimestamp).toBe('2026-08-05T05:01:00.000Z');
+      expect(result.error).toBeUndefined();
+    });
+
+    it('textually recovers created_at from partial line in raw tail', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'agy' }));
+      const stdout = '...truncated line...\n{"step_index":2,"source":"MODEL","created_at":"2026-08-05T05:02:30.000Z"}';
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/brain/session-1/logs/transcript.jsonl');
+      expect(result.lastTimestamp).toBe('2026-08-05T05:02:30.000Z');
     });
   });
 });

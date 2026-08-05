@@ -115,12 +115,48 @@ export async function pollLogFile(memberId: string, logFilePath: string): Promis
 
     const extracted = provider === 'gemini'
       ? extractGeminiTimestamp(memberId, lines)
+      : provider === 'agy'
+      ? extractAgyTimestamp(memberId, lines, result.stdout)
       : extractClaudeTimestamp(memberId, lines, result.stdout);
     return { ...extracted, mtimeMs };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { lastTimestamp: null, error: msg };
   }
+}
+
+/**
+ * AGY transcript entries carry a top-level `created_at` ISO 8601 UTC timestamp
+ * (e.g. "created_at": "2026-08-05T05:13:28Z").
+ */
+const RAW_AGY_TIMESTAMP_RE = /(?<!\\)"created_at"\s*:\s*"([^"\\]*)"/g;
+
+function extractAgyTimestamp(memberId: string, lines: string[], rawTail = ''): PollResult {
+  let sawParseableEntry = false;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]) as Record<string, unknown>;
+      sawParseableEntry = true;
+      const ts = parsed['created_at'] ?? parsed['timestamp'];
+      if (typeof ts === 'string') {
+        return { lastTimestamp: ts };
+      }
+    } catch {
+      // partial line at start of tail -- skip
+    }
+  }
+
+  let lastRaw: string | null = null;
+  RAW_AGY_TIMESTAMP_RE.lastIndex = 0;
+  for (let m = RAW_AGY_TIMESTAMP_RE.exec(rawTail); m !== null; m = RAW_AGY_TIMESTAMP_RE.exec(rawTail)) {
+    lastRaw = m[1];
+  }
+  if (lastRaw !== null) return { lastTimestamp: lastRaw };
+
+  if (sawParseableEntry) {
+    logLine('stall_poll_format_error', JSON.stringify({ memberId, error: 'no entry with created_at in tail' }));
+  }
+  return { lastTimestamp: null };
 }
 
 /**
@@ -151,7 +187,7 @@ function extractClaudeTimestamp(memberId: string, lines: string[], rawTail = '')
       // Entry with no timestamp (e.g. a summary/meta record) -- keep scanning
       // backwards rather than giving up on the whole sample.
     } catch {
-      // partial line at start of tail — skip
+      // partial line at start of tail -- skip
     }
   }
 
@@ -184,7 +220,7 @@ function extractGeminiTimestamp(memberId: string, lines: string[]): PollResult {
         return { lastTimestamp: null };
       }
     } catch {
-      // partial line — skip
+      // partial line -- skip
     }
   }
   return { lastTimestamp: null };

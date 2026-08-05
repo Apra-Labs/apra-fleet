@@ -41,7 +41,7 @@ import { isMaxTurnsResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'stalled';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'stalled';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -237,7 +237,7 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
     const t = tier as keyof typeof memberTiers;
     return memberTiers[t] ?? memberTiers.standard ?? memberTiers.cheap ?? Object.values(memberTiers).filter(Boolean)[0] as string;
   }
-  return provider.modelForTier(tier as 'cheap' | 'mid' | 'premium');
+  return provider.modelForTier(tier as 'cheap' | 'standard' | 'premium');
 }
 
 const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
@@ -1114,7 +1114,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
             ? 'max_turns_exhausted'
             : failureCategory === 'auth'
               ? 'auth'
-              : 'nonzero_exit',
+              : failureCategory === 'server'
+                ? 'server'
+                : failureCategory === 'overloaded'
+                  ? 'overloaded'
+                  : failureCategory === 'workspace_not_trusted'
+                    ? 'workspace_not_trusted'
+                    : 'nonzero_exit',
           // apra-fleet-63x.1: a nonzero exit -- most commonly max_turns_exhausted,
           // where the CLI ran real turns and burned real tokens before hitting its
           // ceiling -- still has a REAL parsed usage figure sitting in _epUsage
