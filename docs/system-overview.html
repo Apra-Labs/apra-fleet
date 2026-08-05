@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apra Fleet -- Complete System Overview</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #7d8590;
+    --blue: #58a6ff;
+    --green: #3fb950;
+    --orange: #f0883e;
+    --purple: #bc8cff;
+    --pink: #f778ba;
+    --yellow: #d29922;
+    --cyan: #39d353;
+    --red: #f85149;
+    --confirmed: #3fb950;
+    --inferred: #58a6ff;
+    --unverified: #7d8590;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 24px 16px 60px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  h1 { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  h2 { font-size: 15px; font-weight: 700; color: var(--blue); margin-bottom: 14px; letter-spacing: 0.04em; text-transform: uppercase; }
+  h3 { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  p  { color: var(--muted); margin-bottom: 10px; font-size: 13px; }
+
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 32px; }
+
+  /* SECTION CARDS */
+  .section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px 24px;
+    margin-bottom: 20px;
+  }
+
+  /* TWO KNOWLEDGE TYPES */
+  .knowledge-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 700px) { .knowledge-grid { grid-template-columns: 1fr; } }
+
+  .k-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .k-card.kb  { border-top: 3px solid var(--purple); }
+  .k-card.cm  { border-top: 3px solid var(--cyan); }
+
+  .k-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .k-card.kb  .k-title { color: var(--purple); }
+  .k-card.cm  .k-title { color: var(--cyan); }
+
+  .k-subtitle { font-size: 11px; color: var(--muted); margin-bottom: 12px; }
+
+  .k-row { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .k-col { flex: 1; min-width: 100px; }
+  .k-col-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    margin: 2px 2px 2px 0;
+    font-weight: 500;
+  }
+  .pill-purple { background: #bc8cff22; color: var(--purple); border: 1px solid #bc8cff44; }
+  .pill-cyan   { background: #39d35322; color: var(--cyan);   border: 1px solid #39d35344; }
+  .pill-blue   { background: #58a6ff22; color: var(--blue);   border: 1px solid #58a6ff44; }
+  .pill-green  { background: #3fb95022; color: var(--green);  border: 1px solid #3fb95044; }
+  .pill-orange { background: #f0883e22; color: var(--orange); border: 1px solid #f0883e44; }
+  .pill-muted  { background: #7d859022; color: var(--muted);  border: 1px solid #7d859044; }
+  .pill-pink   { background: #f778ba22; color: var(--pink);   border: 1px solid #f778ba44; }
+  .pill-red    { background: #f8514922; color: var(--red);    border: 1px solid #f8514944; }
+
+  /* CONFIDENCE BADGES */
+  .conf { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+  .conf-confirmed  { background: #3fb95022; color: var(--confirmed); border: 1px solid #3fb95055; }
+  .conf-inferred   { background: #58a6ff22; color: var(--inferred);  border: 1px solid #58a6ff55; }
+  .conf-unverified { background: #7d859022; color: var(--unverified);border: 1px solid #7d859055; }
+
+  /* AGENTS */
+  .agents-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .agent-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+
+  .agent-name { font-size: 13px; font-weight: 700; margin-bottom: 2px; }
+  .agent-mode { font-size: 10px; color: var(--muted); margin-bottom: 8px; }
+  .agent-kb   { font-size: 11px; color: var(--muted); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+
+  /* FLOW DIAGRAM */
+  .flow {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    margin-bottom: 4px;
+  }
+
+  .flow-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 100px;
+  }
+
+  .flow-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    white-space: nowrap;
+    position: relative;
+  }
+
+  .flow-arrow {
+    display: flex;
+    align-items: center;
+    padding: 0 4px;
+    color: var(--muted);
+    font-size: 16px;
+    margin-top: 20px;
+  }
+
+  .flow-label { font-size: 10px; color: var(--muted); margin-top: 4px; text-align: center; max-width: 90px; }
+
+  .flow-box.pm        { border-color: var(--orange); color: var(--orange); }
+  .flow-box.planner   { border-color: var(--blue);   color: var(--blue); }
+  .flow-box.doer      { border-color: var(--green);  color: var(--green); }
+  .flow-box.reviewer  { border-color: var(--pink);   color: var(--pink); }
+  .flow-box.kb-agent  { border-color: var(--purple); color: var(--purple); }
+  .flow-box.git       { border-color: var(--muted);  color: var(--muted); }
+
+  /* COMMUNICATION TABLE */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid #21262d; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+
+  /* STORAGE TABLE */
+  .store-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+  }
+
+  .store-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .store-name { font-size: 12px; font-weight: 700; margin-bottom: 2px; }
+  .store-path { font-size: 10px; color: var(--muted); font-family: monospace; word-break: break-all; margin-bottom: 8px; }
+  .store-item { font-size: 11px; color: var(--muted); padding: 2px 0; }
+
+  /* KB LIFECYCLE */
+  .lifecycle {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+  }
+  @media (max-width: 700px) { .lifecycle { grid-template-columns: 1fr; } }
+
+  .lc-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .lc-phase { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+  .lc-card.write .lc-phase { color: var(--green); }
+  .lc-card.read  .lc-phase { color: var(--blue); }
+  .lc-card.decay .lc-phase { color: var(--orange); }
+
+  .lc-item { font-size: 11px; color: var(--muted); padding: 3px 0; display: flex; gap: 6px; }
+  .lc-item::before { content: '->'; color: var(--border); flex-shrink: 0; }
+
+  /* CONFIDENCE TABLE */
+  .conf-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .conf-table th { text-align: left; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .conf-table td { padding: 8px; border-bottom: 1px solid #21262d; vertical-align: top; font-size: 11px; }
+  .conf-table tr:last-child td { border-bottom: none; }
+
+  /* SEPARATOR */
+  .sep { height: 1px; background: var(--border); margin: 20px 0; }
+
+  /* CALLOUT */
+  .callout {
+    background: var(--surface2);
+    border-left: 3px solid var(--blue);
+    border-radius: 0 6px 6px 0;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    margin: 12px 0;
+  }
+  .callout.green  { border-color: var(--green); }
+  .callout.purple { border-color: var(--purple); }
+  .callout.orange { border-color: var(--orange); }
+
+  code {
+    font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+    font-size: 11px;
+    background: #21262d;
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--orange);
+  }
+
+  .tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-right: 4px; font-weight: 600; }
+  .tag-pm      { background: #f0883e22; color: var(--orange); }
+  .tag-fleet   { background: #58a6ff22; color: var(--blue); }
+  .tag-git     { background: #7d859022; color: var(--muted); }
+  .tag-beads   { background: #d2992222; color: var(--yellow); }
+  .tag-kb      { background: #bc8cff22; color: var(--purple); }
+  .tag-nexus   { background: #39d35322; color: var(--cyan); }
+</style>
+</head>
+<body>
+
+<h1>Apra Fleet -- Complete System Overview</h1>
+<p class="subtitle">How two knowledge types flow, how agents communicate, and where everything is stored.</p>
+
+<!-- ====== TWO KNOWLEDGE TYPES ====== -->
+<div class="section">
+  <h2>Two types of knowledge</h2>
+  <div class="knowledge-grid">
+
+    <div class="k-card kb">
+      <div class="k-title">Knowledge Bank (KB)</div>
+      <div class="k-subtitle">Semantic, behavioral, durable -- survives across sprints</div>
+      <div class="k-row">
+        <div class="k-col">
+          <div class="k-col-label">What it stores</div>
+          <span class="pill pill-purple">knowledge</span>
+          <span class="pill pill-purple">runbook</span>
+          <span class="pill pill-purple">context-cache</span>
+          <span class="pill pill-purple">learning</span>
+        </div>
+        <div class="k-col">
+          <div class="k-col-label">Engine</div>
+          <span class="pill pill-muted">SQLite + FTS5</span><br>
+          <span class="pill pill-muted">per-repo scoped</span>
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <div class="k-col-label">Examples</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+          "jitter added AFTER maxDelayMs cap"<br>
+          "shouldRetry receives 1-based attempt"<br>
+          "AUDN requires symbol AND file overlap"
+        </div>
+      </div>
+    </div>
+
+    <div class="k-card cm">
+      <div class="k-title">Code Memory (GitNexus)</div>
+      <div class="k-subtitle">Structural, call-graph, symbol index -- derived from AST</div>
+      <div class="k-row">
+        <div class="k-col">
+          <div class="k-col-label">What it stores</div>
+          <span class="pill pill-cyan">call graphs</span>
+          <span class="pill pill-cyan">symbol defs</span>
+          <span class="pill pill-cyan">imports</span>
+          <span class="pill pill-cyan">impact maps</span>
+        </div>
+        <div class="k-col">
+          <div class="k-col-label">Engine</div>
+          <span class="pill pill-muted">AST analysis</span><br>
+          <span class="pill pill-muted">gitnexus index</span>
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <div class="k-col-label">Examples</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+          "SqliteProvider.query() calls filterByType()"<br>
+          "Changing kb_capture.ts affects: index.ts, 3 tests"<br>
+          "retry() is exported from index.ts"
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="callout">
+    <strong>Rule:</strong> Never use grep or file reads for structural questions (who calls what, what imports what) -- use <code>code_graph</code>, <code>code_impact</code>, <code>code_query</code>, <code>code_context</code>.
+    Never use these tools for behavioral facts -- use <code>kb_query</code>.
+  </div>
+</div>
+
+<!-- ====== KB LIFECYCLE ====== -->
+<div class="section">
+  <h2>KB -- How it gets written, read, and maintained</h2>
+
+  <div class="lifecycle">
+    <div class="lc-card write">
+      <div class="lc-phase">Write paths</div>
+      <div class="lc-item">KB Agent calls <code>kb_capture</code> after every reviewer verdict</div>
+      <div class="lc-item">KB Agent calls <code>kb_promote</code> to raise confidence on existing entries</div>
+      <div class="lc-item">Doer/Reviewer call <code>kb_harvest</code> at end of session -- regex scan of session output, feeds KB Agent</div>
+      <div class="lc-item"><code>kb_setup</code> installs a git post-commit hook that calls <code>kb_invalidate</code> on changed files automatically</div>
+    </div>
+
+    <div class="lc-card read">
+      <div class="lc-phase">Read paths</div>
+      <div class="lc-item">Session start: <code>kb_session_prime</code> -- returns top entries, stale files, recommended code calls</div>
+      <div class="lc-item">Retrieve-first: before reading any unfamiliar file/function, doer calls <code>kb_query</code> -- if CONFIRMED/INFERRED entry exists, trust it, skip source read</div>
+      <div class="lc-item">KB Agent calls <code>kb_query</code> before EVERY capture -- dedup check</div>
+      <div class="lc-item"><code>kb_context</code> -- checks if a file's summary is fresh (git-hash bound)</div>
+    </div>
+
+    <div class="lc-card decay">
+      <div class="lc-phase">Maintenance</div>
+      <div class="lc-item">AUDN: every capture checks for near-duplicates (symbol + file overlap + FTS title match)</div>
+      <div class="lc-item">Confidence decay: INFERRED entries with no source_files, not accessed in 30 days -> demoted to UNVERIFIED at next <code>prime()</code></div>
+      <div class="lc-item">Git hook: file change -> <code>kb_invalidate</code> marks entries for that file as stale automatically</div>
+      <div class="lc-item"><code>/pm kb-review</code>: surfaces flagged contradiction pairs for human resolution</div>
+    </div>
+  </div>
+
+  <div class="sep"></div>
+
+  <h3>Confidence ladder</h3>
+  <table class="conf-table" style="margin-top:10px;">
+    <tr>
+      <th>Level</th><th>Meaning</th><th>How it's reached</th><th>How it decays</th>
+    </tr>
+    <tr>
+      <td><span class="conf conf-confirmed">CONFIRMED</span></td>
+      <td>Reviewer APPROVED the code this entry describes. Highest trust.</td>
+      <td>KB Agent calls <code>kb_promote</code> after APPROVED verdict, or <code>kb_capture</code> with confidence=CONFIRMED</td>
+      <td>Only via contradiction flag or manual invalidation</td>
+    </tr>
+    <tr>
+      <td><span class="conf conf-inferred">INFERRED</span></td>
+      <td>KB Agent verified by reading source. Trusted but not reviewer-stamped.</td>
+      <td><code>kb_capture(confidence='INFERRED')</code> or promoted from UNVERIFIED</td>
+      <td>If no source_files, not accessed/promoted in 30+ days -> auto-demoted to UNVERIFIED at next prime()</td>
+    </tr>
+    <tr>
+      <td><span class="conf conf-unverified">UNVERIFIED</span></td>
+      <td>Transcript-only. Low trust, useful as a hint.</td>
+      <td><code>kb_harvest</code> auto-scan, or KB Agent with CHANGES NEEDED verdict</td>
+      <td>Lowest level -- no further decay</td>
+    </tr>
+  </table>
+</div>
+
+<!-- ====== CODE MEMORY LIFECYCLE ====== -->
+<div class="section">
+  <h2>Code Memory (GitNexus) -- How it gets built and read</h2>
+  <div class="lifecycle">
+    <div class="lc-card write">
+      <div class="lc-phase">Build / Update</div>
+      <div class="lc-item">PM runs <code>/pm index</code> -> <code>npx gitnexus analyze</code> on the project repo via a fleet member</div>
+      <div class="lc-item">Run once after <code>/pm init</code>, again after large merges</div>
+      <div class="lc-item">Builds AST call-graph, symbol index, import maps -> stored in <code>.gitnexus/</code></div>
+    </div>
+    <div class="lc-card read">
+      <div class="lc-phase">Read (4 MCP tools)</div>
+      <div class="lc-item"><code>code_graph</code> -- who calls this function, who is called by it</div>
+      <div class="lc-item"><code>code_impact</code> -- if I change X, what else breaks?</div>
+      <div class="lc-item"><code>code_query</code> -- where is symbol Y defined?</div>
+      <div class="lc-item"><code>code_context</code> -- full symbol context with callers/callees</div>
+    </div>
+    <div class="lc-card decay">
+      <div class="lc-phase">Freshness</div>
+      <div class="lc-item">Index becomes stale after large refactors or merges</div>
+      <div class="lc-item">No automatic invalidation -- PM re-indexes manually</div>
+      <div class="lc-item">Does NOT decay on its own -- structural facts stay valid until the code changes</div>
+    </div>
+  </div>
+  <div class="callout green" style="margin-top:14px;">
+    Code Memory answers STRUCTURAL questions ("what calls what"). KB answers BEHAVIORAL questions ("what does this do, what are the non-obvious constraints"). Both are needed -- neither replaces the other.
+  </div>
+</div>
+
+<!-- ====== AGENT ROLES ====== -->
+<div class="section">
+  <h2>Agents and their roles</h2>
+  <div class="agents-grid">
+
+    <div class="agent-card" style="border-top:3px solid var(--orange);">
+      <div class="agent-name" style="color:var(--orange);">PM Orchestrator</div>
+      <div class="agent-mode"><span class="pill pill-orange">this session</span> <span class="pill pill-muted">never writes code</span></div>
+      <div style="font-size:11px;color:var(--muted);">
+        Reads state from git + beads. Dispatches all other agents. Manages worktrees, permissions, git plumbing. Raises PRs. Loops until APPROVED.
+      </div>
+      <div class="agent-kb">KB: reads status.md only. No KB calls directly.</div>
+    </div>
+
+    <div class="agent-card" style="border-top:3px solid var(--blue);">
+      <div class="agent-name" style="color:var(--blue);">Planner</div>
+      <div class="agent-mode"><span class="pill pill-blue">local subagent</span> <span class="pill pill-muted">strongest model</span></div>
+      <div style="font-size:11px;color:var(--muted);">
+        Reads requirements.md (+ design.md). Writes PLAN.md with phase-ordered tasks, each with an assigned model. Self-critiques. Commits.
+      </div>
+      <div class="agent-kb">KB: none -- plan is derived from requirements, not KB.</div>
+    </div>
+
+    <div class="agent-card" style="border-top:3px solid var(--blue);">
+      <div class="agent-name" style="color:var(--blue);">Plan-Reviewer</div>
+      <div class="agent-mode"><span class="pill pill-blue">local subagent</span> <span class="pill pill-muted">strongest model</span></div>
+      <div style="font-size:11px;color:var(--muted);">
+        Reads requirements.md + PLAN.md. Writes feedback.md (APPROVED / CHANGES NEEDED). Gates plan execution.
+      </div>
+      <div class="agent-kb">KB: none.</div>
+    </div>
+
+    <div class="agent-card" style="border-top:3px solid var(--green);">
+      <div class="agent-name" style="color:var(--green);">Doer</div>
+      <div class="agent-mode"><span class="pill pill-green">fleet member</span> <span class="pill pill-muted">plan-assigned model</span></div>
+      <div style="font-size:11px;color:var(--muted);">
+        Implements tasks in order. Commits after each. Stops at VERIFY. Runs lint + tests. Pushes to origin.
+      </div>
+      <div class="agent-kb">
+        KB: <code>kb_session_prime</code> (start) -> retrieve-first <code>kb_query</code> -> <code>kb_harvest</code> (end).
+        <strong>NO kb_capture.</strong>
+      </div>
+    </div>
+
+    <div class="agent-card" style="border-top:3px solid var(--pink);">
+      <div class="agent-name" style="color:var(--pink);">Reviewer</div>
+      <div class="agent-mode"><span class="pill pill-pink">fleet member</span> <span class="pill pill-muted">strongest model</span></div>
+      <div style="font-size:11px;color:var(--muted);">
+        Reviews diff against plan + requirements. Runs lint + tests. Writes feedback.md verdict. Commits + pushes.
+      </div>
+      <div class="agent-kb">
+        KB: <code>kb_session_prime</code> (start) -> <code>kb_harvest</code> (end).
+        Verdict (APPROVED / CHANGES NEEDED) directly sets KB confidence ceiling.
+      </div>
+    </div>
+
+    <div class="agent-card" style="border-top:3px solid var(--purple);">
+      <div class="agent-name" style="color:var(--purple);">KB Agent</div>
+      <div class="agent-mode"><span class="pill pill-purple">fleet member (doer's machine)</span> <span class="pill pill-muted">cheap model</span></div>
+      <div style="font-size:11px;color:var(--muted);">
+        Runs after EVERY reviewer verdict. Reads diff + session output + feedback.md. Captures durable knowledge. No code writes, no git commits.
+      </div>
+      <div class="agent-kb">
+        KB: <code>kb_query</code> (dedup) -> <code>kb_capture</code> -> <code>kb_promote</code> -> report inline.
+        <strong>ALL writes go through KB Agent.</strong>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ====== COMPLETE CYCLE ====== -->
+<div class="section">
+  <h2>Complete cycle -- one sprint, end to end</h2>
+
+  <div style="overflow-x:auto;padding-bottom:8px;">
+  <div style="display:flex;align-items:flex-start;gap:0;min-width:900px;">
+
+    <div class="flow-step">
+      <div class="flow-box pm">PM</div>
+      <div class="flow-label">writes requirements.md<br>bd create epic</div>
+    </div>
+    <div class="flow-arrow">-></div>
+
+    <div class="flow-step">
+      <div class="flow-box planner">Planner</div>
+      <div class="flow-label">local subagent<br>writes PLAN.md</div>
+    </div>
+    <div class="flow-arrow">-></div>
+
+    <div class="flow-step">
+      <div class="flow-box planner">Plan-Rev</div>
+      <div class="flow-label">local subagent<br>APPROVED?</div>
+    </div>
+    <div class="flow-arrow">-></div>
+
+    <div class="flow-step">
+      <div class="flow-box pm">PM</div>
+      <div class="flow-label">creates beads tasks<br>writes progress.json</div>
+    </div>
+    <div class="flow-arrow">-></div>
+
+    <div class="flow-step">
+      <div class="flow-box doer">Doer</div>
+      <div class="flow-label">fleet execute_prompt<br>prime -> impl -> harvest</div>
+    </div>
+    <div class="flow-arrow">-></div>
+
+    <div class="flow-step">
+      <div class="flow-box reviewer">Reviewer</div>
+      <div class="flow-label">fleet execute_prompt<br>diff + tests -> verdict</div>
+    </div>
+    <div class="flow-arrow">-></div>
+
+    <div class="flow-step">
+      <div class="flow-box kb-agent">KB Agent</div>
+      <div class="flow-label">fleet execute_prompt<br>capture + promote</div>
+    </div>
+    <div class="flow-arrow">-></div>
+
+    <div class="flow-step">
+      <div class="flow-box pm">PM</div>
+      <div class="flow-label">close VERIFY in beads<br>raise PR</div>
+    </div>
+
+  </div>
+  </div>
+
+  <div class="sep"></div>
+
+  <h3 style="margin-bottom:12px;">Inside each fleet dispatch</h3>
+  <table>
+    <tr>
+      <th>Agent</th><th>Dispatched how</th><th>Reads from git</th><th>Writes to git</th><th>KB calls</th>
+    </tr>
+    <tr>
+      <td style="color:var(--green);">Doer</td>
+      <td><code>execute_prompt</code> on doer member<br><span class="pill pill-green" style="margin-top:4px;">plan-assigned model</span></td>
+      <td>PLAN.md, progress.json, requirements.md, src files</td>
+      <td>src files, tests, progress.json (push to origin)</td>
+      <td><code>kb_session_prime</code>, <code>kb_query</code>, <code>kb_harvest</code></td>
+    </tr>
+    <tr>
+      <td style="color:var(--pink);">Reviewer</td>
+      <td><code>execute_prompt</code> on reviewer member<br><span class="pill pill-pink" style="margin-top:4px;">strongest model</span></td>
+      <td>PLAN.md, progress.json, requirements.md, diff, prior feedback.md</td>
+      <td>feedback.md (push to origin)</td>
+      <td><code>kb_session_prime</code>, <code>kb_harvest</code></td>
+    </tr>
+    <tr>
+      <td style="color:var(--purple);">KB Agent</td>
+      <td><code>execute_prompt</code> on doer member<br><span class="pill pill-purple" style="margin-top:4px;">cheap model, fresh session</span></td>
+      <td>git diff (read-only), feedback.md, src files (for verification)</td>
+      <td><strong>Nothing.</strong> No git ops.</td>
+      <td><code>kb_query</code>, <code>kb_capture</code>, <code>kb_promote</code>, <code>kb_context</code></td>
+    </tr>
+  </table>
+</div>
+
+<!-- ====== COMMUNICATION BUS ====== -->
+<div class="section">
+  <h2>How agents communicate -- the message bus</h2>
+  <table>
+    <tr><th>Channel</th><th>Who writes</th><th>Who reads</th><th>What it carries</th></tr>
+    <tr>
+      <td><span class="tag tag-git">git</span> PLAN.md</td>
+      <td>Planner</td>
+      <td>Plan-reviewer, Doer, Reviewer, KB Agent</td>
+      <td>Task list, model assignments, done criteria, phase order</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-git">git</span> progress.json</td>
+      <td>PM (initial), Doer (updates)</td>
+      <td>PM, Doer (on resume), Reviewer</td>
+      <td>Task statuses, notes, lastDispatchedPhase, dispatch ledger</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-git">git</span> feedback.md</td>
+      <td>Plan-reviewer, Reviewer</td>
+      <td>PM (reads verdict), Doer (on CHANGES NEEDED), KB Agent</td>
+      <td>APPROVED / CHANGES NEEDED verdict + full narrative</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-git">git</span> requirements.md</td>
+      <td>PM</td>
+      <td>Planner, Plan-reviewer, Reviewer</td>
+      <td>Sprint requirements -- the source of truth for intent</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-fleet">fleet</span> execute_prompt</td>
+      <td>PM (calls it)</td>
+      <td>Member (runs claude -p inside member's work folder)</td>
+      <td>Role prompt, task scope, worktree path, KB instructions</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-fleet">fleet</span> send_files</td>
+      <td>PM</td>
+      <td>Member (receives CLAUDE.md = role context)</td>
+      <td>Role-specific agent context file (tpl-doer.md, tpl-reviewer.md, tpl-kb-agent.md)</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-fleet">fleet</span> receive_files</td>
+      <td>PM</td>
+      <td>PM (pulls feedback.md from reviewer)</td>
+      <td>Verdict file after reviewer completes</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-beads">beads</span> bd</td>
+      <td>PM</td>
+      <td>PM</td>
+      <td>Epic + task lifecycle (open, in_progress, closed). Findings as tasks. Cross-sprint view.</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-kb">KB</span> SQLite</td>
+      <td>KB Agent (kb_capture, kb_promote)</td>
+      <td>Doer (kb_query, kb_session_prime), KB Agent (dedup checks)</td>
+      <td>Durable behavioral knowledge, confidence levels, source file hashes</td>
+    </tr>
+  </table>
+</div>
+
+<!-- ====== WHERE THINGS ARE STORED ====== -->
+<div class="section">
+  <h2>Where everything is stored</h2>
+  <div class="store-grid">
+
+    <div class="store-card">
+      <div class="store-name" style="color:var(--purple);">Knowledge Bank (KB)</div>
+      <div class="store-path">~/.apra-fleet/data/knowledge/&lt;repo-hash&gt;.db</div>
+      <div class="store-item">SQLite with FTS5 full-text index</div>
+      <div class="store-item">One DB per git repo (scoped by repo root hash)</div>
+      <div class="store-item">Tables: entries, links, sessions</div>
+      <div class="store-item">Entries have: type, confidence, content, source_files, symbols, content_hash</div>
+    </div>
+
+    <div class="store-card">
+      <div class="store-name" style="color:var(--cyan);">Code Memory (GitNexus)</div>
+      <div class="store-path">&lt;project-repo&gt;/.gitnexus/</div>
+      <div class="store-item">AST-derived call-graph index</div>
+      <div class="store-item">Built by npx gitnexus analyze</div>
+      <div class="store-item">Queried via 4 MCP tools</div>
+      <div class="store-item">Must be re-indexed after large merges</div>
+    </div>
+
+    <div class="store-card">
+      <div class="store-name" style="color:var(--yellow);">Beads (Task DB)</div>
+      <div class="store-path">~/pm/.beads/*.db</div>
+      <div class="store-item">Dolt-backed SQLite (git-versioned rows)</div>
+      <div class="store-item">One DB for ALL projects and sprints</div>
+      <div class="store-item">Tracks: epics, tasks, status, assignees, findings</div>
+      <div class="store-item">PM root, not inside project repos</div>
+    </div>
+
+    <div class="store-card">
+      <div class="store-name" style="color:var(--orange);">Sprint State</div>
+      <div class="store-path">&lt;project-repo&gt;/&lt;branch&gt;/</div>
+      <div class="store-item">PLAN.md -- task list with models</div>
+      <div class="store-item">progress.json -- live execution state</div>
+      <div class="store-item">feedback.md -- latest review verdict</div>
+      <div class="store-item">requirements.md -- intent document</div>
+      <div class="store-item">Committed to feature branch, pushed to origin</div>
+    </div>
+
+    <div class="store-card">
+      <div class="store-name" style="color:var(--blue);">Fleet Config</div>
+      <div class="store-path">~/.apra-fleet/</div>
+      <div class="store-item">members.json -- registered members</div>
+      <div class="store-item">data/knowledge/config.json -- KB provider config</div>
+      <div class="store-item">hooks/ -- post-register and other hooks</div>
+      <div class="store-item">credentials/ -- encrypted credential store</div>
+    </div>
+
+    <div class="store-card">
+      <div class="store-name" style="color:var(--green);">PM Status</div>
+      <div class="store-path">~/pm/&lt;project&gt;/status.md</div>
+      <div class="store-item">Phase log, member assignments, mode</div>
+      <div class="store-item">KB Agent run summaries</div>
+      <div class="store-item">Not committed to git -- PM-local only</div>
+      <div class="store-item">Updated after every dispatch completes</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ====== KEY INVARIANTS ====== -->
+<div class="section">
+  <h2>Key invariants</h2>
+  <table>
+    <tr>
+      <th>Rule</th><th>Why</th>
+    </tr>
+    <tr>
+      <td>Only KB Agent calls <code>kb_capture</code> / <code>kb_promote</code></td>
+      <td>Doer and reviewer are too embedded in implementation to evaluate knowledge quality. KB Agent reads diff + verdict + transcript with fresh context.</td>
+    </tr>
+    <tr>
+      <td>CONFIRMED requires reviewer APPROVED verdict</td>
+      <td>Reviewer is the quality gate. CONFIRMED entries are trusted by future doers without source reads. Must be earned.</td>
+    </tr>
+    <tr>
+      <td>git is the single source of truth for sprint state</td>
+      <td>PM, doer, reviewer all share state through committed files on the feature branch. Memory is not trusted across sessions.</td>
+    </tr>
+    <tr>
+      <td>Doer uses retrieve-first before reading source</td>
+      <td>Avoids re-reading files that prior agents have already summarized. CONFIRMED/INFERRED entries are faster and sufficient.</td>
+    </tr>
+    <tr>
+      <td>KB is per-repo scoped</td>
+      <td>apra-sandbox KB and apra-fleet KB are separate. Learnings stay relevant to their codebase. PM queries the wrong KB if not running from the right repo.</td>
+    </tr>
+    <tr>
+      <td>KB Agent runs on doer member, cheap model, fresh session</td>
+      <td>Doer already has the correct branch checked out. Cheap model is sufficient for evaluation. Fresh session avoids inheriting doer's biases.</td>
+    </tr>
+  </table>
+</div>
+
+</body>
+</html>

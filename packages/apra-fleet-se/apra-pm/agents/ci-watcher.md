@@ -1,7 +1,7 @@
 ---
 name: ci-watcher
 description: Polls CI for the sprint HEAD SHA; returns green/red/not_configured/pending.
-tools: [Bash]
+tools: [Bash, ToolSearch]
 ---
 
 # CI Status Check
@@ -21,6 +21,18 @@ Your dispatch prompt must supply ONE of the two scoping forms:
 **Missing-input behavior**: if neither form is satisfied (no `prNumber`, and `branch` or
 `expectedHeadSha` missing), do not guess or check an arbitrary branch. Return
 `status: "pending"` with `notes` stating which input was missing.
+
+## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+
+1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime"`
+2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo whose CI you
+   are checking, and `hint_modules` naming its CI workflow files. Trust CONFIRMED entries
+   fully. Use INFERRED entries as hints, not facts. Known-flaky tests and known CI failure
+   modes are the point here -- they change how you read a red run.
+3. Do NOT capture. You poll a status API; you verify no claim about this repository, so you
+   have no basis to write one down.
+
+If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 ## Step 1 -- List recent CI runs
 

@@ -1,7 +1,7 @@
 ---
 name: harvester
 description: Extracts durable sprint knowledge into docs/, updates README/CHANGELOG (including pre-computed cost analysis block), defers low-priority issues, and returns OK.
-tools: [Read, Edit, Write, Bash, Grep, Glob]
+tools: [Read, Edit, Write, Bash, Grep, Glob, ToolSearch]
 ---
 
 # Sprint Harvest
@@ -30,6 +30,17 @@ not supplied, do NOT fabricate, reformat, or recompute a substitute -- these are
 pre-computed by the orchestrator in JavaScript and must be inserted byte-for-byte. Stop
 and return `status: "FAILED"` with `notes` naming exactly which input was missing. Same for
 a missing `base-branch`/`branch`: do not guess which branch to diff.
+
+## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+
+1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo being harvested,
+   and `hint_symbols`/`hint_modules` relevant to the modules touched during the sprint.
+   Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
+3. When you extract durable knowledge during harvest, call `mcp__apra-fleet__kb_capture`
+   with type "knowledge" or "learning" for anything non-obvious that future sprints should know.
+
+If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 ## Step 1 -- Write sprint analysis artifact (FIRST, before anything else)
 

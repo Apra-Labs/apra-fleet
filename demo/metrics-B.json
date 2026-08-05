@@ -1,0 +1,174 @@
+[
+  {
+    "env": "B",
+    "sprint": "sprint1",
+    "collected_at": "2026-07-14T07:24:28.874Z",
+    "sandbox_dir": "C:\\ws_yash\\demo-upgrade\\sandbox-b",
+    "data_dir": "C:\\ws_yash\\demo-upgrade\\data-b",
+    "git": {
+      "available": true,
+      "commit_count": 4,
+      "recent": [
+        {
+          "hash": "5362e4e73231507418aab8db057d6850c8bcd879",
+          "subject": "chore(kb): update knowledge bible -- 11 confirmed entries"
+        },
+        {
+          "hash": "a2e87ff726c522a000fd01159b66e991164b9ae1",
+          "subject": "chore(kb): update knowledge bible -- 6 confirmed entries"
+        },
+        {
+          "hash": "baa31660379f455decea188b06dac9b5e9a6bec9",
+          "subject": "bd init: initialize beads issue tracking"
+        },
+        {
+          "hash": "b9b067b57bcd30df8cbe22017f44fe7773875226",
+          "subject": "chore: fresh sandbox copy of fleet-e2e-toy for Env B"
+        }
+      ],
+      "notes": []
+    },
+    "progress": {
+      "found": false,
+      "path": null,
+      "totals": null,
+      "by_role": {},
+      "doer_model_mix": [],
+      "notes": [
+        "no progress.json found under C:\\ws_yash\\demo-upgrade\\sandbox-b -- expected for a vendored pm with no dispatches ledger, or a simple-sprint flow with no PLAN.md/progress.json"
+      ]
+    },
+    "kb": {
+      "available": true,
+      "db_path": "C:\\ws_yash\\demo-upgrade\\data-b\\knowledge\\sandbox-b\\kb.sqlite",
+      "slug": "sandbox-b",
+      "totals": {
+        "by_confidence": {
+          "CONFIRMED": 14,
+          "INFERRED": 1,
+          "UNVERIFIED": 1
+        },
+        "by_type": {
+          "context-cache": 9,
+          "learning": 4,
+          "knowledge": 3,
+          "runbook": 0,
+          "user-directive": 0
+        },
+        "total": 16
+      },
+      "stale": 4,
+      "flagged": 0,
+      "superseded": 4,
+      "retrieval": {
+        "entries_retrieved": 5,
+        "total_uses": 43,
+        "hit_rate": 0.4166666666666667
+      },
+      "notes": []
+    },
+    "bible": {
+      "present": true,
+      "entries": 11,
+      "commits": 2,
+      "notes": []
+    },
+    "usage": {
+      "available": true,
+      "total_calls": 0,
+      "by_tool": {},
+      "notes": [
+        "usage.jsonl is NOT env-isolated (hardcoded to real homedir, ignores APRA_FLEET_DATA_DIR) -- counts are filtered by repo path match, not by file location"
+      ]
+    },
+    "notes": [
+      "no progress.json found under C:\\ws_yash\\demo-upgrade\\sandbox-b -- expected for a vendored pm with no dispatches ledger, or a simple-sprint flow with no PLAN.md/progress.json"
+    ]
+  },
+  {
+    "env": "B",
+    "sprint": "sprint2",
+    "collected_at": "2026-07-14T07:24:29.224Z",
+    "sandbox_dir": "C:\\ws_yash\\demo-upgrade\\sandbox-b",
+    "data_dir": "C:\\ws_yash\\demo-upgrade\\data-b",
+    "git": {
+      "available": true,
+      "commit_count": 4,
+      "recent": [
+        {
+          "hash": "5362e4e73231507418aab8db057d6850c8bcd879",
+          "subject": "chore(kb): update knowledge bible -- 11 confirmed entries"
+        },
+        {
+          "hash": "a2e87ff726c522a000fd01159b66e991164b9ae1",
+          "subject": "chore(kb): update knowledge bible -- 6 confirmed entries"
+        },
+        {
+          "hash": "baa31660379f455decea188b06dac9b5e9a6bec9",
+          "subject": "bd init: initialize beads issue tracking"
+        },
+        {
+          "hash": "b9b067b57bcd30df8cbe22017f44fe7773875226",
+          "subject": "chore: fresh sandbox copy of fleet-e2e-toy for Env B"
+        }
+      ],
+      "notes": []
+    },
+    "progress": {
+      "found": false,
+      "path": null,
+      "totals": null,
+      "by_role": {},
+      "doer_model_mix": [],
+      "notes": [
+        "no progress.json found under C:\\ws_yash\\demo-upgrade\\sandbox-b -- expected for a vendored pm with no dispatches ledger, or a simple-sprint flow with no PLAN.md/progress.json"
+      ]
+    },
+    "kb": {
+      "available": true,
+      "db_path": "C:\\ws_yash\\demo-upgrade\\data-b\\knowledge\\sandbox-b\\kb.sqlite",
+      "slug": "sandbox-b",
+      "totals": {
+        "by_confidence": {
+          "CONFIRMED": 14,
+          "INFERRED": 1,
+          "UNVERIFIED": 1
+        },
+        "by_type": {
+          "context-cache": 9,
+          "learning": 4,
+          "knowledge": 3,
+          "runbook": 0,
+          "user-directive": 0
+        },
+        "total": 16
+      },
+      "stale": 4,
+      "flagged": 0,
+      "superseded": 4,
+      "retrieval": {
+        "entries_retrieved": 5,
+        "total_uses": 43,
+        "hit_rate": 0.4166666666666667
+      },
+      "notes": []
+    },
+    "bible": {
+      "present": true,
+      "entries": 11,
+      "commits": 2,
+      "notes": []
+    },
+    "usage": {
+      "available": true,
+      "total_calls": 0,
+      "by_tool": {},
+      "notes": [
+        "usage.jsonl is NOT env-isolated (hardcoded to real homedir, ignores APRA_FLEET_DATA_DIR) -- counts are filtered by repo path match, not by file location"
+      ]
+    },
+    "notes": [
+      "no progress.json found under C:\\ws_yash\\demo-upgrade\\sandbox-b -- expected for a vendored pm with no dispatches ledger, or a simple-sprint flow with no PLAN.md/progress.json"
+    ]
+  }
+]

@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Apra Fleet -- The Amnesia Test (demo deck)</title>
+<style>
+  :root{--bg:#0f1117;--panel:#161b26;--border:#232b3b;--text:#e2e8f0;--dim:#94a3b8;--faint:#64748b;
+    --green:#22c55e;--green-bg:#0a1f12;--amber:#fbbf24;--red:#f87171;--red-bg:#1f0f0f;--blue:#60a5fa;--purple:#a78bfa;--gold:#f59e0b;--orange:#fb923c;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow:hidden;}
+  .slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;padding:5vh 8vw;opacity:0;transition:opacity .35s;overflow-y:auto;}
+  .slide.on{display:flex;opacity:1;}
+  .kicker{font-size:12.5px;letter-spacing:.14em;font-weight:700;text-transform:uppercase;color:var(--faint);margin-bottom:16px;}
+  h1{font-size:40px;line-height:1.1;margin-bottom:16px;font-weight:700;}
+  h1 .hl{color:var(--green);} h1 .rd{color:var(--red);}
+  .big{font-size:18px;line-height:1.6;color:var(--dim);max-width:940px;}
+  .big b{color:var(--text);}
+  ul{list-style:none;margin-top:10px;} li{font-size:17px;line-height:1.9;color:var(--dim);padding-left:26px;position:relative;max-width:940px;}
+  li:before{content:"\2192";position:absolute;left:0;color:var(--blue);}
+  li b{color:var(--text);}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:10px;max-width:1000px;}
+  .col{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px 22px;}
+  .col.old{border-color:#4c1d1d;} .col.new{border-color:#14532d;}
+  .col h3{font-size:15px;margin-bottom:12px;} .col.old h3{color:var(--red);} .col.new h3{color:var(--green);}
+  .col .row{font-size:15px;line-height:1.85;color:var(--dim);} .col .row .v{float:right;font-weight:700;}
+  .col.old .v{color:var(--red);} .col.new .v{color:var(--green);}
+  .stat{font-size:58px;font-weight:800;color:var(--green);line-height:1;} .stat.rd{color:var(--red);}
+  .statrow{display:flex;gap:52px;margin:20px 0;flex-wrap:wrap;}
+  .statrow .s{text-align:center;} .statrow .lab{font-size:13px;color:var(--faint);margin-top:8px;max-width:170px;}
+  .note{position:absolute;bottom:3.5vh;left:8vw;right:8vw;font-size:13.5px;color:var(--faint);border-top:1px solid var(--border);padding-top:10px;line-height:1.5;}
+  .note b{color:var(--amber);}
+  .bugbox{background:#1c1405;border:1px solid #6b4f0f;border-radius:12px;padding:20px 24px;max-width:980px;font-size:17px;line-height:1.6;color:var(--dim);}
+  .bugbox b{color:var(--gold);}
+  code{background:#1c2333;padding:2px 7px;border-radius:5px;font-size:.85em;color:#c4d3f0;}
+  /* dispatch card -- reproduces Claude Code session output */
+  .term{background:#0a0d13;border:1px solid var(--border);border-radius:10px;padding:16px 20px;font-family:Consolas,"Courier New",monospace;font-size:15px;line-height:1.75;max-width:980px;}
+  .term .dot{color:var(--green);} .term .role{color:var(--purple);font-weight:700;} .term .model{color:var(--gold);}
+  .term .done{color:var(--faint);} .term .tool{color:var(--blue);} .term .o{color:var(--dim);} .term .ok{color:var(--green);font-weight:700;}
+  .term .cmd{color:var(--green);}
+  .pipe{display:flex;align-items:stretch;gap:0;margin:14px 0;max-width:1020px;flex-wrap:wrap;}
+  .stage{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;min-width:150px;flex:1;}
+  .stage .n{font-size:13px;font-weight:700;margin-bottom:4px;}
+  .stage .d{font-size:11.5px;color:var(--faint);line-height:1.5;}
+  .arrow{display:flex;align-items:center;color:var(--faint);font-size:20px;padding:0 6px;}
+  .s-plan .n{color:var(--blue);} .s-prev .n{color:#93c5fd;} .s-doer .n{color:var(--orange);} .s-rev .n{color:#93c5fd;} .s-kb .n{color:var(--purple);}
+  .subtle{font-size:12.5px;color:var(--faint);margin-top:10px;font-style:italic;}
+  .hint{position:absolute;top:3vh;right:3vw;font-size:12px;color:var(--faint);}
+  .nav{position:absolute;bottom:2.5vh;right:3vw;font-size:13px;color:var(--faint);}
+</style>
+</head>
+<body>
+
+<!-- 0 : plain language -->
+<div class="slide on">
+  <div class="kicker">Apra Fleet -- the idea in plain language</div>
+  <h1>A team of AI developers that <span class="hl">keeps a shared notebook</span></h1>
+  <div class="big">
+  Apra Fleet runs your development like a small team: a <b>planner</b> breaks the work down, <b>doers</b> write the code, <b>reviewers</b> check it -- each on an AI model sized to the job.<br><br>
+  Until now, every AI tool had one flaw: <b>total amnesia</b>. Finish a task, close the session, and everything it figured out about your codebase is gone.<br><br>
+  The new build fixes that with two memories:<br>
+  <b style="color:var(--blue)">1. A map of the code</b> -- automatically built and kept current, so agents navigate by structure instead of searching blindly.<br>
+  <b style="color:var(--purple)">2. A notebook of lessons</b> -- everything the agents figure out while working ("this filter lives in the store layer", "never break X") is written down, <b>fact-checked by a reviewer before it's trusted</b>, and saved <b>inside your git repo</b> -- so the whole team, human and AI, inherits it.<br><br>
+  The result: <b>the second time the fleet touches any part of your code, it already knows it.</b></div>
+  <div class="note">SAY: "One sentence: it's a team of AI developers that keeps a shared, fact-checked notebook in your repo -- so it gets smarter and cheaper the more it works for you."</div>
+</div>
+
+<!-- 1 : KB workflow -->
+<div class="slide">
+  <div class="kicker">How it works -- the knowledge lifecycle</div>
+  <h1>How the fleet <span class="hl">stores</span> and <span class="hl">reuses</span> knowledge</h1>
+
+  <div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--green);margin:6px 0 6px;">STORE&nbsp;&mdash;&nbsp;during and after every sprint</div>
+  <div class="pipe">
+    <div class="stage s-doer"><div class="n">1. DISCOVER</div><div class="d">planner / doer / reviewer hit a durable fact while working (a convention, a constraint, a gotcha)</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-plan"><div class="n">2. kb_capture</div><div class="d">saved immediately, clamped to <b>INFERRED</b> -- no agent can self-certify</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-rev"><div class="n">3. REVIEWER</div><div class="d">independent verdict on the code that demonstrates the fact</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-kb"><div class="n">4. KB AGENT</div><div class="d"><b>kb_promote</b> to <b>CONFIRMED</b> only if the reviewer APPROVED. The curator.</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-plan"><div class="n">5. kb_export</div><div class="d"><code>.fleet/kb-canonical.json</code> <b>auto-commits to git</b> -- the shareable bible</div></div>
+  </div>
+
+  <div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--blue);margin:18px 0 6px;">RETRIEVE&nbsp;&mdash;&nbsp;at the start of the next sprint / session / clone</div>
+  <div class="pipe">
+    <div class="stage s-plan"><div class="n">6. RECALL <span style="color:var(--faint);font-weight:400">(kb_session_prime)</span></div><div class="d">planner/doer recall prior learnings for the task's symbols before touching a file</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-kb"><div class="n">7. CONFIRMED hits</div><div class="d">prior learnings surface (a cold clone seeds from the git bible)</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-doer"><div class="n">8. REUSE</div><div class="d">agent trusts the fact, <b>skips re-reading the code</b>, picks a cheaper model</div></div>
+  </div>
+
+  <div class="subtle">Trust tiers, enforced in code: UNVERIFIED (raw / harvested) &rarr; INFERRED (captured, unreviewed) &rarr; CONFIRMED (reviewer-approved). Only promotion mints CONFIRMED; the bible carries only CONFIRMED.</div>
+  <div class="note">SAY: "This is the whole engine. Agents capture what they learn as they work; a reviewer's approval promotes it to trusted; the KB Agent curates it and commits it to your repo; and the next session recalls and reuses it. Store on the top row, recall on the bottom."</div>
+</div>
+
+<!-- 2 : two kinds of knowledge -->
+<div class="slide">
+  <div class="kicker">Two kinds of knowledge -- don't confuse them</div>
+  <h1>Code Graph vs Agent Learning</h1>
+  <div class="cols">
+    <div class="col" style="border-color:#1e3a5f;"><h3 style="color:var(--blue);">CODE GRAPH &mdash; code intelligence (gitnexus)</h3>
+      <div class="row" style="color:var(--dim);line-height:1.9;">What the code <b style="color:var(--text)">IS</b>: symbols, call graph, module structure.<br>
+      Machine-derived, rebuilt on demand, <b style="color:var(--text)">always current</b>, disposable -- delete it and re-index for the identical result.<br><br>
+      <span style="color:var(--faint)">Tools:</span> <code>code_context</code>, <code>code_impact</code>, <code>code_query</code>, <code>code_graph</code><br><br>
+      <span style="color:var(--faint)">Answers:</span> "Where is X? Who calls Y? What breaks if I change Z?"</div>
+    </div>
+    <div class="col" style="border-color:#3b2d6e;"><h3 style="color:var(--purple);">AGENT LEARNING &mdash; Knowledge Bank</h3>
+      <div class="row" style="color:var(--dim);line-height:1.9;">What we <b style="color:var(--text)">FIGURED OUT</b>: conventions, constraints, gotchas, decisions -- the things the code does <i>not</i> tell you.<br>
+      Earned through work, <b style="color:var(--text)">reviewer-gated</b>, persists in git. Precious -- lost forever if not captured.<br><br>
+      <span style="color:var(--faint)">Tools:</span> <code>kb_capture</code>, <code>kb_promote</code>, <code>kb_session_prime</code> (recall), <code>kb_query</code><br><br>
+      <span style="color:var(--faint)">Answers:</span> "Why is it built this way? What must I not break?"</div>
+    </div>
+  </div>
+  <div class="big" style="margin-top:16px">They are complementary, and the current build <b>joins them</b>: <code>code_context</code> on a symbol also inlines any CONFIRMED Knowledge-Bank facts about it -- <b>structure and hard-won wisdom in one call.</b></div>
+  <div class="note">SAY: "Two different things. The code graph is the map -- always accurate, rebuildable. Agent learning is the wisdom -- earned, reviewed, and easy to lose. v0.3.4 had neither; the new build has both, and links them."</div>
+</div>
+
+<!-- 3 : real transcript from our own sprints -->
+<div class="slide">
+  <div class="kicker">Proof from our own dogfooding -- real session excerpts</div>
+  <h1>Both, working on this codebase</h1>
+  <div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--blue);margin:2px 0 6px;">CODE GRAPH -- structural navigation instead of guessing</div>
+  <div class="term">
+    <div>doer: <span class="tool">code_context</span>(<span class="o">name: "getGitNexusClient"</span>)</div>
+    <div class="o">&nbsp;&nbsp;-> disambiguated 4 definitions; confirmed src/tools/code-intelligence.ts:42</div>
+  </div>
+  <div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--purple);margin:16px 0 6px;">AGENT LEARNING -- a recalled fact replaced a file read</div>
+  <div class="term">
+    <div>doer: <span class="tool">kb_session_prime</span> + <span class="tool">kb_query</span> <span class="o">-> CONFIRMED entry for callGitNexus</span></div>
+    <div class="o">&nbsp;&nbsp;"...returned a CONFIRMED context-cache entry with exact line numbers</div>
+    <div class="o">&nbsp;&nbsp;(92-109) and structure for callGitNexus, which let me <span style="color:var(--green)">skip an</span></div>
+    <div class="o">&nbsp;&nbsp;<span style="color:var(--green)">exploratory read</span> and go straight to the precise edit."</div>
+  </div>
+  <div class="subtle">Verbatim from a doer's report during the kb-integrity sprint on this repo. A later planner: "12 KB entries replaced all exploratory reads" -- citing entry IDs per task.</div>
+  <div class="note">SAY: "This isn't theoretical -- it's from building this very system. The code graph pinpointed a symbol among four; a recalled Knowledge-Bank fact let the doer skip reading a file it had already understood once."</div>
+</div>
+
+<!-- under the hood : storage + retrieval mechanics -->
+<div class="slide">
+  <div class="kicker">Under the hood -- for the engineers in the room</div>
+  <h1>It's all <span class="hl">MCP tool calls</span>. No magic, no cloud.</h1>
+  <div class="cols" style="max-width:1040px;">
+    <div class="col" style="border-color:#3b2d6e;"><h3 style="color:var(--purple);">STORE -- what actually happens</h3>
+      <div class="row" style="line-height:1.8;color:var(--dim);">
+      Agent makes a normal MCP tool call: <code>kb_capture({title, content, symbols, source_files})</code><br>
+      -> the local apra-fleet server (a Node process on your machine) writes one row into a <b style="color:var(--text)">per-repo SQLite DB</b> (<code>kb.sqlite</code>) with:<br>
+      &nbsp;&nbsp;- an <b style="color:var(--text)">FTS5 full-text index</b> for search<br>
+      &nbsp;&nbsp;- a <b style="color:var(--text)">trust column</b> (clamped to INFERRED on capture)<br>
+      &nbsp;&nbsp;- <b style="color:var(--text)">file-content hashes</b> of the source files (for staleness)<br>
+      &nbsp;&nbsp;- duplicate/contradiction detection (AUDN) at write time<br>
+      After review, <code>kb_promote</code> flips trust to CONFIRMED and <code>kb_export</code> writes the CONFIRMED set to <code>.fleet/kb-canonical.json</code> and <b style="color:var(--text)">git-commits it</b>.</div>
+    </div>
+    <div class="col" style="border-color:#1e3a5f;"><h3 style="color:var(--blue);">RETRIEVE -- what actually happens</h3>
+      <div class="row" style="line-height:1.8;color:var(--dim);">
+      One tool call at session start: <code>kb_session_prime({hint_symbols, hint_modules})</code><br>
+      -> the server runs a pipeline and returns ranked entries:<br>
+      &nbsp;&nbsp;1. <b style="color:var(--text)">FTS search</b> (OR across hint terms) over the SQLite DB<br>
+      &nbsp;&nbsp;2. <b style="color:var(--text)">staleness check</b> -- re-hash source files; drop entries whose code changed<br>
+      &nbsp;&nbsp;3. <b style="color:var(--text)">graph expansion</b> -- also recall facts about callers/callees of the hinted symbols<br>
+      &nbsp;&nbsp;4. <b style="color:var(--text)">cold-seed</b> -- fresh clone? load from the git bible<br>
+      Mid-task: <code>kb_query</code> before reading an unfamiliar file.</div>
+    </div>
+  </div>
+  <div class="big" style="margin-top:14px">No embeddings service, no vector database, no external calls. <b>SQLite + FTS5 + file hashes + a JSON file in git</b> -- boring on purpose, so it's fast, inspectable, and yours.</div>
+  <div class="note">SAY: "When someone asks 'how is it stored' -- it's a tool call into a local SQLite DB with full-text search, trust columns, and file hashes; the confirmed subset is a JSON file committed to git. Retrieval is one tool call that searches, staleness-checks, and ranks."</div>
+</div>
+
+<!-- tool catalog -->
+<div class="slide">
+  <div class="kicker">The tool surface -- 49 MCP tools, three families</div>
+  <h1>What the agents can actually call</h1>
+  <div class="cols" style="grid-template-columns:1fr 1fr 1fr;max-width:1060px;">
+    <div class="col" style="border-color:#3b2d6e;"><h3 style="color:var(--purple);">Knowledge Bank (16)</h3>
+      <div class="row" style="font-size:12.5px;line-height:1.9;color:var(--dim);font-family:Consolas,monospace;">
+      kb_session_prime <span style="color:var(--faint)">recall</span><br>
+      kb_query &middot; kb_context &middot; kb_list &middot; kb_stats<br>
+      kb_capture <span style="color:var(--faint)">store (clamped)</span><br>
+      kb_promote <span style="color:var(--faint)">trust gate</span><br>
+      kb_feedback <span style="color:var(--faint)">downvote</span><br>
+      kb_invalidate &middot; kb_harvest<br>
+      kb_export &middot; kb_import <span style="color:var(--faint)">bible</span><br>
+      kb_freshness_sweep<br>
+      kb_reconcile_prefilter<br>
+      kb_resolve_contradiction<br>
+      kb_setup</div>
+    </div>
+    <div class="col" style="border-color:#1e3a5f;"><h3 style="color:var(--blue);">Code Intelligence (7)</h3>
+      <div class="row" style="font-size:12.5px;line-height:1.9;color:var(--dim);font-family:Consolas,monospace;">
+      code_context <span style="color:var(--faint)">symbol 360</span><br>
+      code_impact <span style="color:var(--faint)">blast radius</span><br>
+      code_query <span style="color:var(--faint)">search</span><br>
+      code_graph <span style="color:var(--faint)">call graph</span><br>
+      code_map <span style="color:var(--faint)">architecture</span><br>
+      code_flow <span style="color:var(--faint)">process flows</span><br>
+      code_tests <span style="color:var(--faint)">targeted tests</span></div>
+    </div>
+    <div class="col"><h3 style="color:var(--dim);">Fleet Operations (26)</h3>
+      <div class="row" style="font-size:12.5px;line-height:1.9;color:var(--dim);font-family:Consolas,monospace;">
+      execute_prompt &middot; execute_command<br>
+      send_files &middot; receive_files<br>
+      register_member &middot; update_member<br>
+      list_members &middot; member_detail<br>
+      fleet_status &middot; monitor_task &middot; stop_prompt<br>
+      compose_permissions<br>
+      credential_store_* <span style="color:var(--faint)">(4)</span><br>
+      provision_llm_auth &middot; provision_vcs_auth<br>
+      setup_git_app &middot; setup_ssh_key &middot; revoke_vcs_auth<br>
+      cloud_control &middot; update_llm_cli<br>
+      shutdown_server &middot; version &middot; remove_member</div>
+    </div>
+  </div>
+  <div class="subtle">v0.3.4 ships only the third column. The first two columns -- all 23 knowledge and code-intelligence tools -- are what this release adds.</div>
+  <div class="note">SAY: "Forty-nine tools, three families. The right column is what we had. The left two columns -- the entire knowledge and code-intelligence surface -- are new in this release."</div>
+</div>
+
+<!-- 4 -->
+<div class="slide">
+  <div class="kicker">Apra Fleet -- part 2: the experiment</div>
+  <h1>The Amnesia Test</h1>
+  <div class="big">Every AI coding tool is brilliant and <b>forgets everything</b> the moment a session ends. It re-reads the same files, re-derives the same facts, and repeats the same mistakes -- every single time.<br><br>
+  We ran the <b>same two tasks on the same codebase twice</b> -- once on our last public release, once on the new build -- to show, concretely, what changes when a fleet actually <span style="color:var(--green)">remembers</span>.</div>
+  <div class="note">SAY: "This isn't a slideshow of features. It's a real head-to-head -- identical repo, identical work, same machine. The only variable is the build."</div>
+</div>
+
+<!-- 2 -->
+<div class="slide">
+  <div class="kicker">The setup</div>
+  <h1>Two environments, one controlled experiment</h1>
+  <div class="cols">
+    <div class="col old"><h3>Env A -- v0.3.4 (last release)</h3>
+      <div class="row">Knowledge Bank<span class="v">none</span></div>
+      <div class="row">Code intelligence<span class="v">none</span></div>
+      <div class="row">Install steps<span class="v">10</span></div>
+      <div class="row">Orchestration<span class="v" style="color:var(--dim)">plan / do / review</span></div>
+    </div>
+    <div class="col new"><h3>Env B -- current build</h3>
+      <div class="row">Knowledge Bank<span class="v">yes</span></div>
+      <div class="row">Code intelligence<span class="v">gitnexus</span></div>
+      <div class="row">Install steps<span class="v">11</span></div>
+      <div class="row">Orchestration<span class="v">plan / do / review + learn</span></div>
+    </div>
+  </div>
+  <div class="big" style="margin-top:18px">Both builds ship the same multi-agent orchestrator. The current build adds one thing: an <b>11th install step -- "Setting up Knowledge Bank and code intelligence."</b> Everything that follows flows from that single addition.</div>
+  <div class="note">SAY: "Same repo, same prompts, same orchestrator. One build remembers what it learns; the other doesn't. Watch what that buys."</div>
+</div>
+
+<!-- 3 -->
+<div class="slide">
+  <div class="kicker">The tasks (identical for both environments)</div>
+  <h1>Two sprints, back to back</h1>
+  <ul>
+    <li><b>Sprint 1 -- Note archiving:</b> add an <code>archived</code> flag to notes, add archive / unarchive endpoints, and exclude archived notes from the default listing.</li>
+    <li><b>Sprint 2 -- Pagination:</b> paginate <code>GET /api/notes</code> into a <code>{ data, total, page, limit }</code> envelope -- and it <b>must compose correctly with the archived filter sprint 1 just built.</b></li>
+  </ul>
+  <div class="big" style="margin-top:20px">Sprint 2 is the trap. It reaches straight back into the <b>same listing code sprint 1 changed</b>. A fleet with memory recalls what it just did; a fleet without memory re-learns it from a cold start.</div>
+  <div class="note">SAY: "The second sprint deliberately depends on the first. That dependency is exactly where memory pays off -- or where its absence hurts."</div>
+</div>
+
+<!-- 4 -->
+<div class="slide">
+  <div class="kicker">How one sprint runs -- the pipeline</div>
+  <h1>Four roles, each on a right-sized model</h1>
+  <div class="pipe">
+    <div class="stage s-plan"><div class="n">PLANNER</div><div class="d">Reads the goal, builds a task DAG, assigns each task a model tier. Strongest model.</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-prev"><div class="n">PLAN-REVIEWER</div><div class="d">Adversarially reviews the plan. Loops to APPROVED before any code.</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-doer"><div class="n">DOER</div><div class="d">Implements one task at a time, commits each, stops at VERIFY.</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-rev"><div class="n">REVIEWER</div><div class="d">Independently re-runs build+tests, verdict APPROVED / CHANGES NEEDED.</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage s-kb"><div class="n">KB AGENT</div><div class="d">Curates what was learned, promotes confirmed facts, commits the bible. <b style="color:var(--red)">Env B only.</b></div></div>
+  </div>
+  <div class="big" style="margin-top:16px">Both builds run planner -> plan-reviewer -> doer -> reviewer. The current build adds the <b>KB Agent</b> at the end of every cycle -- the step that turns a finished sprint into <b>retained, reusable knowledge</b>.</div>
+  <div class="note">SAY: "This pipeline is identical in both builds except the last box. Next slides show each role from the actual run."</div>
+</div>
+
+<!-- 5 -->
+<div class="slide">
+  <div class="kicker">Workflow -- role 1 of 4 &middot; from the actual Env B run</div>
+  <h1>Planner</h1>
+  <div class="term">
+    <div><span class="dot">&#9679;</span> <span class="role">planner</span>(Plan note archiving sprint) <span class="model">Opus 4.8</span></div>
+    <div class="done">&nbsp;&nbsp;Done (21 tool uses &middot; 52.8k tokens &middot; 4m 2s)</div>
+    <div class="o">&nbsp;</div>
+    <div class="o">Wrote a 5-task DAG. KB empty (first sprint) -> front-loaded risk:</div>
+    <div class="o">T1 (store-mutation design) on <span class="model">opus</span>, rest on <span class="model">sonnet</span>.</div>
+  </div>
+  <div class="big" style="margin-top:16px">The planner turns the one-line goal into a dependency graph of tasks and <b>picks a model tier per task</b> -- opus for the risky design call, sonnet for the mechanical follow-ups. On sprint 1 the KB is empty, so it front-loads the riskiest work first.</div>
+  <div class="note">SAY: "Notice it reasons about cost up front -- expensive model only where the risk is. And it noted the KB was empty because this is the first sprint."</div>
+</div>
+
+<!-- 6 -->
+<div class="slide">
+  <div class="kicker">Workflow -- role 2 of 4 &middot; from the actual Env B run</div>
+  <h1>Plan-reviewer</h1>
+  <div class="term">
+    <div><span class="dot">&#9679;</span> <span class="role">plan-reviewer</span>(Review note archiving plan) <span class="model">Opus 4.8</span></div>
+    <div class="done">&nbsp;&nbsp;Done (10 tool uses &middot; 26.5k tokens &middot; 2m 47s)</div>
+    <div class="o">&nbsp;</div>
+    <div class="ok">&nbsp;&nbsp;APPROVED (round 1)</div>
+    <div class="o">One non-blocking suggestion: assert GET /:id returns archived notes.</div>
+  </div>
+  <div class="big" style="margin-top:16px">Before a single line is written, a second strong model <b>reviews the plan adversarially</b> and loops it to APPROVED. Catching a flaw here costs a few thousand tokens; catching it after implementation costs a whole sprint.</div>
+  <div class="note">SAY: "This is the cheapest quality gate in the system -- fix the plan before code exists. It approved on the first round with one minor note."</div>
+</div>
+
+<!-- 7 -->
+<div class="slide">
+  <div class="kicker">Workflow -- role 3 of 4 &middot; from the actual Env B run</div>
+  <h1>Doer -- and here memory switches on</h1>
+  <div class="term">
+    <div><span class="dot">&#9679;</span> <span class="role">doer</span>(T1 model + store foundation) <span class="model">Opus 4.8</span></div>
+    <div class="done">&nbsp;&nbsp;Done (21 tool uses &middot; 50.2k tokens &middot; 3m 22s) -- build/lint/test green 21/21</div>
+    <div class="o">&nbsp;</div>
+    <div><span class="dot">&#9679;</span> <span class="role">doer</span>(T2-T4 + VERIFY) <span class="model">Sonnet 5</span></div>
+    <div>&nbsp;&nbsp;<span class="tool">kb_session_prime</span>(<span class="o">hint_symbols: ["noteStore","setArchived","router"]</span>)</div>
+    <div>&nbsp;&nbsp;<span class="tool">kb_capture</span> <span class="o">-> durable facts about the store + listing layer</span></div>
+  </div>
+  <div class="big" style="margin-top:16px">Each doer runs on the tier the planner assigned. Crucially, the doer <b>primes from the KB and captures new discoveries as it works</b> -- coding conventions, structural facts, gotchas -- instead of letting them evaporate when the session ends.</div>
+  <div class="note">SAY: "This is the difference in action. The doer isn't just writing code -- it's calling kb_session_prime to load prior knowledge and kb_capture to save what it learns."</div>
+</div>
+
+<!-- 8 -->
+<div class="slide">
+  <div class="kicker">Workflow -- role 4 of 4 &middot; from the actual Env B run</div>
+  <h1>Reviewer &rarr; KB Agent &rarr; bible</h1>
+  <div class="term">
+    <div><span class="ok">&nbsp;&nbsp;Iteration review: APPROVED</span> <span class="o">(archive/unarchive + listing tests)</span></div>
+    <div><span class="ok">&nbsp;&nbsp;Verify gate review: APPROVED</span> <span class="o">(build + lint + full test suite green)</span></div>
+    <div class="o">&nbsp;</div>
+    <div>&nbsp;&nbsp;KB Agent: capture -> <span class="tool">kb_promote</span> to CONFIRMED (reviewer approved)</div>
+    <div>&nbsp;&nbsp;<span class="tool">kb_export</span> -> <span class="cmd">.fleet/kb-canonical.json</span> auto-committed (pm-kb)</div>
+  </div>
+  <div class="big" style="margin-top:16px">The reviewer independently re-runs the tests and issues a verdict. That verdict is also the <b>knowledge quality gate</b>: only facts backing reviewer-APPROVED code get promoted to CONFIRMED, and the bible <b>commits itself to git</b> -- zero manual steps.</div>
+  <div class="note">SAY: "Trust is earned, not asserted. CONFIRMED means a reviewer approved the code that proves it. Then it lands in the repo automatically for the next developer."</div>
+</div>
+
+<!-- 9 -->
+<div class="slide">
+  <div class="kicker">Env A -- the old build's result</div>
+  <h1>It works... and <span class="rd">forgets</span></h1>
+  <div class="big">v0.3.4 ran the exact same pipeline and delivered both features with tests green. But between sprint 1 and sprint 2 it retained <b>nothing</b> -- so sprint 2 re-explored the archived-listing code from a cold start, as if sprint 1 never happened.</div>
+  <div class="statrow">
+    <div class="s"><div class="stat rd">0</div><div class="lab">knowledge entries kept</div></div>
+    <div class="s"><div class="stat rd">0</div><div class="lab">actual tokens it can even measure</div></div>
+    <div class="s"><div class="stat rd">flat</div><div class="lab">sprint-2 cost estimate vs sprint-1</div></div>
+  </div>
+  <div class="big">Its own logs literally read <code>Act tokens: 0</code> -- it estimates cost from a fixed table and can't measure the real thing. And the estimate <b>doesn't drop on sprint 2</b>, because there is no reuse to make it cheaper.</div>
+  <div class="note">SAY: "It's a capable release -- it finished the work. But it's an amnesiac. Every sprint starts from zero, and it can't even see its own token cost."</div>
+</div>
+
+<!-- 10 -->
+<div class="slide">
+  <div class="kicker">Env B -- the new build, step 1</div>
+  <h1>Init builds a <span class="hl">map of the code</span></h1>
+  <div class="term">
+    <div><span class="cmd">/pm init</span> fleet-e2e-toy-env-b</div>
+    <div class="o">&nbsp;&nbsp;... setting up Knowledge Bank and code intelligence</div>
+    <div>&nbsp;&nbsp;<span class="tool">npx gitnexus analyze</span> <span class="o">-> 75 nodes | 79 edges | 8 clusters</span></div>
+  </div>
+  <div class="big" style="margin-top:16px">Before writing anything, the current build <b>indexes the whole codebase</b> -- every symbol, the call graph, module clusters. Agents then navigate by structure (<code>code_context</code>, <code>code_impact</code>) instead of grepping blindly. Env A has no equivalent step at all.</div>
+  <div class="note">SAY: "Zoom in here for the recording. This code-intelligence index is built once at init and powers every structural question the agents ask."</div>
+</div>
+
+<!-- 11 -->
+<div class="slide">
+  <div class="kicker">Env B -- sprint 1</div>
+  <h1>It <span class="hl">learns while doing</span></h1>
+  <div class="big">As sprint 1 implements archiving, the doer and reviewer capture durable facts about the store and listing layers -- <b>16 learnings across the two sprints</b>. Each is clamped to a safe confidence on capture; <b>14 are promoted to CONFIRMED only after the reviewer approves the code that demonstrates them</b>. The bible auto-commits to git as it grows.</div>
+  <div class="statrow">
+    <div class="s"><div class="stat">16</div><div class="lab">learnings captured</div></div>
+    <div class="s"><div class="stat">14</div><div class="lab">promoted to CONFIRMED</div></div>
+    <div class="s"><div class="stat">11</div><div class="lab">in the git-committed bible</div></div>
+  </div>
+  <div class="note">SAY: "No one said 'remember this.' Capture happens at the moment of discovery; promotion is gated by review; the bible commits itself."</div>
+</div>
+
+<!-- 12 -->
+<div class="slide">
+  <div class="kicker">Env B -- sprint 2, the payoff moment</div>
+  <h1>It <span class="hl">remembers</span> sprint 1</h1>
+  <div class="term">
+    <div><span class="dot">&#9679;</span> <span class="role">planner</span>(Plan pagination sprint) <span class="model">Opus 4.8</span></div>
+    <div>&nbsp;&nbsp;<span class="tool">kb_session_prime</span> <span class="o">-> HITS on the archived-listing code from sprint 1</span></div>
+    <div class="o">&nbsp;&nbsp;"reuse CONFIRMED knowledge; the store filter is already understood"</div>
+  </div>
+  <div class="big" style="margin-top:16px">Sprint 2 opens by <b>retrieving what sprint 1 learned</b> about the exact listing code pagination must compose with. It starts already knowing the terrain. Across the two sprints, <b>8 stored entries were retrieved and reused</b> -- the compounding Env A cannot do by construction.</div>
+  <div class="note">SAY: "This is the whole thesis in one screen. Same task as Env A's sprint 2 -- but this one begins already knowing what the last sprint figured out."</div>
+</div>
+
+<!-- 13 -->
+<div class="slide">
+  <div class="kicker">The scoreboard</div>
+  <h1>Learns. Remembers. <span class="hl">Shares.</span></h1>
+  <div class="cols">
+    <div class="col old"><h3>Env A -- v0.3.4</h3>
+      <div class="row">Code index built<span class="v">no</span></div>
+      <div class="row">Knowledge captured<span class="v">0</span></div>
+      <div class="row">Confirmed / reused<span class="v">0 / 0</span></div>
+      <div class="row">Bible in git<span class="v">none</span></div>
+      <div class="row">Sprint-2 context<span class="v">cold</span></div>
+    </div>
+    <div class="col new"><h3>Env B -- current</h3>
+      <div class="row">Code index built<span class="v">75 nodes</span></div>
+      <div class="row">Knowledge captured<span class="v">16</span></div>
+      <div class="row">Confirmed / reused<span class="v">14 / 8</span></div>
+      <div class="row">Bible in git<span class="v">11 entries</span></div>
+      <div class="row">Sprint-2 context<span class="v">primed</span></div>
+    </div>
+  </div>
+  <div class="note">SAY: "Read it across. Env A isn't slower on these -- it's absent. Zero, zero, zero. Env B captured, confirmed, reused, and shared."</div>
+</div>
+
+<!-- 14 -->
+<div class="slide">
+  <div class="kicker">The honest part -- say this out loud</div>
+  <h1>What this <span class="rd">doesn't</span> claim</h1>
+  <div class="big">We are <b>not</b> showing a "40% fewer tokens" headline. The two builds structure their work differently (Env A used a separate worktree per sprint; Env B layered both on one branch), and the sandbox cost telemetry didn't populate cleanly for either side -- so a raw token or commit-count number would not be defensible.<br><br>
+  The verified, defensible claim is the <b>capability</b>: real reuse happened in Env B (8 retrievals, priming on prior work) and is <b>structurally impossible</b> in Env A. And v0.3.4 can't even measure its own tokens -- its logs read <code>Act tokens: 0</code>.</div>
+  <div class="note">SAY: "Credibility beats a big number. I'm deliberately not cherry-picking a benchmark. The win is capability, and it's real."</div>
+</div>
+
+<!-- 15 -->
+<div class="slide">
+  <div class="kicker">The twist -- and the best part of the story</div>
+  <h1>The demo caught a <span class="rd">release-blocker</span></h1>
+  <div class="bugbox">
+    The first Env B runs showed <b>no</b> knowledge activity at all. Root cause: the shipped agent definitions hard-coded tool lists that <b>excluded every KB and code-intelligence tool</b> -- so the standard flow's planner, doer, and reviewer literally could not call them. The entire knowledge layer was <b>inert in the real product path</b>, working only when orchestration was hand-driven.<br><br>
+    We <b>found it, fixed it (grant the agents MCP access), and re-ran clean</b> -- every number in this deck is from the fixed run.
+  </div>
+  <div class="big" style="margin-top:18px">A rigorous head-to-head that catches your own release-blocker before it ships is worth more than any favorable benchmark.</div>
+  <div class="note">SAY: "This is my favorite slide. We didn't just measure the feature -- our own test caught it silently broken in the release path, and we fixed it in the same session."</div>
+</div>
+
+<!-- 16 -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h1>A fleet that gets <span class="hl">cheaper, more consistent, and more aligned</span> the more it works</h1>
+  <div class="big">Knowledge captured once is retrieved forever. A correction made once propagates forever. A standing instruction given once applies forever -- and all of it lives in <b>your repository</b>, committed and diffable, not in a vector database you rent.<br><br>
+  <b>v0.3.4 finished each sprint and forgot everything. The new build learned from it -- and proved it by catching its own bug.</b></div>
+  <div class="note">SAY: "That's the pitch. Same work gets done, but the fleet compounds -- and the knowledge is yours, in your repo."</div>
+</div>
+
+<div class="hint">Arrow keys / Space / click to advance &middot; F = fullscreen</div>
+<div class="nav"><span id="cur">1</span> / <span id="tot">16</span></div>
+
+<script>
+  var slides=[].slice.call(document.querySelectorAll('.slide')),i=0;
+  document.getElementById('tot').textContent=slides.length;
+  function show(n){slides[i].classList.remove('on');i=Math.max(0,Math.min(slides.length-1,n));slides[i].classList.add('on');document.getElementById('cur').textContent=i+1;window.scrollTo(0,0);}
+  document.addEventListener('keydown',function(e){
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){show(i+1);e.preventDefault();}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){show(i-1);e.preventDefault();}
+    else if(e.key==='Home'){show(0);} else if(e.key==='End'){show(slides.length-1);}
+    else if(e.key==='f'||e.key==='F'){if(!document.fullscreenElement)document.documentElement.requestFullscreen();else document.exitFullscreen();}
+  });
+  document.addEventListener('click',function(e){if(!e.target.closest('a'))show(i+1);});
+</script>
+</body>
+</html>

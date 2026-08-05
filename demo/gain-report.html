@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Apra Fleet -- Upgrade Head-to-Head: v0.3.4 vs current</title>
+<style>
+  :root{--bg:#0f1117;--panel:#161b26;--border:#232b3b;--text:#e2e8f0;--dim:#94a3b8;--faint:#64748b;
+    --green:#22c55e;--green-bg:#0a1f12;--amber:#fbbf24;--red:#f87171;--red-bg:#1f0f0f;--blue:#60a5fa;--purple:#a78bfa;--gold:#f59e0b;}
+  *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:36px 20px;display:flex;flex-direction:column;align-items:center;}
+  h1{font-size:22px;margin:0 0 4px;} .sub{color:var(--faint);font-size:13px;margin:0 0 26px;}
+  .wrap{width:100%;max-width:1080px;}
+  h2{font-size:13px;font-weight:700;letter-spacing:.09em;color:var(--dim);border-bottom:1px solid var(--border);padding-bottom:8px;margin:30px 0 16px;}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:10px;}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top;}
+  th{color:var(--faint);font-weight:600;font-size:11px;letter-spacing:.05em;}
+  td.metric{color:var(--text);font-weight:600;width:34%;}
+  .a{color:var(--dim);} .b{color:var(--text);}
+  .old{color:var(--red);} .new{color:var(--green);font-weight:600;}
+  .callout{border-radius:10px;padding:14px 18px;margin:14px 0;font-size:13px;line-height:1.6;}
+  .win{background:var(--green-bg);border:1px solid #14532d;}
+  .bug{background:#1c1405;border:1px solid #6b4f0f;}
+  .honest{background:#111827;border:1px solid var(--border);color:var(--dim);}
+  .callout b{color:var(--text);} .tag{font-size:10px;font-weight:700;letter-spacing:.08em;display:block;margin-bottom:6px;}
+  .win .tag{color:var(--green);} .bug .tag{color:var(--gold);} .honest .tag{color:var(--faint);}
+  code{background:#1c2333;padding:1px 6px;border-radius:4px;font-size:11px;color:#c4d3f0;}
+  .setup{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:8px;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px;}
+  .card h3{margin:0 0 8px;font-size:13px;} .card .l{font-size:11.5px;color:var(--dim);line-height:1.7;}
+  .envA h3{color:var(--red);} .envB h3{color:var(--green);}
+</style>
+</head>
+<body>
+<h1>Upgrade Head-to-Head: released v0.3.4 vs current build</h1>
+<p class="sub">Same NoteAPI repo, same two sprints (note archiving, then pagination), same machine. Env A = the last public release; Env B = the branch under review. Run 2026-07-13. Every number below was verified directly against the sandboxes.</p>
+
+<div class="wrap">
+
+  <div class="setup">
+    <div class="card envA"><h3>Env A -- apra-fleet v0.3.4 (released)</h3>
+      <div class="l">Installed from the GitHub release asset. 10-step install, <b>no Knowledge Bank, no code-intelligence layer</b>. Both features delivered and tested (build+lint+test green), driven entirely by beads + file reads.</div></div>
+    <div class="card envB"><h3>Env B -- current build</h3>
+      <div class="l">Installed from the branch. 11-step install -- the extra step is <b>"Setting up Knowledge Bank and code intelligence."</b> Same two features delivered, with the KB + gitnexus layer active and isolated to a per-env data dir.</div></div>
+  </div>
+
+  <h2>THE CAPABILITY DELTA (the headline)</h2>
+  <table>
+    <tr><th>Capability</th><th>Env A (v0.3.4)</th><th>Env B (current)</th></tr>
+    <tr><td class="metric">Code-intelligence index (gitnexus)</td><td class="a old">none -- feature absent</td><td class="b new">built at init: 75 nodes / 79 edges</td></tr>
+    <tr><td class="metric">Knowledge captured across the 2 sprints</td><td class="a old">0 (no KB layer)</td><td class="b new">16 entries</td></tr>
+    <tr><td class="metric">Promoted to CONFIRMED (reviewer-gated)</td><td class="a old">0</td><td class="b new">14</td></tr>
+    <tr><td class="metric">Entries actually retrieved / reused</td><td class="a old">0 -- impossible by construction</td><td class="b new">8 retrievals (kb_session_prime hits)</td></tr>
+    <tr><td class="metric">Shareable bible (.fleet/kb-canonical.json)</td><td class="a old">none</td><td class="b new">11 CONFIRMED entries, in git</td></tr>
+    <tr><td class="metric">Cross-sprint reuse of sprint-1's code knowledge</td><td class="a old">re-derived cold in sprint 2</td><td class="b new">planner primed on the listing code sprint 1 touched</td></tr>
+  </table>
+  <div class="callout win"><span class="tag">WHAT THIS PROVES</span>
+    The current build carries an entire knowledge + code-intelligence capability that v0.3.4 <b>does not have at all</b>. In Env B the planner and doer called <code>kb_session_prime</code> and <code>code_context</code>, captured 16 learnings, promoted 14 to CONFIRMED after review, and reused them 8 times -- with the bible committed to git for the next developer to inherit. In Env A none of this exists: sprint 2 re-explored the same listing code sprint 1 had just changed, from scratch.</div>
+
+  <h2>COST MEASUREMENT -- an honest gap in v0.3.4 itself</h2>
+  <table>
+    <tr><th>Metric</th><th>Env A (v0.3.4)</th><th>Env B (current)</th></tr>
+    <tr><td class="metric">Cost visibility</td><td class="a old">ESTIMATE ONLY -- static calibration table</td><td class="b new">real per-dispatch capture designed in</td></tr>
+    <tr><td class="metric">Actual tokens measured (v0.3.4 own log)</td><td class="a old">0 -- "Act tokens: 0", every role, every sprint</td><td class="b">--</td></tr>
+    <tr><td class="metric">Sprint-1 vs sprint-2 cost estimate</td><td class="a old">$0.410 -> $0.419 (flat: no reuse to lower it)</td><td class="b new">reuse lowers real sprint-2 exploration</td></tr>
+  </table>
+  <div class="callout honest"><span class="tag">READ HONESTLY</span>
+    v0.3.4's own sprint logs report <b>Act tokens: 0</b> -- it never measures actual consumption, only estimates from a fixed table, and that estimate is essentially <b>identical sprint-to-sprint</b> because there is no learning to make the second sprint cheaper. We are <b>not</b> claiming a headline "X% fewer tokens" number here: the two builds structure their work differently (Env A used a separate worktree per sprint; Env B layered both on one branch), so raw commit/token counts are not cleanly comparable, and the sandbox telemetry did not populate for either side. The defensible, verified claim is the capability delta above -- reuse happened in B and cannot happen in A.</div>
+
+  <h2>THE FINDING THAT MATTERS MOST</h2>
+  <div class="callout bug"><span class="tag">P0 BUG CAUGHT BY THIS DEMO (yashr-9y5, now fixed)</span>
+    The first Env B attempts showed <b>no</b> KB activity. Root cause: the shipped <code>planner</code>/<code>doer</code>/<code>reviewer</code> agent definitions hard-coded tool allowlists that <b>excluded every MCP tool</b>, so the standard <code>/pm</code> flow's subagents physically could not call <code>kb_session_prime</code>, <code>kb_capture</code>, or <code>code_*</code>. The entire knowledge layer was <b>inert in the real product flow</b> and only ever worked when orchestration was hand-driven with unrestricted agents. The fix -- grant <code>mcp__apra-fleet__*</code> to the three agents -- is on submodule branch <code>fix/agent-mcp-tool-grants</code>; after it, a fresh Env B run captured all 16 entries above. <b>A rigorous head-to-head that catches your own release-blocker before ship is worth more than a favorable benchmark.</b></div>
+
+  <h2>BOTH BUILDS DELIVERED THE FEATURES</h2>
+  <p class="sub" style="margin-top:0">To be fair to v0.3.4: it is a capable release. Both environments implemented note archiving and pagination correctly, with full doer/reviewer loops and passing test suites. The difference is not <i>whether</i> the work got done -- it is that the current build <b>learned from doing it</b>, kept that knowledge, and made it reusable and shareable. v0.3.4 finished each sprint and forgot everything.</p>
+
+</div>
+</body>
+</html>

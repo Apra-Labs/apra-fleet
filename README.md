@@ -179,6 +179,43 @@ flowchart LR
   <img src="assets/marketing/workflow-memory-light.svg" alt="Workflow memory and resumability in apra-fleet: stateless prompt chains vs durable workflows with atomic journal replay." width="100%">
 </picture>
 
+## Knowledge Layer
+
+Every agent session starts by calling `kb_session_prime`. The KB checks which
+files have changed since last read and returns exactly those. Unchanged files
+are served from cached summaries -- no re-read, no wasted tokens.
+
+```
+Cold session:  kb_session_prime returns stale_files=[a.ts, b.ts, c.ts]
+               Agent reads all three, calls kb_capture for each.
+Warm session:  kb_session_prime returns stale_files=[], session_warm=true
+               Agent works from KB summaries. Zero file reads.
+```
+
+MCP tools that ship with the KB:
+
+| Tool | What it does |
+|------|--------------|
+| `kb_session_prime` | Prime a session: stale files, fresh summaries, GitNexus call list |
+| `kb_capture` | Store a learning, context-cache, runbook, or knowledge entry |
+| `kb_query` | Two-level FTS retrieval (L1: title+summary, L2: full content) |
+| `kb_list` | Audit-list entries by confidence/type/module/symbol (read-only, no use_count bump) |
+| `kb_context` | Batch file freshness check (single git call for N files) |
+| `kb_invalidate` | Mark files stale immediately (also called by the git hook) |
+| `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED |
+| `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
+| `kb_export` | Write live CONFIRMED entries to `.fleet/kb-canonical.json` -- the git-shareable team bible |
+| `kb_setup` | Install git hook, write provider config, store remote token encrypted |
+
+Every KB tool call, including the automatic post-prompt `kb_harvest`, is
+scoped to the repo it is about -- a fleet server handling many members across
+many repos never lets one repo's learnings land in another repo's KB.
+
+The backend is swappable: start with local SQLite, add a central HTTP server for
+a team, or plug in Postgres later -- all via a one-line config change.
+
+See [docs/knowledge-layer.md](docs/knowledge-layer.md) for the full guide.
+
 ## Explore with agents. Operate with programs.
 
 There are two ways to orchestrate agents, and apra-fleet is built on the
@@ -287,6 +324,8 @@ third-party verticals.
 | Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
+| Knowledge Layer (setup, usage, provider swap) | [docs/knowledge-layer.md](docs/knowledge-layer.md) |
+| Code intelligence provider abstraction | [docs/code-intelligence-providers.md](docs/code-intelligence-providers.md) |
 | Hub-spoke cloud migration plan (historical; see tier-3 ownership ADR) | [docs/hub-spoke-master-plan.md](docs/hub-spoke-master-plan.md) |
 | Tier-3 ownership decision (fleet-dashboard vs `src/hub-service/`) | [docs/adr-tier3-ownership.md](docs/adr-tier3-ownership.md) |
 | Shared hub/dashboard API contract package | [packages/fleet-api-contract/README.md](packages/fleet-api-contract/README.md) |

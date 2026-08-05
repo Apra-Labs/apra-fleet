@@ -5,32 +5,121 @@
   "title": "reviewer output",
   "description": "Canonical machine-readable output contract for the reviewer role. See agents/reviewer.md Step 5 for the prose contract this mirrors.",
   "type": "object",
-  "required": ["verdict", "notes", "reopenIds", "newTasks"],
+  "required": [
+    "verdict",
+    "notes",
+    "reopenIds",
+    "newTasks"
+  ],
   "properties": {
     "verdict": {
       "type": "string",
-      "enum": ["APPROVED", "CHANGES_NEEDED"]
+      "enum": [
+        "APPROVED",
+        "CHANGES_NEEDED"
+      ]
     },
     "notes": {
       "type": "string"
     },
     "reopenIds": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "replanIds": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "newTasks": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["title", "description", "priority"],
+        "required": [
+          "title",
+          "description",
+          "priority"
+        ],
         "properties": {
-          "title": { "type": "string" },
-          "description": { "type": "string" },
-          "priority": { "type": "string" }
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "kb_promotions": {
+      "type": "array",
+      "description": "Entries this reviewer VERIFIED against the tree and is promoting to CONFIRMED. Reviewer-only: promotion is the sole path that mints CONFIRMED, and widening capture does not widen promotion. The engine makes the kb_promote calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence for this promotion -- what you actually checked. kb_promote refuses a trivial reason.",
+            "minLength": 20
+          }
+        }
+      }
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     }

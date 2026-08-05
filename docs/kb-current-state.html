@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Apra Fleet -- Knowledge System: Current State</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #161b26; --border: #232b3b;
+    --text: #e2e8f0; --dim: #94a3b8; --faint: #64748b;
+    --green: #22c55e; --green-bg: #0a1f12;
+    --red: #f87171; --red-bg: #1f0f0f;
+    --amber: #fbbf24; --amber-bg: #1f1a0a;
+    --blue: #60a5fa; --blue-bg: #0e1a2e;
+    --purple: #a78bfa; --purple-bg: #171130;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 36px 20px; display: flex; flex-direction: column; align-items: center; }
+  h1 { font-size: 21px; margin: 0 0 4px; }
+  .sub { color: var(--faint); font-size: 13px; margin: 0 0 30px; }
+  .section { width: 100%; max-width: 1060px; margin-bottom: 36px; }
+  .section-title { font-size: 12px; font-weight: 700; letter-spacing: 0.1em;
+    color: var(--dim); border-bottom: 1px solid var(--border);
+    padding-bottom: 8px; margin-bottom: 18px; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .lane { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px; }
+  .lane h2 { font-size: 14px; margin: 0 0 2px; }
+  .lane .lane-sub { font-size: 11px; color: var(--faint); margin: 0 0 14px; }
+  .card { border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+    border: 1px solid var(--border); background: #10151f; position: relative; }
+  .card .t { font-size: 12px; font-weight: 600; margin-bottom: 3px; }
+  .card .d { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  .card .d code { background: #1c2333; padding: 1px 5px; border-radius: 3px;
+    font-size: 10px; color: #c4d3f0; }
+  .badge { position: absolute; top: 9px; right: 10px; font-size: 9px;
+    font-weight: 700; letter-spacing: 0.06em; padding: 2px 7px; border-radius: 9px; }
+  .ok    { background: var(--green-bg); color: var(--green); border: 1px solid #14532d; }
+  .broken{ background: var(--red-bg); color: var(--red); border: 1px solid #7f1d1d; }
+  .warn  { background: var(--amber-bg); color: var(--amber); border: 1px solid #713f12; }
+  .arrow { text-align: center; color: var(--faint); font-size: 13px; margin: 2px 0 8px; }
+  .evidence { font-size: 10px; color: var(--faint); font-style: italic; margin-top: 4px; }
+
+  /* timeline */
+  .timeline { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .phase { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px; }
+  .phase .ph { font-size: 11px; font-weight: 700; text-align: center;
+    padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .call { font-size: 10px; padding: 4px 6px; border-radius: 5px; margin-bottom: 5px;
+    line-height: 1.4; }
+  .call.code  { background: var(--blue-bg); color: #93c5fd; border-left: 2px solid var(--blue); }
+  .call.learn { background: var(--purple-bg); color: #c4b5fd; border-left: 2px solid var(--purple); }
+  .call.dead  { background: var(--red-bg); color: var(--red); border-left: 2px solid var(--red);
+    text-decoration: line-through; text-decoration-thickness: 1px; }
+  .call.dead span { text-decoration: none; font-style: italic; display: block;
+    font-size: 9px; margin-top: 2px; }
+  .legend { display: flex; gap: 18px; margin-top: 12px; font-size: 10px; color: var(--dim); }
+  .legend .chip { display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+    margin-right: 5px; vertical-align: -1px; }
+
+  /* fixes */
+  .fix { display: grid; grid-template-columns: 34px 1fr; gap: 12px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; margin-bottom: 10px; align-items: start; }
+  .fix .n { width: 26px; height: 26px; border-radius: 50%; background: var(--purple-bg);
+    color: var(--purple); border: 1px solid var(--purple); font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; }
+  .fix .t { font-size: 12px; font-weight: 600; margin-bottom: 3px; }
+  .fix .d { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  .fix .d code { background: #1c2333; padding: 1px 5px; border-radius: 3px;
+    font-size: 10px; color: #c4d3f0; }
+</style>
+</head>
+<body>
+
+<h1>Knowledge System -- Current State Audit</h1>
+<p class="sub">Evidence from streamsurv KB (41 entries) and gitnexus index (35,214 nodes) -- audited 2026-07-06</p>
+
+<!-- ============ SECTION 1: TWO KNOWLEDGE TYPES ============ -->
+<div class="section">
+  <div class="section-title">1 -- TWO KNOWLEDGE TYPES: WHAT EXISTS TODAY</div>
+  <div class="two-col">
+
+    <!-- LEFT: CODE BASE KNOWLEDGE -->
+    <div class="lane">
+      <h2 style="color:#60a5fa">Type 1 -- Code Base Knowledge</h2>
+      <p class="lane-sub">What the code IS: symbols, call graphs, structure. Machine-derived, rebuilt on demand.</p>
+
+      <div class="card">
+        <span class="badge ok">WORKING</span>
+        <div class="t">Build</div>
+        <div class="d"><code>/pm init</code> auto-runs <code>npx gitnexus analyze</code> (fixed this sprint).
+        <code>/pm index</code> re-indexes after big merges.</div>
+      </div>
+      <div class="arrow">v</div>
+      <div class="card">
+        <span class="badge ok">WORKING</span>
+        <div class="t">Storage -- .gitnexus/ (per worktree, branch-safe)</div>
+        <div class="d">ladybugdb graph store (<code>lbug</code>) + parse caches.</div>
+        <div class="evidence">streamsurv: 2,917 files, 35,214 nodes, 48,227 edges, FTS available</div>
+      </div>
+      <div class="arrow">v</div>
+      <div class="card">
+        <span class="badge ok">WORKING</span>
+        <div class="t">Serve -- fleet MCP tools</div>
+        <div class="d"><code>code_graph</code> <code>code_impact</code> <code>code_query</code> <code>code_context</code>
+        -- fleet spawns <code>npx gitnexus mcp</code> as child process.</div>
+      </div>
+      <div class="arrow">v</div>
+      <div class="card">
+        <span class="badge warn">PROMPT-DRIVEN</span>
+        <div class="t">Consume -- planner + doer</div>
+        <div class="d">Agents call these tools ONLY because dispatch templates instruct it
+        (patched this week). No prompt instruction = agents fall back to Glob/Grep. Verified empirically.</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: AGENT LEARNING -->
+    <div class="lane">
+      <h2 style="color:#a78bfa">Type 2 -- Agent Learning (KB)</h2>
+      <p class="lane-sub">What agents DISCOVERED: constraints, gotchas, patterns. Earned per sprint, must be trusted.</p>
+
+      <div class="card">
+        <span class="badge ok">WORKING</span>
+        <div class="t">Capture -- kb_capture during work</div>
+        <div class="d">Doer (30 entries), reviewer (10), KB Agent (9 by author). Content quality is genuinely good.</div>
+        <div class="evidence">41 entries across 4 sprint days (Jun 22 - Jul 3)</div>
+      </div>
+      <div class="arrow">v</div>
+      <div class="card">
+        <span class="badge broken">GATE BYPASSED</span>
+        <div class="t">Certify -- the CONFIRMED gate</div>
+        <div class="d">Design: UNVERIFIED -> INFERRED -> CONFIRMED via <code>kb_promote</code> after reviewer APPROVED.
+        Reality: agents call <code>kb_capture(confidence: CONFIRMED)</code> directly and self-certify.</div>
+        <div class="evidence">39 of 39 CONFIRMED entries have promoted_at = NULL -- zero went through promotion</div>
+      </div>
+      <div class="arrow">v</div>
+      <div class="card">
+        <span class="badge ok">WORKING</span>
+        <div class="t">Storage -- kb.sqlite (per repo, shared across branches)</div>
+        <div class="d"><code>~/.apra-fleet/data/knowledge/&lt;slug&gt;/kb.sqlite</code> --
+        FTS index, AUDN contradiction detection, links table.</div>
+        <div class="evidence">39 CONFIRMED / 2 UNVERIFIED / 0 flagged / 0 stale</div>
+      </div>
+      <div class="arrow">v</div>
+      <div class="card">
+        <span class="badge broken">UNDERUSED</span>
+        <div class="t">Retrieve -- kb_session_prime + kb_query</div>
+        <div class="d">Knowledge goes in but barely comes out. Priming only started working
+        after this week's template patches.</div>
+        <div class="evidence">Only 5 of 41 entries ever retrieved (use_count &gt; 0)</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SECTION 2: INVOCATION TIMELINE ============ -->
+<div class="section">
+  <div class="section-title">2 -- WHEN EACH GETS INVOKED (SPRINT LIFECYCLE)</div>
+  <div class="timeline">
+
+    <div class="phase">
+      <div class="ph" style="color:#4ade80">/pm init</div>
+      <div class="call code">gitnexus analyze<br>builds code index</div>
+      <div class="call learn">kb_setup<br>creates kb.sqlite</div>
+    </div>
+
+    <div class="phase">
+      <div class="ph" style="color:#60a5fa">/pm plan</div>
+      <div class="call learn">planner:<br>kb_session_prime<br>(loads prior learnings)</div>
+      <div class="call code">planner:<br>code_query / code_context<br>(explores structure)</div>
+    </div>
+
+    <div class="phase">
+      <div class="ph" style="color:#fb923c">/pm start (doer)</div>
+      <div class="call learn">kb_session_prime<br>then kb_query before<br>unfamiliar file reads</div>
+      <div class="call code">code_context / code_impact<br>for symbol + call graph</div>
+      <div class="call learn">kb_capture<br>during work (main<br>capture path today)</div>
+    </div>
+
+    <div class="phase">
+      <div class="ph" style="color:#93c5fd">review</div>
+      <div class="call code">reviewer reads diff,<br>runs build + tests</div>
+      <div class="call learn">reviewer also captures<br>(10 entries observed)</div>
+    </div>
+
+    <div class="phase">
+      <div class="ph" style="color:#c4b5fd">KB Agent</div>
+      <div class="call learn">dispatched by PM after<br>verdict (prompt convention<br>-- nothing enforces it)</div>
+      <div class="call learn">kb_capture + kb_promote<br>using verdict as gate</div>
+    </div>
+
+    <div class="phase">
+      <div class="ph" style="color:#f87171">session end</div>
+      <div class="call dead">kb_harvest
+        <span>regex extractor; needs a transcript agents cannot supply. 1 of 41 entries. Effectively dead.</span>
+      </div>
+    </div>
+  </div>
+  <div class="legend">
+    <span><span class="chip" style="background:#60a5fa"></span>Code Base knowledge (gitnexus)</span>
+    <span><span class="chip" style="background:#a78bfa"></span>Agent Learning (KB)</span>
+    <span><span class="chip" style="background:#f87171"></span>Broken / dead path</span>
+  </div>
+</div>
+
+<!-- ============ SECTION 3: WHAT NEEDS TO BE DONE ============ -->
+<div class="section">
+  <div class="section-title">3 -- WHAT NEEDS TO BE DONE (PRIORITY ORDER)</div>
+
+  <div class="fix">
+    <div class="n">1</div>
+    <div>
+      <div class="t">Enforce the CONFIRMED gate in code</div>
+      <div class="d"><code>kb_capture</code> caps confidence at INFERRED regardless of what the caller passes.
+      Only <code>kb_promote</code> -- called by the KB Agent holding the reviewer verdict -- can mint CONFIRMED.
+      This makes "CONFIRMED = passed review" true by construction, not by prompt obedience.
+      Touch: <code>kb-capture.ts</code>, <code>sqlite-provider.ts</code>.</div>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="n">2</div>
+    <div>
+      <div class="t">Retire kb_harvest; make KB Agent direct capture the official path</div>
+      <div class="d">The regex-over-transcript design cannot work (agents have no access to their own transcript).
+      The KB Agent already reads diff + feedback.md + progress notes and captures directly -- codify that as
+      the flow, remove harvest from templates.</div>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="n">3</div>
+    <div>
+      <div class="t">Add kb_list + export to git (the Knowledge Bible)</div>
+      <div class="d">New <code>kb_list</code> tool: dump all entries filterable by confidence / module / sprint.
+      KB Agent commits CONFIRMED entries to <code>.fleet/kb-canonical.json</code> on the branch --
+      shared, versioned, visible. This answers "where do I see my learnings."</div>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="n">4</div>
+    <div>
+      <div class="t">Wire staleness detection</div>
+      <div class="d">0 entries marked stale after 4 sprint days of code change -- the file-hash sync never runs.
+      Run it inside <code>kb_session_prime</code> so entries touching changed files get flagged before an agent trusts them.</div>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="n">5</div>
+    <div>
+      <div class="t">Record KB Agent dispatch in a ledger</div>
+      <div class="d">KB Agent runs on prompt convention -- if the PM skips it (observed before this week's patch),
+      knowledge is silently lost. Log each dispatch in progress.json / beads so a missing run is visible.</div>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="n">6</div>
+    <div>
+      <div class="t">Boost retrieval hit rate</div>
+      <div class="d">5 of 41 entries ever used. After fixes 1-5 land, measure whether hint_symbols matching
+      in <code>kb_session_prime</code> is too narrow; widen to module-level matching if entries still go unread.</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

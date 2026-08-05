@@ -1,0 +1,22 @@
+{
+  "sprint": "sprint2-pagination",
+  "track": "main",
+  "branch": "feat/pagination",
+  "base": "main",
+  "worktree": "<fixture-sandbox>",
+  "transport": "local",
+  "sprint_root": "fixture-epic-2",
+  "lastDispatchedPhase": 1,
+  "tasks": [
+    { "id": "T2.1", "phase": 1, "title": "Add page/limit query params + response envelope", "model": "claude-sonnet-4-5", "type": "work", "status": "completed", "bead": "fx-4", "commit": "def1111", "notes": "" },
+    { "id": "T2.2", "phase": 1, "title": "Compose pagination with archived-default filter", "model": "claude-haiku-4-5", "type": "work", "status": "completed", "bead": "fx-5", "commit": "def2222", "notes": "" },
+    { "id": "T2.3", "phase": 1, "title": "Verify pagination + archived interaction", "model": "claude-opus-4-1", "type": "verify", "status": "completed", "bead": "fx-6", "commit": "def3333", "notes": "" }
+  ],
+  "dispatches": [
+    { "seq": 1, "role": "planner", "model": "claude-opus-4-1", "phase": 0, "tasks": [], "tokens": 9200, "toolUses": 10, "ms": 20000 },
+    { "seq": 2, "role": "plan-reviewer", "model": "claude-opus-4-1", "phase": 0, "tasks": [], "tokens": 3100, "toolUses": 3, "ms": 7000 },
+    { "seq": 3, "role": "doer", "model": "claude-haiku-4-5", "phase": 1, "tasks": ["T2.1", "T2.2"], "tokens": 11400, "toolUses": 16, "ms": 38000 },
+    { "seq": 4, "role": "doer", "model": "claude-opus-4-1", "phase": 1, "tasks": ["T2.3"], "tokens": 4200, "toolUses": 6, "ms": 14000 },
+    { "seq": 5, "role": "reviewer", "model": "claude-opus-4-1", "phase": 1, "tasks": ["T2.1", "T2.2", "T2.3"], "tokens": 6800, "toolUses": 6, "ms": 15000 }
+  ]
+}

@@ -1962,6 +1962,210 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
  * @param {{ callTool: (name: string, args: object) => Promise<any>, members?: string[], sprintId?: string, log?: Function }} opts
  * @returns {{ reserveAll: () => Promise<void>, releaseAll: () => Promise<void> }}
  */
+/**
+ * apra-fleet-e28 / KB trust pipeline Phase 2: KB priming for the fleet-sprint
+ * engine, which had none -- it lived only in the Claude workflow copy.
+ *
+ * `callTool` is injected exactly like `createMemberReservationClient`'s, so this
+ * stays transport-agnostic and unit-testable without a live fleet server.
+ *
+ * WHY PER MEMBER, NOT PER SPRINT: this engine has no repo path of its own. It
+ * coordinates members by name and branch; the repo lives on each member's side,
+ * possibly on a different host at a different path. `kb_session_prime` selects
+ * WHICH project KB is read from its `repo_path`, and omitting that argument
+ * falls back to the fleet server's own cwd -- collapsing every member's
+ * knowledge into whichever repo the server happens to sit in, which is exactly
+ * the apra-fleet-tm7 / apra-fleet-3zl repo-blindness defect. So the work folder
+ * is resolved per member via `member_detail` (which reports it as `folder`) and
+ * each member is primed against its own repo.
+ *
+ * Best-effort throughout, matching the reservation client's precedent: a member
+ * whose folder cannot be resolved, or whose prime call fails, is logged and
+ * skipped. A sprint must not fail because the KB is cold -- priming is an
+ * optimisation, and every role contract's Step 0 already degrades gracefully
+ * when the KB tools are unavailable.
+ *
+ * @param {{ callTool?: (name: string, args: object) => Promise<any>, members?: string[], log?: Function }} opts
+ * @returns {{ primeAll: () => Promise<{primed: number, skipped: number}> }}
+ */
+export function createKbPrimingClient(opts = {}) {
+    const { callTool, members = [], log = () => {} } = opts;
+    const active = typeof callTool === 'function' && members.length > 0;
+
+    function parseResult(result) {
+        if (result && typeof result === 'string') { try { return JSON.parse(result); } catch { return null; } }
+        if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
+            try { return JSON.parse(result.content[0].text); } catch { return null; }
+        }
+        return (result && typeof result === 'object') ? result : null;
+    }
+
+    async function folderFor(member) {
+        const detail = parseResult(await callTool('member_detail', { member_name: member }));
+        // member_detail reports the work folder as `folder` (src/tools/member-detail.ts).
+        const folder = detail && (detail.folder || (detail.member && detail.member.folder));
+        return (typeof folder === 'string' && folder.length > 0) ? folder : null;
+    }
+
+    // member -> work folder, populated by primeAll(). createKbWorkClient reads
+    // it so a capture lands in the repo the member actually worked in, rather
+    // than being resolved against the fleet server's cwd.
+    const folders = new Map();
+
+    return {
+        folderOf(member) {
+            return folders.get(member) || null;
+        },
+        async primeAll() {
+            if (!active) return { primed: 0, skipped: members.length };
+            let primed = 0;
+            let skipped = 0;
+            for (const member of members) {
+                try {
+                    const repoPath = await folderFor(member);
+                    if (repoPath) folders.set(member, repoPath);
+                    if (!repoPath) {
+                        // No folder means no repo to scope the KB to. Priming without
+                        // one would read the fleet server's own KB, so skip instead.
+                        log(`[kb-prime] no work folder for member '${member}' -- skipping (KB stays cold)`);
+                        skipped++;
+                        continue;
+                    }
+                    await callTool('kb_session_prime', { repo_path: repoPath });
+                    primed++;
+                } catch (err) {
+                    log(`[kb-prime] failed for member '${member}' (non-fatal): ${err.message}`);
+                    skipped++;
+                }
+            }
+            if (primed > 0) log(`[kb-prime] primed ${primed} member repo(s)`);
+            return { primed, skipped };
+        },
+    };
+}
+
+/**
+ * KB trust pipeline Phase 2, execution half for this engine.
+ *
+ * The role output schemas are SHARED with apra-pm (contracts.mjs loads them from
+ * apra-pm/agents/schemas), so every role dispatched here is now asked for
+ * kb_captures, and the reviewer for kb_promotions. Without a consumer those
+ * fields would be silently dropped -- the knowledge would be gathered and
+ * thrown away. This is that consumer.
+ *
+ * Unlike apra-pm's auto-sprint.js -- a Claude Workflow script with no tool
+ * access, which must hand its vetted payload to an executor subagent -- this
+ * engine runs in-process with an injected callTool, so it makes the kb_capture
+ * and kb_promote calls DIRECTLY. Judgment still belongs to the role; execution
+ * belongs here.
+ *
+ * Validation mirrors lib/vet-kb-work.mjs in apra-pm and the provider invariants
+ * it reflects: a capture must cite at least one source file (SqliteProvider
+ * rejects an entry the freshness sweep can never stale), a promotion needs a
+ * recorded evidence string, and kb_promotions is refused from any role other
+ * than reviewer -- widening capture to four roles must not widen promotion.
+ *
+ * @param {{ callTool?: (name: string, args: object) => Promise<any>, log?: Function }} opts
+ * @returns {{ apply: (role: string, repoPath: string, result: any) => Promise<{captured: number, promoted: number, refused: number}> }}
+ */
+export const KB_PROMOTER_ROLES = Object.freeze(new Set([ROLE_REVIEWER]));
+export const KB_MIN_PROMOTE_REASON = 20;
+export const KB_CAPTURE_TYPES = Object.freeze(['knowledge', 'learning', 'runbook']);
+
+export function vetKbWork(role, result) {
+    const captures = [];
+    const promotions = [];
+    const refused = [];
+
+    const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
+    for (const c of rawCaptures) {
+        if (!c || typeof c.title !== 'string' || typeof c.summary !== 'string') {
+            refused.push(`${role}: capture missing title/summary`);
+            continue;
+        }
+        if (!Array.isArray(c.source_files) || c.source_files.length === 0) {
+            refused.push(`${role}: capture "${c.title}" cites no source files`);
+            continue;
+        }
+        if (!KB_CAPTURE_TYPES.includes(c.type)) {
+            refused.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
+            continue;
+        }
+        captures.push({
+            type: c.type,
+            title: c.title,
+            summary: c.summary,
+            source_files: c.source_files,
+            symbols: Array.isArray(c.symbols) ? c.symbols : [],
+        });
+    }
+
+    const rawPromotions = (result && Array.isArray(result.kb_promotions)) ? result.kb_promotions : [];
+    if (rawPromotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+        refused.push(`${role}: kb_promotions refused -- promotion is reviewer-only`);
+    } else {
+        for (const p of rawPromotions) {
+            if (!p || typeof p.id !== 'string' || p.id.length === 0) {
+                refused.push(`${role}: promotion missing id`);
+                continue;
+            }
+            if (typeof p.reason !== 'string' || p.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+                refused.push(`${role}: promotion ${p.id} has no recorded evidence`);
+                continue;
+            }
+            promotions.push({ id: p.id, reason: p.reason.trim() });
+        }
+    }
+
+    return { captures, promotions, refused };
+}
+
+export function createKbWorkClient(opts = {}) {
+    const { callTool, log = () => {} } = opts;
+    const active = typeof callTool === 'function';
+
+    return {
+        async apply(role, repoPath, result) {
+            const { captures, promotions, refused } = vetKbWork(role, result);
+
+            for (const r of refused) log(`[kb-work] refused -- ${r}`);
+            // Log every promotion with its stated evidence BEFORE attempting it.
+            // This log is the audit trail the bible never had.
+            for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
+
+            // Without a repo path a capture would land in whichever KB the fleet
+            // server's cwd resolves to -- the tm7 defect. Refuse rather than guess.
+            if (!active || !repoPath) {
+                if ((captures.length || promotions.length) && !repoPath) {
+                    log(`[kb-work] no repo path for ${role} -- ${captures.length} capture(s) and ${promotions.length} promotion(s) dropped`);
+                }
+                return { captured: 0, promoted: 0, refused: refused.length };
+            }
+
+            let captured = 0;
+            let promoted = 0;
+            for (const c of captures) {
+                try {
+                    await callTool('kb_capture', { ...c, repo_path: repoPath });
+                    captured++;
+                } catch (err) {
+                    log(`[kb-work] kb_capture failed for "${c.title}" (non-fatal): ${err.message}`);
+                }
+            }
+            for (const p of promotions) {
+                try {
+                    await callTool('kb_promote', { id: p.id, reason: p.reason });
+                    promoted++;
+                } catch (err) {
+                    log(`[kb-work] kb_promote failed for ${p.id} (non-fatal): ${err.message}`);
+                }
+            }
+            if (captured || promoted) log(`[kb-work] ${role}: captured ${captured}, promoted ${promoted}`);
+            return { captured, promoted, refused: refused.length };
+        },
+    };
+}
+
 export function createMemberReservationClient(opts = {}) {
     const { callTool, members = [], sprintId, log = () => {} } = opts;
     const active = typeof callTool === 'function' && typeof sprintId === 'string' && sprintId.length > 0 && members.length > 0;
@@ -4544,6 +4748,27 @@ async function runSprintCycle(context) {
 
     // Member mapping resolution
     const physicalMembers = validated.members;
+
+    // apra-fleet-e28: prime each member's own project KB before any dispatch, so
+    // the Step 0 Knowledge Bank block in every role contract has something warm
+    // to read. This engine had no KB priming at all -- it lived only in the
+    // Claude workflow copy. Best-effort: a cold KB never fails a sprint.
+    const kbPriming = context.kbPriming ?? createKbPrimingClient({
+        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        members: physicalMembers,
+        log,
+    });
+    await kbPriming.primeAll();
+
+    // The role output schemas are shared with apra-pm, so every role dispatched
+    // below is now asked for kb_captures (and the reviewer for kb_promotions).
+    // This is the consumer: without it those fields would be gathered and
+    // silently dropped. Unlike apra-pm's workflow script, this engine has a real
+    // callTool, so the kb_capture/kb_promote calls are made directly.
+    const kbWork = context.kbWork ?? createKbWorkClient({
+        callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
+        log,
+    });
     const getMemberForRole = (role) => {
         if (validated.roleMap && validated.roleMap[role] && validated.roleMap[role].length > 0) {
             return validated.roleMap[role][0];
@@ -6941,6 +7166,12 @@ async function runSprintCycle(context) {
                 });
                 const closedIds = actualBeadIds.filter((id) => !unclosedIds.includes(id));
 
+                // KB trust pipeline Phase 2: the doer decides what to capture,
+                // the engine executes it against the repo THAT doer worked in.
+                // Captures are honoured regardless of the streak outcome -- a
+                // gotcha found on the way to a failed streak is still true.
+                await kbWork.apply(ROLE_DOER, kbPriming.folderOf(doerMember), report);
+
                 // apra-fleet-eft.76.4: per-bead failure attribution -- always
                 // emitted (not only when something failed) so every streak's
                 // report leaves an audit trail of exactly which beads closed
@@ -6990,6 +7221,9 @@ async function runSprintCycle(context) {
             // self-contradictory and must never be treated as an ordinary
             // "more work needed" round.
             const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson });
+            // KB trust pipeline Phase 2: the reviewer decides, the engine executes.
+            // Reviewer is the ONLY role whose kb_promotions are honoured.
+            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), verdict);
             // A5: the last reviewer verdict seen THIS cycle feeds the Cycle
             // Evaluation section's completion check below -- goal-priority
             // completion requires this to be exactly 'APPROVED', not just
@@ -7512,6 +7746,7 @@ async function runSprintCycle(context) {
             );
             const reReviewScope = await bdListScoped('--json');
             const reReviewVerdict = await dispatchReview({ beadIds: [], acceptanceCriteriaJson: JSON.stringify(reReviewScope) });
+            await kbWork.apply(ROLE_REVIEWER, kbPriming.folderOf(getMembersForRole(ROLE_REVIEWER)[0]), reReviewVerdict);
             lastReviewVerdict = reReviewVerdict.verdict;
             reviewedThisCycle = true;
 

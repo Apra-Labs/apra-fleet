@@ -22,7 +22,7 @@ import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
 import { recoverOrphanedDispatch } from '../services/orphan-recovery.js';
 import { durableOutputPath } from '../os/linux.js';
-import { LogScope, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
+import { LogScope, logLine, logWarn, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import { sessionRegistry } from '../services/session-registry.js';
@@ -1020,6 +1020,43 @@ ${parsed.result}`;
 
 ---
 session: ${parsed.sessionId}`;
+    // Auto-harvest learnings from session output (fire-and-forget)
+    if (parsed.result) {
+      // apra-fleet-tm7.2: always pass resolvedWorkFolder, local or remote.
+      // getKbProviders(undefined) falls back to slugFor(process.cwd()) --
+      // the FLEET SERVER's own cwd, not any generic 'default' -- so omitting
+      // repo_path for remote members would silently route their harvested
+      // learnings into the server's own repo KB (the exact defect apra-fleet-tm7
+      // describes). For a REMOTE member, resolvedWorkFolder is a path on the
+      // remote host that will almost never exist on this (fleet server)
+      // machine, so resolveProjectSlug's git calls on it fail with ENOENT and
+      // it falls through to the literal 'default' slug -- not the server's
+      // own repo, so no cross-repo contamination happens. That is a deliberate,
+      // acceptable outcome for remote members until they get their own routing.
+      // KB-TRUST PHASE 1 (apra-fleet-4wz.8): report the harvest counters. This is
+      // the highest-volume KB writer and its result was previously discarded
+      // entirely, so entries_rejected -- the fail-closed signal -- was invisible
+      // on the one path that produces most of it. Rejections are EXPECTED to
+      // dominate here: harvest's regex extraction frequently yields no file
+      // paths at all, and an entry with no basis is refused by design. A high
+      // rejected count is the invariant working, not a regression to tune away.
+      void import('./kb-harvest.js')
+        .then(({ kbHarvest }) =>
+          kbHarvest({ repo_path: resolvedWorkFolder, session_transcript: parsed.result, session_id: parsed.sessionId })
+        )
+        .then((raw: string) => {
+          try {
+            const r = JSON.parse(raw) as { entries_captured: number; entries_updated: number; entries_skipped: number; entries_rejected: number };
+            if (r.entries_captured || r.entries_updated || r.entries_skipped || r.entries_rejected) {
+              logLine('kb_harvest', `auto-harvest: captured=${r.entries_captured} updated=${r.entries_updated} skipped=${r.entries_skipped} rejected=${r.entries_rejected}`);
+            }
+          } catch {
+            // A non-JSON payload is not worth failing a fire-and-forget harvest over.
+          }
+        })
+        .catch((err: Error) => logWarn('kb_harvest', `auto-harvest failed: ${err.message}`));
+    }
+
     if (heuristicWarningSuffix) output += heuristicWarningSuffix;
     return {
       text: output,

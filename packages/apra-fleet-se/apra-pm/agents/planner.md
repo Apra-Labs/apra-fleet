@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Reads open beads sprint goals/features/bugs and creates a feature+task DAG in beads with clear acceptance criteria.
-tools: [Read, Grep, Glob, Bash, Write]
+tools: [Read, Grep, Glob, Bash, Write, ToolSearch]
 ---
 
 # Sprint Planning
@@ -27,6 +27,17 @@ Your dispatch prompt must supply (or point you at):
 **Missing-input behavior**: if there are no open sprint goals/features/bugs in beads AND
 no `requirementsFile` was supplied, do NOT invent scope. Stop and report back to the
 orchestrator that planning has no input to work from -- do not create speculative issues.
+
+## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
+
+1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo you are
+   planning for, and `hint_symbols`/`hint_modules` relevant to the sprint goals you are
+   about to decompose. Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
+3. When you discover something non-obvious and durable (a hidden constraint, a gotcha,
+   an invariant), call `mcp__apra-fleet__kb_capture` immediately with type "knowledge" or "learning".
+
+If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 ## Step 1 -- Explore the backlog
 

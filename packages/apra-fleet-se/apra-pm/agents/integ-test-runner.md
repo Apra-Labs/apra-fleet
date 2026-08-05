@@ -1,7 +1,7 @@
 ---
 name: integ-test-runner
 description: Runs integ-test-playbook.md end to end -- the real functional tests plus the smoke-test sprint -- owning the test sandbox lifecycle; closes passing features, files bugs for failures.
-tools: [Read, Bash, Grep, Glob]
+tools: [Read, Bash, Grep, Glob, ToolSearch]
 ---
 
 # Integration Test Execution
@@ -88,6 +88,19 @@ test the code that was deployed THIS cycle.
   not match the cycle's deploy-verified SHA, causes the part-2 result to be
   treated as INCONCLUSIVE -- it will never count as a pass. Reusing a prior
   cycle's output therefore cannot succeed; always re-run.
+
+## Step 0c -- Knowledge Bank (required -- do this BEFORE working any feature)
+
+1. Run ToolSearch with query `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under test, and
+   `hint_symbols`/`hint_modules` relevant to the features you were handed. Trust CONFIRMED
+   entries fully. Use INFERRED entries as hints, not facts. An entry recording that a test
+   is environment-sensitive changes how you read a single red run.
+3. When a test turns out to be flaky or environment-sensitive, or the sandbox needs a step
+   the playbook does not record, call `mcp__apra-fleet__kb_capture` with type "knowledge" or
+   "learning".
+
+If ToolSearch returns no KB tools (MCP server not running), skip these steps and proceed.
 
 ## Step 1 -- Work the features you were handed
 

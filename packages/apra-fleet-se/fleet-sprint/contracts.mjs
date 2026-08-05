@@ -258,11 +258,18 @@ export function assertVersionPin(role, schema, expectedMajor) {
 // signal for this second case.
 //
 // Roles allow-listed here are exempt because they legitimately have no
-// output schema file, by design (not by omission):
-//   - "planner": per the layering proposal, the planner's "output" IS the
-//     beads DAG it creates, not a structured verdict object -- there is no
-//     corresponding agents/schemas/planner-output.json anywhere, ever.
-export const ROLES_WITHOUT_OUTPUT_SCHEMA = Object.freeze(new Set(['planner']));
+// output schema file, by design (not by omission).
+//
+// EMPTY as of 2026-08-03. "planner" used to be listed here on the layering
+// proposal's reasoning that the planner's output IS the beads DAG it creates,
+// not a structured verdict object. The KB trust pipeline supersedes that: its
+// Capture-roles decision accepts kb_captures from doer, reviewer, planner and
+// harvester, and a role can only return a field the engine reads if it has an
+// output contract to carry it. agents/schemas/planner-output.json now exists,
+// so the planner is no longer schema-less and a MISSING planner-output.json is
+// once again a real defect worth warning about.
+// See docs/superpowers/specs/2026-08-03-kb-trust-pipeline-design.md, Phase 2.
+export const ROLES_WITHOUT_OUTPUT_SCHEMA = Object.freeze(new Set([]));
 
 /**
  * Emits a loud console.warn when `resolveSchemasDir()`'s resolved directory
