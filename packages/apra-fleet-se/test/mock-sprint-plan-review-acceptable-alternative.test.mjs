@@ -51,6 +51,13 @@ test('mock sprint: R2 names acceptable alternative X, R3 implements X, R3 plan-r
             return { content: [{ text: 'Planner pass complete; addressed the plan-reviewer feedback from the prior round.' }] };
         };
 
+        // apra-fleet-eft.69.1: the engine no longer emits a duplicate
+        // "Plan Reviewer: <verdict json>" log line after each dispatch (that
+        // was the exact duplicate-row bug apra-fleet-eft.69 reported -- the
+        // AGENT activity row already carries this same content as its own
+        // `output`). Capture each round's verdict here, at the source,
+        // instead of scraping it back out of engine logs.
+        const planReviewerVerdicts = [];
         const planReviewerHandler = async ({ tempDir, runCmd, epicBead, planRound }) => {
             const list = JSON.parse((await runCmd(`bd list --parent ${epicBead.id} --json`, tempDir)).stdout || '[]');
             const legacy = list.find((b) => b.title.includes('Legacy'));
@@ -60,30 +67,27 @@ test('mock sprint: R2 names acceptable alternative X, R3 implements X, R3 plan-r
                 { id: successor.id, bucket: 'S', model: 'standard' },
             ];
 
+            const respond = (verdictObj) => {
+                planReviewerVerdicts.push(verdictObj);
+                return { content: [{ text: JSON.stringify(verdictObj) }] };
+            };
+
             if (planRound === 1) {
                 // R1: flags the duplication, no resolution offered yet.
-                return {
-                    content: [{
-                        text: JSON.stringify({
-                            verdict: 'CHANGES_NEEDED',
-                            notes: `${legacy.id} duplicates work now handled by ${successor.id}; this must be resolved before approval.`,
-                            taskAssignments,
-                        }),
-                    }],
-                };
+                return respond({
+                    verdict: 'CHANGES_NEEDED',
+                    notes: `${legacy.id} duplicates work now handled by ${successor.id}; this must be resolved before approval.`,
+                    taskAssignments,
+                });
             }
 
             if (planRound === 2) {
                 // R2: explicitly names resolution X as ACCEPTABLE.
-                return {
-                    content: [{
-                        text: JSON.stringify({
-                            verdict: 'CHANGES_NEEDED',
-                            notes: `Acceptable resolution: link ${legacy.id} as blocked-by ${successor.id} (that exact edge). If implemented exactly as stated, this criterion is satisfied.`,
-                            taskAssignments,
-                        }),
-                    }],
-                };
+                return respond({
+                    verdict: 'CHANGES_NEEDED',
+                    notes: `Acceptable resolution: link ${legacy.id} as blocked-by ${successor.id} (that exact edge). If implemented exactly as stated, this criterion is satisfied.`,
+                    taskAssignments,
+                });
             }
 
             // R3: the no-goalpost-moving rule -- since the planner implemented
@@ -96,28 +100,20 @@ test('mock sprint: R2 names acceptable alternative X, R3 implements X, R3 plan-r
                 (d) => d.type === 'blocks' && d.depends_on_id === successor.id
             );
             if (hasAcceptedLink) {
-                return {
-                    content: [{
-                        text: JSON.stringify({
-                            verdict: 'APPROVED',
-                            notes: `${legacy.id} is now blocked-by ${successor.id} exactly as accepted in the prior round. Approved.`,
-                            taskAssignments,
-                        }),
-                    }],
-                };
+                return respond({
+                    verdict: 'APPROVED',
+                    notes: `${legacy.id} is now blocked-by ${successor.id} exactly as accepted in the prior round. Approved.`,
+                    taskAssignments,
+                });
             }
             // Fail-safe (should not trigger in this scenario): if X was
             // somehow not implemented, do NOT invent a new demand -- restate
             // the SAME accepted resolution rather than moving the goalposts.
-            return {
-                content: [{
-                    text: JSON.stringify({
-                        verdict: 'CHANGES_NEEDED',
-                        notes: `Acceptable resolution: link ${legacy.id} as blocked-by ${successor.id} (that exact edge). If implemented exactly as stated, this criterion is satisfied.`,
-                        taskAssignments,
-                    }),
-                }],
-            };
+            return respond({
+                verdict: 'CHANGES_NEEDED',
+                notes: `Acceptable resolution: link ${legacy.id} as blocked-by ${successor.id} (that exact edge). If implemented exactly as stated, this criterion is satisfied.`,
+                taskAssignments,
+            });
         };
 
         const scoped = await runDevelopLoopScenario('planrelitigate', {
@@ -175,16 +171,21 @@ test('mock sprint: R2 names acceptable alternative X, R3 implements X, R3 plan-r
         );
 
         // R3's plan-reviewer (this mock) actually returned APPROVED -- not a
-        // different re-litigated demand -- confirmed via the engine's own
-        // "Plan Reviewer: <verdict json>" log line for that round.
-        const planReviewerLogs = scoped.logs.filter((l) => l.startsWith('Plan Reviewer: '));
+        // different re-litigated demand -- confirmed via the verdicts the
+        // handler itself produced. (apra-fleet-eft.69.1: the engine no
+        // longer logs a duplicate "Plan Reviewer: <verdict json>" line per
+        // round -- that was the duplicate-row bug apra-fleet-eft.69 flagged,
+        // since the same content already rides the dispatch's own AGENT
+        // activity row -- so this test now asserts against
+        // planReviewerVerdicts, captured at the source, instead of scraping
+        // engine logs.)
         check(
-            planReviewerLogs.length === 3,
-            `Expected exactly 3 'Plan Reviewer: ...' log lines, got ${planReviewerLogs.length}: ${JSON.stringify(planReviewerLogs)}`
+            planReviewerVerdicts.length === 3,
+            `Expected exactly 3 plan-reviewer verdicts, got ${planReviewerVerdicts.length}: ${JSON.stringify(planReviewerVerdicts)}`
         );
         check(
-            planReviewerLogs[2].includes('"verdict":"APPROVED"'),
-            `Expected R3's verdict log line to show APPROVED, got: ${planReviewerLogs[2]}`
+            planReviewerVerdicts[2].verdict === 'APPROVED',
+            `Expected R3's verdict to be APPROVED, got: ${JSON.stringify(planReviewerVerdicts[2])}`
         );
 
         // The R3 planner genuinely implemented X (not merely that round 3

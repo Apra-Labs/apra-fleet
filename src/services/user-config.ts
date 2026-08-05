@@ -13,6 +13,20 @@ export interface UserConfig {
     /** How many characters of a command/prompt to keep on its fleet-log line. */
     previewChars?: number;
   };
+  /** Context-headroom admission control overrides (apra-fleet-eft.81.1).
+   *  See src/services/context-admission.ts for the fleet defaults and the
+   *  three-band decision this config tunes. */
+  contextAdmission?: {
+    /** S/M/L -> token estimate, for execute_prompt's `context_size` shorthand. */
+    sizeBucketTokens?: Partial<Record<'S' | 'M' | 'L', number>>;
+    /** Tokens reserved below the raw window before a dispatch is flagged near-margin. */
+    safetyMarginTokens?: number;
+    /** Per-provider context window (tokens), overriding the built-in defaults. */
+    contextWindows?: Partial<Record<LlmProvider, number>>;
+    /** 'enforce' (default) rejects over-demand dispatches; 'warn' never rejects,
+     *  only attaches the structured warning. */
+    mode?: 'enforce' | 'warn';
+  };
 }
 
 /**
@@ -98,6 +112,63 @@ export function loadUserConfig(): UserConfig {
     } else if (preview !== undefined) {
       console.error('[fleet] user config: logging.previewChars must be a non-negative number, ignoring');
     }
+  }
+
+  if (obj.contextAdmission && typeof obj.contextAdmission === 'object' && !Array.isArray(obj.contextAdmission)) {
+    const ca = obj.contextAdmission as Record<string, unknown>;
+    const parsedCa: NonNullable<UserConfig['contextAdmission']> = {};
+
+    if (ca.sizeBucketTokens && typeof ca.sizeBucketTokens === 'object' && !Array.isArray(ca.sizeBucketTokens)) {
+      const buckets = ca.sizeBucketTokens as Record<string, unknown>;
+      const validBuckets: Partial<Record<'S' | 'M' | 'L', number>> = {};
+      for (const [bucketKey, bucketVal] of Object.entries(buckets)) {
+        if (bucketKey !== 'S' && bucketKey !== 'M' && bucketKey !== 'L') {
+          console.error(`[fleet] user config: unknown contextAdmission.sizeBucketTokens key "${bucketKey}", skipping`);
+          continue;
+        }
+        if (typeof bucketVal === 'number' && Number.isFinite(bucketVal) && bucketVal >= 0) {
+          validBuckets[bucketKey] = bucketVal;
+        } else {
+          console.error(`[fleet] user config: contextAdmission.sizeBucketTokens.${bucketKey} must be a non-negative number, ignoring`);
+        }
+      }
+      parsedCa.sizeBucketTokens = validBuckets;
+    }
+
+    if (ca.safetyMarginTokens !== undefined) {
+      if (typeof ca.safetyMarginTokens === 'number' && Number.isFinite(ca.safetyMarginTokens) && ca.safetyMarginTokens >= 0) {
+        parsedCa.safetyMarginTokens = ca.safetyMarginTokens;
+      } else {
+        console.error('[fleet] user config: contextAdmission.safetyMarginTokens must be a non-negative number, ignoring');
+      }
+    }
+
+    if (ca.contextWindows && typeof ca.contextWindows === 'object' && !Array.isArray(ca.contextWindows)) {
+      const windows = ca.contextWindows as Record<string, unknown>;
+      const validWindows: Partial<Record<LlmProvider, number>> = {};
+      for (const [provKey, winVal] of Object.entries(windows)) {
+        if (!VALID_PROVIDERS.has(provKey)) {
+          console.error(`[fleet] user config: unknown provider "${provKey}" in contextAdmission.contextWindows, skipping`);
+          continue;
+        }
+        if (typeof winVal === 'number' && Number.isFinite(winVal) && winVal >= 0) {
+          validWindows[provKey as LlmProvider] = winVal;
+        } else {
+          console.error(`[fleet] user config: contextAdmission.contextWindows.${provKey} must be a non-negative number, ignoring`);
+        }
+      }
+      parsedCa.contextWindows = validWindows;
+    }
+
+    if (ca.mode !== undefined) {
+      if (ca.mode === 'enforce' || ca.mode === 'warn') {
+        parsedCa.mode = ca.mode;
+      } else {
+        console.error('[fleet] user config: contextAdmission.mode must be "enforce" or "warn", ignoring');
+      }
+    }
+
+    result.contextAdmission = parsedCa;
   }
 
   cached = result;

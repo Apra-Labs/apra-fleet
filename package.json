@@ -55,6 +55,7 @@
     "smoke": "tsc && node dist/smoke-test.js",
     "integration": "tsc && npx tsx tests/integration.test.ts",
     "prepare": "node scripts/install-hooks.mjs",
+    "sync-agent-docs": "node scripts/sync-agent-docs.mjs",
     "prepublishOnly": "npm run dist-pm && npm run build && npm run build:se"
   },
   "keywords": [

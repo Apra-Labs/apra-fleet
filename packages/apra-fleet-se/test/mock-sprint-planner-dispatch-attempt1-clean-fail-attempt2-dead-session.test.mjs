@@ -52,6 +52,21 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // watchdog ceiling (or hanging past it) to resolve, instead of failing fast
 // with its own typed error the same way attempt 1 did -- exactly the
 // eft.50.1-fixed behavior this test pins.
+//
+// apra-fleet-eft.60.5: live real-bd retest (2026-07-28, branch
+// feat/sprint-service-1 @ 9438bc47), run exactly per this bead's own repro
+// command (`APRA_FLEET_BD_MOCK=off node --test packages/apra-fleet-se/test/
+// mock-sprint-planner-dispatch-attempt1-clean-fail-attempt2-dead-session.test.mjs`),
+// standalone, twice, after eft.74's phantom-session fix landed. Both runs
+// passed: elapsedMs ~22.7-28.9s (well under the 180000ms file timeout / test
+// harness budget), the full 5-attempt retry ladder ran to completion
+// (plannerAttempt === 5), attempt 1 failed cleanly and distinctly before
+// attempt 2+ hit its own typed dead-session dispatch_failed error each time,
+// and no "[dispatch-watchdog]" log line ever appeared -- i.e. the retry
+// ladder never silently hung and never needed the watchdog ceiling to
+// resolve. This closes out eft.60, corroborating eft.60.1/eft.60.3's fix and
+// eft.60.2/eft.60.4's regression pins now that eft.74's phantom-session fix
+// is in place (mirroring the eft.63.3 retest pattern).
 // =============================================================================
 
 test('mock sprint: Planner retry attempt 1 fails cleanly (dispatch_failed) as a distinct precondition, THEN attempt 2 (reusing a dead-session-reconnect) also fails fast with its own typed error -- never silently hangs, never needs the watchdog ceiling to resolve', { timeout: 180000 }, async () => {

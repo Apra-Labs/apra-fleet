@@ -18,6 +18,26 @@ const __dirname = path.dirname(__filename);
 // Set MOCK_SPRINT_DELAY_MS to simulate LLM latency locally; defaults to 0 for CI.
 export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 
+// apra-fleet-1cb.1 AUDIT NOTE: grepped runner.js for every read of
+// `result.isError` / `.isError` on an execute_command (bd/git/node shell)
+// response. The ONLY hit is createMemberReservationClient()'s `callFor()`
+// helper (member_reservation dispatch bookkeeping) -- that tool's isError is
+// a genuine MCP-transport-level flag for a DIFFERENT tool, not the shell
+// exit code of a bd/git invocation, so it is unaffected by this issue.
+// runner.js's `command()` wrapper (packages/apra-fleet-workflow/src/workflow/
+// index.mjs) already treats `result.isError` and
+// `result.structuredContent.exitCode !== 0` as two DISTINCT failure signals
+// (see its comment: "`result.isError` is an MCP-transport-level flag only --
+// it does NOT reflect the exit code of the underlying process") -- so no
+// runner.js code path depends on isError:true to detect a nonzero-exit bd/
+// git command; exitCode already does that job. The mocks below (and in
+// golden-transcript.test.mjs / golden-transcript-3bead.test.mjs /
+// budget-live.test.mjs) previously conflated the two by returning
+// `isError: true` for ordinary nonzero shell exits (a bd/git/node command
+// that actually ran and failed) -- fixed here to only set isError on a
+// genuine spawn failure (see isSpawnFailure() below), matching
+// src/tools/execute-command.ts, which never sets isError for a nonzero exit.
+
 // apra-fleet-eft.75.2: runner.js's main() now acquires a machine-local
 // pidfile mutex keyed on (branch, members) BEFORE any dispatch (see
 // fleet-sprint/sprint-lock.mjs) -- a REAL guard against two processes running
@@ -56,6 +76,19 @@ export function mockCmdResult(code, stdout, stderr) {
         content: [{ text: `Exit code: ${code}\n${output}` }],
         structuredContent: { exitCode: code, stdout: stdout ?? '', stderr: stderr ?? '' },
     };
+}
+
+// apra-fleet-1cb.1: classifies a runCmd() `err` (Node's child_process exec()
+// callback error) as a genuine spawn/transport failure -- the process never
+// ran at all -- as opposed to the process running and exiting nonzero, which
+// is normal data (see the comment on mockCmdResult above and
+// src/tools/execute-command.ts, which never sets isError for a nonzero shell
+// exit code). Node's exec() sets `err.code` to the numeric exit code for an
+// ordinary nonzero exit; it is left `undefined`, or set to a string like
+// 'ENOENT', only when the command itself never started (e.g. a bad cwd or a
+// binary that truly cannot be found).
+export function isSpawnFailure(err) {
+    return err.code === undefined || err.code === 'ENOENT';
 }
 
 // Same (cmd, cwd) => Promise<{ err, stdout, stderr }> signature as always,
@@ -296,11 +329,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         integHandler = null,
         finalReviewHandler = null,
         // Optional (cmd: string) => boolean predicate: when it returns
-        // true for a given executeCommand() invocation, the mock returns
-        // `{ isError: true, ... }` instead of actually running the command
-        // -- used to simulate a probe (or any other command()) failure
-        // deterministically, without depending on real filesystem/process
-        // flakiness.
+        // true for a given executeCommand() invocation, the mock returns a
+        // nonzero-exit result (apra-fleet-1cb.1: normal data, no isError --
+        // see mockCmdResult/isSpawnFailure above) instead of actually
+        // running the command -- used to simulate a probe (or any other
+        // command()) failure deterministically, without depending on real
+        // filesystem/process flakiness.
         commandFailurePattern = null,
         // apra-fleet-unw2.4 (N4): per-member modeling. `commandLogDetailed`,
         // when provided, receives one `{ command, member }` entry per
@@ -324,13 +358,15 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // apra-fleet-unw2.9 (N11): injectable git/gh failure. Optional
         // (cmd: string) => boolean predicate, tested ONLY against `git `/
         // `gh ` commands (the ones this mock otherwise short-circuits to a
-        // hardcoded success below). When it matches, the mock returns
-        // `{ isError: true, ... }` with `gitGhFailureMessage` (or a default)
-        // as the failure text -- this is what lets a test observe a git/gh
-        // failure path (e.g. `git push` rejected, `gh pr create` erroring
-        // for a reason OTHER than "already exists") as something OTHER than
-        // the unconditional "ok (mocked...)" success every git/gh command
-        // got before this issue. Deliberately separate from
+        // hardcoded success below). When it matches, the mock returns a
+        // nonzero-exit result (apra-fleet-1cb.1: normal data, no isError --
+        // matches src/tools/execute-command.ts) with `gitGhFailureMessage`
+        // (or a default) as the failure text -- this is what lets a test
+        // observe a git/gh failure path (e.g. `git push` rejected, `gh pr
+        // create` erroring for a reason OTHER than "already exists") as
+        // something OTHER than the unconditional "ok (mocked...)" success
+        // every git/gh command got before this issue. Deliberately separate
+        // from
         // `commandFailurePattern` above, which is never matched against
         // git/gh commands (see the intercept order below) -- that keeps
         // existing scenarios using `commandFailurePattern` for bd/node probe
@@ -453,6 +489,30 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 }
             }
 
+            // apra-fleet-9te.4.1: Ensure Sprint Branch probes for a
+            // pre-existing local branch via this exact rev-parse before
+            // deciding whether to reuse it as-is or reset it to base.
+            // Answer deterministically from this mock's per-member
+            // checkout-state model (see memberGitState doc above) instead of
+            // falling through to the generic git/gh "ok (mocked)" success
+            // below, which would make every scenario look like the local
+            // branch already exists and silently short-circuit the
+            // reset-to-base fallback path this mock exists to exercise.
+            const revParseMatch = /^git rev-parse --verify --quiet refs\/heads\/(\S+)/.exec(opts.command);
+            if (revParseMatch) {
+                const m = opts.member_name || '(none)';
+                const st = memberGitState ? memberGitState.get(m) : null;
+                if (st && st.ensuredBranches.has(revParseMatch[1])) {
+                    return mockCmdResult(0, revParseMatch[1], '');
+                }
+                // apra-fleet-1cb.1: a real `git rev-parse --verify --quiet` for a
+                // ref that doesn't exist is a normal nonzero exit (code 1, no
+                // stdout/stderr) -- not an MCP-level dispatch failure -- exactly
+                // like src/tools/execute-command.ts, which never sets isError for
+                // a nonzero shell exit. Match that: no isError, just exit code 1.
+                return mockCmdResult(1, '', '');
+            }
+
             // git/gh commands (apra-fleet-unw.14's branch-ensure/push/PR
             // steps) are intercepted rather than run for real: tempDir is a
             // bare `bd init` scratch directory, not a git repo with an
@@ -466,10 +526,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // that wants to observe a genuine (non-"already exists")
                 // git/gh failure should get exactly that, deterministically.
                 if (gitGhFailurePattern && gitGhFailurePattern.test(opts.command)) {
-                    return {
-                        isError: true,
-                        content: [{ text: gitGhFailureMessage || `mock git/gh failure (injected) for: ${opts.command}` }],
-                    };
+                    // apra-fleet-1cb.1: a real git/gh failure (auth, network,
+                    // rejected push, etc.) is the underlying CLI exiting nonzero --
+                    // the MCP execute_command call itself still succeeds (no
+                    // isError), matching src/tools/execute-command.ts. Simulate
+                    // that as a nonzero exit carrying the failure text, not isError.
+                    return mockCmdResult(1, '', gitGhFailureMessage || `mock git/gh failure (injected) for: ${opts.command}`);
                 }
 
                 // apra-fleet-eft.64.1: answer the Publish PR step's remote-
@@ -496,10 +558,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 if (prCreateMatch) {
                     const branch = prCreateMatch[1];
                     if (prExistsState.has(branch)) {
-                        return {
-                            isError: true,
-                            content: [{ text: `GraphQL: a pull request for branch "${branch}" already exists: https://github.com/mock-org/mock-repo/pull/1 (createPullRequest)` }],
-                        };
+                        // apra-fleet-1cb.1: `gh pr create` failing because a PR
+                        // already exists is a nonzero CLI exit, not an MCP-level
+                        // isError -- matching src/tools/execute-command.ts.
+                        return mockCmdResult(1, '', `GraphQL: a pull request for branch "${branch}" already exists: https://github.com/mock-org/mock-repo/pull/1 (createPullRequest)`);
                     }
                     prExistsState.add(branch);
                 }
@@ -511,7 +573,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // command-failure injection for probe/other command() calls,
             // used by the probe-failure-skips-phase scenario below.
             if (commandFailurePattern && commandFailurePattern.test(opts.command)) {
-                return { isError: true, content: [{ text: `mock command failure (injected) for: ${opts.command}` }] };
+                // apra-fleet-1cb.1: the probe/command this simulates (e.g. a
+                // `node -e existsSync(...)` check) genuinely runs and exits
+                // nonzero -- not an MCP dispatch failure -- so match
+                // src/tools/execute-command.ts and return normal nonzero-exit
+                // data instead of isError.
+                return mockCmdResult(1, '', `mock command failure (injected) for: ${opts.command}`);
             }
 
             // No stale intercepts here otherwise: runner.js's Deploy/Integ
@@ -520,7 +587,21 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // every other bd/node command below.
             const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
             if (err) {
-                return { isError: true, content: [{ text: stderr || err.message }] };
+                // apra-fleet-1cb.1: match src/tools/execute-command.ts, which
+                // only ever fails a call (no MCP result at all, or a caught
+                // exception) on a genuine spawn/transport failure -- a
+                // nonzero-exit `bd`/git/node invocation still returns a normal
+                // ExecuteCommandResult with structuredContent.exitCode set, no
+                // isError. Node's child_process exec() sets `err.code` to the
+                // process's numeric exit code for an ordinary nonzero exit;
+                // it is left undefined (or 'ENOENT') only when the process
+                // itself never ran (e.g. couldn't spawn). Only THAT case is a
+                // genuine dispatch-level failure here.
+                if (isSpawnFailure(err)) {
+                    return { isError: true, content: [{ text: stderr || err.message }] };
+                }
+                const exitCode = typeof err.code === 'number' ? err.code : 1;
+                return mockCmdResult(exitCode, stdout, stderr);
             }
             return mockCmdResult(0, stdout, stderr);
         },
@@ -565,7 +646,16 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // sprintMutexId stamp in runner.js) actually reaches every real
             // dispatch call site, not just the ones exercised directly by an
             // execute-prompt.ts unit test.
-            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id });
+            // apra-fleet-eft.78.4: also record the resolved `resume` value
+            // (boolean|string, see AgentOptions.resume in
+            // packages/apra-fleet-workflow/src/workflow/index.mjs) each
+            // dispatch actually carried -- lets a test assert on runner.js's
+            // per-role round-resume wiring (createRoundSessionRegistry) end
+            // to end: a warm within-cycle resume carries the PRIOR round's
+            // explicit session id string, a cross-cycle dispatch carries
+            // `false`. Purely additive (a new object key); no existing
+            // assertion reads/compares the whole `dispatched` entry shape.
+            dispatched.push({ agent: opts.agent, label: isFinalReview ? 'Final Review' : null, prompt: opts.prompt, member: opts.member_name, sprintId: opts.sprint_id, resume: opts.resume });
             await sleep(DELAY_MS);
 
             // --- plan phase: planner ---
@@ -866,6 +956,23 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
         const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
         const engine = new WorkflowEngine(workflow);
 
+        // apra-fleet-eft.70.2: phase-tagged command activity log. FleetWorkflow
+        // (an EventEmitter) emits 'activity:start' for every command()/agent()
+        // call -- INCLUDING journal-replayed cache hits (see
+        // packages/apra-fleet-workflow/src/workflow/index.mjs's command()) --
+        // carrying the exact `command` text and the `phase` title active at
+        // dispatch time (opts.phase || this._currentPhase()). Listening here
+        // (rather than reconstructing phase boundaries from commandLog's flat
+        // string order) gives the full-DB-fetch tripwire test
+        // (test/full-db-fetch-tripwire.test.mjs) a reliable, source-independent
+        // way to group commands by the phase step they ran in.
+        const activityLog = [];
+        workflow.on('activity:start', (meta) => {
+            if (meta && meta.type === 'command') {
+                activityLog.push({ phase: meta.phase, command: meta.command });
+            }
+        });
+
         // apra-fleet-unw.14: runner.js now validates a full CLI->runner arg
         // contract (branch/base_branch/members are required; goal/max_cycles
         // are optional with defaults) before any dispatch, and uses
@@ -887,7 +994,7 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
             .map((b) => ({ title: b.title, status: b.status }))
             .sort((a, b) => a.title.localeCompare(b.title));
 
-        return { dispatched, result, finalBeads, commandLog, epicBeadId: epicBead.id };
+        return { dispatched, result, finalBeads, commandLog, activityLog, epicBeadId: epicBead.id };
     } finally {
         await teardown(tempDir);
     }

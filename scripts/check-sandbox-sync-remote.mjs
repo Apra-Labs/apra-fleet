@@ -137,17 +137,23 @@ export function defaultSandboxPath(repoPath) {
 export function resolvesInsideSandbox(remoteValue, sandboxPath) {
   if (!remoteValue) return false;
 
-  const fileUrlMatch = /^file:\/\/(.*)$/.exec(remoteValue);
+  // Strip any '+file://' compound scheme (e.g. 'git+file://') down to 'file://'
+  // so Dolt origin URLs like git+file:///.../.apra-fleet-toy-origin.git pointing
+  // inside the sandbox are recognized as internal instead of caught by the generic
+  // external-scheme branch.
+  const normalizedValue = remoteValue.replace(/^[a-z][a-z0-9+.-]*\+file:\/\//i, 'file://');
+
+  const fileUrlMatch = /^file:\/\/(.*)$/.exec(normalizedValue);
   let candidatePath;
   if (fileUrlMatch) {
     candidatePath = fileUrlMatch[1];
-  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(remoteValue)) {
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedValue)) {
     // Some other URL scheme (https, git+https, ssh, ...) -- never a
     // sandbox-local filesystem path, e.g. the real
     // git+https://github.com/Apra-Labs/fleet-e2e-toy remote.
     return false;
   } else {
-    candidatePath = remoteValue;
+    candidatePath = normalizedValue;
   }
 
   const resolvedCandidate = path.resolve(candidatePath);

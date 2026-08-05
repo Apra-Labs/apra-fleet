@@ -20,11 +20,16 @@ import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
+import { recoverOrphanedDispatch } from '../services/orphan-recovery.js';
+import { durableOutputPath } from '../os/linux.js';
 import { LogScope, logLine, logWarn, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import { sessionRegistry } from '../services/session-registry.js';
 import { getTokenIssuer } from '../services/token-issuer.js';
+import { resolveExpectedDemand, checkContextAdmission, recordSessionUsage } from '../services/context-admission.js';
+import { recordKnownSession, isKnownSession } from '../services/known-sessions.js';
+import { resolveBudgetScope, evaluateBudget, recordAndEvaluate, type BudgetUsageBlock } from '../services/budget-awareness.js';
 import { sendMessage } from './send-message.js';
 import { registerPending } from '../services/pending-responses.js';
 import type { Agent, SSHExecResult } from '../types.js';
@@ -34,7 +39,7 @@ import type { ParsedResponse } from '../providers/provider.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'workspace_not_trusted';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -42,6 +47,18 @@ export interface ExecutePromptStructured {
   response?: string;
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
   sessionId?: string;
+  /** Present on an 'insufficient_context_headroom' rejection (apra-fleet-eft.81.1). */
+  detail?: { demand: number; headroom: number; window: number };
+  /** Present on a successful dispatch that fits but lands inside the session's
+   *  safety margin (apra-fleet-eft.81.1) -- a non-fatal heads-up, not an error. */
+  contextWarning?: { message: string; detail: { demand: number; headroom: number; window: number } };
+  /** Usage/budget block (apra-fleet-eft.80.2) attached to every result once
+   *  the configured budget crosses its warning band, and to a
+   *  budget_exhausted rejection. Named `budgetUsage` (not `usage`) to avoid
+   *  colliding with the token-count `usage` field above. Carries source:
+   *  'provider' (from a provider-native getUsage()) vs 'estimated' (fleet-side
+   *  token-count fallback). */
+  budgetUsage?: BudgetUsageBlock;
   [key: string]: unknown;
 }
 
@@ -53,7 +70,13 @@ export interface ExecutePromptResult {
 export const executePromptSchema = z.object({
   ...memberIdentifier,
   prompt: z.string().describe('The prompt to send to the LLM on the remote member'),
-  resume: z.boolean().default(true).describe('Resume the previous session if one exists (default: true)'),
+  resume: z.union([z.boolean(), z.string()]).default(true).describe(
+    'Session-resume control (default: true). ' +
+    'true = best-effort resume of the member\'s stored last session (a stale/unknown stored session transparently falls back to a fresh session). ' +
+    'false = always start a fresh session. ' +
+    'A session-id STRING = EXPLICIT resume of exactly that session, preferred over the member\'s stored session -- the caller asserts this prompt depends on that session\'s prior context, so an unknown/expired id is a TERMINAL error ' +
+    '(structured {isError, reason: "session_not_found"}, NO LLM call, and NO fresh-session fallback) rather than a silent wrong-context dispatch.'
+  ),
   timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
   max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
@@ -84,6 +107,23 @@ export const executePromptSchema = z.object({
     'the caller passed to member_reservation reserve/release. Callers that never set a ' +
     'reservation, or that reserved and dispatch in the same process, should omit this; ' +
     'omitting it preserves the pre-existing env-var-based behavior exactly.'
+  ),
+  expected_context_tokens: z.number().positive().optional().describe(
+    'Optional estimate (apra-fleet-eft.81.1) of how many tokens this dispatch will add ' +
+    'to the target session\'s context. When set (or context_size is set), the server ' +
+    'compares it against the session\'s remaining context-window headroom BEFORE ' +
+    'invoking the LLM: too little headroom rejects the call with ' +
+    '{reason: "insufficient_context_headroom", detail: {demand, headroom, window}} and no ' +
+    'spawn; a fit that lands inside the safety margin still proceeds but attaches a ' +
+    'structured contextWarning. Wins over context_size when both are set. Omitting both ' +
+    'fields disables the check entirely -- pre-existing behavior is unchanged.'
+  ),
+  context_size: z.enum(['S', 'M', 'L']).optional().describe(
+    'Optional size-bucket shorthand for expected_context_tokens (apra-fleet-eft.81.1): ' +
+    'S/M/L map to configured token estimates (fleet defaults, overridable via ' +
+    'config.json\'s contextAdmission.sizeBucketTokens). Ignored when expected_context_tokens ' +
+    'is also set. The auto-sprint engine supplies this from the dispatched task\'s size ' +
+    'metadata.'
   ),
 }).strict();
 
@@ -129,9 +169,12 @@ async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFile
   }
 }
 
-async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFilePath: string): Promise<void> {
+async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFilePath: string, extraPaths: string[] = []): Promise<void> {
   if (agent.agentType === 'local') {
     try { fs.unlinkSync(promptFilePath); } catch { /* ignore */ }
+    for (const p of extraPaths) {
+      try { fs.unlinkSync(p); } catch { /* ignore */ }
+    }
     return;
   }
   const agentOs = getAgentOS(agent);
@@ -145,7 +188,10 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
   } else {
     const escapedFolder = escapeDoubleQuoted(remoteDir);
-    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}`).catch(() => { /* ignore */ });
+    // apra-fleet-6z8.1: the durable stdout mirror is cleaned up in the SAME
+    // round trip as the prompt file -- no extra exec per dispatch.
+    const extras = extraPaths.map(p => ` "${escapeDoubleQuoted(p)}"`).join('');
+    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}${extras}`).catch(() => { /* ignore */ });
   }
 }
 
@@ -434,19 +480,24 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // without a live session (the common case today, and always for members
   // that never opt into an interactive session).
   //
-  // Gated to Claude only (apra-fleet-us9.9's survey,
-  // docs/interactive-injection-provider-survey.md): mode (b) -- server-push
-  // mid-session prompt injection -- is POC-proven on Claude alone via the
-  // provider-branded `notifications/claude/channel` capability.
-  // Gemini/Codex are confirmed [FAIL] (no equivalent push mechanism);
-  // Copilot/AGY/OpenCode are [TBD], not confirmed. A non-Claude member CAN
-  // still have a live sessionRegistry entry (registerMcpEndpoint gives it
-  // basic MCP tool access, apra-fleet-fnz.1-3) without that meaning it can
-  // receive or act on this push -- routing to it anyway would silently
+  // Gated by capability, not provider name (apra-fleet-cqa, eft.74 follow-up):
+  // mode (b) -- server-push mid-session prompt injection -- was POC-proven on
+  // Claude via the provider-branded `notifications/claude/channel` capability
+  // (apra-fleet-us9.9's survey, docs/interactive-injection-provider-survey.md),
+  // but the routing decision itself must be provider-agnostic: whatever the
+  // provider, a session is only an interactive-routing candidate if it
+  // actually declared that capability at MCP initialize time (recorded as
+  // SessionState.channelCapable below). Gemini/Codex are confirmed [FAIL]
+  // today (no equivalent push mechanism) and so never end up channelCapable in
+  // practice, but that is a fact about what each provider adapter currently
+  // advertises, not a name-based pre-filter here -- any provider that
+  // implements the same MCP channel capability is picked up automatically. A
+  // member CAN still have a live sessionRegistry entry (registerMcpEndpoint
+  // gives it basic MCP tool access, apra-fleet-fnz.1-3) without that meaning
+  // it can receive or act on this push -- routing to it anyway would silently
   // spend the full timeout_s waiting for a response that can never arrive.
-  const isClaudeMember = (agent.llmProvider ?? 'claude') === 'claude';
   const workspaceId = getTokenIssuer().workspaceId();
-  const rawSession = isClaudeMember ? sessionRegistry.get(workspaceId, agent.id) : undefined;
+  const rawSession = sessionRegistry.get(workspaceId, agent.id);
   // apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
   // opt-in handshake, not mere JWT registration. A plain subprocess
   // connect-back (a Doer that opened an MCP tool-access session with a member
@@ -467,7 +518,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // through here because the reconnected SessionState had pid=undefined, so the
   // check below was skipped and the caller hung on the dead channel.
   const interactivePid = interactiveSession?.pid
-    ?? (isClaudeMember ? sessionRegistry.lastKnownPid(workspaceId, agent.id) : undefined);
+    ?? sessionRegistry.lastKnownPid(workspaceId, agent.id);
   if (interactiveSession?.server && interactivePid !== undefined && !isPidAlive(interactivePid)) {
     // apra-fleet-eft.28.1/eft.28.5: never reuse a persistent interactive
     // session whose underlying member claude process has already died. Before
@@ -542,6 +593,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // a new execute_prompt that may have already claimed the member.
       inFlightAgents.delete(agent.id);
       clearedByStall = true;
+      // apra-fleet-6z8.2: a CONFIRMED stall means the remote turn made no
+      // progress of any kind for the whole threshold. Clearing bookkeeping
+      // alone left that wedged process running indefinitely on the member --
+      // burning its LLM session, holding its work folder, and colliding with
+      // whatever dispatch takes the member next. Kill the tracked pid too.
+      // Best-effort and never awaited: onStall is a fire-and-forget callback
+      // from the poll loop, and tryKillPid already swallows its own errors.
+      void tryKillPid(agent, strategy, cmds).catch(() => {});
     },
   });
 
@@ -581,10 +640,48 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
-  const resuming = !!(input.resume && agent.sessionId && provider.supportsResume());
+  // Resume semantics (apra-fleet-eft.78.1). `resume` is boolean | string:
+  //  - true   -> best-effort resume of the member's stored last session; a
+  //              stale/unknown stored session transparently retries fresh.
+  //  - false  -> always a fresh session.
+  //  - string -> EXPLICIT session-id resume: resume exactly this id, preferring
+  //              it over agent.sessionId. The caller asserts the prompt depends
+  //              on that session's context, so an unknown/expired id is a
+  //              TERMINAL session_not_found (handled just below) and NO
+  //              fresh-session fallback is ever applied (see the retry paths).
+  const explicitResumeId = typeof input.resume === 'string' && input.resume.length > 0 ? input.resume : undefined;
+  const resumeRequested = input.resume === true || explicitResumeId !== undefined;
+  const resumeTargetId = explicitResumeId ?? agent.sessionId;
+  // An explicit-id resume must never silently degrade to a fresh session: that
+  // is exactly the wrong-context dispatch this feature forbids. resume=true and
+  // resume=false keep their pre-existing transparent recovery.
+  const allowFreshSessionFallback = explicitResumeId === undefined;
+  const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume());
   const mintedId = (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy')
-    ? (resuming ? agent.sessionId! : uuid())
-    : (resuming ? agent.sessionId : undefined);
+    ? (resuming ? resumeTargetId! : uuid())
+    : (resuming ? resumeTargetId : undefined);
+
+  // Terminal session-not-found gate for explicit-id resumes (apra-fleet-eft.78.1).
+  // Checked BEFORE any spawn (writePromptFile / the LLM invocation): if the
+  // caller named a session the server has never issued for this member -- and it
+  // is not the member's currently-stored session -- there is no context to
+  // resume. Reject with a structured session_not_found and make NO LLM call,
+  // so an orchestrator can rebuild a self-contained prompt and re-dispatch fresh
+  // deliberately, rather than getting a silent blank-session response.
+  if (explicitResumeId !== undefined) {
+    const resumable = provider.supportsResume()
+      && (isKnownSession(agent.id, explicitResumeId) || explicitResumeId === agent.sessionId);
+    if (!resumable) {
+      scope.abort(`explicit resume rejected -- session "${explicitResumeId}" is unknown/expired (no LLM call)`);
+      inFlightAgents.delete(agent.id);
+      stallDetector.remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `❌ execute_prompt on "${agent.friendlyName}" rejected -- session "${explicitResumeId}" cannot be resumed (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (resume=false), or resume=true for best-effort recovery.`,
+        structuredContent: { isError: true, reason: 'session_not_found', sessionId: explicitResumeId },
+      };
+    }
+  }
 
   const promptOpts = {
     folder: resolvedWorkFolder,
@@ -600,6 +697,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   };
 
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
+
+  // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
+  // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). Windows
+  // members have no such companion tee, so recovery is skipped for them.
+  const durablePath = getAgentOS(agent) === 'windows' ? undefined : durableOutputPath(scope.getInv());
+  const dispatchStartedAt = Date.now();
 
   const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
@@ -634,13 +737,66 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
+  // Context-headroom admission control (apra-fleet-eft.81.1): a declared
+  // demand is checked against this session's remaining headroom BEFORE any
+  // CLI is spawned. No declared demand (both fields omitted) means this
+  // block is skipped entirely -- pre-existing behavior is unchanged.
+  const contextDemand = resolveExpectedDemand(input.expected_context_tokens, input.context_size);
+  let contextWarning: ExecutePromptStructured['contextWarning'];
+  if (contextDemand !== undefined) {
+    const admission = checkContextAdmission({
+      provider: provider.name,
+      resolvedModel,
+      sessionId: mintedId,
+      demand: contextDemand,
+    });
+    if (!admission.allowed) {
+      scope.abort(`insufficient context headroom: demand=${admission.detail.demand} headroom=${admission.detail.headroom} window=${admission.detail.window}`);
+      inFlightAgents.delete(agent.id);
+      stallDetector.remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `❌ execute_prompt on "${agent.friendlyName}" rejected -- insufficient context headroom (demand=${admission.detail.demand}, headroom=${admission.detail.headroom}, window=${admission.detail.window}). Start a fresh session, shrink the task, or split it.`,
+        structuredContent: { isError: true, reason: 'insufficient_context_headroom', detail: admission.detail },
+      };
+    }
+    if (admission.warning) {
+      contextWarning = { message: admission.warning, detail: admission.detail };
+    }
+  }
+
+  // Usage/budget admission (apra-fleet-eft.80.2): when a budget is configured
+  // for this member (or its workspace), a hard-threshold crossing rejects the
+  // NEW dispatch BEFORE any LLM is spawned -- never killing an in-flight call.
+  // No configured budget (the common case) means resolveBudgetScope returns
+  // undefined and this block is skipped entirely -- behavior is unchanged.
+  const budgetScope = resolveBudgetScope([agent.id, workspaceId]);
+  if (budgetScope) {
+    const preBudget = await evaluateBudget({ scope: budgetScope, agent, provider });
+    if (preBudget?.exhausted) {
+      scope.abort(`budget exhausted: scope=${budgetScope} spent=${preBudget.block.spent} budget=${preBudget.block.budget} source=${preBudget.block.source}`);
+      inFlightAgents.delete(agent.id);
+      stallDetector.remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `❌ execute_prompt on "${agent.friendlyName}" rejected -- budget exhausted (scope=${budgetScope}, spent=${preBudget.block.spent}, budget=${preBudget.block.budget} ${preBudget.block.unit}, source=${preBudget.block.source}). No LLM call was made; raise or reset the budget to resume.`,
+        structuredContent: { isError: true, reason: 'budget_exhausted', budgetUsage: preBudget.block },
+      };
+    }
+  }
+
   // Kill any leftover session from a previous (possibly zombie) execute_prompt call
   await tryKillPid(agent, strategy, cmds);
 
   // Write the rendered prompt (with substitutions applied) to the prompt file before execution
   await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
 
+  // apra-fleet-6z8.1: remembered for the lease-of-life gate below -- the pid
+  // outlives the SSH channel that reported it, and is the only way to tell a
+  // fabricated "exit 0 / empty" close apart from a real one.
+  let capturedPid: number | undefined;
   const onPidCaptured = (pid: number) => {
+    capturedPid = pid;
     scope.info(`pid=${pid}`);
     if (mintedId) {
       try {
@@ -683,6 +839,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // itself cancelled the request -- there is nothing to recover from a
       // deliberate cancellation.
       if (extra?.signal?.aborted) throw dispatchErr;
+      // apra-fleet-eft.78.1: an explicit-id resume must NOT retry in a fresh
+      // session (that would run a context-dependent delta prompt with no
+      // context). Let the exception surface as dispatch_failed instead.
+      if (!allowFreshSessionFallback) throw dispatchErr;
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
@@ -707,8 +867,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       };
     }
 
-    // Stale session retry -- fresh session ID, no resume
-    if (result.code !== 0 && input.resume && agent.sessionId) {
+    // Stale session retry -- fresh session ID, no resume. apra-fleet-eft.78.1:
+    // ONLY the best-effort resume=true mode gets this transparent retry-fresh
+    // recovery. An explicit session-id resume (string) deliberately does NOT --
+    // its caller asserted context dependence, so a not-found id is terminal.
+    if (result.code !== 0 && input.resume === true && agent.sessionId) {
       scope.info(`[${resolvedModel}] retrying -- stale session`);
       await tryKillPid(agent, strategy, cmds);
       const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
@@ -718,8 +881,10 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (parsed.usage) _epUsage = parsed.usage;
     }
 
-    // Server/overloaded error retry -- single attempt after delay
-    if (result.code !== 0 && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
+    // Server/overloaded error retry -- single attempt after delay. Skipped for
+    // an explicit-id resume (apra-fleet-eft.78.1): the retry starts a fresh
+    // session, which would discard the exact context the caller asked to resume.
+    if (result.code !== 0 && allowFreshSessionFallback && isRetryable(provider.classifyError(result.stderr || result.stdout))) {
       scope.info(`[${resolvedModel}] retrying -- server overloaded`);
       await tryKillPid(agent, strategy, cmds);
       await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
@@ -748,12 +913,53 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // which schema-extraction layers then misreported as "LLM returned
     // invalid JSON". Classify it at the source as a typed dispatch error
     // instead, with stderr's tail attached for diagnosis.
+    //
+    // apra-fleet-6z8.1 (lease-of-life gate): before declaring that, cross-check
+    // whether the captured pid is STILL ALIVE via a fresh short exec. ssh.ts
+    // substitutes code 0 when the channel closes without ever receiving an
+    // 'exit' event, so "exit 0 + empty" is ALSO exactly what a torn-down
+    // channel over a perfectly healthy, still-running turn looks like (live
+    // evidence: pid 89858 running 2+ minutes past the close). Declaring
+    // empty_response there orphans the CLI and invites a duplicate concurrent
+    // dispatch of the same scope. A confirmed-dead pid keeps today's behavior
+    // verbatim.
     if (!parsed.result || parsed.result.trim() === '') {
-      const stderrTail = (result.stderr || '').trim().slice(-500);
-      return {
-        text: `❌ execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
-        structuredContent: { isError: true, reason: 'empty_response' },
-      };
+      const recovery = await recoverOrphanedDispatch({
+        strategy,
+        cmds,
+        pid: capturedPid,
+        durablePath,
+        unsupported: getAgentOS(agent) === 'windows',
+        maxWaitMs: maxTotalMs !== undefined ? Math.max(maxTotalMs - (Date.now() - dispatchStartedAt), 0) : undefined,
+        scope,
+      });
+
+      if (recovery.status === 'timeout') {
+        scope.info(`orphan recovery timed out after ${Math.round((recovery.waitedMs ?? 0) / 1000)}s -- pid killed`);
+        return {
+          text: `❌ execute_prompt on "${agent.friendlyName}" lost its SSH channel while the member CLI (pid ${capturedPid}) was still running, and that process was still alive after the recovery window (${Math.round((recovery.waitedMs ?? 0) / 1000)}s). The process has been killed; no result was recovered. This is NOT an empty response -- do not treat it as a failed turn without checking the member's session transcript first.`,
+          structuredContent: { isError: true, reason: 'orphan_recovery_timeout' },
+        };
+      }
+
+      if (recovery.status === 'recovered' && recovery.stdout) {
+        // Feed the durable output through the normal provider parse path,
+        // exactly as if it had arrived on the original channel.
+        const recoveredParsed = provider.parseResponse({ stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 });
+        if (recoveredParsed.result && recoveredParsed.result.trim() !== '') {
+          scope.info(`recovered the real result from the durable output file after a false-alarm empty_response (waited ${Math.round((recovery.waitedMs ?? 0) / 1000)}s)`);
+          parsed = recoveredParsed;
+          if (parsed.usage) _epUsage = parsed.usage;
+        }
+      }
+
+      if (!parsed.result || parsed.result.trim() === '') {
+        const stderrTail = (result.stderr || '').trim().slice(-500);
+        return {
+          text: `❌ execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
+          structuredContent: { isError: true, reason: 'empty_response' },
+        };
+      }
     }
 
     // Session-id assertion: returned id must match the one we minted/resumed
@@ -763,6 +969,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     } else {
       touchAgent(agent.id, mintedId ?? parsed.sessionId);
     }
+    // apra-fleet-eft.78.1: mark the session this dispatch actually landed on as
+    // known/resumable for this member, so a later explicit-id resume of it
+    // passes the terminal session_not_found gate above instead of being
+    // rejected as unknown.
+    recordKnownSession(agent.id, parsed.sessionId ?? mintedId);
     if (mintedId) {
       try {
         stallDetector.update(agent.id, {
@@ -782,6 +993,24 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           output: prev.output + parsed.usage.output_tokens,
         },
       });
+      // Per-session cumulative tracking for context-headroom admission
+      // (apra-fleet-eft.81.1) -- separate from the per-member lifetime total
+      // just above. Keyed by whichever session id this dispatch actually
+      // landed on (the returned id, falling back to the minted/resumed one),
+      // so the NEXT admission check on this same session sees this dispatch's
+      // usage already accounted for.
+      recordSessionUsage(parsed.sessionId ?? mintedId, parsed.usage);
+    }
+
+    // Usage/budget accounting (apra-fleet-eft.80.2): account this dispatch's
+    // token usage against the scope's budget (self-metered only when the
+    // provider has no native getUsage()), then attach the usage block to the
+    // result when the warning band is crossed. Nothing is attached below the
+    // band, and nothing happens at all when no budget is configured.
+    let budgetUsage: BudgetUsageBlock | undefined;
+    if (budgetScope && parsed.usage) {
+      const postBudget = await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: parsed.usage });
+      if (postBudget?.warned) budgetUsage = postBudget.block;
     }
 
     let output = `📋 Response from ${agent.friendlyName}:
@@ -835,6 +1064,8 @@ session: ${parsed.sessionId}`;
         response: parsed.result,
         ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
         ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+        ...(contextWarning ? { contextWarning } : {}),
+        ...(budgetUsage ? { budgetUsage } : {}),
       },
     };
   } catch (err: any) {
@@ -858,6 +1089,6 @@ session: ${parsed.sessionId}`;
       inFlightAgents.delete(agent.id);
     }
     stallDetector.remove(agent.id);
-    await deletePromptFile(agent, strategy, promptFilePath);
+    await deletePromptFile(agent, strategy, promptFilePath, durablePath ? [durablePath] : []);
   }
 }

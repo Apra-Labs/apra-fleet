@@ -168,7 +168,20 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // --file`, and the plan-cap deferral `bd note --file`) each keep their SAME
 // single bd command() site -- only the file's provenance moved host -> member
 // -- so the net change is +1, not +3.
-const EXPECTED_COMMAND_COUNT = 37;
+// 37 -> 38 (apra-fleet-9te.4.1): Ensure Sprint Branch gained a new
+// `git rev-parse --verify --quiet refs/heads/<branch>` probe, dispatched only
+// when the origin fetch reports the remote ref is missing, to detect a
+// pre-existing local-only branch before deciding whether to reuse it as-is
+// or reset it to base -- member_name: member confirmed present.
+// 39 -> 41 (apra-fleet-co4): Ensure Sprint Branch gained two new
+// `git merge-base --is-ancestor` probes (one per direction), dispatched only
+// when the origin fetch succeeds AND a local branch of that name already
+// exists, to detect whether the local branch has committed-but-unpushed work
+// ahead of origin before ever resetting it -- fixes a confirmed live
+// data-loss incident where a successful fetch was wrongly treated as always
+// safe to reset over. Both new sites pass member_name: member, confirmed
+// present.
+const EXPECTED_COMMAND_COUNT = 41;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -183,7 +196,14 @@ const EXPECTED_COMMAND_COUNT = 37;
 // site (one corrective re-dispatch when the candidate is schema-valid but
 // semantically rejected, e.g. run 8's suffix-stripped bead ids);
 // member_name literal confirmed.
-const EXPECTED_AGENT_COUNT = 18;
+// 18 -> 20 (apra-fleet-eft.68.1): the in-cycle SCOPED replan (route replanIds
+// to a scoped planner + plan-review pass WITHIN the develop loop, rather than
+// deferring to the next cycle) added exactly two new agent() call sites in the
+// develop loop -- (1) the scoped planner dispatch (member_name:
+// getMemberForRole('planner')) and (2) the scoped plan-review dispatch
+// (member_name: getMemberForRole('plan-reviewer')), both literal member_name
+// present, verified compliant.
+const EXPECTED_AGENT_COUNT = 20;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in

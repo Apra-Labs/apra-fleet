@@ -11,9 +11,10 @@
 // sprints run as detached, IPC-less children of bin/cli.mjs, spawned later by
 // the eft.4.2 spawner seam).
 //
-// This skeleton wires only the lifecycle-owned endpoints; the ledger, spawner,
-// watchdog and dashboard seams are inert stubs here and get replaced by their
-// respective eft tasks without changing this entry point.
+// Every module seam (ledger, spawner, watchdog, dashboard/backlog/launch-form,
+// the eft.4.4 sprint/member/backlog API, the id allocator, and the dolt push
+// mutex) is wired to its REAL implementation below -- none of them are the
+// inert server.mjs stubs anymore (eft.4.8.1).
 // =============================================================================
 
 import { parseArgs } from 'node:util';
@@ -28,6 +29,22 @@ import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
+// eft.4.8.1: the operator-facing surface -- PID-liveness watchdog (eft.4.3),
+// dashboard/backlog/launch-form (eft.6.*), and the six sprint/member/backlog
+// operator endpoints (eft.4.4). These were fully implemented and unit-tested
+// but never imported/registered here -- this is that wiring.
+import { createWatchdog } from '../src/supervisor/watchdog.mjs';
+import { createBacklog } from '../src/supervisor/backlog.mjs';
+// launch-form.mjs (renderLaunchFormHtml/buildLaunchRequestBody) has no
+// register*Routes()/create*() seam of its own -- dashboard.mjs's
+// renderIndexPageHtml() already imports it directly and falls back to
+// renderLaunchFormHtml() whenever no launchFormHtml override is supplied, so
+// constructing the real dashboard below (instead of the inert stub) is what
+// actually wires the Launch Sprint form onto the page.
+import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
+import { createSprintController, registerSprintRoutes } from '../src/supervisor/api.mjs';
+import { listFleetMembers } from '../src/supervisor/fleet-members.mjs';
+import { resolveFleetServerConnection } from './cli.mjs';
 
 const SERVE_USAGE = `
 Usage: fleet-se serve [options]
@@ -101,9 +118,56 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // POST to an unregistered route (404) and wedge the D-push bracket.
     const doltMutex = createDoltMutex();
 
-    const supervisor = createSupervisor({ port, ledger, spawner, idAllocator, doltMutex });
+    // eft.4.3: PID-liveness watchdog + four-status classifier. Its
+    // resolvePort collaborator maps a sprintId -> the live --viewer-port the
+    // spawner allocated for that sprint's still-tracked child pid (undefined
+    // once the pid bookkeeping is gone -- classifySprint() already treats an
+    // unresolvable port as "cannot verify via HTTP", never as a false
+    // "crashed"). This is the one small wiring helper this task needed: every
+    // other seam below is a direct construct-and-register of an
+    // already-implemented module.
+    const resolveSprintPort = (sprintId) => {
+        const entry = ledger.get(sprintId);
+        if (!entry || entry.childPid == null) return undefined;
+        return spawner.getLiveEntry ? spawner.getLiveEntry(entry.childPid)?.port : undefined;
+    };
+    const watchdog = createWatchdog({ ledger, resolvePort: resolveSprintPort });
+
+    // eft.6.2: the Backlog-last tree (full tracker minus every active
+    // sprint's live-expanded scope). Reused both as the dashboard page's
+    // Backlog section (below) AND as GET /api/backlog's real listing (see the
+    // sprint controller wiring below), so there is exactly one "what does the
+    // tracker minus claimed scope look like right now" implementation.
+    const backlog = createBacklog({ ledger, watchdog });
+
+    // eft.6.1/6.3: the single-page operator dashboard -- Sprint Stack, then
+    // Backlog, then the Launch Sprint form (launch-form.mjs attaches itself
+    // via dashboard.mjs's renderIndexPageHtml default; see the import comment
+    // above for why no separate launch-form seam is constructed here).
+    const dashboard = createDashboard({ ledger, watchdog, backlog });
+
+    const supervisor = createSupervisor({ port, ledger, spawner, watchdog, dashboard, idAllocator, doltMutex });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
+
+    // eft.6.1: GET / -- the Sprint Stack + Backlog + Launch Sprint page.
+    registerDashboardRoutes(supervisor, dashboard);
+
+    // eft.4.4: the six operator-facing sprint/member/backlog endpoints.
+    // listMembers is fleet-backed (fleet-members.mjs opens a short-lived MCP
+    // connection per call -- see its module doc for why the supervisor never
+    // holds a standing fleet connection); getBacklog reuses the SAME backlog
+    // seam constructed above rather than re-deriving "tracker minus claimed
+    // scope" a second way. ledger/spawner/history are the same collaborators
+    // every other seam in this file shares.
+    const sprintController = createSprintController({
+        ledger,
+        spawner,
+        history,
+        listMembers: () => listFleetMembers({ resolveConnection: resolveFleetServerConnection }),
+        getBacklog: async () => ({ tree: await backlog.buildTree() }),
+    });
+    registerSprintRoutes(supervisor, sprintController);
 
     // eft.5.4: operator force-release of a wedged reservation.
     registerReservationRoutes(supervisor, reconciler);

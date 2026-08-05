@@ -192,6 +192,67 @@ export function realSyncSpawnCount(cwd, pattern) {
     return count;
 }
 
+// ---------------------------------------------------------------------------
+// real-mode `bd init` templating (apra-fleet-3ei)
+// ---------------------------------------------------------------------------
+// Every heavy mock-sprint/golden-transcript/budget-live scenario's setup()/
+// setupMinimal() issues a bare `bd init` into a brand-new scratch tempDir
+// before it ever creates a bead. Under real bd (APRA_FLEET_BD_MOCK=off, i.e.
+// `npm run test:integration` / the real-bd suite apra-fleet-eft.17 is about)
+// this is a full process spawn that bootstraps an embedded Dolt database
+// from scratch -- real, repeated cost across 25+ setup() calls.
+//
+// Unlike a pre-seeded backlog (investigated and rejected for this same bead:
+// fleet-e2e-toy's issues are a flat, unrelated toy backlog that doesn't
+// exercise what these scenarios need), a BARE `bd init` with no issues yet
+// created has no scenario-specific content at all -- every scenario runs the
+// exact same command against an empty scratch dir, so its result is safe to
+// produce once per test-file process and replicate onto every subsequent
+// caller's own tempDir instead of re-running the real bootstrap.
+//
+// Verified (see task investigation): a copy of an already-`bd init`-ed
+// directory tree, relocated to a differently-named destination directory,
+// still behaves correctly under `bd list`/`bd create`/`bd update --parent`
+// -- the embedded Dolt store's issue-id prefix is fixed at template-creation
+// time and does not need to match the destination directory's name. No
+// scenario asserts on the literal issue-id prefix string, only on the ids
+// `bd create --silent` hands back at runtime, so this is behavior-neutral.
+let bdInitTemplatePromise = null;
+let bdInitTemplateSpawns = 0;
+
+function createBdInitTemplate() {
+    const templateDir = path.join(os.tmpdir(), `apra-fleet-bd-init-template-${process.pid}`);
+    bdInitTemplateSpawns += 1;
+    return fs.promises
+        .mkdir(templateDir, { recursive: true })
+        .then(() => execCmd('bd init', templateDir))
+        .then((res) => ({ ...res, templateDir }));
+}
+
+// Serves a real `bd init` call in real mode by copying a once-per-process
+// template directory onto the caller's already-created (empty) `cwd`,
+// instead of spawning `bd init` again. If the ONE real template spawn itself
+// failed, that same failure is surfaced to every caller -- a fresh real
+// spawn per scenario would just fail identically 25+ times, and fabricating
+// a misleading success would be worse.
+async function realBdInitTemplated(cwd) {
+    if (!bdInitTemplatePromise) bdInitTemplatePromise = createBdInitTemplate();
+    const { err, stdout, stderr, templateDir } = await bdInitTemplatePromise;
+    if (err) return { err, stdout, stderr };
+    await fs.promises.cp(templateDir, cwd, { recursive: true });
+    return { err: null, stdout, stderr };
+}
+
+// Test-only introspection (same purpose as realSyncSpawnCount above): how
+// many REAL `bd init` process spawns has this process actually performed,
+// however many logical `bd init` calls were served from the template copy
+// without spawning anything. Should never exceed 1 for the whole process.
+export function bdInitTemplateSpawnCount() {
+    return bdInitTemplateSpawns;
+}
+
+const isBdInitCommand = (cmd) => /^\s*bd\s+init\s*$/.test(cmd);
+
 export function scenarioKeyFromCwd(cwd) {
     return path.basename(cwd).replace(/-\d+-\d+$/, '');
 }
@@ -356,6 +417,9 @@ export function runCmd(cmd, cwd) {
         // D-push brackets -- and the stable sync.remote pre-gate probe every
         // bracket consults -- from cache (see realDoltSyncCached above).
         if (isDoltSyncCommand(cmd) || isStableConfigProbe(cmd)) return realDoltSyncCached(cmd, cwd);
+        // Serve a bare `bd init` from the once-per-process template instead
+        // of re-running bd's own bootstrap (see realBdInitTemplated above).
+        if (isBdInitCommand(cmd)) return realBdInitTemplated(cwd);
         return execCmd(cmd, cwd);
     }
     // Dolt sync brackets are mock-mode no-ops (see isDoltSyncCommand above):

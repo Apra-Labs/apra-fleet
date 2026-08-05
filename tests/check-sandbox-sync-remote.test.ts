@@ -68,6 +68,18 @@ describe('resolvesInsideSandbox', () => {
   it('is false for an empty value', () => {
     expect(resolvesInsideSandbox('', sandbox)).toBe(false);
   });
+
+  it('is true for a git+file:// compound scheme URL resolving to a path inside the sandbox root (apra-fleet-eft.62.1)', () => {
+    expect(resolvesInsideSandbox(`git+file://${sandbox}/.apra-fleet-toy-dolt-remote`, sandbox)).toBe(true);
+  });
+
+  it('is false for a git+file:// compound scheme URL resolving to a path outside the sandbox root', () => {
+    expect(resolvesInsideSandbox('git+file:///tmp/apra-fleet-tests/somewhere-else', sandbox)).toBe(false);
+  });
+
+  it('is true for other +file:// compound schemes (e.g. hg+file://) resolving inside the sandbox root', () => {
+    expect(resolvesInsideSandbox(`hg+file://${sandbox}/.some-remote`, sandbox)).toBe(true);
+  });
 });
 
 describe('parseActiveSyncRemoteValue', () => {

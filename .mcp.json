@@ -3,6 +3,10 @@
     "apra-fleet": {
       "type": "http",
       "url": "http://localhost:7523/mcp"
+    },
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp"
     }
   }
 }

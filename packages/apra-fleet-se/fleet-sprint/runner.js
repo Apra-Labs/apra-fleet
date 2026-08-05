@@ -5,7 +5,19 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, isNonRetryableDispatchError } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, isNonRetryableDispatchError, isPostDispatchSyncFailure } from './errors.mjs';
+
+// apra-fleet-6z8.3: backoff for retrying ONLY the post-dispatch sync step of a
+// bracket whose dispatch already completed. Short and bounded -- this is a
+// git/dolt push round trip, not an LLM turn, and the alternative (letting the
+// failure escape the bracket) is what used to redispatch the whole turn.
+const POST_DISPATCH_SYNC_RETRY_DELAYS_MS = [0, 5000, 15000];
+
+/** True when the hermetic mock harness has opted into zero-wait backoffs
+ *  (APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF=1, set by mock-sprint-harness.mjs).
+ *  Production behavior -- real timed sleeps, unchanged delays -- is untouched. */
+const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
+import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 
@@ -572,6 +584,29 @@ const GIT_DIVERGED_PATTERNS = [
     /have diverged/i,
 ];
 
+// apra-fleet-fmu: substrings that mark a git failure as an AUTH (credential)
+// failure -- the member's provisioned VCS token/credential has expired or is
+// otherwise rejected by the remote. Live-observed root cause (2026-07-26/27,
+// apra-fleet-eft sprint, member fleet-mac): both a Dolt push and a later git
+// push failed repeatedly with "fatal: could not read Username for
+// 'https://github.com': Device not configured" after the member's GitHub App
+// token expired -- the orchestrator had to manually call provision_vcs_auth
+// via MCP to unblock. Distinct from 'transient' (network/lock blips a plain
+// retry can resolve): blindly retrying an auth failure without re-provisioning
+// credentials first is pointless and reproduces the exact live incident, so
+// it is checked BEFORE 'transient' in classifyGitFailure() below -- but AFTER
+// 'diverged', which must never be misclassified.
+const GIT_AUTH_PATTERNS = [
+    /could not read Username for/i,
+    /could not read Password for/i,
+    /Authentication failed/i,
+    /Permission denied \(publickey\)/i,
+    /remote: Invalid username or (token|password)/i,
+    /terminal prompts disabled/i,
+    /support for password authentication was removed/i,
+    /Bad credentials/i,
+];
+
 // Substrings that mark a git failure as TRANSIENT (network / lock) -- safe to
 // retry a bounded number of times.
 const GIT_TRANSIENT_PATTERNS = [
@@ -600,18 +635,22 @@ const GIT_TRANSIENT_PATTERNS = [
 ];
 
 /**
- * Classify a failed git command's output into the two failure classes the
- * sync brackets must route differently (plan risk 2). Divergence is checked
- * FIRST: a non-FF/unmerged state must never be misread as transient and
- * retried blindly, even if its message happens to also contain a lock/network
- * word.
+ * Classify a failed git command's output into the failure classes the sync
+ * brackets must route differently (plan risk 2; apra-fleet-fmu adds 'auth').
+ * Divergence is checked FIRST: a non-FF/unmerged state must never be misread
+ * as transient/auth and retried blindly, even if its message happens to also
+ * contain a lock/network/credential word. 'auth' is checked NEXT, before
+ * 'transient': a credential failure is not a network/lock blip and blindly
+ * retrying it without re-provisioning credentials first is pointless (see
+ * GIT_AUTH_PATTERNS' doc comment for the live incident this closes).
  *
  * @param {string} output - the raw git stderr/stdout of the failed command
- * @returns {'diverged'|'transient'|'unknown'}
+ * @returns {'diverged'|'auth'|'transient'|'unknown'}
  */
 export function classifyGitFailure(output) {
     const text = String(output == null ? '' : output);
     for (const re of GIT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
+    for (const re of GIT_AUTH_PATTERNS) if (re.test(text)) return 'auth';
     for (const re of GIT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
     return 'unknown';
 }
@@ -628,10 +667,24 @@ export function classifyGitFailure(output) {
  * ONLY transient failures up to `maxTransientRetries` times. A diverged (or
  * unknown) failure is returned immediately, never retried.
  *
- * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'transient'|'unknown' }>}
+ * apra-fleet-fmu: an optional injected `onAuthFailure` async callback adds a
+ * DISTINCT, bounded one-shot self-heal path -- deliberately NOT folded into
+ * the `maxTransientRetries` loop above, so it stays easy to reason about and
+ * test in isolation. When a command fails with an 'auth' classification (see
+ * classifyGitFailure) and `onAuthFailure` is provided, it is called EXACTLY
+ * ONCE (never in a loop, even if the retry below fails with 'auth' again);
+ * if it resolves without throwing, the SAME command is retried exactly once
+ * more. If `onAuthFailure` throws, or is not provided at all, this falls
+ * through to the exact pre-existing behavior: the failed result is returned
+ * as-is for the caller to turn into its typed GitSyncError/GitDivergedError.
+ * Every existing caller that does not pass `onAuthFailure` sees ZERO
+ * behavior change.
+ *
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'diverged'|'auth'|'transient'|'unknown' }>}
  */
-async function runGitStep({ command, member, cmd, label, log, maxTransientRetries }) {
+async function runGitStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure }) {
     let attempt = 0;
+    let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
@@ -641,6 +694,18 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
         if (kind === 'transient' && attempt < maxTransientRetries) {
             attempt += 1;
             log(`[Sync] transient git failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
+            continue;
+        }
+        if (kind === 'auth' && typeof onAuthFailure === 'function' && !authHealAttempted) {
+            authHealAttempted = true;
+            log(`[Sync] auth git failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
+            try {
+                await onAuthFailure({ member, label, cmd, error, kind: 'git' });
+            } catch (healErr) {
+                log(`[Sync] self-heal for member '${member}' (${label}) failed; not retrying further: ${healErr.message}`);
+                return { ok: false, output: res ? res.output : '', error, kind };
+            }
+            log(`[Sync] self-heal for member '${member}' (${label}) completed; retrying the failed git command once.`);
             continue;
         }
         return { ok: false, output: res ? res.output : '', error, kind };
@@ -658,12 +723,26 @@ async function runGitStep({ command, member, cmd, label, log, maxTransientRetrie
  * Every git command is issued via the injected command() with an explicit
  * member_name (3.2).
  *
+ * apra-fleet-fmu: an optional injected `onAuthFailure` is threaded straight
+ * through to runGitStep's bounded one-shot self-heal (a stale token can just
+ * as easily break a pull as a push) -- omitting it preserves the exact
+ * pre-existing behavior, same convention as the `agent` param on
+ * syncMemberAfter.
+ *
+ * apra-fleet-eft.87.1: an optional `resetToRemoteTip` (default false) changes
+ * the pull half from `git merge --ff-only` to a `git reset --hard <remote>/
+ * <branch>` so a RETRIED doer dispatch resumes on the published tip instead of
+ * failing on (or re-committing over) a divergence its own prior attempt left
+ * behind. Only set on a retry that may have mutated (withGitSync's
+ * resumeOntoRemoteTip); omitting it preserves the exact prior ff-only-merge
+ * behaviour for every first attempt / happy-path caller.
+ *
  * @param {string} member
- * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string }} opts
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, remote?: string, branch?: string, onAuthFailure?: Function, resetToRemoteTip?: boolean }} opts
  * @returns {Promise<{ ok: true, member: string }>}
  */
 export async function syncMemberBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch, onAuthFailure, resetToRemoteTip = false } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberBefore requires an injected command() in opts");
     }
@@ -671,7 +750,7 @@ export async function syncMemberBefore(member, opts = {}) {
     const fetchCmd = branch ? `git fetch ${remote} ${branch}` : `git fetch ${remote}`;
     const fetch = await runGitStep({
         command, member, cmd: fetchCmd,
-        label: `G-pull fetch for '${member}'`, log, maxTransientRetries,
+        label: `G-pull fetch for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!fetch.ok) {
         // A brand-new sprint branch that has not been pushed to the remote
@@ -696,10 +775,43 @@ export async function syncMemberBefore(member, opts = {}) {
         );
     }
 
+    // apra-fleet-eft.87.1: on a RETRIED doer dispatch whose prior attempt was
+    // NOT provably a no-mutation failure (it may have committed and/or pushed
+    // its single-task streak), a plain `git merge --ff-only` is the wrong
+    // recovery. If the prior attempt pushed and the local tip then diverged (a
+    // re-implemented duplicate commit vs the already-published one), the ff-only
+    // merge raises GitDivergedError and the streak can NEVER resume -- every
+    // subsequent `git push`/`git merge --ff-only` fails non-fast-forward (the
+    // eft.87 smoke-test symptom, `git rev-list --left-right` = '2 1'). When
+    // `resetToRemoteTip` is set (only ever on a retry that may have mutated --
+    // see withGitSync's resumeOntoRemoteTip), HARD-RESET the local branch onto
+    // the freshly fetched remote tip so the retry resumes ON TOP of already-
+    // published work rather than re-committing it. Only the code checkout is
+    // touched (beads live in a separate Dolt clone); a local commit that was
+    // never published is intentionally dropped and simply re-done by the retry,
+    // which is exactly what prevents the divergent duplicate commit. Requires a
+    // concrete branch to name a remote tip; without one it falls through to the
+    // normal ff-only merge below (unchanged behaviour).
+    if (resetToRemoteTip && branch) {
+        const resetTarget = `${remote}/${branch}`;
+        const reset = await runGitStep({
+            command, member, cmd: `git reset --hard ${resetTarget}`,
+            label: `G-pull reset-to-remote-tip for '${member}'`, log, maxTransientRetries, onAuthFailure,
+        });
+        if (!reset.ok) {
+            throw new GitSyncError(
+                `[Sync] G-pull reset-to-remote-tip failed for member '${member}': ${reset.error}`,
+                { member, gitOutput: reset.error },
+            );
+        }
+        log(`[Sync] G-pull for member '${member}': hard-reset local branch onto '${resetTarget}' so a retried dispatch resumes on the published tip instead of re-committing (apra-fleet-eft.87.1).`);
+        return { ok: true, member };
+    }
+
     const mergeCmd = branch ? `git merge --ff-only ${remote}/${branch}` : 'git merge --ff-only';
     const merge = await runGitStep({
         command, member, cmd: mergeCmd,
-        label: `G-pull ff-only merge for '${member}'`, log, maxTransientRetries,
+        label: `G-pull ff-only merge for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!merge.ok) {
         if (merge.kind === 'diverged') {
@@ -743,18 +855,25 @@ export async function syncMemberBefore(member, opts = {}) {
  * pre-8.12 Tier-1-only behavior -- every existing caller/test that does not
  * pass `agent` sees the same throws as before.
  *
+ * apra-fleet-fmu: an optional injected `onAuthFailure` (same injection
+ * pattern as `agent` above) is threaded through to every runGitStep call
+ * below for a bounded one-shot self-heal (call it once, retry the same
+ * command once) whenever a step is classified 'auth'. Omitting it preserves
+ * the exact pre-existing behavior -- every existing caller/test that does not
+ * pass `onAuthFailure` sees ZERO behavior change.
+ *
  * @param {string} member
  * @param {{
  *   command: Function, pushCode?: boolean, log?: Function,
  *   maxTransientRetries?: number, remote?: string, branch?: string,
- *   agent?: Function, resolveConflictModel?: string,
+ *   agent?: Function, resolveConflictModel?: string, onAuthFailure?: Function,
  * }} opts
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, rebased: boolean, tier2Resolved?: boolean }>}
  */
 export async function syncMemberAfter(member, opts = {}) {
     const {
         command, pushCode = true, log = () => {}, maxTransientRetries = 1, remote = 'origin', branch,
-        agent, resolveConflictModel,
+        agent, resolveConflictModel, onAuthFailure,
     } = opts;
     if (typeof command !== 'function') {
         throw new Error("syncMemberAfter requires an injected command() in opts");
@@ -768,7 +887,7 @@ export async function syncMemberAfter(member, opts = {}) {
 
     let push = await runGitStep({
         command, member, cmd: pushCmd,
-        label: `G-push for '${member}'`, log, maxTransientRetries,
+        label: `G-push for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, rebased: false };
@@ -788,7 +907,7 @@ export async function syncMemberAfter(member, opts = {}) {
     const rebaseCmd = branch ? `git pull --rebase ${remote} ${branch}` : 'git pull --rebase';
     const rebase = await runGitStep({
         command, member, cmd: rebaseCmd,
-        label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries,
+        label: `G-push pull-rebase retry for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!rebase.ok) {
         // apra-fleet-eft.8.6 (Tier 1 scripted detection): confirm from git's
@@ -822,7 +941,7 @@ export async function syncMemberAfter(member, opts = {}) {
             if (stillUnmerged.length === 0) {
                 const rePush = await runGitStep({
                     command, member, cmd: pushCmd,
-                    label: `G-push after Tier 2 conflict resolution for '${member}'`, log, maxTransientRetries,
+                    label: `G-push after Tier 2 conflict resolution for '${member}'`, log, maxTransientRetries, onAuthFailure,
                 });
                 if (rePush.ok) {
                     log(`[Sync] Tier 2 conflict resolution for member '${member}' succeeded -- working tree clean and the resolved code was pushed.`);
@@ -849,7 +968,7 @@ export async function syncMemberAfter(member, opts = {}) {
 
     push = await runGitStep({
         command, member, cmd: pushCmd,
-        label: `G-push re-push after rebase for '${member}'`, log, maxTransientRetries,
+        label: `G-push re-push after rebase for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, rebased: true };
@@ -944,6 +1063,25 @@ const DOLT_DIVERGED_PATTERNS = [
     /working set (is )?not clean/i,
 ];
 
+// apra-fleet-fmu: substrings that mark a `bd dolt` failure as an AUTH
+// (credential) failure -- mirrors GIT_AUTH_PATTERNS above. `bd dolt push`
+// shells out to git under the hood, so it can surface the SAME "could not
+// read Username for 'https://github.com'" text a plain git push does (this
+// exact class was live-observed on a D-push, not just a G-push, in the
+// apra-fleet-eft sprint incident this bead closes). Checked after 'diverged'
+// (never misclassified) but before 'transient' (retrying without
+// re-provisioning credentials first is pointless).
+const DOLT_AUTH_PATTERNS = [
+    /could not read Username for/i,
+    /could not read Password for/i,
+    /Authentication failed/i,
+    /Permission denied \(publickey\)/i,
+    /remote: Invalid username or (token|password)/i,
+    /terminal prompts disabled/i,
+    /support for password authentication was removed/i,
+    /Bad credentials/i,
+];
+
 // Substrings that mark a `bd dolt` failure as TRANSIENT (network / server /
 // lock) -- safe to retry a bounded number of times.
 const DOLT_TRANSIENT_PATTERNS = [
@@ -1010,8 +1148,12 @@ export function extractDoltRemoteUrl(output) {
  * for the same reason: its text ("no branches found in remote") must never
  * be misread as a real divergence/conflict.
  *
+ * apra-fleet-fmu: 'auth' is checked after 'diverged' but before 'transient',
+ * same ordering rationale as classifyGitFailure -- a credential failure must
+ * never be misread as a conflict, and blindly retrying it is pointless.
+ *
  * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
- * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'transient'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown'}
  */
 export function classifyDoltFailure(output) {
     const text = String(output == null ? '' : output);
@@ -1019,6 +1161,7 @@ export function classifyDoltFailure(output) {
     for (const re of DOLT_EMPTY_REMOTE_PATTERNS) if (re.test(text)) return 'empty-remote';
     for (const re of DOLT_REMOTE_UNREACHABLE_PATTERNS) if (re.test(text)) return 'remote-unreachable';
     for (const re of DOLT_DIVERGED_PATTERNS) if (re.test(text)) return 'diverged';
+    for (const re of DOLT_AUTH_PATTERNS) if (re.test(text)) return 'auth';
     for (const re of DOLT_TRANSIENT_PATTERNS) if (re.test(text)) return 'transient';
     return 'unknown';
 }
@@ -1032,8 +1175,8 @@ export function classifyDoltFailure(output) {
  * classifyDoltFailure's stderr pattern matching: apra-fleet-eft.30 showed a
  * (mis)wired Dolt-level remote can still make a real `bd dolt push` attempt
  * and fail with a credentials error ('could not read Username for
- * https://github.com') that classifyDoltFailure has no pattern for, so it
- * returns 'unknown' rather than 'no-remote' -- even though the sprint's
+ * https://github.com') that classifyDoltFailure now recognizes as 'auth'
+ * (apra-fleet-fmu) rather than 'no-remote' -- even though the sprint's
  * bd-level sync.remote for this clone IS neutralized and nothing is
  * supposed to be pushed. Consulting the bd-level setting directly closes
  * that gap regardless of what Dolt's own remote list says.
@@ -1093,10 +1236,20 @@ export async function isMemberSyncRemoteConfigured(member, opts) {
  * retrying ONLY transient failures up to `maxTransientRetries` times. A
  * diverged (or unknown) failure is returned immediately, never retried.
  *
- * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'diverged'|'transient'|'unknown' }>}
+ * apra-fleet-fmu: mirrors runGitStep's optional `onAuthFailure` self-heal --
+ * a DISTINCT, bounded one-shot path (never folded into the
+ * `maxTransientRetries` loop). On an 'auth' classification (see
+ * classifyDoltFailure), if `onAuthFailure` is provided it is called EXACTLY
+ * ONCE, and if it resolves without throwing the same `bd dolt` command is
+ * retried exactly once more. If `onAuthFailure` throws, or is not provided,
+ * this falls through to the exact pre-existing behavior. Every existing
+ * caller that does not pass `onAuthFailure` sees ZERO behavior change.
+ *
+ * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'unknown' }>}
  */
-async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries }) {
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure }) {
     let attempt = 0;
+    let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label });
@@ -1106,6 +1259,18 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         if (kind === 'transient' && attempt < maxTransientRetries) {
             attempt += 1;
             log(`[Dolt] transient failure for member '${member}' (${label}); retry ${attempt}/${maxTransientRetries}: ${error}`);
+            continue;
+        }
+        if (kind === 'auth' && typeof onAuthFailure === 'function' && !authHealAttempted) {
+            authHealAttempted = true;
+            log(`[Dolt] auth failure for member '${member}' (${label}); invoking self-heal (provision_vcs_auth) once before a single bounded retry: ${error}`);
+            try {
+                await onAuthFailure({ member, label, cmd, error, kind: 'dolt' });
+            } catch (healErr) {
+                log(`[Dolt] self-heal for member '${member}' (${label}) failed; not retrying further: ${healErr.message}`);
+                return { ok: false, output: res ? res.output : '', error, kind };
+            }
+            log(`[Dolt] self-heal for member '${member}' (${label}) completed; retrying the failed dolt command once.`);
             continue;
         }
         return { ok: false, output: res ? res.output : '', error, kind };
@@ -1163,12 +1328,17 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  * since there is nothing to reconcile. A real divergence/conflict pull
  * failure still throws DoltDivergedError, unchanged.
  *
+ * apra-fleet-fmu: an optional injected `onAuthFailure` is threaded through to
+ * runDoltStep's bounded one-shot self-heal (a stale token can just as easily
+ * break a pull as a push). Omitting it preserves the exact pre-existing
+ * behavior.
+ *
  * @param {string} member
- * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function }} opts
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function }} opts
  * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote' }>}
  */
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -1205,7 +1375,7 @@ export async function doltPullBefore(member, opts = {}) {
 
     const pull = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-pull for '${member}'`, log, maxTransientRetries,
+        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!pull.ok) {
         if (pull.kind === 'no-remote') {
@@ -1392,12 +1562,17 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * eft.16.1. Override the check with `opts.checkSyncRemoteConfigured` (same
  * `(member, {command, log}) => Promise<boolean>` shape) in tests.
  *
+ * apra-fleet-fmu: an optional injected `onAuthFailure` is threaded through to
+ * every runDoltStep call below (including doltPushGuarded's reconcile/re-push
+ * retries) for a bounded one-shot self-heal on an 'auth' classification.
+ * Omitting it preserves the exact pre-existing behavior.
+ *
  * @param {string} member
- * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function }} opts
+ * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function }} opts
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote' }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -1448,7 +1623,7 @@ export async function doltPushAfter(member, opts = {}) {
     async function doltPushGuarded() {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push for '${member}'`, log, maxTransientRetries,
+        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, reconciled: false };
@@ -1496,7 +1671,7 @@ export async function doltPushAfter(member, opts = {}) {
     log(`[Dolt] D-push for member '${member}' was rejected (another writer pushed first); reconciling with a single D-pull then one re-push (first-successful-pusher-wins).`);
     const reconcile = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries,
+        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (!reconcile.ok) {
         if (reconcile.kind === 'diverged') {
@@ -1513,7 +1688,7 @@ export async function doltPushAfter(member, opts = {}) {
 
     push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries,
+        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure,
     });
     if (push.ok) {
         return { ok: true, member, pushed: true, reconciled: true };
@@ -1552,12 +1727,18 @@ export async function doltPushAfter(member, opts = {}) {
  * escalation -- see that function's own doc comment. Omitting `agent`
  * preserves the exact pre-8.12 behavior.
  *
+ * apra-fleet-fmu: `onAuthFailure` (optional) is threaded through to BOTH
+ * syncMemberAfter (G-push) and doltPushAfter (D-push) for their respective
+ * bounded one-shot self-heal on an 'auth' classification. Omitting it
+ * preserves the exact pre-fmu behavior.
+ *
  * @param {string} member
  * @param {{
  *   command: Function, pushCode?: boolean, pushBeads?: boolean,
  *   log?: Function, mutex?: { acquire: Function, release: Function },
  *   sprintId?: string, branch?: string, maxTransientRetries?: number,
  *   remote?: string, agent?: Function, resolveConflictModel?: string,
+ *   onAuthFailure?: Function,
  * }} opts
  * @returns {Promise<{ ok: true, member: string, gPush: object, dPush: object }>}
  */
@@ -1565,18 +1746,18 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     const {
         command, pushCode = true, pushBeads = true, log = () => {},
         mutex, sprintId, branch, maxTransientRetries = 1, remote = 'origin',
-        agent, resolveConflictModel,
+        agent, resolveConflictModel, onAuthFailure,
     } = opts;
 
     let gPush;
     try {
-        gPush = await syncMemberAfter(member, { command, pushCode, log, branch, maxTransientRetries, remote, agent, resolveConflictModel });
+        gPush = await syncMemberAfter(member, { command, pushCode, log, branch, maxTransientRetries, remote, agent, resolveConflictModel, onAuthFailure });
     } catch (gPushErr) {
         log(`[Sync] G-push failed for member '${member}' -- skipping D-push and failing this streak rather than advertising an unreachable close (a beads close whose justifying code never reached the shared branch): ${gPushErr.message}`);
         throw gPushErr;
     }
 
-    const dPush = await doltPushAfter(member, { command, pushBeads, log, mutex, sprintId });
+    const dPush = await doltPushAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure });
     return { ok: true, member, gPush, dPush };
 }
 
@@ -2089,6 +2270,88 @@ export function createMemberSessionGuard(opts = {}) {
 }
 
 /**
+ * apra-fleet-fmu -- best-effort, GENERIC extraction of an "owner/repo" string
+ * from a git remote URL (https, scp-like git@host:owner/repo(.git), or
+ * ssh://). Deliberately target-agnostic (auto-sprint-product-vs-dogfood
+ * convention): fleet-sprint is a general-purpose product used to develop many
+ * different repos, so the `repos` argument passed to provision_vcs_auth must
+ * be DERIVED at runtime from the member's own git remote, never hardcoded to
+ * a literal repo name. Returns null on anything unrecognized so the caller
+ * can fall back to omitting `repos` (the field is optional server-side)
+ * rather than guessing.
+ *
+ * @param {string|null|undefined} url
+ * @returns {string|null}
+ */
+export function parseOwnerRepoFromRemoteUrl(url) {
+    const text = String(url == null ? '' : url).trim();
+    if (!text) return null;
+    let m = text.match(/^https?:\/\/[^/]+\/([^/]+)\/([^/]+?)(\.git)?\/?$/i);
+    if (m) return `${m[1]}/${m[2]}`;
+    m = text.match(/^ssh:\/\/[^@/]+@[^/]+\/([^/]+)\/([^/]+?)(\.git)?\/?$/i);
+    if (m) return `${m[1]}/${m[2]}`;
+    // scp-like syntax, e.g. git@github.com:owner/repo.git
+    m = text.match(/^[\w.-]+@[^:]+:([^/]+)\/([^/]+?)(\.git)?\/?$/i);
+    if (m) return `${m[1]}/${m[2]}`;
+    return null;
+}
+
+/**
+ * apra-fleet-fmu -- builds the real end-to-end `onAuthFailure` self-heal
+ * callback runGitStep/runDoltStep call on an 'auth' classification: resolves
+ * the failing member's `owner/repo` generically from its own `git remote
+ * get-url origin` (see parseOwnerRepoFromRemoteUrl -- never hardcoded), then
+ * calls the new ApraFleet.provisionVcsAuth() client method
+ * (packages/apra-fleet-client) to re-provision GitHub App credentials for
+ * that member. Uses `git_access: 'push'` and the default `github_mode:
+ * 'github-app'` -- the same credential shape the live incident this bead
+ * closes needed re-provisioned. Logs both the attempt and its outcome so the
+ * self-heal is visible in sprint logs, never silent. Any failure (resolving
+ * the remote, or the provision_vcs_auth call itself) propagates as a thrown
+ * error so runGitStep/runDoltStep's bounded one-shot self-heal correctly
+ * treats it as "self-heal failed" and does not retry further.
+ *
+ * `callTool` is injected exactly like createMemberSessionGuard's (the
+ * caller's MCP client, e.g. `mcpClient.callTool`), so this stays
+ * transport-agnostic and unit-testable without a live fleet server.
+ *
+ * @param {{ callTool: (name: string, args: object) => Promise<any>, command: Function, log?: Function }} opts
+ * @returns {(info: { member: string, label: string, cmd?: string, error: string, kind: 'git'|'dolt' }) => Promise<void>}
+ */
+export function createVcsAuthSelfHealCallback(opts = {}) {
+    const { callTool, command, log = () => {} } = opts;
+    const fleetApi = new ApraFleet({ callTool });
+
+    return async function onAuthFailure({ member, label, error }) {
+        log(`[Sync] self-heal: auth failure detected for member '${member}' (${label}); calling provision_vcs_auth to re-provision credentials: ${error}`);
+
+        let repos;
+        try {
+            const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+            const url = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
+            const repo = parseOwnerRepoFromRemoteUrl(url);
+            if (repo) {
+                repos = [repo];
+            } else {
+                log(`[Sync] self-heal: could not derive an owner/repo from member '${member}' git remote (raw: '${url}'); calling provision_vcs_auth without an explicit repos scope.`);
+            }
+        } catch (remoteErr) {
+            log(`[Sync] self-heal: failed to read member '${member}' git remote to derive 'repos' (continuing without an explicit repos scope): ${remoteErr.message}`);
+        }
+
+        await fleetApi.provisionVcsAuth({
+            member_name: member,
+            provider: 'github',
+            github_mode: 'github-app',
+            git_access: 'push',
+            ...(repos ? { repos } : {}),
+        });
+
+        log(`[Sync] self-heal: provision_vcs_auth succeeded for member '${member}' (${label}); the failed command will be retried once.`);
+    };
+}
+
+/**
  * apra-fleet-eft.73.1 -- stage `content` to a fresh temp file ON THE MEMBER
  * that will run the subsequent `bd` command, and return that MEMBER-LOCAL
  * absolute path. This replaces the old orchestrator-host-local
@@ -2499,11 +2762,38 @@ export function validateArgs(args) {
  *   requirementsFile: string|undefined,
  *   requirementsContent: string|null,
  *   feedback: string|null,
+ *   replanScope?: string[]|null,
  * }} opts
  * @returns {string}
  */
-function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback }) {
+function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null }) {
     const lines = [];
+
+    // apra-fleet-eft.68.1: SCOPED in-cycle replan clause. When a reviewer flags
+    // a bead via `replanIds` (its acceptance criteria are themselves defective
+    // and cannot be satisfied by re-development), the orchestrator now dispatches
+    // a SCOPED planner pass for exactly those beads' subtree WITHIN the same
+    // cycle -- instead of ending the cycle and deferring to the next cycle's
+    // full planner (the old eft.67.2 short-circuit). This clause is present ONLY
+    // on that scoped dispatch (absent -- byte-identical to before -- on every
+    // ordinary full-plan/re-plan dispatch, so the happy-path golden transcript
+    // is unchanged), and narrows the planner to amend only the flagged beads'
+    // acceptance criteria/decomposition without touching anything else in scope.
+    const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
+    if (hasReplanScope) {
+        lines.push(
+            'SCOPED IN-CYCLE REPLAN -- this is a NARROW, targeted re-planning pass, not a full ' +
+            'sprint plan. A reviewer flagged the following already-created bead(s) as having ' +
+            'DEFECTIVE ACCEPTANCE CRITERIA that cannot be satisfied by re-development as written: ' +
+            `${replanScope.join(', ')}. Re-scope ONLY these bead(s): read each one\'s current ` +
+            'description and the reviewer feedback below, then correct its acceptance criteria in ' +
+            'place (via `bd update`), or -- if it is genuinely too large -- decompose it into ' +
+            'task-type children with clear acceptance criteria and model metadata. Do NOT touch, ' +
+            'reword, re-decompose, close, or create any bead OUTSIDE this flagged set, and do NOT ' +
+            'add scope beyond the original sprint goal. Keep the goalposts fixed: you are fixing a ' +
+            'defect in these specific beads, not re-planning the sprint.'
+        );
+    }
 
     if (isDeltaCycle) {
         lines.push(
@@ -2604,15 +2894,37 @@ function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile
  *   targetIssues: string[],
  *   goal: string,
  *   priorRoundVerdicts?: Array<{ round: number, verdict: string, notes: string|null }>,
+ *   replanScope?: string[]|null,
  * }} opts
  * @returns {string}
  */
-function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [] }) {
+function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null }) {
+    const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
     const lines = [
         'Review the beads DAG created by the planner for this sprint, per your agent contract.',
         `Sprint root / scope to review (the open beads subtree this review pass covers): ` +
         `sprint root issue id(s) ${targetIssues.join(', ')}, goal priority ${goal}. ` +
         'Review only the features and tasks under this scope.',
+    ];
+
+    // apra-fleet-eft.68.1: on a SCOPED in-cycle replan review, tell the
+    // plan-reviewer to focus its verdict on whether the planner's amendment
+    // actually FIXED the flagged bead(s)' acceptance criteria -- not to
+    // re-litigate the whole DAG. Present ONLY on the scoped dispatch (absent,
+    // byte-identical to before, on every ordinary plan-review dispatch).
+    if (hasReplanScope) {
+        lines.push(
+            'SCOPED IN-CYCLE REPLAN REVIEW -- this pass follows a NARROW, targeted re-plan of ' +
+            `specifically flagged bead(s) ${replanScope.join(', ')} whose acceptance criteria a ` +
+            'reviewer judged defective. Focus your verdict on whether the planner has now given ' +
+            'those bead(s) clear, satisfiable acceptance criteria (and decomposed them into ' +
+            'task-type children if they were too large). Approve if the flagged bead(s) are now ' +
+            'well-formed; do not withhold approval over unrelated, previously-accepted parts of ' +
+            'the DAG, and do not demand new scope beyond fixing the flagged defect.'
+        );
+    }
+
+    lines.push(
         // Stabilization log Issue 14: mid-sprint, a feature whose children
         // are ALL closed is in the pending-feature-closure state -- feature
         // closure is the integ-test phase's job, not the planner's. Two runs
@@ -2660,7 +2972,7 @@ function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [] }
         '(targeting the residual mechanism the latest evidence names, never ' +
         'duplicating the closed fix) plus a [test] task. A bug whose notes show no ' +
         'post-closure recurrence stays under the pending-closure rule as before.',
-    ];
+    );
 
     // apra-fleet-eft.71.2: round N>1 of this cycle's planner<->plan-reviewer
     // loop carries every earlier round's verdict for THIS SAME scope/cycle so
@@ -2852,6 +3164,289 @@ export function groupStreaksFromLaneMetadata(currentReady) {
         || String(x.streakId).localeCompare(String(y.streakId)));
 
     return { streaks: laneEntries.map((e) => e.sorted), reason: null };
+}
+
+/**
+ * apra-fleet-eft.76.7 -- pure reference implementation of the planner.md
+ * "effort-point splitting math" (apra-fleet-eft.76.1): planner.md documents
+ * this formula as design-time math the LLM planner applies when authoring a
+ * lane's `streak`/`streakOrder` metadata at bead-creation time, BEFORE any
+ * bead is ever ready/dispatched -- it is not itself wired into the runtime
+ * develop-round dispatch, which only ever CONSUMES already-split lane
+ * metadata (see groupStreaksFromLaneMetadata above). Exported here as a
+ * pure, deterministic function so the formula itself is unit-testable in
+ * isolation, independent of any one LLM's arithmetic.
+ *
+ * Effort formula (planner.md): `effort = (sum of per-task size points) x
+ * (max model weight across the lane)`. Size points: S=1, M=2, L=4. Model
+ * weight: cheap=1, standard=10, premium=20.
+ */
+export const SIZE_POINTS = Object.freeze({ S: 1, M: 2, L: 4 });
+export const MODEL_WEIGHT = Object.freeze({ cheap: 1, standard: 10, premium: 20 });
+// planner.md: "the effort threshold constant (default 200)".
+export const DEFAULT_EFFORT_THRESHOLD = 200;
+
+/**
+ * Computes the effort-point total for a lane (or candidate sub-lane) of
+ * tasks, per the planner.md formula above.
+ * @param {Array<{size: 'S'|'M'|'L', model: 'cheap'|'standard'|'premium'}>} tasks
+ * @returns {number}
+ */
+export function computeLaneEffort(tasks) {
+    const sizeSum = tasks.reduce((acc, t) => acc + (SIZE_POINTS[t.size] || 0), 0);
+    const maxWeight = tasks.reduce((acc, t) => Math.max(acc, MODEL_WEIGHT[t.model] || 0), 0);
+    return sizeSum * maxWeight;
+}
+
+// apra-fleet-eft.77.1 --------------------------------------------------------
+// Predicted-context-size estimator, wired in behind the SAME splitting seam
+// as the effort-point formula above (splitLaneByEffort). planner-owned-
+// streaks (apra-fleet-eft.76) split lanes by effort points as a PROXY for the
+// real limit: the doer session's context requirement. When a per-task
+// context estimate can actually be computed -- from the byte sizes of the
+// task's named files plus historical tokens-per-bucket telemetry already
+// recorded via `bd remember` (see e.g. the `*-tokens-input=...` memories) --
+// that estimate decides the split instead. The effort-point formula remains
+// the FALLBACK whenever no estimate is available for every task in the lane,
+// so existing callers/tests that never supply file sizes or telemetry keep
+// getting byte-for-byte the same effort-point-based behavior as before.
+
+// Rough bytes-per-token ratio used to convert named-file byte sizes into an
+// estimated token contribution (in the ballpark of common tokenizer
+// averages -- good enough for a splitting heuristic, not billing).
+export const BYTES_PER_TOKEN = 4;
+
+// Default ceiling, in estimated tokens, a sub-lane's predicted context
+// requirement must stay under before splitting. Plays the same role as
+// DEFAULT_EFFORT_THRESHOLD, but in token-estimate units.
+export const DEFAULT_CONTEXT_CEILING = 150000;
+
+/**
+ * apra-fleet-eft.78.3 -- per-role, per-cycle session registry that drives
+ * "round resume": within ONE sprint cycle's approval loop, a role (planner,
+ * reviewer, ...) resumes its OWN prior-round session across rounds
+ * (planner R1->R2->R3, reviewer R1->R2->R3) via an explicit session id, so a
+ * re-plan / re-review keeps the warm context it already built instead of
+ * re-deriving it from scratch. The session id itself is whatever
+ * execute_prompt promoted into structuredContent.sessionId
+ * (apra-fleet-eft.78.1), surfaced to the engine by agent()'s onSessionId
+ * callback (packages/apra-fleet-workflow).
+ *
+ * Guards, all enforced here so the call sites stay tiny:
+ *   - NEVER resume across cycles (fresh eyes): a stored entry is keyed to the
+ *     cycle it was recorded in; asking for a different cycle returns `false`
+ *     (a fresh session), even before any new record overwrites it.
+ *   - Fall back to a fresh session on a prior-round dispatch error/timeout:
+ *     the call site invokes clear(role) in its failure branch, so the next
+ *     round has nothing to resume.
+ *   - Fall back to a fresh session near the context ceiling: if the recorded
+ *     dispatch's reported usage is at/above `ceilingFraction` of
+ *     `contextCeiling`, the entry is flagged and resumeArgFor() returns
+ *     `false` -- resuming a session already near its window limit would start
+ *     the next round out of room.
+ *   - Capability check by CAPABILITY, not provider-name: a provider that does
+ *     not support resume returns no session id, so record() is never called
+ *     with one and resumeArgFor() naturally yields `false` (fresh). There is
+ *     deliberately no `if (provider === 'claude')`-style name test anywhere.
+ *
+ * @param {{ log?: (msg: string) => void, contextCeiling?: number, ceilingFraction?: number }} [opts]
+ */
+export function createRoundSessionRegistry(opts = {}) {
+    const log = typeof opts.log === 'function' ? opts.log : () => {};
+    const contextCeiling = typeof opts.contextCeiling === 'number' && opts.contextCeiling > 0
+        ? opts.contextCeiling
+        : DEFAULT_CONTEXT_CEILING;
+    const ceilingFraction = typeof opts.ceilingFraction === 'number' && opts.ceilingFraction > 0
+        ? opts.ceilingFraction
+        : 0.9;
+    // role -> { cycle: number, sessionId: string, nearCeiling: boolean }
+    const byRole = new Map();
+
+    /**
+     * Record the session id a dispatch of `role` returned during `cycle`.
+     * A no-op for a missing/empty id (e.g. a provider that does not support
+     * resume) so the next round stays fresh.
+     */
+    function record(role, cycle, sessionId, meta = {}) {
+        if (!role || typeof sessionId !== 'string' || sessionId === '') {
+            return;
+        }
+        const totalTokens = meta && meta.usage && typeof meta.usage.total_tokens === 'number'
+            ? meta.usage.total_tokens
+            : null;
+        const nearCeiling = totalTokens !== null && totalTokens >= contextCeiling * ceilingFraction;
+        byRole.set(role, { cycle, sessionId, nearCeiling });
+        if (nearCeiling) {
+            log(`[round-resume] ${role} session recorded near the context ceiling ` +
+                `(~${totalTokens} tokens >= ${Math.round(contextCeiling * ceilingFraction)}); ` +
+                `the next round in this cycle will start a FRESH session.`);
+        }
+    }
+
+    /**
+     * The `resume` argument the NEXT dispatch of `role` in `cycle` should carry:
+     * the stored session id (a string) to resume that same session, or `false`
+     * to start fresh. Fresh whenever there is no prior round, the prior round
+     * was in a different cycle, the prior round ended near the context ceiling,
+     * or no session id was ever captured (provider without resume support).
+     */
+    function resumeArgFor(role, cycle) {
+        const entry = byRole.get(role);
+        if (!entry) return false;                 // no prior round -> fresh (R1)
+        if (entry.cycle !== cycle) return false;  // never resume across cycles
+        if (entry.nearCeiling) return false;      // near context ceiling -> fresh
+        if (!entry.sessionId) return false;       // no captured id -> fresh
+        return entry.sessionId;                   // resume THAT session explicitly
+    }
+
+    /**
+     * Drop any stored session for `role` so its next round starts fresh. Called
+     * by a dispatch site when the just-run round failed/timed out -- resuming a
+     * failed session would carry a broken/partial context forward.
+     */
+    function clear(role) {
+        byRole.delete(role);
+    }
+
+    return { record, resumeArgFor, clear };
+}
+
+/**
+ * Estimates one task's predicted context-size contribution, in tokens, from:
+ * - `task.files` (the task's named files) looked up in `opts.fileSizes` (a
+ *   map of file path -> byte size), converted via BYTES_PER_TOKEN; and
+ * - `opts.telemetry` (a map of `${size}:${model}` bucket key -> average
+ *   observed tokens for that bucket, sourced from historical `bd remember`
+ *   token-usage memories).
+ *
+ * Returns `null` -- "no estimate available" -- when neither source yields
+ * anything for this task (no named files with known sizes, and no telemetry
+ * entry for its size/model bucket). Callers use the `null` sentinel to
+ * detect the no-estimate case and fall back to the effort-point formula
+ * rather than silently treating a missing input as zero cost.
+ *
+ * @param {{id: string, size?: string, model?: string, files?: string[]}} task
+ * @param {{ fileSizes?: Record<string, number>, telemetry?: Record<string, number> }} [opts]
+ * @returns {number|null}
+ */
+export function estimateTaskContextTokens(task, opts = {}) {
+    const fileSizes = opts.fileSizes || {};
+    const telemetry = opts.telemetry || {};
+
+    let fileTokens = 0;
+    let sawFileSize = false;
+    for (const f of task.files || []) {
+        const bytes = fileSizes[f];
+        if (typeof bytes === 'number' && Number.isFinite(bytes)) {
+            fileTokens += bytes / BYTES_PER_TOKEN;
+            sawFileSize = true;
+        }
+    }
+
+    const bucketKey = `${task.size}:${task.model}`;
+    const telemetryTokens = telemetry[bucketKey];
+    const sawTelemetry = typeof telemetryTokens === 'number' && Number.isFinite(telemetryTokens);
+
+    if (!sawFileSize && !sawTelemetry) return null;
+    return fileTokens + (sawTelemetry ? telemetryTokens : 0);
+}
+
+/**
+ * Estimates a lane's (or candidate sub-lane's) total predicted context
+ * requirement, in tokens, by summing each task's estimate (see
+ * estimateTaskContextTokens). Returns `null` if ANY task in `tasks` has no
+ * computable estimate, so a partial estimate is never mistaken for a
+ * whole-lane one.
+ * @param {Array<object>} tasks
+ * @param {{ fileSizes?: Record<string, number>, telemetry?: Record<string, number> }} [opts]
+ * @returns {number|null}
+ */
+export function estimateLaneContextTokens(tasks, opts = {}) {
+    let total = 0;
+    for (const t of tasks) {
+        const est = estimateTaskContextTokens(t, opts);
+        if (est === null) return null;
+        total += est;
+    }
+    return total;
+}
+
+/**
+ * Splits a single lane's ORDERED task list (order already consistent with
+ * `blocks` edges, i.e. planner.md's `streakOrder`) into one or more
+ * contiguous sub-lanes so that, where possible, no sub-lane's predicted cost
+ * exceeds its limit -- UNLESS honoring that would separate two members of
+ * the same mutex-resource group (e.g. the same submodule pointer, a shared
+ * version/manifest field, or a committed fixture file), in which case the
+ * mutex group is kept together in the SAME sub-lane even when that leaves it
+ * over the limit (planner.md: "NEVER separate mutex-resource members... even
+ * if honoring that leaves a streak over threshold").
+ *
+ * Cost model (apra-fleet-eft.77.1): when every task in `tasks` has a
+ * computable predicted-context-size estimate (see estimateTaskContextTokens
+ * -- i.e. `opts.fileSizes`/`opts.telemetry` yield a non-null estimate for
+ * each task), the lane is split against `opts.contextCeiling` (default
+ * DEFAULT_CONTEXT_CEILING) using that context estimate. Otherwise -- the
+ * common case when no file-size/telemetry data is supplied -- it falls back
+ * to the effort-point formula (computeLaneEffort) against `opts.threshold`
+ * (default DEFAULT_EFFORT_THRESHOLD), exactly as before this estimator was
+ * introduced.
+ *
+ * - Never reorders or drops a task: concatenating the returned sub-lanes,
+ *   in order, reproduces `tasks` exactly -- each sub-lane is a contiguous
+ *   prefix/suffix slice, never an arbitrary mid-lane cut (planner.md: "each
+ *   resulting streak is a contiguous prefix/suffix of the dependency
+ *   order").
+ * - A lane that already fits under the limit is returned as a single
+ *   sub-lane (no gratuitous splitting).
+ * - `opts.mutexGroups`, if given, is an array of arrays of task ids that
+ *   contend for the same mutex resource; every id in the same group is
+ *   guaranteed to land in the same returned sub-lane.
+ *
+ * @param {Array<{id: string, size: 'S'|'M'|'L', model: 'cheap'|'standard'|'premium', files?: string[]}>} tasks
+ * @param {{ threshold?: number, mutexGroups?: string[][], fileSizes?: Record<string, number>, telemetry?: Record<string, number>, contextCeiling?: number }} [opts]
+ * @returns {Array<Array<object>>} sub-lanes, each a contiguous slice of `tasks`
+ */
+export function splitLaneByEffort(tasks, opts = {}) {
+    if (!Array.isArray(tasks) || tasks.length === 0) return [];
+    const threshold = opts.threshold ?? DEFAULT_EFFORT_THRESHOLD;
+    const contextCeiling = opts.contextCeiling ?? DEFAULT_CONTEXT_CEILING;
+
+    // Only trust the context estimate when EVERY task in the lane has one;
+    // a single un-estimable task disqualifies the whole lane back to the
+    // effort-point fallback, per this function's contract above.
+    const useContextEstimate = tasks.every((t) => estimateTaskContextTokens(t, opts) !== null);
+    const costOf = useContextEstimate
+        ? (subset) => estimateLaneContextTokens(subset, opts)
+        : (subset) => computeLaneEffort(subset);
+    const limit = useContextEstimate ? contextCeiling : threshold;
+
+    const mutexGroupOf = new Map();
+    (opts.mutexGroups || []).forEach((group, idx) => {
+        group.forEach((id) => mutexGroupOf.set(id, idx));
+    });
+    const sameMutexGroup = (a, b) =>
+        mutexGroupOf.has(a.id) && mutexGroupOf.get(a.id) === mutexGroupOf.get(b.id);
+
+    const sublanes = [];
+    let current = [];
+
+    for (const task of tasks) {
+        if (current.length === 0) {
+            current.push(task);
+            continue;
+        }
+        const prev = current[current.length - 1];
+        const candidate = [...current, task];
+        if (costOf(candidate) > limit && !sameMutexGroup(prev, task)) {
+            sublanes.push(current);
+            current = [task];
+        } else {
+            current = candidate;
+        }
+    }
+    sublanes.push(current);
+    return sublanes;
 }
 
 /**
@@ -3837,6 +4432,112 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
     return Promise.race([dispatchPromise, watchdogPromise]).finally(() => clearTimeout(timer));
 }
 
+// apra-fleet-9te.4.3: extracted, pure branch-selection decision for the
+// Ensure Sprint Branch phase (see the phase's own inline comments near
+// `phase('Ensure Sprint Branch')` below for the full auto-sprint-9 /
+// apra-fleet-9te.4.1 history) so this logic can be unit-tested directly
+// without spinning up a full mock sprint. Given the outcomes of the two
+// probes the phase already issues -- a `git fetch origin/<branch>` (soft-
+// failed) and, only when that fetch reports the ref is missing, a
+// `git rev-parse --verify --quiet refs/heads/<branch>` local-branch probe --
+// this decides what checkout command to run, or that the phase must abort
+// loudly instead of ever touching git. No I/O of its own; the caller still
+// owns issuing/awaiting the actual command() calls and logging.
+//
+// Returns one of:
+//   { action: 'abort', message } -- the branch fetch failed for a reason
+//     OTHER than "branch doesn't exist yet"; caller must throw and never
+//     attempt a checkout (a transient failure here must never be
+//     misdiagnosed as "new branch" and silently reset to base).
+//   { action: 'checkout', reused: true, command } -- reuse a pre-existing
+//     local-only branch as-is (plain `git checkout <branch>`, no reset),
+//     preserving any commits that only exist locally.
+//   { action: 'checkout', reused: false, command, startPoint } -- normal
+//     `git checkout -B <branch> <startPoint>`, where startPoint is
+//     `origin/<branch>` when the fetch succeeded (real pushed work exists)
+//     or `origin/<baseBranch>` when the branch is genuinely new.
+//
+// apra-fleet-co4: when the fetch of origin/<branch> SUCCEEDS and a local
+// branch of that name already exists, the two tips can still disagree --
+// the local branch may hold commits origin doesn't (a doer committed but
+// its own push failed, or a sprint was killed/restarted before the
+// orchestrator's own push bracket ran for that commit). The prior version
+// of this function treated a successful fetch as unconditionally
+// authoritative and always reset to origin/<branch>, silently discarding
+// those local-only commits with no stash, no warning -- a confirmed live
+// data-loss incident (commit a919b53a / apra-fleet-eft.68.1). The caller
+// now also passes `localTipStatus`, the result of comparing the two tips
+// via `git merge-base --is-ancestor` in both directions, whenever the
+// fetch succeeded and a local branch exists:
+//   'behind-or-equal' -- local has nothing origin doesn't; safe to reset.
+//   'ahead'            -- local has commits origin doesn't, and origin has
+//                          nothing local doesn't (a clean fast-forward);
+//                          reuse the local branch as-is, exactly like the
+//                          missing-remote-ref case, so those commits
+//                          survive.
+//   'diverged'          -- neither tip is an ancestor of the other; abort
+//                          loudly rather than ever attempt an automatic
+//                          merge/rebase -- a human must decide.
+export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, branchFetchError, localBranchExists, localTipStatus }) {
+    // A failed fetch is only safe to treat as "branch doesn't exist yet"
+    // when git says exactly that (`fatal: couldn't find remote ref
+    // <branch>`, exit 128) -- any other failure (network blip, auth token
+    // expiry, DNS hiccup) must NOT silently fall back to origin/<baseBranch>,
+    // or a transient error would trigger the exact destructive reset this
+    // fix exists to prevent, with nothing logged to explain why.
+    if (!branchFetchOk && !/couldn't find remote ref/i.test(branchFetchError || '')) {
+        return {
+            action: 'abort',
+            message:
+                `Ensure Sprint Branch: fetch of existing branch 'origin/${branch}' ` +
+                `failed for a reason other than "branch doesn't exist" (${branchFetchError || 'unknown error'}) -- ` +
+                `refusing to silently fall back to resetting to base, since the branch may actually exist with real ` +
+                `pushed work and this fetch failure could be transient. Investigate and retry.`,
+        };
+    }
+
+    // apra-fleet-co4: the fetch succeeded (origin/<branch> exists) AND a
+    // local branch exists AND its tip has diverged from origin's in a way
+    // that is not a clean fast-forward -- never attempt an automatic
+    // merge/rebase, abort loudly and let a human investigate.
+    if (branchFetchOk && localBranchExists && localTipStatus === 'diverged') {
+        return {
+            action: 'abort',
+            message:
+                `Ensure Sprint Branch: local branch '${branch}' has diverged from 'origin/${branch}' ` +
+                `(neither is an ancestor of the other) -- refusing to reset or auto-merge, since either direction ` +
+                `could silently discard real commits. A human needs to investigate and reconcile the two branches ` +
+                `manually before this sprint can safely proceed.`,
+        };
+    }
+
+    const startPoint = branchFetchOk ? `origin/${branch}` : `origin/${baseBranch}`;
+    // Reuse the local branch as-is (no reset) whenever:
+    //  - the remote ref is missing entirely (the pre-existing
+    //    apra-fleet-9te.4.1 case), or
+    //  - the fetch succeeded but the local branch is strictly ahead of
+    //    origin/<branch> (apra-fleet-co4) -- resetting would discard
+    //    committed-but-unpushed local work.
+    const reuseLocalBranch =
+        (!branchFetchOk && !!localBranchExists) ||
+        (branchFetchOk && !!localBranchExists && localTipStatus === 'ahead');
+
+    if (reuseLocalBranch) {
+        return {
+            action: 'checkout',
+            reused: true,
+            command: `git checkout ${branch}`,
+        };
+    }
+
+    return {
+        action: 'checkout',
+        reused: false,
+        command: `git checkout -B ${branch} ${startPoint}`,
+        startPoint,
+    };
+}
+
 // Mechanical migration to the WorkflowEngine's ES-module entry-point contract
 // (apra-fleet-unw.7): the engine now calls `main(context)` instead of
 // injecting bare globals into an AsyncFunction scope. This destructure is the
@@ -3845,7 +4546,53 @@ export function withDispatchWatchdog(dispatchPromise, opts = {}) {
 // same binding the old bare-global version referred to; no control-flow or
 // dispatch-order changes.
 async function runSprintCycle(context) {
-    const { agent: agentRaw, command, parallel, log, phase, group, endGroup, publishState, args, budget } = context;
+    const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget } = context;
+
+    // apra-fleet-eft.70.1: shared full-DB beads snapshot, plus the two choke
+    // points (`command` and `phase` themselves) that keep it correct. Wrapping
+    // both HERE -- before any other statement in this function uses either
+    // name -- means every direct `command(...)`/`phase(...)` call below, and
+    // every helper (doltPullBefore, persistNewTaskBestEffort, withGitSync,
+    // etc.) that receives `command` via an options object built from this same
+    // closure variable, transparently goes through the wrapped version; no
+    // other call site in this file needs to change.
+    //
+    // Problem this fixes (see fetchAllBeadsShared()'s own doc comment for the
+    // pre-existing concurrent-caller coalescing, which this extends): TWO
+    // adjacent-but-not-concurrent full fetches used to each pay for their own
+    // 'bd list --all --limit 0 --json' round trip, because the prior in-flight
+    // promise had already resolved and been cleared by the time the next
+    // caller started (e.g. updateDashboard()'s `bdListScoped('')` immediately
+    // followed by `bdListScoped('--ready --json')`, or the pre-sprint
+    // updateDashboard() -> initialBeads -> notDoneBeads sequence). Caching the
+    // last snapshot fixes that, but only if it is invalidated the instant the
+    // underlying data can have changed -- so invalidation fires on BOTH:
+    //   1. every `phase()` call (a new Plan/Develop/Review/Deploy/etc. step
+    //      must never inherit a stale view from the step before it), and
+    //   2. every bd command that is not a known read (list/show/ready/
+    //      config) -- update/create/close/note/dep/dolt pull are all treated
+    //      as mutations, conservatively: an unrecognized bd subcommand is
+    //      assumed to mutate rather than assumed safe, so a stray extra full
+    //      fetch is the failure mode, never silently stale data. Non-bd
+    //      commands (git, node probes) never touch beads state and are left
+    //      alone.
+    let allBeadsSnapshot = null; // { beads } -- cleared by invalidateAllBeadsCache()
+    function invalidateAllBeadsCache() { allBeadsSnapshot = null; }
+    const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
+    const command = async (cmdStr, opts) => {
+        const result = await rawCommand(cmdStr, opts);
+        if (typeof cmdStr === 'string') {
+            const trimmed = cmdStr.trim();
+            if (/^bd\b/i.test(trimmed) && !BD_READ_ONLY_RE.test(trimmed)) {
+                invalidateAllBeadsCache();
+            }
+        }
+        return result;
+    };
+    const phase = (title) => {
+        invalidateAllBeadsCache();
+        return rawPhase(title);
+    };
 
     // A stable per-sprint id for mutex fairness/introspection: the sprint branch
     // is unique per concurrent sprint on the shared remote.
@@ -3931,6 +4678,28 @@ async function runSprintCycle(context) {
         log,
     });
 
+    // apra-fleet-fmu: the git/dolt credential-auth self-heal callback every
+    // withGitSync bracket's syncMemberBefore/doltPullBefore (G-pull/D-pull)
+    // and syncMemberAfterOrdered (G-push/D-push) pass through as
+    // `onAuthFailure`. Same three-source precedence as memberSessionGuard
+    // immediately above:
+    //   1. `context.onAuthFailure` -- an explicitly-injected callback (tests
+    //      wire an in-process one here to prove the self-heal fires without a
+    //      live fleet server).
+    //   2. `args.callTool` -- the REAL end-to-end path: build the real
+    //      provision_vcs_auth self-heal via the ApraFleet client
+    //      (createVcsAuthSelfHealCallback, packages/apra-fleet-client).
+    //   3. neither -- undefined: every existing caller/test that does not
+    //      wire `callTool` (and does not explicitly inject `onAuthFailure`)
+    //      sees ZERO behavior change -- an 'auth'-classified git/dolt failure
+    //      falls straight through to today's exact existing
+    //      GitSyncError/DoltSyncError throw, exactly as before this bead.
+    const onAuthFailure = context.onAuthFailure ?? (
+        (args && typeof args.callTool === 'function')
+            ? createVcsAuthSelfHealCallback({ callTool: args.callTool, command, log })
+            : undefined
+    );
+
     // Validate BEFORE any agent()/command() dispatch (apra-fleet-unw.14,
     // A7 defense in depth): a rejected/malformed arg must result in zero
     // fleet dispatches.
@@ -3961,6 +4730,18 @@ async function runSprintCycle(context) {
 
     let cycle = 1;
     const MAX_CYCLES = validated.maxCycles;
+
+    // apra-fleet-eft.78.3: per-(role, cycle) session registry so a role's
+    // session is resumed across ROUNDS within one cycle (planner R1->R2->R3,
+    // reviewer R1->R2->R3) via an explicit session id, while NEVER resuming
+    // across cycles (fresh eyes) and falling back to a fresh session on a
+    // prior-round dispatch error/timeout or near the context ceiling. The
+    // session id comes from execute_prompt's structuredContent.sessionId
+    // (apra-fleet-eft.78.1), captured via agent()'s onSessionId callback; a
+    // provider that does not support resume returns none, so nothing is
+    // recorded and the next round is fresh (a capability signal, not a
+    // provider-name check). See createRoundSessionRegistry's doc comment.
+    const roundSessions = createRoundSessionRegistry({ log });
 
     const targetIssues = validated.targetIssues;
     const sprintFilter = targetIssues.length > 0 ? `--parent ${targetIssues.join(',')}` : '';
@@ -4054,7 +4835,7 @@ async function runSprintCycle(context) {
     // non-code-writing roles (pushCode:false short-circuits before the
     // conflict path is ever reached) and never fires for a plain, non-
     // conflict divergence.
-    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, skipPreDispatchSync = false, skipPreDispatchDoltPull = false } = {}) {
+    async function withGitSync(member, pushCode, dispatchFn, { pushBeads = false, skipPreDispatchSync = false, skipPreDispatchDoltPull = false, resumeOntoRemoteTip = false } = {}) {
         // apra-fleet-eft.54.1: on a retry that immediately follows a TERMINAL
         // no-mutation dispatch failure for this same member (the Planner retry
         // ladder's 2nd..Nth attempt after a dispatch_failed/auth abort), the
@@ -4071,10 +4852,22 @@ async function runSprintCycle(context) {
         // PLANNER_DISPATCH_RETRY_DELAYS_MS backoff. The first attempt (and
         // every non-retry / happy-path call) keeps the exact prior pre-dispatch
         // behaviour -- skipPreDispatchSync defaults false.
+        // apra-fleet-eft.87.1: skipPreDispatchSync (the eft.54.1 optimization)
+        // and resumeOntoRemoteTip are mutually exclusive retry modes and MUST
+        // stay that way. skipPreDispatchSync short-circuits the entire pre-
+        // dispatch sync on the STRICT assumption "the prior attempt published
+        // nothing" -- it is only ever passed for a genuine TERMINAL no-mutation
+        // dispatch failure (isNoMutationDispatchFailure). resumeOntoRemoteTip is
+        // the opposite case: a retry whose prior attempt was NOT provably a no-
+        // mutation failure (it may have committed and/or pushed), so it must
+        // FETCH + reset the local branch onto the remote tip BEFORE the doer can
+        // commit, resuming on published work instead of re-implementing it and
+        // diverging. It therefore runs the full pre-dispatch sync with
+        // syncMemberBefore's resetToRemoteTip mode rather than the skip path.
         if (skipPreDispatchSync) {
             log(`[Sync] Skipping pre-dispatch G-pull/D-pull for member '${member}' on a retry after a terminal no-mutation dispatch failure (prior attempt published nothing -- workspace unchanged since the last pull).`);
         } else {
-            await syncMemberBefore(member, { command, log, branch: validated.branch });
+            await syncMemberBefore(member, { command, log, branch: validated.branch, onAuthFailure, resetToRemoteTip: resumeOntoRemoteTip });
             // apra-fleet-eft.54.6: skipPreDispatchDoltPull skips ONLY the real
             // `bd dolt pull` SPAWN (the residual real-bd Dolt sync bracket the
             // terminal auth-abort path hung on) while STILL running
@@ -4089,17 +4882,28 @@ async function runSprintCycle(context) {
             // orchestrator's own pre-sprint-validation doltPullBefore
             // (eft.34/eft.58.1 call site) already freshened with nothing
             // mutated since. Defaults false, so every other dispatch pulls.
-            await doltPullBefore(member, { command, log, skipPull: skipPreDispatchDoltPull });
+            await doltPullBefore(member, { command, log, skipPull: skipPreDispatchDoltPull, onAuthFailure });
         }
         // apra-fleet-eft.54.1: track a terminal dispatch failure so the
-        // post-dispatch sync teardown can be skipped for it (see the finally).
+        // post-dispatch sync teardown can be skipped for it (see below).
+        //
+        // apra-fleet-6z8.3: the teardown is deliberately NOT a `finally` any
+        // more. A throw out of a `finally` replaces the (successful) dispatch
+        // result and is indistinguishable, to the caller's retry ladder, from
+        // "the dispatch itself failed" -- which is exactly how a pure D-push
+        // failure (e.g. missing VCS credentials) caused a brand-new Planner LLM
+        // turn to be redispatched over work that was already committed in the
+        // member's local beads clone. Splitting the two lets the sync step be
+        // retried ON ITS OWN and, if it still fails, surfaced as a typed
+        // PostDispatchSyncError that no retry caller may answer by redispatching.
         let dispatchThrew = null;
+        let dispatchResult;
         try {
-            return await dispatchFn();
+            dispatchResult = await dispatchFn();
         } catch (err) {
             dispatchThrew = err;
-            throw err;
-        } finally {
+        }
+        {
             // apra-fleet-eft.54.1: on a TERMINAL dispatch failure the agent
             // never delivered a usable result, so there is provably nothing
             // new to publish -- skip the real-bd G-push/D-push teardown
@@ -4124,12 +4928,49 @@ async function runSprintCycle(context) {
                 // rationale (unreachable-close prevention) and unit tests in
                 // mock-sprint-git-sync-brackets.test.mjs for the scripted-mock
                 // coverage of this ordering.
-                await syncMemberAfterOrdered(member, {
-                    command, pushCode, pushBeads, log, branch: validated.branch,
-                    mutex: doltPushMutex, sprintId: sprintMutexId, agent,
-                });
+                //
+                // apra-fleet-6z8.3: when the dispatch COMPLETED, the sync step
+                // is retried on its own -- a push failure is frequently
+                // transient (a racing writer, a momentarily unreachable remote,
+                // a credential refresh in flight) and re-running the sync costs
+                // nothing, whereas re-running the LLM turn costs a full dispatch
+                // AND risks duplicate beads/commit mutations. When the dispatch
+                // already threw, the teardown keeps its single-attempt shape:
+                // the dispatch error is what surfaces either way.
+                const syncAttemptDelaysMs = dispatchThrew ? [0] : POST_DISPATCH_SYNC_RETRY_DELAYS_MS;
+                let syncErr = null;
+                for (let attempt = 0; attempt < syncAttemptDelaysMs.length; attempt++) {
+                    if (syncAttemptDelaysMs[attempt] > 0) {
+                        log(`[Sync] Post-dispatch sync for member '${member}' failed; retrying ONLY the sync step in ${syncAttemptDelaysMs[attempt] / 1000}s (attempt ${attempt + 1}/${syncAttemptDelaysMs.length}) -- the dispatch already completed and must NOT be re-run.`);
+                        if (!mockInstantRetryBackoff()) {
+                            await new Promise((resolve) => setTimeout(resolve, syncAttemptDelaysMs[attempt]));
+                        }
+                    }
+                    try {
+                        await syncMemberAfterOrdered(member, {
+                            command, pushCode, pushBeads, log, branch: validated.branch,
+                            mutex: doltPushMutex, sprintId: sprintMutexId, agent, onAuthFailure,
+                        });
+                        syncErr = null;
+                        break;
+                    } catch (err) {
+                        syncErr = err;
+                    }
+                }
+                if (syncErr) {
+                    // A dispatch error always wins: it is the more fundamental
+                    // failure, and the pre-6z8.3 code's `finally` masking it
+                    // with the teardown error was never intentional.
+                    if (dispatchThrew) throw dispatchThrew;
+                    throw new PostDispatchSyncError(
+                        `Post-dispatch sync (G-push/D-push) failed for member '${member}' AFTER the dispatch completed successfully: ${syncErr.message}. The dispatch's work is already committed locally -- it must NOT be re-dispatched; fix the sync (credentials/remote) and re-run.`,
+                        { member, dispatchResult, syncAttempts: syncAttemptDelaysMs.length, cause: syncErr },
+                    );
+                }
             }
         }
+        if (dispatchThrew) throw dispatchThrew;
+        return dispatchResult;
     }
 
     // apra-fleet-xbu.C1: `bd list --parent` accepts exactly one id per
@@ -4171,12 +5012,27 @@ async function runSprintCycle(context) {
     // as replay's queue order. Coalescing means only one command is ever
     // actually issued for a given overlapping window, so there is nothing
     // for the replay queue to misorder.
+    //
+    // apra-fleet-eft.70.1: ALSO check `allBeadsSnapshot` (declared at the top
+    // of this function, alongside the `command`/`phase` wrappers that keep it
+    // fresh) before issuing a new request at all. That snapshot survives
+    // ACROSS separate (non-overlapping) calls too -- not just the in-flight
+    // window below -- so a caller that starts after a previous fetch has
+    // already resolved still gets the cached result instead of paying for
+    // its own full round trip, as long as nothing has mutated beads or
+    // started a new phase step since. See the `command`/`phase` wrapper doc
+    // comment above for exactly what invalidates it.
     let allBeadsInFlight = null;
     async function fetchAllBeadsShared() {
+        if (allBeadsSnapshot) return allBeadsSnapshot.beads;
         if (!allBeadsInFlight) {
             const allLabel = 'bd list --all --limit 0 --json';
             allBeadsInFlight = command(allLabel, { member_name: orchestratorMember, silent: true })
                 .then((raw) => parseBdJson(raw, allLabel))
+                .then((beads) => {
+                    allBeadsSnapshot = { beads };
+                    return beads;
+                })
                 .finally(() => { allBeadsInFlight = null; });
         }
         return allBeadsInFlight;
@@ -4330,6 +5186,17 @@ async function runSprintCycle(context) {
             timeout_s: DISPATCH_TIMEOUT_S,
             max_total_s: DISPATCH_TIMEOUT_S,
             max_turns: BASE_REVIEWER_MAX_TURNS,
+            // apra-fleet-eft.78.3: within THIS cycle's develop-review loop,
+            // resume the reviewer's OWN prior-round session (R1->R2->R3) via its
+            // explicit session id so a re-review of the next round's fixes keeps
+            // the diff/context it already built. `false` on R1 and on the first
+            // review of any later cycle (roundSessions never resumes across
+            // cycles); cleared on a failed round below so the next round is
+            // fresh. onSessionId captures this round's id for the next round.
+            // The max_turns-exhaustion resume (dispatchReviewerResume) still
+            // overrides this to `resume: true` (in-dispatch continuation).
+            resume: roundSessions.resumeArgFor('reviewer', cycle),
+            onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
         };
         const dispatchReviewerOnce = () => withGitSync(reviewerPool[0], false, () => agent(
             buildReviewerPrompt({
@@ -4384,6 +5251,10 @@ async function runSprintCycle(context) {
                 // contract violations and threw ReviewerContractViolationError).
                 if (err instanceof AgentOutputError) {
                     log(`Reviewer: schema-repair exhausted, treating round as CHANGES_NEEDED: ${err.message}`);
+                    // apra-fleet-eft.78.3: a failed round's session must not be
+                    // resumed by the next round -- drop it so the next review is
+                    // a fresh session (prior-round error/timeout guard).
+                    roundSessions.clear('reviewer');
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
                         notes: `Reviewer failed to return a schema-valid verdict after repair attempts: ${err.message}`,
@@ -4410,6 +5281,9 @@ async function runSprintCycle(context) {
                     // is exactly as transient/non-schema as an AgentDispatchError -- must
                     // not be allowed to propagate and abort the whole sprint (apra-fleet-eft).
                     log(`Reviewer: agent dispatch failed, treating round as CHANGES_NEEDED: ${err.message}`);
+                    // apra-fleet-eft.78.3: prior-round dispatch/transport failure
+                    // -> the next review round starts a FRESH session.
+                    roundSessions.clear('reviewer');
                     verdict = {
                         verdict: 'CHANGES_NEEDED',
                         notes: `Reviewer dispatch failed: ${err.message}`,
@@ -4421,7 +5295,23 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            log(`Reviewer: ${JSON.stringify(verdict)}`);
+            // apra-fleet-eft.69.1: deliberately NO separate log() dump of
+            // `verdict` here. Every path above that reaches this line
+            // already produced an activity row that shows the identical
+            // content: the schema-validated success path emits it verbatim
+            // as agent()'s own `output` (JSON.stringify'd) on the standard
+            // AGENT row (the same generic row every other dispatch renders
+            // through -- see src/viewer/index.mjs), and the dispatch-failure
+            // fallback above is likewise already visible on that same
+            // dispatch's (failed) activity row plus the `log()` call right
+            // next to where `verdict` was constructed. A second log() line
+            // re-printing the exact same JSON produced a duplicate row with
+            // no distinct purpose (apra-fleet-eft.69 bug item 1) -- removed
+            // here and at every other post-dispatch site in this file
+            // (Plan Reviewer, Streak Assignment, Doer, Deployer, Integ Test
+            // Runner, Final Verdict, Harvester) for the identical reason,
+            // so every agent dispatch renders uniformly through its one
+            // AGENT row (bug item 2).
 
             if (verdict.dispatchFailed) {
                 if (reviewAttempt < 2) {
@@ -4563,41 +5453,121 @@ async function runSprintCycle(context) {
                 label: `Fetch existing '${validated.branch}' (if any) on member '${member}'`,
             }
         );
-        // A failed fetch is only safe to treat as "branch doesn't exist yet"
-        // when git says exactly that (`fatal: couldn't find remote ref
-        // <branch>`, exit 128) -- any other failure (network blip, auth
-        // token expiry, DNS hiccup) must NOT silently fall back to
-        // origin/<baseBranch>, or a transient error would trigger the exact
-        // destructive reset this fix exists to prevent, with nothing logged
-        // to explain why. Abort loudly instead so the operator can retry.
-        if (!branchFetch.ok && !/couldn't find remote ref/i.test(branchFetch.error || '')) {
-            throw new Error(
-                `Ensure Sprint Branch: fetch of existing branch 'origin/${validated.branch}' on member '${member}' ` +
-                `failed for a reason other than "branch doesn't exist" (${branchFetch.error || 'unknown error'}) -- ` +
-                `refusing to silently fall back to resetting to base, since the branch may actually exist with real ` +
-                `pushed work and this fetch failure could be transient. Investigate and retry.`
-            );
-        }
-        const startPoint = branchFetch.ok
-            ? `origin/${validated.branch}`
-            : `origin/${validated.baseBranch}`;
-
-        // Stabilization log Issue 11: any infrastructure-killed dispatch
-        // (transport drop, timeout, stop_prompt) predictably leaves the
-        // member's working tree DIRTY with whatever the agent had in flight,
-        // and `checkout -B` then fails with "Your local changes ... would be
-        // overwritten" -- observed live killing run 7 at Setup. That orphaned
-        // WIP belongs to a bead that is still open (a future streak redoes it
-        // properly), so the right move is to PRESERVE it in a named stash and
-        // proceed -- not to abort the sprint, and never to discard it. The
-        // happy path (clean tree) is unchanged: no extra commands issued.
-        const checkoutResult = await command(
-            `git checkout -B ${validated.branch} ${startPoint}`,
+        // apra-fleet-9te.4.1: when the remote ref for <branch> is missing,
+        // the naive fallback (`checkout -B <branch> origin/<baseBranch>`)
+        // silently force-resets ANY pre-existing local <branch> to base's
+        // tip -- discarding commits from a prior --max-cycles-limited cycle
+        // that closed beads but never got pushed, leaving beads and the git
+        // tree disagreeing. Probe for a pre-existing local branch, both when
+        // the remote ref is missing (needed to decide whether to reuse it as
+        // the missing-remote-ref case) and, since apra-fleet-co4, also when
+        // the fetch succeeded -- a successful fetch alone does NOT make
+        // origin/<branch> authoritative if the local branch has committed
+        // work origin does not (see the tip-comparison probe just below).
+        const localProbe = await command(
+            `git rev-parse --verify --quiet refs/heads/${validated.branch}`,
             {
                 member_name: member,
                 silent: true,
                 failSoft: true,
-                label: `Ensure sprint branch '${validated.branch}' from '${startPoint}' on member '${member}'`,
+                label: `Probe for pre-existing local branch '${validated.branch}' on member '${member}'`,
+            }
+        );
+        const localBranchExists = localProbe.ok;
+
+        // apra-fleet-co4: when both origin/<branch> and a local <branch>
+        // exist, compare their tips via two `git merge-base --is-ancestor`
+        // checks (one each direction) so decideEnsureBranchAction() never
+        // has to blindly trust that a successful fetch means "safe to
+        // reset" -- see that function's own doc comment for the full
+        // ahead/behind/diverged case breakdown this feeds.
+        let localTipStatus;
+        if (branchFetch.ok && localBranchExists) {
+            const localIsAncestorOfRemote = await command(
+                `git merge-base --is-ancestor ${validated.branch} origin/${validated.branch}`,
+                {
+                    member_name: member,
+                    silent: true,
+                    failSoft: true,
+                    label: `Check whether local '${validated.branch}' is an ancestor of 'origin/${validated.branch}' on member '${member}'`,
+                }
+            );
+            const remoteIsAncestorOfLocal = await command(
+                `git merge-base --is-ancestor origin/${validated.branch} ${validated.branch}`,
+                {
+                    member_name: member,
+                    silent: true,
+                    failSoft: true,
+                    label: `Check whether 'origin/${validated.branch}' is an ancestor of local '${validated.branch}' on member '${member}'`,
+                }
+            );
+            if (localIsAncestorOfRemote.ok && remoteIsAncestorOfLocal.ok) {
+                localTipStatus = 'behind-or-equal'; // tips are equal
+            } else if (localIsAncestorOfRemote.ok) {
+                localTipStatus = 'behind-or-equal'; // local is a strict ancestor of origin
+            } else if (remoteIsAncestorOfLocal.ok) {
+                localTipStatus = 'ahead';
+            } else {
+                localTipStatus = 'diverged';
+            }
+        }
+
+        // apra-fleet-9te.4.3 / apra-fleet-co4: the fetch-outcome/local-probe-
+        // outcome/tip-comparison -> checkout-command decision itself is now
+        // the pure, independently unit-tested decideEnsureBranchAction()
+        // helper defined above (see its own doc comment for the full case
+        // breakdown) -- this call site's only remaining job is turning that
+        // decision into the actual command()/log() dispatch.
+        const decision = decideEnsureBranchAction({
+            branch: validated.branch,
+            baseBranch: validated.baseBranch,
+            branchFetchOk: branchFetch.ok,
+            branchFetchError: branchFetch.error,
+            localBranchExists,
+            localTipStatus,
+        });
+        if (decision.action === 'abort') {
+            throw new Error(`${decision.message} (member '${member}')`);
+        }
+        if (decision.reused) {
+            if (branchFetch.ok) {
+                log(
+                    `Ensure Sprint Branch: local branch '${validated.branch}' on member '${member}' is AHEAD of ` +
+                    `'origin/${validated.branch}' (has committed, unpushed work) -- reusing it as-is instead of ` +
+                    `resetting to origin, to avoid discarding local-only commits.`
+                );
+            } else {
+                log(
+                    `Ensure Sprint Branch: remote ref for '${validated.branch}' is missing on member '${member}' ` +
+                    `but a local branch of that name already exists -- reusing it as-is instead of resetting to base, ` +
+                    `to avoid discarding local-only commits.`
+                );
+            }
+        }
+        const checkoutCommand = decision.command;
+        const checkoutLabel = decision.reused
+            ? (branchFetch.ok
+                ? `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (local ahead of origin)`
+                : `Reuse existing local sprint branch '${validated.branch}' on member '${member}' (remote ref missing)`)
+            : `Ensure sprint branch '${validated.branch}' from '${decision.startPoint}' on member '${member}'`;
+
+        // Stabilization log Issue 11: any infrastructure-killed dispatch
+        // (transport drop, timeout, stop_prompt) predictably leaves the
+        // member's working tree DIRTY with whatever the agent had in flight,
+        // and the checkout above then fails with "Your local changes ...
+        // would be overwritten" -- observed live killing run 7 at Setup. That
+        // orphaned WIP belongs to a bead that is still open (a future streak
+        // redoes it properly), so the right move is to PRESERVE it in a
+        // named stash and proceed -- not to abort the sprint, and never to
+        // discard it. The happy path (clean tree) is unchanged: no extra
+        // commands issued.
+        const checkoutResult = await command(
+            checkoutCommand,
+            {
+                member_name: member,
+                silent: true,
+                failSoft: true,
+                label: checkoutLabel,
             }
         );
         if (!checkoutResult.ok) {
@@ -4620,11 +5590,11 @@ async function runSprintCycle(context) {
                 }
             );
             await command(
-                `git checkout -B ${validated.branch} ${startPoint}`,
+                checkoutCommand,
                 {
                     member_name: member,
                     silent: true,
-                    label: `Ensure sprint branch '${validated.branch}' from '${startPoint}' on member '${member}' (post-stash retry)`,
+                    label: `${checkoutLabel} (post-stash retry)`,
                 }
             );
         }
@@ -5098,6 +6068,18 @@ async function runSprintCycle(context) {
                 timeout_s: DISPATCH_TIMEOUT_S,
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: PLANNER_MAX_TURNS,
+                // apra-fleet-eft.78.3: within THIS cycle's plan-review loop,
+                // resume the planner's OWN prior-round session (R1->R2->R3) via
+                // its explicit session id so a re-plan keeps warm context. This
+                // is `false` on R1 and on the first round of any LATER cycle
+                // (roundSessions never resumes across cycles). onSessionId
+                // captures the id this round returns for the next round to
+                // resume. Note: the max_turns-exhaustion resume path
+                // (dispatchPlannerResume) still overrides this to `resume: true`
+                // via spread order -- that is an in-dispatch continuation of the
+                // session just run, orthogonal to cross-round resume.
+                resume: roundSessions.resumeArgFor('planner', cycle),
+                onSessionId: (id, meta) => roundSessions.record('planner', cycle, id, meta),
             };
             // apra-fleet-eft.28.3: every interactive Planner dispatch attempt
             // (the FIRST/pre-plan one included -- withDispatchWatchdog wraps
@@ -5233,6 +6215,18 @@ async function runSprintCycle(context) {
                     break;
                 } catch (err) {
                     plannerErr = err;
+                    // apra-fleet-6z8.3: the Planner LLM turn ALREADY RAN and
+                    // its output is already committed in the member's local
+                    // beads clone -- only the post-dispatch git/dolt sync
+                    // failed, and withGitSync has already retried that step on
+                    // its own. Redispatching here would spawn a second Planner
+                    // session for the same phase on top of completed work (the
+                    // duplicate-dispatch class this whole bug is about), so
+                    // abort the ladder immediately and surface the sync failure.
+                    if (isPostDispatchSyncFailure(err)) {
+                        log(`Planner dispatch COMPLETED but its post-dispatch sync failed: ${err.message} Aborting retries WITHOUT re-dispatching -- the planning turn already ran and its beads writes are local; fix the sync and re-run.`);
+                        break;
+                    }
                     // apra-fleet-eft.54.1: only a no-mutation dispatch failure
                     // leaves the workspace provably unchanged, so only then may
                     // the next attempt skip its pre-dispatch sync. Any other
@@ -5253,7 +6247,17 @@ async function runSprintCycle(context) {
             if (plannerErr) {
                 throw plannerErr;
             }
-            log(`Planner: ${plannerRes}`);
+            // apra-fleet-eft.69.1: deliberately NO separate log() dump of
+            // `plannerRes` here -- this is the exact duplicate-row bug the
+            // user reported (apra-fleet-eft.69 bug item 1, "a second row
+            // like 'Planner: response from ...' which is basically a repeat
+            // print of the AGENT row's content"). dispatchPlanner()'s own
+            // agent() call already emits this same text as that dispatch's
+            // `output`, rendered via the standard AGENT activity row (with
+            // its own collapsible body / 'more...' control) -- see
+            // src/viewer/index.mjs. See the Reviewer dispatch site's
+            // comment (~line 4523) for the same reasoning applied uniformly
+            // across every other role's dispatch in this file.
 
             let verdict;
             // Stabilization log Issue 25: same-session turn-exhaustion resume
@@ -5323,7 +6327,8 @@ async function runSprintCycle(context) {
                 }
             }
             lastVerdict = verdict;
-            log(`Plan Reviewer: ${JSON.stringify(verdict)}`);
+            // apra-fleet-eft.69.1: no duplicate log() dump -- see the
+            // Reviewer dispatch site above for why.
             // apra-fleet-eft.71.2: record this round's verdict for THIS cycle
             // AFTER using (not before) the accumulated prior rounds above, so
             // round N's dispatch never sees its own not-yet-returned verdict.
@@ -5509,6 +6514,16 @@ async function runSprintCycle(context) {
         // at the top of the next iteration's currentReady computation.
         const replanIds = new Set();
 
+        // apra-fleet-eft.68.1: loop guard for the in-cycle scoped replan --
+        // the set of bead ids that have ALREADY been through one scoped
+        // planner+plan-review pass THIS cycle. Enforces "max one scoped replan
+        // per bead per cycle": a bead flagged for replan a SECOND time in the
+        // same cycle is refused at the reviewer fold-in below (logged guard
+        // line) rather than re-planned again, so a defective bead can never
+        // ping-pong replan<->develop endlessly within a single cycle. Reset per
+        // cycle (same rationale as replanIds above).
+        const replannedThisCycle = new Set();
+
         const doerPool = getMembersForRole(ROLE_DOER);
 
         while (devRounds < 3) {
@@ -5530,6 +6545,122 @@ async function runSprintCycle(context) {
                 .slice().sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
             if (currentReadyAll.length === 0) break;
+
+            // apra-fleet-eft.68.1: in-cycle SCOPED replan. Supersedes the old
+            // eft.67.2 "defer to the next cycle" short-circuit for the FIRST
+            // replan of a bead: when a reviewer flagged a still-ready bead via
+            // `replanIds` (its acceptance criteria are themselves defective and
+            // cannot be satisfied by re-development), dispatch a SCOPED planner
+            // pass for exactly those beads' subtree PLUS a scoped plan-review of
+            // the result WITHIN this same cycle, then resume develop rounds so
+            // the amended bead is re-dispatched to a doer this cycle -- rather
+            // than burning the rest of the cycle and waiting on the next cycle's
+            // full planner. `replannedThisCycle` (the loop guard) makes this fire
+            // at most ONCE per bead per cycle: a bead flagged for replan a second
+            // time is refused at the reviewer fold-in below and falls through to
+            // the eft.67.2 exclude/break short-circuit (deferred to the next
+            // cycle) instead of re-planning again. Round accounting: a scoped
+            // replan pass consumes one develop round (same 3-round budget), so a
+            // replan<->develop ping-pong can never outrun the cap.
+            const eligibleReplan = currentReadyAll.filter((b) => replanIds.has(b.id) && !replannedThisCycle.has(b.id));
+            if (eligibleReplan.length > 0) {
+                const replanScopeIds = eligibleReplan.map((b) => b.id);
+                devRounds++;
+                phase(`Replan C${cycle} R${devRounds}`);
+                log(
+                    `[fleet-sprint] in-cycle scoped replan: reviewer flagged bead(s) ${replanScopeIds.join(', ')} as ` +
+                    `having defective acceptance criteria -- dispatching a SCOPED planner + plan-review pass for their ` +
+                    `subtree THIS cycle (replan round R${devRounds}) instead of deferring to the next cycle, then ` +
+                    `resuming develop rounds.`
+                );
+                // Guard: mark up front so a SECOND replan flag for the same bead
+                // this cycle is refused (see the reviewer fold-in below), whatever
+                // the outcome of this pass.
+                for (const id of replanScopeIds) replannedThisCycle.add(id);
+
+                // --- Scoped planner pass ---
+                const SCOPED_REPLAN_PLANNER_MAX_TURNS = 100;
+                let scopedPlannerOk = true;
+                try {
+                    const scopedPlannerRes = await withGitSync(getMemberForRole('planner'), false, () => withDispatchWatchdog(
+                        agent(
+                            buildPlannerPrompt({
+                                isDeltaCycle: true,
+                                targetIssues,
+                                goal: validated.goal,
+                                requirementsFile: validated.requirementsFile,
+                                requirementsContent,
+                                feedback: null,
+                                replanScope: replanScopeIds,
+                            }),
+                            {
+                                member_name: getMemberForRole('planner'),
+                                agentType: 'planner',
+                                model: FIXED_ROLE_TIER.planner,
+                                timeout_s: DISPATCH_TIMEOUT_S,
+                                max_total_s: DISPATCH_TIMEOUT_S,
+                                max_turns: SCOPED_REPLAN_PLANNER_MAX_TURNS,
+                                label: 'Scoped Replan Plan (interactive)',
+                            }
+                        ),
+                        { timeoutS: DISPATCH_TIMEOUT_S, member: getMemberForRole('planner'), label: 'Scoped Replan Plan (interactive)', log }
+                    ), { pushBeads: true });
+                    log(`Scoped Replan Planner: ${scopedPlannerRes}`);
+                } catch (err) {
+                    scopedPlannerOk = false;
+                    log(`[fleet-sprint] in-cycle scoped replan: planner dispatch failed (${err.message}) -- leaving bead(s) ${replanScopeIds.join(', ')} flagged for the next cycle's planner.`);
+                }
+
+                // --- Scoped plan-review pass ---
+                let scopedReplanApproved = false;
+                if (scopedPlannerOk) {
+                    const SCOPED_REPLAN_REVIEWER_MAX_TURNS = 60;
+                    try {
+                        const scopedVerdict = await withGitSync(getMemberForRole('plan-reviewer'), false, () => agent(
+                            buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds }),
+                            {
+                                member_name: getMemberForRole('plan-reviewer'),
+                                agentType: 'plan-reviewer',
+                                schema: planReviewerVerdict,
+                                model: FIXED_ROLE_TIER['plan-reviewer'],
+                                timeout_s: DISPATCH_TIMEOUT_S,
+                                max_total_s: DISPATCH_TIMEOUT_S,
+                                max_turns: SCOPED_REPLAN_REVIEWER_MAX_TURNS,
+                                label: 'Scoped Replan Review',
+                            }
+                        ));
+                        log(`Scoped Replan Reviewer: ${JSON.stringify(scopedVerdict)}`);
+                        scopedReplanApproved = scopedVerdict.verdict === 'APPROVED';
+                    } catch (err) {
+                        // A schema-repair-exhausted or dispatch failure is a
+                        // FAILED scoped review (never an approval), same
+                        // discipline as the main plan loop above.
+                        log(`[fleet-sprint] in-cycle scoped replan: plan-review dispatch failed (${err.message}) -- treating the scoped replan as NOT approved; bead(s) ${replanScopeIds.join(', ')} handed to the next cycle's planner.`);
+                    }
+                }
+
+                if (scopedReplanApproved) {
+                    // The planner re-scoped the flagged bead(s) and the
+                    // plan-reviewer approved the amendment -- clear them from
+                    // replanIds so the NEXT loop iteration re-dispatches them to a
+                    // doer IN THIS SAME cycle.
+                    for (const id of replanScopeIds) replanIds.delete(id);
+                    log(`[fleet-sprint] in-cycle scoped replan: plan-review APPROVED the amendment for ${replanScopeIds.join(', ')} -- resuming develop rounds; the re-scoped bead(s) are re-dispatchable to a doer this cycle.`);
+                } else {
+                    // Not approved (or the planner/reviewer dispatch failed): the
+                    // bead(s) stay in replanIds AND are now marked
+                    // replannedThisCycle, so the next iteration's exclude/break
+                    // short-circuit defers them to the next cycle's planner.
+                    log(`[fleet-sprint] in-cycle scoped replan: the scoped replan of ${replanScopeIds.join(', ')} was not approved -- they stay excluded from this cycle's develop rounds (deferred to the next cycle's planner).`);
+                }
+
+                // The scoped planner just MUTATED beads in this clone -- D-push +
+                // refresh the dashboard, exactly like the develop-review reopen/
+                // newTask site below, then re-evaluate the loop top.
+                await doltPushAfter(orchestratorMember, { command, pushBeads: true, log, mutex: doltPushMutex, sprintId: sprintMutexId });
+                await updateDashboard();
+                continue;
+            }
 
             // apra-fleet-eft.67.2: replan short-circuit. `replanIds` is the
             // union of every bead id flagged by a reviewer's optional
@@ -5624,7 +6755,14 @@ async function runSprintCycle(context) {
                         model: FIXED_ROLE_TIER.streakAssignment,
                     }
                 );
-                log(`Streak Assignment: ${JSON.stringify(streakCandidate)}`);
+                // apra-fleet-eft.69.1: no duplicate log() dump -- see the
+                // Reviewer dispatch site's comment (~line 4523) for why.
+                // This is also what previously made Streak Assignment LOOK
+                // like it rendered differently from every other agent
+                // dispatch (bug item 2): the standard AGENT row (label
+                // 'Streak Assignment', above) already renders through the
+                // exact same generic path as Planner/Reviewer/Doer/etc; the
+                // extra raw-JSON log() line just made it visually noisier.
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Streak Assignment: schema-repair exhausted, falling back to one-bead-per-streak: ${err.message}`);
@@ -5657,7 +6795,8 @@ async function runSprintCycle(context) {
                             model: FIXED_ROLE_TIER.streakAssignment,
                         }
                     );
-                    log(`Streak Assignment (semantic repair): ${JSON.stringify(streakCandidate)}`);
+                    // apra-fleet-eft.69.1: no duplicate log() dump -- see
+                    // the Reviewer dispatch site's comment (~line 4523).
                     ({ streaks, usedFallback, reason } = selectStreaks(streakCandidate, currentReady));
                 } catch (repairErr) {
                     if (repairErr instanceof AgentOutputError || repairErr instanceof AgentDispatchError || repairErr instanceof FleetTransportError) {
@@ -5788,7 +6927,13 @@ async function runSprintCycle(context) {
                 // by other sprints. This is the prevention layer that reduces
                 // row-level conflicts (C.2) by claiming beads based on the
                 // current remote state.
-                const dispatchDoer = () => withGitSync(doerMember, true, async () => {
+                // apra-fleet-eft.87.1: `syncOpts` lets a RETRY re-dispatch ask
+                // for resumeOntoRemoteTip so the pre-dispatch sync resets the
+                // local branch onto the streak branch's remote tip before the
+                // doer commits again -- see the retry call below. The FIRST
+                // attempt passes nothing, so its pre-dispatch sync keeps the
+                // exact prior ff-only behaviour (no reset on the happy path).
+                const dispatchDoer = (syncOpts = {}) => withGitSync(doerMember, true, async () => {
                     // apra-fleet-eft.9.7: per-bead work-claiming inside the brackets,
                     // after D-pull brings in the latest claim state. Only claim once.
                     if (!hasClaimedBeads) {
@@ -5874,7 +7019,7 @@ async function runSprintCycle(context) {
                             max_turns: BASE_DOER_MAX_TURNS,
                         }
                     );
-                }, { pushBeads: true });
+                }, { pushBeads: true, ...syncOpts });
 
                 // The resume-and-continue retry is the SAME logical doer
                 // streak continuing (same session, same code/bead-writing
@@ -5935,6 +7080,16 @@ async function runSprintCycle(context) {
                         if (dispatchError) {
                             log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' still failing after ${resumeAttempt} resume attempt(s) (last: ${dispatchError.message}) -- flagging as too-complex-for-one-streak.`);
                         }
+                    } else if (isPostDispatchSyncFailure(err)) {
+                        // apra-fleet-6z8.3: the doer turn itself COMPLETED --
+                        // only its post-dispatch G-push/D-push failed, and
+                        // withGitSync already retried that step on its own.
+                        // Re-running the streak would redo an LLM turn whose
+                        // commits/bead closes already exist locally. The
+                        // per-bead attribution pass below still runs, so any
+                        // bead this streak really did close is credited.
+                        log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' COMPLETED but its post-dispatch sync failed: ${err.message} Not re-dispatching -- the work is already committed locally.`);
+                        dispatchError = err;
                     } else if (isNonRetryableDispatchError(err)) {
                         // Stabilization Issue 43: auth/trust failures cannot be
                         // fixed by retrying the identical dispatch.
@@ -5944,7 +7099,16 @@ async function runSprintCycle(context) {
                         log(`Doer streak [${actualBeadIds.join(', ')}] on member '${doerMember}' threw: ${err.message}. Retrying once.`);
                         wasRetried = true;
                         try {
-                            report = await dispatchDoer();
+                            // apra-fleet-eft.87.1: this is a RETRIED doer
+                            // dispatch whose prior attempt was NOT a provable
+                            // no-mutation failure (a generic throw -- it may have
+                            // committed and/or pushed its single-task streak
+                            // before failing). Resume onto the streak branch's
+                            // remote tip so the retry builds on any already-
+                            // published work instead of re-implementing the task
+                            // as a divergent, content-identical duplicate commit
+                            // (the eft.87 non-fast-forward-forever symptom).
+                            report = await dispatchDoer({ resumeOntoRemoteTip: true });
                         } catch (err2) {
                             dispatchError = err2;
                         }
@@ -5977,7 +7141,11 @@ async function runSprintCycle(context) {
                     throw dispatchError;
                 }
 
-                log(`Doer [${actualBeadIds.join(', ')}] on [${doerMember}]: ${JSON.stringify(report)}`);
+                // apra-fleet-eft.69.1: no duplicate log() dump of `report`
+                // here -- see the Reviewer dispatch site's comment
+                // (~line 4523). The doer streak's own AGENT row already
+                // carries this verbatim as its `output` (its title already
+                // includes the bead ids: label `Streak [${actualBeadIds}]`).
 
                 // CRITICAL (Work item 3): never trust the doer's own
                 // success claim -- verify via `bd show` that the assigned
@@ -6117,10 +7285,26 @@ async function runSprintCycle(context) {
             // running union, consulted at the top of the next iteration's
             // currentReady computation above. Only ids that were ACTUALLY
             // reopened this round are tracked.
+            // apra-fleet-eft.68.1: the loop guard's single enforcement point.
+            // A bead that has ALREADY been through one in-cycle scoped replan
+            // this cycle (replannedThisCycle) is refused a SECOND scoped replan:
+            // it stays reopened (real dev feedback still applies) but is NOT
+            // re-added to replanIds, so the develop loop above never dispatches
+            // a second scoped planner pass for it -- it is handed to the next
+            // cycle's planner instead. This is what makes "max one scoped replan
+            // per bead per cycle" hold regardless of the round budget.
             for (const id of (verdict.replanIds || [])) {
-                if (reopenedIds.has(id)) {
-                    replanIds.add(id);
+                if (!reopenedIds.has(id)) continue;
+                if (replannedThisCycle.has(id)) {
+                    log(
+                        `[fleet-sprint] replan loop guard: bead ${id} was already scoped-replanned once this cycle ` +
+                        `(C${cycle}) and a reviewer has flagged it for replan AGAIN -- refusing a second in-cycle scoped ` +
+                        `replan (max one per bead per cycle). It stays reopened and is handed off to the next cycle's ` +
+                        `planner rather than re-planned again now.`
+                    );
+                    continue;
                 }
+                replanIds.add(id);
             }
             for (const newTask of verdict.newTasks) {
                 // N3: validate BEFORE interpolation -- see validateNewTask()
@@ -6267,7 +7451,8 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            log(`Deployer: ${JSON.stringify(deployResult)}`);
+            // apra-fleet-eft.69.1: no duplicate log() dump -- see the
+            // Reviewer dispatch site's comment (~line 4523).
             deployedThisCycle = deployResult.deployed === true;
             if (!deployedThisCycle) {
                 deployFailures.push({ cycle, notes: deployResult.notes });
@@ -6453,7 +7638,8 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
-            log(`Integ Test Runner: ${JSON.stringify(integResult)}`);
+            // apra-fleet-eft.69.1: no duplicate log() dump -- see the
+            // Reviewer dispatch site's comment (~line 4523).
             // apra-fleet-eft.55.2: before trusting `passed` at all, verify
             // part-2 (smoke test) evidence actually came from THIS cycle's
             // deploy-verified SHA -- see validatePart2Evidence's doc
@@ -6766,7 +7952,11 @@ async function runSprintCycle(context) {
             }
         }
     }
-    log(`Final Verdict: ${JSON.stringify(finalVerdictResult)}`);
+    // apra-fleet-eft.69.1: no duplicate log() dump -- see the Reviewer
+    // dispatch site's comment (~line 4523). `finalVerdictResult.verdict`
+    // also surfaces via the generic, workflow-agnostic Result strip in the
+    // dashboard header (state.result -- see src/viewer/index.mjs), a second
+    // independent reason a raw JSON re-print here would be redundant.
 
     // Stabilization log iteration 5: persist a FAIL's actionable findings
     // to BEADS -- the only artifact the next sprint's planner reads (notes
@@ -6901,7 +8091,8 @@ async function runSprintCycle(context) {
                 throw err;
             }
         }
-        log(`Harvester: ${JSON.stringify(harvesterResult)}`);
+        // apra-fleet-eft.69.1: no duplicate log() dump -- see the Reviewer
+        // dispatch site's comment (~line 4523).
         if (harvesterResult.status !== 'OK') {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
         }

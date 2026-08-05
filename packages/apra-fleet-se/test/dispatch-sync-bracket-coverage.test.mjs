@@ -69,8 +69,14 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // 12 -> 13: Streak Assignment semantic-repair re-ask -- the second
 // documented exemption (same pure-compute grouping task as the first;
 // no repo access, so no sync bracket).
-const EXPECTED_AGENT_COUNT = 18;
-const EXPECTED_WITHGITSYNC_CALL_COUNT = 16;
+// 18 -> 20 agent()/16 -> 18 withGitSync (apra-fleet-eft.68.1): the in-cycle
+// SCOPED replan added two new agent() dispatches in the develop loop -- the
+// scoped planner and the scoped plan-review -- each wrapped in its own
+// read-side (pushCode:false) withGitSync(...) bracket. The scoped planner's
+// bracket additionally carries pushBeads:true (it re-scopes/mutates the
+// flagged subtree); neither writes code, so pushCode:true stays at 4.
+const EXPECTED_AGENT_COUNT = 20;
+const EXPECTED_WITHGITSYNC_CALL_COUNT = 18;
 const STREAK_ASSIGNMENT_MARKERS = [
     "label: 'Streak Assignment'",
     "label: 'Streak Assignment (semantic repair)'",

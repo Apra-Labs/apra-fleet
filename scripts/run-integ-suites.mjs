@@ -329,7 +329,17 @@ function cmdStart(files) {
 // name === data.file (see its header comment). APRA_FLEET_BD_MOCK=off forces
 // REAL bd, not the mocked default (bd-mock-shim contract: unset =
 // mock/replay; 0/false/off/real = real bd; record = real bd + refresh
-// fixtures).
+// fixtures). APRA_FLEET_TEST_CONCURRENCY is exported here too, kept in sync
+// with this lane's own `concurrency` argument -- apra-fleet-eft.85.3 found
+// that without it, test/helpers/scaled-timeout.mjs's scaledTimeout() reads
+// an unset env var and silently never scales, so the 3 contention-sensitive
+// real-bd files (bd-init-templating.test.mjs,
+// mock-sprint-planner-auth-failure-no-retry.test.mjs,
+// serve-wiring-integration.test.mjs) kept using their unscaled fixed
+// timeouts and re-broke under this runner's --test-concurrency=8 main lane,
+// even though scripts/run-tests.mjs (the OTHER entry point) already
+// exported this var correctly. See scripts/run-tests.mjs for the sibling
+// export this mirrors.
 function runLane(files, concurrency) {
   return new Promise((resolve) => {
     if (files.length === 0) { resolve(0); return; }
@@ -350,6 +360,7 @@ function runLane(files, concurrency) {
         env: {
           ...process.env,
           APRA_FLEET_BD_MOCK: 'off',
+          APRA_FLEET_TEST_CONCURRENCY: String(concurrency),
           INTEG_SUITES_STATUS_FILE: statusFile,
           INTEG_SUITES_HEARTBEAT_FILE: heartbeatFile,
         },

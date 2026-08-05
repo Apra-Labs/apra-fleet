@@ -7,6 +7,7 @@ import { setStoredPid, clearStoredPid, getStoredPid, getAgentOS } from '../src/u
 import { writeStatusline } from '../src/services/statusline.js';
 import { getOsCommands } from '../src/os/index.js';
 import type { SSHExecResult } from '../src/types.js';
+import { setBudget, _resetBudgetState } from '../src/services/budget-awareness.js';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -1454,6 +1455,70 @@ describe('workspace-not-trusted classification (apra-fleet-eft.40.3)', () => {
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'workspace_not_trusted' });
     // 3 calls only -- proves the stale-session retry (which would add a 4th call) never fired.
     expect(mockExecCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+// apra-fleet-eft.80.3: hard-threshold budget exhaustion must reject the NEW
+// dispatch with a structured budget_exhausted error BEFORE any LLM call --
+// unlike workspace_not_trusted (which fails after the main exec has already
+// run), this gate sits ahead of writePromptFile, so the spawn-spy assertion
+// here is a hard 0 calls, not "3 calls, no retry."
+describe('budget_exhausted admission gate (apra-fleet-eft.80.3)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    _resetBudgetState();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+    _resetBudgetState();
+  });
+
+  it('rejects with budget_exhausted and makes no LLM call (spawn-spy: 0 execCommand calls)', async () => {
+    const member = makeTestAgent({ friendlyName: 'budget-exhausted-member' });
+    addAgent(member);
+    setBudget(member.id, { limit: 1000, unit: 'tokens', hardFraction: 1.0 });
+    // Provider has no getUsage() capability here (see providerWithoutUsage in
+    // budget-awareness.test.ts) -- makeTestAgent's default provider setup does
+    // not implement getUsage, so this exercises the estimated-source path.
+    // Directly seed the estimated spend past the hard threshold rather than
+    // round-tripping through recordAndEvaluate.
+    const { recordEstimatedSpend } = await import('../src/services/budget-awareness.js');
+    recordEstimatedSpend(member.id, 1000); // 100% of a 1000-token budget
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).toMatchObject({
+      isError: true,
+      reason: 'budget_exhausted',
+      budgetUsage: { spent: 1000, budget: 1000, scope: member.id, unit: 'tokens', source: 'estimated' },
+    });
+    expect(resultText(result)).toContain('budget exhausted');
+    expect(resultText(result)).toContain('No LLM call was made');
+    // No writePromptFile, no main command, no deletePromptFile: the gate sits
+    // ahead of every exec, so the spawn-spy sees zero calls.
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not reject when spend is below the hard threshold -- dispatch proceeds normally', async () => {
+    const member = makeTestAgent({ friendlyName: 'budget-below-threshold' });
+    addAgent(member);
+    setBudget(member.id, { limit: 1000, unit: 'tokens', hardFraction: 1.0 });
+    const { recordEstimatedSpend } = await import('../src/services/budget-awareness.js');
+    recordEstimatedSpend(member.id, 500); // 50% -- warn band and hard threshold both uncrossed
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'ok', session_id: 'sess-budget-ok' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+
+    expect(result.structuredContent).not.toMatchObject({ reason: 'budget_exhausted' });
+    expect(mockExecCommand).toHaveBeenCalled();
   });
 });
 

@@ -299,12 +299,24 @@ function buildRepairPrompt(errorsText) {
  * @property {number} [max_turns] - Max turns for conversational tools
  * @property {'low'|'medium'|'high'|'xhigh'|'max'} [effort] - Effort parameter for fleet routing
  * @property {string} [agentType] - Agent persona to activate on the member
- * @property {boolean} [resume] - Resume the previous session on the member if one exists.
+ * @property {boolean|string} [resume] - Resume the previous session on the member if one exists.
+ *   A boolean `true` resumes the member's stored last session; a non-empty STRING resumes
+ *   EXACTLY that session id (apra-fleet-eft.78.1 widened execute_prompt's resume input to
+ *   boolean|session-id and made an explicit-id resume that cannot be resumed a TERMINAL
+ *   error). The value is passed straight through to executePrompt's payload.resume.
  *   NOTE: the underlying ApraFleet client (packages/apra-fleet-client/src/client/api.mjs)
  *   defaults `resume` to `true` when omitted. The WORKFLOW layer overrides that: agent()
  *   explicitly sends `resume: false` unless the caller sets this option, so that
  *   workflow-authored prompts are self-contained by default and don't silently inherit
  *   state from a prior session. (F10 / apra-fleet-unw.3)
+ * @property {(sessionId: string, meta: { member?: string, agent?: string, usage?: object }) => void} [onSessionId]
+ *   Optional best-effort callback invoked with the resumable session id that execute_prompt
+ *   promoted into structuredContent.sessionId (apra-fleet-eft.78.1), on a non-error dispatch
+ *   that actually produced one. Lets a caller (the auto-sprint engine's per-role round-resume
+ *   registry, apra-fleet-eft.78.3) record each dispatch's session id per (role, cycle) so it
+ *   can resume the same role's session across rounds via `resume: <id>`. Never fires when the
+ *   provider returns no session id (a capability signal, not a provider-name check); a throwing
+ *   callback is caught and never breaks the dispatch. (apra-fleet-eft.78.3)
  * @property {number} [timeoutMs] - Client-side McpClient.request() timeout override (ms),
  *   passed through to ApraFleet.executePrompt. Not sent to the server. When omitted, a
  *   default is derived from timeout_s/max_total_s (see deriveTimeoutMs in
@@ -868,6 +880,32 @@ export class FleetWorkflow extends EventEmitter {
                     console.error(`[Agent API Error]`, text);
                     this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
                     throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id } });
+                }
+
+                // apra-fleet-eft.78.3: surface the resumable session id
+                // (promoted into structuredContent.sessionId by execute_prompt
+                // in apra-fleet-eft.78.1) to the caller via an optional callback,
+                // WITHOUT changing agent()'s string/parsed return contract. The
+                // auto-sprint engine uses this to record each dispatch's session
+                // per (role, cycle) so it can resume the same role's session
+                // across rounds within a cycle (runner.js's round-session
+                // registry). Fired only on a non-error dispatch that actually
+                // produced a session id; a provider that does not support resume
+                // returns no sessionId, so the callback never fires and the
+                // engine falls back to a fresh session (a capability signal, not
+                // a provider-name check). Best-effort: a throwing callback must
+                // never break the dispatch.
+                if (
+                    structured
+                    && typeof structured.sessionId === 'string'
+                    && structured.sessionId
+                    && typeof opts.onSessionId === 'function'
+                ) {
+                    try {
+                        opts.onSessionId(structured.sessionId, { member: opts.member_name || opts.member_id, agent: opts.agentType, usage: result.usage });
+                    } catch (cbErr) {
+                        console.error(`[Agent onSessionId] callback threw (non-fatal): ${cbErr && cbErr.message ? cbErr.message : cbErr}`);
+                    }
                 }
 
                 if (result && result.content && result.content.length > 0) {
