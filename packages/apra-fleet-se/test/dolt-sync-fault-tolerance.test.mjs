@@ -7,6 +7,7 @@ import {
     doltBackoffDelayMs,
     getDegradedSyncRecords,
     clearDegradedSyncRecords,
+    doltPushAfter,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
 
@@ -109,6 +110,69 @@ test('a credential D-push failure surfaces as a credential-named DoltSyncError, 
     assert.ok(outcome.error instanceof DoltSyncError, 'credential failure must not be a DoltDivergedError');
     assert.equal(outcome.error instanceof DoltDivergedError, false);
     assert.match(outcome.detail, /CREDENTIALS/);
+    clearDegradedSyncRecords();
+});
+
+// -----------------------------------------------------------------------------
+// apra-fleet-spp.4: the same auth-not-diverged reclassification (spp.3) also
+// applies to the post-reconcile RE-PUSH, not just the first push attempt.
+// Drive the full ladder: (1) initial D-push genuinely rejected non-fast-
+// forward, (2) the single bounded reconcile D-pull succeeds, (3) the re-push
+// then fails on a credential/auth-shaped stderr. Calls doltPushAfter()
+// directly (not the degrading DoltSync.syncAfter wrapper) so the typed error
+// is observed as a rejection rather than folded into a structured outcome.
+//
+// Mutation check performed: `git apply -R` on the spp.3 hunk in
+// dolt-sync.mjs (the `if (push.kind === 'auth') { throw new
+// DoltSyncError(...) }` block immediately before the terminal "Still
+// rejected after one reconcile pull" DoltDivergedError throw), so the
+// auth-shaped re-push failure fell straight into the DoltDivergedError
+// below it. Re-ran `node --test test/dolt-sync-fault-tolerance.test.mjs`:
+// 27 passing / 1 failing -- the positive test below
+// ("apra-fleet-spp.4: reconcile-then-auth re-push ...") failed with
+// "must be the auth-specific DoltSyncError" (actual DoltDivergedError,
+// as expected). Re-applied the hunk afterward; full suite back to 28/28.
+// -----------------------------------------------------------------------------
+
+test('apra-fleet-spp.4: reconcile-then-auth re-push surfaces the auth DoltSyncError, not DoltDivergedError', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({
+        // First push: genuine non-fast-forward rejection -> triggers reconcile.
+        // Re-push after the reconcile pull: credential failure, not divergence.
+        'bd dolt push': [fail(REAL_DIVERGENCE_STDERR), fail(LIVE_2026_08_02_CREDENTIAL_STDERR)],
+        'bd dolt pull': [OK],
+    });
+    await assert.rejects(
+        () => doltPushAfter('fleet-mac', { command, checkSyncRemoteConfigured: remoteConfigured, sleep: async () => {} }),
+        (err) => {
+            assert.ok(err instanceof DoltSyncError, 'must be the auth-specific DoltSyncError');
+            assert.equal(err instanceof DoltDivergedError, false, 'must NOT be folded into DoltDivergedError');
+            assert.equal(err.details.kind, 'auth');
+            assert.equal(err.details.operation, 'push-reconcile-repush');
+            assert.match(err.message, /CREDENTIALS/);
+            assert.match(err.message, /re-push after reconcile/);
+            return true;
+        },
+    );
+    clearDegradedSyncRecords();
+});
+
+test('apra-fleet-spp.4 negative: reconcile-then-still-diverged re-push still surfaces DoltDivergedError', async () => {
+    clearDegradedSyncRecords();
+    const { command } = makeCommandMock({
+        // Both the initial push and the re-push after reconcile are genuine
+        // non-fast-forward rejections -- real divergence must still abort.
+        'bd dolt push': [fail(REAL_DIVERGENCE_STDERR), fail(REAL_DIVERGENCE_STDERR)],
+        'bd dolt pull': [OK],
+    });
+    await assert.rejects(
+        () => doltPushAfter('fleet-mac', { command, checkSyncRemoteConfigured: remoteConfigured, sleep: async () => {} }),
+        (err) => {
+            assert.ok(err instanceof DoltDivergedError, 'a genuine post-reconcile divergence must still throw DoltDivergedError');
+            assert.match(err.message, /still rejected after one reconcile pull/);
+            return true;
+        },
+    );
     clearDegradedSyncRecords();
 });
 
@@ -337,10 +401,10 @@ test('an unresolvable divergence maps to the neutral conflict-unresolvable kind'
     clearDegradedSyncRecords();
 });
 
-test('capabilities() declares the Dolt/beads adapter as whole-state-publish with repair not yet wired', () => {
+test('capabilities() declares the Dolt/beads adapter as whole-state-publish with repair WIRED (apra-fleet-vkc.1)', () => {
     const caps = DoltSync.capabilities();
     assert.equal(caps.wholeStatePublish, true);
-    assert.equal(caps.supportsRepair, false);
+    assert.equal(caps.supportsRepair, true);
     assert.equal(caps.supportsCoordinationLock, true);
     assert.ok(Array.isArray(caps.kinds) && caps.kinds.includes('conflict-unresolvable'));
 });
@@ -395,8 +459,27 @@ test('flush() reports the pending degradation ledger without a separate retry me
     assert.deepEqual(clean.degradations, []);
 });
 
-test('repair() is a named, unwired seam -- it never runs the recovery ladder itself', async () => {
+test('repair() with no injected command() reports not-configured rather than pretending to repair', async () => {
     const result = await DoltSync.repair('local');
     assert.equal(result.repaired, false);
-    assert.match(result.escalation, /apra-fleet-vkc\.1/);
+    assert.match(result.escalation, /not-configured/);
+});
+
+test('repair() runs the real recovery ladder (apra-fleet-vkc.1): Path B closes a wedged clone', async () => {
+    // Path A has no sql runtime injected here, so it self-defers; Path B
+    // (discard-and-re-bootstrap) needs only command() + its fs defaults, which
+    // we stub so no real filesystem/bootstrap is touched.
+    const { command } = makeCommandMock({
+        'bd bootstrap': [OK],
+        'bd dolt push': [OK],
+    });
+    const result = await DoltSync.repair('local', {
+        command,
+        // Path B fs seams, injected so the test touches no real disk.
+        readConfig: async () => ({ exists: true, raw: 'sync:\n  remote: origin\n', hasSyncRemote: true }),
+        removePath: async () => {},
+        listLocalState: async () => ['(test) nothing to discard'],
+    });
+    assert.equal(result.repaired, true);
+    assert.equal(result.tier, 'path-b');
 });

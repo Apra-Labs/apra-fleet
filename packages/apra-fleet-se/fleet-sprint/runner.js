@@ -24,6 +24,11 @@ const POST_DISPATCH_SYNC_RETRY_DELAYS_MS = [0, 5000, 15000];
 const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
+// apra-fleet-vkc.1: the dolt conflict recovery ladder (Path A -> Path B ->
+// Tier 2). syncMemberAfterOrdered() builds it and threads it through
+// DoltSync.syncAfter() so a wedged beads clone at the post-dispatch D-push
+// terminal attempts recovery before surfacing BEADS_SYNC_CONFLICT.
+import { buildDoltRecoveryLadder } from './dolt-recovery-tier2.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
 
@@ -1108,7 +1113,34 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     // advertise an unreachable close, exactly what the G-push-before-D-push
     // ordering above exists to prevent, and would erase the
     // BEADS_SYNC_CONFLICT terminal reason the dashboard reports.
-    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true });
+    //
+    // apra-fleet-vkc.1: before that fatal divergence surfaces, attempt the
+    // Path A -> Tier 2 recovery ladder (Path B deliberately disabled here --
+    // see below). Path A's resolve-in-place sql runtime is not injected here
+    // (runner.js has no live dolt sql-server client), so in production Path A
+    // is reached and cleanly self-defers; Tier 2 dispatches through `agent`
+    // when one is available. The ladder only fails the streak
+    // (DoltDivergedError -> BEADS_SYNC_CONFLICT) if every enabled tier fails
+    // to close the clone.
+    //
+    // Path B (discard-and-re-bootstrap) is explicitly disabled
+    // (enablePathB: false) at THIS call site -- post-review fix, apra-fleet-
+    // vkc.1. syncMemberAfterOrdered() wraps an arbitrary, possibly
+    // multi-command agent dispatch (a doer/reviewer/planner streak), so there
+    // is no single well-defined `pendingMutation` this bracket could capture
+    // and replay. Without one, Path B's "replay the one pending mutation"
+    // step (dolt-recovery-path-b.mjs step 6) is a no-op, so firing it here
+    // would discard whatever bead mutations the dispatch just made on
+    // `member` and still report the D-push as recovered -- silent data loss
+    // masquerading as success. Path A (safe, gated, zero data loss when it
+    // fires) and Tier 2 (records + escalates, never discards) remain wired;
+    // only the unsafe fallback is turned off. See buildDoltRecoveryLadder's
+    // own doc comment (dolt-recovery-tier2.mjs) for the general hazard this
+    // guards against, and DoltSync.repair() for an explicit, operator-driven
+    // entry point where a real pendingMutation and member-scoped
+    // readConfig/removePath/listLocalState CAN be supplied deliberately.
+    const recover = buildDoltRecoveryLadder(member, { command, agent, log, model: resolveConflictModel, enablePathB: false });
+    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, recover });
     return { ok: true, member, gPush, dPush };
 }
 

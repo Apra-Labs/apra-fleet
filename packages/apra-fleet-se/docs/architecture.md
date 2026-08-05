@@ -237,6 +237,21 @@ Tracked across the whole sprint (not reset per cycle):
   `StalledSprintError` message, so a human reading the failure can see
   *which* bead(s) are oscillating, not just that the sprint stalled.
 
+**The closed count fed into `closedCountHistory` must be read fresh, not
+reused from an earlier snapshot taken the same cycle.** A cycle's Integ Test
+step can itself close verify-routed beads as its very last action; if the
+count appended to `closedCountHistory` for that cycle was computed from a
+bead-state read taken *before* that step ran, those closures are invisible
+to the high-water-mark check even though they are genuine progress -- the
+history looks flat across consecutive cycles despite real work landing in
+each one, and the sprint can trip `StalledSprintError` while insisting "the
+verifier may be failing" when the verifier in fact succeeded every time and
+the bookkeeping simply never looked again after it ran. Cycle Evaluation
+therefore re-queries live closed-bead state for the scope directly (rather
+than reusing whatever the cycle's earlier bead-state fetch already had in
+hand) immediately before computing that cycle's entry, so a same-cycle
+closure is always credited in the cycle it actually happened.
+
 ## Budget tracking
 
 `--budget <usd>` (optional) sets `context.budget.total` before any dispatch;
@@ -356,6 +371,50 @@ of every subsequent cycle, a non-destructive `git checkout <branch>`
 deliberately not a `checkout -B ... origin/<base>`, which would discard any
 work already committed to the branch.
 
+## VCS provider abstraction (VCSModule)
+
+Git- and Dolt-backed sync both eventually have to interpret a failed shell
+command's raw stderr and decide what kind of failure it was. That
+interpretation used to live as GitHub-specific regex lists inlined in the
+runner itself, which meant every new git host (Azure DevOps, Bitbucket,
+GitLab, a self-hosted/generic remote) meant editing the runner's own source.
+VCSModule replaces that with a provider-agnostic seam:
+
+- **`classifyFailure(text, provider)`** maps raw command output to a
+  provider-neutral `kind` -- the same taxonomy the Dolt sync layer's
+  `auth`/divergence split above draws from (`auth`, `transient`,
+  `conflict-resolvable`, `conflict-unresolvable`, `unknown`, ...) -- so
+  downstream code (self-heal triggers, retry policy, typed error selection)
+  never pattern-matches host-specific text itself. Only the raw text is
+  host-specific; the `kind` it resolves to never is.
+- **A provider registry**, one file per provider (GitHub and a generic-git
+  fallback ship built in; Azure DevOps/Bitbucket/GitLab are structured as
+  drop-in additions), each exporting a descriptor of failure-text patterns
+  plus a `capabilities()` table declaring which failure kinds that provider
+  can ever produce. Adding a provider is adding one file to the registry and
+  registering it -- not editing the runner's dispatch/classification logic.
+  A synthetic/unregistered provider still classifies correctly through the
+  generic-git fallback rather than falling through to `unknown` by default.
+- **The member registry, not a hardcoded literal, decides which provider
+  applies.** A member's configured VCS provider is resolved from its
+  registration and threaded into every classification and PR-creation call
+  site for that member, rather than every call site assuming GitHub.
+- **Self-heal is wired at every auth-classified boundary**, not just the
+  git-push path: both call sites that create a pull request (the orchestrator
+  side, since PR creation is never a server-side act on a repo -- see the
+  server/repo-boundary ADR) and the Dolt D-push path above trigger the same
+  bounded, one-shot `provision_vcs_auth` re-provisioning callback on an
+  `auth`-classified failure before giving up, so a lapsed credential self-
+  heals uniformly regardless of which surface first observed it.
+- **A classification miss is the failure mode this abstraction exists to
+  close**, not a cosmetic one: a git failure that can't be classified falls
+  through to `unknown`, and `unknown` at this layer is never retried and never
+  self-healed -- it aborts the sprint immediately. Every provider's
+  descriptor is therefore reviewed specifically for coverage of that
+  provider's real auth-failure text (not just the generic OpenSSH/git text
+  that happens to port across hosts), because the cost of a miss is a false
+  sprint-fatal abort on what is usually a routine, recoverable token expiry.
+
 ## Orchestrator-bracketed git sync (`synced` mode)
 
 In `synced` mode, every dispatch that reads or writes git-tracked state is
@@ -420,8 +479,19 @@ reach):
   under a shared parent synchronously (no `await` before the counter
   advances, so two concurrent same-parent creations can never race on the
   same counter read), and hands each creator an explicit, pre-decided,
-  distinct id to pass to `bd create --id <childId>` -- so two sprints
-  creating siblings under the same parent always target different rows.
+  distinct id to pass to `bd create` -- so two sprints creating siblings
+  under the same parent always target different rows. The `bd` CLI rejects a
+  `bd create` invocation that combines `--id` and `--parent` in the same
+  call, so the creator issues `--id` alone (the id the allocator already
+  decided) and links the bead to its parent with a separate, immediately
+  following `bd update <id> --parent <parentId>` call -- two calls, not one,
+  are the correct sequence here, not a workaround. If the allocator itself
+  returns no id (allocator unreachable/degraded), the creator falls back to
+  a plain `bd create --parent <parentId>` (no `--id`) and accepts whatever
+  id `bd` assigns, rather than failing the create outright. Either way, the
+  child's reported parent is verified against the id that was actually
+  requested before the creation is trusted -- a mismatch is treated as a
+  failed create, not silently accepted.
 
 ### Two coordination hosts, not one -- and why
 
@@ -500,10 +570,15 @@ skip, not a sync failure, and is distinguished from a real divergence at two
 independent layers so neither can silently misclassify the other:
 
 - **`classifyDoltFailure()`** pattern-matches a failed `bd dolt` command's raw
-  output into `no-remote` / `diverged` / `transient` / `unknown`, checking
-  `no-remote` first (a "nothing configured" message must never be misread as
-  a retryable transient failure) and `diverged` next (a real conflict must
-  never be masked by an overlapping transient-sounding word in its message).
+  output into `no-remote` / `diverged` / `auth` / `transient` /
+  `remote-unreachable` / `unknown`, checking `no-remote` first (a "nothing
+  configured" message must never be misread as a retryable transient
+  failure), `diverged` next (a real conflict must never be masked by an
+  overlapping transient-sounding word in its message), and `auth` as its own
+  branch distinct from both (a credential failure -- e.g. "could not read
+  Username", "Device not configured" -- must never be folded into `diverged`;
+  see "Push failures are classified before they are retried" below for why
+  that distinction matters at the D-push terminals specifically).
 - **A direct bd-level `sync.remote` check** queries `bd config get
   sync.remote --json` on the member directly, independent of what Dolt's own
   internal remote wiring reports. This closes a gap the stderr-pattern
@@ -537,9 +612,38 @@ fleet-sprint driving a canary to closure with zero pushes reaching the real
 remote) is the only evidence that actually closes it, not passing mocked/unit
 coverage of the classifier and the bd-level check in isolation.
 
+**Push failures are classified before they are retried, not folded together.**
+A D-push rejection reaching this layer is first sorted into a distinct
+`kind` -- `auth` (a git-credential failure, e.g. "could not read Username",
+"Device not configured", or another credential-shaped error text) versus a
+genuine non-fast-forward divergence -- at both terminals where a push can
+still fail: the first push attempt, and the re-push that follows the single
+reconcile-pull. This classification happens independently at each terminal
+because the two failures can occur in either order in the same run (a real
+conflict on the first push, then a credential failure on the retry, or vice
+versa) and folding both into one "diverged" bucket produces a misleading
+abort: nothing to reconcile, but the sprint reports itself as having lost a
+data race instead of having a broken credential. An `auth`-classified
+failure triggers the same one-shot reactive credential self-heal
+(`provision_vcs_auth` for that member) used elsewhere in the sync layer
+before the push is retried; a push rejection is only ever treated as a real
+divergence -- and only then handed to the reconcile-pull-then-retry path
+below -- once the credential path has been ruled out.
+
 **Conflict recovery ladder** (dispatched only when the mutex/allocator still
 leave a clone genuinely wedged -- e.g. a conflict introduced before the
-serialization primitives existed, or an operational failure):
+serialization primitives existed, or an operational failure). The ladder is
+wired directly into the D-push failure path itself -- invoked at both of the
+divergence terminals described above (the reconcile-pull discovering the
+clone still can't cleanly reconcile, and a re-push still being rejected
+after that reconcile) -- rather than existing as a standalone module only
+exercised by its own tests. With no recovery hook supplied, a divergence
+still surfaces exactly as it did before the ladder was wired in (degraded-by-
+default is preserved); the ladder only ever narrows an existing failure into
+a resolved one, it never changes behavior when it isn't invoked. The same
+composed ladder also backs the sync layer's explicit `repair()` entry point,
+so an operator-triggered repair and an in-flight push failure both escalate
+through identical stages:
 
 1. **Path A (scripted, resolve-in-place)** -- gated behind two deterministic
    checks (every conflicted table is on an allowlist; exactly one conflicting

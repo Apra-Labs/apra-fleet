@@ -395,6 +395,14 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         deployHandler = null,
         integHandler = null,
         finalReviewHandler = null,
+        // apra-fleet-417.4: optional (opts, tempDir, runCmd, epicBead) =>
+        // result override for the 'regression-test-runner' dispatch, mirroring
+        // deployHandler/integHandler above. Only reachable when the scenario
+        // has actually written regression-test-playbook.md into tempDir (see
+        // runDevelopLoopScenario's `withRegressionPlaybook` option) -- the
+        // real runner.js phase probes for that file and skips the dispatch
+        // entirely otherwise, same as deploy.md/integ-test-playbook.md.
+        regressionHandler = null,
         // Optional (cmd: string) => boolean predicate: when it returns
         // true for a given executeCommand() invocation, the mock returns a
         // nonzero-exit result (apra-fleet-1cb.1: normal data, no isError --
@@ -1015,6 +1023,31 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 };
             }
 
+            // --- regression test phase (apra-fleet-417.4: schema-validated) ---
+            //
+            // Once-per-sprint, informational, only dispatched when
+            // regression-test-playbook.md exists in tempDir (see
+            // runDevelopLoopScenario's `withRegressionPlaybook` option). Not
+            // reached by any existing scenario that omits that flag -- the
+            // real probeFileExists('regression-test-playbook.md') check in
+            // runner.js skips the phase entirely without it, same as the
+            // Deploy/Integ phases above without deploy.md/integ-test-
+            // playbook.md.
+            if (opts.agent === 'regression-test-runner') {
+                if (regressionHandler) return regressionHandler({ opts, tempDir, runCmd, epicBead });
+                return {
+                    content: [{
+                        text: JSON.stringify({
+                            passed: true,
+                            suitePassed: true,
+                            smokePassed: true,
+                            bugsFiled: [],
+                            summary: 'Mock regression pass: full suite and sandbox smoke test both green.',
+                        })
+                    }]
+                };
+            }
+
             // --- harvest phase (apra-fleet-unw.17, A6: schema-validated;
             //     apra-fleet-unw2.10, N12: contract enforcement) ---
             //
@@ -1191,6 +1224,12 @@ export async function runDevelopLoopScenario(tag, {
     planReviewerHandler,
     // apra-fleet-unw.17 additions:
     deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
+    // apra-fleet-417.4: optional (opts, tempDir, runCmd, epicBead) => result
+    // override for the 'regression-test-runner' dispatch -- see
+    // buildMockFleetApi's option comment above. Paired with
+    // `withRegressionPlaybook` below (writes regression-test-playbook.md so
+    // the real probe finds it and the phase actually dispatches).
+    regressionHandler,
     goal = 'P1/P2', maxCycles = 1,
     // Optional hook invoked with {tempDir, runCmd, epicBead, tasks} AFTER
     // setupMinimal() creates the epic/tasks but BEFORE the sprint runs --
@@ -1201,6 +1240,11 @@ export async function runDevelopLoopScenario(tag, {
     // deploy.md / integ-test-playbook.md are NOT written by setupMinimal();
     // set true to write them (enabling the Deploy/Integ phases).
     withRunbooks = false,
+    // apra-fleet-417.4: regression-test-playbook.md is NOT written by
+    // setupMinimal() or withRunbooks (it is a wholly separate, once-per-
+    // sprint phase with its own probe); set true to write it (enabling the
+    // Regression Test phase, and pairing with `regressionHandler` above).
+    withRegressionPlaybook = false,
     // apra-fleet-unw2.9 (N11) additions: see buildMockFleetApi's option
     // comments above. `branchOverride` lets a scenario force a specific
     // branch name (rather than the tag-derived default) -- used by the
@@ -1250,6 +1294,9 @@ export async function runDevelopLoopScenario(tag, {
         await fs.writeFile(path.join(tempDir, 'deploy.md'), '# Deploy\nrun `npm publish`');
         await fs.writeFile(path.join(tempDir, 'integ-test-playbook.md'), '# Integ Test\nRun `vitest e2e`');
     }
+    if (withRegressionPlaybook) {
+        await fs.writeFile(path.join(tempDir, 'regression-test-playbook.md'), '# Regression\nRun the full suite, then the sandbox smoke test, then Teardown.');
+    }
     if (beforeSprint) {
         await beforeSprint({ tempDir, runCmd, epicBead, tasks });
     }
@@ -1284,6 +1331,7 @@ export async function runDevelopLoopScenario(tag, {
             deployHandler,
             integHandler,
             finalReviewHandler,
+            regressionHandler,
             commandFailurePattern,
             commandLogDetailed,
             memberGitState,

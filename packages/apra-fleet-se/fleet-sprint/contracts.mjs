@@ -121,8 +121,11 @@ export function validateRole(role) {
 // written literal in section 3) -- unchanged from before apra-fleet-bun.
 const PACKAGE_ROOT = path.join(__dirname, '..');
 const REPO_ROOT = path.join(PACKAGE_ROOT, '..', '..');
-const DIST_BUNDLED_SCHEMAS_DIR = path.join(REPO_ROOT, 'dist', 'agents', 'schemas');
-const PACKAGE_LOCAL_SCHEMAS_DIR = path.join(PACKAGE_ROOT, 'apra-pm', 'agents', 'schemas');
+// Exported (not just module-local) so a drift guard test can compare the two
+// real candidate directories on disk without re-deriving this path math --
+// see test/contracts-schema-dist-staleness-guard.test.mjs (apra-fleet-spp.2).
+export const DIST_BUNDLED_SCHEMAS_DIR = path.join(REPO_ROOT, 'dist', 'agents', 'schemas');
+export const PACKAGE_LOCAL_SCHEMAS_DIR = path.join(PACKAGE_ROOT, 'apra-pm', 'agents', 'schemas');
 
 function isDirectory(candidate) {
     try {

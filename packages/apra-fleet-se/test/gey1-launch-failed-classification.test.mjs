@@ -217,6 +217,20 @@ describe('watchdog -- apra-fleet-gey.1: launch-failed classification and auto-re
         await wd.classifyAll();
         await wd.classifyAll();
 
+        // classifySprint() fires history.record() for the LAUNCH_FAILED event
+        // without awaiting it (deliberately -- the classifier must not block
+        // on the history write, see watchdog.mjs's classifySprint() comment),
+        // so the persist-to-disk can still be in flight when classifyAll()
+        // resolves. Under a busy/concurrent test run this in-flight write
+        // sometimes had not yet landed by the time the synchronous
+        // fs.readFileSync() below ran, producing an intermittent 0-events
+        // read instead of the expected 1 -- a pure test-side race, not a
+        // product bug. history.stop() awaits the SAME internal write-chain
+        // every record() call is serialized through, so awaiting it here
+        // deterministically flushes any pending write before we read the
+        // file, regardless of system load.
+        await history.stop();
+
         // Read the persisted history
         const historyDoc = JSON.parse(fs.readFileSync(path.join(tmpDataDir, HISTORY_FILENAME), 'utf-8'));
 

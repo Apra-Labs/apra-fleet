@@ -48,38 +48,45 @@
  * purpose-based API incrementally; they are IMPLEMENTATION DETAIL of the three
  * entry points above, not a second supported surface.
  *
- * RECOVERY-LADDER DISPOSITION (apra-fleet-417.2.1 AC3; coordinates with
- * apra-fleet-vkc.1, which owns executing it)
+ * RECOVERY-LADDER DISPOSITION (apra-fleet-417.2.1 AC3; EXECUTED by
+ * apra-fleet-vkc.1)
  * -------------------------------------------------------------------------
- * Decision: WIRE, not decommission. dolt-recovery.mjs (Path A: gated
- * allowlist auto-resolve), dolt-recovery-path-b.mjs (Path B: re-clone from the
- * shared remote) and dolt-recovery-tier2.mjs (Tier 2: human/agent escalation
- * against docs/dolt-tier2-runbook.md) are today imported only by their own
- * tests -- doltPushAfter()'s diverged path throws DoltDivergedError with no
+ * Decision: WIRE, not decommission -- and, as of apra-fleet-vkc.1, DONE.
+ * dolt-recovery.mjs (Path A: gated allowlist resolve-in-place),
+ * dolt-recovery-path-b.mjs (Path B: discard-and-re-bootstrap from the shared
+ * remote) and dolt-recovery-tier2.mjs (Tier 2: agent escalation against
+ * docs/dolt-tier2-runbook.md) were previously imported only by their own
+ * tests -- doltPushAfter()'s diverged path threw DoltDivergedError with no
  * recovery attempt. They are NOT decommissioned because the failure they
- * handle is real and currently sprint-fatal: a wedged beads clone stops the
- * whole sprint, and the ladder is the only written-down remedy for it.
+ * handle is real and was sprint-fatal: a wedged beads clone stops the whole
+ * sprint, and the ladder is the only written-down remedy for it.
  *
- * Rationale for wiring them BEHIND this module rather than at the call sites:
- * the ladder must run at exactly one place -- the diverged terminal of
- * syncAfter() (and of syncBefore()'s reconcile pull) -- so that every one of
- * runner.js's dolt call sites inherits recovery without opting in, and so that
- * "attempted Path A -> Path B -> Tier 2, each logged with its outcome" has a
- * single implementation to audit.
+ * How it is wired (apra-fleet-vkc.1): dolt-recovery-tier2.mjs now exports
+ * buildDoltRecoveryLadder(member, opts), the ONE place the three paths are
+ * composed into a single zero-argument callback. doltPushAfter() accepts that
+ * callback as `opts.recover` and invokes it at its divergence terminal -- the
+ * single place a divergence outlives the bounded first-successful-pusher-wins
+ * reconcile -- logging each tier's outcome and surfacing the DoltDivergedError
+ * (-> BEADS_SYNC_CONFLICT) only if the whole ladder fails. runner.js's
+ * post-dispatch sync bracket (syncMemberAfterOrdered) builds the callback and
+ * threads it through DoltSync.syncAfter(), so every one of runner.js's D-push
+ * call sites inherits recovery without opting in. DoltSync.repair() runs the
+ * same ladder (capabilities().supportsRepair is now true).
  *
- * Status of that wiring: NOT DONE IN THIS FILE YET, deliberately. This bead
- * (417.2.1) is a no-behavior-change consolidation; apra-fleet-vkc.1 owns the
- * decision's execution (and apra-fleet-417.3.1 owns classification/bounded
- * retry/degraded-path hardening on the same seam). If vkc.1 lands a DIFFERENT
- * disposition, vkc.1 wins and this comment must be updated to match -- it is
- * recorded here only so the seam and its rationale are not lost, and so the
- * wiring lands here rather than being sprayed back across runner.js.
+ * Kept unchanged on purpose: with NO `recover` callback wired, doltPushAfter()
+ * behaves exactly as before (DoltDivergedError propagates immediately), so the
+ * degraded-by-default path (apra-fleet-417.3.1) and every existing call site
+ * keep their pre-vkc.1 semantics. Path A additionally requires an injected
+ * sql()/spawnSqlServer() runtime; runner.js does not yet supply one, so in
+ * production Path A is reached and cleanly self-defers to Path B (no silent
+ * dead module) until such a runtime is injected -- see buildDoltRecoveryLadder.
  *
  * ASCII only.
  */
 
 import { DoltDivergedError, DoltSyncError } from './errors.mjs';
 import { classifyFailure, toDoltVerdict } from './vcs-module.mjs';
+import { buildDoltRecoveryLadder } from './dolt-recovery-tier2.mjs';
 
 // ---------------------------------------------------------------------------
 // Dolt sync brackets: D-pull / D-push
@@ -524,12 +531,18 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * (including the reconcile/re-push) -- see runDoltStep's AUTH SELF-HEAL
  * CONTRACT.
  *
+ * `opts.recover` (apra-fleet-vkc.1) is the optional Path A -> Path B -> Tier 2
+ * recovery ladder callback (buildDoltRecoveryLadder, dolt-recovery-tier2.mjs).
+ * When present, a divergence that outlives the bounded reconcile attempts the
+ * ladder before the DoltDivergedError is surfaced as BEADS_SYNC_CONFLICT; when
+ * absent the divergence propagates immediately (pre-vkc.1 behavior).
+ *
  * @param {string} member
- * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote' }>}
+ * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function, recover?: () => Promise<{ ok: boolean, tier: string }> }} opts
+ * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, recoveryTier?: string }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, recover } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -567,6 +580,39 @@ export async function doltPushAfter(member, opts = {}) {
                 log(`[Dolt] mutex release after D-push for member '${member}' failed (non-fatal; lease will expire): ${relErr.message}`);
             }
         }
+    }
+
+    // apra-fleet-vkc.1: the recovery ladder terminal. A divergence that
+    // outlives the bounded first-successful-pusher-wins reconcile is exactly
+    // the wedged-clone failure the Path A -> Path B -> Tier 2 ladder exists
+    // for. When an `opts.recover` ladder callback is wired (runner.js builds it
+    // via buildDoltRecoveryLadder and threads it through DoltSync.syncAfter),
+    // the diverged terminal attempts it -- logging each outcome -- and only
+    // surfaces the DoltDivergedError (which runner.js classifies as the
+    // terminal BEADS_SYNC_CONFLICT) if the whole ladder fails to close the
+    // clone. With no recover callback wired the behavior is unchanged: the
+    // DoltDivergedError propagates immediately, so every existing call site and
+    // the degraded-by-default path keep their pre-vkc.1 semantics.
+    async function surfaceDivergence(divergedError, operation) {
+        if (typeof recover === 'function') {
+            log(`[Dolt] D-push for member '${member}' diverged (${operation}); attempting the recovery ladder (Path A -> Path B -> Tier 2) before surfacing BEADS_SYNC_CONFLICT.`);
+            let ladder = null;
+            try {
+                ladder = await recover({ operation, error: divergedError });
+            } catch (recErr) {
+                log(`[Dolt] recovery ladder itself threw for member '${member}' (treated as unrecovered): ${(recErr && recErr.message) || recErr}`);
+            }
+            if (ladder && ladder.ok) {
+                log(`[Dolt] recovery ladder RESOLVED the divergence for member '${member}' at tier '${ladder.tier}' -- D-push reconciled.`);
+                return { ok: true, member, pushed: true, reconciled: true, recovered: true, recoveryTier: ladder.tier };
+            }
+            log(
+                `[Dolt] recovery ladder did NOT resolve the divergence for member '${member}'` +
+                `${ladder ? ` (last tier '${ladder.tier}'${ladder.escalated ? ', escalated to Tier 2' : ''})` : ' (no ladder result)'}; ` +
+                'surfacing DoltDivergedError -> BEADS_SYNC_CONFLICT.',
+            );
+        }
+        throw divergedError;
     }
 
     async function doltPushGuarded() {
@@ -631,9 +677,12 @@ export async function doltPushAfter(member, opts = {}) {
     });
     if (!reconcile.ok) {
         if (reconcile.kind === 'diverged') {
-            throw new DoltDivergedError(
-                `[Dolt] D-push reconcile pull for member '${member}' hit an unmergeable beads conflict -- must not be retried blindly: ${reconcile.error}`,
-                { member, doltOutput: reconcile.error, operation: 'push-reconcile' },
+            return await surfaceDivergence(
+                new DoltDivergedError(
+                    `[Dolt] D-push reconcile pull for member '${member}' hit an unmergeable beads conflict -- must not be retried blindly: ${reconcile.error}`,
+                    { member, doltOutput: reconcile.error, operation: 'push-reconcile' },
+                ),
+                'push-reconcile',
             );
         }
         throw new DoltSyncError(
@@ -650,10 +699,24 @@ export async function doltPushAfter(member, opts = {}) {
         return { ok: true, member, pushed: true, reconciled: true };
     }
 
-    // Still rejected after the one bounded reconcile.
-    throw new DoltDivergedError(
-        `[Dolt] D-push for member '${member}' still rejected after one reconcile pull -- refusing to retry further: ${push.error}`,
-        { member, doltOutput: push.error, operation: 'push' },
+    if (push.kind === 'auth') {
+        // apra-fleet-spp.3: same mislabel class as the first-push/pull paths,
+        // just reached via the post-reconcile re-push -- a credential that
+        // lapsed mid-reconcile is not a data divergence, so it must not be
+        // folded into DoltDivergedError below.
+        throw new DoltSyncError(
+            `[Dolt] D-push re-push after reconcile for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${push.error}`,
+            { member, doltOutput: push.error, details: { kind: 'auth', operation: 'push-reconcile-repush' } },
+        );
+    }
+
+    // Still rejected after the one bounded reconcile, and not an auth failure.
+    return await surfaceDivergence(
+        new DoltDivergedError(
+            `[Dolt] D-push for member '${member}' still rejected after one reconcile pull -- refusing to retry further: ${push.error}`,
+            { member, doltOutput: push.error, operation: 'push' },
+        ),
+        'push',
     );
     } // end doltPushGuarded
 }
@@ -819,17 +882,17 @@ export function toNeutralDegradedKind(kind) {
  * adapter: declares which neutral degraded.kind values this backend can ever
  * produce, plus the booleans callers use instead of assuming Dolt semantics.
  *
- * `supportsRepair: false` reflects that `repair()` below is a named seam, not
- * a wired recovery ladder yet -- apra-fleet-vkc.1 owns that wiring (see the
- * RECOVERY-LADDER DISPOSITION note in this file's header). `supportsRepair`
- * will become `true` once vkc.1 lands.
+ * `supportsRepair: true` (apra-fleet-vkc.1) reflects that `repair()` below now
+ * runs the real Path A -> Path B -> Tier 2 recovery ladder
+ * (buildDoltRecoveryLadder, dolt-recovery-tier2.mjs) rather than being a named
+ * seam only -- see the RECOVERY-LADDER DISPOSITION note in this file's header.
  *
  * @returns {{ wholeStatePublish: boolean, supportsRepair: boolean, supportsCoordinationLock: boolean, kinds: string[] }}
  */
 export function capabilities() {
     return {
         wholeStatePublish: true,
-        supportsRepair: false,
+        supportsRepair: true,
         supportsCoordinationLock: true,
         kinds: ['transient', 'auth', 'conflict-resolvable', 'conflict-unresolvable', 'store-unreachable', 'no-store', 'unknown'],
     };
@@ -1007,8 +1070,10 @@ export async function syncBefore(member, opts = {}) {
  * `fatal: true` at a call site that must still hard-abort (the post-dispatch
  * sync bracket does, so an unreachable close can never be advertised).
  *
- * This is the seam the recovery ladder is to be wired behind -- see the
- * RECOVERY-LADDER DISPOSITION note in the module header (apra-fleet-vkc.1).
+ * This is the seam the recovery ladder is wired behind (apra-fleet-vkc.1): an
+ * `opts.recover` ladder callback is passed straight through to doltPushAfter(),
+ * whose divergence terminal invokes it -- see the RECOVERY-LADDER DISPOSITION
+ * note in the module header.
  *
  * `opts.mutatedItemIds` (ADR Decision 2/3, apra-fleet-417.5) is accepted per
  * the TaskDBModule contract but INTENTIONALLY NOT CONSUMED by this adapter:
@@ -1129,20 +1194,38 @@ export function flush(filter = {}) {
  * credential re-provisioning. Called by operators/tools and by ensureReady();
  * never inline from a per-operation sync path."
  *
- * NOT YET WIRED (apra-fleet-417.5): this is the named seam only.
- * apra-fleet-vkc.1 owns wiring the actual recovery ladder (dolt-recovery.mjs
- * Path A / dolt-recovery-path-b.mjs Path B / dolt-recovery-tier2.mjs Tier 2)
- * behind this entry point -- see the RECOVERY-LADDER DISPOSITION note in this
- * file's header for why that wiring belongs here and not at call sites, and
- * why it is deliberately not done in this bead. `capabilities().
- * supportsRepair` stays `false` until vkc.1 lands.
+ * WIRED (apra-fleet-vkc.1): runs the real Path A -> Path B -> Tier 2 recovery
+ * ladder (buildDoltRecoveryLadder, dolt-recovery-tier2.mjs) against a wedged
+ * beads clone and reports whether it was repaired. This is the operator/tool
+ * entry point onto the SAME ladder doltPushAfter()'s divergence terminal
+ * invokes -- one composed implementation, two callers -- so a manual repair
+ * and an automatic one behave identically. `command` is required (every
+ * recovery path issues `bd dolt` commands through it); the Path A sql runtime
+ * and the Tier 2 `agent` are optional (see buildDoltRecoveryLadder for how
+ * each path degrades when its dependency is absent).
  *
  * @param {string} member
- * @returns {Promise<{ repaired: boolean, escalation?: string }>}
+ * @param {{ command?: Function, log?: Function, agent?: Function, [key: string]: any }} [opts]
+ * @returns {Promise<{ repaired: boolean, tier?: string, escalation?: string, result?: object }>}
  */
-export async function repair(member) {
-    void member;
-    return { repaired: false, escalation: 'not-implemented: recovery ladder wiring is owned by apra-fleet-vkc.1' };
+export async function repair(member, opts = {}) {
+    const { command, log = () => {} } = opts;
+    if (typeof command !== 'function') {
+        return { repaired: false, escalation: 'not-configured: repair() requires an injected command() to run the recovery ladder' };
+    }
+    const ladder = buildDoltRecoveryLadder(member, opts);
+    const result = await ladder();
+    if (result && result.ok) {
+        log(`[Dolt] repair() resolved member '${member}' via the recovery ladder at tier '${result.tier}'.`);
+        return { repaired: true, tier: result.tier, result };
+    }
+    log(`[Dolt] repair() did NOT resolve member '${member}' (tier '${result && result.tier}'${result && result.escalated ? ', escalated to Tier 2' : ''}).`);
+    return {
+        repaired: false,
+        tier: result && result.tier,
+        escalation: result && result.escalated ? 'tier-2-dispatched' : 'unrecovered',
+        result,
+    };
 }
 
 export const DoltSync = {

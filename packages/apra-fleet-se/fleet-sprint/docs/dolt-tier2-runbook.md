@@ -1,5 +1,15 @@
 # Dolt conflict recovery: Tier 2 runbook (apra-fleet-eft.9.6)
 
+> **Wiring status (apra-fleet-vkc.1): LIVE.** The Path A -> Path B -> Tier 2
+> recovery ladder described here is no longer test-only. `dolt-recovery-tier2.mjs`
+> exports `buildDoltRecoveryLadder()`, which `dolt-sync.mjs`'s `doltPushAfter()`
+> invokes at its divergence terminal and which `runner.js`'s post-dispatch sync
+> bracket (`syncMemberAfterOrdered`) threads in, so a wedged clone at a real
+> D-push attempts this ladder before surfacing `BEADS_SYNC_CONFLICT`. Path A's
+> resolve-in-place step still requires an injected dolt sql-server runtime;
+> until one is wired into `runner.js`, Path A is reached and cleanly self-defers
+> to Path B (discard-and-re-bootstrap) in production.
+
 This is the runbook a REAL agent receives when it is dispatched to resolve a
 wedged beads (dolt) clone that the scripted recovery ladder could not close on
 its own. It is the dolt counterpart of the git conflict ladder's Tier 2

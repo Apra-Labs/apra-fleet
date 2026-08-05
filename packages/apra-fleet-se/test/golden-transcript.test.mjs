@@ -12,6 +12,8 @@ import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 // replaced; see test/helpers/bd-replay.mjs for the APRA_FLEET_BD_MOCK
 // contract.
 import { runCmd } from './helpers/bd-replay.mjs';
+import { extractVerifyIds } from './helpers/verify-clause.mjs';
+import { StalledSprintError } from '../fleet-sprint/errors.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -99,6 +101,44 @@ test('mockCmdResult/isSpawnFailure: nonzero exit is non-error data, spawn failur
     assert.strictEqual(isSpawnFailure({ code: 'ENOENT' }), true);
     assert.strictEqual(isSpawnFailure({ code: 1 }), false);
     assert.strictEqual(isSpawnFailure({ code: 127 }), false);
+});
+
+// apra-fleet-spp.5: direct regression coverage for extractVerifyIds()
+// (test/helpers/verify-clause.mjs), the parser both this file's and
+// golden-transcript-3bead.test.mjs's integ-test-runner mock handlers use to
+// find the bead id(s) named in runner.js's "...await verification-closure:
+// <ids>. For each, verify..." prompt clause. A capture anchored on the first
+// '.' (this file's pre-fix regex) truncates a dotted, decomposed-child bead
+// id -- e.g. apra-fleet-xyz.1, this project's standard child-id form -- down
+// to its parent prefix (apra-fleet-xyz), which would make the mock `bd
+// close` the WRONG bead. This test feeds a prompt naming exactly one dotted
+// id and asserts the parser (and, simulating the handler's own `for (const
+// id of verifyIds)` loop, the resulting close list) yields exactly that
+// dotted id, untruncated.
+test('extractVerifyIds: a dotted decomposed-child verify id is preserved, not truncated at its first dot', () => {
+    const prompt =
+        'Additionally, these bead(s) have ALL their children closed and await ' +
+        'verification-closure: apra-fleet-xyz.1. For each, verify against the ' +
+        'deployed build per the playbook.';
+
+    const verifyIds = extractVerifyIds(prompt);
+    assert.deepStrictEqual(verifyIds, ['apra-fleet-xyz.1']);
+
+    // Simulate the mock handler's own close loop to assert exactly this
+    // dotted id -- not a truncated 'apra-fleet-xyz' -- is what gets closed.
+    const closed = [];
+    for (const id of verifyIds) closed.push(id);
+    assert.deepStrictEqual(closed, ['apra-fleet-xyz.1']);
+
+    // Multiple ids, one of which is dotted, comma-separated -- confirms the
+    // dot-tolerance holds alongside normal split-on-comma behavior.
+    const multiPrompt =
+        'await verification-closure: apra-fleet-abc, apra-fleet-xyz.1, apra-fleet-def.2.3. For each, verify ' +
+        'against the deployed build.';
+    assert.deepStrictEqual(
+        extractVerifyIds(multiPrompt),
+        ['apra-fleet-abc', 'apra-fleet-xyz.1', 'apra-fleet-def.2.3']
+    );
 });
 
 async function setup(tempDirSuffix) {
@@ -382,6 +422,34 @@ function buildTranscriptFleetApi(tempDir, epicBead, dispatchLog) {
 
             // --- integ test phase ---
             if (opts.agent === 'integ-test-runner') {
+                // apra-fleet-66u.4: mirror the real integ-test-runner agent's
+                // documented contract (runner.js's own dispatch prompt --
+                // "...await verification-closure: <ids>. For each, verify
+                // ... close it (bd close) ...", buildable via runner.js's
+                // verifyClause) by actually closing every verify-routed bead
+                // id the prompt names, the same way the `doer` handler above
+                // extracts and closes its own "Assigned bead ids". Without
+                // this, a scenario whose epic/parent bead becomes
+                // verify-eligible (all children closed) never gets that bead
+                // closed by this mock, so apra-fleet-jfo.2's
+                // stillOpenVerifyIds exit gate correctly refuses to let the
+                // sprint exit -- runner.js then (correctly, by design) loops
+                // Deploy/IntegTest with zero forward progress until it
+                // stall-aborts. That is not a runner.js staleness bug; it is
+                // this mock never performing the side effect its own prompt
+                // asked for. See the apra-fleet-66u.4 bd comment for the
+                // full diagnosis.
+                //
+                // apra-fleet-spp.5: extraction now delegates to the shared
+                // extractVerifyIds() helper (test/helpers/verify-clause.mjs)
+                // instead of an inline /([^.]+)\./ capture, which truncated
+                // a dotted verify id (e.g. apra-fleet-eft.52, this project's
+                // standard decomposed-child form) at its first '.' and would
+                // have made this mock `bd close` the WRONG bead.
+                const verifyIds = extractVerifyIds(opts.prompt);
+                for (const id of verifyIds) {
+                    await runCmd(`bd close ${id}`, tempDir);
+                }
                 return {
                     content: [{
                         text: JSON.stringify({
@@ -656,6 +724,77 @@ test('golden transcript: mock sprint happy-path dispatch sequence matches the co
         'file (review the diff before committing it):\n' +
         '  UPDATE_GOLDEN=1 node --test test/golden-transcript.test.mjs\n' +
         'or: npm run update-golden -w @apralabs/apra-fleet-se'
+    );
+});
+
+// =============================================================================
+// apra-fleet-66u.5: pins the apra-fleet-66u.4 fix (the mock
+// integ-test-runner handler above now issues `bd close` for every
+// verify-routed bead named in its dispatch prompt) on THIS file's
+// mock-sprint/golden-transcript path specifically -- the 2026-08-04
+// recurrence of the apra-fleet-66u false-stall regression happened here,
+// not on the already-covered real-sprint develop-loop harness (see
+// apra-fleet-66u.3's test/66u-stall-progress-credit.test.mjs).
+//
+// This scenario's single task closes under the epic (setup() above), making
+// the epic itself a childful verify-routed target once that one child
+// closes -- exactly the same shape as 66u.3(a)'s epic-closes-via-Integ-Test
+// case, but driven through this file's real runner.js dispatch (not the
+// mock-sprint-harness's runDevelopLoopScenario()). Without the 66u.4 fix,
+// the mock integ-test-runner handler above would never close the epic, so
+// runner.js's stillOpenVerifyIds exit gate would keep looping Deploy/
+// IntegTest with zero forward progress in closedCount/verifyEverIds until
+// staleCycles hit STALL_CYCLE_LIMIT and runner.js threw StalledSprintError
+// (the exact "Closed-count history: [3,3,3] ... the verifier may be
+// failing" shape from the real incident) -- which engine.executeFile()
+// rejects `runGoldenScenario()`'s promise with, caught below.
+//
+// MUTATION CHECK: reverting apra-fleet-66u.4's `for (const id of verifyIds)
+// { await runCmd(...) }` loop in buildTranscriptFleetApi()'s
+// integ-test-runner handler above (restoring the old canned
+// {featuresClosed, passed:true}-only response) makes this test's `caught`
+// assertion fail: it throws a StalledSprintError instead of completing.
+test('golden transcript: Integ Test closing the childful epic in the same cycle it becomes verify-eligible credits progress and avoids a false stall (apra-fleet-66u.5)', async () => {
+    let caught = null;
+    let transcript = null;
+    let result = null;
+    try {
+        ({ transcript, result } = await runGoldenScenario('golden-progress'));
+    } catch (err) {
+        caught = err;
+    }
+
+    // Named assertion #1: no false-stall abort fired.
+    assert.ok(
+        !(caught instanceof StalledSprintError),
+        'Expected no false-stall abort on the mock golden sprint\'s same-cycle ' +
+        `Integ Test closure of the childful epic, got: ${caught ? caught.message : 'none'}`
+    );
+    if (caught) throw caught;
+
+    // Named assertion #2: the sprint reached success (not merely "did not
+    // throw" -- confirms the whole runner.js cycle loop actually exited
+    // cleanly via the goal-priority + verify-set completion path).
+    assert.strictEqual(
+        result.status, 'success',
+        `Expected the golden mock sprint to complete successfully, got: ${JSON.stringify(result)}`
+    );
+
+    // Named assertion #3: this run genuinely exercised the same-cycle
+    // verify-closure path apra-fleet-66u.4 fixed -- an integ-test-runner
+    // dispatch actually named the epic in its verification-closure clause
+    // (proves the scenario reaches the childful-target-becomes-verify-
+    // eligible shape, not merely a scenario that happens to avoid it).
+    const integPrompts = transcript.filter((e) => e.kind === 'prompt' && e.agentType === 'integ-test-runner');
+    assert.ok(integPrompts.length > 0, 'Expected at least one integ-test-runner dispatch in the golden transcript');
+    const epicPlaceholder = '<BEAD:epic-fleet-member-management-apis>';
+    const verifyDispatch = integPrompts.find(
+        (e) => e.prompt.includes('verification-closure:') && e.prompt.includes(epicPlaceholder)
+    );
+    assert.ok(
+        verifyDispatch,
+        `Expected an integ-test-runner dispatch naming the epic (${epicPlaceholder}) in its ` +
+        `verification-closure clause -- got prompts: ${JSON.stringify(integPrompts.map((e) => e.prompt))}`
     );
 });
 
