@@ -6,6 +6,8 @@ Commands below require these prefixes in `.claude/settings.json` under `permissi
 - `Bash(*apra-fleet-installer-* install *)`
 - `Bash(*apra-fleet* --version)`
 - `Bash(*apra-fleet* start)`
+- `Bash(node scripts/preflight-clear-build-locks.mjs)` -- pre-`npm ci` stale
+  build-tool lock cleanup, see Deploy below
 - `Bash(npm ci)`
 - `Bash(npm run build)`
 - `Bash(npm run build:binary)`
@@ -29,6 +31,14 @@ either wait for them to finish or be ready to force-release their stale
 reservations and relaunch afterward.
 
 ```bash
+# Ownership-scoped pre-flight: kills any process still holding a lock on a
+# file under THIS repo's node_modules (e.g. an orphaned esbuild.exe from a
+# prior crashed/killed build) so `npm ci` doesn't fail with EPERM/unlink.
+# Never name-based -- only kills processes whose own executable path/cmdline
+# points inside this exact checkout's node_modules, so it cannot collide
+# with an unrelated project's same-named process.
+node scripts/preflight-clear-build-locks.mjs
+
 npm ci
 npm run build
 npm run build:binary
