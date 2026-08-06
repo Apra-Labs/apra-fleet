@@ -67,7 +67,7 @@ export class AgyProvider implements ProviderAdapter {
     const tier = inputTier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
 
-    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}"`;
+    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}" --output-format json`;
     if (agentName) {
       cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
     }
@@ -81,16 +81,9 @@ export class AgyProvider implements ProviderAdapter {
       }
     }
 
-    if (unattended === 'dangerous') {
+    if (unattended) {
       cmd += ' --dangerously-skip-permissions';
     }
-
-    // After agy exits, read its transcript from disk (primary output channel --
-    // agy writes its response to CONOUT$, not stdout, so file I/O is required).
-    const transcriptScript = `${SCRIPTS_UNIX}/agy-transcript-reader.js`;
-    const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
-    const folderArg = `"${escapeDoubleQuoted(folder)}"`;
-    cmd += `; node "${transcriptScript}" ${convArg} ${folderArg}`;
 
     return cmd;
   }
@@ -111,9 +104,53 @@ export class AgyProvider implements ProviderAdapter {
       extractedSessionId = sessionMatch[1].trim();
     }
 
-    // Primary path: extract response from the transcript JSONL that agy writes after
-    // completing its task. This is more reliable than PTY/ANSI capture because agy
-    // writes its LLM response to CONOUT$ (not stdout), but always writes a transcript file.
+    // Primary path: parse AGY's native JSON envelope from stdout
+    // Format: {"conversation_id":"...","status":"SUCCESS"|"ERROR","response":"...","usage":{"input_tokens":...,"output_tokens":...}}
+    try {
+      const strippedForJson = stripAnsi(raw)
+        .replace(/^FLEET_PID:\d+\r?\n/m, '')
+        .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
+        .trim();
+
+      const jsonMatch = strippedForJson.match(/\{[\s\S]*"conversation_id"[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsedObj = JSON.parse(jsonMatch[0]) as {
+          conversation_id?: string;
+          status?: string;
+          response?: string;
+          error?: string;
+          usage?: {
+            input_tokens?: number;
+            output_tokens?: number;
+            thinking_tokens?: number;
+            cache_read_tokens?: number;
+            total_tokens?: number;
+          };
+        };
+
+        const convId = parsedObj.conversation_id && parsedObj.conversation_id.trim()
+          ? parsedObj.conversation_id.trim()
+          : undefined;
+
+        const resultText = (parsedObj.response && parsedObj.response.trim()
+          ? parsedObj.response.trim()
+          : (parsedObj.error ?? '').trim());
+        const isError = result.code !== 0 || parsedObj.status === 'ERROR';
+
+        return {
+          result: resultText,
+          sessionId: convId ?? extractedSessionId,
+          isError,
+          raw,
+          usage: parsedObj.usage ? {
+            input_tokens: parsedObj.usage.input_tokens ?? 0,
+            output_tokens: parsedObj.usage.output_tokens ?? 0,
+          } : undefined,
+        };
+      }
+    } catch { /* fallthrough to transcript/ANSI extraction */ }
+
+    // Secondary path: transcript marker section
     const startMarker = 'FLEET_TRANSCRIPT_START';
     const endMarker = 'FLEET_TRANSCRIPT_END';
     const startIdx = raw.indexOf(startMarker);
@@ -139,7 +176,7 @@ export class AgyProvider implements ProviderAdapter {
           ) {
             lastResponse = entry.content.trim();
           }
-        } catch { /* skip malformed JSON lines */ }
+        } catch { /* skip */ }
       }
       if (lastResponse) {
         return {
@@ -152,8 +189,7 @@ export class AgyProvider implements ProviderAdapter {
       }
     }
 
-    // Fallback: ANSI-strip stdout (covers cases where transcript is missing or incomplete)
-    console.error('[agy] warning: transcript markers not found -- falling back to raw ANSI-stripped output');
+    // Fallback: ANSI-strip stdout
     const stripped = stripAnsi(raw)
       .replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '')
       .replace(/^FLEET_PID:\d+\r?\n/m, '')
@@ -179,9 +215,6 @@ export class AgyProvider implements ProviderAdapter {
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {
     if (!sessionId || !resuming) return '';
-    // Only pass --conversation when resuming an existing session (agy uses it to
-    // reload conversation history). For fresh sessions, agy ignores any UUID we
-    // pass and creates its own -- transcript is found via folder lookup instead.
     return `--conversation "${escapeDoubleQuoted(sessionId)}"`;
   }
 
@@ -244,24 +277,13 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string, tier?: 'cheap' | 'standard' | 'premium'): string {
-    // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
     const resolvedTier = tier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];
-
-    let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" ${argList}`;
-
-    // After agy exits, read its conversation transcript via the installed helper script.
-    // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]
-    // so the script falls back gracefully (UUID lookup still works when agy honors --conversation).
-    const transcriptScript = `${SCRIPTS_WIN}\\agy-transcript-reader.js`;
-    const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
-    cmd += `; node "${transcriptScript}" ${convArg} ""`;
-
-    return cmd;
+    return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" --output-format json ${argList}`;
   }
 
   jsonOutputFlag(): string {
-    return '';
+    return '--output-format json';
   }
 
   headlessInvocation(promptLiteral: string): string {

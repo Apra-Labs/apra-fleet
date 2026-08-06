@@ -79,6 +79,7 @@ export const executePromptSchema = z.object({
     'A session-id STRING = EXPLICIT resume of exactly that session, preferred over the member\'s stored session -- the caller asserts this prompt depends on that session\'s prior context, so an unknown/expired id is a TERMINAL error ' +
     '(structured {isError, reason: "session_not_found"}, NO LLM call, and NO fresh-session fallback) rather than a silent wrong-context dispatch.'
   ),
+  session_id: z.string().optional().describe('Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")'),
   timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
   max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
@@ -763,7 +764,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   //              on that session's context, so an unknown/expired id is a
   //              TERMINAL session_not_found (handled just below) and NO
   //              fresh-session fallback is ever applied (see the retry paths).
-  const explicitResumeId = typeof input.resume === 'string' && input.resume.length > 0 ? input.resume : undefined;
+  const explicitResumeId = (typeof input.resume === 'string' && input.resume.length > 0)
+    ? input.resume
+    : (typeof input.session_id === 'string' && input.session_id.trim().length > 0 ? input.session_id.trim() : undefined);
   const resumeRequested = input.resume === true || explicitResumeId !== undefined;
   const resumeTargetId = explicitResumeId ?? agent.sessionId;
   // An explicit-id resume must never silently degrade to a fresh session: that
@@ -771,7 +774,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // resume=false keep their pre-existing transparent recovery.
   const allowFreshSessionFallback = explicitResumeId === undefined;
   const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume());
-  const mintedId = (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy')
+  const mintedId = (provider.name === 'claude' || provider.name === 'gemini')
     ? (resuming ? resumeTargetId! : uuid())
     : (resuming ? resumeTargetId : undefined);
 
@@ -1036,7 +1039,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (budget.exhausted) throw dispatchErr;
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
-      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+      const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini') ? uuid() : undefined, resuming: false };
       const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
       result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
     }
@@ -1069,7 +1072,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (!staleBudget.exhausted) {
         scope.info(`[${resolvedModel}] retrying -- stale session`);
         await tryKillPid(agent, strategy, cmds);
-        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini') ? uuid() : undefined, resuming: false };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
@@ -1088,7 +1091,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         scope.info(`[${resolvedModel}] retrying -- server overloaded`);
         await tryKillPid(agent, strategy, cmds);
         await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+        const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini') ? uuid() : undefined, resuming: false };
         const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
         result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
         parsed = provider.parseResponse(result);
@@ -1208,7 +1211,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const healBudget = retryBudget();
         if (!healBudget.exhausted) {
           await tryKillPid(agent, strategy, cmds);
-          const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini' || provider.name === 'agy') ? uuid() : undefined, resuming: false };
+          const freshOpts = { ...promptOpts, sessionId: (provider.name === 'claude' || provider.name === 'gemini') ? uuid() : undefined, resuming: false };
           const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
           result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
           parsed = provider.parseResponse(result);
@@ -1228,9 +1231,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       }
     }
 
-    // Session-id assertion: returned id must match the one we minted/resumed
-    // Exception: AGY owns its session generation, so we always accept its returned ID
-    if (provider.name !== 'agy' && mintedId && parsed.sessionId && parsed.sessionId !== mintedId) {
+    // Session-id assertion: when an explicit session ID is requested, the returned ID must match.
+    // If the provider CLI fell back to creating a new session ID because the requested session was missing on disk,
+    // reject cleanly with session_not_found rather than returning wrong-context output.
+    if (!allowFreshSessionFallback && mintedId && parsed.sessionId && parsed.sessionId !== mintedId) {
+      scope.info(`explicit session resume rejected: expected=${mintedId} got=${parsed.sessionId} -- session not found on remote disk`);
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- session "${mintedId}" was not found on remote member disk (provider created a fresh session instead). Rebuild the context and re-dispatch with resume=false.`,
+        structuredContent: { isError: true, reason: 'session_not_found', sessionId: mintedId },
+      };
+    }
+
+    if (mintedId && parsed.sessionId && parsed.sessionId !== mintedId) {
       scope.info(`session-id mismatch: expected=${mintedId} got=${parsed.sessionId} -- not persisting`);
       touchAgent(agent.id, undefined);
     } else {
