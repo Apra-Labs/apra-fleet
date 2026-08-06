@@ -619,9 +619,7 @@ apra-fleet workflow fleet-sprint \
       <ul>
         <li>Multi-sprint supervisor dashboard <span class="tagchip">preview</span> -- runs concurrent sprints with reservations, but its end-to-end smoke test has not yet passed cleanly</li>
         <li>Hub-spoke cloud mode (<code>apra-fleet join</code> / <code>spoke</code>) <span class="tagchip">groundwork</span> -- API contract and identity model landed; not yet usable end-to-end</li>
-        <li>Role permission grants are still a manual settings edit -- an automated permissions ledger was prototyped and reverted pending a design pass</li>
-        <li>Default install shells out to the <code>claude</code> CLI and fails hard if it isn't on PATH yet -- install Claude Code first, or pass <code>--llm</code> / <code>--transport http</code></li>
-        <li>Remote members on strict POSIX sh (not bash/zsh) may fail durable-output recovery</li>
+        <li>Default install expects the <code>claude</code> CLI to be on PATH -- install Claude Code first, or pass <code>--llm</code> / <code>--transport http</code></li>
       </ul>
     </div>
   </div>
