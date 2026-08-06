@@ -246,8 +246,6 @@
 
   .figure { margin: 2rem 0 0; }
   .figure figcaption { font-size: 0.8rem; color: var(--muted); margin-top: 0.6rem; max-width: 44rem; }
-  .figure--wide { width: min(1400px, calc(100vw - 3rem)); max-width: min(1400px, calc(100vw - 3rem)); margin-left: 50%; transform: translateX(-50%); }
-  .figure--wide figcaption { max-width: 44rem; }
 
   .stats { display: flex; gap: 2.5rem 3.5rem; flex-wrap: wrap; margin: 2rem 0 0; }
   .stat .n { font-family: var(--display); font-size: 2rem; font-weight: 600; color: var(--beacon); font-variant-numeric: tabular-nums; }
@@ -439,7 +437,7 @@ another called reviewer. Pair them."</span></pre>
   <p class="eyebrow">The architecture</p>
   <h2>Six layers. Software engineering is only the top one.</h2>
   <p class="lede">The architecture overview: layer by layer -- from OS primitives and provider CLIs up through the fleet MCP server, agent roles, and client runners. Note where the seam sits: Layer 4, apra-fleet-workflow, is a domain-agnostic engine; Layer 5, apra-fleet-se, is the software-engineering vertical built on top of it.</p>
-  <figure class="figure figure--wide">
+  <figure class="figure">
     <img class="img-light" src="assets/stack-light.svg" alt="apra-fleet layered architecture stack: six layers from operating systems and LLM CLIs, through the fleet MCP server, agent roles, and client runners, to the generic apra-fleet-workflow engine and the apra-fleet-se software-engineering vertical on top">
     <img class="img-dark" src="assets/stack-dark.svg" alt="apra-fleet layered architecture stack: six layers from operating systems and LLM CLIs, through the fleet MCP server, agent roles, and client runners, to the generic apra-fleet-workflow engine and the apra-fleet-se software-engineering vertical on top">
     <figcaption>The layered stack, from the repository's own README: fleet-supervisor and fleet-sprint (Layer 5) sit on the generic workflow engine (Layer 4) -- a seam you can check. The runner executes any authored workflow directory (<a href="https://github.com/Apra-Labs/apra-fleet/blob/main/docs/authoring-workflows.md">docs/authoring-workflows.md</a>) -- software engineering is just the one wired up.</figcaption>
