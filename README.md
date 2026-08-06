@@ -253,6 +253,130 @@ a network egress policy (allow / deny / confirm). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
 god-mode. VCS access is provisioned and revocable per member.
 
+## Email Configuration
+
+The fleet supports sending email via **SendGrid** or **SMTP**. Configure the
+transport by setting environment variables on the fleet server, using either
+environment variables or the credential-store for secrets.
+
+### SendGrid Setup
+
+Set these environment variables or credential-store entries:
+
+```bash
+export EMAIL_TRANSPORT=sendgrid
+export EMAIL_FROM="noreply@example.com"
+export SENDGRID_API_KEY="SG_..."      # or set via: apra-fleet secret --set sendgrid_api_key
+```
+
+Or use the credential-store for the API key:
+```bash
+apra-fleet secret --set sendgrid_api_key    # Prompts for the API key (masked input)
+```
+
+Then reference it in your workflow or configuration:
+```bash
+export SENDGRID_API_KEY="{{secure.sendgrid_api_key}}"
+```
+
+### SMTP Setup
+
+For SMTP (port 587 with STARTTLS, or 465 for implicit TLS):
+
+```bash
+export EMAIL_TRANSPORT=smtp
+export EMAIL_FROM="noreply@example.com"
+export SMTP_HOST="smtp.example.com"
+export SMTP_PORT=587
+export SMTP_USER="user@example.com"
+export SMTP_PASS="..."                # or set via credential-store
+export SMTP_SECURE=false               # true for port 465 (implicit TLS)
+```
+
+Store the password in the credential-store:
+```bash
+apra-fleet secret --set smtp_password
+```
+
+Then reference it in your configuration:
+```bash
+export SMTP_PASS="{{secure.smtp_password}}"
+```
+
+### Workflow Usage
+
+Use `send_email` in your workflow scripts to send messages:
+
+```javascript
+import { sendEmail } from '@apralabs/apra-fleet/tools/send-email.js';
+
+export async function main(context) {
+  const { log, phase } = context;
+
+  // Simple text email
+  phase('Sending notification');
+  const result = await sendEmail({
+    to: 'recipient@example.com',
+    subject: 'Workflow Notification',
+    body: 'This email was sent by an apra-fleet workflow.'
+  });
+  const parsed = JSON.parse(result);
+  log(`Email sent: ${parsed.messageId}`);
+
+  // Email with HTML and attachments
+  phase('Sending report');
+  const resultWithAttachment = await sendEmail({
+    to: ['user1@example.com', 'user2@example.com'],
+    cc: ['manager@example.com'],
+    subject: 'Sprint Report',
+    body: 'Please see the attached report.',
+    html: '<p>Please see the <strong>attached report</strong>.</p>',
+    attachments: [
+      {
+        filename: 'report.pdf',
+        content: 'JVBERi0xLjQKJeLj...',  // Base64-encoded PDF
+        contentType: 'application/pdf'
+      }
+    ]
+  });
+  const parsedWithAttachment = JSON.parse(resultWithAttachment);
+  log(`Report sent: ${parsedWithAttachment.messageId}`);
+}
+```
+
+### Configuration Location
+
+Fleet user configuration is stored in:
+
+- **Linux/macOS:** `~/.apra-fleet/`
+- **Windows:** `%APPDATA%\apra-fleet\`
+
+Environment variables can be set in:
+- Fleet server startup environment
+- Workflow scripts (per-execution overrides)
+- Per-member environment (via fleet registration)
+
+### send_email Tool Reference
+
+The `send_email` tool accepts:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `to` | string or string[] | yes | Recipient email address(es) |
+| `subject` | string | yes | Email subject line |
+| `body` | string | yes | Plain-text email body |
+| `html` | string | no | HTML email body (optional; if provided, sends both text and HTML) |
+| `cc` | string[] | no | CC recipient addresses |
+| `bcc` | string[] | no | BCC recipient addresses |
+| `attachments` | attachment[] | no | File attachments (base64-encoded content) |
+
+Each attachment object contains:
+- `filename` (string, required): Name of the file
+- `content` (string, required): Base64-encoded file content
+- `contentType` (string, optional): MIME type (defaults to application/octet-stream)
+
+Returns: `{ ok: true, messageId }` on success, or `{ ok: false, error }` on failure.
+
 ## The packages
 
 | Package | What it is |
