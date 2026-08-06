@@ -163,6 +163,17 @@
  * @property {string} [member_name] - Friendly name of the member
  */
 
+/**
+ * @typedef {Object} SendEmailOptions
+ * @property {string | string[]} to - Recipient email address, or list of addresses
+ * @property {string} subject - Email subject line
+ * @property {string} body - Plain-text email body
+ * @property {string} [html] - Optional HTML email body
+ * @property {string[]} [cc] - CC recipient addresses
+ * @property {string[]} [bcc] - BCC recipient addresses
+ * @property {{ filename: string, content: string, contentType?: string }[]} [attachments] - Optional file attachments (base64-encoded content)
+ */
+
 
 // Grace margin added on top of the payload's own timeout hint (timeout_s /
 // max_total_s) so the client doesn't race the server's own deadline -- the
@@ -340,6 +351,14 @@ export class ApraFleet {
      */
     async setupSshKey(options) {
         return this.mcpClient.callTool('setup_ssh_key', options);
+    }
+
+    /**
+     * Send an email via the configured transport (SendGrid or SMTP).
+     * @param {SendEmailOptions} options
+     */
+    async sendEmail(options) {
+        return this.mcpClient.callTool('send_email', options);
     }
 
     /**
