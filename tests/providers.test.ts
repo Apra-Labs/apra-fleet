@@ -1070,9 +1070,11 @@ describe('AgyProvider', () => {
     expect(cmd).toContain('--dangerously-skip-permissions');
   });
 
-  it('builds prompt command with unattended=auto', () => {
+  it('builds prompt command with unattended=auto without passing invalid permission-mode flag', () => {
     const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'auto' });
-    expect(cmd).toContain('--permission-mode auto');
+    expect(cmd).not.toContain('--permission-mode');
+    expect(cmd).not.toContain('--dangerously-skip-permissions');
+    expect(p.permissionModeAutoFlag()).toBeNull();
   });
 
   it('jsonOutputFlag returns --output-format json', () => {

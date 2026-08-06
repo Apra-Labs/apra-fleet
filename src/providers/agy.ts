@@ -83,8 +83,6 @@ export class AgyProvider implements ProviderAdapter {
 
     if (unattended === 'dangerous') {
       cmd += ' --dangerously-skip-permissions';
-    } else if (unattended === 'auto') {
-      cmd += ' --permission-mode auto';
     }
 
     return cmd;
@@ -94,8 +92,8 @@ export class AgyProvider implements ProviderAdapter {
     return '--dangerously-skip-permissions';
   }
 
-  permissionModeAutoFlag(): string {
-    return '--permission-mode auto';
+  permissionModeAutoFlag(): string | null {
+    return null;
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {
