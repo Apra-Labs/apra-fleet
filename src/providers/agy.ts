@@ -1,9 +1,10 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { stripAnsi } from '../utils/ansi.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -85,6 +86,13 @@ export class AgyProvider implements ProviderAdapter {
       cmd += ' --dangerously-skip-permissions';
     }
 
+    // After agy exits, read its transcript from disk (primary output channel --
+    // agy writes its response to CONOUT$, not stdout, so file I/O is required).
+    const transcriptScript = `${SCRIPTS_UNIX}/agy-transcript-reader.js`;
+    const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
+    const folderArg = `"${escapeDoubleQuoted(folder)}"`;
+    cmd += `; node "${transcriptScript}" ${convArg} ${folderArg}`;
+
     return cmd;
   }
 
@@ -112,7 +120,6 @@ export class AgyProvider implements ProviderAdapter {
         .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
         .trim();
 
-      // Non-greedy reverse scan for the last valid JSON object containing AGY envelope keys
       const lines = strippedForJson.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
       let parsedObj: any = null;
       for (let i = lines.length - 1; i >= 0; i--) {
@@ -129,7 +136,6 @@ export class AgyProvider implements ProviderAdapter {
       }
 
       if (!parsedObj) {
-        // Multi-line JSON fallback attempt
         const jsonMatch = strippedForJson.match(/\{[\s\S]*?"conversation_id"[\s\S]*?\}/);
         if (jsonMatch) {
           parsedObj = JSON.parse(jsonMatch[0]);
@@ -157,11 +163,11 @@ export class AgyProvider implements ProviderAdapter {
           } : undefined,
         };
       }
-    } catch (err: any) {
-      console.warn(`[agy] warning: failed to parse AGY native JSON envelope from stdout: ${err?.message ?? err}`);
-    }
+    } catch { /* fallthrough */ }
 
-    // Secondary path: transcript marker section
+    // Secondary path: diagnostic warning on non-JSON fallthrough
+    logWarn('agy_provider', 'No valid native JSON envelope found in AGY output; falling back to transcript/ANSI parsing');
+
     const startMarker = 'FLEET_TRANSCRIPT_START';
     const endMarker = 'FLEET_TRANSCRIPT_END';
     const startIdx = raw.indexOf(startMarker);
@@ -187,7 +193,7 @@ export class AgyProvider implements ProviderAdapter {
           ) {
             lastResponse = entry.content.trim();
           }
-        } catch { /* skip */ }
+        } catch { /* skip malformed JSON lines */ }
       }
       if (lastResponse) {
         return {
@@ -200,7 +206,8 @@ export class AgyProvider implements ProviderAdapter {
       }
     }
 
-    // Fallback: ANSI-strip stdout
+    // Fallback: ANSI-strip stdout (covers cases where transcript is missing or incomplete)
+    console.error('[agy] warning: transcript markers not found -- falling back to raw ANSI-stripped output');
     const stripped = stripAnsi(raw)
       .replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '')
       .replace(/^FLEET_PID:\d+\r?\n/m, '')
@@ -224,8 +231,25 @@ export class AgyProvider implements ProviderAdapter {
     return false;
   }
 
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'provider-minted' };
+  }
+
+  resolveSessionLogPath(sessionId: string, _workFolder: string, homeDir?: string): string {
+    const home = homeDir ?? os.homedir();
+    return path.join(home, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+  }
+
+  resolveSessionLogDir(_workFolder: string, homeDir?: string): string | null {
+    const home = homeDir ?? os.homedir();
+    return path.join(home, '.gemini', 'antigravity-cli', 'brain');
+  }
+
   resumeFlag(sessionId?: string, resuming?: boolean): string {
     if (!sessionId || !resuming) return '';
+    // Only pass --conversation when resuming an existing session (agy uses it to
+    // reload conversation history). For fresh sessions, agy ignores any UUID we
+    // pass and creates its own -- transcript is found via folder lookup instead.
     return `--conversation "${escapeDoubleQuoted(sessionId)}"`;
   }
 
@@ -288,9 +312,20 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string, tier?: 'cheap' | 'standard' | 'premium'): string {
+    // Write per-workspace model override before launching agy (mirrors buildPromptCommand).
     const resolvedTier = tier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];
-    return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" ${argList}`;
+
+    let cmd = `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" ${argList}`;
+
+    // After agy exits, read its conversation transcript via the installed helper script.
+    // Since wrapWindowsPrompt doesn't receive folder directly, pass empty string for argv[2]
+    // so the script falls back gracefully (UUID lookup still works when agy honors --conversation).
+    const transcriptScript = `${SCRIPTS_WIN}\\agy-transcript-reader.js`;
+    const convArg = sessionId ? `"${escapeDoubleQuoted(sessionId)}"` : '""';
+    cmd += `; node "${transcriptScript}" ${convArg} ""`;
+
+    return cmd;
   }
 
   jsonOutputFlag(): string {

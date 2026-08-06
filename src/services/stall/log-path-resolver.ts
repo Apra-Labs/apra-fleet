@@ -1,6 +1,5 @@
 import type { LlmProvider } from '../../types.js';
-import { homedir } from 'os';
-import { join, basename } from 'path';
+import { getProvider } from '../../providers/index.js';
 
 /**
  * Claude Code stores each project's sessions under a single directory named
@@ -18,22 +17,8 @@ export function resolveSessionLogDir(
   workFolder: string,
   homeDir?: string
 ): string | null {
-  const home = homeDir ?? homedir();
-
-  if (provider === 'claude') {
-    return join(home, '.claude', 'projects', encodeClaudeProjectDir(workFolder));
-  }
-
-  if (provider === 'gemini') {
-    const projectName = basename(workFolder) || 'project';
-    return join(home, '.gemini', 'tmp', projectName, 'chats');
-  }
-
-  if (provider === 'agy') {
-    return join(home, '.gemini', 'antigravity-cli', 'brain');
-  }
-
-  return null;
+  const adapter = getProvider(provider);
+  return adapter.resolveSessionLogDir(workFolder, homeDir);
 }
 
 export function resolveSessionLogPath(
@@ -42,27 +27,10 @@ export function resolveSessionLogPath(
   workFolder: string,
   homeDir?: string
 ): string {
-  const home = homeDir ?? homedir();
-
-  if (provider === 'claude') {
-    // Claude: ~/.claude/projects/<project-path-encoded>/<sessionId>.jsonl
-    return join(home, '.claude', 'projects', encodeClaudeProjectDir(workFolder), `${sessionId}.jsonl`);
-  }
-
-  if (provider === 'gemini') {
-    // Gemini: ~/.gemini/tmp/<project>/chats/<sessionId>.jsonl
-    const projectName = workFolder.split(/[\\/]/).pop() ?? 'project';
-    return join(home, '.gemini', 'tmp', projectName, 'chats', `${sessionId}.jsonl`);
-  }
-
-  if (provider === 'agy') {
-    // AGY: ~/.gemini/antigravity-cli/brain/<sessionId>/.system_generated/logs/transcript.jsonl
-    return join(home, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
-  }
-
-  if (provider === 'codex' || provider === 'copilot') {
+  const adapter = getProvider(provider);
+  const resolved = adapter.resolveSessionLogPath(sessionId, workFolder, homeDir);
+  if (!resolved) {
     throw new Error(`Unsupported log polling for provider: ${provider}`);
   }
-
-  throw new Error(`Unknown LLM provider: ${provider}`);
+  return resolved;
 }

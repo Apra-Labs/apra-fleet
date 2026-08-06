@@ -2,6 +2,7 @@ import { getAgent } from '../registry.js';
 import { getStrategy, type AgentStrategy } from '../strategy.js';
 import { getAgentOS } from '../../utils/agent-helpers.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
+import { getProvider } from '../../providers/index.js';
 
 export interface PollResult {
   lastTimestamp: string | null;
@@ -22,6 +23,38 @@ export interface PollResult {
    * permission error, etc.) -- treated the same as "no signal" by callers.
    */
   mtimeMs?: number | null;
+}
+
+/**
+ * Polling for directory-level file activity for provisional sessions where a
+ * specific session file is not yet known before spawn (e.g. AGY fresh turns).
+ */
+export async function pollDirectoryMtimeMs(memberId: string): Promise<number | null> {
+  const agent = getAgent(memberId);
+  if (!agent) return null;
+
+  const provider = agent.llmProvider ?? 'claude';
+  const adapter = getProvider(provider);
+  const logDir = adapter.resolveSessionLogDir(agent.workFolder);
+  if (!logDir) return null;
+
+  const isWindows = getAgentOS(agent) === 'windows';
+  const strategy = getStrategy(agent);
+
+  const cmd = isWindows
+    ? `powershell -c "$i = Get-ChildItem -Path '${logDir}' -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1; if ($i) { [DateTimeOffset]::new($i.LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds() }"`
+    : `find "${logDir}" -type f -exec stat -c %Y {} + 2>/dev/null | sort -nr | head -n1`;
+
+  try {
+    const result = await strategy.execCommand(cmd, 5000);
+    const trimmed = result.stdout.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return isWindows ? n : n * 1000;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -1,6 +1,6 @@
 import { updateAgent } from '../registry.js';
 import { logLine, logWarn, LogScope } from '../../utils/log-helpers.js';
-import { pollLogFile } from './stall-poller.js';
+import { pollLogFile, pollDirectoryMtimeMs } from './stall-poller.js';
 import { toLocalISOString, fmtElapsed } from './time-utils.js';
 import { writeStatusline } from '../statusline.js';
 
@@ -85,13 +85,20 @@ export class StallDetector {
 
     for (const [memberId, entry] of this.stallCheckList.entries()) {
       if (entry.provisional) {
-        // Provisional: if logFilePath is available, check mtime to see if log writes have started
+        // Provisional: if logFilePath is available, check mtime; if logFilePath is null, poll directory activity
         if (entry.logFilePath) {
           try {
             const pollResult = await pollLogFile(memberId, entry.logFilePath);
             if (pollResult.mtimeMs && pollResult.mtimeMs > entry.lastActivityAt) {
               entry.lastActivityAt = pollResult.mtimeMs;
               entry.provisional = false;
+            }
+          } catch { /* best effort */ }
+        } else {
+          try {
+            const dirMtimeMs = await pollDirectoryMtimeMs(memberId);
+            if (dirMtimeMs && dirMtimeMs > entry.lastActivityAt) {
+              entry.lastActivityAt = dirMtimeMs;
             }
           } catch { /* best effort */ }
         }

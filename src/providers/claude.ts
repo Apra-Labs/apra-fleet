@@ -1,7 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
 import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
@@ -237,6 +240,22 @@ export class ClaudeProvider implements ProviderAdapter {
   resumeFlag(sessionId?: string, resuming?: boolean): string {
     if (!sessionId) return '';
     return resuming ? buildResumeFlag(sessionId) : buildSessionIdFlag(sessionId);
+  }
+
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'caller-minted' };
+  }
+
+  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string): string {
+    const home = homeDir ?? os.homedir();
+    const encoded = workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+    return path.join(home, '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+  }
+
+  resolveSessionLogDir(workFolder: string, homeDir?: string): string | null {
+    const home = homeDir ?? os.homedir();
+    const encoded = workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+    return path.join(home, '.claude', 'projects', encoded);
   }
 
   // Bare family aliases -- the claude CLI resolves these to the current

@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -105,6 +105,18 @@ export class CodexProvider implements ProviderAdapter {
 
   supportsMaxTurns(): boolean {
     return false;
+  }
+
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'provider-minted' };
+  }
+
+  resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string): string {
+    return '';
+  }
+
+  resolveSessionLogDir(_workFolder: string, _homeDir?: string): string | null {
+    return null;
   }
 
   resumeFlag(_sessionId?: string): string {

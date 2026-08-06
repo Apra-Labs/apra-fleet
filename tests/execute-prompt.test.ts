@@ -12,7 +12,7 @@ import { getOsCommands } from '../src/os/index.js';
 import type { SSHExecResult } from '../src/types.js';
 import { setBudget, _resetBudgetState } from '../src/services/budget-awareness.js';
 import { recordSessionUsage, _resetSessionUsage, DEFAULT_SIZE_BUCKET_TOKENS } from '../src/services/context-admission.js';
-import { sessionRegistry } from '../src/services/session-registry.js';
+import { recordKnownSession } from '../src/services/known-sessions.js';
 import { localWorkspaceId } from '../src/services/token-issuer.js';
 // apra-fleet-63x.2: the same pricing function FleetWorkflow.agent() calls
 // (packages/apra-fleet-workflow/src/workflow/index.mjs's _resolveCost ->
@@ -2212,6 +2212,67 @@ describe('context-headroom admission gate at the execute_prompt boundary (apra-f
       isError: true,
       reason: 'insufficient_context_headroom',
       detail: { demand: DEFAULT_SIZE_BUCKET_TOKENS.M },
+    });
+  });
+
+  describe('AGY provider dispatches', () => {
+    it('fresh AGY dispatch (resume: false) emits no --conversation flag and records returned conversation_id', async () => {
+      const agyMember = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy' });
+      addAgent(agyMember);
+
+      const agyOutput = JSON.stringify({
+        conversation_id: 'agy-conv-9876',
+        status: 'SUCCESS',
+        response: 'Done with AGY task',
+        usage: { input_tokens: 1000, output_tokens: 200 },
+      });
+      mockExecCommand.mockResolvedValue({
+        stdout: `FLEET_PID:1234\n${agyOutput}`,
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: agyMember.id, prompt: 'do task', resume: false, timeout_s: 5 });
+
+      expect(mockExecCommand).toHaveBeenCalled();
+      const promptCmdCall = mockExecCommand.mock.calls.find(call => call[0].includes('agy'));
+      expect(promptCmdCall).toBeDefined();
+      const executedCmd = promptCmdCall![0];
+      expect(executedCmd).toContain('--output-format json');
+      expect(executedCmd).not.toContain('--conversation');
+
+      expect(resultText(result)).toContain('Done with AGY task');
+      expect((result.structuredContent as any)?.sessionId).toBe('agy-conv-9876');
+
+      const updatedAgent = getAgent(agyMember.id);
+      expect(updatedAgent?.sessionId).toBe('agy-conv-9876');
+    });
+
+    it('resumed AGY dispatch (resume: true) passes --conversation with target session ID', async () => {
+      const agyMember = makeTestAgent({ friendlyName: 'agy-resumer', llmProvider: 'agy', sessionId: 'agy-conv-existing' });
+      addAgent(agyMember);
+      recordKnownSession(agyMember.id, 'agy-conv-existing');
+
+      const agyOutput = JSON.stringify({
+        conversation_id: 'agy-conv-existing',
+        status: 'SUCCESS',
+        response: 'Resumed AGY task response',
+        usage: { input_tokens: 500, output_tokens: 100 },
+      });
+      mockExecCommand.mockResolvedValue({
+        stdout: agyOutput,
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: agyMember.id, prompt: 'continue task', resume: true, timeout_s: 5 });
+
+      expect(mockExecCommand).toHaveBeenCalled();
+      const promptCmdCall = mockExecCommand.mock.calls.find(call => call[0].includes('agy'));
+      expect(promptCmdCall).toBeDefined();
+      const executedCmd = promptCmdCall![0];
+      expect(executedCmd).toContain('--conversation "agy-conv-existing"');
+      expect(resultText(result)).toContain('Resumed AGY task response');
     });
   });
 });

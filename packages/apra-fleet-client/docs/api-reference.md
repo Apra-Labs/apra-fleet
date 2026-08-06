@@ -197,7 +197,8 @@ fields are sent as the tool payload; `timeoutMs` is passed to
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
 | `model` | `string?` | Model tier (`"cheap"`, `"standard"`, `"premium"`) or a specific model ID. |
-| `resume` | `boolean?` | Resume the previous session if one exists. At this client/transport layer, an omitted field defaults to `true` server-side. `apra-fleet-workflow`'s `FleetWorkflow.agent()` always sends this field explicitly (defaulting it to `false` for workflow-authored prompts), so workflow callers effectively opt out of this client-level default unless they ask for it. |
+| `resume` | `(boolean \| string)?` | Resume the previous session if one exists, or pass a session ID string directly. At this client/transport layer, an omitted field defaults to `true` server-side. `apra-fleet-workflow`'s `FleetWorkflow.agent()` always sends this field explicitly (defaulting it to `false` for workflow-authored prompts), so workflow callers effectively opt out of this client-level default unless they ask for it. |
+| `session_id` | `string?` | Optional explicit session ID to resume (shorthand alias for `resume: "<sessionId>"`). |
 | `substitutions` | `Record<string,string>?` | Token-name -> replacement-value map. |
 | `timeout_s` | `number?` | Inactivity timeout in seconds (default: 300). |
 | `timeoutMs` | `number?` | Client-side request timeout override (ms); not sent to the server. |

@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -104,6 +104,20 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   supportsMaxTurns(): boolean {
     return false;
+  }
+
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'provider-minted' };
+  }
+
+  resolveSessionLogPath(sessionId: string, _workFolder: string, homeDir?: string): string {
+    const home = homeDir ?? os.homedir();
+    return path.join(home, '.local', 'share', 'opencode', 'storage', 'chats', sessionId);
+  }
+
+  resolveSessionLogDir(_workFolder: string, homeDir?: string): string | null {
+    const home = homeDir ?? os.homedir();
+    return path.join(home, '.local', 'share', 'opencode', 'storage', 'chats');
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {

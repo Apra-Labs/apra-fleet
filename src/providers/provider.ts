@@ -5,6 +5,10 @@ import { sanitizeSessionId } from '../os/os-commands.js';
 
 export type { LlmProvider };
 
+export type SessionIdStrategy =
+  | { type: 'caller-minted' }
+  | { type: 'provider-minted' };
+
 /**
  * Build a `--resume <id>` flag with session ID sanitization and quoting.
  * Shared by providers that pass session IDs on the command line (Claude, Gemini).
@@ -133,6 +137,12 @@ export interface ProviderAdapter {
   supportsResume(): boolean;
   supportsMaxTurns(): boolean;
   resumeFlag(sessionId?: string, resuming?: boolean): string;
+  /** Defines whether this provider accepts caller-minted UUIDs or generates session IDs natively. */
+  sessionIdStrategy(): SessionIdStrategy;
+  /** Resolves the session transcript log path for a given session ID. */
+  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string): string;
+  /** Resolves the project/provider root log directory for watching in-flight activity. */
+  resolveSessionLogDir(workFolder: string, homeDir?: string): string | null;
 
   // Model tier mapping
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string>;
