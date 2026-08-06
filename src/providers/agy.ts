@@ -83,6 +83,8 @@ export class AgyProvider implements ProviderAdapter {
 
     if (unattended === 'dangerous') {
       cmd += ' --dangerously-skip-permissions';
+    } else if (unattended === 'auto') {
+      cmd += ' --permission-mode auto';
     }
 
     return cmd;
@@ -92,8 +94,8 @@ export class AgyProvider implements ProviderAdapter {
     return '--dangerously-skip-permissions';
   }
 
-  permissionModeAutoFlag(): string | null {
-    return null;
+  permissionModeAutoFlag(): string {
+    return '--permission-mode auto';
   }
 
   parseResponse(result: SSHExecResult): ParsedResponse {
@@ -112,27 +114,36 @@ export class AgyProvider implements ProviderAdapter {
         .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
         .trim();
 
-      const jsonMatch = strippedForJson.match(/\{[\s\S]*"conversation_id"[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsedObj = JSON.parse(jsonMatch[0]) as {
-          conversation_id?: string;
-          status?: string;
-          response?: string;
-          error?: string;
-          usage?: {
-            input_tokens?: number;
-            output_tokens?: number;
-            thinking_tokens?: number;
-            cache_read_tokens?: number;
-            total_tokens?: number;
-          };
-        };
+      // Non-greedy reverse scan for the last valid JSON object containing AGY envelope keys
+      const lines = strippedForJson.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      let parsedObj: any = null;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (line.startsWith('{') && line.endsWith('}')) {
+          try {
+            const candidate = JSON.parse(line);
+            if (candidate && typeof candidate === 'object' && ('conversation_id' in candidate || 'status' in candidate || 'response' in candidate)) {
+              parsedObj = candidate;
+              break;
+            }
+          } catch { /* keep looking */ }
+        }
+      }
 
-        const convId = parsedObj.conversation_id && parsedObj.conversation_id.trim()
+      if (!parsedObj) {
+        // Multi-line JSON fallback attempt
+        const jsonMatch = strippedForJson.match(/\{[\s\S]*?"conversation_id"[\s\S]*?\}/);
+        if (jsonMatch) {
+          parsedObj = JSON.parse(jsonMatch[0]);
+        }
+      }
+
+      if (parsedObj) {
+        const convId = parsedObj.conversation_id && typeof parsedObj.conversation_id === 'string' && parsedObj.conversation_id.trim()
           ? parsedObj.conversation_id.trim()
           : undefined;
 
-        const resultText = (parsedObj.response && parsedObj.response.trim()
+        const resultText = (parsedObj.response && typeof parsedObj.response === 'string' && parsedObj.response.trim()
           ? parsedObj.response.trim()
           : (parsedObj.error ?? '').trim());
         const isError = result.code !== 0 || parsedObj.status === 'ERROR';
@@ -142,13 +153,15 @@ export class AgyProvider implements ProviderAdapter {
           sessionId: convId ?? extractedSessionId,
           isError,
           raw,
-          usage: parsedObj.usage ? {
+          usage: parsedObj.usage && typeof parsedObj.usage === 'object' ? {
             input_tokens: parsedObj.usage.input_tokens ?? 0,
             output_tokens: parsedObj.usage.output_tokens ?? 0,
           } : undefined,
         };
       }
-    } catch { /* fallthrough to transcript/ANSI extraction */ }
+    } catch (err: any) {
+      console.warn(`[agy] warning: failed to parse AGY native JSON envelope from stdout: ${err?.message ?? err}`);
+    }
 
     // Secondary path: transcript marker section
     const startMarker = 'FLEET_TRANSCRIPT_START';
@@ -279,7 +292,7 @@ export class AgyProvider implements ProviderAdapter {
   wrapWindowsPrompt(setupCmd: string, filePath: string, argList: string, sessionId?: string, model?: string, tier?: 'cheap' | 'standard' | 'premium'): string {
     const resolvedTier = tier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', resolvedTier) ?? AGY_MODEL_FOR_TIER[resolvedTier];
-    return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" --output-format json ${argList}`;
+    return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} --model "${escapeDoubleQuoted(displayModel)}" ${argList}`;
   }
 
   jsonOutputFlag(): string {

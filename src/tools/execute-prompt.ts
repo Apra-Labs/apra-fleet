@@ -811,6 +811,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     agentName: input.agent,
   };
 
+  if (resumeTargetId || mintedId) {
+    const activeSid = (resumeTargetId ?? mintedId)!;
+    try {
+      stallDetector.update(agent.id, {
+        sessionId: activeSid,
+        logFilePath: resolveSessionLogPath(agent.llmProvider ?? 'claude', activeSid, resolvedWorkFolder),
+        provisional: false,
+      });
+    } catch { /* best-effort */ }
+  }
+
   const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
 
   // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt

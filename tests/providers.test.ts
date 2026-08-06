@@ -1070,6 +1070,11 @@ describe('AgyProvider', () => {
     expect(cmd).toContain('--dangerously-skip-permissions');
   });
 
+  it('builds prompt command with unattended=auto', () => {
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'auto' });
+    expect(cmd).toContain('--permission-mode auto');
+  });
+
   it('jsonOutputFlag returns --output-format json', () => {
     expect(p.jsonOutputFlag()).toBe('--output-format json');
   });

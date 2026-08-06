@@ -85,7 +85,18 @@ export class StallDetector {
 
     for (const [memberId, entry] of this.stallCheckList.entries()) {
       if (entry.provisional) {
-        // Provisional: skip log reading, but still detect stalls via baseline timeout
+        // Provisional: if logFilePath is available, check mtime to see if log writes have started
+        if (entry.logFilePath) {
+          try {
+            const pollResult = await pollLogFile(memberId, entry.logFilePath);
+            if (pollResult.mtimeMs && pollResult.mtimeMs > entry.lastActivityAt) {
+              entry.lastActivityAt = pollResult.mtimeMs;
+              entry.provisional = false;
+            }
+          } catch { /* best effort */ }
+        }
+
+        // Baseline timeout check for provisional entries
         if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
           const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
           scope.warn(JSON.stringify({
