@@ -2076,6 +2076,21 @@ export const KB_PROMOTER_ROLES = Object.freeze(new Set([ROLE_REVIEWER]));
 export const KB_MIN_PROMOTE_REASON = 20;
 export const KB_CAPTURE_TYPES = Object.freeze(['knowledge', 'learning', 'runbook']);
 
+/**
+ * True when an MCP tool result represents a tool-level failure. The MCP client
+ * resolves such results instead of throwing (apra-fleet-23c), so callers that
+ * only catch exceptions silently treat failures as successes.
+ */
+function isToolError(res) {
+    return !!(res && typeof res === 'object' && res.isError === true);
+}
+
+/** Best-effort human-readable text out of an MCP error result, for logging. */
+function toolErrorText(res) {
+    const first = res && Array.isArray(res.content) ? res.content[0] : null;
+    return (first && typeof first.text === 'string' && first.text) || 'no error text returned';
+}
+
 export function vetKbWork(role, result) {
     const captures = [];
     const promotions = [];
@@ -2095,10 +2110,18 @@ export function vetKbWork(role, result) {
             refused.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
             continue;
         }
+        // apra-fleet-23c: kbCaptureSchema requires content (z.string().min(1)).
+        // Omitting it here meant every kb_capture the engine sent failed zod
+        // validation at the MCP boundary and persisted nothing.
+        if (typeof c.content !== 'string' || c.content.trim().length === 0) {
+            refused.push(`${role}: capture "${c.title}" has no content`);
+            continue;
+        }
         captures.push({
             type: c.type,
             title: c.title,
             summary: c.summary,
+            content: c.content,
             source_files: c.source_files,
             symbols: Array.isArray(c.symbols) ? c.symbols : [],
         });
@@ -2150,7 +2173,15 @@ export function createKbWorkClient(opts = {}) {
             let promoted = 0;
             for (const c of captures) {
                 try {
-                    await callTool('kb_capture', { ...c, repo_path: repoPath });
+                    const res = await callTool('kb_capture', { ...c, repo_path: repoPath });
+                    // apra-fleet-23c: an MCP client RESOLVES with {isError:true} on a
+                    // tool-level failure rather than throwing, so counting every
+                    // non-throwing call as a success reported captures that never
+                    // persisted ("captured 3" against a KB that stayed empty).
+                    if (isToolError(res)) {
+                        log(`[kb-work] kb_capture rejected for "${c.title}" (non-fatal): ${toolErrorText(res)}`);
+                        continue;
+                    }
                     captured++;
                 } catch (err) {
                     log(`[kb-work] kb_capture failed for "${c.title}" (non-fatal): ${err.message}`);
@@ -2158,7 +2189,11 @@ export function createKbWorkClient(opts = {}) {
             }
             for (const p of promotions) {
                 try {
-                    await callTool('kb_promote', { id: p.id, reason: p.reason });
+                    const res = await callTool('kb_promote', { id: p.id, reason: p.reason });
+                    if (isToolError(res)) {
+                        log(`[kb-work] kb_promote rejected for ${p.id} (non-fatal): ${toolErrorText(res)}`);
+                        continue;
+                    }
                     promoted++;
                 } catch (err) {
                     log(`[kb-work] kb_promote failed for ${p.id} (non-fatal): ${err.message}`);
@@ -3616,9 +3651,17 @@ export function extractContestedBeadIds(verdict) {
 // would let a title close the quote early regardless of any other
 // restriction), and backslash (blocks a trailing-backslash "escape the
 // closing quote" trick as well as any other backslash-based escape
-// sequence). The allowed punctuation (`.,:;!?()'-_/` plus space) covers
+// sequence). The allowed punctuation (`.,:;!?()'-_/+[]` plus space) covers
 // realistic task titles while remaining inert as shell syntax in both POSIX
 // and Windows member shells.
+//
+// apra-fleet-v75: `[`, `]` and `+` are allowed. The title is interpolated as
+// `bd create "${title}"` -- inside double quotes, brackets never glob and `+`
+// has no meaning, in POSIX shells or PowerShell. Excluding them rejected this
+// project's own bead-title convention ([bug]/[epic]/[test] prefixes), which
+// `bd create` itself accepts; a real reviewer follow-up was dropped mid-sprint
+// on exactly that. The characters that ARE live inside double quotes --
+// `"`, `\`, backtick, `$` -- remain excluded, which is what this guard is for.
 //
 // `description` no longer reaches this shell-interpolation risk at all
 // (apra-fleet-eft.56.1, transport hardened in eft.73.1):
@@ -3630,7 +3673,7 @@ export function extractContestedBeadIds(verdict) {
 // SAFE_DESCRIPTION_RE only enforces the repo's own ASCII-only convention
 // (plus non-empty) -- legitimate technical characters ('=', '&', '+', '"',
 // backticks-as-text, '%', '#', '[', ']', etc.) are allowed again.
-const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/-]+$/;
+const SAFE_TEXT_RE = /^[A-Za-z0-9 .,:;!?()'_/+[\]-]+$/;
 const SAFE_DESCRIPTION_RE = /^[\t\n\r\x20-\x7E]+$/;
 const SAFE_PRIORITY_RE = /^P[0-4]$/;
 

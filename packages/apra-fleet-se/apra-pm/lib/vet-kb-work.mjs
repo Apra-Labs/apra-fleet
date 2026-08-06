@@ -41,10 +41,18 @@ export function vetKbWork(role, result) {
       rejected.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
       continue;
     }
+    // apra-fleet-23c: kbCaptureSchema requires content (z.string().min(1)).
+    // Omitting it meant every kb_capture failed zod validation at the MCP
+    // boundary and persisted nothing.
+    if (typeof c.content !== 'string' || c.content.trim().length === 0) {
+      rejected.push(`${role}: capture "${c.title}" has no content`);
+      continue;
+    }
     captures.push({
       type: c.type,
       title: c.title,
       summary: c.summary,
+      content: c.content,
       source_files: c.source_files,
       symbols: Array.isArray(c.symbols) ? c.symbols : [],
     });
