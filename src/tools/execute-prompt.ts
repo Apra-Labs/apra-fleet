@@ -778,14 +778,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     ? (resuming ? resumeTargetId! : uuid())
     : (resuming ? resumeTargetId : undefined);
 
-  // Terminal session-not-found gate for explicit-id resumes (apra-fleet-eft.78.1).
-  // Checked BEFORE any spawn (writePromptFile / the LLM invocation): if the
-  // caller named a session the server has never issued for this member -- and it
-  // is not the member's currently-stored session -- there is no context to
-  // resume. Reject with a structured session_not_found and make NO LLM call,
-  // so an orchestrator can rebuild a self-contained prompt and re-dispatch fresh
-  // deliberately, rather than getting a silent blank-session response.
-  if (explicitResumeId !== undefined) {
+  // Terminal session-not-found gate for explicit resume: "session-id" string (apra-fleet-eft.78.1).
+  // Checked BEFORE any spawn: if the caller passed resume: "session-id", verify server issued it.
+  // Exception: direct input.session_id parameter bypasses the 0ms server-memory gate and delegates
+  // directly to the provider CLI on the member machine (supporting external session IDs and historical logs).
+  const isDirectSessionIdParam = typeof input.session_id === 'string' && input.session_id.trim().length > 0;
+  if (explicitResumeId !== undefined && !isDirectSessionIdParam) {
     const resumable = provider.supportsResume()
       && (isKnownSession(agent.id, explicitResumeId) || explicitResumeId === agent.sessionId);
     if (!resumable) {

@@ -81,7 +81,7 @@ export class AgyProvider implements ProviderAdapter {
       }
     }
 
-    if (unattended) {
+    if (unattended === 'dangerous') {
       cmd += ' --dangerously-skip-permissions';
     }
 
