@@ -43,6 +43,12 @@ on this list -- flags evolve and this skill can drift.
   `packages/apra-fleet-se/fleet-sprint/docs/README.md`.
 - `--branch` is created from `--base` if it does not already exist. If it
   does exist (e.g. you are resuming), it is reused as-is.
+- **`--base` is resolved against the remote, not your local checkout.** A new
+  sprint branch is cut from `origin/<base>`, so any local commit on `<base>`
+  that you have not pushed is invisible to the run. Push `<base>` first --
+  otherwise the sprint silently starts from an older tree, and work that
+  depends on those commits (a `.beads/config.yaml` from `bd init`, a new
+  package.json script) fails in ways that look unrelated.
 - `--role-map` assigns specific members to specific roles, e.g.
   `--role-map '{"doer":["m1","m2"],"reviewer":["m3"]}'`. Accepts inline JSON
   or `@path/to/file.json`.
@@ -51,7 +57,12 @@ on this list -- flags evolve and this skill can drift.
 
 ## Preconditions to check first
 
-1. Every `--issue` target exists and is open: `bd show <id>`.
+1. Every `--issue` target exists and is open: `bd show <id>`, **and already has
+   children**: `bd list --parent <id>` must return at least one open bead.
+   Pre-sprint validation runs BEFORE the planner, so a childless epic aborts
+   the run ("No open/in-progress/blocked/deferred beads found for scope ...")
+   rather than being decomposed. The planner refines an existing DAG; it does
+   not create the first level of it.
 2. Every `--members` name is registered with the fleet (`list_members` /
    `mcp__apra-fleet__list_members`). An unregistered member aborts the
    sprint unless `--allow-missing-members` is passed.
