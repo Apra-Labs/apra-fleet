@@ -86,6 +86,35 @@ describe('createKbPrimingClient (apra-fleet-e28)', () => {
         assert.equal(calls.find((c) => c.name === 'kb_session_prime').args.repo_path, '/srv/wrapped/repo');
     });
 
+    // apra-fleet-n78: the mocks above answer member_detail with a folder no matter
+    // what args they get, which is more generous than the real tool. member_detail's
+    // `format` defaults to 'compact' (src/tools/member-detail.ts), and the compact
+    // renderer emits no folder at all -- `folder: agent.workFolder` is set only on
+    // the json path. So folderFor() has to ask for json explicitly, or it resolves
+    // null for every member and the KB is never primed for anyone.
+    test('asks member_detail for json -- compact carries no folder', async () => {
+        const calls = [];
+        const callTool = async (name, args) => {
+            calls.push({ name, args });
+            if (name === 'member_detail') {
+                // Mirror the real tool: compact is prose, and has no folder in it.
+                return args.format === 'json'
+                    ? { content: [{ text: JSON.stringify({ folder: '/srv/alpha/repo' }) }] }
+                    : { content: [{ text: '🤖 alpha (local) | online | os=linux | cli=2.1.223' }] };
+            }
+            return {};
+        };
+        const client = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        const result = await client.primeAll();
+
+        assert.equal(calls.find((c) => c.name === 'member_detail').args.format, 'json',
+            'without format:json the compact text has no folder and every member is skipped');
+        assert.equal(result.primed, 1);
+        assert.equal(result.skipped, 0);
+        assert.equal(calls.find((c) => c.name === 'kb_session_prime').args.repo_path, '/srv/alpha/repo');
+    });
+
     test('is a no-op when callTool is absent (direct runSprintCycle/main test calls)', async () => {
         const client = createKbPrimingClient({ members: ['alpha'], log: () => {} });
         const result = await client.primeAll();

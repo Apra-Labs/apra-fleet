@@ -2001,7 +2001,11 @@ export function createKbPrimingClient(opts = {}) {
     }
 
     async function folderFor(member) {
-        const detail = parseResult(await callTool('member_detail', { member_name: member }));
+        // apra-fleet-n78: format:'json' is REQUIRED. member_detail defaults to
+        // 'compact', whose renderer emits no folder at all -- `folder` is set only
+        // on the json path (src/tools/member-detail.ts). Omitting it made this
+        // return null for every member, so the KB was never primed for anyone.
+        const detail = parseResult(await callTool('member_detail', { member_name: member, format: 'json' }));
         // member_detail reports the work folder as `folder` (src/tools/member-detail.ts).
         const folder = detail && (detail.folder || (detail.member && detail.member.folder));
         return (typeof folder === 'string' && folder.length > 0) ? folder : null;
