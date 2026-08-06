@@ -1,16 +1,8 @@
 import type { LlmProvider } from '../../types.js';
 import { getProvider } from '../../providers/index.js';
+import { encodeClaudeProjectDir } from '../../providers/provider.js';
 
-/**
- * Claude Code stores each project's sessions under a single directory named
- * after the project's absolute path, with EVERY non-alphanumeric character
- * replaced by '-' (slashes, backslashes, colons, dots, underscores, spaces...).
- * e.g. /home/ecs_user/vbv_nyk/app -> -home-ecs-user-vbv-nyk-app
- * This must match Claude's own encoding exactly, or the transcript is not found.
- */
-export function encodeClaudeProjectDir(workFolder: string): string {
-  return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
-}
+export { encodeClaudeProjectDir };
 
 export function resolveSessionLogDir(
   provider: LlmProvider,

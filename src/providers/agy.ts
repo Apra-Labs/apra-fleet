@@ -116,6 +116,7 @@ export class AgyProvider implements ProviderAdapter {
     // Format: {"conversation_id":"...","status":"SUCCESS"|"ERROR","response":"...","usage":{"input_tokens":...,"output_tokens":...}}
     try {
       const strippedForJson = stripAnsi(raw)
+        .replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '')
         .replace(/^FLEET_PID:\d+\r?\n/m, '')
         .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
         .trim();
@@ -151,9 +152,10 @@ export class AgyProvider implements ProviderAdapter {
           ? parsedObj.conversation_id.trim()
           : undefined;
 
-        const resultText = (parsedObj.response && typeof parsedObj.response === 'string' && parsedObj.response.trim()
+        const errString = typeof parsedObj.error === 'string' ? parsedObj.error.trim() : '';
+        const resultText = (parsedObj.response && typeof parsedObj.response === 'string' && parsedObj.response.trim())
           ? parsedObj.response.trim()
-          : (parsedObj.error ?? '').trim());
+          : errString;
         const isError = result.code !== 0 || parsedObj.status === 'ERROR';
 
         return {

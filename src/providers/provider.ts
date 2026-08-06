@@ -9,6 +9,10 @@ export type SessionIdStrategy =
   | { type: 'caller-minted' }
   | { type: 'provider-minted' };
 
+export function encodeClaudeProjectDir(workFolder: string): string {
+  return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
 /**
  * Build a `--resume <id>` flag with session ID sanitization and quoting.
  * Shared by providers that pass session IDs on the command line (Claude, Gemini).

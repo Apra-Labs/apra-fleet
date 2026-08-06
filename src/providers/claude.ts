@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
 import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
-import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag, encodeClaudeProjectDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -248,13 +248,13 @@ export class ClaudeProvider implements ProviderAdapter {
 
   resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string): string {
     const home = homeDir ?? os.homedir();
-    const encoded = workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+    const encoded = encodeClaudeProjectDir(workFolder);
     return path.join(home, '.claude', 'projects', encoded, `${sessionId}.jsonl`);
   }
 
   resolveSessionLogDir(workFolder: string, homeDir?: string): string | null {
     const home = homeDir ?? os.homedir();
-    const encoded = workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+    const encoded = encodeClaudeProjectDir(workFolder);
     return path.join(home, '.claude', 'projects', encoded);
   }
 

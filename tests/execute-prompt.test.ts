@@ -2274,6 +2274,47 @@ describe('context-headroom admission gate at the execute_prompt boundary (apra-f
       expect(executedCmd).toContain('--conversation "agy-conv-existing"');
       expect(resultText(result)).toContain('Resumed AGY task response');
     });
+
+    it('session_id parameter acts as explicit session resume', async () => {
+      const agyMember = makeTestAgent({ friendlyName: 'agy-session-id-param', llmProvider: 'agy' });
+      addAgent(agyMember);
+      recordKnownSession(agyMember.id, 'agy-conv-shorthand');
+
+      const agyOutput = JSON.stringify({
+        conversation_id: 'agy-conv-shorthand',
+        status: 'SUCCESS',
+        response: 'Shorthand response',
+      });
+      mockExecCommand.mockResolvedValue({
+        stdout: agyOutput,
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: agyMember.id, prompt: 'task with session_id', session_id: 'agy-conv-shorthand', timeout_s: 5 });
+      expect(resultText(result)).toContain('Shorthand response');
+    });
+
+    it('explicit resume with returned session mismatch rejects with session_not_found', async () => {
+      const agyMember = makeTestAgent({ friendlyName: 'agy-mismatch', llmProvider: 'agy' });
+      addAgent(agyMember);
+      recordKnownSession(agyMember.id, 'agy-expected-id');
+
+      const agyOutput = JSON.stringify({
+        conversation_id: 'agy-different-id',
+        status: 'SUCCESS',
+        response: 'Mismatched response',
+      });
+      mockExecCommand.mockResolvedValue({
+        stdout: agyOutput,
+        stderr: '',
+        code: 0,
+      });
+
+      const result = await executePrompt({ member_id: agyMember.id, prompt: 'task', session_id: 'agy-expected-id', timeout_s: 5 });
+      expect(result.structuredContent?.reason).toBe('session_not_found');
+      expect(result.structuredContent?.isError).toBe(true);
+    });
   });
 });
 
