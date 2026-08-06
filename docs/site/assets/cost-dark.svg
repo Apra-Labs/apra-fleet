@@ -1,0 +1,174 @@
+<svg width="1280" height="600" viewBox="0 0 1280 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cost per apra-fleet e2e run: four real LLM-driven runs ranging $0.46-$3.05, then ~$0.00 forever after switching to a deterministic workflow.">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="costBgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#111210"/>
+      <stop offset="50%" stop-color="#171814"/>
+      <stop offset="100%" stop-color="#111210"/>
+    </linearGradient>
+
+    <linearGradient id="barAmberGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#94BA33"/>
+      <stop offset="100%" stop-color="#5a7a10"/>
+    </linearGradient>
+
+    <linearGradient id="panelDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E201B" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#171814" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <filter id="glowGreen" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="glowGoldFilter" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <!-- Cyber Grid Pattern -->
+    <pattern id="gridCostDark" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E201B" stroke-width="1" opacity="0.6"/>
+      <circle cx="40" cy="40" r="1.5" fill="#2C2E28" opacity="0.8"/>
+    </pattern>
+  </defs>
+
+  <!-- Base Canvas -->
+  <rect width="1280" height="600" fill="url(#costBgDark)"/>
+  <rect width="1280" height="600" fill="url(#gridCostDark)"/>
+
+  <!-- TOP HEADER BLOCK -->
+  <!-- Category Pill Badge -->
+  <g transform="translate(50, 32)">
+    <rect x="0" y="0" width="270" height="28" rx="14" fill="#94BA33" fill-opacity="0.15" stroke="#94BA33" stroke-width="1.2"/>
+    <circle cx="16" cy="14" r="4" fill="#94BA33" filter="url(#glowGoldFilter)"/>
+    <text x="30" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="800" letter-spacing="1.0" fill="#94BA33">TOKEN ECONOMICS &amp; COST COLLAPSE</text>
+  </g>
+
+  <!-- Main Title at y=112 -->
+  <text x="50" y="112" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="30" font-weight="900" fill="#ECEEE8">Explore with Agents. Operate with Workflows.</text>
+
+  <!-- Subtitle at y=146 -->
+  <text x="50" y="146" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="500" fill="#A3A89C">Real dogfood benchmark data: LLM token cost collapses to ~$0.00 when control flow hardens into deterministic workflows.</text>
+
+  <!-- MAIN COMPARISON CONTAINER (y=180) -->
+  <g transform="translate(50, 180)">
+
+    <!-- LEFT PANEL: LLM Orchestrated Exploration -->
+    <g transform="translate(0, 0)">
+      <rect x="0" y="0" width="550" height="370" rx="14" fill="url(#panelDark)" stroke="#2C2E28" stroke-width="1.5"/>
+
+      <!-- Panel Header Bar -->
+      <rect x="0" y="0" width="550" height="44" rx="14" fill="#1E201B"/>
+      <rect x="0" y="30" width="550" height="14" fill="#1E201B"/>
+      <circle cx="24" cy="22" r="5" fill="#94BA33" filter="url(#glowGoldFilter)"/>
+      <text x="38" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#ECEEE8">EXPLORATION PHASE (LLM-Orchestrated)</text>
+      <text x="420" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="700" fill="#94BA33">High Token Burn</text>
+
+      <!-- Bar Chart Container -->
+      <g transform="translate(45, 80)">
+        <!-- Grid Axis Lines -->
+        <line x1="0" y1="200" x2="450" y2="200" stroke="#2C2E28" stroke-width="1"/>
+        <line x1="0" y1="50" x2="450" y2="50" stroke="#2C2E28" stroke-width="1" stroke-dasharray="4 4"/>
+        <text x="456" y="50" dominant-baseline="central" font-family="monospace" font-size="11" font-weight="700" fill="#A3A89C">$3.00</text>
+        <line x1="0" y1="125" x2="450" y2="125" stroke="#2C2E28" stroke-width="1" stroke-dasharray="4 4"/>
+        <text x="456" y="125" dominant-baseline="central" font-family="monospace" font-size="11" font-weight="700" fill="#A3A89C">$1.50</text>
+
+        <!-- Clean Cost Reduction Curve -->
+        <path d="M 57 40 C 130 110, 220 148, 410 165" fill="none" stroke="#94BA33" stroke-width="2" stroke-dasharray="4 3" opacity="0.65"/>
+
+        <!-- Bar 1: $3.05 -->
+        <g transform="translate(30, 0)">
+          <rect x="0" y="47" width="54" height="153" rx="6" fill="url(#barAmberGrad)"/>
+          <text x="27" y="30" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="900" fill="#94BA33" text-anchor="middle">$3.05</text>
+          <text x="27" y="220" dominant-baseline="central" font-family="monospace" font-size="12" font-weight="700" fill="#ECEEE8" text-anchor="middle">Run 1</text>
+        </g>
+
+        <!-- Bar 2: $0.88 -->
+        <g transform="translate(140, 0)">
+          <rect x="0" y="156" width="54" height="44" rx="6" fill="url(#barAmberGrad)"/>
+          <text x="27" y="139" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="900" fill="#94BA33" text-anchor="middle">$0.88</text>
+          <text x="27" y="220" dominant-baseline="central" font-family="monospace" font-size="12" font-weight="700" fill="#ECEEE8" text-anchor="middle">Run 2</text>
+        </g>
+
+        <!-- Bar 3: $0.49 -->
+        <g transform="translate(250, 0)">
+          <rect x="0" y="175" width="54" height="25" rx="6" fill="url(#barAmberGrad)"/>
+          <text x="27" y="158" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="900" fill="#94BA33" text-anchor="middle">$0.49</text>
+          <text x="27" y="220" dominant-baseline="central" font-family="monospace" font-size="12" font-weight="700" fill="#ECEEE8" text-anchor="middle">Run 3</text>
+        </g>
+
+        <!-- Bar 4: $0.46 -->
+        <g transform="translate(360, 0)">
+          <rect x="0" y="177" width="54" height="23" rx="6" fill="url(#barAmberGrad)"/>
+          <text x="27" y="160" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="900" fill="#94BA33" text-anchor="middle">$0.46</text>
+          <text x="27" y="220" dominant-baseline="central" font-family="monospace" font-size="12" font-weight="700" fill="#ECEEE8" text-anchor="middle">Run 4</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- MIDDLE TRANSITION NODE -->
+    <g transform="translate(590, 185)">
+      <circle cx="0" cy="0" r="26" fill="#1E201B" stroke="#94BA33" stroke-width="2" filter="url(#glowGoldFilter)"/>
+      <path d="M -9 0 L 9 0 M 3 -5 L 9 0 L 3 5" stroke="#94BA33" stroke-width="2.5" fill="none"/>
+      <text x="0" y="46" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="800" fill="#94BA33" text-anchor="middle">HARDEN</text>
+      <text x="0" y="62" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="10" font-weight="600" fill="#ECEEE8" text-anchor="middle">to workflow</text>
+    </g>
+
+    <!-- RIGHT PANEL: Operational Phase (Unboxed, Open & Spacious Mechanics List) -->
+    <g transform="translate(630, 0)">
+      <rect x="0" y="0" width="550" height="370" rx="14" fill="url(#panelDark)" stroke="#94BA33" stroke-width="1.5"/>
+
+      <!-- Panel Header Bar -->
+      <rect x="0" y="0" width="550" height="44" rx="14" fill="#1E201B"/>
+      <rect x="0" y="30" width="550" height="14" fill="#1E201B"/>
+      <circle cx="24" cy="22" r="5" fill="#94BA33" filter="url(#glowGreen)"/>
+      <text x="38" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#ECEEE8">OPERATIONAL PHASE (apra-fleet Workflow)</text>
+      <text x="390" y="22" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12" font-weight="800" fill="#94BA33">0 Tokens Control Flow</text>
+
+      <!-- Content Container -->
+      <g transform="translate(30, 60)">
+        <!-- ~$0.00 / run Cost Card -->
+        <rect x="0" y="0" width="490" height="100" rx="10" fill="#171814" stroke="#94BA33" stroke-width="1.5"/>
+        <text x="24" y="26" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13" font-weight="600" fill="#ECEEE8">Orchestration &amp; Script Execution Cost:</text>
+        <text x="24" y="68" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="40" font-weight="900" fill="#94BA33" filter="url(#glowGreen)">~$0.00 / run</text>
+
+        <!-- Confirmed Run Badge -->
+        <rect x="345" y="26" width="125" height="48" rx="8" fill="#94BA33" fill-opacity="0.15" stroke="#94BA33" stroke-width="1"/>
+        <text x="407" y="43" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="11" font-weight="800" fill="#94BA33" text-anchor="middle">CONFIRMED</text>
+        <text x="407" y="60" dominant-baseline="central" font-family="monospace" font-size="10" font-weight="600" fill="#ECEEE8" text-anchor="middle">Run #30122124609</text>
+
+        <!-- SPACIOUS UNBOXED MECHANICS LIST (bullets shifted left, zero tight box boundaries) -->
+        <g transform="translate(0, 120)">
+
+          <!-- Bullet Item 1: execute_command -->
+          <g transform="translate(8, 25)">
+            <circle cx="0" cy="0" r="4.5" fill="#94BA33"/>
+            <text x="16" y="0" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14">
+              <tspan font-weight="900" fill="#ECEEE8">execute_command (0 Tokens):</tspan>
+              <tspan dx="10" font-weight="500" fill="#ECEEE8">Shell, git &amp; file ops run free.</tspan>
+            </text>
+          </g>
+
+          <!-- Bullet Item 2: execute_prompt -->
+          <g transform="translate(8, 72)">
+            <circle cx="0" cy="0" r="4.5" fill="#94BA33"/>
+            <text x="16" y="0" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14">
+              <tspan font-weight="900" fill="#ECEEE8">execute_prompt (Judgment):</tspan>
+              <tspan dx="10" font-weight="500" fill="#ECEEE8">LLM only for creative and judgment.</tspan>
+            </text>
+          </g>
+
+          <!-- Bullet Item 3: Commodity Model Swap -->
+          <g transform="translate(8, 119)">
+            <circle cx="0" cy="0" r="4.5" fill="#38BDF8"/>
+            <text x="16" y="0" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14">
+              <tspan font-weight="900" fill="#ECEEE8">Commodity Model Swap:</tspan>
+              <tspan dx="10" font-weight="500" fill="#ECEEE8">Swap frontier LLM for local vLLM on demand.</tspan>
+            </text>
+          </g>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>
