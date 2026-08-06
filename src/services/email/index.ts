@@ -38,6 +38,7 @@ export function loadEmailConfig(): EmailConfig {
 
     return {
       transport: 'smtp',
+      from,
       smtp: { host, port, secure: process.env.SMTP_SECURE === 'true', auth: { user, pass }, from },
     };
   }
@@ -52,7 +53,7 @@ export function loadEmailConfig(): EmailConfig {
       );
     }
 
-    return { transport: 'sendgrid', sendgrid: { apiKey, from } };
+    return { transport: 'sendgrid', from, sendgrid: { apiKey, from } };
   }
 
   throw new Error(`Unknown EMAIL_TRANSPORT "${transport}". Expected "sendgrid" or "smtp".`);

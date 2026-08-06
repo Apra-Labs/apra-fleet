@@ -40,6 +40,7 @@ export interface SmtpConfig {
 
 export interface EmailConfig {
   transport: 'sendgrid' | 'smtp';
+  from: string;
   sendgrid?: SendgridConfig;
   smtp?: SmtpConfig;
 }
