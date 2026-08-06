@@ -5,15 +5,11 @@ name: Spike - SEA dynamic import() of on-disk ESM (apra-fleet-7pm.1)
 # dynamic-import() an on-disk .mjs whose own bare specifier resolves from a
 # sibling node_modules -- with useCodeCache: true, as gen-sea-config.mjs sets.
 #
-# Run on demand (workflow_dispatch) or by pushing the spike script itself.
-# This is a spike harness, not a required gate on every PR.
+# Run on demand (workflow_dispatch) only.
+# This is a spike harness, not a required gate on every PR or push.
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'scripts/spike-sea-import.mjs'
-      - '.github/workflows/spike-sea-import.yml'
 
 jobs:
   spike:
