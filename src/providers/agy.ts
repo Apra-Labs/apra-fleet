@@ -127,7 +127,9 @@ export class AgyProvider implements ProviderAdapter {
         if (line.startsWith('{') && line.endsWith('}')) {
           try {
             const candidate = JSON.parse(line);
-            if (candidate && typeof candidate === 'object' && ('conversation_id' in candidate || 'status' in candidate || 'response' in candidate)) {
+            const isEnvelopeStatus = candidate && (candidate.status === 'SUCCESS' || candidate.status === 'ERROR');
+            const hasEnvelopeKeys = candidate && typeof candidate === 'object' && ('conversation_id' in candidate || isEnvelopeStatus) && ('response' in candidate || 'error' in candidate);
+            if (hasEnvelopeKeys) {
               parsedObj = candidate;
               break;
             }
@@ -136,9 +138,11 @@ export class AgyProvider implements ProviderAdapter {
       }
 
       if (!parsedObj) {
-        const jsonMatch = strippedForJson.match(/\{[\s\S]*?"conversation_id"[\s\S]*?\}/);
+        const jsonMatch = strippedForJson.match(/\{[\s\S]*?"response"\s*:[\s\S]*?\}/);
         if (jsonMatch) {
-          parsedObj = JSON.parse(jsonMatch[0]);
+          try {
+            parsedObj = JSON.parse(jsonMatch[0]);
+          } catch { /* fallthrough */ }
         }
       }
 
