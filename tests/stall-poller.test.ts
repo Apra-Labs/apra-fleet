@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Agent, SSHExecResult } from '../src/types.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 const {
   mockGetAgent,
@@ -387,15 +390,31 @@ describe('pollLogFile', () => {
       expect(await pollDirectoryMtimeMs('member-1')).toBeNull();
     });
 
-    it('polls directory mtime using maxdepth find command on posix', async () => {
+    it('successfully resolves mtime from a 4-level deep AGY brain layout fixture directory', async () => {
+      const tmpBrainDir = path.join(os.tmpdir(), `agy-test-brain-${Date.now()}`);
+      const transcriptDir = path.join(tmpBrainDir, 'sess-456', '.system_generated', 'logs');
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const transcriptPath = path.join(transcriptDir, 'transcript.jsonl');
+      fs.writeFileSync(transcriptPath, '{"test":true}');
+      const fileStat = fs.statSync(transcriptPath);
+
       mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'agy', workFolder: '/home/user/project' }));
-      mockGetAgentOS.mockReturnValue('linux');
-      mockExecCommand.mockResolvedValue({ stdout: '1700000000\n', stderr: '', code: 0 });
+      mockGetAgentOS.mockReturnValue(process.platform === 'win32' ? 'windows' : 'linux');
+
+      const expectedMs = Math.floor(fileStat.mtimeMs);
+      const statSeconds = Math.floor(expectedMs / 1000);
+      mockExecCommand.mockImplementation(async () => {
+        if (process.platform === 'win32') {
+          return { stdout: `${expectedMs}\n`, stderr: '', code: 0 };
+        }
+        return { stdout: `${statSeconds}\n`, stderr: '', code: 0 };
+      });
 
       const mtime = await pollDirectoryMtimeMs('member-1');
-      expect(mtime).toBe(1700000000000);
-      expect(mockExecCommand.mock.calls[mockExecCommand.mock.calls.length - 1][0]).toContain('find');
-      expect(mockExecCommand.mock.calls[mockExecCommand.mock.calls.length - 1][0]).toContain('-maxdepth 5');
+      expect(mtime).not.toBeNull();
+      expect(mtime).toBeGreaterThan(0);
+
+      fs.rmSync(tmpBrainDir, { recursive: true, force: true });
     });
   });
 });

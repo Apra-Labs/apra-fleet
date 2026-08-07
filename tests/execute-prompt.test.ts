@@ -12,7 +12,7 @@ import { getOsCommands } from '../src/os/index.js';
 import type { SSHExecResult } from '../src/types.js';
 import { setBudget, _resetBudgetState } from '../src/services/budget-awareness.js';
 import { recordSessionUsage, _resetSessionUsage, DEFAULT_SIZE_BUCKET_TOKENS } from '../src/services/context-admission.js';
-import { recordKnownSession } from '../src/services/known-sessions.js';
+import { recordKnownSession, isKnownSession } from '../src/services/known-sessions.js';
 import { localWorkspaceId } from '../src/services/token-issuer.js';
 // apra-fleet-63x.2: the same pricing function FleetWorkflow.agent() calls
 // (packages/apra-fleet-workflow/src/workflow/index.mjs's _resolveCost ->
@@ -2304,6 +2304,11 @@ describe('context-headroom admission gate at the execute_prompt boundary (apra-f
         conversation_id: 'agy-different-id',
         status: 'SUCCESS',
         response: 'Mismatched response',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+        },
       });
       mockExecCommand.mockResolvedValue({
         stdout: agyOutput,
@@ -2315,6 +2320,11 @@ describe('context-headroom admission gate at the execute_prompt boundary (apra-f
       expect(result.structuredContent?.reason).toBe('session_not_found');
       expect(result.structuredContent?.isError).toBe(true);
       expect((result.structuredContent as any)?.returnedSessionId).toBe('agy-different-id');
+      expect(isKnownSession(agyMember.id, 'agy-different-id')).toBe(true);
+      expect((result.structuredContent as any)?.usage).toEqual({ input_tokens: 100, output_tokens: 50, total_tokens: 150 });
+
+      const updatedAgent = getAgent(agyMember.id);
+      expect(updatedAgent?.tokenUsage).toEqual({ input: 100, output: 50 });
     });
 
     it('explicit resume skips fresh-session trust-heal retry', async () => {
@@ -2324,12 +2334,18 @@ describe('context-headroom admission gate at the execute_prompt boundary (apra-f
 
       mockExecCommand.mockResolvedValue({
         stdout: '',
-        stderr: 'workspace is not trusted -- ensureWorkspaceTrusted',
-        code: 1,
+        stderr: 'this workspace has not been trusted -- ensureWorkspaceTrusted',
+        code: 0,
       });
 
+      mockExecCommand.mockClear();
+
       const result = await executePrompt({ member_id: claudeMember.id, prompt: 'task', session_id: 'sess-untrusted-explicit', timeout_s: 5 });
-      expect(result.structuredContent?.reason).toBe('nonzero_exit');
+      expect(result.structuredContent?.reason).toBe('workspace_not_trusted');
+      // Verify seedWorkspaceTrust was NOT invoked and no retry prompt was dispatched
+      expect(seedWorkspaceTrust).not.toHaveBeenCalled();
+      const promptCmdCalls = mockExecCommand.mock.calls.filter(c => c[0].includes('claude'));
+      expect(promptCmdCalls).toHaveLength(1);
     });
   });
 });

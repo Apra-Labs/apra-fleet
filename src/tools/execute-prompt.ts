@@ -1265,6 +1265,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           recordKnownSession(agent.id, parsed.sessionId);
         }
         if (parsed.usage) {
+          const prev = agent.tokenUsage ?? { input: 0, output: 0 };
+          updateAgent(agent.id, {
+            tokenUsage: {
+              input: prev.input + parsed.usage.input_tokens,
+              output: prev.output + parsed.usage.output_tokens,
+            },
+          });
           recordSessionUsage(parsed.sessionId ?? expectedSid, parsed.usage);
           if (budgetScope) {
             await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: parsed.usage });
@@ -1272,7 +1279,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         }
         return {
           text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- resumed session mismatch. Expected session "${expectedSid}", but provider returned "${parsed.sessionId}".`,
-          structuredContent: { isError: true, reason: 'session_not_found', sessionId: expectedSid, returnedSessionId: parsed.sessionId },
+          structuredContent: {
+            isError: true,
+            reason: 'session_not_found',
+            sessionId: expectedSid,
+            returnedSessionId: parsed.sessionId,
+            ...(parsed.usage ? { usage: { ...parsed.usage, total_tokens: parsed.usage.input_tokens + parsed.usage.output_tokens } } : {}),
+          },
         };
       }
       touchAgent(agent.id, undefined);
