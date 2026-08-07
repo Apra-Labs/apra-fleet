@@ -1,15 +1,15 @@
 /**
- * Unit tests for the concrete email adapters (src/services/email/sendgrid.ts,
- * src/services/email/smtp.ts). Network I/O is mocked: global fetch for
+ * Unit tests for the concrete email providers (src/providers/email/sendgrid.ts,
+ * src/providers/email/smtp.ts). Network I/O is mocked: global fetch for
  * SendGrid, and node:net/node:tls sockets (via an in-memory EventEmitter) for
  * SMTP.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 
-import { SendgridTransport } from '../src/services/email/sendgrid.js';
+import { SendGridProvider } from '../src/providers/email/sendgrid.js';
 
-describe('SendgridTransport', () => {
+describe('SendGridProvider', () => {
   const originalFetch = global.fetch;
 
   afterEach(() => {
@@ -23,8 +23,8 @@ describe('SendgridTransport', () => {
     });
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const transport = new SendgridTransport({ apiKey: 'key-1', from: 'from@example.com' });
-    const result = await transport.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
+    const provider = new SendGridProvider({ apiKey: 'key-1', from: 'from@example.com' });
+    const result = await provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
 
     expect(result).toEqual({ messageId: 'sg-abc-123' });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -43,8 +43,8 @@ describe('SendgridTransport', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, headers: { get: () => null } });
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const transport = new SendgridTransport({ apiKey: 'key-1', from: 'from@example.com' });
-    await transport.send({
+    const provider = new SendGridProvider({ apiKey: 'key-1', from: 'from@example.com' });
+    await provider.send({
       to: ['to@example.com'],
       cc: ['cc@example.com'],
       bcc: ['bcc@example.com'],
@@ -68,8 +68,8 @@ describe('SendgridTransport', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, headers: { get: () => null } });
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const transport = new SendgridTransport({ apiKey: 'key-1', from: 'from@example.com' });
-    const result = await transport.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
+    const provider = new SendGridProvider({ apiKey: 'key-1', from: 'from@example.com' });
+    const result = await provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
 
     expect(result.messageId).toMatch(/^sendgrid-/);
   });
@@ -83,9 +83,9 @@ describe('SendgridTransport', () => {
     });
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const transport = new SendgridTransport({ apiKey: 'bad-key', from: 'from@example.com' });
+    const provider = new SendGridProvider({ apiKey: 'bad-key', from: 'from@example.com' });
 
-    await expect(transport.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
+    await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
       /SendGrid send failed \(401\): bad api key/,
     );
   });
@@ -135,7 +135,7 @@ vi.mock('node:tls', () => ({
   default: { connect: (...args: unknown[]) => mockTlsConnect(...args) },
 }));
 
-describe('SmtpTransport', () => {
+describe('SmtpProvider', () => {
   beforeEach(() => {
     mockNetConnect.mockReset();
     mockTlsConnect.mockReset();
@@ -166,8 +166,8 @@ describe('SmtpTransport', () => {
       return socket;
     });
 
-    const { SmtpTransport } = await import('../src/services/email/smtp.js');
-    const transport = new SmtpTransport({
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
       host: 'smtp.example.com',
       port: 587,
       secure: false,
@@ -175,7 +175,7 @@ describe('SmtpTransport', () => {
       from: 'from@example.com',
     });
 
-    const result = await transport.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
+    const result = await provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
 
     expect(result.messageId).toBe('ABC123');
     expect(socket.written.some(w => w.startsWith('MAIL FROM:<from@example.com>'))).toBe(true);
@@ -191,15 +191,15 @@ describe('SmtpTransport', () => {
       return socket;
     });
 
-    const { SmtpTransport } = await import('../src/services/email/smtp.js');
-    const transport = new SmtpTransport({
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
       host: 'smtp.example.com',
       port: 587,
       auth: { user: 'user@example.com', pass: 'secret' },
       from: 'from@example.com',
     });
 
-    await expect(transport.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
+    await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
       /SMTP server did not greet/,
     );
   });
@@ -219,15 +219,15 @@ describe('SmtpTransport', () => {
       return socket;
     });
 
-    const { SmtpTransport } = await import('../src/services/email/smtp.js');
-    const transport = new SmtpTransport({
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
       host: 'smtp.example.com',
       port: 587,
       auth: { user: '', pass: '' },
       from: 'from@example.com',
     });
 
-    await expect(transport.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
+    await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
       /MAIL FROM rejected/,
     );
   });

@@ -1,7 +1,7 @@
 /**
  * apra-fleet-ddg.9: real end-to-end email send integration test.
  *
- * Exercises the SendGrid and SMTP transports against REAL credentials and
+ * Exercises the SendGrid and SMTP providers against REAL credentials and
  * sends an ACTUAL email (subject, body, cc, and a small attachment). This
  * never runs as part of a routine `npm test` -- it is gated behind
  * SEND_EMAIL_INTEG=1 so a member's normal test run never burns a live send
@@ -13,14 +13,14 @@
  *   SMTP_HOST=... SMTP_PORT=... SMTP_USER=... SMTP_PASS=... SMTP_TEST_FROM=... SMTP_TEST_TO=... \
  *   npx vitest run tests/integration/send-email.integ.test.ts
  *
- * Each transport's block additionally skips itself (rather than failing)
+ * Each provider's block additionally skips itself (rather than failing)
  * when its own required env vars are not present, so operators can opt a
- * single transport in without configuring both.
+ * single provider in without configuring both.
  */
 import { describe, it, expect } from 'vitest';
 
-import { SendgridTransport } from '../../src/services/email/sendgrid.js';
-import { SmtpTransport } from '../../src/services/email/smtp.js';
+import { SendGridProvider } from '../../src/providers/email/sendgrid.js';
+import { SmtpProvider } from '../../src/providers/email/smtp.js';
 import type { EmailMessage } from '../../src/services/email/types.js';
 
 const INTEG_OPTED_IN = process.env.SEND_EMAIL_INTEG === '1';
@@ -60,22 +60,22 @@ const SMTP_TEST_TO = process.env.SMTP_TEST_TO ?? SMTP_TEST_FROM;
 const SMTP_CONFIGURED = Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS && SMTP_TEST_FROM && SMTP_TEST_TO);
 
 describe.skipIf(!INTEG_OPTED_IN)('send-email integration (real credentials, real send)', () => {
-  describe.skipIf(!SENDGRID_CONFIGURED)('SendGrid transport', () => {
+  describe.skipIf(!SENDGRID_CONFIGURED)('SendGrid provider', () => {
     it('sends a real email with subject, body, cc, and attachment', async () => {
-      const transport = new SendgridTransport({
+      const provider = new SendGridProvider({
         apiKey: SENDGRID_API_KEY as string,
         from: SENDGRID_TEST_FROM as string,
       });
 
-      const result = await transport.send(buildMessage(SENDGRID_TEST_FROM as string, SENDGRID_TEST_TO as string));
+      const result = await provider.send(buildMessage(SENDGRID_TEST_FROM as string, SENDGRID_TEST_TO as string));
 
       expect(result.messageId).toBeTruthy();
     });
   });
 
-  describe.skipIf(!SMTP_CONFIGURED)('SMTP transport', () => {
+  describe.skipIf(!SMTP_CONFIGURED)('SMTP provider', () => {
     it('sends a real email with subject, body, cc, and attachment', async () => {
-      const transport = new SmtpTransport({
+      const provider = new SmtpProvider({
         host: SMTP_HOST as string,
         port: SMTP_PORT,
         secure: SMTP_SECURE,
@@ -83,7 +83,7 @@ describe.skipIf(!INTEG_OPTED_IN)('send-email integration (real credentials, real
         from: SMTP_TEST_FROM as string,
       });
 
-      const result = await transport.send(buildMessage(SMTP_TEST_FROM as string, SMTP_TEST_TO as string));
+      const result = await provider.send(buildMessage(SMTP_TEST_FROM as string, SMTP_TEST_TO as string));
 
       expect(result.messageId).toBeTruthy();
     });

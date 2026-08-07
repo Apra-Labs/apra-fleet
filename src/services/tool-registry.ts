@@ -147,7 +147,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   server.tool('credential_store_update', 'Update metadata (members, TTL, network policy) on an existing credential without re-entering the secret.', credentialStoreUpdateSchema.shape, wrapTool('credential_store_update', (input) => credentialStoreUpdate(input as any)));
 
   // Email
-  server.tool('send_email', 'Send an email via the configured transport (SendGrid or SMTP). Validates recipient addresses and attachments. Returns a JSON result with messageId on success or error on failure.', sendEmailSchema.shape, wrapTool('send_email', (input) => sendEmail(input as any)));
+  server.tool('send_email', 'Send an email via the configured provider (SendGrid or SMTP). Validates recipient addresses and attachments. Returns a JSON result with messageId on success or error on failure.', sendEmailSchema.shape, wrapTool('send_email', (input) => sendEmail(input as any)));
 
   // Interactive Session Messaging
   server.tool('send_message', 'Send a task message to a connected interactive member session via SSE. Returns the message ID.', sendMessageSchema.shape, wrapTool('send_message', (input) => sendMessage(input as any)));

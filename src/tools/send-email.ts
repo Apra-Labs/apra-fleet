@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { resolveEmailTransport } from '../services/email/index.js';
-import type { EmailMessage } from '../services/email/types.js';
+import { getEmailProvider } from '../providers/email/index.js';
+import type { EmailMessage } from '../providers/email/provider.js';
 import { logLine } from '../utils/log-helpers.js';
 
 // Basic RFC-5322-ish email format check -- not exhaustive, just catches
@@ -44,7 +44,7 @@ function validateAddresses(input: SendEmailInput): string[] {
 }
 
 /**
- * Send an email via the configured transport (SendGrid or SMTP).
+ * Send an email via the configured provider (SendGrid or SMTP).
  * Returns a JSON string: `{ ok: true, messageId }` on success,
  * or `{ ok: false, error }` on failure.
  */
@@ -66,9 +66,9 @@ export async function sendEmail(input: SendEmailInput): Promise<string> {
   };
 
   try {
-    const transport = resolveEmailTransport();
-    const result = await transport.send(message);
-    logLine('send_email', `sent via ${transport.name} messageId=${result.messageId}`);
+    const provider = getEmailProvider();
+    const result = await provider.send(message);
+    logLine('send_email', `sent via ${provider.name} messageId=${result.messageId}`);
     return JSON.stringify({ ok: true, messageId: result.messageId });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

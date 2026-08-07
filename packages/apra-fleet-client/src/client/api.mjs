@@ -354,7 +354,7 @@ export class ApraFleet {
     }
 
     /**
-     * Send an email via the configured transport (SendGrid or SMTP).
+     * Send an email via the configured provider (SendGrid or SMTP).
      * @param {SendEmailOptions} options
      */
     async sendEmail(options) {

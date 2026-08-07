@@ -1,33 +1,33 @@
 /**
- * Unit tests for the email transport resolver (src/services/email/index.ts):
+ * Unit tests for the email provider resolver (src/providers/email/index.ts):
  * config loading from env/credential-store, and resolver picking the correct
- * adapter. Both concrete adapters (SendgridTransport/SmtpTransport) are mocked
+ * adapter. Both concrete adapters (SendGridProvider/SmtpProvider) are mocked
  * so this file exercises resolver logic only, not network I/O.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockCredentialResolve, MockSendgridTransport, MockSmtpTransport } = vi.hoisted(() => ({
+const { mockCredentialResolve, MockSendGridProvider, MockSmtpProvider } = vi.hoisted(() => ({
   mockCredentialResolve: vi.fn(),
-  MockSendgridTransport: vi.fn(),
-  MockSmtpTransport: vi.fn(),
+  MockSendGridProvider: vi.fn(),
+  MockSmtpProvider: vi.fn(),
 }));
 
 vi.mock('../src/services/credential-store.js', () => ({
   credentialResolve: mockCredentialResolve,
 }));
 
-vi.mock('../src/services/email/sendgrid.js', () => ({
-  SendgridTransport: MockSendgridTransport,
+vi.mock('../src/providers/email/sendgrid.js', () => ({
+  SendGridProvider: MockSendGridProvider,
 }));
 
-vi.mock('../src/services/email/smtp.js', () => ({
-  SmtpTransport: MockSmtpTransport,
+vi.mock('../src/providers/email/smtp.js', () => ({
+  SmtpProvider: MockSmtpProvider,
 }));
 
-import { loadEmailConfig, resolveEmailTransport } from '../src/services/email/index.js';
+import { loadEmailConfig, getEmailProvider } from '../src/providers/email/index.js';
 
 const ENV_KEYS = [
-  'EMAIL_TRANSPORT',
+  'EMAIL_PROVIDER',
   'SMTP_HOST',
   'SMTP_PORT',
   'SMTP_USER',
@@ -46,8 +46,8 @@ beforeEach(() => {
   }
   mockCredentialResolve.mockReset();
   mockCredentialResolve.mockReturnValue(null);
-  MockSendgridTransport.mockReset();
-  MockSmtpTransport.mockReset();
+  MockSendGridProvider.mockReset();
+  MockSmtpProvider.mockReset();
 });
 
 afterEach(() => {
@@ -58,24 +58,24 @@ afterEach(() => {
 });
 
 describe('loadEmailConfig', () => {
-  it('defaults to sendgrid transport when EMAIL_TRANSPORT is unset', () => {
+  it('defaults to sendgrid provider when EMAIL_PROVIDER is unset', () => {
     process.env.SENDGRID_API_KEY = 'key-123';
     process.env.EMAIL_FROM = 'noreply@example.com';
 
     const config = loadEmailConfig();
 
-    expect(config.transport).toBe('sendgrid');
+    expect(config.provider).toBe('sendgrid');
     expect(config.sendgrid).toEqual({ apiKey: 'key-123', from: 'noreply@example.com' });
   });
 
   it('throws a clear error when sendgrid is selected but not configured', () => {
-    process.env.EMAIL_TRANSPORT = 'sendgrid';
+    process.env.EMAIL_PROVIDER = 'sendgrid';
 
     expect(() => loadEmailConfig()).toThrow(/SendGrid transport is not configured/);
   });
 
   it('prefers a credential-store secret over the SENDGRID_API_KEY env var', () => {
-    process.env.EMAIL_TRANSPORT = 'sendgrid';
+    process.env.EMAIL_PROVIDER = 'sendgrid';
     process.env.SENDGRID_API_KEY = 'env-key';
     process.env.EMAIL_FROM = 'noreply@example.com';
     mockCredentialResolve.mockReturnValue({ plaintext: 'store-key', meta: {} });
@@ -87,7 +87,7 @@ describe('loadEmailConfig', () => {
   });
 
   it('builds smtp config from env vars, falling back to a default port', () => {
-    process.env.EMAIL_TRANSPORT = 'smtp';
+    process.env.EMAIL_PROVIDER = 'smtp';
     process.env.SMTP_HOST = 'smtp.example.com';
     process.env.SMTP_USER = 'user@example.com';
     process.env.SMTP_PASS = 'pass-123';
@@ -95,7 +95,7 @@ describe('loadEmailConfig', () => {
 
     const config = loadEmailConfig();
 
-    expect(config.transport).toBe('smtp');
+    expect(config.provider).toBe('smtp');
     expect(config.smtp).toEqual({
       host: 'smtp.example.com',
       port: 587,
@@ -106,67 +106,67 @@ describe('loadEmailConfig', () => {
   });
 
   it('throws a clear error when smtp is selected but missing required fields', () => {
-    process.env.EMAIL_TRANSPORT = 'smtp';
+    process.env.EMAIL_PROVIDER = 'smtp';
     process.env.SMTP_HOST = 'smtp.example.com';
 
     expect(() => loadEmailConfig()).toThrow(/SMTP transport is not configured/);
   });
 
-  it('throws for an unknown transport value', () => {
-    process.env.EMAIL_TRANSPORT = 'carrier-pigeon';
+  it('throws for an unknown provider value', () => {
+    process.env.EMAIL_PROVIDER = 'carrier-pigeon';
 
-    expect(() => loadEmailConfig()).toThrow(/Unknown EMAIL_TRANSPORT/);
+    expect(() => loadEmailConfig()).toThrow(/Unknown EMAIL_PROVIDER/);
   });
 });
 
-describe('resolveEmailTransport', () => {
-  it('picks the SendgridTransport adapter for transport="sendgrid"', () => {
-    const config = { transport: 'sendgrid' as const, from: 'a@example.com', sendgrid: { apiKey: 'k', from: 'a@example.com' } };
+describe('getEmailProvider', () => {
+  it('picks the SendGridProvider adapter for provider="sendgrid"', () => {
+    const config = { provider: 'sendgrid' as const, from: 'a@example.com', sendgrid: { apiKey: 'k', from: 'a@example.com' } };
 
-    resolveEmailTransport(config);
+    getEmailProvider(config);
 
-    expect(MockSendgridTransport).toHaveBeenCalledWith(config.sendgrid);
-    expect(MockSmtpTransport).not.toHaveBeenCalled();
+    expect(MockSendGridProvider).toHaveBeenCalledWith(config.sendgrid);
+    expect(MockSmtpProvider).not.toHaveBeenCalled();
   });
 
-  it('picks the SmtpTransport adapter for transport="smtp"', () => {
+  it('picks the SmtpProvider adapter for provider="smtp"', () => {
     const config = {
-      transport: 'smtp' as const,
+      provider: 'smtp' as const,
       from: 'a@example.com',
       smtp: { host: 'h', port: 587, auth: { user: 'u', pass: 'p' }, from: 'a@example.com' },
     };
 
-    resolveEmailTransport(config);
+    getEmailProvider(config);
 
-    expect(MockSmtpTransport).toHaveBeenCalledWith(config.smtp);
-    expect(MockSendgridTransport).not.toHaveBeenCalled();
+    expect(MockSmtpProvider).toHaveBeenCalledWith(config.smtp);
+    expect(MockSendGridProvider).not.toHaveBeenCalled();
   });
 
-  it('throws when sendgrid transport is selected but its config is missing', () => {
-    const config = { transport: 'sendgrid' as const, from: 'a@example.com' };
+  it('throws when sendgrid provider is selected but its config is missing', () => {
+    const config = { provider: 'sendgrid' as const, from: 'a@example.com' };
 
-    expect(() => resolveEmailTransport(config)).toThrow(/SendGrid transport selected but not configured/);
+    expect(() => getEmailProvider(config)).toThrow(/SendGrid transport selected but not configured/);
   });
 
-  it('throws when smtp transport is selected but its config is missing', () => {
-    const config = { transport: 'smtp' as const, from: 'a@example.com' };
+  it('throws when smtp provider is selected but its config is missing', () => {
+    const config = { provider: 'smtp' as const, from: 'a@example.com' };
 
-    expect(() => resolveEmailTransport(config)).toThrow(/SMTP transport selected but not configured/);
+    expect(() => getEmailProvider(config)).toThrow(/SMTP transport selected but not configured/);
   });
 
-  it('throws for an unrecognized transport in a resolved config', () => {
-    const config = { transport: 'carrier-pigeon' as unknown as 'sendgrid', from: 'a@example.com' };
+  it('throws for an unrecognized provider in a resolved config', () => {
+    const config = { provider: 'carrier-pigeon' as unknown as 'sendgrid', from: 'a@example.com' };
 
-    expect(() => resolveEmailTransport(config)).toThrow(/Unknown transport/);
+    expect(() => getEmailProvider(config)).toThrow(/Unknown transport/);
   });
 
   it('loads config via loadEmailConfig when no config argument is passed', () => {
-    process.env.EMAIL_TRANSPORT = 'sendgrid';
+    process.env.EMAIL_PROVIDER = 'sendgrid';
     process.env.SENDGRID_API_KEY = 'key-123';
     process.env.EMAIL_FROM = 'noreply@example.com';
 
-    resolveEmailTransport();
+    getEmailProvider();
 
-    expect(MockSendgridTransport).toHaveBeenCalledWith({ apiKey: 'key-123', from: 'noreply@example.com' });
+    expect(MockSendGridProvider).toHaveBeenCalledWith({ apiKey: 'key-123', from: 'noreply@example.com' });
   });
 });

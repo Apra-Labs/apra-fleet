@@ -1,25 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const resolveEmailTransport = vi.fn();
+const getEmailProvider = vi.fn();
 
-vi.mock('../src/services/email/index.js', () => ({
-  resolveEmailTransport: (...args: unknown[]) => resolveEmailTransport(...args),
+vi.mock('../src/providers/email/index.js', () => ({
+  getEmailProvider: (...args: unknown[]) => getEmailProvider(...args),
 }));
 
 import { sendEmail } from '../src/tools/send-email.js';
 
 beforeEach(() => {
-  resolveEmailTransport.mockReset();
+  getEmailProvider.mockReset();
 });
 
 describe('sendEmail', () => {
-  it('rejects a malformed "to" address without calling the transport', async () => {
+  it('rejects a malformed "to" address without calling the provider', async () => {
     const result = await sendEmail({ to: 'not-an-email', subject: 'hi', body: 'hello' });
     const parsed = JSON.parse(result);
 
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toMatch(/Invalid 'to' address/);
-    expect(resolveEmailTransport).not.toHaveBeenCalled();
+    expect(getEmailProvider).not.toHaveBeenCalled();
   });
 
   it('rejects a malformed "cc" address', async () => {
@@ -48,9 +48,9 @@ describe('sendEmail', () => {
     expect(parsed.error).toMatch(/Invalid 'bcc' address/);
   });
 
-  it('sends via the resolved transport and returns ok with a messageId on success', async () => {
+  it('sends via the resolved provider and returns ok with a messageId on success', async () => {
     const send = vi.fn().mockResolvedValue({ messageId: 'msg-123' });
-    resolveEmailTransport.mockReturnValue({ name: 'sendgrid', send });
+    getEmailProvider.mockReturnValue({ name: 'sendgrid', send });
 
     const result = await sendEmail({
       to: 'valid@example.com',
@@ -67,7 +67,7 @@ describe('sendEmail', () => {
 
   it('accepts a list of "to" addresses when all are valid', async () => {
     const send = vi.fn().mockResolvedValue({ messageId: 'msg-456' });
-    resolveEmailTransport.mockReturnValue({ name: 'smtp', send });
+    getEmailProvider.mockReturnValue({ name: 'smtp', send });
 
     const result = await sendEmail({
       to: ['a@example.com', 'b@example.com'],
@@ -80,8 +80,8 @@ describe('sendEmail', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it('returns ok:false with the error message when the transport throws', async () => {
-    resolveEmailTransport.mockReturnValue({
+  it('returns ok:false with the error message when the provider throws', async () => {
+    getEmailProvider.mockReturnValue({
       name: 'sendgrid',
       send: vi.fn().mockRejectedValue(new Error('network down')),
     });
@@ -92,8 +92,8 @@ describe('sendEmail', () => {
     expect(parsed).toEqual({ ok: false, error: 'network down' });
   });
 
-  it('returns ok:false when transport resolution itself throws (e.g. not configured)', async () => {
-    resolveEmailTransport.mockImplementation(() => {
+  it('returns ok:false when provider resolution itself throws (e.g. not configured)', async () => {
+    getEmailProvider.mockImplementation(() => {
       throw new Error('SMTP transport is not configured.');
     });
 
