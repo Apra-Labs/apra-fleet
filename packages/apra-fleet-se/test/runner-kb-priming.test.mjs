@@ -205,7 +205,12 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
         });
 
         assert.equal(out.promoted, 1);
-        assert.deepEqual(calls.find((c) => c.name === 'kb_promote').args, { id: 'abc123', reason: GOOD_REASON });
+        // apra-fleet-0ef: repo_path is REQUIRED. This assertion previously
+        // pinned the DEFECT -- kb_promote was called without it, so the
+        // promotion resolved against the fleet server's cwd (a different
+        // project's KB) and could only ever fail "Entry not found". kb_capture
+        // above has always passed it; promote was missed.
+        assert.deepEqual(calls.find((c) => c.name === 'kb_promote').args, { id: 'abc123', reason: GOOD_REASON, repo_path: '/srv/a' });
     });
 
     // apra-fleet-23c: kbCaptureSchema requires content (z.string().min(1)), but

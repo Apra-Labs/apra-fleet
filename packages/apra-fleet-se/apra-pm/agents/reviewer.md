@@ -32,7 +32,9 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
 1. Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_list,mcp__apra-fleet__kb_promote"`
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+   (`kb_list`/`kb_promote` are deliberately NOT here -- Step 5 promotes through your
+   structured output, not through a tool call.)
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under review,
    and `hint_symbols`/`hint_modules` relevant to the files changed in this review round.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.
@@ -121,13 +123,20 @@ You are the only role permitted to mint CONFIRMED. `kb_capture` clamps to INFERR
 without this step nothing an agent learns ever reaches the team bible -- it stays local to
 the machine that learned it, and `kb_export` (CONFIRMED-only) never sees it.
 
-1. Call `mcp__apra-fleet__kb_list` with `confidence: "INFERRED"` and `repo_path` set to the
-   repo under review, to see the candidate entries.
+**You do not call any `kb_*` tool for this.** The orchestrator hands you the candidate
+entries and executes your decisions -- judgment is yours, execution is its.
+
+1. Read the **KNOWLEDGE BANK -- promotion candidates** block in your dispatch prompt. It
+   lists every INFERRED entry for the repo under review as `{id, title, summary,
+   source_files}`. If that block is absent, there is nothing to promote: return `[]` and
+   move on.
 2. Promote **only** entries whose claim you independently verified during THIS review --
-   by reading the diff, running the tests, or checking the referenced code yourself.
-   Call `mcp__apra-fleet__kb_promote` with the entry `id` and a `reason` that states the
-   evidence, e.g. `"verified against src/auth/token.ts:88 and the expired-token test"`.
-3. Promote nothing else.
+   by reading the diff, running the tests, or checking the cited files yourself.
+3. Return them in the `kb_promotions` field of your structured output as
+   `[{id, reason}]`, where `reason` states the evidence (minimum 20 characters), e.g.
+   `"verified against src/auth/token.ts:88 and the expired-token test"`. The orchestrator
+   makes the `kb_promote` calls.
+4. Promote nothing else. `kb_promotions: []` is a valid, common answer.
 
 Hard limits:
 
@@ -136,17 +145,19 @@ Hard limits:
   state; a wrong CONFIRMED entry is worse than no entry, because later sessions trust
   CONFIRMED fully and will not re-check it.
 - **Never blanket-promote.** Do not promote every entry the doer captured, and do not
-  promote by module, tag, or timestamp. One deliberate call per verified claim.
+  promote by module, tag, or timestamp. One deliberate entry per verified claim.
 - **Not tied to the verdict.** A fact can be verified even when the code needs rework, and
   an APPROVED verdict does not make unverified entries true. Judge each entry on its own
   evidence.
 - **User-directives are off limits.** `kb_promote` refuses to activate a pending
-  user-directive (activation is human-only, via `apra-fleet kb approve-directive`). Do not
-  attempt it; a refusal is expected behaviour, not an error to work around.
-- If the KB tools are unavailable, skip this step and proceed to the verdict.
+  user-directive (activation is human-only, via `apra-fleet kb approve-directive`). The
+  orchestrator already filters these out of your candidate list, so you should never see
+  one; if you do, leave it alone.
+- **Never invent an id.** Only ids from the candidate block are promotable. An id you did
+  not read there does not exist, and a promotion naming it is silently dropped.
 
-Promotion is a KB write, not a beads mutation -- it does not conflict with the "never
-mutate beads" rule below. Report what you promoted in `notes`.
+Promotion is a KB decision, not a beads mutation -- it does not conflict with the "never
+mutate beads" rule below. Report what you promoted in `notes` as well.
 
 ## Step 6 -- Verdict
 

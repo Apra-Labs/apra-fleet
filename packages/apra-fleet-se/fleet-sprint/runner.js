@@ -2147,11 +2147,62 @@ export function vetKbWork(role, result) {
     return { captures, promotions, refused };
 }
 
+/** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
+export const KB_MAX_PROMOTION_CANDIDATES = 40;
+
 export function createKbWorkClient(opts = {}) {
     const { callTool, log = () => {} } = opts;
     const active = typeof callTool === 'function';
 
+    /** Best-effort JSON out of an MCP result (string, content-block, or plain object). */
+    function parseResult(result) {
+        if (typeof result === 'string') { try { return JSON.parse(result); } catch { return null; } }
+        if (result && Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string') {
+            try { return JSON.parse(result.content[0].text); } catch { return null; }
+        }
+        return (result && typeof result === 'object') ? result : null;
+    }
+
     return {
+        /**
+         * apra-fleet-0ef: the INFERRED entries this reviewer may promote.
+         *
+         * The engine's contract is "judgment belongs to the role, execution
+         * belongs here" -- the reviewer returns `kb_promotions:[{id, reason}]`
+         * and `apply()` calls kb_promote. But an entry id exists only inside
+         * the KB, and the reviewer subagent has no apra-fleet MCP tools to
+         * look one up, so it could never name an id: `kb_promotions` was
+         * structurally always empty and nothing was ever promoted. (kb_captures
+         * worked only because a capture needs no pre-existing id.) This is the
+         * missing input: the engine reads the candidates and hands them to the
+         * reviewer in its prompt.
+         *
+         * Best-effort by design -- a cold or unreachable KB must degrade to
+         * "nothing to promote", never fail the review dispatch.
+         */
+        async promotionCandidates(repoPath) {
+            // Without a repo path kb_list would resolve against the fleet
+            // server's cwd and offer entries from an unrelated project's KB
+            // (the apra-fleet-tm7 repo-blindness class). Refuse rather than guess.
+            if (!active || !repoPath) return [];
+            try {
+                const parsed = parseResult(await callTool('kb_list', {
+                    repo_path: repoPath,
+                    confidence: 'INFERRED',
+                    limit: KB_MAX_PROMOTION_CANDIDATES,
+                }));
+                const results = parsed && Array.isArray(parsed.results) ? parsed.results : [];
+                return results
+                    // promote() refuses type='user-directive' outright (activation
+                    // is human-terminal, CLI-only), so offering one as a candidate
+                    // can only produce a guaranteed refusal.
+                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive')
+                    .slice(0, KB_MAX_PROMOTION_CANDIDATES);
+            } catch (err) {
+                log(`[kb-work] could not list promotion candidates for ${repoPath} (non-fatal): ${err.message}`);
+                return [];
+            }
+        },
         async apply(role, repoPath, result) {
             const { captures, promotions, refused } = vetKbWork(role, result);
 
@@ -2189,7 +2240,14 @@ export function createKbWorkClient(opts = {}) {
             }
             for (const p of promotions) {
                 try {
-                    const res = await callTool('kb_promote', { id: p.id, reason: p.reason });
+                    // apra-fleet-0ef: repo_path is REQUIRED here, exactly as on
+                    // the kb_capture call above. Omitting it resolved the
+                    // promotion against the fleet server's cwd -- a different
+                    // project's KB, where the id does not exist -- so every
+                    // promotion would have failed "Entry not found" (the
+                    // apra-fleet-tm7 repo-blindness class, fixed for capture
+                    // but missed here).
+                    const res = await callTool('kb_promote', { id: p.id, reason: p.reason, repo_path: repoPath });
                     if (isToolError(res)) {
                         log(`[kb-work] kb_promote rejected for ${p.id} (non-fatal): ${toolErrorText(res)}`);
                         continue;
@@ -3549,14 +3607,39 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
  * commands on the member side regardless of what either document says, so
  * the prohibition is stated here too as defense in depth, not because of
  * any known prose/code divergence.
- * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string }} opts
+ * apra-fleet-s6d: `beadIds` may legitimately be EMPTY. The Cycle Evaluation
+ * re-review asks a scope-wide question ("no goal-priority beads are open --
+ * is the sprint actually done?"), so it has no bead ids to name. Rendering
+ * the per-bead framing anyway produced the literal dangling sentence
+ * "...for the following bead id(s): ." plus a SPRINT SCOPE block ordering the
+ * reviewer to judge "ONLY against the named bead id(s) above" -- against an
+ * empty set. The reviewer answered honestly (CHANGES_NEEDED with nothing to
+ * reopen and nothing to create), which is exactly what
+ * isReviewerContractViolation flags; the retry re-sent the identical
+ * incoherent prompt, so the sprint aborted on ReviewerContractViolationError.
+ * The empty case therefore gets its own coherent scope-wide framing.
+ *
+ * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string, goal?: string, kbCandidates?: object[] }} opts
  * @returns {string}
  */
-function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal }) {
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates }) {
+    const ids = Array.isArray(beadIds) ? beadIds : [];
+    const scopeWide = ids.length === 0;
+    // Scope-wide re-reviews are fed `bd list --json` (the whole remaining
+    // scope); per-bead reviews are fed `bd show --json`. Label the untrusted
+    // block with the command that actually produced it.
+    const scopeCommand = scopeWide ? 'bd list --json' : 'bd show --json';
     return [
-        `Review the work just done for the following bead id(s): ${beadIds.join(', ')}.`,
-        'Full task detail (including acceptance criteria), from `bd show --json`:',
-        wrapUntrustedBlock('bd show --json', acceptanceCriteriaJson),
+        scopeWide
+            ? 'Re-review the CURRENT state of the entire sprint scope. No bead ids are named '
+              + 'because no goal-priority beads remain open -- that is precisely the question you '
+              + 'are being asked to settle: judge the delivered work as a whole and decide whether '
+              + 'this sprint is genuinely complete.'
+            : `Review the work just done for the following bead id(s): ${ids.join(', ')}.`,
+        scopeWide
+            ? 'The full sprint scope, from `bd list --json`:'
+            : 'Full task detail (including acceptance criteria), from `bd show --json`:',
+        wrapUntrustedBlock(scopeCommand, acceptanceCriteriaJson),
         `Diff range to review: ${baseBranch}..${branch} (base_branch..branch).`,
         // Stabilization log Issue 17: run 11's cycle-3 reviewer judged the
         // whole epic diff and blocked on the DEFERRED out-of-goal P3
@@ -3566,11 +3649,45 @@ function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, bran
         // APPROVED verdict). Scope the verdict to the sprint's goal.
         ...(goal ? [
             `SPRINT SCOPE: this sprint's goal priority is ${goal}. Judge your verdict ` +
-            `ONLY against the named bead id(s) above and other work at or above that ` +
-            `goal priority. Features/beads BELOW the goal priority (e.g. P3 when the ` +
+            (scopeWide
+                ? `ONLY against work at or above that goal priority. `
+                : `ONLY against the named bead id(s) above and other work at or above that `
+                  + `goal priority. `) +
+            `Features/beads BELOW the goal priority (e.g. P3 when the ` +
             `goal is P1/P2) are DEFERRED BY DESIGN to a later sprint: their absence ` +
             `from the diff is correct, must not block APPROVED, must not appear in ` +
             `reopenIds, and may be mentioned in notes only.`,
+        ] : []),
+        // apra-fleet-0ef: the reviewer is the ONLY role permitted to mint
+        // CONFIRMED, but a KB entry id can only come from the KB, and the
+        // reviewer subagent has no apra-fleet MCP tools to look one up. Without
+        // this block it could never name an id, so `kb_promotions` came back
+        // empty on every round and nothing was ever promoted. The engine reads
+        // the candidates and executes; the judgment stays with the reviewer.
+        ...(Array.isArray(kbCandidates) && kbCandidates.length > 0 ? [
+            'KNOWLEDGE BANK -- promotion candidates. These entries were captured during this '
+            + 'sprint and sit at INFERRED. You are the only role that can promote them to '
+            + 'CONFIRMED. Do NOT call any kb_* tool yourself: return your decisions in the '
+            + '`kb_promotions` field of your structured output as [{id, reason}] and the '
+            + 'orchestrator executes them.\n'
+            + 'Promote ONLY entries whose claim you independently verified during THIS review '
+            + '-- by reading the diff, running the tests, or checking the cited files yourself. '
+            + 'The `reason` must state that evidence (at least 20 characters, e.g. "verified '
+            + 'against server/transit.js:88 and the reopen test"). Evidence, not plausibility: '
+            + 'if an entry merely looks correct, leave it INFERRED -- that is a perfectly good '
+            + 'resting state, and a wrong CONFIRMED entry is worse than no entry. Never '
+            + 'blanket-promote, and never promote by module, tag or timestamp. Promoting '
+            + 'nothing is a valid outcome; return [] in that case.\n'
+            + wrapUntrustedBlock('kb_list --confidence INFERRED', JSON.stringify(
+                kbCandidates.map((e) => ({
+                    id: e.id,
+                    title: e.title,
+                    summary: e.summary,
+                    source_files: e.source_files,
+                })),
+                null,
+                2
+            )),
         ] : []),
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
@@ -5212,6 +5329,18 @@ async function runSprintCycle(context) {
      */
     async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
+        // apra-fleet-0ef: fetch the INFERRED entries this reviewer may promote
+        // and hand them to it in the prompt. The reviewer has no MCP kb_* tools
+        // of its own, so without this it can never name an entry id and
+        // `kb_promotions` comes back empty every round -- which is exactly why
+        // kb_promote had never once fired. Scoped to the reviewer's OWN work
+        // folder (same source kbWork.apply uses to route the writes), and
+        // best-effort: a cold KB must not fail the review.
+        const reviewerRepoPath = kbPriming.folderOf(reviewerPool[0]);
+        const kbCandidates = await kbWork.promotionCandidates(reviewerRepoPath);
+        if (kbCandidates.length > 0) {
+            log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
+        }
         // Stabilization log Issue 9: a full-cycle review is big -- run 6's
         // reviewer genuinely ran out of the fleet's default turn budget
         // (num_turns=51 after ~12 minutes of legitimate review work), and a
@@ -5252,6 +5381,7 @@ async function runSprintCycle(context) {
                 baseBranch: validated.baseBranch,
                 branch: validated.branch,
                 goal: validated.goal,
+                kbCandidates,
             }),
             // member_name is repeated literally here -- not only via the
             // shared opts object -- so the source-level call-site parse in
@@ -5262,7 +5392,14 @@ async function runSprintCycle(context) {
             // Issue 27 (see the integ resume site): restate the review scope --
             // a resumed dispatch replaces the delivered prompt artifact.
             'Continue your review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. ' +
-            `Your scope, restated so a resumed dispatch never loses it: bead id(s) under review ${beadIds.join(', ')} on branch ${validated.branch} against base ${validated.baseBranch}. ` +
+            // apra-fleet-s6d: same empty-beadIds case as buildReviewerPrompt --
+            // a scope-wide re-review has no ids to restate, and "bead id(s)
+            // under review  on branch..." reads as a dropped value.
+            `Your scope, restated so a resumed dispatch never loses it: `
+            + (Array.isArray(beadIds) && beadIds.length > 0
+                ? `bead id(s) under review ${beadIds.join(', ')} `
+                : `the entire sprint scope (no individual bead ids -- you are judging whether the sprint as a whole is complete) `)
+            + `on branch ${validated.branch} against base ${validated.baseBranch}. ` +
             'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
             {
                 ...reviewerDispatchOpts,

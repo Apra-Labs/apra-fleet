@@ -68,6 +68,7 @@
         "properties": {
           "id": {
             "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of promotable ids -- do not call a kb_* tool to find one, and never invent one.",
             "minLength": 1
           },
           "reason": {
