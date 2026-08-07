@@ -31,7 +31,7 @@ Registers a new machine as a fleet member. This is the entry point for every mem
 | `auth_type` | `"password"` \| `"key"` | remote only | Authentication method |
 | `password` | string | conditional | Required when `auth_type` is `"password"` |
 | `key_path` | string | conditional | Required when `auth_type` is `"key"` |
-| `work_folder` | string | yes | Working directory on the target machine |
+| `work_folder` | string | yes | Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- `~` and relative paths are rejected |
 | `llm_provider` | `"claude"` \| `"gemini"` \| `"codex"` \| `"copilot"` | no | Default: `"claude"`. LLM backend for this member |
 
 **What it does, step by step:**
@@ -81,16 +81,17 @@ Modifies an existing member's registration. All fields except `member_id` are op
 | `auth_type` | `"password"` \| `"key"` | no | New auth method (remote only) |
 | `password` | string | no | New password (encrypted before storage) |
 | `key_path` | string | no | New private key path |
-| `work_folder` | string | no | New working directory |
+| `work_folder` | string | no | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- `~` and relative paths are rejected |
 | `llm_provider` | `"claude"` \| `"gemini"` \| `"codex"` \| `"copilot"` | no | Switch LLM backend |
 
 **What it does:**
 
 1. Looks up the member by ID.
-2. If `work_folder` is changing, runs the duplicate folder check (same logic as `register_member`) -- rejects if the new folder is already in use by another member on the same device. The check excludes the current member's own ID so "updating to the same folder" doesn't falsely trigger.
-3. Encrypts password if provided (AES-256-GCM).
-4. Applies updates and persists to registry.
-5. **Re-provisions role-agent files (remote only)** -- same hash-diff-and-upload check as `register_member`, so a member that was registered before an agent file was added or changed picks it up. Skipped for local members and providers with no agents directory (codex, copilot); a provisioning failure is returned as a warning and does not fail the update.
+2. If the member is not local and `work_folder` is provided, rejects it up front unless it is a fully-qualified/absolute path.
+3. If `work_folder` is changing, runs the duplicate folder check (same logic as `register_member`) -- rejects if the new folder is already in use by another member on the same device. The check excludes the current member's own ID so "updating to the same folder" doesn't falsely trigger.
+4. Encrypts password if provided (AES-256-GCM).
+5. Applies updates and persists to registry.
+6. **Re-provisions role-agent files (remote only)** -- same hash-diff-and-upload check as `register_member`, so a member that was registered before an agent file was added or changed picks it up. Skipped for local members and providers with no agents directory (codex, copilot); a provisioning failure is returned as a warning and does not fail the update.
 
 **Output:** Updated member details.
 
