@@ -16,7 +16,19 @@ export interface StallEntry {
   memberId: string;
   memberName: string;
   provisional: boolean;
+  /** A genuine stall has been detected AND reported/killed -- suppresses
+   *  re-reporting and re-killing. Reset when activity resumes. */
   stallReported: boolean;
+  /**
+   * SF-19: separate latch for the "no activity signal is available for this
+   * member/provider" warning. It exists ONLY to keep that warning from
+   * repeating every tick, and must never be conflated with `stallReported`:
+   * a single transient no-signal tick (a flaky home-dir probe, a momentary
+   * network blip) previously set `stallReported: true`, which permanently
+   * disarmed the genuine-kill check below for the rest of the dispatch even
+   * once a real signal became available again.
+   */
+  noSignalReported?: boolean;
   // Called once when stall is confirmed — clears busy state from outside the hung execCommand
   onStall?: () => void;
 }
@@ -119,9 +131,13 @@ export class StallDetector {
         // EVERY codex/copilot/none dispatch, local or remote, past 120s). Warn
         // once instead; other ceilings (e.g. execute_prompt's max_total_s /
         // timeout_s) still bound such a dispatch.
+        // SF-19: latch the warning on `noSignalReported`, NOT on
+        // `stallReported`. Using the latter meant one transient no-signal tick
+        // permanently suppressed the genuine-kill check further down, silently
+        // forfeiting real stall protection for the remainder of the dispatch.
         if (!signalAvailable) {
-          if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
-            this.update(memberId, { stallReported: true });
+          if (now - entry.lastActivityAt > stallThresholdMs && !entry.noSignalReported) {
+            this.update(memberId, { noSignalReported: true });
             logWarn('stall_no_signal', JSON.stringify({
               memberId,
               memberName: entry.memberName,

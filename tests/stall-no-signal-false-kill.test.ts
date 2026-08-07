@@ -228,6 +228,43 @@ describe('no-signal dispatches are not killed by the stall detector (#390 / igoe
     expect(dirPollCmd).not.toContain(HUB_HOME_MARKER);
   });
 
+  // SF-19: the no-signal warning used to latch on `stallReported`, the same flag
+  // that gates the genuine-kill check. One transient no-signal tick therefore
+  // disarmed real stall protection for the rest of the dispatch. Separate flags
+  // (`noSignalReported` vs `stallReported`) keep the two independent.
+  it('a transient no-signal tick does NOT disarm the genuine kill on a later tick', async () => {
+    const agent = makeTestAgent({
+      friendlyName: 'bella-member',
+      username: undefined,      // no username -> no fallback home dir either
+      os: 'linux',
+      llmProvider: 'agy',
+      workFolder: '/home/bella/work/repo',
+    });
+    addAgent(agent);
+
+    const onStall = vi.fn();
+    detector.add(agent.id, entryFor(agent.id, onStall, 50_000));
+
+    // Tick 1: member briefly unreachable, and with no username there is no
+    // fallback home dir -- no pollable directory at all, so NO signal.
+    mockExecCommand.mockImplementation(async () => ({ stdout: '', stderr: 'ssh: connect failed', code: 255 }));
+    await detector._poll();
+    expect(onStall).not.toHaveBeenCalled();
+    expect(mockLogWarn.mock.calls.filter(c => c[0] === 'stall_no_signal')).toHaveLength(1);
+
+    // Tick 2: member reachable again, so a REAL signal exists -- and the brain
+    // dir's newest file is frozen well past the stall threshold. This is a
+    // genuine stall and the kill must fire despite tick 1.
+    const staleSecs = Math.floor((Date.now() - 300_000) / 1000);
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('$HOME')) return { stdout: '/home/bella\n', stderr: '', code: 0 };
+      return { stdout: `${staleSecs}\n`, stderr: '', code: 0 };
+    });
+    await detector._poll();
+
+    expect(onStall).toHaveBeenCalledTimes(1);
+  });
+
   it('remote AGY: fresh directory activity keeps a live dispatch alive', async () => {
     const agent = makeTestAgent({
       friendlyName: 'bella-member',
