@@ -13,6 +13,7 @@ import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.j
 import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.js';
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
+import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 
 export const updateMemberSchema = z.object({
   ...memberIdentifier,
@@ -79,6 +80,13 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   const hostChanged = input.host !== undefined && input.host !== existing.host;
   const portChanged = input.port !== undefined && input.port !== existing.port;
   const folderChanged = input.work_folder !== undefined && input.work_folder !== existing.workFolder;
+
+  // SF-17: same fully-qualified requirement as register_member -- a remote
+  // member's work_folder is never tilde-resolved or made absolute at runtime,
+  // so an update must not be able to introduce the state registration rejects.
+  if (existing.agentType === 'remote' && input.work_folder !== undefined && !isFullyQualifiedPath(input.work_folder)) {
+    return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT updated.');
+  }
 
   const needsUniquenessCheck = existing.agentType === 'remote'
     ? (hostChanged || portChanged || folderChanged)

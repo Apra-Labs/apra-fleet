@@ -29,6 +29,7 @@ import type { TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
 import { getAgentOS } from '../utils/agent-helpers.js';
 import { logWarn } from '../utils/log-helpers.js';
+import { getProvider } from '../providers/index.js';
 
 /** memberId -> resolved home directory. Successful probes only. */
 const homeDirCache = new Map<string, string>();
@@ -195,6 +196,55 @@ export function getCachedMemberPathContext(agent: Agent): MemberPathContext {
   return guess
     ? { homeDir: guess, targetOs, source: 'username-fallback' }
     : { homeDir: null, targetOs, source: 'unknown' };
+}
+
+/** Throwaway home dir used only to ask "does this provider build a member-side
+ *  log path at all?" -- never used to build a path that is actually read. */
+const HOME_CAPABILITY_SENTINEL = '/__fleet_capability_probe__';
+
+/**
+ * SF-18: warm the home-dir cache for every remote member that needs one.
+ *
+ * Before this, `getMemberPathContext` (the only probing resolver) had exactly
+ * ONE caller: `pollDirectoryActivity`, which runs solely for provisional
+ * dispatches with a null logFilePath -- i.e. AGY/OpenCode fresh turns. Claude
+ * and Gemini sessions are caller-minted, so their stall entries always carry a
+ * logFilePath and never reach it. Their cache therefore stayed empty forever,
+ * and the synchronous dispatch-path resolver (`getCachedMemberPathContext`,
+ * used by execute_prompt to name the transcript file) permanently fell back to
+ * the username-convention GUESS. On a member with a relocated or
+ * domain-suffixed home that guess is wrong, the named transcript never exists,
+ * and stall detection for that member silently goes inert.
+ *
+ * Called at server startup, which is the one place that covers members
+ * registered in an EARLIER process (the cache is per-process). register_member
+ * fires its own probe for newly added members so their very first dispatch is
+ * already warm.
+ *
+ * Deliberately fire-and-forget and deliberately NOT on the dispatch path: an
+ * awaited probe there inserts a remote round trip ahead of the dispatch's own
+ * commands, reordering the exact sequence #390 was careful to preserve. Every
+ * failure mode is silent -- the username guess remains the fallback, exactly as
+ * before.
+ */
+export function warmMemberHomeDirs(agents: Agent[]): void {
+  for (const agent of agents) {
+    // Local members never probe (os.homedir() is already exactly right).
+    if (agent.agentType === 'local') continue;
+    if (homeDirCache.has(agent.id)) continue;
+    // Providers with no member-side log path at all (codex/copilot/none) have
+    // no use for a home dir -- spending a remote exec on them is pure waste.
+    const targetOs = getAgentOS(agent) as TargetOS;
+    let hasLogDir: boolean;
+    try {
+      hasLogDir = getProvider(agent.llmProvider ?? 'claude')
+        .resolveSessionLogDir(agent.workFolder, HOME_CAPABILITY_SENTINEL, targetOs) !== null;
+    } catch {
+      continue;
+    }
+    if (!hasLogDir) continue;
+    void getMemberHomeDir(agent).catch(() => { /* best effort -- the guess remains */ });
+  }
 }
 
 /** Drop cached home dirs (a specific member, or all). Used when a member is

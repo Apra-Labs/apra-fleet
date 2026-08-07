@@ -23,6 +23,8 @@ import { checkRunningInstance } from '../services/singleton.js';
 import { provisionAgents, type ProvisionResult } from '../services/agent-provisioner.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { composePermissions } from './compose-permissions.js';
+import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
+import { getMemberHomeDir } from '../services/member-home.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -128,6 +130,14 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (!input.host) return '❌ "host" is required for remote members. Member was NOT registered.';
     if (!input.username) return '❌ "username" is required for remote members. Member was NOT registered.';
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
+  }
+
+  // SF-17: a remote member's work_folder is used verbatim on the MEMBER's
+  // machine -- `~` and relative paths are never resolved for it (by design; see
+  // work-folder-validation.ts). Reject them here so the caller supplies a
+  // fully-qualified path instead of the system guessing one at runtime.
+  if (!isLocal && !isFullyQualifiedPath(input.work_folder)) {
+    return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT registered.');
   }
 
   // Resolve {{secure.NAME}} tokens in password field
@@ -385,6 +395,25 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   addAgent(tempAgent);
   logLine('register_member', `id=${tempAgent.id} name=${tempAgent.friendlyName} type=${tempAgent.agentType}`, tempAgent);
   writeStatusline();
+
+  // SF-18: warm the member's home-dir cache.
+  //
+  // Every provider's transcript path is built under the MEMBER's home dir
+  // (issue #390). Only pollDirectoryActivity ever probed it, and that runs
+  // exclusively for provisional (AGY/OpenCode) dispatches -- so for Claude and
+  // Gemini members, whose entries always carry a caller-minted logFilePath, the
+  // cache was never populated and the synchronous dispatch path
+  // (getCachedMemberPathContext) permanently used the username-convention
+  // GUESS. A member with a relocated or domain-suffixed home then got a
+  // transcript path that cannot exist, which silently disables stall detection
+  // for it.
+  //
+  // Fired here (registration) rather than on the dispatch path so the FIRST
+  // dispatch already benefits, and deliberately NOT awaited: registration's
+  // reported result must not depend on it, and nothing downstream blocks on it.
+  if (!isLocal && !skipSshOps && connResult.ok) {
+    void getMemberHomeDir(tempAgent).catch(() => { /* best effort -- falls back to the guess */ });
+  }
 
   // --- Auto-run compose_permissions for the member's role/tags (apra-fleet-5oo.1) ---
   // register_member must not leave a member with an attribution-only settings

@@ -80,7 +80,7 @@ describe('register_member: agent provisioning integration', () => {
       member_type: 'remote',
       host: '192.168.1.110',
       username: 'akhil',
-      work_folder: '~/git/prov-test',
+      work_folder: '/home/testuser/git/prov-test',
       auth_type: 'password',
       password: 'pw',
     });
@@ -101,7 +101,7 @@ describe('register_member: agent provisioning integration', () => {
       member_type: 'remote',
       host: '192.168.1.111',
       username: 'akhil',
-      work_folder: '~/git/prov-fail-test',
+      work_folder: '/home/testuser/git/prov-fail-test',
       auth_type: 'password',
       password: 'pw',
     });
@@ -119,7 +119,7 @@ describe('register_member: agent provisioning integration', () => {
       member_type: 'remote',
       host: '192.168.1.112',
       username: 'akhil',
-      work_folder: '~/git/cloud-test',
+      work_folder: '/home/testuser/git/cloud-test',
       auth_type: 'key',
       key_path: '~/.ssh/id_rsa',
       cloud_provider: 'aws',
@@ -160,7 +160,7 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
       member_type: 'remote',
       host: '192.168.1.120',
       username: 'akhil',
-      work_folder: '~/git/trust-reg-test',
+      work_folder: '/home/testuser/git/trust-reg-test',
       auth_type: 'password',
       password: 'pw',
     });
@@ -170,7 +170,7 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
     // seed, and once more inside the compose_permissions auto-run
     // (apra-fleet-5oo.1) which self-heals trust on every run (apra-fleet-eft.40.2).
     expect(spy).toHaveBeenCalledTimes(2);
-    expect(spy).toHaveBeenCalledWith('~/git/trust-reg-test', expect.any(Function), 'linux');
+    expect(spy).toHaveBeenCalledWith('/home/testuser/git/trust-reg-test', expect.any(Function), 'linux');
     spy.mockRestore();
   });
 
@@ -182,7 +182,7 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
       member_type: 'remote',
       host: '192.168.1.121',
       username: 'akhil',
-      work_folder: '~/git/trust-fail-test',
+      work_folder: '/home/testuser/git/trust-fail-test',
       auth_type: 'password',
       password: 'pw',
     });
