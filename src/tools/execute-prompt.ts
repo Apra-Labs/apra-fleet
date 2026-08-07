@@ -984,14 +984,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     capturedPid = pid;
     scope.info(`pid=${pid}`);
     if (mintedId) {
+      let logPath: string | null = null;
       try {
-        const logPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, agent.workFolder);
-        stallDetector.update(agent.id, {
-          sessionId: mintedId,
-          logFilePath: logPath,
-          provisional: false,
-        });
-      } catch { /* copilot/codex: no log path resolution */ }
+        logPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, resolvedWorkFolder);
+      } catch {
+        logPath = null;
+      }
+      stallDetector.update(agent.id, {
+        sessionId: mintedId,
+        logFilePath: logPath,
+        provisional: !logPath,
+      });
     }
   };
 
@@ -1260,6 +1263,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         clearStoredPid(agent.id);
         if (parsed.sessionId) {
           recordKnownSession(agent.id, parsed.sessionId);
+        }
+        if (parsed.usage) {
+          recordSessionUsage(parsed.sessionId ?? expectedSid, parsed.usage);
+          if (budgetScope) {
+            await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: parsed.usage });
+          }
         }
         return {
           text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- resumed session mismatch. Expected session "${expectedSid}", but provider returned "${parsed.sessionId}".`,

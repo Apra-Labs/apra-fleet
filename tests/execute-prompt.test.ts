@@ -2314,6 +2314,22 @@ describe('context-headroom admission gate at the execute_prompt boundary (apra-f
       const result = await executePrompt({ member_id: agyMember.id, prompt: 'task', session_id: 'agy-expected-id', timeout_s: 5 });
       expect(result.structuredContent?.reason).toBe('session_not_found');
       expect(result.structuredContent?.isError).toBe(true);
+      expect((result.structuredContent as any)?.returnedSessionId).toBe('agy-different-id');
+    });
+
+    it('explicit resume skips fresh-session trust-heal retry', async () => {
+      const claudeMember = makeTestAgent({ friendlyName: 'claude-explicit-trust', llmProvider: 'claude' });
+      addAgent(claudeMember);
+      recordKnownSession(claudeMember.id, 'sess-untrusted-explicit');
+
+      mockExecCommand.mockResolvedValue({
+        stdout: '',
+        stderr: 'workspace is not trusted -- ensureWorkspaceTrusted',
+        code: 1,
+      });
+
+      const result = await executePrompt({ member_id: claudeMember.id, prompt: 'task', session_id: 'sess-untrusted-explicit', timeout_s: 5 });
+      expect(result.structuredContent?.reason).toBe('nonzero_exit');
     });
   });
 });

@@ -395,7 +395,7 @@ describe('pollLogFile', () => {
       const mtime = await pollDirectoryMtimeMs('member-1');
       expect(mtime).toBe(1700000000000);
       expect(mockExecCommand.mock.calls[mockExecCommand.mock.calls.length - 1][0]).toContain('find');
-      expect(mockExecCommand.mock.calls[mockExecCommand.mock.calls.length - 1][0]).toContain('-maxdepth 2');
+      expect(mockExecCommand.mock.calls[mockExecCommand.mock.calls.length - 1][0]).toContain('-maxdepth 5');
     });
   });
 });

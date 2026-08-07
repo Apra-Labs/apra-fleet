@@ -46,8 +46,8 @@ export async function pollDirectoryMtimeMs(memberId: string): Promise<number | n
   const escapedPosixDir = escapeDoubleQuoted(logDir);
 
   const cmd = isWindows
-    ? `powershell -c "$i = Get-ChildItem -Path '${escapedWinDir}' -Depth 2 -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1; if ($i) { [DateTimeOffset]::new($i.LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds() }"`
-    : `find "${escapedPosixDir}" -maxdepth 2 -type f -exec stat -c %Y {} + 2>/dev/null | sort -nr | head -n1`;
+    ? `powershell -c "$i = Get-ChildItem -Path '${escapedWinDir}' -Depth 5 -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1; if ($i) { [DateTimeOffset]::new($i.LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds() }"`
+    : `find "${escapedPosixDir}" -maxdepth 5 -type f -exec stat -c %Y {} + 2>/dev/null | sort -nr | head -n1`;
 
   try {
     const result = await strategy.execCommand(cmd, 5000);
