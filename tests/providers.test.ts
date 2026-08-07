@@ -1151,3 +1151,25 @@ describe('AgyProvider', () => {
     ]);
   });
 });
+
+describe('SessionIdStrategy & Log Path Resolution', () => {
+  it('claude and gemini use caller-minted sessionIdStrategy', () => {
+    expect(getProvider('claude').sessionIdStrategy()).toEqual({ type: 'caller-minted' });
+    expect(getProvider('gemini').sessionIdStrategy()).toEqual({ type: 'caller-minted' });
+  });
+
+  it('agy, opencode, codex, copilot, none use provider-minted sessionIdStrategy', () => {
+    expect(getProvider('agy').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+    expect(getProvider('opencode').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+    expect(getProvider('codex').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+    expect(getProvider('copilot').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+    expect(getProvider('none').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+  });
+
+  it('opencode, codex, copilot, none return empty string for resolveSessionLogPath', () => {
+    expect(getProvider('opencode').resolveSessionLogPath('sid', '/path')).toBe('');
+    expect(getProvider('codex').resolveSessionLogPath('sid', '/path')).toBe('');
+    expect(getProvider('copilot').resolveSessionLogPath('sid', '/path')).toBe('');
+    expect(getProvider('none').resolveSessionLogPath('sid', '/path')).toBe('');
+  });
+});

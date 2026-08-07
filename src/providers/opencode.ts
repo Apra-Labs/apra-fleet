@@ -110,9 +110,8 @@ export class OpenCodeProvider implements ProviderAdapter {
     return { type: 'provider-minted' };
   }
 
-  resolveSessionLogPath(sessionId: string, _workFolder: string, homeDir?: string): string {
-    const home = homeDir ?? os.homedir();
-    return path.join(home, '.local', 'share', 'opencode', 'storage', 'chats', sessionId);
+  resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string): string {
+    return '';
   }
 
   resolveSessionLogDir(_workFolder: string, homeDir?: string): string | null {

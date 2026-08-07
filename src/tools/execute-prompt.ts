@@ -1219,6 +1219,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // onAuthFailure shape: a repeat failure after the heal is terminal, not
       // looped).
       if ((!parsed.result || parsed.result.trim() === '')
+        && allowFreshSessionFallback
         && provider.classifyError(result.stderr || result.stdout) === 'workspace_not_trusted'
         && !trustHealAttempted) {
         trustHealAttempted = true;
@@ -1256,9 +1257,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
+        clearStoredPid(agent.id);
+        if (parsed.sessionId) {
+          recordKnownSession(agent.id, parsed.sessionId);
+        }
         return {
           text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- resumed session mismatch. Expected session "${expectedSid}", but provider returned "${parsed.sessionId}".`,
-          structuredContent: { isError: true, reason: 'session_not_found', sessionId: expectedSid },
+          structuredContent: { isError: true, reason: 'session_not_found', sessionId: expectedSid, returnedSessionId: parsed.sessionId },
         };
       }
       touchAgent(agent.id, undefined);
@@ -1274,7 +1279,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       recordKnownSession(agent.id, finalSid);
       let postLogPath: string | null = null;
       try {
-        postLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', finalSid, agent.workFolder);
+        postLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', finalSid, resolvedWorkFolder);
       } catch {
         postLogPath = null;
       }

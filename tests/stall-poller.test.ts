@@ -33,7 +33,7 @@ vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: mockGetAgentOS,
 }));
 
-import { pollLogFile } from '../src/services/stall/stall-poller.js';
+import { pollLogFile, pollDirectoryMtimeMs } from '../src/services/stall/stall-poller.js';
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -375,6 +375,27 @@ describe('pollLogFile', () => {
 
       const result = await pollLogFile('member-1', '/brain/session-1/logs/transcript.jsonl');
       expect(result.lastTimestamp).toBe('2026-08-05T05:02:30.000Z');
+    });
+  });
+
+  describe('pollDirectoryMtimeMs', () => {
+    it('returns null if agent not found or provider has no log dir', async () => {
+      mockGetAgent.mockReturnValue(undefined);
+      expect(await pollDirectoryMtimeMs('unknown')).toBeNull();
+
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'none' }));
+      expect(await pollDirectoryMtimeMs('member-1')).toBeNull();
+    });
+
+    it('polls directory mtime using maxdepth find command on posix', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'agy', workFolder: '/home/user/project' }));
+      mockGetAgentOS.mockReturnValue('linux');
+      mockExecCommand.mockResolvedValue({ stdout: '1700000000\n', stderr: '', code: 0 });
+
+      const mtime = await pollDirectoryMtimeMs('member-1');
+      expect(mtime).toBe(1700000000000);
+      expect(mockExecCommand.mock.calls[mockExecCommand.mock.calls.length - 1][0]).toContain('find');
+      expect(mockExecCommand.mock.calls[mockExecCommand.mock.calls.length - 1][0]).toContain('-maxdepth 2');
     });
   });
 });
