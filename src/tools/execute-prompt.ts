@@ -15,6 +15,7 @@ import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
+import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
@@ -814,11 +815,25 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     agentName: input.agent,
   };
 
+  // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
+  // the MEMBER's home directory, joined with the MEMBER's OS convention. Before
+  // this, every remote member got a HUB-home path (os.homedir()) joined with the
+  // HUB's path convention -- a path that can never exist on the member, which
+  // silently disabled stall detection for Claude/Gemini and manufactured
+  // false-positive stall kills for AGY/OpenCode.
+  //
+  // This resolution is deliberately SYNCHRONOUS (cached probe result, else the
+  // member's known login username's default home): the dispatch path must not
+  // add a remote round trip, and a wrong guess here can only cost detection
+  // fidelity, never cause a kill. The kill-capable directory poll in
+  // stall-poller.ts uses the probe-backed async resolver instead.
+  const memberPathCtx = getCachedMemberPathContext(agent);
+
   const activePreSpawnSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
   let resolvedLogPath: string | null = null;
   if (activePreSpawnSid) {
     try {
-      resolvedLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', activePreSpawnSid, resolvedWorkFolder);
+      resolvedLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', activePreSpawnSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
     } catch {
       resolvedLogPath = null;
     }
@@ -986,7 +1001,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     if (mintedId) {
       let logPath: string | null = null;
       try {
-        logPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, resolvedWorkFolder);
+        logPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', mintedId, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
       } catch {
         logPath = null;
       }
@@ -1301,7 +1316,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       recordKnownSession(agent.id, finalSid);
       let postLogPath: string | null = null;
       try {
-        postLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', finalSid, resolvedWorkFolder);
+        postLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', finalSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
       } catch {
         postLogPath = null;
       }

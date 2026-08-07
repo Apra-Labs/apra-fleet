@@ -1,4 +1,5 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -110,13 +111,14 @@ export class OpenCodeProvider implements ProviderAdapter {
     return { type: 'provider-minted' };
   }
 
-  resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string): string {
+  resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {
     return '';
   }
 
-  resolveSessionLogDir(_workFolder: string, homeDir?: string): string | null {
-    const home = homeDir ?? os.homedir();
-    return path.join(home, '.local', 'share', 'opencode', 'storage', 'chats');
+  resolveSessionLogDir(_workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
+    return joinForOS(targetOs, home, '.local', 'share', 'opencode', 'storage', 'chats');
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {

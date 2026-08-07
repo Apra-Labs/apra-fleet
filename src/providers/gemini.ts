@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
-import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag, joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -130,16 +130,18 @@ export class GeminiProvider implements ProviderAdapter {
     return { type: 'caller-minted' };
   }
 
-  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string): string {
-    const home = homeDir ?? os.homedir();
+  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return '';
     const projectName = workFolder.split(/[\\/]/).pop() ?? 'project';
-    return path.join(home, '.gemini', 'tmp', projectName, 'chats', `${sessionId}.jsonl`);
+    return joinForOS(targetOs, home, '.gemini', 'tmp', projectName, 'chats', `${sessionId}.jsonl`);
   }
 
-  resolveSessionLogDir(workFolder: string, homeDir?: string): string | null {
-    const home = homeDir ?? os.homedir();
+  resolveSessionLogDir(workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
     const projectName = workFolder.split(/[\\/]/).pop() ?? 'project';
-    return path.join(home, '.gemini', 'tmp', projectName, 'chats');
+    return joinForOS(targetOs, home, '.gemini', 'tmp', projectName, 'chats');
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {

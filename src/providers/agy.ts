@@ -1,4 +1,5 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -241,14 +242,16 @@ export class AgyProvider implements ProviderAdapter {
     return { type: 'provider-minted' };
   }
 
-  resolveSessionLogPath(sessionId: string, _workFolder: string, homeDir?: string): string {
-    const home = homeDir ?? os.homedir();
-    return path.join(home, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+  resolveSessionLogPath(sessionId: string, _workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return '';
+    return joinForOS(targetOs, home, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
   }
 
-  resolveSessionLogDir(_workFolder: string, homeDir?: string): string | null {
-    const home = homeDir ?? os.homedir();
-    return path.join(home, '.gemini', 'antigravity-cli', 'brain');
+  resolveSessionLogDir(_workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
+    return joinForOS(targetOs, home, '.gemini', 'antigravity-cli', 'brain');
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {

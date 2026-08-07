@@ -1,11 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
-import { buildResumeFlag, buildSessionIdFlag, encodeClaudeProjectDir } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -246,16 +243,18 @@ export class ClaudeProvider implements ProviderAdapter {
     return { type: 'caller-minted' };
   }
 
-  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string): string {
-    const home = homeDir ?? os.homedir();
+  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return '';
     const encoded = encodeClaudeProjectDir(workFolder);
-    return path.join(home, '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+    return joinForOS(targetOs, home, '.claude', 'projects', encoded, `${sessionId}.jsonl`);
   }
 
-  resolveSessionLogDir(workFolder: string, homeDir?: string): string | null {
-    const home = homeDir ?? os.homedir();
+  resolveSessionLogDir(workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
     const encoded = encodeClaudeProjectDir(workFolder);
-    return path.join(home, '.claude', 'projects', encoded);
+    return joinForOS(targetOs, home, '.claude', 'projects', encoded);
   }
 
   // Bare family aliases -- the claude CLI resolves these to the current

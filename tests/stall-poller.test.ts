@@ -36,7 +36,7 @@ vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: mockGetAgentOS,
 }));
 
-import { pollLogFile, pollDirectoryMtimeMs } from '../src/services/stall/stall-poller.js';
+import { pollLogFile, pollDirectoryActivity } from '../src/services/stall/stall-poller.js';
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -381,13 +381,24 @@ describe('pollLogFile', () => {
     });
   });
 
-  describe('pollDirectoryMtimeMs', () => {
-    it('returns null if agent not found or provider has no log dir', async () => {
+  describe('pollDirectoryActivity', () => {
+    it('reports no signal available if agent not found or provider has no log dir', async () => {
       mockGetAgent.mockReturnValue(undefined);
-      expect(await pollDirectoryMtimeMs('unknown')).toBeNull();
+      expect(await pollDirectoryActivity('unknown')).toEqual({ mtimeMs: null, signalAvailable: false });
 
+      // apra-fleet-igoe / issue #390: codex/copilot/none have NO pollable log
+      // directory at all. That must be reported as "no signal available", not as
+      // "polled and found nothing" -- the stall detector keys its no-kill
+      // decision off exactly this distinction.
       mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'none' }));
-      expect(await pollDirectoryMtimeMs('member-1')).toBeNull();
+      expect(await pollDirectoryActivity('member-1')).toEqual({ mtimeMs: null, signalAvailable: false });
+      expect(mockExecCommand).not.toHaveBeenCalled();
+    });
+
+    it('reports signalAvailable=true but mtimeMs=null when the directory exists but yields nothing', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'agy' }));
+      mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+      expect(await pollDirectoryActivity('member-1')).toEqual({ mtimeMs: null, signalAvailable: true });
     });
 
     it('successfully resolves mtime from a 4-level deep AGY brain layout fixture directory', async () => {
@@ -410,9 +421,10 @@ describe('pollLogFile', () => {
         return { stdout: `${statSeconds}\n`, stderr: '', code: 0 };
       });
 
-      const mtime = await pollDirectoryMtimeMs('member-1');
-      expect(mtime).not.toBeNull();
-      expect(mtime).toBeGreaterThan(0);
+      const activity = await pollDirectoryActivity('member-1');
+      expect(activity.signalAvailable).toBe(true);
+      expect(activity.mtimeMs).not.toBeNull();
+      expect(activity.mtimeMs).toBeGreaterThan(0);
 
       fs.rmSync(tmpBrainDir, { recursive: true, force: true });
     });

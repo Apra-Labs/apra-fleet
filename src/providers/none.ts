@@ -1,4 +1,4 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 
@@ -65,11 +65,11 @@ export class NoneProvider implements ProviderAdapter {
     return { type: 'provider-minted' };
   }
 
-  resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string): string {
+  resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {
     return '';
   }
 
-  resolveSessionLogDir(_workFolder: string, _homeDir?: string): string | null {
+  resolveSessionLogDir(_workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string | null {
     return null;
   }
 

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockPollLogFile, mockUpdateAgent, mockLogLine, mockLogWarn, mockScopeWarn } = vi.hoisted(() => ({
+const { mockPollLogFile, mockPollDirectoryActivity, mockUpdateAgent, mockLogLine, mockLogWarn, mockScopeWarn } = vi.hoisted(() => ({
   mockPollLogFile: vi.fn(),
+  mockPollDirectoryActivity: vi.fn(),
   mockUpdateAgent: vi.fn(),
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
@@ -10,6 +11,7 @@ const { mockPollLogFile, mockUpdateAgent, mockLogLine, mockLogWarn, mockScopeWar
 
 vi.mock('../src/services/stall/stall-poller.js', () => ({
   pollLogFile: mockPollLogFile,
+  pollDirectoryActivity: mockPollDirectoryActivity,
 }));
 
 vi.mock('../src/services/registry.js', () => ({
@@ -249,6 +251,9 @@ describe('StallDetector', () => {
     it('emits stall_detected for provisional entry exceeding threshold', async () => {
       process.env['STALL_THRESHOLD_MS'] = '5000';
       const pastTime = Date.now() - 10_000;
+      // A pollable log directory exists (signal IS available) but nothing in it
+      // advanced -- that is a genuine, evidence-backed stall.
+      mockPollDirectoryActivity.mockResolvedValue({ mtimeMs: null, signalAvailable: true });
       detector.add('member-1', makeEntry({ provisional: true, logFilePath: null, lastActivityAt: pastTime }));
 
       await detector._poll();
@@ -257,6 +262,101 @@ describe('StallDetector', () => {
         try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
       });
       expect(stallCalls).toHaveLength(1);
+    });
+  });
+
+  /**
+   * apra-fleet issue #390 / apra-fleet-igoe -- "no signal available" is the
+   * ABSENCE of evidence, not evidence of a stall.
+   *
+   * For codex/copilot/none, resolveSessionLogDir returns null unconditionally,
+   * so pollDirectoryActivity can never produce a positive signal. Every such
+   * dispatch's lastActivityAt stayed frozen at dispatch start, crossed the
+   * 120s threshold, and got killed by onStall() -- mid-progress, every time.
+   * The same happened to remote AGY/OpenCode members whose log directory could
+   * not be resolved at all (unknown member home dir).
+   */
+  describe('_poll — no-signal providers are never killed by the stall detector', () => {
+    const stallDetectedCalls = () => mockScopeWarn.mock.calls.filter((c: string[]) => {
+      try { return JSON.parse(c[0]).event === 'stall_detected'; } catch { return false; }
+    });
+
+    it('does NOT invoke onStall for a long-running dispatch when no signal mechanism exists', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      mockPollDirectoryActivity.mockResolvedValue({ mtimeMs: null, signalAvailable: false });
+      const onStall = vi.fn();
+      // 10x past the threshold, and still going.
+      detector.add('member-1', makeEntry({
+        provisional: true,
+        logFilePath: null,
+        lastActivityAt: Date.now() - 50_000,
+        onStall,
+      }));
+
+      await detector._poll();
+      await detector._poll();
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+      expect(stallDetectedCalls()).toHaveLength(0);
+      // It is still reported, once, as a diagnostic -- silence would be worse.
+      const noSignalWarns = mockLogWarn.mock.calls.filter((c: string[]) => c[0] === 'stall_no_signal');
+      expect(noSignalWarns).toHaveLength(1);
+      expect(noSignalWarns[0]![1]).toContain('member-1');
+    });
+
+    it('DOES invoke onStall when a signal mechanism exists but the signal is frozen', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      mockPollDirectoryActivity.mockResolvedValue({ mtimeMs: null, signalAvailable: true });
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({
+        provisional: true,
+        logFilePath: null,
+        lastActivityAt: Date.now() - 50_000,
+        onStall,
+      }));
+
+      await detector._poll();
+
+      expect(onStall).toHaveBeenCalledTimes(1);
+      expect(stallDetectedCalls()).toHaveLength(1);
+    });
+
+    it('still tracks real directory activity when a signal mechanism exists', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      const fresh = Date.now();
+      mockPollDirectoryActivity.mockResolvedValue({ mtimeMs: fresh, signalAvailable: true });
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({
+        provisional: true,
+        logFilePath: null,
+        lastActivityAt: Date.now() - 50_000,
+        onStall,
+      }));
+
+      await detector._poll();
+
+      expect(onStall).not.toHaveBeenCalled();
+      expect(detector.getEntry('member-1')?.lastActivityAt).toBe(fresh);
+    });
+
+    it('falls back to kill-capable behavior if the poller itself blows up (fail-closed)', async () => {
+      process.env['STALL_THRESHOLD_MS'] = '5000';
+      mockPollDirectoryActivity.mockRejectedValue(new Error('poller exploded'));
+      const onStall = vi.fn();
+      detector.add('member-1', makeEntry({
+        provisional: true,
+        logFilePath: null,
+        lastActivityAt: Date.now() - 50_000,
+        onStall,
+      }));
+
+      await detector._poll();
+
+      // An unexpected poller failure must not silently disable stall protection
+      // for members that DO have a working signal -- only an explicit
+      // signalAvailable:false opts out.
+      expect(onStall).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -1,9 +1,53 @@
+import path from 'node:path';
+import os from 'node:os';
 import type { LlmProvider } from '../types.js';
 import type { SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
 
 export type { LlmProvider };
+
+/** The OS of the machine a resolved path will be USED on (the member's own
+ *  machine), which is NOT necessarily the OS this hub process runs on. */
+export type TargetOS = 'linux' | 'macos' | 'windows';
+
+/**
+ * apra-fleet issue #390: join path segments using the TARGET member's OS
+ * convention instead of Node's host-dependent `path.join`.
+ *
+ * Providers previously built member-side log paths with the default `path`
+ * module, so a Windows hub produced backslash-joined paths for a Linux member
+ * (and vice versa) -- a path that can never exist on the member, which silently
+ * disables stall detection (Claude/Gemini) or manufactures a false-positive
+ * stall kill (AGY/OpenCode).
+ *
+ * `targetOs === undefined` deliberately keeps the legacy host-convention
+ * behavior: that is what LOCAL members want (they run as this process's own
+ * user on this process's own OS), and it keeps every pre-existing caller
+ * byte-identical.
+ */
+export function joinForOS(targetOs: TargetOS | undefined, ...segments: string[]): string {
+  if (targetOs === 'windows') return path.win32.join(...segments);
+  if (targetOs === undefined) return path.join(...segments);
+  return path.posix.join(...segments);
+}
+
+/**
+ * apra-fleet issue #390: normalize the `homeDir` argument of
+ * resolveSessionLogPath / resolveSessionLogDir.
+ *
+ *  - `undefined` -> "caller did not say" -> fall back to this process's home
+ *    directory (correct for local members; legacy behavior for everyone else).
+ *  - `null`      -> "caller TRIED to resolve the member's home directory and
+ *    FAILED" -> there is no honest path to build, so return null and let the
+ *    provider report an unresolvable path. Callers must degrade gracefully
+ *    (no signal) rather than poll a fabricated host-home path on a remote
+ *    machine, which is what produced the false kills this fixes.
+ */
+export function resolveHomeDir(homeDir: string | null | undefined): string | null {
+  if (homeDir === null) return null;
+  return homeDir ?? os.homedir();
+}
 
 export type SessionIdStrategy =
   | { type: 'caller-minted' }
@@ -143,10 +187,20 @@ export interface ProviderAdapter {
   resumeFlag(sessionId?: string, resuming?: boolean): string;
   /** Defines whether this provider accepts caller-minted UUIDs or generates session IDs natively. */
   sessionIdStrategy(): SessionIdStrategy;
-  /** Resolves the session transcript log path for a given session ID. */
-  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string): string;
-  /** Resolves the project/provider root log directory for watching in-flight activity. */
-  resolveSessionLogDir(workFolder: string, homeDir?: string): string | null;
+  /** Resolves the session transcript log path for a given session ID, AS IT EXISTS
+   *  ON THE MEMBER'S MACHINE.
+   *  @param homeDir  The MEMBER's home directory. `undefined` falls back to this
+   *                  process's home dir (correct for local members only); `null`
+   *                  means "the member's home dir could not be resolved", and the
+   *                  provider returns '' rather than fabricating a host-home path.
+   *  @param targetOs The MEMBER's OS, used to pick the path-join convention.
+   *                  `undefined` keeps this process's host convention. */
+  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string;
+  /** Resolves the project/provider root log directory for watching in-flight activity.
+   *  Same `homeDir` / `targetOs` semantics as {@link resolveSessionLogPath}. Returns
+   *  null when this provider has no pollable log directory at all, or when the
+   *  member's home directory could not be resolved. */
+  resolveSessionLogDir(workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null;
 
   // Model tier mapping
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string>;

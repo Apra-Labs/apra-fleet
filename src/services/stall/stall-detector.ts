@@ -1,6 +1,6 @@
 import { updateAgent } from '../registry.js';
 import { logLine, logWarn, LogScope } from '../../utils/log-helpers.js';
-import { pollLogFile, pollDirectoryMtimeMs } from './stall-poller.js';
+import { pollLogFile, pollDirectoryActivity } from './stall-poller.js';
 import { toLocalISOString, fmtElapsed } from './time-utils.js';
 import { writeStatusline } from '../statusline.js';
 
@@ -86,6 +86,7 @@ export class StallDetector {
     for (const [memberId, entry] of this.stallCheckList.entries()) {
       if (entry.provisional) {
         // Provisional: if logFilePath is available, check mtime; if logFilePath is null, poll directory activity
+        let signalAvailable = true;
         if (entry.logFilePath) {
           try {
             const pollResult = await pollLogFile(memberId, entry.logFilePath);
@@ -95,12 +96,41 @@ export class StallDetector {
             }
           } catch { /* best effort */ }
         } else {
+          // apra-fleet issue #390 / apra-fleet-igoe: default to "a signal is
+          // available" so any unexpected failure of the poller itself keeps the
+          // pre-existing (kill-capable) behavior. Only an explicit
+          // signalAvailable:false -- the provider genuinely has no pollable log
+          // directory, or the member's home dir could not be resolved -- opts
+          // this entry out of the baseline-timeout kill below.
           try {
-            const dirMtimeMs = await pollDirectoryMtimeMs(memberId);
-            if (dirMtimeMs && dirMtimeMs > entry.lastActivityAt) {
-              entry.lastActivityAt = dirMtimeMs;
+            const activity = await pollDirectoryActivity(memberId);
+            signalAvailable = activity?.signalAvailable !== false;
+            if (activity?.mtimeMs && activity.mtimeMs > entry.lastActivityAt) {
+              entry.lastActivityAt = activity.mtimeMs;
             }
           } catch { /* best effort */ }
+        }
+
+        // apra-fleet issue #390 / apra-fleet-igoe: with NO activity-signal
+        // mechanism at all, "we never saw progress" is the absence of evidence,
+        // not evidence of a stall -- lastActivityAt is simply frozen at dispatch
+        // start and crosses the threshold for every dispatch longer than it,
+        // healthy or not. Killing on that is a pure false positive (it fired for
+        // EVERY codex/copilot/none dispatch, local or remote, past 120s). Warn
+        // once instead; other ceilings (e.g. execute_prompt's max_total_s /
+        // timeout_s) still bound such a dispatch.
+        if (!signalAvailable) {
+          if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
+            this.update(memberId, { stallReported: true });
+            logWarn('stall_no_signal', JSON.stringify({
+              memberId,
+              memberName: entry.memberName,
+              idleSecs: Math.floor((now - entry.lastActivityAt) / 1000),
+              note: 'no stall signal available for this member/provider -- not killing; relying on dispatch timeouts',
+            }));
+          }
+          writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
+          continue;
         }
 
         // Baseline timeout check for provisional entries
