@@ -38,7 +38,7 @@ export const registerMemberSchema = z.object({
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
   password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
-  work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine'),
+  work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a remote member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   // Cloud fields

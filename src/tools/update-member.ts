@@ -38,7 +38,7 @@ export const updateMemberSchema = z.object({
   work_folder: z.string()
     .regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines')
     .optional()
-    .describe('New working directory on target machine'),
+    .describe('New working directory on target machine. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a non-local member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   icon: z.string().optional().describe('Override the auto-assigned emoji icon. Use named aliases: blue-circle, green-square, red-circle, etc. (8 colors × 2 shapes: circle, square). Or pass raw emoji.'),
@@ -81,10 +81,14 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   const portChanged = input.port !== undefined && input.port !== existing.port;
   const folderChanged = input.work_folder !== undefined && input.work_folder !== existing.workFolder;
 
-  // SF-17: same fully-qualified requirement as register_member -- a remote
-  // member's work_folder is never tilde-resolved or made absolute at runtime,
-  // so an update must not be able to introduce the state registration rejects.
-  if (existing.agentType === 'remote' && input.work_folder !== undefined && !isFullyQualifiedPath(input.work_folder)) {
+  // SF-17/SF-21: same fully-qualified requirement as register_member -- a
+  // non-local member's work_folder is never tilde-resolved or made absolute
+  // at runtime, so an update must not be able to introduce the state
+  // registration rejects. Guard on `!== 'local'` -- not `=== 'remote'` -- a relay
+  // member is not local either, and register_member cannot create one
+  // directly, so update_member is the only path that can set its work_folder
+  // -- missing it here would silently reopen exactly the bug this closes.
+  if (existing.agentType !== 'local' && input.work_folder !== undefined && !isFullyQualifiedPath(input.work_folder)) {
     return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT updated.');
   }
 

@@ -283,7 +283,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | Field | Type | Notes |
 |---|---|---|
 | `friendly_name` | `string` | Required. Human-friendly name for this member. |
-| `work_folder` | `string` | Required. Working directory on the target machine. |
+| `work_folder` | `string` | Required. Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- `~` and relative paths are rejected. |
 | `member_type` | `"local" \| "remote"?` | Default: `"remote"`. |
 | `host` | `string?` | IP address or hostname of the remote machine. |
 | `username` | `string?` | SSH username. |

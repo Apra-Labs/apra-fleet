@@ -145,5 +145,33 @@ describe('SF-17: work_folder must be fully qualified for remote members', () => 
       expect(result).not.toContain(FQ_ERROR);
       expect(getAllAgents()[0].workFolder).toBe('~/local-repo');
     });
+
+    // SF-21: register_member cannot create a relay member directly (its
+    // member_type enum is only 'local'/'remote'), so update_member is the ONLY
+    // path that can set a relay member's work_folder. A guard scoped to
+    // `agentType === 'remote'` misses it entirely, reopening exactly the
+    // silent-wrong-directory bug SF-17 exists to prevent -- relay members hit
+    // the same raw, unresolved workFolder path as remote ones
+    // (execute-prompt.ts: only 'local' gets resolveTilde).
+    it('rejects a ~-relative work_folder for a relay member (SF-21)', async () => {
+      const member = makeTestAgent({ agentType: 'relay', workFolder: '/home/testuser/project' });
+      addAgent(member);
+
+      const result = await updateMember({ member_id: member.id, work_folder: '~/repo' });
+
+      expect(result).toContain(FQ_ERROR);
+      expect(result).toContain('Member was NOT updated.');
+      expect(getAllAgents()[0].workFolder).toBe('/home/testuser/project');
+    });
+
+    it('accepts a fully-qualified path for a relay member (SF-21)', async () => {
+      const member = makeTestAgent({ agentType: 'relay', workFolder: '/home/testuser/project' });
+      addAgent(member);
+
+      const result = await updateMember({ member_id: member.id, work_folder: '/srv/work/repo' });
+
+      expect(result).not.toContain(FQ_ERROR);
+      expect(getAllAgents()[0].workFolder).toBe('/srv/work/repo');
+    });
   });
 });

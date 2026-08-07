@@ -73,7 +73,7 @@
 /**
  * @typedef {Object} RegisterMemberOptions
  * @property {string} friendly_name - Human-friendly name for this member (required)
- * @property {string} work_folder - Working directory on the target machine (required)
+ * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
  * @property {"local" | "remote"} [member_type] - Member type (default: "remote")
  * @property {string} [host] - IP address or hostname of the remote machine
  * @property {string} [username] - SSH username
@@ -92,7 +92,7 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [friendly_name] - New friendly name
- * @property {string} [work_folder] - New working directory
+ * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
  * @property {string} [host] - New host
  * @property {string} [username] - New SSH username
  * @property {number} [port] - New SSH port
