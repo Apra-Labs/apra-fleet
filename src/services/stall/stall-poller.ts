@@ -2,6 +2,9 @@ import { getAgent } from '../registry.js';
 import { getStrategy, type AgentStrategy } from '../strategy.js';
 import { getAgentOS } from '../../utils/agent-helpers.js';
 import { logLine, logWarn } from '../../utils/log-helpers.js';
+import { getProvider } from '../../providers/index.js';
+import { getMemberPathContext } from '../member-home.js';
+import { escapeDoubleQuoted } from '../../os/os-commands.js';
 
 export interface PollResult {
   lastTimestamp: string | null;
@@ -22,6 +25,92 @@ export interface PollResult {
    * permission error, etc.) -- treated the same as "no signal" by callers.
    */
   mtimeMs?: number | null;
+}
+
+export interface DirectoryActivity {
+  /** Newest file mtime under the provider's log dir, or null when nothing could
+   *  be read (directory absent, empty, or command failed). */
+  mtimeMs: number | null;
+  /**
+   * apra-fleet issue #390 / apra-fleet-igoe: whether this member+provider has a
+   * WORKING activity-signal mechanism at all.
+   *
+   * false means there is no log directory to poll -- either the provider has
+   * none (codex/copilot/none always) or the member's home directory could not
+   * be resolved. In that case a `mtimeMs: null` is NOT evidence of inactivity,
+   * it is the absence of evidence, and the stall detector must not treat it as
+   * a stall (that is precisely the false-kill this distinction exists to stop).
+   */
+  signalAvailable: boolean;
+}
+
+const NO_SIGNAL: DirectoryActivity = { mtimeMs: null, signalAvailable: false };
+
+/** Throwaway home dir used only to ask "does this provider build a log dir at
+ *  all?" without doing a member-side home-dir probe first. Never used to build
+ *  a path that is actually read. */
+const HOME_CAPABILITY_SENTINEL = '/__fleet_capability_probe__';
+
+/**
+ * Polling for directory-level file activity for provisional sessions where a
+ * specific session file is not yet known before spawn (e.g. AGY fresh turns).
+ */
+export async function pollDirectoryActivity(memberId: string): Promise<DirectoryActivity> {
+  const agent = getAgent(memberId);
+  if (!agent) return NO_SIGNAL;
+
+  const provider = agent.llmProvider ?? 'claude';
+  const adapter = getProvider(provider);
+  const isWindows = getAgentOS(agent) === 'windows';
+
+  // Capability check FIRST, with a sentinel home dir: does this provider have a
+  // pollable log directory at all? codex/copilot/none return null for any home
+  // dir whatsoever. Asking here (a pure function call) means we never pay for a
+  // member-side home-dir probe whose answer could not be used.
+  if (adapter.resolveSessionLogDir(agent.workFolder, HOME_CAPABILITY_SENTINEL, isWindows ? 'windows' : 'linux') === null) {
+    return NO_SIGNAL;
+  }
+
+  // apra-fleet issue #390: the log dir lives on the MEMBER's machine, under the
+  // MEMBER's home dir, joined with the MEMBER's OS convention. Resolving it with
+  // this process's os.homedir()/path.join produced a directory that could not
+  // exist on any remote member, which is what made the provisional
+  // baseline-timeout check fire against perfectly healthy dispatches.
+  const { homeDir, targetOs, source } = await getMemberPathContext(agent);
+  const logDir = adapter.resolveSessionLogDir(agent.workFolder, homeDir, targetOs);
+  // homeDir === null lands here too: no honest path to poll, so report "no
+  // signal available" rather than polling a fabricated hub path.
+  if (!logDir) return NO_SIGNAL;
+
+  // A home dir that came from the username FALLBACK (the probe failed) is a
+  // guess. We still poll it -- if the guess is right, full stall protection is
+  // preserved -- but a guessed directory that yields NOTHING is not evidence of
+  // a stall, it is an unverified path. Only an authoritative directory (local
+  // member, or a probed home dir) may report "signal available" on an empty
+  // result and thereby license a kill.
+  const authoritative = source === 'local' || source === 'probe';
+
+  const strategy = getStrategy(agent);
+
+  const escapedWinDir = logDir.replace(/'/g, "''");
+  const escapedPosixDir = escapeDoubleQuoted(logDir);
+
+  const cmd = isWindows
+    ? `powershell -c "$i = Get-ChildItem -Path '${escapedWinDir}' -Depth 5 -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1; if ($i) { [DateTimeOffset]::new($i.LastWriteTimeUtc, [TimeSpan]::Zero).ToUnixTimeMilliseconds() }"`
+    : `find "${escapedPosixDir}" -maxdepth 5 -type f -exec stat -c %Y {} + 2>/dev/null | sort -nr | head -n1`;
+
+  try {
+    const result = await strategy.execCommand(cmd, 5000);
+    const trimmed = result.stdout.trim();
+    if (!trimmed) return { mtimeMs: null, signalAvailable: authoritative };
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n <= 0) return { mtimeMs: null, signalAvailable: authoritative };
+    // A guessed directory that actually produced an mtime IS verified: real
+    // files were found there, so from here on it is a genuine signal source.
+    return { mtimeMs: isWindows ? n : n * 1000, signalAvailable: true };
+  } catch {
+    return { mtimeMs: null, signalAvailable: authoritative };
+  }
 }
 
 /**

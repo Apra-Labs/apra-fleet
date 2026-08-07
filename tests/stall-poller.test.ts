@@ -1,5 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Agent, SSHExecResult } from '../src/types.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execAsync = promisify(exec);
 
 const {
   mockGetAgent,
@@ -33,7 +40,9 @@ vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: mockGetAgentOS,
 }));
 
-import { pollLogFile } from '../src/services/stall/stall-poller.js';
+import { pollLogFile, pollDirectoryActivity } from '../src/services/stall/stall-poller.js';
+import { getProvider } from '../src/providers/index.js';
+import { clearMemberHomeDirCache } from '../src/services/member-home.js';
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -375,6 +384,130 @@ describe('pollLogFile', () => {
 
       const result = await pollLogFile('member-1', '/brain/session-1/logs/transcript.jsonl');
       expect(result.lastTimestamp).toBe('2026-08-05T05:02:30.000Z');
+    });
+  });
+
+  describe('pollDirectoryActivity', () => {
+    it('reports no signal available if agent not found or provider has no log dir', async () => {
+      mockGetAgent.mockReturnValue(undefined);
+      expect(await pollDirectoryActivity('unknown')).toEqual({ mtimeMs: null, signalAvailable: false });
+
+      // apra-fleet-igoe / issue #390: codex/copilot/none have NO pollable log
+      // directory at all. That must be reported as "no signal available", not as
+      // "polled and found nothing" -- the stall detector keys its no-kill
+      // decision off exactly this distinction.
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'none' }));
+      expect(await pollDirectoryActivity('member-1')).toEqual({ mtimeMs: null, signalAvailable: false });
+      expect(mockExecCommand).not.toHaveBeenCalled();
+    });
+
+    it('reports signalAvailable=true but mtimeMs=null when the directory exists but yields nothing', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'agy' }));
+      mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+      expect(await pollDirectoryActivity('member-1')).toEqual({ mtimeMs: null, signalAvailable: true });
+    });
+
+    /**
+     * SF-14: the directory-scan depth bound must be deep enough to actually
+     * reach an AGY transcript.
+     *
+     * The previous version of this test built the fixture tree but then mocked
+     * `execCommand` to hand back an mtime derived from `fs.statSync`, so the
+     * generated `find`/`Get-ChildItem` command was never run against the tree
+     * and the test passed identically with `-maxdepth 1`. Here `execCommand`
+     * really executes the generated command (that IS the member-side shell in
+     * production), against a real fixture at the real AGY layout depth -- so a
+     * too-shallow bound produces no output and the assertions fail.
+     *
+     * macOS is skipped: the POSIX branch uses GNU `stat -c %Y`, which BSD stat
+     * does not accept, and that would be a toolchain failure rather than a
+     * depth-bound failure.
+     */
+    describe.skipIf(process.platform === 'darwin')('AGY brain-dir depth bound (SF-14)', () => {
+      const targetOs: 'windows' | 'linux' = process.platform === 'win32' ? 'windows' : 'linux';
+      const agy = getProvider('agy');
+      let fixtureHome: string;
+      let logDir: string;
+      let transcriptPath: string;
+
+      beforeEach(() => {
+        clearMemberHomeDirCache();
+        fixtureHome = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'agy-depth-'));
+        // Layout comes from the provider itself, so it tracks agy.ts rather
+        // than a hardcoded guess about how deep the transcript sits.
+        logDir = agy.resolveSessionLogDir('/work/repo', fixtureHome, targetOs)!;
+        transcriptPath = agy.resolveSessionLogPath('sess-456', '/work/repo', fixtureHome, targetOs);
+        fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+        fs.writeFileSync(transcriptPath, '{"created_at":"2026-08-05T05:01:00.000Z"}\n');
+
+        // Remote member so the home dir comes from the (mocked-transport) probe
+        // and lands on the fixture tree instead of this machine's real home.
+        mockGetAgent.mockReturnValue(makeAgent({
+          id: 'member-1',
+          agentType: 'remote',
+          username: 'bella',
+          llmProvider: 'agy',
+          workFolder: '/work/repo',
+        }));
+        mockGetAgentOS.mockReturnValue(targetOs);
+        mockExecCommand.mockImplementation(async (cmd: string) => {
+          // Only the home-dir probe is stubbed (it asks the member "where is
+          // your home"; here that answer is the fixture root). Every other
+          // command -- i.e. the directory scan under test -- is executed for
+          // real by the host shell.
+          if (cmd.includes('$HOME') || cmd.includes('USERPROFILE')) {
+            return { stdout: fixtureHome, stderr: '', code: 0 };
+          }
+          const { stdout, stderr } = await execAsync(cmd, { timeout: 30_000, maxBuffer: 1024 * 1024 });
+          return { stdout: String(stdout), stderr: String(stderr), code: 0 };
+        });
+      });
+
+      afterEach(() => {
+        fs.rmSync(fixtureHome, { recursive: true, force: true });
+        clearMemberHomeDirCache();
+      });
+
+      it('the generated scan command really finds the transcript nested under the brain dir', async () => {
+        const activity = await pollDirectoryActivity('member-1');
+
+        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
+        expect(scanCmd).toBeDefined();
+        expect(scanCmd).toContain(logDir);
+
+        expect(activity.signalAvailable).toBe(true);
+        // The real command really located the real file: its mtime comes back.
+        expect(activity.mtimeMs).not.toBeNull();
+        const actualMtime = fs.statSync(transcriptPath).mtimeMs;
+        // POSIX branch reports whole seconds, so allow a 1s truncation window.
+        expect(Math.abs(activity.mtimeMs! - actualMtime)).toBeLessThan(1500);
+      });
+
+      it('the depth bound in the generated command covers the full AGY transcript layout', async () => {
+        await pollDirectoryActivity('member-1');
+        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'))!;
+
+        // How far below the polled root the transcript actually lives, derived
+        // from the provider (currently brain/<sessionId>/.system_generated/
+        // logs/transcript.jsonl == 4 levels), not assumed.
+        const relSegments = transcriptPath
+          .slice(logDir.length)
+          .split(/[\\/]/)
+          .filter(Boolean);
+        const requiredDepth = relSegments.length;
+        expect(requiredDepth).toBeGreaterThan(1);
+
+        if (targetOs === 'windows') {
+          // Get-ChildItem -Depth 0 == direct children, so a file `requiredDepth`
+          // levels down needs at least `requiredDepth - 1`.
+          const bound = Number(/-Depth (\d+)/.exec(scanCmd)![1]);
+          expect(bound).toBeGreaterThanOrEqual(requiredDepth - 1);
+        } else {
+          // find -maxdepth 1 == direct children, so it needs at least `requiredDepth`.
+          const bound = Number(/-maxdepth (\d+)/.exec(scanCmd)![1]);
+          expect(bound).toBeGreaterThanOrEqual(requiredDepth);
+        }
+      });
     });
   });
 });

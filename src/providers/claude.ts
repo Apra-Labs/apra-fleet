@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { defaultWindowsPidWrapper } from '../os/windows-wrapper.js';
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
-import { buildResumeFlag, buildSessionIdFlag } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { buildResumeFlag, buildSessionIdFlag, encodeClaudeProjectDir, joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
@@ -237,6 +237,24 @@ export class ClaudeProvider implements ProviderAdapter {
   resumeFlag(sessionId?: string, resuming?: boolean): string {
     if (!sessionId) return '';
     return resuming ? buildResumeFlag(sessionId) : buildSessionIdFlag(sessionId);
+  }
+
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'caller-minted' };
+  }
+
+  resolveSessionLogPath(sessionId: string, workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return '';
+    const encoded = encodeClaudeProjectDir(workFolder);
+    return joinForOS(targetOs, home, '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+  }
+
+  resolveSessionLogDir(workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
+    const encoded = encodeClaudeProjectDir(workFolder);
+    return joinForOS(targetOs, home, '.claude', 'projects', encoded);
   }
 
   // Bare family aliases -- the claude CLI resolves these to the current

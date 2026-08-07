@@ -37,7 +37,7 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
   describe('AGY Command Construction & Features (Session, Resume, Turns)', () => {
     const provider = new AgyProvider();
 
-    it('builds non-interactive agy prompt command with model and dangerously-skip-permissions', () => {
+    it('builds non-interactive agy prompt command with model, --output-format json, and dangerously-skip-permissions', () => {
       const cmd = provider.buildPromptCommand({
         folder: '/home/user/workspace',
         promptFile: '.fleet-task.md',
@@ -45,6 +45,7 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
         unattended: 'dangerous',
       });
       expect(cmd).toContain('agy --model');
+      expect(cmd).toContain('--output-format json');
       expect(cmd).toContain('--dangerously-skip-permissions');
       expect(cmd).toContain('Your task is described in /home/user/workspace/.fleet-task.md');
     });
@@ -140,7 +141,31 @@ describe('AGY Integration Suite (agy-integration-tests)', () => {
   });
 
   describe('AGY Response Parser', () => {
-    it('parses assistant output from MODEL steps and handles JSON content', () => {
+    it('parses native --output-format json envelope with conversation_id and token usage', () => {
+      const provider = new AgyProvider();
+      const envelope = {
+        conversation_id: '52f769e2-d98f-499b-8535-b389b7a7d1a1',
+        status: 'SUCCESS',
+        response: 'AGY Task Completed Successfully via Native JSON',
+        usage: {
+          input_tokens: 16397,
+          output_tokens: 532,
+          total_tokens: 16929,
+        },
+      };
+      const stdout = `FLEET_PID:12345\n${JSON.stringify(envelope)}`;
+
+      const result = provider.parseResponse({ stdout, stderr: '', code: 0 });
+      expect(result.result).toContain('AGY Task Completed Successfully via Native JSON');
+      expect(result.sessionId).toBe('52f769e2-d98f-499b-8535-b389b7a7d1a1');
+      expect(result.isError).toBe(false);
+      expect(result.usage).toEqual({
+        input_tokens: 16397,
+        output_tokens: 532,
+      });
+    });
+
+    it('parses assistant output from legacy JSONL lines as fallback', () => {
       const provider = new AgyProvider();
       const stdout = [
         'FLEET_PID:12345',

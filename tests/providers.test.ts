@@ -1050,9 +1050,10 @@ describe('AgyProvider', () => {
     expect(p.updateCommand()).toBe('agy update');
   });
 
-  it('builds prompt command with defaults', () => {
+  it('builds prompt command with defaults and --output-format json', () => {
     const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md' });
     expect(cmd).toContain('agy --model');
+    expect(cmd).toContain('--output-format json');
     expect(cmd).toContain('-p');
     expect(cmd).not.toContain('--conversation');
     expect(cmd).not.toContain('--dangerously-skip-permissions');
@@ -1061,11 +1062,62 @@ describe('AgyProvider', () => {
   it('builds prompt command with resume flag', () => {
     const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', sessionId: 'sess-abc', resuming: true });
     expect(cmd).toContain('--conversation "sess-abc"');
+    expect(cmd).toContain('--output-format json');
   });
 
   it('builds prompt command with unattended=dangerous', () => {
     const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'dangerous' });
     expect(cmd).toContain('--dangerously-skip-permissions');
+  });
+
+  it('builds prompt command with unattended=auto without passing invalid permission-mode flag', () => {
+    const cmd = p.buildPromptCommand({ folder: '/home/user/project', promptFile: '.fleet-task.md', unattended: 'auto' });
+    expect(cmd).not.toContain('--permission-mode');
+    expect(cmd).not.toContain('--dangerously-skip-permissions');
+    expect(p.permissionModeAutoFlag()).toBeNull();
+  });
+
+  it('jsonOutputFlag returns --output-format json', () => {
+    expect(p.jsonOutputFlag()).toBe('--output-format json');
+  });
+
+  it('parseResponse extracts result, sessionId, and usage metrics from AGY native JSON envelope', () => {
+    const agyJson = JSON.stringify({
+      conversation_id: 'conv-12345-uuid',
+      status: 'SUCCESS',
+      response: 'Hello from AGY!',
+      duration_seconds: 1.23,
+      num_turns: 1,
+      usage: {
+        input_tokens: 5000,
+        output_tokens: 150,
+        thinking_tokens: 50,
+        cache_read_tokens: 1000,
+        total_tokens: 5150,
+      },
+    });
+
+    const parsed = p.parseResponse({ stdout: agyJson, stderr: '', code: 0 });
+    expect(parsed.result).toBe('Hello from AGY!');
+    expect(parsed.sessionId).toBe('conv-12345-uuid');
+    expect(parsed.isError).toBe(false);
+    expect(parsed.usage).toEqual({ input_tokens: 5000, output_tokens: 150 });
+  });
+
+  it('parseResponse handles AGY JSON error status and error message', () => {
+    const agyErrJson = JSON.stringify({
+      conversation_id: '',
+      status: 'ERROR',
+      response: '',
+      error: 'invalid model selection (--model "bogus")',
+      duration_seconds: 0,
+      num_turns: 0,
+      usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 },
+    });
+
+    const parsed = p.parseResponse({ stdout: agyErrJson, stderr: '', code: 1 });
+    expect(parsed.result).toBe('invalid model selection (--model "bogus")');
+    expect(parsed.isError).toBe(true);
   });
 
   it('modelFlag returns empty string', () => {
@@ -1097,5 +1149,27 @@ describe('AgyProvider', () => {
       { action: 'invoke_subagent', target: '*' },
       { action: 'send_message', target: '*' },
     ]);
+  });
+});
+
+describe('SessionIdStrategy & Log Path Resolution', () => {
+  it('claude and gemini use caller-minted sessionIdStrategy', () => {
+    expect(getProvider('claude').sessionIdStrategy()).toEqual({ type: 'caller-minted' });
+    expect(getProvider('gemini').sessionIdStrategy()).toEqual({ type: 'caller-minted' });
+  });
+
+  it('agy, opencode, codex, copilot, none use provider-minted sessionIdStrategy', () => {
+    expect(getProvider('agy').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+    expect(getProvider('opencode').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+    expect(getProvider('codex').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+    expect(getProvider('copilot').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+    expect(getProvider('none').sessionIdStrategy()).toEqual({ type: 'provider-minted' });
+  });
+
+  it('opencode, codex, copilot, none return empty string for resolveSessionLogPath', () => {
+    expect(getProvider('opencode').resolveSessionLogPath('sid', '/path')).toBe('');
+    expect(getProvider('codex').resolveSessionLogPath('sid', '/path')).toBe('');
+    expect(getProvider('copilot').resolveSessionLogPath('sid', '/path')).toBe('');
+    expect(getProvider('none').resolveSessionLogPath('sid', '/path')).toBe('');
   });
 });

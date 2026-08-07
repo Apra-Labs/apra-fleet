@@ -1,68 +1,39 @@
 import type { LlmProvider } from '../../types.js';
-import { homedir } from 'os';
-import { join, basename } from 'path';
+import type { TargetOS } from '../../providers/provider.js';
+import { getProvider } from '../../providers/index.js';
+import { encodeClaudeProjectDir } from '../../providers/provider.js';
+
+export { encodeClaudeProjectDir };
 
 /**
- * Claude Code stores each project's sessions under a single directory named
- * after the project's absolute path, with EVERY non-alphanumeric character
- * replaced by '-' (slashes, backslashes, colons, dots, underscores, spaces...).
- * e.g. /home/ecs_user/vbv_nyk/app -> -home-ecs-user-vbv-nyk-app
- * This must match Claude's own encoding exactly, or the transcript is not found.
+ * apra-fleet issue #390: `homeDir` and `targetOs` describe the MEMBER's machine.
+ *  - `homeDir === undefined` -> fall back to this process's home dir (correct
+ *    for local members; the legacy behavior for everyone else).
+ *  - `homeDir === null` -> the member's home dir could not be resolved; return
+ *    null instead of fabricating a hub-home path on a remote machine.
+ *  - `targetOs === undefined` -> join with this process's host convention.
  */
-export function encodeClaudeProjectDir(workFolder: string): string {
-  return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
-}
-
 export function resolveSessionLogDir(
   provider: LlmProvider,
   workFolder: string,
-  homeDir?: string
+  homeDir?: string | null,
+  targetOs?: TargetOS
 ): string | null {
-  const home = homeDir ?? homedir();
-
-  if (provider === 'claude') {
-    return join(home, '.claude', 'projects', encodeClaudeProjectDir(workFolder));
-  }
-
-  if (provider === 'gemini') {
-    const projectName = basename(workFolder) || 'project';
-    return join(home, '.gemini', 'tmp', projectName, 'chats');
-  }
-
-  if (provider === 'agy') {
-    return join(home, '.gemini', 'antigravity-cli', 'brain');
-  }
-
-  return null;
+  const adapter = getProvider(provider);
+  return adapter.resolveSessionLogDir(workFolder, homeDir, targetOs);
 }
 
 export function resolveSessionLogPath(
   provider: LlmProvider,
   sessionId: string,
   workFolder: string,
-  homeDir?: string
+  homeDir?: string | null,
+  targetOs?: TargetOS
 ): string {
-  const home = homeDir ?? homedir();
-
-  if (provider === 'claude') {
-    // Claude: ~/.claude/projects/<project-path-encoded>/<sessionId>.jsonl
-    return join(home, '.claude', 'projects', encodeClaudeProjectDir(workFolder), `${sessionId}.jsonl`);
-  }
-
-  if (provider === 'gemini') {
-    // Gemini: ~/.gemini/tmp/<project>/chats/<sessionId>.jsonl
-    const projectName = workFolder.split(/[\\/]/).pop() ?? 'project';
-    return join(home, '.gemini', 'tmp', projectName, 'chats', `${sessionId}.jsonl`);
-  }
-
-  if (provider === 'agy') {
-    // AGY: ~/.gemini/antigravity-cli/brain/<sessionId>/.system_generated/logs/transcript.jsonl
-    return join(home, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
-  }
-
-  if (provider === 'codex' || provider === 'copilot') {
+  const adapter = getProvider(provider);
+  const resolved = adapter.resolveSessionLogPath(sessionId, workFolder, homeDir, targetOs);
+  if (!resolved) {
     throw new Error(`Unsupported log polling for provider: ${provider}`);
   }
-
-  throw new Error(`Unknown LLM provider: ${provider}`);
+  return resolved;
 }
