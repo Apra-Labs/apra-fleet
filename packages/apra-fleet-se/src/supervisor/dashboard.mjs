@@ -36,7 +36,13 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
-import { renderBacklogPanelHtml } from './backlog.mjs';
+import { renderBacklogPanelHtml, bdListAllBeads } from './backlog.mjs';
+// apra-fleet-x8r.2: the SAME closed/required helper apra-fleet-x8r.1 landed
+// for the fleet-sprint viewer's Sprint Stack widget (and its HTML renderer) --
+// deliberately reused here rather than a second count implementation, so
+// there is exactly one closed/required computation in the package.
+import { computeSprintProgress } from '../../fleet-sprint/sprint-progress.mjs';
+import { renderProgressBarHtml } from '../../fleet-sprint/viewer-extensions.mjs';
 
 /**
  * Badge color per four-status classifier value; unknown values fall back to
@@ -88,6 +94,24 @@ function memberChip(member) {
 }
 
 /**
+ * apra-fleet-x8r.2: the Sprint Stack row's progress-bar markup, or a neutral
+ * placeholder when `view.progress` is unavailable (e.g. the bulk beads fetch
+ * or scope expansion failed for this sprint this render -- see
+ * buildSprintViews() below). Never NaN/a crash: `renderProgressBarHtml()`
+ * itself only ever receives an already-computed `{closed, required,
+ * fraction}` object here, never null passed through to it, so its own
+ * divide-by-zero guard is not what's protecting this path.
+ * @param {{ closed: number, required: number, fraction: number }|null|undefined} progress
+ * @returns {string}
+ */
+function renderSprintProgressHtml(progress) {
+    if (!progress || typeof progress.required !== 'number') {
+        return '<div style="padding: 8px 0; font-size: 12px; color: #71717a; font-style: italic;">progress unavailable</div>';
+    }
+    return renderProgressBarHtml(progress);
+}
+
+/**
  * Renders one running sprint's section.
  * @param {SprintView} view
  * @returns {string}
@@ -97,6 +121,7 @@ export function renderSprintSection(view) {
     const branch = view.branch ? escapeHtml(view.branch) : 'unknown';
     const goal = view.goal ? escapeHtml(view.goal) : 'unknown';
     const beadCount = Number.isInteger(view.beadCount) ? String(view.beadCount) : 'unknown';
+    const progressHtml = renderSprintProgressHtml(view.progress);
     const scopeRoots = (view.issueRoots ?? []).map((id) => escapeHtml(id)).join(', ') || 'none';
     const members = (view.members ?? []);
     const membersHtml = members.length > 0
@@ -136,6 +161,7 @@ export function renderSprintSection(view) {
         '<button type="button" class="btn btn-secondary btn-restart-sprint" data-sprint-id="' + sprintId + '" ' +
         'style="font-size: 12px;">Restart</button>' +
         '</div>' +
+        progressHtml +
         '<div style="margin-top: 8px; font-size: 13px; color: #d4d4d8;">' +
         '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + '</div>' +
         '<div><span style="color:#a1a1aa;">Goal:</span> ' + goal + '</div>' +
@@ -516,6 +542,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  * @property {string} status - one of WATCHDOG_STATUS's four values
  * @property {string[]} issueRoots
  * @property {number|null} beadCount
+ * @property {{ closed: number, required: number, fraction: number }|null} progress
  * @property {Array<{ name: string, role: string|null }>} members
  */
 
@@ -532,6 +559,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  *   watchdog: { classifySprint: (entry: object) => Promise<{ status: string }> },
  *   listChildren?: (parentId: string) => Promise<string[]>,
  *   expandScope?: (roots: string[]) => Promise<Set<string>>,
+ *   listAllBeads?: () => Promise<Array<{ id: string, status: string }>>,
  *   getSprintMeta?: (sprintId: string) => Promise<{ branch?: string, goal?: string, roles?: Record<string,string> }>|{ branch?: string, goal?: string, roles?: Record<string,string> },
  *   backlog?: { renderHtml: () => Promise<string>|string },
  *   logger?: { log?: Function, error?: Function },
@@ -557,6 +585,13 @@ export function createDashboard(deps = {}) {
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
     const listChildren = deps.listChildren ?? bdListChildren;
     const expand = deps.expandScope ?? ((roots) => expandScope(roots, listChildren));
+    // apra-fleet-x8r.2: one bulk `bd list --json` fetch per renderIndexPage()
+    // call (reused across every sprint row below), not one per row -- same
+    // "one query fewer" discipline bdListScoped('') documents in runner.js.
+    // Reuses backlog.mjs's already-tested bdListAllBeads() (normalizeBead()
+    // shape: `{ id, status, ... }`) rather than a second bulk-fetch
+    // implementation.
+    const listAllBeads = deps.listAllBeads ?? bdListAllBeads;
     // apra-fleet-3i3.2: best-effort per-sprint metadata (branch/goal/member
     // roles). Defaults to reading branch/goal straight off the ledger entry
     // (which now persists them -- see ledger.mjs) when the caller injects
@@ -586,13 +621,28 @@ export function createDashboard(deps = {}) {
      */
     async function buildSprintViews() {
         const entries = ledger.list();
+        // apra-fleet-x8r.2: fetched ONCE for the whole page render (not once
+        // per sprint row) -- a failure here is isolated to "no progress bar
+        // this round" for every row (each falls back to its own placeholder
+        // below), never a thrown page render.
+        let allBeads = null;
+        try {
+            allBeads = await listAllBeads();
+        } catch (err) {
+            logError('[dashboard] bulk beads fetch failed (progress bars will show placeholders this round):', err);
+        }
         const built = await Promise.all(entries.map(async (entry) => {
             const classification = await watchdog.classifySprint(entry);
 
             let beadCount = null;
+            let progress = null;
             try {
                 const scope = await expand(entry.issueRoots ?? []);
                 beadCount = scope.size;
+                if (Array.isArray(allBeads)) {
+                    const beadsInScope = allBeads.filter((b) => b && scope.has(b.id));
+                    progress = computeSprintProgress(beadsInScope);
+                }
             } catch (err) {
                 logError(`[dashboard] scope expansion failed for sprint '${entry.sprintId}':`, err);
             }
@@ -612,6 +662,7 @@ export function createDashboard(deps = {}) {
                 status: classification.status,
                 issueRoots: entry.issueRoots ?? [],
                 beadCount,
+                progress,
                 members: (entry.members ?? []).map((name) => ({ name, role: roles[name] ?? null })),
             };
         }));

@@ -109,6 +109,36 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(!html.includes('<role>'));
     });
 
+    test('apra-fleet-x8r.2: renders a progress bar plus M/N text when progress is available', () => {
+        const html = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: 3,
+            progress: { closed: 2, required: 3, fraction: 2 / 3 },
+            members: [],
+        });
+        assert.ok(html.includes('sprint-progress'));
+        assert.ok(html.includes('2/3'));
+    });
+
+    test('apra-fleet-x8r.2: missing/unknown progress renders a neutral placeholder, never NaN or a throw', () => {
+        const html = renderSprintSection({
+            sprintId: 'sprint-1',
+            branch: 'feat/x',
+            goal: 'P1',
+            status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [],
+            beadCount: null,
+            progress: null,
+            members: [],
+        });
+        assert.ok(!html.includes('NaN'));
+        assert.ok(html.toLowerCase().includes('progress unavailable'));
+    });
+
     test('apra-fleet-3i3.1: renders a Stop button and a per-row inline result element, both keyed by sprintId', () => {
         const html = renderSprintSection({
             sprintId: 'sprint-1',
@@ -195,6 +225,35 @@ describe('dashboard -- createDashboard', () => {
         });
         const [view] = await dashboard.buildSprintViews();
         assert.equal(view.beadCount, 3);
+    });
+
+    test('apra-fleet-x8r.2: progress reuses computeSprintProgress over the sprint scope, sourced from listAllBeads', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(['root', 'child1', 'child2']),
+            listAllBeads: async () => [
+                { id: 'root', status: 'closed' },
+                { id: 'child1', status: 'closed' },
+                { id: 'child2', status: 'open' },
+                { id: 'out-of-scope', status: 'open' },
+            ],
+        });
+        const [view] = await dashboard.buildSprintViews();
+        assert.deepEqual(view.progress, { closed: 2, required: 3, fraction: 2 / 3 });
+    });
+
+    test('apra-fleet-x8r.2: a failed bulk beads fetch leaves progress null (placeholder) for every sprint, without throwing', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(['root']),
+            listAllBeads: async () => { throw new Error('bd unavailable'); },
+            logger: { log() {}, error() {} },
+        });
+        const views = await dashboard.buildSprintViews();
+        assert.equal(views[0].progress, null);
+        assert.equal(views[0].beadCount, 1);
     });
 
     test('getSprintMeta supplies branch/goal/roles when injected; defaults to null/unknown otherwise', async () => {
