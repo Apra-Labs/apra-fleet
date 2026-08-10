@@ -181,6 +181,12 @@ Guards enforcing whichever mode is selected:
 
 See `packages/apra-fleet-se/docs/architecture.md` for the full internals of both modes, including the escalation ladders and the always-on supervisor service that launches and tracks sprints.
 
+### VCSModule and the Server/Member Split for Repo Actions
+
+The fleet server never acts on a repository or a hosted VCS provider's API itself -- its role is limited to minting and distributing scoped credentials; only a MEMBER performs the actual repo-mutating call (raising a PR, pushing a commit, posting a comment). This is the `server-never-acts-on-a-repo` invariant; see `docs/adr-server-never-acts-on-repo.md` for the full rationale, including the pre-existing credential-minting carve-out (the server has always held the GitHub App key and minted tokens) that this invariant does not change.
+
+`VCSModule` (`packages/apra-fleet-se/fleet-sprint/vcs-module.mjs`) is the orchestrator-side (fleet-se) half of that split for PR-raising actions: a pure, provider-dispatched command builder that -- given a provider name and an already-minted credential -- deterministically builds the exact command a member will run via `execute_command`, plus metadata to interpret its result. It performs no network I/O itself and never runs on the member; it mirrors/extends the server-side provider seam (`VcsProviderService`, `src/services/vcs/types.ts`) rather than inventing a parallel one. The member stays a dumb executor: it holds no VCS-abstraction code and makes no choice about how a PR gets raised.
+
 ## Workflow Subsystem (SEA-embedded workflow runner)
 
 `apra-fleet workflow <name>` runs a self-contained script (an ESM entry point
