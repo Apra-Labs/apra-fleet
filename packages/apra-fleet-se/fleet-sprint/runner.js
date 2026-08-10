@@ -5290,6 +5290,35 @@ async function runSprintCycle(context) {
     // A2). A bead can be a leaf `type=task` OR a decomposed `type=bug`/
     // `type=feature` parent; only the has-children structure tells them
     // apart.
+    /**
+     * apra-fleet-mjo: the ids of every in-scope bead that is some other
+     * in-scope bead's `--parent`, i.e. every DECOMPOSED (grouping) node.
+     *
+     * Single source of truth for "this bead is not a dispatchable unit of
+     * work", shared by readyLeafBeads() (which must never hand one to a doer)
+     * and the goal-priority completion gate (which must never let one block
+     * the sprint). Those two sites previously disagreed, and the
+     * contradiction was fatal: a parent whose children had all closed was
+     * simultaneously impossible to dispatch and impossible to clear, so
+     * `openAtGoal` never reached 0, the completion gate and the re-review
+     * branch it guards were both unreachable, and the run burned cycles until
+     * the stall guard aborted it -- discarding harvest and PR even though
+     * every task had succeeded. Observed live 2026-08-07 (closed-count
+     * history [9, 14, 14, 14] with two open bug parents as the only blockers).
+     *
+     * Built from children of ANY status (closed included) -- see the Issue 28
+     * note in readyLeafBeads: the moment a decomposed node's children all
+     * close it must NOT stop looking like a parent.
+     *
+     * `bdListScoped('')` is the no-extra-query path (the already-fetched
+     * project-wide any-status dump filtered to scope), so calling this issues
+     * no new bd command.
+     */
+    async function decomposedParentIds() {
+        const allAnyStatus = await bdListScoped('');
+        return new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
+    }
+
     async function readyLeafBeads() {
         // Stabilization log Issue 28: the exclusion set must be built from
         // children of ANY status, not just open ones. The previous
@@ -5304,11 +5333,10 @@ async function runSprintCycle(context) {
         // already-fetched project-wide ANY-status dump (closed included)
         // filtered to scope -- exactly the child set needed here, with no
         // new bd command issued.
-        const [ready, allAnyStatus] = await Promise.all([
+        const [ready, parentIds] = await Promise.all([
             bdListScoped('--ready --json'),
-            bdListScoped(''),
+            decomposedParentIds(),
         ]);
-        const parentIds = new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
         return ready.filter((b) => !parentIds.has(b.id));
     }
 
@@ -7875,7 +7903,13 @@ async function runSprintCycle(context) {
         // the current cross-member beads state (every member's D-pushed closes)
         // rather than the orchestrator's stale local copy.
         await doltPullBefore(orchestratorMember, { command, log });
-        const openAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
+        // apra-fleet-mjo: count only DISPATCHABLE work. A decomposed parent is
+        // never handed to a doer (readyLeafBeads excludes it), so counting it
+        // here makes the gate unreachable the moment its children all close.
+        // Its children -- the real units of work -- are counted on their own.
+        const openAtGoalParentIds = await decomposedParentIds();
+        const openAtGoal = (await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`))
+            .filter((b) => !openAtGoalParentIds.has(b.id));
 
         // Stall detection: track the closed-bead count for the WHOLE sprint
         // scope (not just goal-priority) so zero forward progress on ANY
@@ -7897,6 +7931,13 @@ async function runSprintCycle(context) {
 
         if (staleCycles >= STALL_CYCLE_LIMIT) {
             const thrashIds = thrashingBeadIds();
+            // apra-fleet-mjo: counts alone ("history: [9, 14, 14, 14]") do not
+            // tell an operator WHAT is holding the sprint open, which is
+            // precisely what they need to intervene. Name the blocking beads.
+            const blockerIds = openAtGoal.map((b) => b.id);
+            const blockerSuffix = blockerIds.length > 0
+                ? ` Still open at/above goal priority ${goalMax}: [${blockerIds.join(', ')}].`
+                : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.';
             const thrashSuffix = thrashIds.length > 0
                 ? ` Reopen-thrash detected on bead(s) [${thrashIds.join(', ')}] (reopened more than ${REOPEN_THRASH_LIMIT} times) -- ` +
                   `likely cause of the oscillation.`
@@ -7904,9 +7945,10 @@ async function runSprintCycle(context) {
             throw new StalledSprintError(
                 `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress on closed beads ` +
                 `in scope '${sprintFilter}'. Closed-count history: [${closedCountHistory.join(', ')}] (high-water mark: ${highWaterClosedCount}).` +
+                blockerSuffix +
                 thrashSuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), cycle }
             );
         }
 
@@ -8026,7 +8068,12 @@ async function runSprintCycle(context) {
     // (finalOpenAtGoal / finalClosedCount) reflects every member's D-pushed
     // beads state, not the orchestrator's stale local copy.
     await doltPullBefore(orchestratorMember, { command, log });
-    const finalOpenAtGoal = await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`);
+    // apra-fleet-mjo: same dispatchable-work-only rule as the per-cycle gate
+    // above -- the closing evidence must not report a grouping node as
+    // outstanding work when no role was ever allowed to touch it.
+    const finalParentIds = await decomposedParentIds();
+    const finalOpenAtGoal = (await bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`))
+        .filter((b) => !finalParentIds.has(b.id));
     const finalClosedCount = (await bdListScoped('--status=closed --json')).length;
 
     let finalVerdictResult;

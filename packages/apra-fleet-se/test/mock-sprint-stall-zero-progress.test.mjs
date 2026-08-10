@@ -51,5 +51,18 @@ test('mock sprint: zero-progress every cycle triggers a stall-abort well before 
             stalled.error && Array.isArray(stalled.error.closedCountHistory) && stalled.error.closedCountHistory.length <= 3,
             `Expected the stall abort to fire within 3 cycles (well before max_cycles=5), got closedCountHistory: ${stalled.error ? JSON.stringify(stalled.error.closedCountHistory) : 'n/a'}`
         );
+        // apra-fleet-mjo: counts alone ("history: [2, 2, 2]") never tell an
+        // operator WHAT is holding the sprint open. The abort must name the
+        // beads still open at/above goal priority, both as a structured field
+        // and in the human-readable message.
+        const blockerIds = stalled.error ? stalled.error.blockerIds : null;
+        check(
+            Array.isArray(blockerIds) && blockerIds.length > 0,
+            `Expected the StalledSprintError to carry the blocking bead ids, got: ${JSON.stringify(blockerIds)}`
+        );
+        check(
+            blockerIds.every((id) => stalled.error.message.includes(id)),
+            `Expected every blocking bead id ${JSON.stringify(blockerIds)} to appear in the abort message, got: ${stalled.error.message}`
+        );
     });
 });
