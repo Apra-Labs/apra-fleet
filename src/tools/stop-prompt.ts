@@ -21,6 +21,10 @@ export async function stopPrompt(input: StopPromptInput): Promise<string> {
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError;
 
+  if (agent.llmProvider === 'none') {
+    return `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
+  }
+
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
 
