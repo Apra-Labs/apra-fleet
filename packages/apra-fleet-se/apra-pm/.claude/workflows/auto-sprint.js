@@ -1362,6 +1362,7 @@ const REVIEW_SCHEMA = {
         "properties": {
           "id": {
             "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of promotable ids -- do not call a kb_* tool to find one, and never invent one.",
             "minLength": 1
           },
           "reason": {
@@ -1381,6 +1382,7 @@ const REVIEW_SCHEMA = {
           "type",
           "title",
           "summary",
+          "content",
           "source_files"
         ],
         "properties": {
@@ -1399,6 +1401,11 @@ const REVIEW_SCHEMA = {
           "summary": {
             "type": "string",
             "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
           },
           "source_files": {
             "type": "array",
@@ -1507,6 +1514,7 @@ const DOER_STATUS_SCHEMA = {
           "type",
           "title",
           "summary",
+          "content",
           "source_files"
         ],
         "properties": {
@@ -1525,6 +1533,11 @@ const DOER_STATUS_SCHEMA = {
           "summary": {
             "type": "string",
             "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
           },
           "source_files": {
             "type": "array",
@@ -1763,6 +1776,7 @@ const HARVEST_SCHEMA = {
           "type",
           "title",
           "summary",
+          "content",
           "source_files"
         ],
         "properties": {
@@ -1781,6 +1795,11 @@ const HARVEST_SCHEMA = {
           "summary": {
             "type": "string",
             "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
           },
           "source_files": {
             "type": "array",
@@ -1845,6 +1864,7 @@ const PLANNER_SCHEMA = {
           "type",
           "title",
           "summary",
+          "content",
           "source_files"
         ],
         "properties": {
@@ -1863,6 +1883,11 @@ const PLANNER_SCHEMA = {
           "summary": {
             "type": "string",
             "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
           },
           "source_files": {
             "type": "array",

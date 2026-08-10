@@ -13,6 +13,11 @@ const GOOD_CAPTURE = {
   type: 'knowledge',
   title: 'getKbProviders is the only KB accessor',
   summary: 'Every kb_* tool routes through getKbProviders so the KB is repo-scoped.',
+  // apra-fleet-23c: content is REQUIRED. kbCaptureSchema declares it as
+  // z.string().min(1), so a capture without it is rejected at the MCP boundary
+  // and persists nothing -- vetKbWork drops it here rather than let the engine
+  // make a call that cannot succeed.
+  content: 'getKbProviders caches one provider per resolved repo slug, so every kb_* tool that routes through it reads and writes the KB belonging to the repo the member is actually working in.',
   source_files: ['src/services/knowledge/kb-providers.ts'],
   symbols: ['getKbProviders'],
 };
@@ -77,6 +82,20 @@ describe('an unverifiable payload produces no tool call', () => {
     });
     assert.deepEqual(captures, []);
     assert.match(rejected[0], /missing title\/summary/);
+  });
+
+  test('a capture with no content is dropped', () => {
+    // apra-fleet-23c added this rule to vet-kb-work.mjs but never pinned it:
+    // a contentless capture is accepted by the engine, refused by
+    // kbCaptureSchema at the MCP boundary, and persists nothing -- a write
+    // that silently is not one. It must be dropped before the call is made.
+    for (const content of [undefined, '', '   ']) {
+      const c = { ...GOOD_CAPTURE, content };
+      if (content === undefined) delete c.content;
+      const { captures, rejected } = vetKbWork('doer', { kb_captures: [c] });
+      assert.deepEqual(captures, [], `content ${JSON.stringify(content)} must be refused`);
+      assert.match(rejected[0], /has no content/);
+    }
   });
 
   test('a capture of an unsupported type is dropped', () => {
