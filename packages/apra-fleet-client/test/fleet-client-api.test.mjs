@@ -153,6 +153,46 @@ describe('ApraFleet', () => {
         assert.deepStrictEqual(result, { status: 'ok' });
     });
 
+    test('registerMember with llm_provider: none', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { friendly_name: 'plain-executor', work_folder: '/home/user/work', llm_provider: 'none' };
+        const result = await fleet.registerMember(options);
+
+        assert.strictEqual(calledName, 'register_member');
+        // llm_provider: 'none' must round-trip through the mocked callTool unchanged,
+        // exactly like any other provider value (apra-fleet-0s6 Part A/C).
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
+    test('updateMember with llm_provider: none', async () => {
+        let calledName, calledArgs;
+        const mockClient = {
+            async callTool(name, args) {
+                calledName = name;
+                calledArgs = args;
+                return { status: 'ok' };
+            }
+        };
+
+        const fleet = new ApraFleet(mockClient);
+        const options = { member_name: 'plain-executor', llm_provider: 'none' };
+        const result = await fleet.updateMember(options);
+
+        assert.strictEqual(calledName, 'update_member');
+        assert.deepStrictEqual(calledArgs, options);
+        assert.deepStrictEqual(result, { status: 'ok' });
+    });
+
     test('provisionLlmAuth', async () => {
         let calledName, calledArgs;
         const mockClient = {

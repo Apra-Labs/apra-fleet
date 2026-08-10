@@ -1,4 +1,4 @@
-<!-- llm-context: Design doc for fleet's git authentication system — scoped token provisioning via GitHub Apps, PATs, Bitbucket, and Azure DevOps. Read when a user asks how to give members git access, how tokens are scoped, or how credentials are managed. -->
+<!-- llm-context: Design doc for fleet's git authentication system -- scoped token provisioning via GitHub Apps, PATs, Bitbucket, and Azure DevOps. Read when a user asks how to give members git access, how tokens are scoped, or how credentials are managed. -->
 <!-- keywords: git auth, GitHub App, PAT, Bitbucket, Azure DevOps, token, scope, provision, revoke, credential, push, pull, clone -->
 <!-- see-also: ../README.md (step-by-step git auth setup), design-vcs-auth-onboarding.md (onboarding flow) -->
 
@@ -58,30 +58,36 @@ members:
 | `issues` | - (no code access) | issues, PRs, projects, comments |
 | `full` | admin + issues | Everything |
 
+### `push+pr` Access Level and Just-in-Time, Call-Site-Scoped Provisioning
+
+The implemented `git_access` enum (`src/tools/provision-vcs-auth.ts`) includes a `push+pr` level alongside the ones in the table above: `contents: write` + `pull_requests: write` (`src/services/github-app.ts`'s `mapAccessLevel()`), scoped specifically to raising a pull request without the broader `admin`/`full` surface.
+
+`push+pr` is never held as a standing, sprint-wide credential. Fleet-sprint's runner (`packages/apra-fleet-se/fleet-sprint/runner.js`) mints it only just-in-time, immediately before the specific PR-creation call site (`provisionPrCapableAuthForMember`, invoked from Publish-PR and the abort flow's PR) -- every other call path (reactive self-heal, proactive preflight) stays on the lower `push` level. This is a deliberate application of the just-in-time, call-site-scoped credential-provisioning pattern: see `docs/adr-server-never-acts-on-repo.md` (Decision 2) for the full rogue-dispatch blast-radius rationale for why a standing high-privilege credential is avoided even when the need is known in advance.
+
 ### Backend: GitHub App Token Minting
 
 For GitHub-hosted repos, use a **GitHub App** installed on the org.
 
 ```
-┌─────────────────────────────────────────────┐
-│  apra-fleet-app (GitHub App)                │
-│  Installed on: Apra-Labs org                │
-│  App private key stored on PM/master         │
-│                                             │
-│  Max permissions (app-level):               │
-│  - contents: write                          │
-│  - issues: write                            │
-│  - pull_requests: write                     │
-│  - actions: write                           │
-│  - administration: write                    │
-└──────────────┬──────────────────────────────┘
-               │
++-----------------------------------------------+
+|  apra-fleet-app (GitHub App)                   |
+|  Installed on: Apra-Labs org                   |
+|  App private key stored on PM/master           |
+|                                                 |
+|  Max permissions (app-level):                  |
+|  - contents: write                             |
+|  - issues: write                               |
+|  - pull_requests: write                        |
+|  - actions: write                              |
+|  - administration: write                       |
++------------------+------------------------------+
+                    |
   PM mints scoped tokens per member at runtime:
-               │
-               ├──→ code-analyst:  { contents: read,  repos: [ApraPipes] }
-               ├──→ feature-dev:   { contents: write, repos: [ApraPipes] }
-               ├──→ release-bot:   { contents: write, admin: write, repos: [*] }
-               └──→ project-mgr:   { issues: write, pull_requests: write }
+                    |
+                    +--> code-analyst:  { contents: read,  repos: [ApraPipes] }
+                    +--> feature-dev:   { contents: write, repos: [ApraPipes] }
+                    +--> release-bot:   { contents: write, admin: write, repos: [*] }
+                    +--> project-mgr:   { issues: write, pull_requests: write }
 ```
 
 **Token minting flow:**
@@ -169,26 +175,26 @@ Use a **Bitbucket OAuth Consumer** or **Repository Access Token**:
 ### Backend: Self-hosted / GitLab
 
 - GitLab: **Project Access Tokens** or **Group Access Tokens** via API
-- Self-hosted: SSH keys (fallback — no token API available)
+- Self-hosted: SSH keys (fallback -- no token API available)
 
 ### Token Lifecycle
 
 ```
 Member startup / first git operation
-        │
-        ▼
+        |
+        v
   PM mints scoped token (1hr TTL)
-        │
-        ▼
+        |
+        v
   Deploy credential to member via execute_command
-        │
-        ▼
+        |
+        v
   Member uses git normally (clone/push/etc)
-        │
-        ▼
+        |
+        v
   Token nearing expiry? Auto-refresh before next git operation
-        │
-        ▼
+        |
+        v
   Member deregistered? Token expires naturally (1hr max)
 ```
 
@@ -241,9 +247,9 @@ New tool: `provision_git_auth`
 
 ## Implementation Plan
 
-1. **GitHub App setup** — create app, install on org, store private key in fleet config
-2. **`provision_git_auth` tool** — mints scoped token, deploys credential to member
-3. **Auto-provisioning** — mint token on member startup or first git operation
-4. **Auto-refresh** — check token expiry before git operations, refresh if needed
-5. **Multi-host backends** — Azure DevOps, Bitbucket, GitLab adapters (same `provision_git_auth` interface)
-6. **Member config** — add `git_access` and `git_repos` fields to member registration
+1. **GitHub App setup** -- create app, install on org, store private key in fleet config
+2. **`provision_git_auth` tool** -- mints scoped token, deploys credential to member
+3. **Auto-provisioning** -- mint token on member startup or first git operation
+4. **Auto-refresh** -- check token expiry before git operations, refresh if needed
+5. **Multi-host backends** -- Azure DevOps, Bitbucket, GitLab adapters (same `provision_git_auth` interface)
+6. **Member config** -- add `git_access` and `git_repos` fields to member registration

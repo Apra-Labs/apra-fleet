@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Revert server-side create_pull_request; orchestrator-side VCSModule PR raising
+
+Sprint goal: revert the server-side `create_pull_request` MCP tool (which ran
+inside the fleet server process, minted its own installation token, and
+POSTed directly to `api.github.com` -- making the orchestrating hub an actor
+on a third-party repository) and replace it with an orchestrator-side
+VCSModule that builds a provider-neutral PR-creation command dispatched
+through a member via `execute_command`, never `gh`, never a server-side
+tool. See `docs/adr-server-never-acts-on-repo.md` for the invariant this
+restores (the server orchestrates members and mints/distributes credentials;
+it never itself acts on a repository) and the just-in-time,
+call-site-scoped credential-provisioning rationale.
+
+What shipped:
+
+- Removed the server-side `create_pull_request` MCP tool entirely; no
+  tool-inventory doc or README now lists it as an available fleet tool.
+- Added `VCSModule` (`packages/apra-fleet-se/fleet-sprint/vcs-module.mjs`), a
+  provider-agnostic seam that classifies raw command failures into a
+  provider-neutral taxonomy and builds the create-pull-request REST command
+  (`buildCreatePrCommand()`) for a member to dispatch itself.
+  `raiseVcsPrForMember()` in `runner.js` wires this into both PR-raising call
+  sites (Publish PR, and the abort flow's `[ABORTED]` PR), with idempotent
+  422-already-exists handling and one bounded auth-classified self-heal +
+  retry.
+- Added a new `push+pr` `git_access` level (`contents: write` +
+  `pull_requests: write`) to `provision_vcs_auth`, scoped specifically to
+  raising a pull request without the broader `admin`/`full` surface. It is
+  never held as a standing, sprint-wide credential -- it is minted
+  just-in-time, immediately before the specific PR-creation call site that
+  needs it; every other call path stays on the lower `push` level.
+
 ## [Unreleased] -- npm-install dependency-packaging fixes
 
 Sprint goal: unblock npm-installed (published-tarball, non-workspace) consumers

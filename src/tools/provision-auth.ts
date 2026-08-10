@@ -232,6 +232,10 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
     return `⏭️ Skipping "${agent.friendlyName}" — local members use this machine's credentials directly.`;
   }
 
+  if (agent.llmProvider === 'none') {
+    return `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
+  }
+
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
   if (!conn.ok) {

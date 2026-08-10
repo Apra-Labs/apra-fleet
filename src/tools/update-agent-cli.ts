@@ -24,15 +24,21 @@ interface UpdateResult {
 }
 
 async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promise<UpdateResult> {
-  const cmds = getOsCommands(getAgentOS(agent));
-  const provider = getProvider(agent.llmProvider);
-  const strategy = getStrategy(agent);
   const result: UpdateResult = {
     name: agent.friendlyName,
     oldVersion: 'unknown',
     newVersion: 'unknown',
     success: false,
   };
+
+  if (agent.llmProvider === 'none') {
+    result.error = `"${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
+    return result;
+  }
+
+  const cmds = getOsCommands(getAgentOS(agent));
+  const provider = getProvider(agent.llmProvider);
+  const strategy = getStrategy(agent);
 
   try {
     // Get current version

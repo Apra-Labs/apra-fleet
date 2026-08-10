@@ -81,7 +81,7 @@
  * @property {"password" | "key"} [auth_type] - Authentication method
  * @property {string} [password] - SSH password
  * @property {string} [key_path] - Path to SSH private key
- * @property {string} [llm_provider] - LLM provider for this member
+ * @property {string} [llm_provider] - LLM provider for this member: "claude" | "gemini" | "codex" | "copilot" | "agy" | "opencode" | "none"
  * @property {string} [category] - Optional group label
  * @property {string[]} [tags] - Optional list of free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode for unattended execution
@@ -99,7 +99,7 @@
  * @property {"password" | "key"} [auth_type] - New auth method
  * @property {string} [password] - New SSH password
  * @property {string} [key_path] - New SSH private key path
- * @property {string} [llm_provider] - Change the LLM provider
+ * @property {string} [llm_provider] - Change the LLM provider: "claude" | "gemini" | "codex" | "copilot" | "agy" | "opencode" | "none"
  * @property {string} [category] - Group label
  * @property {string[]} [tags] - Free-form labels
  * @property {"false" | "auto" | "dangerous"} [unattended] - Permission mode
