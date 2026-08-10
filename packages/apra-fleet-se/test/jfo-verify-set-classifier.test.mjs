@@ -228,10 +228,19 @@ describe('buildFinalVerdictPrompt unclosed-verify-beads evidence', () => {
 // whose Deploy fails on cycle 1 (openAtGoal reads 0, no review ran yet).
 // These tests lock in the prompt-builder contract the fix relies on: a
 // non-empty beadIds list (the call site now passes targetIssues) produces a
-// well-formed, reviewable prompt, while an empty list reproduces the exact
-// malformed prompt text that triggered the live failure.
+// well-formed, reviewable prompt.
+//
+// The empty-list case is now ALSO safe, from the other direction. jfo.3 fixed
+// the call site; apra-fleet-s6d independently fixed the builder, so an empty
+// beadIds list no longer renders the malformed "bead id(s): ." text at all --
+// it gets its own coherent scope-wide framing ("No bead ids are named because
+// no goal-priority beads remain open..."), which is a legitimate question for
+// the Cycle Evaluation re-review to ask. The two fixes are defense in depth:
+// the call site should never pass an empty list, and the builder no longer
+// produces an incoherent prompt if something ever does. The assertion below
+// therefore checks the malformed text is GONE, not that it reproduces.
 describe('buildReviewerPrompt beadIds contract (regression for the Re-Review empty-beadIds bug)', () => {
-    test('an empty beadIds array reproduces the malformed "bead id(s): ." prompt (documents the bug this fix avoids)', () => {
+    test('an empty beadIds array renders coherent scope-wide framing, never the malformed "bead id(s): ." prompt', () => {
         const prompt = buildReviewerPrompt({
             beadIds: [],
             acceptanceCriteriaJson: '[]',
@@ -239,7 +248,8 @@ describe('buildReviewerPrompt beadIds contract (regression for the Re-Review emp
             branch: 'sprint-branch',
             goal: 'P1/P2',
         });
-        assert.match(prompt, /bead id\(s\): \./);
+        assert.doesNotMatch(prompt, /bead id\(s\): \./);
+        assert.match(prompt, /No bead ids are named/);
     });
 
     test('passing the sprint\'s targetIssues as beadIds produces a well-formed, reviewable prompt', () => {

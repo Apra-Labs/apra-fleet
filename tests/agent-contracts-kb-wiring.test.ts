@@ -11,6 +11,7 @@ import { loadAgentAssets } from '../src/cli/install.js';
  * frontmatter has no ToolSearch, so both halves are asserted together.
  */
 const ROLES = [
+  'backlog-groomer',
   'ci-watcher',
   'deployer',
   'doer',
@@ -18,6 +19,7 @@ const ROLES = [
   'integ-test-runner',
   'planner',
   'plan-reviewer',
+  'regression-test-runner',
   'reviewer',
 ];
 
@@ -38,7 +40,7 @@ function toolsLine(content: string): string {
 describe('every role contract carries working KB wiring', () => {
   const byRole = assetsByRole();
 
-  it('ships all 8 role contracts', () => {
+  it('ships all 10 role contracts', () => {
     expect([...byRole.keys()].sort()).toEqual([...ROLES].sort());
   });
 

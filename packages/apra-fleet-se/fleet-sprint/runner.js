@@ -8649,9 +8649,9 @@ async function runSprintCycle(context) {
                 `Sprint stalled: ${staleCycles} consecutive cycle(s) made no new high-water-mark progress ` +
                 `(closed beads + verify-routed beads) in scope '${sprintFilter}'. Closed-count history: ` +
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
-                thrashSuffix + verifySuffix +
+                blockerSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
+                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle }
             );
         }
 
