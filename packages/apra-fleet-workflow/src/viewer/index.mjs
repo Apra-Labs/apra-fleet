@@ -171,6 +171,18 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
        the only way to shrink total height. Flex here still wins on
        specificity but no longer conflicts with .panel's own flex layout. */
     .tab-content.active { display: flex; min-height: 0; }
+
+    /* apra-fleet-4yr.1: in-page replacements for window.confirm()/alert()
+       on the Stop path -- native OS dialogs clash with the dark-glass UI.
+       Modal reuses .btn-stop's danger color for its Stop action; toast is
+       non-blocking and auto-dismisses. */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 1000; }
+    .modal-overlay.open { display: flex; }
+    .modal-box { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 20px; max-width: 360px; width: 90%; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    .modal-box p { color: var(--text); font-size: 13px; margin-bottom: 16px; line-height: 1.4; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .toast { position: fixed; bottom: 24px; right: 24px; background: var(--bg-glass); border: 1px solid var(--border); color: var(--text); padding: 10px 16px; border-radius: 6px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 1001; }
+    .toast.show { opacity: 1; transform: translateY(0); }
   </style>
 </head>
 <body data-view="${isHistory ? 'history' : 'live'}">
@@ -199,6 +211,16 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       ${isHistory ? '' : '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>'}
     </div>
   </div>
+  ${isHistory ? '' : `<div class="modal-overlay" id="stop-modal-overlay">
+    <div class="modal-box">
+      <p>Are you sure you want to forcibly stop the workflow?</p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeStopModal()">Cancel</button>
+        <button class="btn btn-stop" onclick="confirmStopWorkflow()">Stop</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="stop-toast">Stop signal sent.</div>`}
   <div class="main-content">
     <div class="content-area">
       <div class="tab-bar" id="tab-bar">
@@ -300,12 +322,36 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       a.click();
     }
     
-    async function stopWorkflow() {
-      if (confirm('Are you sure you want to forcibly stop the workflow?')) {
-        await fetch('/stop', { method: 'POST' });
-        alert('Stop signal sent.');
-      }
+    // apra-fleet-4yr.1: in-page modal replaces window.confirm() for the
+    // Stop confirmation step (the safety check itself stays -- only the
+    // native dialog is replaced), and a non-blocking toast replaces
+    // window.alert() once /stop resolves.
+    function stopWorkflow() {
+      const overlay = document.getElementById('stop-modal-overlay');
+      if (overlay) overlay.classList.add('open');
     }
+
+    function closeStopModal() {
+      const overlay = document.getElementById('stop-modal-overlay');
+      if (overlay) overlay.classList.remove('open');
+    }
+
+    function showStopToast() {
+      const toast = document.getElementById('stop-toast');
+      if (!toast) return;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+
+    async function confirmStopWorkflow() {
+      closeStopModal();
+      await fetch('/stop', { method: 'POST' });
+      showStopToast();
+    }
+
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') closeStopModal();
+    });
 
     let allExpanded = true;
     function toggleAllGlobal() {
