@@ -51,10 +51,29 @@ describe('backlog -- parentIdOf / normalizeBead', () => {
 
     test('normalizeBead maps raw + already-normalized shapes to the minimal node shape', () => {
         const raw = normalizeBead(trackerBead('c1', 'C1', 'E', 'task'));
-        assert.deepEqual(raw, { id: 'c1', title: 'C1', issueType: 'task', status: 'open', parentId: 'E' });
+        assert.deepEqual(raw, { id: 'c1', title: 'C1', issueType: 'task', status: 'open', parentId: 'E', priority: null });
         const pre = normalizeBead({ id: 'z', title: 'Z', issueType: 'epic', status: 'closed', parentId: 'root' });
         assert.equal(pre.parentId, 'root');
         assert.equal(pre.issueType, 'epic');
+    });
+
+    // apra-fleet-x8r.7: normalizeBead()'s returned key set is exactly what
+    // downstream consumers (computeSprintProgress's priority filter, the
+    // dashboard/backlog tree renderers) can rely on. Pin it so widening or
+    // narrowing that shape forces a deliberate test update here, rather than
+    // silently changing what a fixture can/can't assert on.
+    test('normalizeBead returns exactly the pinned key set', () => {
+        const keys = Object.keys(normalizeBead(trackerBead('c1', 'C1', 'E', 'task'))).sort();
+        assert.deepEqual(keys, ['id', 'issueType', 'parentId', 'priority', 'status', 'title']);
+    });
+
+    test('normalizeBead preserves a numeric priority, and normalizes a missing/non-numeric one to null (never a numeric default)', () => {
+        const withPriority = normalizeBead({ ...trackerBead('c1', 'C1', 'E'), priority: 2 });
+        assert.equal(withPriority.priority, 2);
+        const withoutPriority = normalizeBead(trackerBead('c2', 'C2', 'E'));
+        assert.equal(withoutPriority.priority, null);
+        const nonNumeric = normalizeBead({ ...trackerBead('c3', 'C3', 'E'), priority: 'high' });
+        assert.equal(nonNumeric.priority, null);
     });
 });
 

@@ -12,6 +12,11 @@ import {
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+// apra-fleet-x8r.7: every `createDashboard({ listAllBeads })` fixture below is
+// built via this helper (raw rows routed through the real normalizeBead()),
+// so a fixture can never assert on a field the production listAllBeads path
+// (bdListAllBeads() -> normalizeBead()) actually strips.
+import { normalizedBeadFixtures } from './helpers/normalized-bead-fixture.mjs';
 
 // apra-fleet-eft.6.1 -- sprint-stack index dashboard. GET / renders one
 // section per RUNNING sprint (branch, goal, status badge, claimed bead
@@ -232,12 +237,12 @@ describe('dashboard -- createDashboard', () => {
             ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
             watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => new Set(['root', 'child1', 'child2']),
-            listAllBeads: async () => [
+            listAllBeads: async () => normalizedBeadFixtures([
                 { id: 'root', status: 'closed' },
                 { id: 'child1', status: 'closed' },
                 { id: 'child2', status: 'open' },
                 { id: 'out-of-scope', status: 'open' },
-            ],
+            ]),
         });
         const [view] = await dashboard.buildSprintViews();
         assert.deepEqual(view.progress, { closed: 2, required: 3, fraction: 2 / 3 });
@@ -249,14 +254,14 @@ describe('dashboard -- createDashboard', () => {
             watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
             expandScope: async () => new Set(['root', 'below-goal', 'decomposed-parent', 'decomposed-child']),
             getSprintMeta: async () => ({ goal: 'P1' }),
-            listAllBeads: async () => [
+            listAllBeads: async () => normalizedBeadFixtures([
                 { id: 'root', status: 'closed', priority: 1, parentId: null },
                 // Below goal (P1 -> goalMax 1): excluded even though open.
                 { id: 'below-goal', status: 'open', priority: 3, parentId: null },
                 // Decomposed parent: excluded structurally, even though open.
                 { id: 'decomposed-parent', status: 'open', priority: 1, parentId: null },
                 { id: 'decomposed-child', status: 'closed', priority: 1, parentId: 'decomposed-parent' },
-            ],
+            ]),
         });
         const [view] = await dashboard.buildSprintViews();
         // Eligible set: root, decomposed-child -- both closed -> N/N, even

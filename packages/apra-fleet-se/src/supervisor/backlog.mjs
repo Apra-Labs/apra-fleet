@@ -68,17 +68,30 @@ export function parentIdOf(raw) {
 /**
  * Normalize a raw `bd list --json` row (or an already-normalized object) into
  * the minimal shape the tree builder/renderer needs.
+ *
+ * `priority` is preserved (not dropped) because downstream consumers filter
+ * on it: apra-fleet-x8r.4's computeSprintProgress() gates a bead's inclusion
+ * in the sprint-required set on `typeof b.priority === 'number'`, and the
+ * supervisor dashboard's default listAllBeads source (bdListAllBeads() below)
+ * is this function applied to every raw row. Dropping `priority` here made
+ * that goalMax filtering silently inert in production while still appearing
+ * to work in tests that hand-built already-normalized-shaped fixtures instead
+ * of routing raw rows through this function (apra-fleet-x8r.7). Preserved as
+ * `null` (never a numeric default like 0) when absent/non-numeric, so
+ * "no priority filtering for this bead" stays unambiguous downstream.
  * @param {object} raw
- * @returns {{ id: string, title: string, issueType: string, status: string, parentId: string|null }}
+ * @returns {{ id: string, title: string, issueType: string, status: string, parentId: string|null, priority: number|null }}
  */
 export function normalizeBead(raw) {
     const b = raw || {};
+    const rawPriority = b.priority;
     return {
         id: typeof b.id === 'string' ? b.id : '',
         title: typeof b.title === 'string' ? b.title : '',
         issueType: b.issueType ?? b.issue_type ?? 'task',
         status: b.status ?? 'open',
         parentId: parentIdOf(b),
+        priority: typeof rawPriority === 'number' && Number.isFinite(rawPriority) ? rawPriority : null,
     };
 }
 
