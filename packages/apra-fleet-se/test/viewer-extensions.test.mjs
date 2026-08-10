@@ -1,6 +1,64 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml } from '../fleet-sprint/viewer-extensions.mjs';
+import { beadsExtension, renderBeadsHtml, renderResultExtrasHtml, renderProgressBarHtml } from '../fleet-sprint/viewer-extensions.mjs';
+import { computeSprintProgress } from '../fleet-sprint/sprint-progress.mjs';
+
+// apra-fleet-x8r.1: closed/required progress-bar widget. computeSprintProgress
+// is a pure function over the ALREADY-SCOPED bead list (the same list
+// bdListScoped('') / runner.js's scope-walk already produces, threaded
+// through as sprintTasks) -- it does no I/O and never re-derives scope.
+describe('computeSprintProgress', () => {
+    test('counts closed vs total across a mixed-status scoped bead list', () => {
+        const beads = [
+            { id: 1, status: 'closed' },
+            { id: 2, status: 'open' },
+            { id: 3, status: 'closed' },
+            { id: 4, status: 'in_progress' },
+        ];
+        assert.deepStrictEqual(computeSprintProgress(beads), { closed: 2, required: 4, fraction: 0.5 });
+    });
+
+    test('required=0 (empty scope) renders without dividing by zero -- fraction is 0, not NaN', () => {
+        const result = computeSprintProgress([]);
+        assert.deepStrictEqual(result, { closed: 0, required: 0, fraction: 0 });
+        assert.ok(Number.isFinite(result.fraction));
+    });
+
+    test('non-array input never throws -- treated as empty', () => {
+        assert.deepStrictEqual(computeSprintProgress(null), { closed: 0, required: 0, fraction: 0 });
+        assert.deepStrictEqual(computeSprintProgress(undefined), { closed: 0, required: 0, fraction: 0 });
+    });
+
+    test('all closed -> fraction 1', () => {
+        const beads = [{ status: 'closed' }, { status: 'closed' }];
+        assert.deepStrictEqual(computeSprintProgress(beads), { closed: 2, required: 2, fraction: 1 });
+    });
+});
+
+describe('renderProgressBarHtml', () => {
+    test('renders the M/N text and a bar fill proportional to fraction', () => {
+        const html = renderProgressBarHtml({ closed: 3, required: 10, fraction: 0.3 });
+        assert.ok(html.includes('3/10'));
+        assert.ok(html.includes('width: 30%'));
+    });
+
+    test('required=0 renders a flat empty bar and 0/0 text, never throws', () => {
+        assert.doesNotThrow(() => renderProgressBarHtml({ closed: 0, required: 0, fraction: 0 }));
+        const html = renderProgressBarHtml({ closed: 0, required: 0, fraction: 0 });
+        assert.ok(html.includes('0/0'));
+        assert.ok(html.includes('width: 0%'));
+    });
+
+    test('never throws on null/undefined input', () => {
+        assert.doesNotThrow(() => renderProgressBarHtml(null));
+        assert.doesNotThrow(() => renderProgressBarHtml(undefined));
+    });
+
+    test('is embedded into the browser-side beadsExtension.js script', () => {
+        assert.ok(beadsExtension.js.includes('computeSprintProgress'));
+        assert.ok(beadsExtension.js.includes('renderProgressBarHtml'));
+    });
+});
 
 // apra-fleet-eft.37.4 (M3): beadsExtension.detailLookup is the relocated
 // (verbatim) former core findBeadById() -- core now only knows the generic

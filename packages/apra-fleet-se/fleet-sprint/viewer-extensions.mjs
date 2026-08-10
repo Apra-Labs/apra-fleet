@@ -1,4 +1,34 @@
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
+import { computeSprintProgress } from './sprint-progress.mjs';
+
+/**
+ * apra-fleet-x8r.1: pure HTML-string builder for the beads-closed/required
+ * progress-bar widget in the single-sprint viewer's extension area. Takes
+ * the ALREADY-COMPUTED `{ closed, required, fraction }` shape
+ * `computeSprintProgress()` returns -- never re-derives scope or counts
+ * itself -- and renders a horizontal bar that fills left-to-right by
+ * `fraction`, plus the numeric 'M/N' text. Styled with the viewer's existing
+ * `--bg`/`--bg-glass`/`--accent` CSS variables. `required === 0` renders a
+ * flat, empty bar and '0/0' text rather than dividing by zero or throwing.
+ *
+ * @param {{ closed: number, required: number, fraction: number }} progress
+ * @returns {string}
+ */
+export function renderProgressBarHtml(progress) {
+    const p = progress || { closed: 0, required: 0, fraction: 0 };
+    const closed = typeof p.closed === 'number' && Number.isFinite(p.closed) ? p.closed : 0;
+    const required = typeof p.required === 'number' && Number.isFinite(p.required) ? p.required : 0;
+    const fraction = typeof p.fraction === 'number' && Number.isFinite(p.fraction) ? p.fraction : 0;
+    const pct = Math.max(0, Math.min(1, fraction)) * 100;
+    return (
+        '<div class="sprint-progress" style="display: flex; align-items: center; gap: 8px; padding: 8px; font-size: 12px;">' +
+        '<div style="flex: 1; height: 8px; background: var(--bg); border: 1px solid var(--bg-glass); border-radius: 4px; overflow: hidden;">' +
+        '<div style="width: ' + pct + '%; height: 100%; background: var(--accent);"></div>' +
+        '</div>' +
+        '<div style="color: #a1a1aa; white-space: nowrap;">' + closed + '/' + required + '</div>' +
+        '</div>'
+    );
+}
 
 /**
  * Pure HTML-string builder for the beads task tree (apra-fleet-unw.10,
@@ -715,6 +745,8 @@ export const beadsExtension = {
         ${escapeHtml.toString()}
         ${renderBeadsHtml.toString()}
         ${renderResultExtrasHtml.toString()}
+        ${computeSprintProgress.toString()}
+        ${renderProgressBarHtml.toString()}
 
         // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
@@ -841,7 +873,13 @@ export const beadsExtension = {
         function renderBeadsPanel() {
             const container = document.getElementById('extension-beads');
             if (!container) return;
-            container.innerHTML = renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            // apra-fleet-x8r.1: the progress bar reflects THIS sprint's own
+            // scope (sprintTasks -- already the bdListScoped('') scope walk
+            // threaded through by runner.js/dashboard.mjs, never re-derived
+            // here), not the Backlog list alongside it.
+            const progress = computeSprintProgress(lastBeadsData.sprintTasks || []);
+            container.innerHTML = renderProgressBarHtml(progress)
+                + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
         }
 
         // Single document-level click-delegation listener (same rationale
