@@ -29,6 +29,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const { composePermissionsSchema, composePermissions } = await import('../tools/compose-permissions.js');
   const { cloudControlSchema, cloudControl } = await import('../tools/cloud-control.js');
   const { monitorTaskSchema, monitorTask } = await import('../tools/monitor-task.js');
+  const { promptProgressSchema, promptProgress } = await import('../tools/prompt-progress.js');
   const { stopPromptSchema, stopPrompt } = await import('../tools/stop-prompt.js');
   const { versionSchema, version } = await import('../tools/version.js');
   const { credentialStoreSetSchema, credentialStoreSet } = await import('../tools/credential-store-set.js');
@@ -135,6 +136,7 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   // Cloud Control
   server.tool('cloud_control', 'Manually start, stop, or check status of a cloud fleet member. Start waits until the member is ready; stop is immediate.', cloudControlSchema.shape, wrapTool('cloud_control', (input) => cloudControl(input as any)));
   server.tool('monitor_task', 'Check status of a long-running background task on a cloud member. Optionally stop the cloud instance automatically when the task completes.', monitorTaskSchema.shape, wrapTool('monitor_task', (input) => monitorTask(input as any)));
+  server.tool('prompt_progress', 'Check progress of work dispatched via execute_prompt: recent commits, task states from progress.json, session busy/idle status, and diff stats. Use since_commit to see only new commits since dispatch.', promptProgressSchema.shape, wrapTool('prompt_progress', (input) => promptProgress(input as any)));
 
   // Agent Lifecycle
   server.tool('stop_prompt', 'Kill the active LLM process on a member. Always call TaskStop on the dispatching background agent after calling this.', stopPromptSchema.shape, wrapTool('stop_prompt', (input) => stopPrompt(input as any)));
