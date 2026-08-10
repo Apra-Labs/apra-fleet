@@ -123,6 +123,21 @@ test('(b) a live-phase fixture ticks from the mocked clock, with no server fetch
     }
 });
 
+test('apra-fleet-x8r.6: a frozen phase with an end timestamp but no/invalid start timestamp renders "-", not "NaNs"', () => {
+    const render = extractPhaseDurationRenderer();
+    const phaseEl = createFakePhaseEl();
+
+    // phaseEndedAt is set (so the render block takes the "frozen" branch and
+    // computes phaseEndedAt - phaseStartedAt), but phaseStartedAt is missing,
+    // so new Date(undefined).getTime() is NaN and the subtraction yields NaN.
+    const phase = {
+        phaseEndedAt: new Date(1_700_000_005_000).toISOString()
+    };
+    render(phaseEl, phase);
+
+    assert.equal(phaseEl.durationEl.textContent, '-', 'a NaN duration must render the missing-value placeholder, not "NaNs"');
+});
+
 test('(d) after a simulated reload, an earlier completed phase still shows its frozen duration, not a live tick', () => {
     const render = extractPhaseDurationRenderer();
 

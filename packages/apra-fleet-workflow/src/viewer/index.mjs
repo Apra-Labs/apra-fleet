@@ -240,6 +240,11 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // '0s', never '-'.
     function formatTime(ms) {
       if (ms === null || ms === undefined) return '-';
+      // apra-fleet-x8r.6: a frozen phase carrying an end timestamp but no/
+      // invalid start timestamp (or any other NaN-producing input) must fall
+      // back to the same '-' placeholder as the missing-value case above,
+      // never the literal string 'NaNs'.
+      if (!Number.isFinite(ms)) return '-';
       if (ms < 0) return '0s';
       let secs = Math.floor(ms / 1000);
       let mins = Math.floor(secs / 60);
