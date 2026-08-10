@@ -354,7 +354,9 @@ export class ApraFleet {
     }
 
     /**
-     * Send an email via the configured provider (SendGrid or SMTP).
+     * Send an email. Pass provider config inline (provider, from, and for
+     * SMTP: host, port, user, secure). Secrets resolve from the credential
+     * store (sendgrid_api_key / smtp_password).
      * @param {SendEmailOptions} options
      */
     async sendEmail(options) {

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { loadEnv } from 'vite';
 import type { TestProject } from 'vitest/node';
 
 // apra-fleet-2xs.9: tests/setup.ts used to point EVERY test run at the SAME fixed
@@ -19,6 +20,10 @@ import type { TestProject } from 'vitest/node';
 // registry.json across files within a single run) while two concurrent `npm test`
 // invocations never collide. The directory is removed in the returned teardown hook.
 export default function globalSetup(project: TestProject) {
+  const env = loadEnv('test', process.cwd(), '');
+  for (const [key, val] of Object.entries(env)) {
+    if (process.env[key] === undefined) process.env[key] = val;
+  }
   const dataDir = path.join(
     os.tmpdir(),
     `apra-fleet-test-data-${process.pid}-${crypto.randomBytes(4).toString('hex')}`

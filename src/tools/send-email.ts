@@ -1,6 +1,8 @@
 import { z } from 'zod';
-import { getEmailProvider } from '../providers/email/index.js';
-import type { EmailMessage } from '../providers/email/provider.js';
+import { resolveSecret } from '../providers/email/index.js';
+import { SendGridProvider } from '../providers/email/sendgrid.js';
+import { SmtpProvider } from '../providers/email/smtp.js';
+import type { EmailMessage, EmailProvider } from '../providers/email/provider.js';
 import { logLine } from '../utils/log-helpers.js';
 
 // Basic RFC-5322-ish email format check -- not exhaustive, just catches
@@ -14,6 +16,14 @@ const attachmentSchema = z.object({
 });
 
 export const sendEmailSchema = z.object({
+  provider: z.enum(['sendgrid', 'smtp']).default('sendgrid').describe('Email provider to use'),
+  from: z.string().min(1).describe('Sender email address'),
+
+  host: z.string().optional().describe('SMTP server hostname (required for smtp provider)'),
+  port: z.number().optional().default(587).describe('SMTP server port'),
+  user: z.string().optional().describe('SMTP username (required for smtp provider)'),
+  secure: z.boolean().optional().default(false).describe('Use implicit TLS (port 465)'),
+
   to: z.union([z.string(), z.array(z.string())]).describe('Recipient email address, or list of addresses'),
   subject: z.string().min(1).describe('Email subject line'),
   body: z.string().min(1).describe('Plain-text email body'),
@@ -43,11 +53,34 @@ function validateAddresses(input: SendEmailInput): string[] {
   return errors;
 }
 
-/**
- * Send an email via the configured provider (SendGrid or SMTP).
- * Returns a JSON string: `{ ok: true, messageId }` on success,
- * or `{ ok: false, error }` on failure.
- */
+function buildProvider(input: SendEmailInput): EmailProvider {
+  if (input.provider === 'smtp') {
+    const pass = resolveSecret('smtp_password');
+    if (!pass) {
+      throw new Error('SMTP password not found. Store it with credential_store_set (name: "smtp_password").');
+    }
+    if (!input.host) {
+      throw new Error('SMTP requires "host" field.');
+    }
+    if (!input.user) {
+      throw new Error('SMTP requires "user" field.');
+    }
+    return new SmtpProvider({
+      host: input.host,
+      port: input.port ?? 587,
+      secure: input.secure ?? false,
+      auth: { user: input.user, pass },
+      from: input.from,
+    });
+  }
+
+  const apiKey = resolveSecret('sendgrid_api_key');
+  if (!apiKey) {
+    throw new Error('SendGrid API key not found. Store it with credential_store_set (name: "sendgrid_api_key").');
+  }
+  return new SendGridProvider({ apiKey, from: input.from });
+}
+
 export async function sendEmail(input: SendEmailInput): Promise<string> {
   const validationErrors = validateAddresses(input);
   if (validationErrors.length > 0) {
@@ -66,7 +99,7 @@ export async function sendEmail(input: SendEmailInput): Promise<string> {
   };
 
   try {
-    const provider = getEmailProvider();
+    const provider = buildProvider(input);
     const result = await provider.send(message);
     logLine('send_email', `sent via ${provider.name} messageId=${result.messageId}`);
     return JSON.stringify({ ok: true, messageId: result.messageId });
