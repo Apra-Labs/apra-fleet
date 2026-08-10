@@ -1118,9 +1118,17 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
     const { tempDir, epicBead } = await setup(tag);
     const dispatched = [];
     const commandLog = [];
+    let passed = false;
     try {
         const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, { planReviewerMode });
-        const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
+        // apra-fleet-20i.1.2: thread this scenario's own tag through as
+        // logPrefix (apra-fleet-20i.1.1's third FleetWorkflow constructor
+        // arg) so every [Workflow Log]/[Dispatch]/[Command] line this run
+        // produces is identifiable when scenarios interleave in test output.
+        // The real single-sprint CLI path (bin/cli.mjs) constructs
+        // `new FleetWorkflow(fleetApi)` with no third arg and keeps the
+        // default '' prefix -- unaffected by this change.
+        const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir }, `[${tag}] `);
         const engine = new WorkflowEngine(workflow);
 
         // apra-fleet-eft.70.2: phase-tagged command activity log. FleetWorkflow
@@ -1162,8 +1170,15 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
             .map((b) => ({ title: b.title, status: b.status }))
             .sort((a, b) => a.title.localeCompare(b.title));
 
+        passed = true;
         return { dispatched, result, finalBeads, commandLog, activityLog, epicBeadId: epicBead.id };
     } finally {
+        // apra-fleet-20i.1.2: explicit per-scenario END marker (distinct
+        // from the generic withScenarioMarkers() START/END pair used by
+        // individual test files -- this one is keyed on the harness's own
+        // `tag`, which every dispatch/log line above was just prefixed
+        // with, so the two are trivially correlated in raw test output).
+        console.log(`=== END scenario: ${tag} (${passed ? 'PASS' : 'FAIL'}) ===`);
         await teardown(tempDir);
     }
 }
@@ -1180,9 +1195,12 @@ export async function runRejectedPlanScenario(tag) {
     const { tempDir, epicBead } = await setup(tag);
     const dispatched = [];
     const commandLog = [];
+    let passed = false;
     try {
         const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, { planReviewerMode: 'always-reject-free-text' });
-        const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
+        // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
+        // threading, real single-sprint CLI path unaffected.
+        const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir }, `[${tag}] `);
         const engine = new WorkflowEngine(workflow);
         const scriptPath = path.join(__dirname, '../../fleet-sprint/runner.js');
 
@@ -1200,8 +1218,11 @@ export async function runRejectedPlanScenario(tag) {
             error = err;
         }
 
+        passed = true;
         return { dispatched, error };
     } finally {
+        // apra-fleet-20i.1.2: see runOnce() above.
+        console.log(`=== END scenario: ${tag}-rejected (${passed ? 'PASS' : 'FAIL'}) ===`);
         await teardown(tempDir);
     }
 }
@@ -1320,6 +1341,7 @@ export async function runDevelopLoopScenario(tag, {
     // the finally so it never leaks past this scenario.
     const priorInstantRetryBackoff = process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF;
     process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = '1';
+    let passed = false;
     try {
         const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
             planReviewerMode: 'approve-immediately',
@@ -1341,7 +1363,9 @@ export async function runDevelopLoopScenario(tag, {
             ...(originUrl !== undefined ? { originUrl } : {}),
             ...(prCurlResponseQueue !== undefined ? { prCurlResponseQueue } : {}),
         });
-        const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
+        // apra-fleet-20i.1.2: see runOnce() above -- same tag-as-logPrefix
+        // threading, real single-sprint CLI path unaffected.
+        const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir }, `[${tag}] `);
         workflow.on('log', (e) => logs.push(e.msg));
         // apra-fleet-eft.28.2: publishState() (runner.js's sprint-state
         // persistence, e.g. the main() typed-abort catch's
@@ -1398,8 +1422,11 @@ export async function runDevelopLoopScenario(tag, {
         // realSyncSpawnCount(tempDir, ...)) -- the commandLog alone cannot
         // distinguish "requested N times, served from cache" from "actually
         // spawned N times".
+        passed = true;
         return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir };
     } finally {
+        // apra-fleet-20i.1.2: see runOnce() above.
+        console.log(`=== END scenario: ${tag} (${passed ? 'PASS' : 'FAIL'}) ===`);
         // apra-fleet-eft.60.3: restore the caller's prior value (never leak the
         // instant-backoff flag past this scenario).
         if (priorInstantRetryBackoff === undefined) {
