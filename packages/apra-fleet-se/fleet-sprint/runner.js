@@ -31,6 +31,9 @@ import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResol
 import { buildDoltRecoveryLadder } from './dolt-recovery-tier2.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
+// apra-fleet-xuo.12.1: auto-grant runbook-declared permissions at Sprint Setup,
+// with post-write read-back verification (see permission-autogrant.mjs).
+import { autoGrantRunbookPermissions } from './permission-autogrant.mjs';
 
 // Re-exported so importers of parseUnmergedPaths from runner.js keep working;
 // conflict-ladder.mjs is the single source of truth for its implementation.
@@ -5724,6 +5727,19 @@ async function runSprintCycle(context) {
             );
         }
     }
+
+    // apra-fleet-xuo.12.1: Auto-grant runbook-declared permissions.
+    // Before the first Deploy/Integ-Test/Regression-Test dispatch, make each
+    // lifecycle playbook's `## Permissions` section the single source of truth
+    // for the member(s) that will run it: parse the Bash(...) families, feed
+    // them into compose_permissions (reactive grant mode), then READ BACK the
+    // member's settings.local.json to prove the grants persisted. A read-back
+    // miss is a hard error (the heredoc write path was seen silently no-op'ing
+    // while reporting success). Skipped cleanly when no MCP callTool is wired
+    // (mock/standalone runs) or no playbook declares permissions.
+    phase('Grant Runbook Permissions');
+    await grantRunbookPermissionsPhase();
+
     publishState('sprint-args', {
         branch: validated.branch,
         baseBranch: validated.baseBranch,
@@ -5732,6 +5748,42 @@ async function runSprintCycle(context) {
         requirementsFile: validated.requirementsFile || null,
     });
     endGroup();
+
+    // Wires the pure permission-autogrant module (probe/parse/plan/grant/
+    // read-back) to the live command()/MCP surfaces. Declared here (hoisted)
+    // so the Sprint Setup call site above stays a single readable line.
+    async function grantRunbookPermissionsPhase() {
+        const callTool = (args && typeof args.callTool === 'function') ? args.callTool : null;
+        if (!callTool) {
+            log('Grant Runbook Permissions: no MCP callTool wired (mock/standalone run) -- skipping runbook permission auto-grant.');
+            return;
+        }
+        const fleetApi = new ApraFleet({ callTool });
+        await autoGrantRunbookPermissions({
+            probeFileExists,
+            readPlaybook: async (filename) => {
+                const res = await command(`cat ${filename}`, {
+                    member_name: orchestratorMember,
+                    silent: true,
+                    failSoft: true,
+                    label: `Read '${filename}' ## Permissions section`,
+                });
+                return res.ok ? (res.output || '') : '';
+            },
+            getMembersForRole,
+            composePermissions: (opts) => fleetApi.composePermissions(opts),
+            readMemberSettings: async (member) => {
+                const res = await command('cat .claude/settings.local.json 2>/dev/null || echo "{}"', {
+                    member_name: member,
+                    silent: true,
+                    failSoft: true,
+                    label: `Read-back composed permissions for member '${member}'`,
+                });
+                return res.ok ? (res.output || '{}') : '{}';
+            },
+            log,
+        });
+    }
 
     // NON-DESTRUCTIVE re-ensure of the sprint branch on every member: an agent
     // on any member can check something else out between cycles, so the "every
