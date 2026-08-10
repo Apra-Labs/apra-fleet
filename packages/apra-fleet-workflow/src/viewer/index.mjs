@@ -853,6 +853,23 @@ function findActivityById(state, id) {
 // for).
 export { HTML_TEMPLATE };
 
+/**
+ * Creates a live dashboard viewer HTTP server for a workflow run.
+ * @param {import('../workflow/index.mjs').FleetWorkflow} workflow
+ * @param {Object} opts - Options object
+ * @param {number} [opts.port=8080] - HTTP server port
+ * @param {string} [opts.runId] - Stable per-run identifier (generated if not provided)
+ * @param {string} [opts.name] - Workflow display name
+ * @param {string} [opts.debouncedStatePath] - Path to write state JSON (uses default if not provided)
+ * @param {*} [opts.launchArgs] - Opaque, free-form per-workflow metadata (NOT argv).
+ *   `launchArgs` is passed through unchanged into state.args and is never inspected
+ *   or interpreted by core -- consumers must feature-detect the fields they need
+ *   rather than assuming a type. Examples: argv array from test callers
+ *   (['--track', 'eft-service'], ['--foo', 'bar']), or a structured object from
+ *   fleet-sprint (e.g., { members, targetIssues, goal }). Defaults to null if omitted.
+ * @param {Array} [opts.dashboardExtensions] - Dashboard widget extensions
+ * @param {Object} [opts.env] - Environment variables (defaults to process.env)
+ */
 export function createDashboardViewer(workflow, opts = {}) {
     const port = (typeof opts.port === 'number') ? opts.port : 8080;
     const dashboardExtensions = opts.dashboardExtensions || [];
@@ -897,6 +914,12 @@ export function createDashboardViewer(workflow, opts = {}) {
         // a mid-run read of the file shows in-progress state, not just
         // the terminal shape.
         runId,
+        // apra-fleet-x8r.10: launchArgs is opaque, free-form, per-workflow
+        // metadata (NOT argv). Core never inspects or interprets it; consumers
+        // must feature-detect the fields they need rather than assuming a type.
+        // Examples: argv array from test callers (['--track', 'eft-service'],
+        // ['--foo', 'bar']), or a structured object from fleet-sprint
+        // ({ members, targetIssues, goal }).
         args: opts.launchArgs ?? null,
         // apra-fleet-eft.37.3: `result` is the workflow script's own return
         // value, stored WHOLESALE and OPAQUELY -- core never inspects or
