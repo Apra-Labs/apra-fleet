@@ -4633,6 +4633,73 @@ export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, br
     };
 }
 
+// Cross-shell epoch-millis probes for the Clock Skew Check phase at Sprint
+// Setup. The phase runs one of these on the member's shell (bracketed by a
+// hub-side Date.now() before and after) to sample the member's wall clock
+// without assuming which shell is available.
+//   - POSIX: GNU `date` supports %3N (milliseconds); a non-GNU `date` (e.g.
+//     BSD/macOS) emits a literal "%3N" or an "illegal option" error instead of
+//     throwing, which parseEpochMillis() below treats as unparsable rather
+//     than crashing the phase.
+//   - Windows: PowerShell's DateTimeOffset.UtcNow already gives millisecond
+//     epoch time directly, no format-string gamble needed.
+export const CLOCK_SKEW_PROBE_POSIX = 'date +%s%3N';
+export const CLOCK_SKEW_PROBE_WINDOWS = '[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()';
+
+// Extracts an epoch-millis integer from a probe's stdout. Never throws: this
+// is advisory-only code, and a probe can emit anything from a shell without
+// the expected command (missing GNU date, PowerShell not on PATH, etc). Takes
+// the first all-digit token in the trimmed output; anything else -- including
+// the "date: illegal option" / literal "%3N" text a POSIX probe emits on a
+// shell without GNU date -- yields null rather than NaN.
+export function parseEpochMillis(stdout) {
+    const trimmed = typeof stdout === 'string' ? stdout.trim() : '';
+    if (!trimmed) return null;
+    const [firstToken] = trimmed.split(/\s+/);
+    if (!/^\d+$/.test(firstToken)) return null;
+    const value = parseInt(firstToken, 10);
+    return Number.isFinite(value) ? value : null;
+}
+
+// Advisory clock-skew threshold, a quarter of the stall-detector's poll
+// threshold (mirrors the parseInt-with-fallback pattern at
+// src/services/stall/stall-detector.ts:96). Falls back to 120000/4 on an
+// unparsable env value.
+export function clockSkewThresholdMs(env) {
+    const raw = env ? env.STALL_THRESHOLD_MS : undefined;
+    const parsed = parseInt(raw ?? '120000', 10);
+    return (Number.isFinite(parsed) ? parsed : 120000) / 4;
+}
+
+// Pure decision helper for the Clock Skew Check phase. The caller brackets a
+// member-side epoch-millis probe with hub-side Date.now() calls (hubT0 before
+// issuing the probe, hubT1 after it returns) to bound the round-trip; if the
+// member's own reported epoch falls inside that window, clocks agree closely
+// enough that skew is treated as zero rather than penalizing the member for
+// probe round-trip latency. NEVER throws: this is advisory-only code, so a
+// bad reading must degrade to an "unparsable" result rather than abort setup.
+export function evaluateClockSkew({ hubT0, hubT1, memberEpochMs, thresholdMs }) {
+    if (typeof memberEpochMs !== 'number' || !Number.isFinite(memberEpochMs)) {
+        return { ok: false, skewMs: null, exceeded: false, reason: 'unparsable' };
+    }
+
+    let skewMs;
+    if (memberEpochMs > hubT1) {
+        skewMs = memberEpochMs - hubT1;
+    } else if (memberEpochMs < hubT0) {
+        skewMs = memberEpochMs - hubT0;
+    } else {
+        skewMs = 0;
+    }
+
+    return {
+        ok: true,
+        skewMs,
+        exceeded: Math.abs(skewMs) > thresholdMs,
+        reason: null,
+    };
+}
+
 async function runSprintCycle(context) {
     const { agent: agentRaw, command: rawCommand, parallel, log, phase: rawPhase, group, endGroup, publishState, args, budget } = context;
 
