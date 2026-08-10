@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent, getAgent, getAllAgents } from '../src/services/registry.js';
 import { registerMember } from '../src/tools/register-member.js';
-import { updateMember } from '../src/tools/update-member.js';
+import { updateMember, updateMemberSchema } from '../src/tools/update-member.js';
 import { memberDetail } from '../src/tools/member-detail.js';
 import { executeCommand } from '../src/tools/execute-command.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
@@ -51,6 +51,14 @@ describe('llm_provider: "none" regression tests (apra-fleet-0s6)', () => {
 
   describe('update_member accepts "none" and round-trips through member_detail', () => {
     it('updates member to llm_provider: "none" via update_member (Part A entry point)', async () => {
+      // Exercise the schema directly -- the MCP boundary (services/tool-registry.ts)
+      // validates input.llm_provider against this exact zod shape before updateMember()
+      // ever runs, so this is what actually guards the Part A enum addition. Without
+      // 'none' in the enum, safeParse('none') would fail here even though updateMember()
+      // itself writes the field through unvalidated.
+      expect(updateMemberSchema.shape.llm_provider.safeParse('none').success).toBe(true);
+      expect(updateMemberSchema.shape.llm_provider.safeParse('not-a-real-provider').success).toBe(false);
+
       // Register a member with a real LLM provider first
       const member = makeTestAgent({
         friendlyName: 'test-member',
@@ -208,11 +216,19 @@ describe('llm_provider: "none" regression tests (apra-fleet-0s6)', () => {
         member_id: member.id,
       });
 
-      expect(resultText(result)).toContain('no LLM provider');
-      expect(resultText(result)).toContain('plain command executor');
-      expect(resultText(result)).toContain('execute_command');
+      const text = resultText(result);
+      expect(text).toContain('no LLM provider');
+      expect(text).toContain('plain command executor');
+      expect(text).toContain('execute_command');
       // No exception/stack trace
-      expect(resultText(result)).not.toMatch(/NoneProvider|TypeError|Error:/);
+      expect(text).not.toMatch(/NoneProvider|TypeError|Error:/);
+      // Distinguish the guard's own clean-rejection message (update-agent-cli.ts:35,
+      // "Use execute_command instead.") from what would leak through if the guard were
+      // removed and NoneProvider.versionCommand() threw instead (none.ts's NO_LLM_ERROR,
+      // "Use execute_command instead of execute_prompt."), which coincidentally contains
+      // every substring asserted above and would otherwise pass this test unguarded.
+      expect(text).toContain('Use execute_command instead.');
+      expect(text).not.toContain('instead of execute_prompt');
     });
 
     it('rejects update_llm_cli for member updated to llm:none', async () => {
@@ -231,9 +247,13 @@ describe('llm_provider: "none" regression tests (apra-fleet-0s6)', () => {
         member_id: member.id,
       });
 
-      expect(resultText(result)).toContain('no LLM provider');
-      expect(resultText(result)).toContain('plain command executor');
-      expect(resultText(result)).toContain('execute_command');
+      const text = resultText(result);
+      expect(text).toContain('no LLM provider');
+      expect(text).toContain('plain command executor');
+      expect(text).toContain('execute_command');
+      expect(text).not.toMatch(/NoneProvider|TypeError|Error:/);
+      expect(text).toContain('Use execute_command instead.');
+      expect(text).not.toContain('instead of execute_prompt');
     });
   });
 
