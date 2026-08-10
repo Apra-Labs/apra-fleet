@@ -15,6 +15,7 @@ import {
 import { createScopeGuard, expandScope } from '../src/supervisor/scope-overlap.mjs';
 import { createDashboard, renderIndexPageHtml } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
+import { renderBeadsHtml } from '../fleet-sprint/viewer-extensions.mjs';
 
 // apra-fleet-eft.6.2 -- Backlog-last tree: full tracker MINUS the union of every
 // active sprint's live-expanded scope, rendered as a TREE with per-node claim
@@ -335,6 +336,65 @@ describe('backlog -- renderBacklogPanelHtml: Sprint section is gone, Backlog + f
         assert.ok(!tableMarkup.includes('No sprint tasks.'));
         assert.ok(html.includes('<table'));
         assert.ok(html.includes('data-filter-field="q"'));
+    });
+});
+
+// apra-fleet-eft.90: persistent item counts at the top of both beads trees --
+// the supervisor's Backlog tab tree (backlog.mjs's renderBacklogPanelHtml, a
+// plain total N, independent of #backlog-active-filters which stays empty
+// with no filter active) and fleet-sprint's own viewer beads tree
+// (viewer-extensions.mjs's renderBeadsHtml, 'M/N' where M = open, N = total).
+// Both counts treat every rendered bead (parent AND child) as its own item --
+// never deduped/collapsed by tree hierarchy -- and both must render the
+// empty-tree case ('0 bead(s)' / '0/0') without throwing.
+describe('backlog -- persistent item counts (apra-fleet-eft.90)', () => {
+    test('renderBacklogPanelHtml shows a total count N, always visible, independent of the (empty, no-filter) #backlog-active-filters indicator', () => {
+        const tasks = [
+            { id: 'B1', title: '[bug] a backlog item', status: 'open', issue_type: 'bug', priority: 2 },
+            { id: 'B2', title: '[impl] another backlog item', status: 'open', issue_type: 'task', priority: 1 },
+            { id: 'B3', title: '[impl] a child item', status: 'open', issue_type: 'task', priority: 1, parent: 'B1' },
+        ];
+        const html = renderBacklogPanelHtml(tasks, { type: [], status: [], priority: [], model: [] });
+        assert.ok(html.includes('id="backlog-total-count"'), 'a dedicated total-count element must be present');
+        // Parent (B1) and child (B3) each count as their own item -- 3, not 2.
+        assert.ok(html.includes('3 bead(s)'), `expected the total count to be 3, got: ${html.match(/id="backlog-total-count"[^>]*>([^<]*)</)}`);
+        // The filter-status indicator itself stays empty (no filter active) --
+        // the total count is a SEPARATE, always-visible element.
+        assert.ok(html.includes('id="backlog-active-filters" style="font-size: 12px; color: var(--accent, #3b82f6);"></span>'));
+    });
+
+    test('renderBacklogPanelHtml with an empty backlog renders "0 bead(s)", never throwing', () => {
+        assert.doesNotThrow(() => renderBacklogPanelHtml([], { type: [], status: [], priority: [], model: [] }));
+        const html = renderBacklogPanelHtml([], { type: [], status: [], priority: [], model: [] });
+        assert.ok(html.includes('0 bead(s)'));
+    });
+
+    test('renderBeadsHtml (fleet-sprint viewer tree) shows M/N at the top -- N = every rendered bead (Sprint + Backlog, including children), M = how many are not closed', () => {
+        const sprintTasks = [
+            { id: 'EPIC', title: '[feature] epic', status: 'in_progress', dependencies: [] },
+            { id: 'EPIC.1', parent: 'EPIC', title: '[impl] child one', status: 'closed', dependencies: [] },
+            { id: 'EPIC.2', parent: 'EPIC', title: '[impl] child two', status: 'open', dependencies: [] },
+        ];
+        const backlogTasks = [
+            { id: 'BL1', title: '[bug] backlog item', status: 'open', priority: 1 },
+        ];
+        const html = renderBeadsHtml(sprintTasks, backlogTasks);
+        // 4 total items (EPIC, EPIC.1, EPIC.2, BL1); 3 are not closed (EPIC,
+        // EPIC.2, BL1) -- EPIC.1 is the only closed one.
+        assert.ok(html.includes('3/4'), `expected M/N to be 3/4, got: ${html.slice(0, 200)}`);
+    });
+
+    test('renderBeadsHtml with both lists empty renders "0/0", never throwing', () => {
+        assert.doesNotThrow(() => renderBeadsHtml([], []));
+        const html = renderBeadsHtml([], []);
+        assert.ok(html.includes('0/0'));
+    });
+
+    test('renderBeadsHtml count is removed/broken regression guard: a bead-count element must exist and be non-empty', () => {
+        const html = renderBeadsHtml([{ id: 1, title: 'a', status: 'open', dependencies: [] }], []);
+        const match = /class="beads-count"[^>]*>([^<]*)</.exec(html);
+        assert.ok(match, 'a "beads-count" element must be present in renderBeadsHtml output');
+        assert.ok(/^\d+\/\d+$/.test(match[1].trim()), `expected an 'M/N' count, got: ${match[1]}`);
     });
 });
 

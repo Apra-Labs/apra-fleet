@@ -565,7 +565,22 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         return html;
     }
 
-    let html = '<table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">';
+    // apra-fleet-eft.90: a persistent 'M/N' item count at the top of the
+    // panel -- N = every rendered bead across BOTH sections (Sprint +
+    // Backlog), M = how many of those are not closed (open, in_progress,
+    // blocked, etc). Parent and child beads each count as their own item
+    // toward both numbers -- these are flat counts over the input arrays
+    // themselves, never deduped/collapsed by tree hierarchy (a bead present
+    // in `sprintTasks`/`backlogTasks` counts exactly once regardless of how
+    // many descendants it has). An empty panel (both lists empty) renders
+    // '0/0', never NaN/throwing.
+    const countedTasks = sprintTasks.concat(backlogTasks);
+    const totalBeadCount = countedTasks.length;
+    const openBeadCount = countedTasks.filter((t) => t && (t.status || '').toString().toLowerCase() !== 'closed').length;
+    const countHtml = '<div class="beads-count" style="padding: 4px 8px; font-size: 12px; color: #a1a1aa;">' +
+        openBeadCount + '/' + totalBeadCount + '</div>';
+
+    let html = countHtml + '<table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">';
     html += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">' +
         '<th style="padding: 8px;">ID</th><th style="padding: 8px;">Title</th><th style="padding: 8px;">Type</th>' +
         '<th style="padding: 8px;">Status</th><th style="padding: 8px;">Pri</th><th style="padding: 8px;">Model</th></tr>';

@@ -509,8 +509,17 @@ function backlogPanelClientScript() {
 (function () {
     var container = document.getElementById('backlog-table');
     var indicator = document.getElementById('backlog-active-filters');
+    var totalCountEl = document.getElementById('backlog-total-count');
     var clearBtn = document.getElementById('backlog-filter-clear');
     if (!container) return;
+
+    // apra-fleet-eft.90: keep the persistent total-item count in sync with
+    // whatever lastTasks currently is -- called once up front (server-
+    // rendered value may already match, but this stays the single source of
+    // truth) and again every time lastTasks is reassigned below.
+    function updateTotalCount() {
+        if (totalCountEl) totalCountEl.textContent = lastTasks.length + ' bead(s)';
+    }
 
     var collapsedBeadIds = new Set();
     var lastTasks = window.__backlogTasks || [];
@@ -578,6 +587,7 @@ function backlogPanelClientScript() {
                 if (data && data.filterOptions) filterOptions = data.filterOptions;
                 collapsedBeadIds.clear();
                 renderTable();
+                updateTotalCount();
                 var entries = Object.keys(currentFilters)
                     .filter(function (k) { return currentFilters[k]; })
                     .map(function (k) { return k + ': ' + currentFilters[k]; });
@@ -594,6 +604,7 @@ function backlogPanelClientScript() {
     }
 
     wireHeaderControls();
+    updateTotalCount();
 })();
 `;
 }
@@ -622,10 +633,23 @@ export function renderBacklogPanelHtml(tasks, filterOptions) {
     const tableHtml = injectRowCheckboxes(injectFilterHeader(rawTable, headerRow));
     const tasksJson = JSON.stringify(Array.isArray(tasks) ? tasks : []).replace(/</g, '\\u003c');
     const filterOptionsJson = JSON.stringify(opts).replace(/</g, '\\u003c');
+    // apra-fleet-eft.90: a persistent total-item count, always visible at
+    // the top of the tab -- INDEPENDENT of #backlog-active-filters (which
+    // stays empty with no filter active, per that indicator's own
+    // long-standing contract). Server-rendered from `tasks` (the already-
+    // narrowed set this render actually shows, whether a filter is active or
+    // not) and kept in sync client-side by backlogPanelClientScript()'s
+    // renderTable()/applyFilters() whenever `lastTasks` changes -- so a
+    // filter change updates this number too, not just the '...shown' text
+    // inside #backlog-active-filters.
+    const totalTaskCount = Array.isArray(tasks) ? tasks.length : 0;
     return (
-        '<div style="display:flex; justify-content:flex-end; align-items:center; gap:8px; margin-bottom: 6px;">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom: 6px;">' +
+        '<span id="backlog-total-count" style="font-size: 12px; color: #a1a1aa;">' + totalTaskCount + ' bead(s)</span>' +
+        '<div style="display:flex; align-items:center; gap:8px;">' +
         '<span id="backlog-active-filters" style="font-size: 12px; color: var(--accent, #3b82f6);"></span>' +
         '<button type="button" id="backlog-filter-clear" class="btn btn-secondary" style="padding: 3px 10px; font-size: 12px;">Clear filters</button>' +
+        '</div>' +
         '</div>' +
         '<div id="backlog-table">' + tableHtml + '</div>' +
         '<script>window.__backlogTasks = ' + tasksJson + '; window.__backlogFilterOptions = ' + filterOptionsJson + ';</script>' +
