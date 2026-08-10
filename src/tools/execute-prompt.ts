@@ -39,6 +39,7 @@ import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
 import type { ParsedResponse } from '../providers/provider.js';
 import { isMaxTurnsResponse } from '../providers/provider.js';
+import { preflightCheck } from '../services/preflight-check.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
@@ -570,6 +571,27 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // deeper in either dispatch path.
   if (agent.llmProvider === 'none') {
     return `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
+  }
+
+  // Pre-dispatch readiness check (apra-fleet preflight-check): verify
+  // connectivity and LLM auth BEFORE the expensive prompt dispatch
+  // (writePromptFile + CLI invocation). Catches expired OAuth, missing
+  // credentials, and offline members in <1s instead of burning a full
+  // round trip. Local members and interactive sessions are excluded
+  // (local shares this machine's credentials; interactive sessions have
+  // their own liveness probes). The check is cached for 60s so
+  // back-to-back dispatches do not add latency.
+  if (agent.agentType !== 'local') {
+    const preflight = await preflightCheck(agent);
+    if (!preflight.ok) {
+      return {
+        text: `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`,
+        structuredContent: {
+          isError: true,
+          reason: preflight.code === 'offline' ? 'dispatch_failed' : 'auth',
+        },
+      };
+    }
   }
 
   // Interactive routing (apra-fleet-2xs.8/us9.8, docs/cloud-fleet-architecture.md

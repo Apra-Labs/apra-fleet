@@ -14,6 +14,7 @@ import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { updateAgent } from '../services/registry.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { logLine } from '../utils/log-helpers.js';
+import { invalidatePreflightCache } from '../services/preflight-check.js';
 import type { Agent } from '../types.js';
 import type { ProviderAdapter } from '../providers/index.js';
 
@@ -255,14 +256,20 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
       resolvedKey = resolvedKey.replaceAll(`{{secure.${name}}}`, entry.plaintext);
     }
     const result = await provisionApiKey(agent, resolvedKey, provider);
-    if (!result.startsWith('❌')) logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+    if (!result.startsWith('❌')) {
+      logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+      invalidatePreflightCache(agent.id);
+    }
     return result;
   }
 
   // Flow A: OAuth credentials copy
   if (provider.oauthCredentialFiles()?.length) {
     const result = await provisionOAuthCopy(agent, provider);
-    if (!result.startsWith('❌')) logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+    if (!result.startsWith('❌')) {
+      logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+      invalidatePreflightCache(agent.id);
+    }
     return result;
   }
 
@@ -272,6 +279,9 @@ export async function provisionAuth(input: ProvisionAuthInput): Promise<string> 
   });
   if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
   const result = await provisionApiKey(agent, decryptPassword(oob.password!), provider);
-  if (!result.startsWith('❌')) logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+  if (!result.startsWith('❌')) {
+    logLine('provision_llm_auth', `provider=${provider.name}`, agent);
+    invalidatePreflightCache(agent.id);
+  }
   return result;
 }

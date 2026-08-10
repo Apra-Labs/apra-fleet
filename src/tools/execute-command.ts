@@ -15,6 +15,7 @@ import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
+import { preflightCheck } from '../services/preflight-check.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -143,6 +144,16 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
   } catch (err: any) {
     return `Failed to execute command on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+  }
+
+  // Pre-dispatch connectivity check (apra-fleet preflight-check): verify the
+  // member is reachable before attempting the command. Skips LLM auth check
+  // since execute_command runs shell commands, not LLM prompts.
+  if (agent.agentType !== 'local') {
+    const preflight = await preflightCheck(agent, { skipAuth: true });
+    if (!preflight.ok) {
+      return `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`;
+    }
   }
 
   const strategy = getStrategy(agent);
