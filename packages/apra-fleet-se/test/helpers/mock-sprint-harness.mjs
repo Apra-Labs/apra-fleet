@@ -1170,6 +1170,12 @@ export async function runOnce(tag, planReviewerMode = 'reject-then-approve') {
             .map((b) => ({ title: b.title, status: b.status }))
             .sort((a, b) => a.title.localeCompare(b.title));
 
+        // apra-fleet-x8r.5: unlike runRejectedPlanScenario/
+        // runDevelopLoopScenario, runOnce() has no inner try/catch that
+        // swallows the run's error into a returned value -- engine.executeFile()
+        // above is awaited directly, so a thrown error skips straight past
+        // this line to the finally block below with `passed` still false.
+        // No change needed here; verified while auditing the other two.
         passed = true;
         return { dispatched, result, finalBeads, commandLog, activityLog, epicBeadId: epicBead.id };
     } finally {
@@ -1218,7 +1224,14 @@ export async function runRejectedPlanScenario(tag) {
             error = err;
         }
 
-        passed = true;
+        // apra-fleet-x8r.5: this scenario's own documented contract (see the
+        // docstring above) is that engine.executeFile() REJECTS with a
+        // SprintPlanRejectedError -- that IS the success case, not merely
+        // "the harness didn't crash". Previously `passed` was set
+        // unconditionally here, so the marker printed PASS even on a run
+        // where the plan was (incorrectly) never rejected, silencing the one
+        // signal that would have flagged it.
+        passed = Boolean(error);
         return { dispatched, error };
     } finally {
         // apra-fleet-20i.1.2: see runOnce() above.
@@ -1422,7 +1435,16 @@ export async function runDevelopLoopScenario(tag, {
         // realSyncSpawnCount(tempDir, ...)) -- the commandLog alone cannot
         // distinguish "requested N times, served from cache" from "actually
         // spawned N times".
-        passed = true;
+        //
+        // apra-fleet-x8r.5: `error` (captured just above from the inner
+        // try/catch around engine.executeFile) is the actual run outcome --
+        // previously `passed` was set unconditionally here regardless of
+        // `error`, so the marker printed PASS even for a run that aborted.
+        // Report the run's real outcome instead; the FAIL branch is now
+        // reachable for scenarios whose sprint run ends in an error, exactly
+        // as intended by callers that deliberately induce one (e.g. a doer
+        // throw or a typed sprint-abort) to verify error handling.
+        passed = (error === null);
         return { dispatched, commandLog, commandLogDetailed, memberGitState, logs, states, error, result, tasks, epicBeadId: epicBead.id, finalBeadsById, branch, tempDir };
     } finally {
         // apra-fleet-20i.1.2: see runOnce() above.
