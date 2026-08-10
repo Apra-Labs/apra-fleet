@@ -163,11 +163,12 @@ recorded in `rejectedNewTasks` (surfaced later in the final-review prompt and
 the harvester's analysis text), and skipped -- never fatal to the sprint.
 
 The same threat model applies to the final reviewer's free-text `notes` when
-it is embedded in the PR title/body (`gh pr create --title "..." --body
-"..."`): `sanitizePrText()` uses the same allowlist, but **strips** (replaces
-with a space) disallowed characters rather than rejecting, because the PR
-body must still be published with the verdict visible even when the notes
-are malformed.
+it is embedded in the PR title/body (VCSModule's `buildCreatePrCommand()`
+builds a `curl POST .../pulls` request carrying `title`/`body` in its JSON
+payload -- see the Publish PR step below): `sanitizePrText()` uses the same
+allowlist, but **strips** (replaces with a space) disallowed characters
+rather than rejecting, because the PR body must still be published with the
+verdict visible even when the notes are malformed.
 
 ## Deploy & Integration phase
 
@@ -781,13 +782,21 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    `analysisText` verbatim and insert `costAnalysis` verbatim -- never
    reformat or recompute either.
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
-   <branch>`), then raises (never merges) a PR via `gh pr create`, whose
-   title (`Auto-sprint [PASS|FAIL]: <branch>`) and body state the final
-   verdict plainly, with the reviewer's (sanitized) notes appended. PR
-   creation is idempotent: a `gh pr create` failure whose message matches
-   `/already exists/i` is treated as success (the desired end state -- a PR
-   is open for this branch -- already holds); any other failure is re-raised
-   as a typed `CommandError`.
+   <branch>`), then raises (never merges) a PR through `raiseVcsPrForMember()`:
+   it mints a just-in-time `push+pr`-level credential for the orchestrator
+   member (`provisionPrCapableAuthForMember()`), reads the token back off the
+   member's filesystem, and hands both to VCSModule's `buildCreatePrCommand()`,
+   which builds a provider-neutral `curl POST .../pulls` command (title
+   `Auto-sprint [PASS|FAIL]: <branch>`, body stating the final verdict
+   plainly with the reviewer's (sanitized) notes appended). That command is
+   dispatched on the member via `execute_command` -- never `gh`, and never a
+   server-side tool, per the server-never-acts-on-a-repo invariant (see
+   `docs/adr-server-never-acts-on-repo.md`). PR creation is idempotent: a
+   422 response whose body matches `/already exists/i` is treated as success
+   (the desired end state -- a PR is open for this branch -- already holds);
+   an auth-classified response (401/403, or a 404 whose body text names a
+   scope/permission refusal) triggers one bounded credential self-heal and
+   retry; any other failure is re-raised as a typed `CommandError`.
 
 The run's return value reflects the **final verdict**, not blanket success:
 `status: 'success'` only when `finalVerdictResult.verdict === 'PASS'`,
