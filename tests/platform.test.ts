@@ -530,6 +530,45 @@ describe('SSH username with spaces (#144)', () => {
   });
 });
 
+describe('SSH keepalive configuration', () => {
+  it('getSSHConfig sets keepaliveInterval to approximately 15000ms', () => {
+    const member: any = {
+      host: '192.168.1.1',
+      port: 22,
+      username: 'testuser',
+      authType: 'password',
+      encryptedPassword: undefined,
+    };
+    const config = getSSHConfig(member);
+    expect(config.keepaliveInterval).toBe(15000);
+  });
+
+  it('getSSHConfig sets keepaliveCountMax to a value >= 1', () => {
+    const member: any = {
+      host: '192.168.1.1',
+      port: 22,
+      username: 'testuser',
+      authType: 'password',
+      encryptedPassword: undefined,
+    };
+    const config = getSSHConfig(member);
+    expect(config.keepaliveCountMax).toBeGreaterThanOrEqual(1);
+  });
+
+  it('getSSHConfig includes both keepaliveInterval and keepaliveCountMax properties', () => {
+    const member: any = {
+      host: '192.168.1.1',
+      port: 22,
+      username: 'testuser',
+      authType: 'password',
+      encryptedPassword: undefined,
+    };
+    const config = getSSHConfig(member);
+    expect(config).toHaveProperty('keepaliveInterval');
+    expect(config).toHaveProperty('keepaliveCountMax');
+  });
+});
+
 describe('injection prevention', () => {
   const linux = getOsCommands('linux');
   const windows = getOsCommands('windows');

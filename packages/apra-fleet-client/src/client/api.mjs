@@ -7,12 +7,13 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [model] - Model tier ("cheap", "standard", "premium") or a specific model ID
- * @property {boolean} [resume] - Resume the previous session if one exists. Defaults to
+ * @property {boolean|string} [resume] - Resume the previous session if one exists. Defaults to
  *   true at this client/transport layer when the field is omitted entirely. NOTE: the
  *   FleetWorkflow.agent() workflow layer (packages/apra-fleet-workflow/src/workflow/index.mjs)
  *   always sends this field explicitly, defaulting it to `false` for workflow-authored
  *   prompts (see AgentOptions.resume there and apra-fleet-unw.3 / F10) -- so workflow
  *   callers effectively opt out of this client-level default unless they ask for resume.
+ * @property {string} [session_id] - Optional explicit session ID to resume (shorthand alias for resume: "<sessionId>")
  * @property {Record<string, string>} [substitutions] - Optional map of token name to replacement value
  * @property {number} [timeout_s] - Inactivity timeout in seconds (default: 300)
  * @property {number} [timeoutMs] - Client-side request timeout override (ms). Not sent to
@@ -72,7 +73,7 @@
 /**
  * @typedef {Object} RegisterMemberOptions
  * @property {string} friendly_name - Human-friendly name for this member (required)
- * @property {string} work_folder - Working directory on the target machine (required)
+ * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
  * @property {"local" | "remote"} [member_type] - Member type (default: "remote")
  * @property {string} [host] - IP address or hostname of the remote machine
  * @property {string} [username] - SSH username
@@ -91,7 +92,7 @@
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
  * @property {string} [friendly_name] - New friendly name
- * @property {string} [work_folder] - New working directory
+ * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected.
  * @property {string} [host] - New host
  * @property {string} [username] - New SSH username
  * @property {number} [port] - New SSH port
@@ -132,7 +133,7 @@
  *   configured app) or pat (personal access token)
  * @property {string} [token] - Personal access token (GitHub PAT or Azure DevOps PAT).
  *   Supports {{secure.NAME}} token -- resolved from the credential store server-side before use.
- * @property {"read" | "push" | "admin" | "issues" | "full"} [git_access] - GitHub App access
+ * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [git_access] - GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
  * @property {string} [email] - Bitbucket account email
@@ -167,6 +168,19 @@
 // Grace margin added on top of the payload's own timeout hint (timeout_s /
 // max_total_s) so the client doesn't race the server's own deadline -- the
 // server should have a chance to reply with its own timeout/error first.
+//
+// This single-budget (max_total_s * 1) + grace shape relies on the server
+// (src/tools/execute-prompt.ts, apra-fleet-y8q.1) sharing ONE max_total_s
+// deadline budget across an original dispatch attempt AND any single retry it
+// runs on its own (e.g. the fresh-session retry after an SSH inactivity
+// exception) -- a retry's own maxTotalMs/timeoutMs is capped to whatever
+// remains of max_total_s since the dispatch started, and skipped entirely
+// once that budget is exhausted. Without that server-side sharing, a retry
+// could burn a second full max_total_s budget and the client's hard timeout
+// here would fire before the server's own clean retry-and-report path ever
+// gets a chance, surfacing a raw client transport timeout instead of the
+// server's typed error. Do not widen this to max_total_s * 2 unless that
+// server-side sharing invariant is removed.
 const TIMEOUT_GRACE_MS = 30 * 1000;
 
 /**
@@ -175,6 +189,10 @@ const TIMEOUT_GRACE_MS = 30 * 1000;
  * (an inactivity timeout) when both are present, then adds a grace margin.
  * Returns undefined when neither hint is present, letting McpClient fall
  * back to its own conservative default (never infinite).
+ *
+ * See the TIMEOUT_GRACE_MS comment above: this budget is only sufficient
+ * because the server shares a single max_total_s deadline across an attempt
+ * and its own internal retry, rather than granting each a fresh full budget.
  *
  * @param {{ max_total_s?: number, timeout_s?: number }} payload
  * @returns {number | undefined}
@@ -323,6 +341,39 @@ export class ApraFleet {
      */
     async setupSshKey(options) {
         return this.mcpClient.callTool('setup_ssh_key', options);
+    }
+
+    /**
+     * Fleet-server-hosted global dolt push mutex (apra-fleet-f34.2,
+     * src/tools/dolt-push-mutex.ts). Serializes cross-sprint `bd dolt push`
+     * for sprints launched WITHOUT a supervisor to coordinate through.
+     *
+     * `acquire` is ticketed (an MCP call cannot long-poll): it returns
+     * `{ granted, ticket, token? }` after a bounded wait, and the caller
+     * re-`poll`s the SAME ticket until granted. Polling never dequeues the
+     * waiter, so FIFO order is preserved. Pass the caller's real `pid` so a
+     * crashed holder is reclaimed by the dead-pid probe.
+     *
+     * @param {{ action: 'acquire'|'poll'|'release'|'renew'|'cancel'|'status',
+     *           sprint_id?: string, ticket?: string, token?: string,
+     *           pid?: number, wait_ms?: number }} options
+     */
+    async doltPushMutex(options) {
+        return this.mcpClient.callTool('dolt_push_mutex', options);
+    }
+
+    /**
+     * Fleet-server-hosted global child-bead-id allocator (apra-fleet-f34.2,
+     * src/tools/child-id-allocator.ts). Mints globally-distinct child ids under
+     * a shared parent for sprints launched WITHOUT a supervisor, so two sprints
+     * creating children under the same parent never derive the same id.
+     *
+     * @param {{ action: 'allocate'|'confirm'|'release'|'status',
+     *           parent_id?: string, token?: string, sprint_id?: string,
+     *           pid?: number, floor?: number }} options
+     */
+    async childIdAllocator(options) {
+        return this.mcpClient.callTool('child_id_allocator', options);
     }
 
     /**

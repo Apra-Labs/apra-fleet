@@ -8,9 +8,9 @@ const patterns: Array<{ category: PromptErrorCategory; re: RegExp }> = [
   // actionable signature is not swallowed by a broader pattern. Remediation: seed trust
   // via ensureWorkspaceTrusted(workFolder) (apra-fleet-eft.40.1/40.2).
   { category: 'workspace_not_trusted', re: /this workspace has not been trusted/i },
-  { category: 'auth', re: /not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error/i },
-  { category: 'server', re: /\b500\b|\b502\b|\b503\b|internal server error|api_error/i },
-  { category: 'overloaded', re: /\b429\b|\b529\b|overloaded|rate limit/i },
+  { category: 'auth', re: /not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error|invalid.*api.*key|api_key_missing|antigravity_api_key|unauthenticated/i },
+  { category: 'server', re: /\b500\b|\b502\b|\b503\b|internal server error|api_error|connection refused|endpoint not reachable|no route to host|dial tcp|failed to connect|network unreachable|dns lookup failed/i },
+  { category: 'overloaded', re: /\b429\b|\b529\b|overloaded|rate limit|quota exceeded|resource_exhausted|credit limit|usage limit/i },
 ];
 
 export function classifyPromptError(output: string): PromptErrorCategory {

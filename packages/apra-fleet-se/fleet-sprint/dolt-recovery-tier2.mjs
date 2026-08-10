@@ -26,7 +26,24 @@
 // caller's job (mechanically re-observing `bd dolt status`/`bd dolt push`
 // after dispatch, the same posture as runner.js's syncMemberAfter Tier 2
 // re-verification).
+//
+// -----------------------------------------------------------------------------
+// apra-fleet-vkc.1 -- THE LADDER ENTRY POINT (buildDoltRecoveryLadder, below).
+//
+// This module is where the three previously test-only recovery paths
+// (dolt-recovery.mjs Path A, dolt-recovery-path-b.mjs Path B, this module's
+// Tier 2) are wired together into ONE zero-argument callback that a diverged
+// D-push terminal invokes. That callback is what dolt-sync.mjs's
+// doltPushAfter() calls at its divergence terminal, and what runner.js's
+// post-dispatch sync bracket (syncMemberAfterOrdered) constructs and threads
+// in. The disposition executed by apra-fleet-vkc.1 is WIRE, not decommission
+// (see dolt-sync.mjs's RECOVERY-LADDER DISPOSITION header for the rationale):
+// the failure these paths handle -- a wedged beads clone that stops the whole
+// sprint -- is real and was previously sprint-fatal with no recovery attempt.
 // =============================================================================
+
+import { recoverDoltConflictPathA } from './dolt-recovery.mjs';
+import { recoverDoltConflictPathB } from './dolt-recovery-path-b.mjs';
 
 /** Repo-relative path to the Tier 2 runbook doc this module's escalation
  *  prompt references. Kept as a constant so the reference cannot drift
@@ -248,4 +265,96 @@ export async function recoverDoltConflict(opts = {}) {
     });
 
     return { ok: false, tier: 'tier-2', escalated: true, escalation, pathAReason, pathBReason };
+}
+
+/**
+ * apra-fleet-vkc.1: build the Path A -> Path B -> Tier 2 recovery ladder as a
+ * single zero-argument async callback the diverged D-push terminal invokes.
+ * This is the ONE place the three recovery modules are composed together with
+ * their concrete dependencies, so doltPushAfter()/repair() (dolt-sync.mjs) and
+ * runner.js's post-dispatch sync bracket all wire recovery through the same
+ * audited seam rather than re-composing the paths at each call site.
+ *
+ * The returned callback resolves to recoverDoltConflict()'s outcome
+ * (`{ ok, tier, ... }`) and never throws for an ordinary recovery failure --
+ * recoverDoltConflict already catches each path's operational error and routes
+ * it onward (Path A error -> Path B -> Tier 2 escalation), so a caller can
+ * branch purely on `.ok`.
+ *
+ * DEPENDENCY POSTURE (deliberately unchanged from the individual paths):
+ *   - Path A (resolve-in-place) requires an injected sql()/spawnSqlServer()
+ *     runtime -- a live dolt sql-server client. When those are NOT supplied
+ *     (the current runner.js posture, which has no such runtime), Path A's own
+ *     guard throws "requires an injected sql()"; recoverDoltConflict catches
+ *     that as a Path A operational failure and falls through to Path B. Path A
+ *     is therefore genuinely REACHED and invoked (no silent dead module), and
+ *     becomes able to resolve-in-place the moment a sql runtime is injected.
+ *   - Path B (discard-and-re-bootstrap) needs only command() plus the fs-backed
+ *     defaults it already ships (readConfig/removePath/listLocalState) to RUN
+ *     -- but "runs" is not "runs correctly here". Those defaults are plain
+ *     Node `fs` calls against whatever process invokes them; without injected
+ *     member-scoped readConfig/removePath/listLocalState (routed through
+ *     command()), Path B discards and re-bootstraps THE CALLING PROCESS's
+ *     local `.beads/*`, not `member`'s. A caller composing this for a
+ *     specific `member` (anything other than "repair my own local clone")
+ *     MUST inject member-scoped fs functions, or set `enablePathB: false` to
+ *     keep Path B out of the ladder entirely (falls straight to Tier 2 when
+ *     Path A can't resolve). See runner.js's syncMemberAfterOrdered() call
+ *     site (apra-fleet-vkc.1 post-review fix) for why it does the latter: it
+ *     wraps an arbitrary, possibly-multi-command agent dispatch, so there is
+ *     no single well-defined `pendingMutation` it could capture and replay --
+ *     Path B firing there would silently discard whatever the dispatch just
+ *     did on `member`, then report the D-push as recovered.
+ *   - Tier 2 needs an injected agent() to dispatch; without one the wedged
+ *     state is still recorded (never silently dropped) but not dispatched.
+ *
+ * @param {string} member
+ * @param {{
+ *   command: Function,
+ *   sql?: Function, spawnSqlServer?: Function, allocatePort?: Function,
+ *   readMetadata?: Function, writeMetadata?: Function,
+ *   dataDir?: string, remote?: string, branch?: string,
+ *   allowlistTables?: string[], resolveStrategy?: '--theirs'|'--ours',
+ *   enablePathB?: boolean,
+ *   readConfig?: Function, removePath?: Function, listLocalState?: Function,
+ *   configPath?: string, removePaths?: string[], embeddedDataDir?: string,
+ *   pendingMutation?: { description: string, cmd: string } | null,
+ *   agent?: Function, log?: Function, model?: string,
+ *   clonePath?: string, runbookPath?: string,
+ * }} opts
+ * @returns {() => Promise<{ ok: boolean, tier: string, escalated?: boolean, result?: object, escalation?: object }>}
+ */
+export function buildDoltRecoveryLadder(member, opts = {}) {
+    const {
+        command,
+        sql, spawnSqlServer, allocatePort, readMetadata, writeMetadata,
+        dataDir, remote, branch, allowlistTables, resolveStrategy,
+        enablePathB = true,
+        readConfig, removePath, listLocalState, configPath, removePaths, embeddedDataDir,
+        pendingMutation, agent, log = () => {}, model, clonePath, runbookPath,
+    } = opts;
+    if (!member) throw new Error('buildDoltRecoveryLadder requires a member');
+    if (typeof command !== 'function') {
+        throw new Error('buildDoltRecoveryLadder requires an injected command() in opts');
+    }
+    const pathB = enablePathB
+        ? () => recoverDoltConflictPathB({
+            member, command, readConfig, removePath, listLocalState,
+            configPath, removePaths, embeddedDataDir, pendingMutation, log,
+        })
+        : async () => {
+            log(`[Dolt] Path B for member '${member}': disabled at this call site (enablePathB:false) -- ` +
+                `discard-and-re-bootstrap needs a specific member-scoped pendingMutation to replay safely, ` +
+                `which this caller cannot provide. Falling through to Tier 2 without touching any local state.`);
+            return { ok: false, reason: 'Path B disabled for this call site (enablePathB:false)' };
+        };
+    return async () => recoverDoltConflict({
+        member,
+        pathA: () => recoverDoltConflictPathA({
+            member, command, sql, spawnSqlServer, allocatePort, readMetadata, writeMetadata,
+            dataDir, remote, branch, allowlistTables, resolveStrategy, log,
+        }),
+        pathB,
+        agent, log, model, clonePath, runbookPath,
+    });
 }

@@ -136,7 +136,7 @@ export function sendJson(res, status, payload) {
  * }}
  */
 export function createSupervisor(deps = {}) {
-    const port = Number.isInteger(deps.port) ? deps.port : DEFAULT_SERVICE_PORT;
+    let port = Number.isInteger(deps.port) ? deps.port : DEFAULT_SERVICE_PORT;
     const logger = deps.logger ?? console;
     const log = (...a) => logger.log?.(...a);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
@@ -324,6 +324,14 @@ export function createSupervisor(deps = {}) {
             server.listen(port);
         });
 
+        // port:0 asks the OS to pick a free port; reflect the port it
+        // actually bound so callers (and the returned/getter `port` below)
+        // see the real value instead of the literal 0 they requested.
+        const bound = server.address();
+        if (bound && typeof bound === 'object' && Number.isInteger(bound.port)) {
+            port = bound.port;
+        }
+
         // After bootstrap, a later server-level 'error' must not crash the
         // process; log and keep serving.
         server.on('error', (err) => logError('[supervisor] server error:', err));
@@ -339,7 +347,7 @@ export function createSupervisor(deps = {}) {
         handleRequest,
         get server() { return server; },
         seams,
-        port,
+        get port() { return port; },
         /** Resolves once the supervisor has fully shut down. */
         get shutdownRequested() { return shutdownRequested; },
     };

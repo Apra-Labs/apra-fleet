@@ -59,6 +59,7 @@ import os from 'node:os';
 import fsp from 'node:fs/promises';
 
 import { isPidAlive } from './reconcile.mjs';
+import { renameWithRetry } from './rename-with-retry.mjs';
 
 /** On-disk schema version for the persisted allocator document. */
 export const ID_ALLOCATOR_VERSION = 1;
@@ -105,6 +106,16 @@ function defaultDataDir() {
  *     rename: typeof import('node:fs/promises').rename,
  *   },
  *   logger?: { log?: Function, error?: Function },
+ *   renameRetry?: {
+ *     maxAttempts?: number,
+ *     baseDelayMs?: number,
+ *     sleep?: (ms: number) => Promise<void>,
+ *   },
+ *     apra-fleet-cvb.5: bounded EPERM/EBUSY retry options for the persist()
+ *     rename step (see rename-with-retry.mjs), mirroring history.mjs's and
+ *     ledger.mjs's ed4.1 wiring -- injectable so a test can drive a fake clock
+ *     with no real sleeps. Defaults to renameWithRetry()'s own defaults
+ *     (5 attempts, ~10ms escalating).
  * }} [deps]
  */
 export function createIdAllocator(deps = {}) {
@@ -120,6 +131,7 @@ export function createIdAllocator(deps = {}) {
     const fs = deps.fs ?? fsp;
     const logger = deps.logger ?? console;
     const log = (...a) => logger.log?.(...a);
+    const renameRetryOpts = deps.renameRetry ?? {};
 
     /**
      * Per-parent allocation state. Each parent id maps to:
@@ -179,7 +191,12 @@ export function createIdAllocator(deps = {}) {
         const run = persistChain.then(async () => {
             await fs.mkdir(path.dirname(filePath), { recursive: true });
             await fs.writeFile(tmpPath, snapshot, 'utf-8');
-            await fs.rename(tmpPath, filePath);
+            // apra-fleet-cvb.5: bounded EPERM/EBUSY retry -- on Windows this
+            // rename can transiently fail while the destination is momentarily
+            // locked/open elsewhere, which would otherwise silently drop this
+            // allocator snapshot (same gap ed4.1 closed for history.mjs and
+            // ledger.mjs).
+            await renameWithRetry(fs, tmpPath, filePath, renameRetryOpts);
         });
         // Keep the chain alive regardless of this write's outcome so one failed
         // write cannot poison every later write; the error still propagates to
@@ -423,7 +440,11 @@ export function createIdAllocator(deps = {}) {
  *
  *   POST /api/child-id-allocator/:parentId/allocate  body { pid?, sprintId?, floor? }
  *       -> 200 { childId, seq, token, expiresAt }. The child then runs
- *          `bd create --id <childId> --parent <parentId>`.
+ *          `bd create --id <childId>` followed by `bd update <childId>
+ *          --parent <parentId>` -- NOT one create carrying both flags, which
+ *          bd rejects outright ("cannot specify both --id and --parent
+ *          flags"); see createChildBeadWithAllocatedId in fleet-sprint/
+ *          runner.js and the apra-fleet-xuo.7 note.
  *   POST /api/child-id-allocator/confirm             body { token }
  *       -> 200 { confirmed: boolean }. Called after a successful create.
  *   POST /api/child-id-allocator/release             body { token }

@@ -27,6 +27,7 @@ persistent task database across all sprints and sessions.
 | `bd ready` | Show all unblocked, open tasks across all sprints |
 | `bd list --all --pretty` | Full tree: all projects, members, tasks, status |
 | `bd create "<title>" -p <pri> --parent <epic-id> --assignee <member>` | Create a task |
+| `bd create "<title>" --id <explicit-id>` then `bd update <explicit-id> --parent <epic-id>` | Create a task with a pre-decided id under a parent -- `bd create` rejects a call that combines `--id` and `--parent` in the same invocation, so an explicit id and a parent link are always two separate calls, never one |
 | `bd show <id> --json` | Full detail for one task |
 | `bd update <id> --status in_progress --assignee <member>` | Mark a task in progress |
 | `bd close <id>` | Mark a task complete (idempotent) |

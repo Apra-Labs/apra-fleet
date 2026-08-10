@@ -22,6 +22,9 @@ import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.j
 import { checkRunningInstance } from '../services/singleton.js';
 import { provisionAgents, type ProvisionResult } from '../services/agent-provisioner.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
+import { composePermissions } from './compose-permissions.js';
+import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
+import { getMemberHomeDir } from '../services/member-home.js';
 
 export const registerMemberSchema = z.object({
   friendly_name: z.string()
@@ -35,7 +38,7 @@ export const registerMemberSchema = z.object({
   auth_type: z.enum(['password', 'key']).optional().describe('Authentication method (required for non-cloud remote members; cloud members default to "key")'),
   password: z.string().optional().describe('SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
-  work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine'),
+  work_folder: z.string().regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines').describe('Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a remote member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   // Cloud fields
@@ -128,6 +131,14 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
     if (!input.host) return '❌ "host" is required for remote members. Member was NOT registered.';
     if (!input.username) return '❌ "username" is required for remote members. Member was NOT registered.';
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
+  }
+
+  // SF-17: a remote member's work_folder is used verbatim on the MEMBER's
+  // machine -- `~` and relative paths are never resolved for it (by design; see
+  // work-folder-validation.ts). Reject them here so the caller supplies a
+  // fully-qualified path instead of the system guessing one at runtime.
+  if (!isLocal && !isFullyQualifiedPath(input.work_folder)) {
+    return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT registered.');
   }
 
   // Resolve {{secure.NAME}} tokens in password field
@@ -386,6 +397,52 @@ export async function registerMember(input: RegisterMemberInput): Promise<string
   addAgent(tempAgent);
   logLine('register_member', `id=${tempAgent.id} name=${tempAgent.friendlyName} type=${tempAgent.agentType}`, tempAgent);
   writeStatusline();
+
+  // SF-18: warm the member's home-dir cache.
+  //
+  // Every provider's transcript path is built under the MEMBER's home dir
+  // (issue #390). Only pollDirectoryActivity ever probed it, and that runs
+  // exclusively for provisional (AGY/OpenCode) dispatches -- so for Claude and
+  // Gemini members, whose entries always carry a caller-minted logFilePath, the
+  // cache was never populated and the synchronous dispatch path
+  // (getCachedMemberPathContext) permanently used the username-convention
+  // GUESS. A member with a relocated or domain-suffixed home then got a
+  // transcript path that cannot exist, which silently disables stall detection
+  // for it.
+  //
+  // Fired here (registration) rather than on the dispatch path so the FIRST
+  // dispatch already benefits, and deliberately NOT awaited: registration's
+  // reported result must not depend on it, and nothing downstream blocks on it.
+  if (!isLocal && !skipSshOps && connResult.ok) {
+    void getMemberHomeDir(tempAgent).catch(() => { /* best effort -- falls back to the guess */ });
+  }
+
+  // --- Auto-run compose_permissions for the member's role/tags (apra-fleet-5oo.1) ---
+  // register_member must not leave a member with an attribution-only settings
+  // stub: compose_permissions is the single source of truth for the member's
+  // composed permission allowlist, so it is run automatically here rather than
+  // relying on a separate manual step nobody is forced to take. Tags are
+  // already known at registration time; fall back to the 'doer' role when no
+  // doer/reviewer tag was supplied (matches compose_permissions' own default
+  // primary-mode resolution). Refusal is the only failure mode: if
+  // compose_permissions itself fails, the registration must NOT be reported as
+  // fully successful.
+  let composeResult: string;
+  try {
+    composeResult = await composePermissions({
+      member_id: tempAgent.id,
+      role: 'doer',
+      tags: tempAgent.tags,
+    });
+  } catch (e: any) {
+    composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+  }
+  if (!composeResult.startsWith('✅')) {
+    // Strip any leading non-ASCII status glyph from the underlying tool's
+    // message so this hard-failure report stays ASCII (repo convention).
+    const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');
+    return `ERROR: member not provisioned -- "${tempAgent.friendlyName}" was registered but compose_permissions failed: ${asciiDetail}`;
+  }
 
   // Block global apra-fleet MCP + skills inside local agy member workspaces
   if (isLocal && (input.llm_provider ?? 'claude') === 'agy') {

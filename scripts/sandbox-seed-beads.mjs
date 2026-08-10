@@ -23,10 +23,10 @@
 //   bd init --from-jsonl --prefix <prefix> --remote file://<dolt-remote> --non-interactive   (cwd: toy repo)
 //   bd dolt push                                                                             (cwd: toy repo)
 
-import { execFileSync } from 'node:child_process';
-import { rmSync, existsSync, realpathSync } from 'node:fs';
+import { rmSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { execBdSync } from './lib/exec-bd.mjs';
 
 const GUARD = '[sandbox-seed guard]';
 
@@ -110,21 +110,48 @@ function main() {
         // Reset re-seed: bd auto-derives its Dolt remote from the toy clone's
         // own git origin (already sandbox-local, asserted by the playbook's
         // check script). No explicit remote is written and nothing is pushed.
-        execFileSync('bd', ['init', '--from-jsonl', '--prefix', args.prefix, '--non-interactive'], {
+        execBdSync(['init', '--from-jsonl', '--prefix', args.prefix, '--non-interactive'], {
             cwd: repo,
             stdio: 'inherit',
+            shell: true,
         });
         console.log(`[sandbox-seed] OK (reset): re-seeded '${repo}' from its committed JSONL (no remote rewiring)`);
         return;
     }
 
     rmSync(remote, { recursive: true, force: true });
-    const remoteUrl = pathToFileURL(remote).href;
-    execFileSync('bd', ['init', '--from-jsonl', '--prefix', args.prefix, '--remote', remoteUrl, '--non-interactive'], {
+    // Re-resolve `remote` off a freshly-created, now-existing directory
+    // rather than trusting the `remote` value validateSandboxSeedPaths()
+    // returned above. That earlier value went through realOrIntended() while
+    // the dolt-remote dir did not exist yet, so its realpathSync() call threw
+    // and it fell back to a bare path.resolve() -- pure string concatenation
+    // with NO OS-level canonicalization. `root`/`repo` above, by contrast,
+    // already existed at that point and DID get OS-canonicalized. On a host
+    // whose TEMP/TMP resolves through a short (8.3-alias) path component --
+    // e.g. GitHub Actions' Windows runners, where %TEMP% is literally
+    // 'C:\Users\RUNNER~1\AppData\Local\Temp' while the real profile dir is
+    // '...\runneradmin\...' -- that means `remote`'s uncanonicalized fallback
+    // path and `repo`'s canonicalized one silently disagree on which alias to
+    // use for the same shared ancestor directory. `pathToFileURL(remote)`
+    // then bakes the short alias (percent-encoded '~' and all) into the Dolt
+    // remote URL bd is told to push to; Dolt's embedded engine's own
+    // GetFileAttributesEx call on that literal short-alias path then fails to
+    // find it (observed failure: 'Error 1105: failed to get remote db ...
+    // GetFileAttributesEx C:\Users\RUNNER~1\...: The system cannot find the
+    // file specified', windows-latest only -- ubuntu/macos have no such
+    // short/long alias split so this never reproduced there). Creating the
+    // directory first and re-resolving through realpathSync (the same code
+    // path `root`/`repo` used) makes `remote` canonicalize the same way as
+    // everything else under `root`, closing the mismatch.
+    mkdirSync(remote, { recursive: true });
+    const resolvedRemote = realpathSync(remote);
+    const remoteUrl = pathToFileURL(resolvedRemote).href;
+    execBdSync(['init', '--from-jsonl', '--prefix', args.prefix, '--remote', remoteUrl, '--non-interactive'], {
         cwd: repo,
         stdio: 'inherit',
+        shell: true,
     });
-    execFileSync('bd', ['dolt', 'push'], { cwd: repo, stdio: 'inherit' });
+    execBdSync(['dolt', 'push'], { cwd: repo, stdio: 'inherit' });
     console.log(`[sandbox-seed] OK: seeded '${repo}' with sync.remote '${remoteUrl}' (all paths inside the sandbox root)`);
 }
 

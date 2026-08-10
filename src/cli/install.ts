@@ -17,10 +17,11 @@ import {
   PROVIDER_STANDARD_MODELS,
   ProviderInstallConfig
 } from './config.js';
-import { transformAgentForOpenCode } from './agent-transform.js';
+import { transformAgentForOpenCode, transformAgentForAgy } from './agent-transform.js';
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
+import { classifyRunningServer, getInstallDataDir } from './install-guard.js';
 
 // --- Dolt CLI install step: injectable deps + explicit gate ---
 //
@@ -104,7 +105,7 @@ export function isNpmGlobalInstall(): boolean {
 function getSeaAsset(key: string): string {
   const sea = require('node:sea');
   const buf = sea.getAsset(key);
-  // getAsset returns ArrayBuffer — decode to string
+  // getAsset returns ArrayBuffer - decode to string
   return new TextDecoder().decode(buf);
 }
 
@@ -153,7 +154,7 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Find project root — works for both tsc (dist/cli/install.js) and esbuild (dist/sea-bundle.cjs)
+// Find project root - works for both tsc (dist/cli/install.js) and esbuild (dist/sea-bundle.cjs)
 function findProjectRoot(): string {
   let dir = __dirname;
   for (let i = 0; i < 5; i++) {
@@ -163,7 +164,7 @@ function findProjectRoot(): string {
   throw new Error('Cannot find project root (version.json not found)');
 }
 
-// Collect files recursively — used by dev-mode manifest generation
+// Collect files recursively - used by dev-mode manifest generation
 function collectFilesRec(dir: string, base: string, rootBase?: string): Record<string, string> {
   const effectiveRootBase = rootBase ?? base;
   const results: Record<string, string> = {};
@@ -184,6 +185,53 @@ function collectFilesRec(dir: string, base: string, rootBase?: string): Record<s
 // the workflow-runtime / agent-schemas / built-in-workflow sections -- mirrors
 // scripts/gen-sea-config.mjs's PACKAGE_TREE_EXCLUDE_DIRS.
 const PACKAGE_TREE_EXCLUDE_DIRS = new Set(['test', 'docs', 'scripts', 'examples']);
+
+/**
+ * Resolve a runtime dependency's package directory by walking the node_modules
+ * chain upward from `root`, the way Node's own resolver does.
+ *
+ * Why this exists: gen-sea-config.mjs (the SEA parity source) can assume every
+ * runtime dep sits at `root/node_modules/<pkg>` because it always runs from the
+ * git/workspace checkout, where nothing is hoisted above the repo root. But
+ * buildDevManifest() also runs at `apra-fleet install` time inside a REAL
+ * npm-installed tree, where `root` is `node_modules/@apralabs/apra-fleet` and
+ * npm HOISTS shared deps (ajv, undici, fast-uri, ...) up to a PARENT
+ * node_modules. A fixed `root/node_modules/<pkg>` probe misses every hoisted
+ * dep there, so the whole workflow-runtime section fails its existsSync gate and
+ * silently drops out -- leaving `apra-fleet workflow fleet-sprint` dead with no
+ * error (the exact class of failure tests/install-dev-manifest.test.ts guards).
+ * Walking up the chain resolves the dep wherever npm actually placed it; in a
+ * dev checkout the first candidate (`root/node_modules/<pkg>`) still wins, so
+ * the manifest is byte-identical there. Returns null when the dep is nowhere on
+ * the chain.
+ */
+function resolveNodeModulesDir(root: string, pkg: string): string | null {
+  let dir = root;
+  for (;;) {
+    const candidate = path.join(dir, 'node_modules', pkg);
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // reached filesystem root
+    dir = parent;
+  }
+}
+
+// Runtime deps of the workflow subsystem that live under node_modules (as
+// opposed to the first-party packages/ trees). Each tuple is [package name on
+// disk, manifest prefix]; the two coincide today but are kept explicit to
+// mirror gen-sea-config.mjs's collectPackageTree(..., '<prefix>') calls exactly.
+const WORKFLOW_RUNTIME_NODE_MODULES_DEPS: ReadonlyArray<readonly [string, string]> = [
+  ['ajv', 'ajv'],
+  ['fast-deep-equal', 'fast-deep-equal'],
+  ['fast-uri', 'fast-uri'],
+  ['json-schema-traverse', 'json-schema-traverse'],
+  ['require-from-string', 'require-from-string'],
+  // undici is a direct runtime dependency of apra-fleet-client's transport
+  // (packages/apra-fleet-client/src/client/transport.mjs). undici-types is a
+  // types-only peer dependency (no runtime require of it in undici's lib), so
+  // it is intentionally not bundled here.
+  ['undici', 'undici'],
+];
 
 function collectFilesFilteredRec(
   dir: string, base: string, rootBase: string, excludeDirs: Set<string>
@@ -225,7 +273,10 @@ function collectPackageTree(
   return results;
 }
 
-function buildDevManifest(root: string): AssetManifest {
+// Exported for tests: the dev-mode manifest is what gates the entire workflow
+// subsystem install, and its inputs are filesystem paths that can silently go
+// stale when directories move (see agentSchemasDir below).
+export function buildDevManifest(root: string): AssetManifest {
   const hooks: Record<string, string> = {};
   for (const entry of fs.readdirSync(path.join(root, 'hooks'))) {
     hooks[entry] = `hooks/${entry}`;
@@ -289,28 +340,27 @@ function buildDevManifest(root: string): AssetManifest {
 
   // Workflow subsystem parity (mirrors scripts/gen-sea-config.mjs) so `node
   // dist/index.js install` behaves identically to the SEA binary. Each source
-  // tree is optional -- an npm global install (no node_modules/ajv, no apra-pm
-  // package, no packages/) simply omits the section, same as an older SEA
-  // manifest built before this epic; the install step warns and skips.
+  // tree is optional -- an npm global install missing any piece simply omits
+  // the section, same as an older SEA manifest built before this epic; the
+  // install step warns and skips. The first-party packages/ trees resolve
+  // relative to root (shipped inside the tarball by the files allowlist); the
+  // node_modules runtime deps resolve via resolveNodeModulesDir() so a real
+  // npm-installed tree (which hoists them above root) still finds them.
   const workflowRuntimeDir = path.join(root, 'packages', 'apra-fleet-workflow');
   const clientDir = path.join(root, 'packages', 'apra-fleet-client');
-  const ajvDir = path.join(root, 'node_modules', 'ajv');
+  const resolvedRuntimeDeps = WORKFLOW_RUNTIME_NODE_MODULES_DEPS.map(
+    ([pkg, prefix]) => [prefix, resolveNodeModulesDir(root, pkg)] as const
+  );
+  const allRuntimeDepsResolved = resolvedRuntimeDeps.every(([, dir]) => dir !== null);
   let workflowRuntime: Record<string, string> | undefined;
-  if (fs.existsSync(workflowRuntimeDir) && fs.existsSync(clientDir) && fs.existsSync(ajvDir)) {
+  if (fs.existsSync(workflowRuntimeDir) && fs.existsSync(clientDir) && allRuntimeDepsResolved) {
     workflowRuntime = {
       ...collectPackageTree(root, workflowRuntimeDir, '@apralabs/apra-fleet-workflow'),
       ...collectPackageTree(root, clientDir, '@apralabs/apra-fleet-client'),
-      ...collectPackageTree(root, ajvDir, 'ajv'),
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'fast-deep-equal'), 'fast-deep-equal'),
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'fast-uri'), 'fast-uri'),
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'json-schema-traverse'), 'json-schema-traverse'),
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'require-from-string'), 'require-from-string'),
-      // undici is a direct runtime dependency of apra-fleet-client's transport
-      // (packages/apra-fleet-client/src/client/transport.mjs). undici-types is
-      // a types-only peer dependency (no runtime require of it in undici's
-      // lib), so it is intentionally not bundled here.
-      ...collectPackageTree(root, path.join(root, 'node_modules', 'undici'), 'undici'),
     };
+    for (const [prefix, dir] of resolvedRuntimeDeps) {
+      Object.assign(workflowRuntime, collectPackageTree(root, dir as string, prefix));
+    }
   }
 
   const agentSchemasDir = path.join(root, 'packages', 'apra-fleet-se', 'apra-pm', 'agents', 'schemas');
@@ -338,7 +388,7 @@ function buildDevManifest(root: string): AssetManifest {
 }
 
 let _manifestOverride: AssetManifest | null = null;
-/** Inject a manifest for tests — avoids SEA asset extraction. Pass null to restore default. */
+/** Inject a manifest for tests - avoids SEA asset extraction. Pass null to restore default. */
 export function _setManifestOverride(m: AssetManifest | null): void { _manifestOverride = m; }
 
 /**
@@ -559,10 +609,23 @@ function mergePermissions(paths: ProviderInstallConfig, extraPerms: string[] = [
   writeConfig(paths, settings);
 }
 
-function configureStatusline(paths: ProviderInstallConfig, scriptPath: string): void {
+function configureStatusline(paths: ProviderInstallConfig, scriptPath: string, llm?: LlmProvider): void {
   const settings = readConfig(paths);
-  // Windows: Claude Code can't execute .sh directly — prefix with bash
-  const command = process.platform === 'win32' ? `bash "${scriptPath}"` : scriptPath;
+  let command: string;
+
+  if (process.platform === 'win32') {
+    if (llm === 'agy') {
+      const gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+      const bashBin = fs.existsSync(gitBash) ? `"${gitBash}"` : 'bash';
+      const formattedScriptPath = scriptPath.replace(/\\/g, '/');
+      command = `${bashBin} "${formattedScriptPath}"`;
+    } else {
+      command = `bash "${scriptPath}"`;
+    }
+  } else {
+    command = scriptPath;
+  }
+
   settings.statusLine = {
     type: 'command',
     command,
@@ -649,12 +712,25 @@ function run(cmd: string, opts?: Record<string, unknown>): void {
   execSync(cmd, { stdio: 'inherit', ...shellOpt, ...opts });
 }
 
+/** Is `cmd` resolvable on PATH? Used before shelling out to a provider's own
+ *  CLI (e.g. `claude`) so a missing binary degrades to a clear warning
+ *  instead of install crashing with a raw "Command failed" error. */
+function isCommandAvailable(cmd: string): boolean {
+  try {
+    const checkCmd = process.platform === 'win32' ? `where ${cmd}` : `command -v ${cmd}`;
+    execSync(checkCmd, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function isApraFleetRunning(): boolean {
   try {
     if (process.platform === 'win32') {
       const out = execSync('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV', { encoding: 'utf-8', stdio: 'pipe' });
       const currentPid = process.pid.toString();
-      // Each CSV line: "apra-fleet.exe","<PID>","..." — exclude the current installer process
+      // Each CSV line: "apra-fleet.exe","<PID>","..." - exclude the current installer process
       return out.split('\n').some(line => {
         const match = line.match(/"apra-fleet\.exe","(\d+)"/);
         return match !== null && match[1] !== currentPid;
@@ -671,12 +747,73 @@ export function isApraFleetRunning(): boolean {
   }
 }
 
-export function killApraFleet(): void {
+export function killApraFleet(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
   if (process.platform === 'win32') {
+    // taskkill /F is already forceful -- no softer signal to escalate from,
+    // so SIGKILL escalation on Windows just reissues the same command.
     execSync('taskkill /F /IM apra-fleet.exe', { stdio: 'ignore' });
   } else {
     // -x = exact name match
-    execSync('pkill -x apra-fleet', { stdio: 'ignore' });
+    const cmd = signal === 'SIGKILL' ? 'pkill -9 -x apra-fleet' : 'pkill -x apra-fleet';
+    execSync(cmd, { stdio: 'ignore' });
+  }
+}
+
+// --- install --force termination polling: bounded wait + SIGKILL escalation ---
+//
+// killApraFleet() above only sends SIGTERM (or the already-forceful Windows
+// taskkill /F). A singleton that is mid-request can take longer than a flat
+// sleep to exit, which previously produced ETXTBSY on fs.copyFileSync (the
+// old apra-fleet binary was still open). waitForApraFleetToStop() polls
+// isApraFleetRunning() over a grace window instead of sleeping a fixed
+// duration, and escalates to SIGKILL if a non-installer apra-fleet process
+// is still alive once that window elapses.
+export interface InstallForceTiming {
+  pollIntervalMs: number;
+  graceMs: number;
+  killGraceMs: number;
+}
+const PROD_INSTALL_FORCE_TIMING: InstallForceTiming = { pollIntervalMs: 200, graceMs: 3000, killGraceMs: 2000 };
+// Tests run with NODE_ENV=test (see tests/setup.ts) and don't fake these timers,
+// so default to a much shorter window there to keep the suite fast, unless a
+// test explicitly overrides via _setInstallForceTimingOverride() to exercise
+// the escalation path directly.
+const TEST_INSTALL_FORCE_TIMING: InstallForceTiming = { pollIntervalMs: 2, graceMs: 20, killGraceMs: 20 };
+let _installForceTimingOverride: InstallForceTiming | null = null;
+/** Test-only: override the poll/grace timing used by waitForApraFleetToStop(). Pass null to restore default. */
+export function _setInstallForceTimingOverride(t: InstallForceTiming | null): void {
+  _installForceTimingOverride = t;
+}
+function installForceTiming(): InstallForceTiming {
+  if (_installForceTimingOverride) return _installForceTimingOverride;
+  return process.env.NODE_ENV === 'test' ? TEST_INSTALL_FORCE_TIMING : PROD_INSTALL_FORCE_TIMING;
+}
+
+/**
+ * Wait for any non-installer apra-fleet process to exit after killApraFleet()
+ * sends SIGTERM. Polls isApraFleetRunning() over a grace window; if the
+ * process is still alive once the window elapses, escalates to SIGKILL and
+ * polls again over a second (shorter) window. Returns as soon as no
+ * non-installer apra-fleet process is detected, or once both windows have
+ * elapsed -- callers should not assume termination is guaranteed in the
+ * latter case (see apra-fleet-l7n.3 for surfacing that failure to the
+ * operator instead of asserting success).
+ */
+export async function waitForApraFleetToStop(): Promise<void> {
+  const { pollIntervalMs, graceMs, killGraceMs } = installForceTiming();
+
+  let deadline = Date.now() + graceMs;
+  while (isApraFleetRunning() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+  }
+
+  if (!isApraFleetRunning()) return;
+
+  // Grace window elapsed and a non-installer apra-fleet process is still alive -- escalate.
+  killApraFleet('SIGKILL');
+  deadline = Date.now() + killGraceMs;
+  while (isApraFleetRunning() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
 }
 
@@ -724,7 +861,7 @@ function copyGlobalBible(repoCwd: string): void {
 }
 
 export async function runInstall(args: string[]): Promise<void> {
-  // --help / -h guard — must come first, before any side effects (#142)
+  // --help / -h guard - must come first, before any side effects (#142)
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`apra-fleet install
 
@@ -734,7 +871,7 @@ Usage:
   apra-fleet install                   Install binary + hooks + statusline + MCP + fleet & PM skills (default)
   apra-fleet install --skill all       Same as bare install (all skills)
   apra-fleet install --skill fleet     Install fleet skill only
-  apra-fleet install --skill pm        Install PM skill (also installs fleet — PM depends on fleet)
+  apra-fleet install --skill pm        Install PM skill (also installs fleet -- PM depends on fleet)
   apra-fleet install --skill none      Skip skill installation
   apra-fleet install --no-skill        Same as --skill none
   apra-fleet install --workflows none  Skip installing the workflow runtime + built-in workflows
@@ -747,7 +884,7 @@ Usage:
 Options:
   --llm <provider>        LLM provider to configure. Supported: claude, gemini, codex, copilot, agy, opencode.
                           Defaults to claude. Note: --llm gemini shows a warning about sequential
-                          dispatch — Gemini does not support background agents, so fleet operations
+                          dispatch -- Gemini does not support background agents, so fleet operations
                           run sequentially rather than in parallel.
   --transport <mode>      MCP transport to use: http (default) or stdio. HTTP uses the singleton
                           fleet server at http://localhost:7523/mcp. stdio runs fleet as a subprocess.
@@ -800,7 +937,7 @@ Options:
       if (nextArg && !nextArg.startsWith('--') && (nextArg === 'all' || nextArg === 'fleet' || nextArg === 'pm' || nextArg === 'none')) {
         skillMode = nextArg;
       } else {
-        // --skill with no value → install both (backwards-compat)
+        // --skill with no value - install both (backwards-compat)
         skillMode = 'all';
       }
     }
@@ -889,17 +1026,32 @@ Options:
   if (serviceStep) totalSteps++;
 
   if (llm === 'gemini' && (installFleet || installPm)) {
-    console.warn(`\n⚠ Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
+    console.warn(`\n- Note: Gemini does not support background agents. If you plan to use Gemini as the\n  PM/orchestrator, fleet operations will run sequentially (no parallel dispatch).\n  For best orchestration performance, consider using Claude. See docs for details.\n`);
   }
 
   // --- Running-process guard (SEA + npm modes -- dev mode runs via node, not a managed binary) ---
-  if ((isSea() || isNpmGlobalInstall()) && isApraFleetRunning()) {
+  //
+  // isApraFleetRunning() is OS-global on purpose (waitForApraFleetToStop() and
+  // uninstall.ts depend on that). It is only the cheap first filter here:
+  // classifyRunningServer() then decides whether the running server is actually
+  // relevant to THIS install -- recorded live in the target data dir, or running
+  // from the install prefix we are about to overwrite (ETXTBSY). An unrelated
+  // server (isolated HOME/APRA_FLEET_DATA_DIR/prefix, e.g. ci.yml's clean temp
+  // prefix step) no longer blocks the install. See apra-fleet-1aw.
+  const runningScope = (isSea() || isNpmGlobalInstall()) && isApraFleetRunning()
+    ? classifyRunningServer(BIN_DIR)
+    : null;
+  if (runningScope && !runningScope.relevant) {
+    console.log(`\n  Note: an unrelated apra-fleet server is running -- ${runningScope.detail}.\n  It is not associated with this install (data dir ${getInstallDataDir()}, prefix ${BIN_DIR}), so it is left running.\n`);
+  }
+  if (runningScope?.relevant) {
     if (!force) {
       const killHint = process.platform === 'win32'
         ? '    taskkill /F /IM apra-fleet.exe'
         : '    pkill -x apra-fleet';
       console.error(`
 Error: apra-fleet is currently running. Stop the server before installing.
+  (${runningScope.detail})
 
   Run with --force to stop it automatically:
     apra-fleet install --force
@@ -910,7 +1062,15 @@ ${killHint}
       process.exit(1);
     }
     killApraFleet();
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await waitForApraFleetToStop();
+    if (isApraFleetRunning()) {
+      console.error(`
+Error: could not stop the running apra-fleet server (it is still running after
+SIGTERM and a SIGKILL escalation). Stop it manually before installing:
+${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pkill -x apra-fleet'}
+`);
+      process.exit(1);
+    }
     console.log('  Stopped running server.');
   }
 
@@ -968,7 +1128,7 @@ ${killHint}
     mergeHooksConfig(paths, installedHooksConfig, llm);
 
     const statuslineScript = path.join(SCRIPTS_DIR, 'fleet-statusline.sh');
-    configureStatusline(paths, statuslineScript);
+    configureStatusline(paths, statuslineScript, llm);
 
     const standardModel = PROVIDER_STANDARD_MODELS[llm] ?? PROVIDER_STANDARD_MODELS['claude'];
     writeDefaultModel(paths, standardModel);
@@ -982,10 +1142,19 @@ ${killHint}
 
   if (transport === 'http') {
     if (llm === 'claude') {
-      try {
-        run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
-      } catch { /* not registered */ }
-      run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+      if (!isCommandAvailable('claude')) {
+        console.warn(
+          `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
+          `  Install Claude Code (https://claude.com/claude-code), then re-run 'apra-fleet install'\n` +
+          `  to register apra-fleet with it, or register manually with:\n` +
+          `    claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`
+        );
+      } else {
+        try {
+          run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+        } catch { /* not registered */ }
+        run(`claude mcp add --scope user --transport http apra-fleet ${fleetUrl}`);
+      }
     } else if (llm === 'gemini') {
       mergeGeminiConfig(paths, { httpUrl: fleetUrl });
     } else if (llm === 'codex') {
@@ -1008,15 +1177,23 @@ ${killHint}
       : { command: 'node', args: [path.join(findProjectRoot(), 'dist', 'index.js'), 'run', '--transport', 'stdio'] };
 
     if (llm === 'claude') {
-      try {
-        run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
-      } catch { /* not registered */ }
-
       // Build the claude MCP command from the actual mcpConfig structure.
       // All args are quoted and joined so paths with spaces (e.g. Windows "Program Files") work.
       const quotedArgs = mcpConfig.args.map((a: string) => `"${a.replace(/"/g, '\\"')}"`).join(' ');
       const cmd = `claude mcp add --scope user apra-fleet -- "${mcpConfig.command}" ${quotedArgs}`;
-      run(cmd);
+      if (!isCommandAvailable('claude')) {
+        console.warn(
+          `  Warning: the 'claude' CLI was not found on PATH -- skipping MCP server registration.\n` +
+          `  Install Claude Code (https://claude.com/claude-code), then re-run 'apra-fleet install'\n` +
+          `  to register apra-fleet with it, or register manually with:\n` +
+          `    ${cmd}`
+        );
+      } else {
+        try {
+          run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+        } catch { /* not registered */ }
+        run(cmd);
+      }
     } else if (llm === 'gemini') {
       mergeGeminiConfig(paths, mcpConfig);
     } else if (llm === 'codex') {
@@ -1032,7 +1209,7 @@ ${killHint}
 
   // --- Step 6: Install fleet skill (optional) ---
   if (skillMode === 'pm') {
-    console.warn(`\n⚠ Note: PM skill depends on fleet skill — installing fleet skill first.\n`);
+    console.warn(`\n- Note: PM skill depends on fleet skill - installing fleet skill first.\n`);
   }
   if (installFleet) {
     console.log(`  [6/${totalSteps}] Installing fleet skill...`);
@@ -1233,7 +1410,11 @@ ${killHint}
     // as a fallback), preserving this branch's no-dist/agents rule, and it
     // recurses into _shared/ and schemas/ which the old flat readdir missed.
     for (const { relPath, content: rawContent } of loadAgentAssets()) {
-      const content = llm === 'opencode' ? transformAgentForOpenCode(rawContent, relPath) : rawContent;
+      const content = llm === 'opencode'
+        ? transformAgentForOpenCode(rawContent, relPath)
+        : llm === 'agy'
+        ? transformAgentForAgy(rawContent, relPath)
+        : rawContent;
       writeAssetFile(path.join(agentsDestDir, relPath), content);
     }
   }
@@ -1291,7 +1472,7 @@ ${killHint}
   }
 
   // --- Beads install step ---
-  // shell:true required on Windows — npm global packages install as .cmd wrappers
+  // shell:true required on Windows - npm global packages install as .cmd wrappers
   // that cannot be directly spawned by Node without a shell
   // KB + code intelligence is the final step (before the optional service step),
   // so Beads sits one slot earlier than it does on main.
@@ -1301,14 +1482,14 @@ ${killHint}
     // Check if already installed
     try {
       execFileSync('bd', ['--version'], { stdio: 'pipe', shell: true });
-      // already installed — skip
+      // already installed - skip
     } catch {
-      // not installed — install it
+      // not installed - install it
       execFileSync('npm', ['install', '-g', '@beads/bd@1.0.4'], { stdio: 'inherit', shell: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install
-    console.warn('  ⚠ Beads install skipped — npm not available or install failed');
+    console.warn('  - Beads install skipped - npm not available or install failed');
   }
 
   // --- KB + code intelligence setup step ---

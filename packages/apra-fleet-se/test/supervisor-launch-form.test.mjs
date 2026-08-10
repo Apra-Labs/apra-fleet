@@ -12,14 +12,26 @@ import { renderIndexPageHtml } from '../src/supervisor/dashboard.mjs';
 
 // apra-fleet-eft.6.3 -- Launch Sprint form: issue multi-select (click-to-toggle
 // on the Backlog tree), member/role assignment, a goal selector offering
-// exactly P1/P1+P2/P1+P2+P3, and branch/base-branch inputs. Submitting builds
+// exactly P1/P1-P2/P1-P2-P3 (slash-joined, see GOAL_OPTIONS), and branch/
+// base-branch inputs. Submitting builds
 // a POST /api/sprints body the server (eft.4.4, src/supervisor/api.mjs)
 // accepts; 409 member-overlap conflicts and 400 field errors are surfaced
 // legibly, never as a generic error.
 
 describe('launch-form -- GOAL_OPTIONS', () => {
-    test('offers exactly P1, P1+P2, P1+P2+P3', () => {
-        assert.deepEqual(GOAL_OPTIONS, ['P1', 'P1+P2', 'P1+P2+P3']);
+    // Slash-separated, not '+'-joined -- must match runner.js's GOAL_PATTERN
+    // (/^P[1-3](\/P[1-3]){0,2}$/, fleet-sprint/runner.js:249), which api.mjs
+    // forwards this value into verbatim with no reformatting. A '+'-joined
+    // value here fails the launched child's own Arg Contract check.
+    test('offers exactly P1, P1/P2, P1/P2/P3', () => {
+        assert.deepEqual(GOAL_OPTIONS, ['P1', 'P1/P2', 'P1/P2/P3']);
+    });
+
+    test('every option matches runner.js\'s GOAL_PATTERN', () => {
+        const GOAL_PATTERN = /^P[1-3](\/P[1-3]){0,2}$/;
+        for (const g of GOAL_OPTIONS) {
+            assert.ok(GOAL_PATTERN.test(g), `${g} must match GOAL_PATTERN`);
+        }
     });
 });
 
@@ -36,7 +48,7 @@ describe('launch-form -- buildLaunchRequestBody', () => {
         selectedRoots: ['apra-fleet-eft.9'],
         members: ['alice', 'bob'],
         roleMap: { doer: ['alice'] },
-        goal: 'P1+P2',
+        goal: 'P1/P2',
         branch: 'feat/x',
         base: 'main',
     };
@@ -49,7 +61,7 @@ describe('launch-form -- buildLaunchRequestBody', () => {
             members: ['alice', 'bob'],
             branch: 'feat/x',
             base: 'main',
-            goal: 'P1+P2',
+            goal: 'P1/P2',
             roleMap: { doer: ['alice'] },
         });
     });
@@ -81,7 +93,7 @@ describe('launch-form -- buildLaunchRequestBody', () => {
     test('goal outside the exact three options -> client-side error', () => {
         const result = buildLaunchRequestBody({ ...base, goal: 'P4' });
         assert.equal(result.ok, false);
-        assert.ok(result.error.includes('P1, P1+P2, P1+P2+P3'));
+        assert.ok(result.error.includes('P1, P1/P2, P1/P2/P3'));
     });
 
     test('missing branch/base -> client-side error', () => {
@@ -153,13 +165,19 @@ describe('launch-form -- renderLaunchFormHtml', () => {
     });
 });
 
-describe('launch-form -- attaches to the index page after the Backlog', () => {
-    test('renderIndexPageHtml places the Launch Sprint form after the Backlog section', () => {
+describe('launch-form -- attaches to the index page in the Backlog tab', () => {
+    // supervisor-viewer-parity (quick-tasks follow-up): Launch Sprint now
+    // shares the Backlog tab (launching starts from picking rows out of the
+    // Backlog), rendered after the backlog table -- not after the sprint
+    // stack/Sprints tab anymore. `id="sprint-stack"` still precedes
+    // `id="backlog"` in raw document order regardless (see
+    // supervisor-backlog.test.mjs), which is the ordering that still matters.
+    test('renderIndexPageHtml places the Launch Sprint form after the Backlog section, in the Backlog tab', () => {
         const html = renderIndexPageHtml([], '<p>no backlog</p>');
         const backlogIdx = html.indexOf('id="backlog"');
         const launchIdx = html.indexOf('id="launch-form"');
         assert.ok(backlogIdx !== -1 && launchIdx !== -1);
-        assert.ok(launchIdx > backlogIdx, 'Launch Sprint form must come after the Backlog');
+        assert.ok(launchIdx > backlogIdx, 'Launch Sprint form must come after the Backlog section');
         assert.ok(html.includes('id="launch-sprint-form"'));
     });
 

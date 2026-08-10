@@ -304,3 +304,58 @@ This checks the latest GitHub release, downloads the installer for your
 platform, and re-runs it automatically. The server restarts with the new
 binary. If you are already on the latest version it reports so and exits. Full
 detail: [docs/features/update.md](features/update.md).
+
+### Stopping a running server before an overwrite install
+
+`install --force` (and `update`, which drives the same path) must stop the
+currently-running server before copying the new binary over the installed
+path, since the OS refuses to overwrite a binary that is still mapped into a
+running process. A single termination signal followed by a fixed delay is not
+reliable: a singleton that is mid-request can take longer to exit than an
+arbitrary fixed sleep, and a copy attempted before it actually exits fails
+outright and leaves the old server running.
+
+The install path instead polls process liveness over a bounded grace window
+after the initial termination signal, and escalates to a harder kill signal
+if the process is still alive once that window elapses, polling again over a
+second (shorter) window before giving up. The binary copy is only attempted
+once the old process is confirmed gone. Symmetrically, the "stopped running
+server" success message is gated on that same confirmation rather than
+printed unconditionally -- if the process is still detected running after
+both the initial signal and the escalation, install reports a clear error
+(with the manual kill command for the platform) and exits non-zero instead of
+proceeding into a copy that would fail anyway or claiming success it can't
+back up.
+
+### Replaying the npm-publish smoke step locally with an unrelated server running
+
+CI's "Pack + install into a clean temp prefix (fleet-sprint smoke test)" step
+packs the CLI and installs it into an isolated, throwaway prefix. That step
+(and any local replay of it) is safe to run even while an unrelated
+apra-fleet server is already up on the same machine, because the
+running-process guard is scoped to the install being performed rather than
+to any apra-fleet process anywhere on the OS: it only fires when the running
+server's data dir matches the data dir this install targets, or when the
+running executable it detects lives under the install prefix being written
+(the ETXTBSY case). A server running against a different data dir and a
+different install prefix does not trip it.
+
+To replay the step locally, isolate the install the same way CI does by
+pointing these env vars at throwaway locations before running
+`apra-fleet install`:
+
+- `HOME` (or `USERPROFILE` on Windows) -- so the default data dir and install
+  prefix resolve under a temp directory instead of your real home.
+- `APRA_FLEET_DATA_DIR` -- overrides the data dir directly if you want it
+  separate from `HOME`.
+- The install prefix (where the packed CLI is installed) -- point it at a
+  clean temp directory distinct from any prefix an existing server was
+  installed into.
+
+`install --force` is not needed for this replay, and must not be used just
+to kill an unrelated apra-fleet server -- `--force` exists to stop the
+server that owns the install being overwritten, not to clear the machine of
+unrelated servers so a differently-scoped install can proceed. As long as
+the data dir and install prefix are isolated from any running server, a
+plain `apra-fleet install` (no `--force`) completes without the guard
+firing.

@@ -47,13 +47,15 @@ test('setup dispatchShell commands include git rev-parse --abbrev-ref HEAD (bran
     'setup dispatchShell must confirm branch with git rev-parse --abbrev-ref HEAD');
 });
 
-test('setup dispatchShell commands include existence checks for deploy.md and integ-test-playbook.md', () => {
+test('setup dispatchShell commands include existence checks for deploy.md, integ-test-playbook.md and regression-test-playbook.md', () => {
   const shellIdx = src.indexOf("label: 'setup-shell'");
-  const region = src.slice(Math.max(0, shellIdx - 4500), shellIdx);
+  const region = src.slice(Math.max(0, shellIdx - 5000), shellIdx);
   assert.match(region, /test -f deploy\.md/,
     'setup dispatchShell must check deploy.md existence');
   assert.match(region, /test -f integ-test-playbook\.md/,
     'setup dispatchShell must check integ-test-playbook.md existence');
+  assert.match(region, /test -f regression-test-playbook\.md/,
+    'setup dispatchShell must check regression-test-playbook.md existence (gates the once-per-sprint regression pass)');
 });
 
 test('setup dispatchShell commands include date +%Y%m%d_%H%M%S (startedAt timestamp)', () => {
@@ -63,13 +65,14 @@ test('setup dispatchShell commands include date +%Y%m%d_%H%M%S (startedAt timest
     'setup dispatchShell must capture startedAt timestamp with date +%Y%m%d_%H%M%S');
 });
 
-test('setup dispatchShell has 8 command slots (output indices 0-7, fetch at 1)', () => {
+test('setup dispatchShell has 9 command slots (output indices 0-8, fetch at 1)', () => {
   // The comments in source enumerate the output indices. After the stale-main guard
-  // (fetch at index 1) and the permission-precompute (index 7), there are 8 slots.
+  // (fetch at index 1), the regression-playbook probe (index 7) and the
+  // permission-precompute (index 8), there are 9 slots.
   const shellIdx = src.indexOf("label: 'setup-shell'");
-  const region = src.slice(Math.max(0, shellIdx - 4500), shellIdx);
-  assert.match(region, /0: repo root[\s\S]*1: fetch result[\s\S]*2: branch checkout[\s\S]*3: confirmed branch[\s\S]*4: startedAt[\s\S]*5: deploy\.md[\s\S]*6: integ-test-playbook[\s\S]*7: newline-joined list of permission/,
-    'setup dispatchShell must document output slots 0-7 with fetch at index 1');
+  const region = src.slice(Math.max(0, shellIdx - 5000), shellIdx);
+  assert.match(region, /0: repo root[\s\S]*1: fetch result[\s\S]*2: branch checkout[\s\S]*3: confirmed branch[\s\S]*4: startedAt[\s\S]*5: deploy\.md[\s\S]*6: integ-test-playbook[\s\S]*7: regression-test-playbook[\s\S]*8: newline-joined list of permission/,
+    'setup dispatchShell must document output slots 0-8 with fetch at index 1');
 });
 
 // ---- setup Phase 2: free-form agent with maxTurns: 20 -----------------------

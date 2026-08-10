@@ -1,4 +1,5 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
@@ -49,7 +50,7 @@ export class OpenCodeProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'premium') return 'opencode/nemotron-3-ultra-free';
     if (tier === 'cheap') return 'opencode/north-mini-code-free';
     return 'opencode/deepseek-v4-flash-free';
@@ -104,6 +105,20 @@ export class OpenCodeProvider implements ProviderAdapter {
 
   supportsMaxTurns(): boolean {
     return false;
+  }
+
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'provider-minted' };
+  }
+
+  resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {
+    return '';
+  }
+
+  resolveSessionLogDir(_workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
+    return joinForOS(targetOs, home, '.local', 'share', 'opencode', 'storage', 'chats');
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {

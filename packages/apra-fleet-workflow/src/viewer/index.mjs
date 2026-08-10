@@ -378,6 +378,19 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
         }
         schedulePoll();
     };
+
+    // apra-fleet-36l.1: during a quiet period (no SSE messages at all --
+    // e.g. a long-running agent activity with no intermediate log/activity
+    // events) the EventSource-driven schedulePoll() above never fires, so
+    // the dashboard can sit on a stale /state snapshot indefinitely with no
+    // visible sign it's still alive. This client-side heartbeat interval is
+    // a second, independent trigger for the SAME schedulePoll()/poll() path
+    // (not a separate fetch), so it naturally coalesces with -- and never
+    // double-fires alongside -- a real event-driven poll: schedulePoll()'s
+    // own pollTimer guard (POLL_COALESCE_MS above) already no-ops if a poll
+    // is already scheduled/in flight when the heartbeat tick lands.
+    const HEARTBEAT_INTERVAL_MS = 7000;
+    setInterval(() => { schedulePoll(); }, HEARTBEAT_INTERVAL_MS);
     `}
 
     function renderTreeIncremental(tree) {

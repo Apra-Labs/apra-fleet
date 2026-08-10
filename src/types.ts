@@ -26,7 +26,7 @@ export interface Agent {
   createdAt: string;
   lastUsed?: string;
   icon?: string;
-  gitAccess?: 'read' | 'push' | 'admin' | 'issues' | 'full';
+  gitAccess?: 'read' | 'push' | 'push+pr' | 'admin' | 'issues' | 'full';
   gitRepos?: string[];
   vcsProvider?: 'github' | 'bitbucket' | 'azure-devops';
   vcsTokenExpiresAt?: string;  // ISO 8601

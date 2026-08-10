@@ -11,6 +11,8 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const { removeMemberSchema, removeMember } = await import('../tools/remove-member.js');
   const { updateMemberSchema, updateMember } = await import('../tools/update-member.js');
   const { memberReservationSchema, memberReservation } = await import('../tools/member-reservation.js');
+  const { doltPushMutexSchema, doltPushMutex } = await import('../tools/dolt-push-mutex.js');
+  const { childIdAllocatorSchema, childIdAllocator } = await import('../tools/child-id-allocator.js');
   const { sendFilesSchema, sendFiles } = await import('../tools/send-files.js');
   const { receiveFilesSchema, receiveFiles } = await import('../tools/receive-files.js');
   const { executePromptSchema, executePrompt } = await import('../tools/execute-prompt.js');
@@ -118,6 +120,8 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   server.tool('get_member_model_pricing', "Returns a member's cheap/standard/premium tier resolved to a concrete model and its per-1M-token price (prompt/completion), for real per-dispatch cost tracking instead of a tier-band estimate. A tier is null when its resolved model has no known price.", getMemberModelPricingSchema.shape, wrapTool('get_member_model_pricing', (input) => getMemberModelPricing(input as any)));
   server.tool('remove_member', 'Remove a member from the fleet.', removeMemberSchema.shape, wrapTool('remove_member', (input) => removeMember(input as any)));
   server.tool('update_member', "Change a member's name, connection details, working directory, AI provider, tags, or other settings.", updateMemberSchema.shape, wrapTool('update_member', (input) => updateMember(input as any)));
+  server.tool('dolt_push_mutex', 'Global cross-sprint dolt push mutex hosted on the fleet server, so sprints launched WITHOUT a supervisor still serialize their `bd dolt push` calls. "acquire" enqueues (FIFO) and returns {granted, ticket, token?}; "poll" re-checks a ticket without losing its queue position; "release"/"renew" are token-guarded; "cancel" drops a ticket; "status" snapshots holder + queue.', doltPushMutexSchema.shape, wrapTool('dolt_push_mutex', (input) => doltPushMutex(input as any)));
+  server.tool('child_id_allocator', 'Global child-bead-id allocator hosted on the fleet server, so sprints launched WITHOUT a supervisor never mint the same child id under a shared parent. "allocate" reserves the next id under parent_id (lease + pid guarded); "confirm" commits it after a successful create; "release" returns an unused id to the free pool; "status" snapshots per-parent state.', childIdAllocatorSchema.shape, wrapTool('child_id_allocator', (input) => childIdAllocator(input as any)));
   server.tool('member_reservation', 'Reserve, release, or force-release exclusive ownership of a member for a sprint (server-side reservation; does not yet block dispatch). "reserve" claims the member for sprint_id; "release" clears it if sprint_id matches the current holder; "force_release" clears a wedged reservation regardless of owner.', memberReservationSchema.shape, wrapTool('member_reservation', (input) => memberReservation(input as any)));
 
   // File Operations

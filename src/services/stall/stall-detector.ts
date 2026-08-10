@@ -1,6 +1,6 @@
 import { updateAgent } from '../registry.js';
 import { logLine, logWarn, LogScope } from '../../utils/log-helpers.js';
-import { pollLogFile } from './stall-poller.js';
+import { pollLogFile, pollDirectoryActivity } from './stall-poller.js';
 import { toLocalISOString, fmtElapsed } from './time-utils.js';
 import { writeStatusline } from '../statusline.js';
 
@@ -16,7 +16,19 @@ export interface StallEntry {
   memberId: string;
   memberName: string;
   provisional: boolean;
+  /** A genuine stall has been detected AND reported/killed -- suppresses
+   *  re-reporting and re-killing. Reset when activity resumes. */
   stallReported: boolean;
+  /**
+   * SF-19: separate latch for the "no activity signal is available for this
+   * member/provider" warning. It exists ONLY to keep that warning from
+   * repeating every tick, and must never be conflated with `stallReported`:
+   * a single transient no-signal tick (a flaky home-dir probe, a momentary
+   * network blip) previously set `stallReported: true`, which permanently
+   * disarmed the genuine-kill check below for the rest of the dispatch even
+   * once a real signal became available again.
+   */
+  noSignalReported?: boolean;
   // Called once when stall is confirmed — clears busy state from outside the hung execCommand
   onStall?: () => void;
 }
@@ -85,7 +97,59 @@ export class StallDetector {
 
     for (const [memberId, entry] of this.stallCheckList.entries()) {
       if (entry.provisional) {
-        // Provisional: skip log reading, but still detect stalls via baseline timeout
+        // Provisional: if logFilePath is available, check mtime; if logFilePath is null, poll directory activity
+        let signalAvailable = true;
+        if (entry.logFilePath) {
+          try {
+            const pollResult = await pollLogFile(memberId, entry.logFilePath);
+            if (pollResult.mtimeMs && pollResult.mtimeMs > entry.lastActivityAt) {
+              entry.lastActivityAt = pollResult.mtimeMs;
+              entry.provisional = false;
+            }
+          } catch { /* best effort */ }
+        } else {
+          // apra-fleet issue #390 / apra-fleet-igoe: default to "a signal is
+          // available" so any unexpected failure of the poller itself keeps the
+          // pre-existing (kill-capable) behavior. Only an explicit
+          // signalAvailable:false -- the provider genuinely has no pollable log
+          // directory, or the member's home dir could not be resolved -- opts
+          // this entry out of the baseline-timeout kill below.
+          try {
+            const activity = await pollDirectoryActivity(memberId);
+            signalAvailable = activity?.signalAvailable !== false;
+            if (activity?.mtimeMs && activity.mtimeMs > entry.lastActivityAt) {
+              entry.lastActivityAt = activity.mtimeMs;
+            }
+          } catch { /* best effort */ }
+        }
+
+        // apra-fleet issue #390 / apra-fleet-igoe: with NO activity-signal
+        // mechanism at all, "we never saw progress" is the absence of evidence,
+        // not evidence of a stall -- lastActivityAt is simply frozen at dispatch
+        // start and crosses the threshold for every dispatch longer than it,
+        // healthy or not. Killing on that is a pure false positive (it fired for
+        // EVERY codex/copilot/none dispatch, local or remote, past 120s). Warn
+        // once instead; other ceilings (e.g. execute_prompt's max_total_s /
+        // timeout_s) still bound such a dispatch.
+        // SF-19: latch the warning on `noSignalReported`, NOT on
+        // `stallReported`. Using the latter meant one transient no-signal tick
+        // permanently suppressed the genuine-kill check further down, silently
+        // forfeiting real stall protection for the remainder of the dispatch.
+        if (!signalAvailable) {
+          if (now - entry.lastActivityAt > stallThresholdMs && !entry.noSignalReported) {
+            this.update(memberId, { noSignalReported: true });
+            logWarn('stall_no_signal', JSON.stringify({
+              memberId,
+              memberName: entry.memberName,
+              idleSecs: Math.floor((now - entry.lastActivityAt) / 1000),
+              note: 'no stall signal available for this member/provider -- not killing; relying on dispatch timeouts',
+            }));
+          }
+          writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - entry.lastActivityAt)})`]]));
+          continue;
+        }
+
+        // Baseline timeout check for provisional entries
         if (now - entry.lastActivityAt > stallThresholdMs && !entry.stallReported) {
           const idleSecs = Math.floor((now - entry.lastActivityAt) / 1000);
           scope.warn(JSON.stringify({
@@ -114,7 +178,7 @@ export class StallDetector {
         lastActivityAt: entry.lastActivityAt,
       }));
 
-      const { lastTimestamp, error } = await pollLogFile(memberId, entry.logFilePath);
+      const { lastTimestamp, mtimeMs, error } = await pollLogFile(memberId, entry.logFilePath);
 
       if (error) {
         const newFailures = entry.consecutiveReadFailures + 1;
@@ -126,26 +190,59 @@ export class StallDetector {
         continue;
       }
 
+      // apra-fleet-iuc.2: the file's own OS mtime is a format-agnostic
+      // corroborating signal for "did this transcript advance," independent
+      // of whether the content scan above could parse a timestamp out of it.
+      // `mtimeMs` is `undefined`/`null` for every existing caller that mocks
+      // pollLogFile without it, so this is a pure superset of the prior
+      // behavior -- it can only turn a would-be false stall into recognized
+      // activity, never the reverse.
+      const mtimeAdvancedTo = (mtimeMs !== undefined && mtimeMs !== null && mtimeMs > entry.lastActivityAt)
+        ? mtimeMs
+        : null;
+
       if (lastTimestamp === null) {
-        // File not yet created — do NOT count as stall cycle per resilience decision
+        if (mtimeAdvancedTo !== null) {
+          // apra-fleet-iuc.2: content parsing found nothing usable (unknown
+          // format, mid-write truncation, etc.) but the file was genuinely
+          // rewritten since our baseline -- that IS activity. Backstops
+          // exactly the class of content-parsing gap fixed twice before
+          // (apra-fleet-6z8.2, apra-fleet-979) without waiting for a third.
+          this.update(memberId, {
+            lastActivityAt: mtimeAdvancedTo,
+            consecutiveIdleCycles: 0,
+            consecutiveReadFailures: 0,
+            stallReported: false,
+          });
+          writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - mtimeAdvancedTo)})`]]));
+        }
+        // Otherwise: file not yet created / no signal at all — do NOT count as stall cycle
         continue;
       }
 
       const ts = new Date(lastTimestamp).getTime();
-      if (!isNaN(ts) && ts > entry.lastActivityAt) {
+      const contentAdvancedTo = (!isNaN(ts) && ts > entry.lastActivityAt) ? ts : null;
+      if (contentAdvancedTo !== null || mtimeAdvancedTo !== null) {
         // Activity advanced — update and reset counters, then reflect fresh elapsed in statusline
+        const advancedTo = Math.max(contentAdvancedTo ?? 0, mtimeAdvancedTo ?? 0);
         this.update(memberId, {
-          lastActivityAt: ts,
+          lastActivityAt: advancedTo,
           consecutiveIdleCycles: 0,
           consecutiveReadFailures: 0,
           stallReported: false,
         });
-        updateAgent(memberId, { lastLlmActivityAt: lastTimestamp });
-        writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - ts)})`]]));
+        if (contentAdvancedTo !== null) {
+          updateAgent(memberId, { lastLlmActivityAt: lastTimestamp });
+        }
+        writeStatusline(new Map([[memberId, `busy(${fmtElapsed(now - advancedTo)})`]]));
         continue;
       }
 
-      // No new activity — increment idle cycle counter and check stall threshold
+      // No new activity per EITHER signal — increment idle cycle counter and
+      // check stall threshold. Requiring both the content scan and the
+      // filesystem's own mtime to agree the transcript is frozen is what
+      // makes this threshold check genuinely mtime-corroborated, not just a
+      // content-parsing artifact.
       const newIdleCycles = entry.consecutiveIdleCycles + 1;
       this.update(memberId, {
         consecutiveIdleCycles: newIdleCycles,

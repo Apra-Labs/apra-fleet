@@ -26,12 +26,16 @@ apra-fleet workflow fleet-sprint \
   --viewer-port 18300
 ```
 
-The launcher resolves the workflow from `~/.apra-fleet/workflows/fleet-sprint`
-(installed by `apra-fleet install`, self-healed on demand). Everything after
-the workflow name is passed through verbatim, so
-`apra-fleet workflow fleet-sprint --help` prints the engine's own help.
+This is the ONE command for every install method -- git-clone dev checkout,
+`npm install -g @apralabs/apra-fleet`, and the pre-built standalone binary
+all resolve it identically; there is no separate npm-only invocation to
+learn. The launcher resolves the workflow from
+`~/.apra-fleet/workflows/fleet-sprint` (installed by `apra-fleet install`,
+self-healed on demand). Everything after the workflow name is passed
+through verbatim, so `apra-fleet workflow fleet-sprint --help` prints the
+engine's own help.
 
-### 2. Directly from a source checkout (development)
+### 2. Directly from a source checkout (development only)
 
 ```bash
 node packages/apra-fleet-se/bin/cli.mjs \
@@ -42,8 +46,10 @@ node packages/apra-fleet-se/bin/cli.mjs \
   --viewer-port 18300
 ```
 
-Useful when you are changing the engine itself and want to run the working
-tree rather than the installed copy.
+A development-only shortcut for when you are actively changing the engine
+itself and want to run the working tree directly rather than the installed
+copy. Not needed, and not documented as a supported path, for any other use
+-- use mode 1 above.
 
 ### Backgrounding
 
@@ -141,3 +147,45 @@ flag resolves the sprint's scope via `bd list --parent <id>` internally --
 it only ever understands the `parent-child` hierarchy. A `blocked-by`-only
 manifest bead is invisible to fleet-sprint's scope filter no matter what you
 pass to `--issue`; only true children are picked up.
+
+## Recovering a wedged member reservation (launched via the supervisor)
+
+If a sprint was launched through the supervisor (`fleet-se serve`, `POST
+/api/sprints`) and its child process crashes or is killed, the supervisor's
+reservation ledger does **not** release that sprint's claim on its own during
+normal runtime -- only a supervisor restart, or an explicit operator call,
+clears it. Symptom: relaunching against the same member(s) is rejected with
+
+```
+409 member overlap rejects launch: sprint '<old-sprint-id>' already claims [<member>]
+```
+
+and `POST /api/sprints/:id/stop` against that same old sprint id also fails
+(`409 ... no reachable child (port unknown)`) because the child is already
+dead -- there is nothing left to proxy a stop to.
+
+Clear it directly, with no supervisor restart required:
+
+```bash
+curl -X POST http://localhost:8787/api/reservations/<old-sprint-id>/force-release \
+  -H "Content-Type: application/json" \
+  -d '{"by": "<your name/reason>", "reason": "sprint child crashed, pid confirmed dead"}'
+```
+
+This releases both of the supervisor ledger's axes (member set + issue-scope
+root) for that sprint id in one call and records an auditable
+`force-released` event in the supervisor's event history. It does **not**
+restart anything and does not affect any other live sprint.
+
+This is a *different* mechanism from the fleet server's own per-member
+`reservedBy` field (enforced at dispatch time, independent of the
+supervisor). If a relaunch still 409s after force-releasing the ledger side,
+also clear that axis:
+
+```
+mcp__apra-fleet__member_reservation  action: "force_release"  member_name: "<member>"
+```
+
+A crashed sprint can leave either axis wedged independently of the other --
+check both. See `packages/apra-fleet-se/docs/architecture.md` ("Supervisor:
+process model" / "Manual force-release") for the full mechanism.

@@ -141,8 +141,20 @@ export class LinuxCommands implements OsCommands {
     // `set -o pipefail` (bash and zsh both honour it) keeps the CLI's own exit
     // code authoritative instead of tee's. Only applied when an invocation id is
     // present -- callers without one (unit tests, ad-hoc builds) are unchanged.
+    //
+    // apra-fleet-8hb.1: `set -o pipefail` is a bash/zsh-ism. `set` is a POSIX
+    // "special built-in", so on a dash/ash login shell an unrecognised option
+    // to it is a fatal parse error that terminates the *whole* shell outright
+    // -- not just that statement -- aborting every dispatch for such members.
+    // Probe support inside a `( ... )` subshell first: on dash/ash the probe
+    // subshell dies (only that subshell, not the shell running this script)
+    // and the `&&` short-circuits, so pipefail is simply never turned on;
+    // on bash/zsh the probe succeeds and pipefail is enabled for real,
+    // keeping the CLI's own exit code authoritative over tee's exactly as
+    // before.
     if (opts.inv) {
-      innerCmd = `set -o pipefail; ${innerCmd} | tee "${durableOutputPath(opts.inv)}"`;
+      const pipefailGuard = '(set -o pipefail) 2>/dev/null && set -o pipefail; ';
+      innerCmd = `${pipefailGuard}${innerCmd} | tee "${durableOutputPath(opts.inv)}"`;
     }
     return pidWrapUnix(innerCmd);
   }
@@ -282,6 +294,10 @@ export class LinuxCommands implements OsCommands {
 
   wrapInWorkFolder(folder: string, command: string): string {
     return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
+  }
+
+  wrapPidCapture(command: string): string {
+    return pidWrapUnix(command);
   }
 
   // --- Git ---

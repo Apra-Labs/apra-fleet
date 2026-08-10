@@ -181,7 +181,94 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // data-loss incident where a successful fetch was wrongly treated as always
 // safe to reset over. Both new sites pass member_name: member, confirmed
 // present.
-const EXPECTED_COMMAND_COUNT = 41;
+// 41 -> 40 (integ/regression split): getDeployedSha()'s `command('git
+// rev-parse HEAD', { member_name: orchestratorMember, ... })` site was
+// REMOVED. It existed only to prove the Integ Test phase's part-2 (smoke
+// test) evidence was fresh; the smoke test moved to the once-per-sprint
+// Regression Test phase, which provisions its own sandbox and has no
+// deployed SHA to attest against, so the probe had no remaining consumer.
+// The new Regression Test phase adds NO new command() site -- it reuses the
+// existing probeFileExists() helper.
+// 41 -> 42 (apra-fleet-xuo.4): the Plan phase gained a new
+// `bd list --parent <parentId> --json` command() call site, dispatched once
+// per target issue after a planner round when pendingRejectedNewTasks is
+// non-empty, to reconcile the pending resurface list against beads actually
+// created under the parent since the rejection (title-independent, matched
+// on description) -- member_name: orchestratorMember confirmed present.
+// 42 -> 43 (apra-fleet-xuo.7.1): createChildBeadWithAllocatedId() gained a
+// `bd update <childId> --parent <parentId>` command() call site, dispatched
+// only on the explicit-allocated-id path immediately after the `bd create`
+// -- bd rejects `--id` and `--parent` on the same create ("cannot specify
+// both --id and --parent flags"), so the parent edge is now recorded by this
+// separate update. It passes member_name: member (the same member the create
+// itself is dispatched to), confirmed present.
+// Merge note (integ/regression split branch + fleet-sprint-stabilization
+// branch, both forked from the same 41-baseline): applying BOTH sides'
+// independent deltas -- the integ/regression split's -1 (getDeployedSha
+// removed) and fleet-sprint-stabilization's +2 (the two xuo.4/xuo.7.1 sites
+// above) -- nets to 41 - 1 + 2 = 42. Verified against the merged runner.js
+// by running this test after resolving the merge (see the actual/expected
+// mismatch it reports if this arithmetic is ever wrong).
+// 43 -> 45 (apra-fleet-jfo, 64dc595): the verify-route/phase-routing slice
+// added two command() sites (`bd show <bugId> --json` and its follow-up),
+// both member_name: orchestratorMember -- the constant was bumped without a
+// note at the time; recorded here for the audit trail.
+// apra-fleet-5d5.1: finalizeAbort()'s three direct `command()` call sites for
+// `git fetch origin`, `git rev-list --count`, and `git push -u origin` were
+// replaced with `runGitStep({ command, member, cmd, label, log,
+// maxTransientRetries, onAuthFailure })` calls (each still passing `member:
+// member`, i.e. `member_name` once inside runGitStep's own single
+// `command(cmd, { member_name: member, ... })` site, which already existed
+// and is unchanged/still counted) so a git-auth failure here gets the same
+// provision_vcs_auth self-heal-and-retry-once as the main withGitSync
+// dispatch bracket. Net -3 direct call sites in finalizeAbort, not a
+// member_name regression -- runGitStep is itself already compliant.
+// apra-fleet-6bu was going to add +1 (a failSoft `git remote get-url origin`
+// probe for a server-side `create_pull_request` path) but that whole path
+// was reverted (apra-fleet-tfx.5/tfx.6) before landing here, so it nets 0.
+// Merge of fix/dispatch-stall-reliability-v2 (5d5.1/6a7) with
+// fix/vcs-pr-architecture-v2 (tfx revert): value re-verified by running this
+// test against the merged runner.js rather than derived by arithmetic, per
+// this test's own acceptance criteria (see comment above).
+// 41 -> 40 (apra-fleet-eft.89.2): updateDashboard()'s project-wide backlog
+// fetch (`bd list --status=${BACKLOG_STATUSES} --json`) was removed -- the
+// per-sprint fleet-sprint viewer now shows sprint progress only, backlog
+// exploration is the supervisor UX's job. Net -1 command() call site.
+// 40 -> 40 (apra-fleet-tfx.8 / tfx.8.1): the Publish PR and finalizeAbort
+// call sites were re-wired off `gh pr create` onto VCSModule's REST
+// create-pull-request dispatch. This REMOVED the two `gh pr create`
+// command() sites (one per PR-raising path) and ADDED exactly two command()
+// sites, both now consolidated in the shared raiseVcsPrForMember() helper:
+// (1) readMemberVcsCredentialToken()'s read of the just-provisioned
+// git-credential-helper script, and (2) the VCSModule-built `curl ... /pulls`
+// dispatch itself. -2 + 2 nets ZERO, so the count stays 40 -- verified by
+// running this test (and checkPath against dc1aa80~1) rather than by
+// arithmetic. NOTE: the tfx.8 issue text cited 44; that was a stale
+// projection that never materialized on this branch -- 40 is the actual,
+// measured value and the one asserted here.
+// 40 -> 37 (apra-fleet-417.2.1, the single dolt-sync module): the three dolt
+// command() call sites MOVED out of runner.js into ./dolt-sync.mjs, which is
+// now the only permitted `bd dolt` command surface -- (1) runDoltStep()'s
+// single spawn, (2) isMemberSyncRemoteConfigured()'s `bd config get
+// sync.remote --json` gate, and (3) preflightBeadsHealthGate()'s best-effort
+// `pwd` diagnostic. NOT a member_name regression and NOT a silently-dropped
+// dispatch: same precedent as the eft.8.12 conflict-ladder.mjs extraction
+// above, except that this time the moved sites are NOT left unguarded --
+// dolt-sync.mjs is asserted by its own test below, so the invariant still
+// covers every one of them.
+// 37 -> 38 (integration-branch merge): Final Review's reopenIds persist
+// block gained one new command() call site (`bd update <id> --status=open
+// --append-notes ...`), verified compliant with member_name (member_name:
+// orchestratorMember).
+// 38 -> 39 (apra-fleet-647.1.4.1): finalizeAbort() gained ONE new command()
+// call site -- resolving 'git remote get-url origin' via VCSModule.capabilities()
+// before attempting the [ABORTED] PR, the same gate the Publish PR step
+// already had. It carries member_name (see finalizeAbort()'s new
+// originUrlRes call), so the invariant this file checks is unaffected.
+// The two bumps above are independent (different commits, different
+// history) and both land in this rebase, so the deltas combine:
+// 40 - 3 + 1 + 1 = 39.
+const EXPECTED_COMMAND_COUNT = 39;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
@@ -203,7 +290,12 @@ const EXPECTED_COMMAND_COUNT = 41;
 // getMemberForRole('planner')) and (2) the scoped plan-review dispatch
 // (member_name: getMemberForRole('plan-reviewer')), both literal member_name
 // present, verified compliant.
-const EXPECTED_AGENT_COUNT = 20;
+// 20 -> 22 (integ/regression split): the new once-per-sprint Regression Test
+// phase (Finalization, between Final Review and Harvest) adds two agent()
+// call sites -- the dispatch itself and its max_turns-exhaustion
+// resume-and-continue, both `member_name:
+// getMemberForRole('regression-test-runner')`, verified compliant.
+const EXPECTED_AGENT_COUNT = 22;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
@@ -237,6 +329,41 @@ test('every command()/agent() call site in runner.js passes member_name or membe
         `every site still passes member_name/member_id.`
     );
 
+    assert.deepStrictEqual(
+        violations,
+        [],
+        `Found ${violations.length} dispatch-safety violation(s):\n${violations.join('\n')}`
+    );
+});
+
+// apra-fleet-417.2.1: runner.js is no longer the only file that dispatches
+// commands -- the dolt brackets moved into ./dolt-sync.mjs, which is now the
+// single permitted `bd dolt` command surface. Guard it with the SAME
+// invariant, so the three sites that moved there cannot silently lose their
+// explicit member_name, and so a future dolt command added to that module is
+// caught by this suite rather than at runtime on a real fleet dispatch.
+const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
+// runDoltStep()'s single `bd dolt` spawn, isMemberSyncRemoteConfigured()'s
+// `bd config get sync.remote --json` gate, and preflightBeadsHealthGate()'s
+// best-effort `pwd` diagnostic -- exactly the three that left runner.js.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 3;
+
+test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
+    const { sites, violations } = checkPath(DOLT_SYNC_PATH);
+
+    const commandSites = sites.filter((s) => s.fnName === 'command');
+    assert.strictEqual(
+        commandSites.length,
+        EXPECTED_DOLT_SYNC_COMMAND_COUNT,
+        `Expected ${EXPECTED_DOLT_SYNC_COMMAND_COUNT} command() call site(s) in dolt-sync.mjs, found ${commandSites.length}. ` +
+        `If a call site was intentionally added or removed, update EXPECTED_DOLT_SYNC_COMMAND_COUNT after confirming ` +
+        `every site still passes member_name/member_id.`
+    );
+    assert.strictEqual(
+        sites.filter((s) => s.fnName === 'agent').length,
+        0,
+        'dolt-sync.mjs must never dispatch an agent() -- it is a command-only sync module.'
+    );
     assert.deepStrictEqual(
         violations,
         [],

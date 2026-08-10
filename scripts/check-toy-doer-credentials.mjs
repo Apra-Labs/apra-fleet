@@ -52,7 +52,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 export const CREDENTIAL_ENV_VAR = 'CLAUDE_CODE_OAUTH_TOKEN';
 
@@ -70,6 +72,21 @@ export function defaultRegistryPath(fleetHome = defaultFleetHome()) {
 /** Path LocalStrategy's clean-env dispatch (and the claude CLI) reads OAuth credentials from. */
 export function defaultCredentialsPath(fleetHome = defaultFleetHome()) {
   return path.join(fleetHome, '.claude', '.credentials.json');
+}
+
+/**
+ * Path to the per-install AES-256-GCM key file (matches src/utils/crypto.ts's
+ * SALT_PATH: `<FLEET_DIR>/salt`, respecting APRA_FLEET_DATA_DIR the same way
+ * defaultRegistryPath does).
+ *
+ * apra-fleet-vak.2: deliberately a separate, read-only lookup -- never calls
+ * into src/utils/crypto.ts#getOrCreateKey, which WRITES a fresh salt file
+ * when one is missing. That write side effect is fine for the real server
+ * process but wrong for a read-only sandbox probe script.
+ */
+export function defaultSaltPath(fleetHome = defaultFleetHome()) {
+  const dataDir = process.env.APRA_FLEET_DATA_DIR ?? path.join(fleetHome, '.apra-fleet', 'data');
+  return path.join(dataDir, 'salt');
 }
 
 /**
@@ -134,11 +151,127 @@ export function checkMemberEnvVarProvisioned(registryPath, memberName) {
     return {
       ok: true,
       message: `OK (env-var path): member '${memberName}' has encryptedEnvVars.${CREDENTIAL_ENV_VAR} populated.`,
+      // apra-fleet-vak.2: additive field only -- the raw ciphertext, so a caller
+      // (checkToyDoerCredentialsProvisioned) can run the JSON-blob shape check
+      // against it without this function's own pass/fail semantics changing.
+      // Pre-existing callers that only read .ok/.message are unaffected.
+      ciphertext: /** @type {Record<string, unknown>} */ (agent.encryptedEnvVars)[CREDENTIAL_ENV_VAR],
     };
   }
   return {
     ok: false,
     message: `NOT-PROVISIONED (env-var path): member '${memberName}' has no encryptedEnvVars.${CREDENTIAL_ENV_VAR} in '${registryPath}'.`,
+  };
+}
+
+/**
+ * Read-only counterpart to src/utils/crypto.ts#decryptPassword: decrypts an
+ * 'ivHex:authTagHex:cipherHex' AES-256-GCM ciphertext using the per-install
+ * key at saltPath. Returns null (never throws) when the salt file is
+ * missing/unreadable, the ciphertext isn't the expected 3-part hex shape, or
+ * decryption otherwise fails (wrong key, corrupt data) -- callers treat null
+ * as "plaintext unavailable", not a crash.
+ *
+ * apra-fleet-vak.2 STEP ONE: this is a deliberate inline reimplementation
+ * (option (b) from the task), NOT a `dist/utils/crypto.js` import (option
+ * (a)). Reasons: (1) this script must keep working with no build present
+ * (`node scripts/check-toy-doer-credentials.mjs` standalone, no `npm run
+ * build` prerequisite); (2) more importantly, src/utils/crypto.ts's own
+ * `getOrCreateKey()` WRITES a brand-new salt file to disk when one is
+ * missing -- unacceptable side-effect for a read-only sandbox probe (see the
+ * "Sandbox-only / read-only" header comment above: this script never
+ * writes/mutates anything). Mirrors src/utils/crypto.ts's exact format/
+ * algorithm ground truth (aes-256-gcm, IV_LENGTH 16, 'iv:authTag:cipher' hex).
+ *
+ * @param {string} ciphertext
+ * @param {string} [saltPath]
+ * @returns {string | null}
+ */
+export function decryptEnvVarValue(ciphertext, saltPath = defaultSaltPath()) {
+  if (!ciphertext || typeof ciphertext !== 'string') return null;
+  if (!fs.existsSync(saltPath)) return null;
+  const parts = ciphertext.split(':');
+  if (parts.length !== 3) return null;
+  const [ivHex, authTagHex, encryptedHex] = parts;
+  try {
+    const key = Buffer.from(fs.readFileSync(saltPath, 'utf-8').trim(), 'hex');
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is this decrypted plaintext JSON-shaped (a full object -- e.g. the
+ * claudeAiOauth blob provisionEnvVarForMember must never store verbatim, see
+ * apra-fleet-vak) rather than a bare OAuth access-token string?
+ *
+ * @param {string} plaintext
+ * @returns {boolean}
+ */
+export function isJsonShapedToken(plaintext) {
+  if (typeof plaintext !== 'string') return false;
+  const trimmed = plaintext.trim();
+  if (!trimmed || trimmed[0] !== '{') return false;
+  try {
+    JSON.parse(trimmed);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * apra-fleet-vak.2: does a member's encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN
+ * ciphertext decrypt to a JSON-shaped blob (the apra-fleet-vak bug: a full
+ * claudeAiOauth object stored verbatim instead of being unwrapped to its bare
+ * accessToken by provisionEnvVarForMember)?
+ *
+ * Three distinct outcomes, never a thrown error and never a silent pass over
+ * a real problem:
+ *   - 'skipped': no ciphertext was supplied (nothing to check).
+ *   - 'indeterminate': plaintext could not be obtained (no salt file, e.g. no
+ *     server has ever run on this host yet -- or a format mismatch) -- this
+ *     check is inconclusive here, NOT a pass.
+ *   - 'hard-fail': plaintext is JSON-shaped -- the apra-fleet-vak regression.
+ *   - 'ok': plaintext is a bare (non-JSON) token string.
+ *
+ * Never includes the plaintext (or any prefix of it) in its message.
+ *
+ * @param {string | undefined | null} ciphertext
+ * @param {{saltPath?: string, fleetHome?: string}} [opts]
+ * @returns {{status: 'skipped' | 'indeterminate' | 'hard-fail' | 'ok', message: string}}
+ */
+export function checkEnvVarNotJsonBlob(ciphertext, opts = {}) {
+  if (!ciphertext) {
+    return {
+      status: 'skipped',
+      message: `SKIPPED (JSON-blob shape check): no encryptedEnvVars.${CREDENTIAL_ENV_VAR} ciphertext to examine.`,
+    };
+  }
+  const saltPath = opts.saltPath ?? defaultSaltPath(opts.fleetHome ?? defaultFleetHome());
+  const plaintext = decryptEnvVarValue(ciphertext, saltPath);
+  if (plaintext === null) {
+    return {
+      status: 'indeterminate',
+      message: `INDETERMINATE (JSON-blob shape check): could not decrypt encryptedEnvVars.${CREDENTIAL_ENV_VAR} to verify its shape -- no readable per-install salt at '${saltPath}' (or a ciphertext/key format mismatch). This result is inconclusive, NOT a pass; build the project and/or run once against a real fleet home with an existing salt file to get a definitive result.`,
+    };
+  }
+  if (isJsonShapedToken(plaintext)) {
+    return {
+      status: 'hard-fail',
+      message: `FAIL (apra-fleet-vak): encryptedEnvVars.${CREDENTIAL_ENV_VAR} decrypts to a JSON-shaped blob, not a bare OAuth access token -- this is the apra-fleet-vak regression (a full claudeAiOauth object stored verbatim). Check provisionEnvVarForMember (src/cli/auth.ts, apra-fleet-vak.1) actually extracted accessToken before writing encryptedEnvVars.`,
+    };
+  }
+  return {
+    status: 'ok',
+    message: `OK (JSON-blob shape check): encryptedEnvVars.${CREDENTIAL_ENV_VAR} decrypts to a bare token string, not a JSON blob.`,
   };
 }
 
@@ -580,18 +713,30 @@ export function checkToyDoerCredentialsProvisioned(opts = {}) {
   const fleetHome = opts.fleetHome ?? defaultFleetHome();
   const registryPath = opts.registryPath ?? defaultRegistryPath(fleetHome);
   const deps = opts.deps ?? {};
+  const saltPath = opts.saltPath ?? defaultSaltPath(fleetHome);
 
   const envVarCheck = checkMemberEnvVarProvisioned(registryPath, memberName);
   const cleanEnvCheck = checkCleanEnvCredentialsFile(fleetHome, deps);
-  const ok = envVarCheck.ok || cleanEnvCheck.ok;
+  // apra-fleet-vak.2: independent of the two checks above -- only examines
+  // the ciphertext WHEN checkMemberEnvVarProvisioned found one (envVarCheck.ok
+  // already required a non-empty string for that). A 'hard-fail' here is the
+  // ONLY thing that can turn an otherwise-passing result into a failure;
+  // 'indeterminate'/'skipped' never do (see checkEnvVarNotJsonBlob's doc).
+  const jsonBlobCheck = checkEnvVarNotJsonBlob(envVarCheck.ciphertext, { saltPath });
+  const hardFail = jsonBlobCheck.status === 'hard-fail';
+
+  const ok = (envVarCheck.ok || cleanEnvCheck.ok) && !hardFail;
 
   return {
     ok,
-    message: ok
-      ? (envVarCheck.ok ? envVarCheck.message : cleanEnvCheck.message)
-      : `FAIL: member '${memberName}' has no provisioned LLM credential -- neither encryptedEnvVars.${CREDENTIAL_ENV_VAR} nor a clean-env-resolvable '.claude/.credentials.json' was found. Run integ-test-playbook.md's '## Test scenario' step 3 (apra-fleet-eft.48.1's credential-provisioning step) before dispatching -- an unprovisioned member fails every real Planner dispatch with 'Authentication failed' (AGENT_DISPATCH_FAILED, apra-fleet-eft.48).`,
+    message: hardFail
+      ? jsonBlobCheck.message
+      : ok
+        ? (envVarCheck.ok ? envVarCheck.message : cleanEnvCheck.message)
+        : `FAIL: member '${memberName}' has no provisioned LLM credential -- neither encryptedEnvVars.${CREDENTIAL_ENV_VAR} nor a clean-env-resolvable '.claude/.credentials.json' was found. Run integ-test-playbook.md's '## Test scenario' step 3 (apra-fleet-eft.48.1's credential-provisioning step) before dispatching -- an unprovisioned member fails every real Planner dispatch with 'Authentication failed' (AGENT_DISPATCH_FAILED, apra-fleet-eft.48).`,
     envVarCheck,
     cleanEnvCheck,
+    jsonBlobCheck,
   };
 }
 
@@ -603,6 +748,7 @@ function main() {
   const result = checkToyDoerCredentialsProvisioned({ memberName, fleetHome });
   console.log(`[check-toy-doer-credentials] ${result.envVarCheck.message}`);
   console.log(`[check-toy-doer-credentials] ${result.cleanEnvCheck.message}`);
+  console.log(`[check-toy-doer-credentials] ${result.jsonBlobCheck.message}`);
 
   if (!result.ok) {
     console.error(`[check-toy-doer-credentials] ${result.message}`);
@@ -612,6 +758,17 @@ function main() {
 }
 
 // Only run when invoked directly (not when imported for tests).
-if (import.meta.url === `file://${process.argv[1]}`) {
+//
+// apra-fleet-2cc.2: the previous `file://${process.argv[1]}` comparison never
+// matched on Windows -- import.meta.url always uses forward slashes
+// (file:///C:/...), while process.argv[1] is a native Windows path with
+// backslashes, so the string built here never equalled import.meta.url and
+// main() silently never ran (the script always exited 0, regardless of
+// provisioning state, disabling the apra-fleet-vak JSON-blob hard-failure
+// check too). pathToFileURL() normalizes process.argv[1] the same way
+// import.meta.url is itself produced, so the comparison is exact on every
+// platform (unchanged behavior on POSIX, where both sides were already
+// equivalent).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }

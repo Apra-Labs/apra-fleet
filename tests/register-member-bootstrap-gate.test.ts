@@ -66,9 +66,15 @@ describe('register-member interactive bootstrap gate', () => {
       expect(checkRunningInstance).not.toHaveBeenCalled();
       expect(spawn).not.toHaveBeenCalled();
 
-      // settings.local.json must not have been written by the (skipped) bootstrap
+      // settings.local.json IS now written -- but by the auto-run
+      // compose_permissions step (apra-fleet-5oo.1), not by the (skipped)
+      // interactive bootstrap. Assert the bootstrap-specific artifact
+      // (the mcpServers['apra-fleet-member'] entry it would have written)
+      // is absent, rather than asserting the whole file is absent.
       const settingsPath = path.join(workFolder, '.claude', 'settings.local.json');
-      expect(fs.existsSync(settingsPath)).toBe(false);
+      expect(fs.existsSync(settingsPath)).toBe(true);
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      expect(settings?.mcpServers?.['apra-fleet-member']).toBeUndefined();
     } finally {
       __resetInteractiveBootstrapDeps();
     }
@@ -99,8 +105,13 @@ describe('register-member interactive bootstrap gate', () => {
       expect(checkRunningInstance).not.toHaveBeenCalled();
       expect(spawn).not.toHaveBeenCalled();
 
+      // Same rationale as above: settings.local.json now legitimately exists
+      // (compose_permissions auto-run), but must not carry the bootstrap's
+      // mcpServers['apra-fleet-member'] entry.
       const settingsPath = path.join(workFolder, '.claude', 'settings.local.json');
-      expect(fs.existsSync(settingsPath)).toBe(false);
+      expect(fs.existsSync(settingsPath)).toBe(true);
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      expect(settings?.mcpServers?.['apra-fleet-member']).toBeUndefined();
     } finally {
       __resetInteractiveBootstrapDeps();
     }

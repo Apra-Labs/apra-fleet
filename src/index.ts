@@ -301,6 +301,16 @@ async function startStdioServer() {
   const stallDetector = getStallDetector();
   stallDetector.start();
 
+  // SF-18: the member home-dir cache is per-process, so members registered in
+  // an earlier process start cold. Warm them once here (fire-and-forget; see
+  // warmMemberHomeDirs) so path resolution uses probed ground truth instead of
+  // the username-convention guess.
+  {
+    const { warmMemberHomeDirs } = await import('./services/member-home.js');
+    const { getAllAgents } = await import('./services/registry.js');
+    warmMemberHomeDirs(getAllAgents());
+  }
+
   const clientStr = capturedClientInfo?.name ? ` client=${capturedClientInfo.name}` : '';
   const versionStr = capturedClientInfo?.version ? ` version=${capturedClientInfo.version}` : '';
   const pidStr = ` pid=${process.pid} ppid=${process.ppid}`;
@@ -373,6 +383,12 @@ async function startHttpServer() {
 
   const stallDetector = getStallDetector();
   stallDetector.start();
+
+  // SF-18: warm the per-process member home-dir cache (see warmMemberHomeDirs).
+  {
+    const { warmMemberHomeDirs } = await import('./services/member-home.js');
+    warmMemberHomeDirs(getAgentsForStartup());
+  }
 
   logLine('startup', `apra-fleet ${serverVersion} started transport=http port=${handle.port} pid=${process.pid} FLEET_DIR=${FLEET_DIR}`);
 

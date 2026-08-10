@@ -185,6 +185,11 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
             cliPath: VIEWER_FIXTURE,
             env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir },
             logger: silentLogger,
+            // apra-fleet-ou7.1: createSpawner()'s own SE dataDir (per-sprint log
+            // files) -- reuse the SAME temp dir already created/cleaned up for
+            // this suite's ledger/history, distinct from the child fixture's own
+            // APRA_FLEET_DATA_DIR above.
+            dataDir,
         });
 
         // Mirrors proxy.mjs's own defaultResolvePort: sprintId -> ledger childPid
@@ -320,9 +325,13 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
         // c1 is claimed by the just-launched sprint: it must not appear anywhere
         // in the Backlog tree.
         assert.ok(!res.body.includes('data-bead-id="c1"'), 'claimed bead c1 must not appear in the Backlog');
-        // The free root and the free siblings are still present, each exactly once.
+        // The free root and the free siblings are still present, each exactly
+        // once as a ROW (`<tr data-bead-id="...">` -- not a plain substring
+        // count: supervisor-viewer-parity's injectRowCheckboxes() also puts a
+        // `data-bead-id="..."` attribute on that row's <input> checkbox, so a
+        // bare 'data-bead-id="id"' marker legitimately appears twice per row).
         for (const id of ['f0', 'c2', 'c3', 'c4', 'c5']) {
-            const marker = 'data-bead-id="' + id + '"';
+            const marker = '<tr data-bead-id="' + id + '"';
             const first = res.body.indexOf(marker);
             const last = res.body.lastIndexOf(marker);
             assert.notEqual(first, -1, `${id} should still be free in the Backlog`);
@@ -353,7 +362,15 @@ describe('dashboard integration (apra-fleet-eft.6.6) -- stack, backlog, launch, 
         assert.ok(htmlRes.headers['content-type'].includes('text/html'));
         const prefix = `/sprints/${sprintId}/live`;
         assert.ok(htmlRes.body.includes(`'${prefix}/events'`), htmlRes.body);
-        assert.ok(!htmlRes.body.includes(String(childPort)), 'the real child port must never leak into the served HTML');
+        // Boundary-aware, not a bare substring check: childPort is an
+        // OS-assigned ephemeral port (an arbitrary integer), and a raw
+        // .includes() can coincidentally match its digits inside an
+        // unrelated number already on the page (a PID, timestamp, byte
+        // count) -- a false-positive flake with zero real leak, since the
+        // rewrite (src/supervisor/proxy.mjs) never touches or embeds the
+        // port at all. Assert the port never appears as a standalone number.
+        const portLeakPattern = new RegExp(`(?<!\\d)${childPort}(?!\\d)`);
+        assert.ok(!portLeakPattern.test(htmlRes.body), 'the real child port must never leak into the served HTML');
 
         // SSE: the first event must arrive before the (never-ending) stream
         // closes -- proving incremental, non-buffered delivery through the

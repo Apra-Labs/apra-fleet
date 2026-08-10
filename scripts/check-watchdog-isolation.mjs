@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Guard for apra-fleet-eft.46: assert that the two dolt-heavy planner
-// dispatch-watchdog tests (mock-sprint-planner-dispatch-dead-pid.test.mjs
+// dispatch-watchdog tests
+// (mock-sprint-planner-dispatch-attempt1-clean-fail-attempt2-dead-session.test.mjs
 // and mock-sprint-planner-dispatch-stalled-session.test.mjs) pass within
 // their declared timeout budgets (180000ms and 650000ms respectively) when
 // run under the full concurrent suite (concurrency=8 for the main lane).
@@ -28,15 +29,19 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Watchdog test budgets (declared in the test files' { timeout: ... }).
-const DEAD_PID_BUDGET_MS = 180000;  // mock-sprint-planner-dispatch-dead-pid.test.mjs
+// (The former mock-sprint-planner-dispatch-dead-pid.test.mjs was retired as a
+// strict assertion subset of the attempt1-clean-fail/attempt2-dead-session
+// file, which declares the SAME 180000ms budget and covers the same
+// dead-session retry ladder -- so this guard now watches the survivor.)
+const DEAD_PID_BUDGET_MS = 180000;  // mock-sprint-planner-dispatch-attempt1-clean-fail-attempt2-dead-session.test.mjs
 const STALLED_SESSION_BUDGET_MS = 650000;  // mock-sprint-planner-dispatch-stalled-session.test.mjs
 
-const DEAD_PID_FILE = 'mock-sprint-planner-dispatch-dead-pid.test.mjs';
+const DEAD_PID_FILE = 'mock-sprint-planner-dispatch-attempt1-clean-fail-attempt2-dead-session.test.mjs';
 const STALLED_SESSION_FILE = 'mock-sprint-planner-dispatch-stalled-session.test.mjs';
 
 /**
@@ -158,6 +163,6 @@ function main() {
 }
 
 // Only run when invoked directly (not when imported for tests).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }

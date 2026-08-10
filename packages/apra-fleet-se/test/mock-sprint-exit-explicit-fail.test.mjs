@@ -36,14 +36,25 @@ test('mock sprint: an explicit final FAIL verdict propagates to status:failed an
         // apra-fleet-unw2.9 (N11) acceptance criterion 2 (FAIL side): per
         // plan.md's already-decided rule, a FAIL verdict still publishes the PR --
         // the verdict is stated plainly in the title/body, not suppressed.
-        const explicitFailPrCmd = explicitFail.commandLog.find((c) => c.startsWith('gh pr create'));
+        // apra-fleet-tfx.8.4: the reverted gh-based path is gone -- the PR is
+        // now raised via VCSModule's `curl ... /pulls` create-pull-request
+        // command, with title/body carried as JSON fields in the -d payload.
+        const explicitFailPrCmd = explicitFail.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
         check(
             !!explicitFailPrCmd,
-            `A FAIL verdict must still publish the PR (plan.md's already-made decision) -- expected a 'gh pr create' command, commandLog: ${JSON.stringify(explicitFail.commandLog)}`
+            `A FAIL verdict must still publish the PR (plan.md's already-made decision) -- expected a VCSModule create-pull-request command, commandLog: ${JSON.stringify(explicitFail.commandLog)}`
         );
         check(
-            !!explicitFailPrCmd && /--title "[^"]*FAIL[^"]*"/.test(explicitFailPrCmd) && /--body "[^"]*FAIL[^"]*"/.test(explicitFailPrCmd),
+            !!explicitFailPrCmd && /"title":"[^"]*FAIL[^"]*"/.test(explicitFailPrCmd) && /Final Verdict: FAIL/.test(explicitFailPrCmd),
             `Expected the PR title AND body to include the FAIL verdict, got: ${explicitFailPrCmd}`
+        );
+        // apra-fleet-eft.1.3 regression (folded in from the former
+        // mock-sprint-abort-pr.test.mjs 'abortprfail' scenario): an ordinary
+        // FAIL-verdict PR is NOT an abort -- it must never carry the abort
+        // path's [ABORTED] prefix.
+        check(
+            !!explicitFailPrCmd && !explicitFailPrCmd.includes('[ABORTED]'),
+            `An ordinary FAIL-verdict PR must NOT carry the [ABORTED] prefix, got: ${explicitFailPrCmd}`
         );
     });
 });

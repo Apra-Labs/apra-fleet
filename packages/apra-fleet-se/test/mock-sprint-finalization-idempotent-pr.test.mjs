@@ -9,9 +9,10 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // against the SAME branch (simulating a re-run of a sprint that already
 // published a PR) must NOT throw. `prExistsState` is a Set shared across
 // both scenario runs and `branchOverride` pins both runs to the exact
-// same branch name -- the second run's `gh pr create` sees that branch
-// already recorded and mock-fails with an "already exists" message,
-// which runner.js's Publish PR step must swallow (not throw).
+// same branch name -- the second run's VCSModule create-pull-request curl
+// dispatch (apra-fleet-tfx.8: the reverted gh-based path is gone) sees that
+// branch already recorded and mock-fails with an HTTP 422 "already exists"
+// response, which runner.js's Publish PR step must swallow (not throw).
 //
 // idempr1 and idempr2 MUST run in this order, in this same file/process --
 // they share a `prExistsState` Set and a fixed branch name (this is the
@@ -38,8 +39,8 @@ test('mock sprint: re-running finalization against the same branch is idempotent
         `Idempotent-PR run1 should succeed, got: ${JSON.stringify(idemPrRun1.result)}`
     );
     check(
-        idemPrRun1.commandLog.some((c) => c.startsWith('gh pr create') && c.includes(`--head "${idempotentBranch}"`)),
-        `Expected run1 to dispatch 'gh pr create' for '${idempotentBranch}', commandLog: ${JSON.stringify(idemPrRun1.commandLog)}`
+        idemPrRun1.commandLog.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls') && c.includes(`"head":"${idempotentBranch}"`)),
+        `Expected run1 to dispatch a VCSModule create-pull-request command for '${idempotentBranch}', commandLog: ${JSON.stringify(idemPrRun1.commandLog)}`
     );
 
     const idemPrRun2 = await withScenarioMarkers('idempr2', () => runDevelopLoopScenario('idempr2', {
@@ -58,8 +59,8 @@ test('mock sprint: re-running finalization against the same branch is idempotent
         `Idempotent-PR run2 (re-run against a branch with an existing PR) should still resolve to success, got: ${JSON.stringify(idemPrRun2.result)}`
     );
     check(
-        idemPrRun2.commandLog.some((c) => c.startsWith('gh pr create') && c.includes(`--head "${idempotentBranch}"`)),
-        `Expected run2 to still dispatch 'gh pr create' (idempotently) for '${idempotentBranch}', commandLog: ${JSON.stringify(idemPrRun2.commandLog)}`
+        idemPrRun2.commandLog.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls') && c.includes(`"head":"${idempotentBranch}"`)),
+        `Expected run2 to still dispatch a VCSModule create-pull-request command (idempotently) for '${idempotentBranch}', commandLog: ${JSON.stringify(idemPrRun2.commandLog)}`
     );
     check(
         idemPrRun2.logs.some((m) => m.includes('already exists') && m.includes('idempotent success')),

@@ -1,9 +1,11 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
+import { joinForOS, resolveHomeDir } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { classifyPromptError } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
 import { stripAnsi } from '../utils/ansi.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -56,26 +58,29 @@ export class AgyProvider implements ProviderAdapter {
   buildPromptCommand(opts: PromptOptions): string {
     const { folder, promptFile, sessionId, resuming, unattended, inv, model, tier: inputTier, agentName } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
+    const normalizedFolder = folder.replace(/\\/g, '/');
+    const fullPromptPath = path.posix.join(normalizedFolder, promptFile);
+    let instruction = `Your task is described in ${fullPromptPath}. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-
 
     // Write per-workspace model override before launching agy.
     const tier = inputTier ?? this.resolveTierFromModel(model);
     const displayModel = getModelOverride('agy', tier) ?? AGY_MODEL_FOR_TIER[tier];
 
-    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}"`;
+    let cmd = `cd "${escapedFolder}" && agy --model "${escapeDoubleQuoted(displayModel)}" --output-format json`;
     if (agentName) {
       cmd += ` --agent "${escapeDoubleQuoted(agentName)}"`;
     }
     cmd += ` -p "${instruction}"`;
 
-    // Only pass --conversation when resuming an existing session. For fresh sessions,
-    // agy ignores the UUID we pass and creates its own -- use folder lookup instead.
-    if (sessionId && resuming) {
-      cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
+    if (resuming) {
+      if (sessionId) {
+        cmd += ` --conversation "${escapeDoubleQuoted(sessionId)}"`;
+      } else {
+        cmd += ` --continue`;
+      }
     }
 
     if (unattended === 'dangerous') {
@@ -102,10 +107,74 @@ export class AgyProvider implements ProviderAdapter {
 
   parseResponse(result: SSHExecResult): ParsedResponse {
     const raw = result.stdout;
+    let extractedSessionId: string | undefined;
+    const sessionMatch = raw.match(/FLEET_SESSION_ID:([^\r\n]+)/);
+    if (sessionMatch) {
+      extractedSessionId = sessionMatch[1].trim();
+    }
 
-    // Primary path: extract response from the transcript JSONL that agy writes after
-    // completing its task. This is more reliable than PTY/ANSI capture because agy
-    // writes its LLM response to CONOUT$ (not stdout), but always writes a transcript file.
+    // Primary path: parse AGY's native JSON envelope from stdout
+    // Format: {"conversation_id":"...","status":"SUCCESS"|"ERROR","response":"...","usage":{"input_tokens":...,"output_tokens":...}}
+    try {
+      const strippedForJson = stripAnsi(raw)
+        .replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '')
+        .replace(/^FLEET_PID:\d+\r?\n/m, '')
+        .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
+        .trim();
+
+      const lines = strippedForJson.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      let parsedObj: any = null;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (line.startsWith('{') && line.endsWith('}')) {
+          try {
+            const candidate = JSON.parse(line);
+            const isEnvelopeStatus = candidate && (candidate.status === 'SUCCESS' || candidate.status === 'ERROR');
+            const hasEnvelopeKeys = candidate && typeof candidate === 'object' && ('conversation_id' in candidate || isEnvelopeStatus) && ('response' in candidate || 'error' in candidate);
+            if (hasEnvelopeKeys) {
+              parsedObj = candidate;
+              break;
+            }
+          } catch { /* keep looking */ }
+        }
+      }
+
+      if (!parsedObj) {
+        const jsonMatch = strippedForJson.match(/\{[\s\S]*?"response"\s*:[\s\S]*?\}/);
+        if (jsonMatch) {
+          try {
+            parsedObj = JSON.parse(jsonMatch[0]);
+          } catch { /* fallthrough */ }
+        }
+      }
+
+      if (parsedObj) {
+        const convId = parsedObj.conversation_id && typeof parsedObj.conversation_id === 'string' && parsedObj.conversation_id.trim()
+          ? parsedObj.conversation_id.trim()
+          : undefined;
+
+        const errString = typeof parsedObj.error === 'string' ? parsedObj.error.trim() : '';
+        const resultText = (parsedObj.response && typeof parsedObj.response === 'string' && parsedObj.response.trim())
+          ? parsedObj.response.trim()
+          : errString;
+        const isError = result.code !== 0 || parsedObj.status === 'ERROR';
+
+        return {
+          result: resultText,
+          sessionId: convId ?? extractedSessionId,
+          isError,
+          raw,
+          usage: parsedObj.usage && typeof parsedObj.usage === 'object' ? {
+            input_tokens: parsedObj.usage.input_tokens ?? 0,
+            output_tokens: parsedObj.usage.output_tokens ?? 0,
+          } : undefined,
+        };
+      }
+    } catch { /* fallthrough */ }
+
+    // Secondary path: diagnostic warning on non-JSON fallthrough
+    logWarn('agy_provider', 'No valid native JSON envelope found in AGY output; falling back to transcript/ANSI parsing');
+
     const startMarker = 'FLEET_TRANSCRIPT_START';
     const endMarker = 'FLEET_TRANSCRIPT_END';
     const startIdx = raw.indexOf(startMarker);
@@ -115,11 +184,16 @@ export class AgyProvider implements ProviderAdapter {
       const section = raw.substring(startIdx + startMarker.length, endIdx);
       const lines = section.split('\n').map(l => l.trim()).filter(Boolean);
       let lastResponse = '';
+      let sessionId: string | undefined;
       for (const line of lines) {
         try {
-          const entry = JSON.parse(line) as { type?: string; status?: string; content?: string };
+          const entry = JSON.parse(line) as { type?: string; source?: string; status?: string; content?: string; conversation_id?: string };
+          if (sessionId === undefined && typeof entry.conversation_id === 'string' && entry.conversation_id.trim()) {
+            sessionId = entry.conversation_id.trim();
+          }
+          const isModelTurn = entry.source === 'MODEL' || entry.type === 'PLANNER_RESPONSE' || entry.type === 'GENERIC' || entry.type === 'MODEL_RESPONSE';
           if (
-            entry.type === 'PLANNER_RESPONSE' &&
+            isModelTurn &&
             entry.status === 'DONE' &&
             typeof entry.content === 'string' &&
             entry.content.trim()
@@ -131,7 +205,7 @@ export class AgyProvider implements ProviderAdapter {
       if (lastResponse) {
         return {
           result: lastResponse,
-          sessionId: undefined,
+          sessionId: sessionId ?? extractedSessionId,
           isError: result.code !== 0,
           raw,
           usage: undefined,
@@ -142,12 +216,14 @@ export class AgyProvider implements ProviderAdapter {
     // Fallback: ANSI-strip stdout (covers cases where transcript is missing or incomplete)
     console.error('[agy] warning: transcript markers not found -- falling back to raw ANSI-stripped output');
     const stripped = stripAnsi(raw)
+      .replace(/FLEET_TRANSCRIPT_START[\s\S]*?FLEET_TRANSCRIPT_END/g, '')
       .replace(/^FLEET_PID:\d+\r?\n/m, '')
+      .replace(/^FLEET_SESSION_ID:[^\r\n]+\r?\n/m, '')
       .replace(/\r/g, '')
       .trim();
     return {
       result: stripped,
-      sessionId: undefined,
+      sessionId: extractedSessionId,
       isError: result.code !== 0,
       raw,
       usage: undefined,
@@ -160,6 +236,22 @@ export class AgyProvider implements ProviderAdapter {
 
   supportsMaxTurns(): boolean {
     return false;
+  }
+
+  sessionIdStrategy(): SessionIdStrategy {
+    return { type: 'provider-minted' };
+  }
+
+  resolveSessionLogPath(sessionId: string, _workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return '';
+    return joinForOS(targetOs, home, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+  }
+
+  resolveSessionLogDir(_workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
+    const home = resolveHomeDir(homeDir);
+    if (!home) return null;
+    return joinForOS(targetOs, home, '.gemini', 'antigravity-cli', 'brain');
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {
@@ -178,7 +270,7 @@ export class AgyProvider implements ProviderAdapter {
     };
   }
 
-  modelForTier(tier: 'cheap' | 'mid' | 'premium'): string {
+  modelForTier(tier: 'cheap' | 'standard' | 'premium'): string {
     if (tier === 'cheap') return 'gemini-3.5-flash-lite';
     if (tier === 'premium') return 'claude-sonnet-4.6';
     return 'gemini-3.5-flash';
@@ -197,7 +289,8 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
+    const agyAllow = convertClaudeAllowToAgyPermissions(allow);
+    return [{ permissions: { allow: agyAllow }, mcpServers: { 'apra-fleet': { disabled: true } }, skillOverrides: { pm: 'off', fleet: 'off' } }];
   }
 
   supportsOAuthCopy(): boolean {
@@ -245,7 +338,7 @@ export class AgyProvider implements ProviderAdapter {
   }
 
   jsonOutputFlag(): string {
-    return '';
+    return '--output-format json';
   }
 
   headlessInvocation(promptLiteral: string): string {
@@ -295,4 +388,55 @@ export class AgyProvider implements ProviderAdapter {
     // 3a). No-op.
     return { seeded: false, detail: 'agy: no per-project trust concept -- machine-global config' };
   }
+}
+
+export interface AgyPermissionRule {
+  action: 'command' | 'read_file' | 'write_file' | 'mcp' | 'read_url' | 'execute_url' | 'custom' | 'invoke_subagent' | 'send_message';
+  target: string;
+}
+
+export function convertClaudeAllowToAgyPermissions(allow: string[]): AgyPermissionRule[] {
+  const rules: AgyPermissionRule[] = [];
+  const added = new Set<string>();
+
+  const addRule = (action: AgyPermissionRule['action'], target: string) => {
+    const key = `${action}:${target}`;
+    if (!added.has(key)) {
+      added.add(key);
+      rules.push({ action, target });
+    }
+  };
+
+  for (const item of allow) {
+    if (item === 'Read' || item === 'Glob' || item === 'Grep') {
+      addRule('read_file', '*');
+    } else if (item === 'Write' || item === 'Edit') {
+      addRule('write_file', '*');
+    } else if (item === 'Agent') {
+      addRule('invoke_subagent', '*');
+      addRule('send_message', '*');
+    } else if (item.startsWith('Bash(')) {
+      const match = item.match(/^Bash\(([^:*]+)(?::|\s|\*|\))/);
+      if (match && match[1]) {
+        const cmdName = match[1].trim();
+        addRule('command', cmdName === '*' ? '*' : cmdName);
+      } else {
+        addRule('command', '*');
+      }
+    } else if (item === 'Bash') {
+      addRule('command', '*');
+    } else if (item.startsWith('Mcp(')) {
+      const match = item.match(/^Mcp\(([^)]+)\)/);
+      addRule('mcp', match ? match[1] : '*');
+    } else if (item === 'Mcp') {
+      addRule('mcp', '*');
+    } else if (item === 'Web' || item === 'Fetch' || item === 'WebSearch') {
+      addRule('read_url', '*');
+    } else {
+      console.warn(`[agy] warning: unmapped permission token "${item}"`);
+      addRule('custom', item);
+    }
+  }
+
+  return rules;
 }

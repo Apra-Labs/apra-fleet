@@ -102,7 +102,7 @@ test('mock sprint: pre-sprint validation auto-repairs a 2-node parent+blocks cyc
         const { logs, error, pId, cId, finalBeadsById } = await runCycleScenario('xbucyclerepair');
 
         check(
-            logs.some((m) => m.includes('Pre-sprint auto-repair (apra-fleet-xbu.2.1)') && m.includes(pId) && m.includes(cId) && m.includes('auto-removed via bd dep remove')),
+            logs.some((m) => m.includes('Pre-sprint auto-repair:') && m.includes(pId) && m.includes(cId) && m.includes('auto-removed via bd dep remove')),
             `Expected a distinct auto-repair log line naming both beads, logs: ${JSON.stringify(logs)}`
         );
         check(
@@ -145,7 +145,7 @@ test('mock sprint: pre-sprint validation still hard-fails when repair leaves no 
         });
 
         check(
-            logs.some((m) => m.includes('Pre-sprint auto-repair (apra-fleet-xbu.2.1)') && m.includes('auto-removed via bd dep remove')),
+            logs.some((m) => m.includes('Pre-sprint auto-repair:') && m.includes('auto-removed via bd dep remove')),
             `Expected the auto-repair to still have been attempted and logged before the fallback diagnostics fired, logs: ${JSON.stringify(logs)}`
         );
         check(error, 'Expected the sprint to still hard-fail when repair leaves genuinely no ready work');

@@ -75,6 +75,18 @@ For each bead id named in your dispatch prompt:
 - No security issues (injection, auth bypass, secrets in code)?
 - Consistent with existing patterns and conventions?
 - No regressions in adjacent code?
+- Confirm the bead is actually reflected in this diff -- do not credit a bead's closure to this review
+  unless you can point to the specific lines that implement it. A bead can show as done in your
+  dispatch context from a prior round, a rebase, or unrelated work without this diff containing its fix.
+
+**Trace failure paths, don't just pattern-match the diff.** For any change touching process
+kill/signal handling, timeouts, retries, or shared/concurrent state (counters, pools, locks,
+caches): explicitly trace what happens on the FAILURE path, not just the success path -- e.g.
+what if the thing being killed already exited, what if a wrapped shell command exits non-zero,
+what if two callers race on the same state. "The diff looks like it implements X" is not the same
+claim as "X holds under these edge cases." When a claim is cheaply checkable in isolation (does
+this call throw under condition Y?), verify it with a small standalone repro instead of reasoning
+from the diff alone.
 
 **File hygiene**: for every file added or modified, it must be justifiable against the sprint tasks.
 Flag temp files, tool config that slipped in, unrelated scripts.

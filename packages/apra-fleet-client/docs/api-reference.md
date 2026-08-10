@@ -153,6 +153,15 @@ before the server's own deadline has a chance to fire.
   (letting `McpClient` fall back to its own `DEFAULT_REQUEST_TIMEOUT_MS`).
 - Otherwise returns `hintSeconds * 1000 + 30_000` -- a 30-second grace
   margin (`TIMEOUT_GRACE_MS`) added on top of the server-facing hint.
+- This single-budget shape (rather than `max_total_s * 2`) relies on the
+  server sharing ONE `max_total_s` deadline across an original dispatch
+  attempt and any single retry it runs internally (e.g. a fresh-session
+  retry after an SSH inactivity exception) -- a retry's own budget is capped
+  to whatever remains of `max_total_s` since the dispatch started, and
+  skipped once that remainder is exhausted (`src/tools/execute-prompt.ts`,
+  apra-fleet-y8q.1). Without that server-side sharing, a retry could burn a
+  second full budget and this client timeout would fire before the server's
+  own clean retry-and-report path ever got a chance.
 
 ### `class ApraFleet`
 
@@ -188,7 +197,8 @@ fields are sent as the tool payload; `timeoutMs` is passed to
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
 | `model` | `string?` | Model tier (`"cheap"`, `"standard"`, `"premium"`) or a specific model ID. |
-| `resume` | `boolean?` | Resume the previous session if one exists. At this client/transport layer, an omitted field defaults to `true` server-side. `apra-fleet-workflow`'s `FleetWorkflow.agent()` always sends this field explicitly (defaulting it to `false` for workflow-authored prompts), so workflow callers effectively opt out of this client-level default unless they ask for it. |
+| `resume` | `(boolean \| string)?` | Resume the previous session if one exists, or pass a session ID string directly. At this client/transport layer, an omitted field defaults to `true` server-side. `apra-fleet-workflow`'s `FleetWorkflow.agent()` always sends this field explicitly (defaulting it to `false` for workflow-authored prompts), so workflow callers effectively opt out of this client-level default unless they ask for it. |
+| `session_id` | `string?` | Optional explicit session ID to resume (shorthand alias for `resume: "<sessionId>"`). |
 | `substitutions` | `Record<string,string>?` | Token-name -> replacement-value map. |
 | `timeout_s` | `number?` | Inactivity timeout in seconds (default: 300). |
 | `timeoutMs` | `number?` | Client-side request timeout override (ms); not sent to the server. |
@@ -273,7 +283,7 @@ Calls `register_member` -- adds a machine to the fleet.
 | Field | Type | Notes |
 |---|---|---|
 | `friendly_name` | `string` | Required. Human-friendly name for this member. |
-| `work_folder` | `string` | Required. Working directory on the target machine. |
+| `work_folder` | `string` | Required. Working directory on the target machine. For remote members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- `~` and relative paths are rejected. |
 | `member_type` | `"local" \| "remote"?` | Default: `"remote"`. |
 | `host` | `string?` | IP address or hostname of the remote machine. |
 | `username` | `string?` | SSH username. |

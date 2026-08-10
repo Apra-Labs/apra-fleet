@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/regression-test-runner-output@1",
+  "version": 1,
+  "title": "regression-test-runner output",
+  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads.",
+  "type": "object",
+  "required": ["passed", "suitePassed", "smokePassed", "bugsFiled", "summary"],
+  "properties": {
+    "passed": {
+      "type": "boolean",
+      "description": "True only if BOTH suitePassed and smokePassed are true AND no carry-over bug was filed this run."
+    },
+    "suitePassed": {
+      "type": "boolean",
+      "description": "Result of playbook Part 1 -- the real-bd functional suite."
+    },
+    "smokePassed": {
+      "type": "boolean",
+      "description": "Result of playbook Part 2 -- the toy-sprint smoke test."
+    },
+    "bugsFiled": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Ids of the standalone, parent-less [regression][carry-over] beads created this run (empty array if none)."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One paragraph describing what was tested, what passed, what failed, and reiterating that the result is informational."
+    },
+    "smokeEvidence": {
+      "type": "object",
+      "description": "Optional structured evidence from Part 2 (the toy-sprint smoke test), so the result is machine-checkable instead of self-reported prose.",
+      "properties": {
+        "versionStdout": {
+          "type": "string",
+          "description": "Verbatim stdout of running the toy CLI's --version on the sprint branch."
+        },
+        "canaryStatus": {
+          "type": "string",
+          "description": "The status field from `bd show gh-toy-4ef` (e.g. \"closed\")."
+        },
+        "toyRepoHeadSha": {
+          "type": "string",
+          "description": "The toy repo's head commit SHA after the toy sprint."
+        }
+      }
+    }
+  }
+}

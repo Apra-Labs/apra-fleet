@@ -257,12 +257,16 @@ describe('supervisor lifecycle -- watchdog four statuses over real children', ()
 describe('supervisor lifecycle -- detached child survives supervisor SIGKILL', () => {
     test('SIGKILLing the spawner (supervisor) process leaves the detached sprint child alive', async () => {
         const basePort = await getFreePort();
+        // apra-fleet-ou7.1: harness.mjs's own createSpawner() now always opens a
+        // real per-sprint log file -- point FLEET_SE_DATA_DIR at an isolated,
+        // auto-cleaned-up (mkTmp/tmpDirs) temp dir.
+        const dataDir = await mkTmp('eft46-detach-');
         // The harness plays "the supervisor": it uses the REAL createSpawner()
         // to launch a detached sprint child, prints its pid/port, then stays
         // alive so we can SIGKILL it out from under the child.
         const harness = spawn(process.execPath, [SPAWNER_HARNESS], {
             stdio: ['ignore', 'pipe', 'ignore'],
-            env: { ...process.env, SPAWNER_TEST_BASE_PORT: String(basePort), SPAWNER_TEST_SPRINT_COUNT: '1' },
+            env: { ...process.env, SPAWNER_TEST_BASE_PORT: String(basePort), SPAWNER_TEST_SPRINT_COUNT: '1', FLEET_SE_DATA_DIR: dataDir },
         });
         track(harness.pid);
 
@@ -335,7 +339,10 @@ describe('supervisor lifecycle -- restart re-adopts a live child by PID', () => 
 
         // The re-adopted real pid is now tracked by the spawner exactly like a
         // freshly-spawned child (its recovered port registered).
-        assert.deepEqual(spawner.getLiveEntry(child.pid), { port: viewerPort, child: null });
+        // apra-fleet-ou7.1: adopt() sets logPath: null (not recovered from a
+        // re-adopted child's command line; consumers read it from the
+        // ledger's own persisted reservation instead).
+        assert.deepEqual(spawner.getLiveEntry(child.pid), { port: viewerPort, child: null, logPath: null });
         assert.ok(spawner.livePorts.has(viewerPort));
 
         // The live reservation is untouched by the restart reconciliation.

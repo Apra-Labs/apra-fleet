@@ -10,6 +10,78 @@
 
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 
+// ---------------------------------------------------------------------------
+// Neutral VCS failure taxonomy (apra-fleet-647.1.3.1)
+// ---------------------------------------------------------------------------
+//
+// The provider-agnostic vocabulary VCSModule.classifyFailure() emits, and the
+// ONLY vocabulary downstream code is allowed to branch on. It deliberately
+// contains no provider words: a caller decides what to do from `kind` alone,
+// never by re-reading raw stderr and never by asking which provider produced
+// it. Provider-specific detail (an Azure DevOps 'TF401019', a GitHub HTTP
+// status) travels separately in `providerCode` as a DIAGNOSTIC, never as a
+// control-flow input.
+//
+//   AUTH_EXPIRED          The presented credential is missing, stale or
+//                         rejected as invalid. RE-PROVISIONING CAN FIX IT --
+//                         this is the kind the one-shot provision_vcs_auth
+//                         self-heal path exists for.
+//   AUTH_DENIED           The identity was understood and refused: the
+//                         principal lacks access. Re-minting the SAME
+//                         credential cannot fix it; an operator must grant
+//                         access.
+//   DIVERGED              The remote moved / a non-fast-forward, unmerged or
+//                         conflicted state. Never retried blindly -- under the
+//                         single-writer stance this is proof the invariant is
+//                         already broken.
+//   TRANSIENT             A network / server / lock blip. The ONLY kind for
+//                         which `retryable` is true.
+//   NO_REMOTE             No remote is configured at all -- there is nothing
+//                         to push or pull. Benign, not an error condition.
+//   EMPTY_REMOTE           A remote IS configured but has never had anything
+//                         pushed into it (apra-fleet-647.1.3.2, dolt provider
+//                         only today -- Dolt's "no branches found in remote"
+//                         Error 1105). Distinct from NO_REMOTE (nothing
+//                         configured at all): benign, nothing to reconcile.
+//   REMOTE_UNREACHABLE     A configured remote cannot be opened at all (a
+//                         deleted directory behind a file:// remote, a dead
+//                         path). Distinct from TRANSIENT: retrying cannot
+//                         help, the target is gone, not busy.
+//   UNSUPPORTED_OPERATION The requested action is not implemented for this
+//                         provider. A programming/config error; retrying and
+//                         re-authenticating are both pointless.
+//   UNKNOWN               Explicitly unrecognized. Never retried, never
+//                         self-healed -- an unmatched stderr must surface, not
+//                         be guessed at.
+//
+// `retryable` means exactly one thing: SAFE TO RE-RUN THE SAME COMMAND WITH NO
+// REMEDIATION FIRST. It is therefore false for AUTH_EXPIRED even though the
+// auth self-heal path does retry once -- that retry is only legal AFTER
+// re-provisioning, which is remediation. REMOTE_UNREACHABLE is false for the
+// same "retrying cannot help" reason.
+export const VCS_FAILURE_KINDS = Object.freeze({
+    AUTH_EXPIRED: 'AUTH_EXPIRED',
+    AUTH_DENIED: 'AUTH_DENIED',
+    DIVERGED: 'DIVERGED',
+    TRANSIENT: 'TRANSIENT',
+    NO_REMOTE: 'NO_REMOTE',
+    EMPTY_REMOTE: 'EMPTY_REMOTE',
+    REMOTE_UNREACHABLE: 'REMOTE_UNREACHABLE',
+    UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
+    UNKNOWN: 'UNKNOWN',
+});
+
+/** The kinds that are safe to retry with no remediation -- TRANSIENT only.
+ *  See the `retryable` note above before adding to this set. */
+export const VCS_RETRYABLE_KINDS = Object.freeze(new Set([VCS_FAILURE_KINDS.TRANSIENT]));
+
+/** The kinds that mean "the credential is the problem" (either half of the
+ *  AUTH split), for callers that route both to the same remediation. */
+export const VCS_AUTH_KINDS = Object.freeze(new Set([
+    VCS_FAILURE_KINDS.AUTH_EXPIRED,
+    VCS_FAILURE_KINDS.AUTH_DENIED,
+]));
+
 /**
  * Thrown when a sprint's Plan phase exhausts its planning rounds (3, per
  * apra-fleet-unw.15) without the plan-reviewer returning an APPROVED
@@ -286,8 +358,12 @@ export class DoltSyncError extends WorkflowError {
 // at second zero). The fleet server already classifies these categories as
 // non-retryable (src/utils/prompt-errors.ts isRetryable()); this mirrors
 // that judgment on the engine side, keyed off the server's own error-message
-// signatures since the message string is all that crosses the dispatch
-// boundary today.
+// signatures since the message string was, until apra-fleet-391, all that
+// crossed the dispatch boundary. execute-prompt.ts now also emits a
+// structured `details.reason` ('auth' | 'workspace_not_trusted') on
+// AgentDispatchError -- checked FIRST below since it can't be fooled by
+// auth-like noise in an unrelated failure's message text; the regex remains
+// as a fallback for older/mocked errors that only ever set `.message`.
 const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace not trusted|has not been trusted/i;
 
 /**
@@ -298,7 +374,71 @@ const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace
  * @returns {boolean}
  */
 export function isNonRetryableDispatchError(err) {
+    const reason = err?.details?.reason;
+    if (reason === 'auth' || reason === 'workspace_not_trusted') return true;
     return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
+}
+
+// apra-fleet-391: subset of NON_RETRYABLE_DISPATCH_RE that is specifically an
+// LLM credential failure (as opposed to workspace-trust, which
+// provision_llm_auth cannot fix -- that needs an operator to run `claude
+// --dangerously-skip-permissions` or trust the folder interactively).
+const AUTH_DISPATCH_RE = /authentication failed|not logged in/i;
+
+/**
+ * True when a dispatch error is specifically an LLM auth/credential failure
+ * (not workspace-trust) -- the subset self-heal via provision_llm_auth can
+ * actually fix.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isAuthDispatchError(err) {
+    if (err?.details?.reason === 'auth') return true;
+    return AUTH_DISPATCH_RE.test(String(err?.message ?? ''));
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-04g.6 -- infrastructure dispatch failures (NOT a test verdict)
+// ---------------------------------------------------------------------------
+//
+// execute-prompt.ts emits these structured `reason`s when the member CLI
+// itself failed to deliver a parseable result envelope, as opposed to running
+// a task to a real pass/fail conclusion:
+//   - 'empty_response'         -- CLI exited 0 but produced no parseable output
+//                                 (died silently mid-turn without printing its
+//                                 result envelope; observed live cycle C4).
+//   - 'dispatch_failed'        -- strategy.execCommand threw, e.g. an
+//                                 inactivity timeout kill or an SSH/transport
+//                                 failure (observed live cycle C5: a 3600000ms
+//                                 inactivity timeout).
+//   - 'orphan_recovery_timeout'-- the SSH channel was lost while the CLI was
+//                                 still running and it was still alive after
+//                                 the recovery window; the pid was killed with
+//                                 no result recovered.
+//   - 'stalled'                 -- a confirmed stall (no member-side progress
+//                                 for the whole stall threshold) killed the
+//                                 remote pid and aborted the in-flight dispatch
+//                                 (apra-fleet-3c9.1). Like the others, no test
+//                                 verdict was ever produced.
+//
+// For an integ-test-runner dispatch, all of these mean "no test verdict was
+// ever produced" -- the run never reported pass or fail. Treating them as a
+// genuine passed:false FAIL (the pre-04g.6 behavior) is a false negative: it
+// records a test failure that never happened and blocks the sprint's confidence
+// check on an infra fault. Callers use this classifier to (a) retry once via a
+// session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
+// than a test FAIL -- exactly as the part-2 stale-evidence path already does.
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled']);
+
+/**
+ * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
+ * delivered a parseable result envelope) rather than a genuine task
+ * pass/fail conclusion -- keyed off the server's structured `details.reason`.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isInfraDispatchFailure(err) {
+    return INFRA_DISPATCH_REASONS.has(err?.details?.reason);
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +476,47 @@ export class SprintLockHeldError extends WorkflowError {
         this.branch = branch;
         this.members = members;
         this.existingPid = existingPid;
+    }
+}
+
+/**
+ * apra-fleet-9ta.4 -- thrown when the Plan phase exhausts its planning
+ * rounds and the LAST round's plan-reviewer verdict was itself synthesized
+ * from an infrastructure dispatch failure (schema-repair exhaustion, a
+ * dropped transport, etc -- see `dispatchFailed` on the synthesized
+ * CHANGES_NEEDED verdict), never a genuine LLM verdict.
+ *
+ * Before this error existed, that same exhaustion threw
+ * SprintPlanRejectedError -- indistinguishable from a REAL plan rejection by
+ * the reviewer -- which misdiagnoses "the plan-reviewer's dispatch channel
+ * never came back" as "the reviewer looked at the plan and rejected it".
+ * The plan was never actually reviewed, so this is a distinct, infra-flavored
+ * failure a human/CI should treat as "retry the sprint", not "fix the plan".
+ *
+ * Deliberately NOT one of isTypedAbortError()'s curated abort classes (see
+ * runner.js): a dispatch-channel/transport blip is recoverable by simply
+ * re-running the sprint, unlike a genuine stall/budget/reviewer-contract
+ * abort or an unmergeable divergence, so it earns a terminal record (via
+ * isTerminalSprintFailure()'s blanket WorkflowError match) but not the
+ * push + [ABORTED] PR a real abort gets.
+ *
+ * @property {string|null} notes - the last plan-reviewer verdict's `notes`
+ *   field (the synthesized dispatch-failure message), carried through for a
+ *   human/CI reading the failure
+ */
+export class PlanReviewDispatchFailedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ notes?: string|null, cycle?: number, planningRounds?: number, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { notes = null, cycle, planningRounds, details, cause } = opts;
+        super(message, {
+            code: 'PLAN_REVIEW_DISPATCH_FAILED',
+            details: { notes, cycle, planningRounds, ...details },
+            cause,
+        });
+        this.notes = notes;
     }
 }
 

@@ -19,7 +19,7 @@ workforce -- on any machine, anywhere, using every LLM provider at once.
 [![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2.svg)](https://modelcontextprotocol.io)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Apra-Labs/apra-fleet)
 
-[Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [Docs](https://apra-labs.github.io/apra-fleet)
+[Quick Start](#quick-start-5-minutes) - [Live Demo](#watch-a-fleet-work) - [How It Works](#how-it-works) - [fleet-sprint Getting Started Guide](docs/fleet-sprint-getting-started.md) - [Website](https://apra-labs.github.io/apra-fleet)
 
 </div>
 
@@ -81,6 +81,9 @@ It is not a toy. It builds apra-fleet itself:
 - Files bugs against itself, decomposes them, fixes them, and blocks its
   own release until quality gates pass
 - Every dispatch, verdict, and dollar visible live on the dashboard
+- Every sprint's raw child stdout/stderr is captured to a per-sprint log
+  and linked from the dashboard, so a run's output is traceable even if it
+  crashes before reporting anything back
 
 A fleet that has run in production:
 
@@ -139,45 +142,44 @@ apra-fleet workflow fleet-sprint \
 
 Open the dashboard, watch your fleet PLAN->BUILD->REVIEW->TEST->SHIP in a loop till closure
 
+> **New to fleet-sprint?** Read the
+> [fleet-sprint Getting Started Guide](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html)
+> ([Markdown](docs/fleet-sprint-getting-started.md) if you're reading this on
+> GitHub -- [PDF](docs/fleet-sprint-getting-started.pdf)) -- a plain-English walkthrough
+> of what it does, what you need to prepare (beads backlog, `deploy.md`,
+> test playbooks, member registration), how to launch and monitor a sprint,
+> and what's automated versus what's still your call.
+
+**Running fleet-sprint after npm install:** the `apra-fleet workflow
+fleet-sprint ...` command above is the same one command for everyone --
+whether you installed via `npm install -g @apralabs/apra-fleet`, the
+standalone binary, or a git-clone dev checkout. There is no separate
+`fleet-sprint` command to install or remember. See
+[the full flag reference](packages/apra-fleet-se/fleet-sprint/docs/README.md)
+for every option.
+
 ## How it works
+
+### Layered Architecture
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/marketing/fleet-stack-dark.svg">
+  <img src="assets/marketing/fleet-stack-light.svg" alt="apra-fleet layered architecture stack: dependencies from OS primitives up to autonomous engineering orchestrators" width="100%">
+</picture>
+
+**Component Docs:** [fleet-sprint](packages/apra-fleet-se/fleet-sprint/docs/README.md) | [auto-sprint.js](packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) | [apra-fleet-client](packages/apra-fleet-client/docs/overview.md) | [apra-pm](packages/apra-fleet-se/apra-pm/README.md) | [apra-fleet-mcp](docs/mcp-tools.md) | [Agent Roles](packages/apra-fleet-se/docs/role-contracts.md)
+
+### Fleet Dispatch Topology
 
 ```mermaid
 flowchart LR
-    subgraph ControlPlane["Control plane (your machine)"]
-        S[Fleet server MCP or HTTP]
-        W[Workflow engine]
-        SUP[Supervisor - ledger, watchdog, dashboard]
-    end
-    subgraph Members["Fleet members (any device, anywhere)"]
-        M1[MacBook - Claude]
-        M2[Linux GPU box - local vLLM]
-        M3[Cloud VM - Codex plus Gemini]
-        M4[Windows tower - Copilot]
-    end
-    S ---|dispatch, files, credentials| M1
-    S --- M2
-    S --- M3
-    S --- M4
-    W --> S
-    SUP --> W
+    CP["Control Plane<br/>(Server, Engine, Supervisor)"] -->|Dispatch & Sync| M1["MacBook<br/>(Claude)"] & M2["Linux GPU<br/>(vLLM)"] & M3["Cloud VM<br/>(AGY)"] & M4["Windows<br/>(OpenCode)"]
 ```
 
-- **Fleet server**: the control plane. Registers members, dispatches
-  commands and prompts, moves files, brokers credentials. Speaks MCP, so
-  any MCP-capable agent can drive a fleet.
-- **Members**: real machines running provider CLIs. The server composes
-  provider-native permissions before every dispatch; unattended modes are
-  scoped, never blanket.
-- **Workflow engine**: runs workflow programs with phases, retries, turn
-  budgets, resumable sessions, and per-activity persistent state.
-- **Supervisor**: the always-on layer -- launch and stop sprints over HTTP,
-  member reservation ledger (no two workflows fight over a machine),
-  crash watchdog, run history.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/marketing/workflow-memory-dark.svg">
-  <img src="assets/marketing/workflow-memory-light.svg" alt="Workflow memory and resumability in apra-fleet: stateless prompt chains vs durable workflows with atomic journal replay." width="100%">
-</picture>
+- **Fleet server**: the control plane. Registers members, dispatches commands and prompts, moves files, brokers credentials. Speaks MCP, so any MCP-capable agent can drive a fleet.
+- **Members**: real machines running provider CLIs. Composes provider-native permissions before every dispatch; unattended modes are scoped, never blanket.
+- **Workflow engine**: runs workflow programs with phases, retries, turn budgets, resumable sessions, and per-activity persistent state.
+- **Supervisor**: always-on layer -- launch & stop sprints over HTTP, member reservation ledger, crash watchdog, run history.
 
 ## Knowledge Layer
 
@@ -308,6 +310,7 @@ third-party verticals.
 
 | Topic | Link |
 |-------|------|
+| **fleet-sprint Getting Started Guide (start here, plain English)** | [Website](https://apra-labs.github.io/apra-fleet/fleet-sprint-getting-started.html) - [Markdown](docs/fleet-sprint-getting-started.md) - [PDF](docs/fleet-sprint-getting-started.pdf) |
 | Codebase wiki (architecture, internals, AI Q&A) | [DeepWiki](https://deepwiki.com/Apra-Labs/apra-fleet) |
 | Install, uninstall, the `--llm` flag | [docs/install.md](docs/install.md) |
 | Choosing a provider (roles, gotchas, mixing providers, OpenCode/local models) | [docs/provider-guide.md](docs/provider-guide.md) |
@@ -333,6 +336,7 @@ third-party verticals.
 | Writing and running workflow scripts | [packages/apra-fleet-workflow/docs/workflow-guide.md](packages/apra-fleet-workflow/docs/workflow-guide.md) |
 | Authoring a SEA-embedded `apra-fleet workflow` (manifest, entry contract, launcher env vars) | [docs/authoring-workflows.md](docs/authoring-workflows.md) |
 | Workflow launcher fleet-server resolution order (HTTP singleton vs. stdio) | [docs/adr-workflow-server-resolution.md](docs/adr-workflow-server-resolution.md) |
+| Running fleet-sprint (full flag reference; identical for npm-install, standalone binary, and git-clone dev checkout) | [packages/apra-fleet-se/fleet-sprint/docs/README.md](packages/apra-fleet-se/fleet-sprint/docs/README.md) |
 | Auto-sprint overview (autonomous plan-develop-review-publish loop) | [packages/apra-fleet-se/docs/overview.md](packages/apra-fleet-se/docs/overview.md) |
 | Auto-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
 | Auto-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |

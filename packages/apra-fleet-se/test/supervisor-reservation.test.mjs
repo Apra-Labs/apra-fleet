@@ -55,11 +55,15 @@ async function tmpDir() {
  * launches a process but hands back a deterministic, incrementing pid. Records
  * every spawn so tests can assert a REJECTED launch never spawns a child.
  */
-function recordingSpawner(captured) {
+function recordingSpawner(captured, dataDir) {
     let nextPid = 5000;
     return createSpawner({
         basePort: 9100,
         isPortAvailable: async () => true,
+        // apra-fleet-ou7.1: point the per-sprint log file dir at the SAME temp
+        // `dir` buildSystem() already creates/cleans up (see its caller below),
+        // instead of the real home dir.
+        dataDir,
         spawn: (command, args) => {
             const pid = nextPid++;
             captured.push({ command, args, pid });
@@ -126,7 +130,7 @@ async function buildSystem(dir, childMap = {}) {
     const controller = createSprintController({
         ledger,
         history,
-        spawner: recordingSpawner(captured),
+        spawner: recordingSpawner(captured, dir),
         listMembers: () => ({}),
         getBacklog: () => ({}),
         beforeLaunch,

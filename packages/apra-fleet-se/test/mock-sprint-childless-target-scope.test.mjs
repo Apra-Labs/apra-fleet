@@ -11,9 +11,12 @@ const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
 
 // =============================================================================
 // apra-fleet-eft.24.2: real-bd/mock-sprint coverage for the eft.24.1 fix
-// (bdListScoped seeds scopeIds with any target issue that has zero children
-// of its own, so a bare, undecomposed sprint target is not silently
-// invisible to the whole sprint). Two things must hold at once:
+// (bdListScoped seeds scopeIds with every target issue's own id, so a bare,
+// undecomposed sprint target is not silently invisible to the whole sprint).
+// apra-fleet-66u.1 later made this seed unconditional for ALL targets
+// (childless or not, see runner.js) so a childful target's own closure is
+// also visible to status-counting queries -- this file's own coverage
+// (a childless target) still holds unchanged. Two things must hold at once:
 //
 //   1. A childless leaf target (no children at all) is genuinely IN SCOPE
 //      for bdListScoped, for both its cheap in-memory-only path (the plain

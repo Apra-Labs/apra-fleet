@@ -25,9 +25,13 @@ followed by prose describing the role's step-by-step procedure, its
 required/optional inputs, its `bd`/`git` command usage, its output contract,
 and an explicit "Rules" section (hard constraints -- e.g. `doer.md`: "NEVER
 close type=feature or type=bug issues"; `reviewer.md`: "NEVER close
-issues -- only the doer closes tasks"). These files are the authoritative,
-human-readable source of truth for what each role actually does when
-dispatched -- `docs/overview.md`'s role summaries are derived from them.
+issues -- only the doer closes tasks"). Closure of a verify-set bead -- a
+parent of ANY issue_type (feature, bug, or task-with-children) whose children
+are all closed while it is still open -- is `integ-test-runner`'s job, not the
+doer's or reviewer's; this is not restricted to `type=feature`. These files
+are the authoritative, human-readable source of truth for what each role
+actually does when dispatched -- `docs/overview.md`'s role summaries are
+derived from them.
 
 ## `contracts.mjs`: the four things it provides
 

@@ -71,6 +71,7 @@ export function mapAccessLevel(level: string): Record<string, string> {
   const levels: Record<string, Record<string, string>> = {
     read: { contents: 'read', metadata: 'read' },
     push: { contents: 'write', metadata: 'read' },
+    'push+pr': { contents: 'write', pull_requests: 'write', metadata: 'read' },
     admin: { contents: 'write', administration: 'write', actions: 'write', metadata: 'read' },
     issues: { issues: 'write', pull_requests: 'write', metadata: 'read' },
     full: { contents: 'write', administration: 'write', issues: 'write', pull_requests: 'write', actions: 'write', metadata: 'read' },

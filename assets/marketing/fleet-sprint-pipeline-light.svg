@@ -1,0 +1,186 @@
+<svg width="1290" height="672" viewBox="34 14 1290 672" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="One fleet-sprint run end to end: your inputs feed a plan, develop, deploy, integration test cycle that loops until the goal is met or max cycles is reached, then emits a final verdict, a harvest of docs and cost, and a pushed branch with an open pull request." preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <!-- Background Gradient Light -->
+    <linearGradient id="plBgLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#F1F5F9"/>
+    </linearGradient>
+
+    <!-- Soft Drop Shadow Filter -->
+    <filter id="plShadowLight" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+
+    <!-- Cyber Grid Pattern Light -->
+    <pattern id="plGridLight" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#E2E8F0" stroke-width="1" opacity="0.45"/>
+      <circle cx="40" cy="40" r="1.5" fill="#CBD5E1" opacity="0.5"/>
+    </pattern>
+
+    <!-- Amber Core Glow -->
+    <radialGradient id="plGlowLight" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.16"/>
+      <stop offset="60%" stop-color="#F59E0B" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Base Canvas -->
+  <rect width="1360" height="700" fill="url(#plBgLight)"/>
+  <rect width="1360" height="700" fill="url(#plGridLight)"/>
+  <rect width="1360" height="700" fill="url(#plGlowLight)"/>
+
+  <!-- TOP HEADER BLOCK -->
+  <g transform="translate(50, 30)">
+    <rect x="0" y="0" width="272" height="28" rx="14" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1.2"/>
+    <circle cx="16" cy="14" r="4" fill="#D97706"/>
+    <text x="30" y="14" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="800" letter-spacing="1.4" fill="#B45309">FLEET-SPRINT PIPELINE</text>
+  </g>
+
+  <text x="50" y="108" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="30" font-weight="900" fill="#0F172A">One fleet-sprint run, end to end</text>
+  <text x="50" y="142" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="500" fill="#64748B">Each stage writes real state: commits, issue closures, filed bugs.</text>
+
+  <!-- LEFT COLUMN: YOUR INPUTS -->
+  <g transform="translate(50, 190)">
+    <rect x="0" y="0" width="240" height="256" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#plShadowLight)"/>
+
+    <!-- Panel Header Bar -->
+    <rect x="0" y="0" width="240" height="38" rx="12" fill="#F1F5F9"/>
+    <rect x="0" y="24" width="240" height="14" fill="#F1F5F9"/>
+    <line x1="0" y1="38" x2="240" y2="38" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="24" cy="19" r="5" fill="#D97706"/>
+    <text x="40" y="19" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A">Your inputs</text>
+
+    <rect x="16" y="52" width="208" height="36" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="120" y="70" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#334155" text-anchor="middle">issues + acceptance criteria</text>
+
+    <rect x="16" y="100" width="208" height="36" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="120" y="118" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" fill="#334155" text-anchor="middle">deploy.md</text>
+
+    <rect x="16" y="148" width="208" height="36" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="120" y="166" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="700" fill="#334155" text-anchor="middle">test playbooks</text>
+
+    <rect x="16" y="196" width="208" height="36" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="120" y="214" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="700" fill="#334155" text-anchor="middle">branch name</text>
+  </g>
+
+  <!-- CYCLE LOOP CONTAINER (drawn before its arrow so the arrow renders on top, never occluded) -->
+  <rect x="330" y="190" width="735" height="360" rx="14" fill="#F59E0B" fill-opacity="0.05" stroke="#F59E0B" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <text x="350" y="214" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="800" letter-spacing="1.4" fill="#B45309">CYCLE LOOP</text>
+  <text x="1045" y="214" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B" text-anchor="end">loops until goal met or max cycles</text>
+
+  <!-- INTAKE ARROW: drawn AFTER the loop container so it is never painted over, with a clear
+       40px gap (290 to 330) between the inputs panel and the container, wide enough that the
+       arrowhead has visible clearance on both ends instead of touching either box. -->
+  <line x1="294" y1="283" x2="314" y2="283" stroke="#D97706" stroke-width="2" stroke-dasharray="4 4"/>
+  <polygon points="324,283 314,278 314,288" fill="#D97706"/>
+
+  <!-- STAGE 1: PLAN -->
+  <g transform="translate(350, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <circle cx="20" cy="20" r="9" fill="#D97706"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#FFFFFF" text-anchor="middle">1</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Plan</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#64748B" text-anchor="middle">planner + plan-reviewer</text>
+  </g>
+  <line x1="508" y1="283" x2="520" y2="283" stroke="#D97706" stroke-width="2"/>
+  <polygon points="530,283 520,278 520,288" fill="#D97706"/>
+
+  <!-- STAGE 2: DEVELOP -->
+  <g transform="translate(530, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <circle cx="20" cy="20" r="9" fill="#D97706"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#FFFFFF" text-anchor="middle">2</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Develop</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#64748B" text-anchor="middle">doer + reviewer</text>
+  </g>
+  <line x1="688" y1="283" x2="700" y2="283" stroke="#D97706" stroke-width="2"/>
+  <polygon points="710,283 700,278 700,288" fill="#D97706"/>
+
+  <!-- STAGE 3: DEPLOY -->
+  <g transform="translate(710, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <circle cx="20" cy="20" r="9" fill="#D97706"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#FFFFFF" text-anchor="middle">3</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Deploy</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#64748B" text-anchor="middle">deployer (needs deploy.md)</text>
+  </g>
+  <line x1="868" y1="283" x2="880" y2="283" stroke="#D97706" stroke-width="2"/>
+  <polygon points="890,283 880,278 880,288" fill="#D97706"/>
+
+  <!-- STAGE 4: INTEGRATION TEST -->
+  <g transform="translate(890, 240)">
+    <rect x="0" y="0" width="155" height="86" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <circle cx="20" cy="20" r="9" fill="#D97706"/>
+    <text x="20" y="20" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="900" fill="#FFFFFF" text-anchor="middle">4</text>
+    <text x="77.5" y="52" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Integration Test</text>
+    <text x="77.5" y="70" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#64748B" text-anchor="middle">test runner (needs playbook)</text>
+  </g>
+
+  <!-- STAGE 4 -> DECISION -->
+  <line x1="967.5" y1="326" x2="967.5" y2="374" stroke="#D97706" stroke-width="2"/>
+  <polygon points="967.5,382 962.5,372 972.5,372" fill="#D97706"/>
+
+  <!-- DECISION DIAMOND -->
+  <polygon points="967.5,382 1045.5,430 967.5,478 889.5,430" fill="#FEF3C7" stroke="#D97706" stroke-width="2"/>
+  <text x="967.5" y="426" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309" text-anchor="middle">goal met or</text>
+  <text x="967.5" y="442" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#B45309" text-anchor="middle">max cycles?</text>
+
+  <!-- NO PATH: RETURN TO PLAN -->
+  <path d="M 885 430 L 440 430 Q 427.5 430 427.5 417 L 427.5 336" fill="none" stroke="#D97706" stroke-width="2" stroke-dasharray="4 4"/>
+  <polygon points="427.5,326 422.5,336 432.5,336" fill="#D97706"/>
+  <text x="880" y="418" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="800" fill="#B45309" text-anchor="end">no</text>
+  <text x="656" y="420" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#B45309" text-anchor="middle">run another cycle</text>
+
+  <!-- LOOP ANNOTATION -->
+  <circle cx="352" cy="518" r="4" fill="#D97706"/>
+  <text x="366" y="518" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="700" fill="#475569">each stage writes real state: commits, issue closures, filed bugs</text>
+
+  <!-- FINAL COLUMN: VERDICT (drawn before the "yes" arrow so the arrow renders on top of it) -->
+  <g transform="translate(1100, 250)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <text x="102.5" y="26" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Final verdict</text>
+    <rect x="31" y="36" width="68" height="26" rx="8" fill="#D1FAE5" stroke="#059669" stroke-width="1.2"/>
+    <text x="65" y="49" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#047857" text-anchor="middle">PASS</text>
+    <rect x="107" y="36" width="68" height="26" rx="8" fill="#EF4444" fill-opacity="0.10" stroke="#EF4444" stroke-width="1.2"/>
+    <text x="141" y="49" dominant-baseline="central" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14" font-weight="800" fill="#EF4444" text-anchor="middle">FAIL</text>
+  </g>
+
+  <!-- YES PATH: EXIT RIGHT AND UP: drawn AFTER the Verdict panel, and its endpoint (1085) sits
+       a clear 15px before the panel's new left edge (1100), so the arrowhead is always fully
+       visible in open canvas instead of landing on/under the box it points to. -->
+  <path d="M 1050 430 L 1074 430 L 1074 294 L 1077 294" fill="none" stroke="#D97706" stroke-width="2"/>
+  <polygon points="1085,294 1075,289 1075,299" fill="#D97706"/>
+  <text x="1066" y="452" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="12.5" font-weight="800" fill="#B45309" text-anchor="middle">yes</text>
+
+  <line x1="1202.5" y1="338" x2="1202.5" y2="352" stroke="#D97706" stroke-width="2"/>
+  <polygon points="1202.5,360 1197.5,350 1207.5,350" fill="#D97706"/>
+
+  <!-- FINAL COLUMN: REGRESSION PASS -->
+  <g transform="translate(1100, 360)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Regression pass</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B" text-anchor="middle">once per sprint, informational</text>
+  </g>
+
+  <line x1="1202.5" y1="448" x2="1202.5" y2="462" stroke="#D97706" stroke-width="2"/>
+  <polygon points="1202.5,470 1197.5,460 1207.5,460" fill="#D97706"/>
+
+  <!-- FINAL COLUMN: HARVEST -->
+  <g transform="translate(1100, 470)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="15.5" font-weight="800" fill="#0F172A" text-anchor="middle">Harvest</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#64748B" text-anchor="middle">docs + changelog + cost</text>
+  </g>
+
+  <line x1="1202.5" y1="558" x2="1202.5" y2="572" stroke="#D97706" stroke-width="2"/>
+  <polygon points="1202.5,580 1197.5,570 1207.5,570" fill="#D97706"/>
+
+  <!-- FINAL COLUMN: PUSH + PR -->
+  <g transform="translate(1100, 580)">
+    <rect x="0" y="0" width="205" height="88" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="1.5" filter="url(#plShadowLight)"/>
+    <text x="102.5" y="38" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="14.5" font-weight="800" fill="#0F172A" text-anchor="middle">Push branch + open PR</text>
+    <text x="102.5" y="60" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#B45309" text-anchor="middle">never auto-merged</text>
+  </g>
+</svg>

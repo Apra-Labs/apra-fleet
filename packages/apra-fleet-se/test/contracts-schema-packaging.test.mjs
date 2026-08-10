@@ -55,7 +55,7 @@ describe('wired end-to-end resolution against a real OS temp directory', () => {
             process.env.APRA_FLEET_SE_SCHEMAS_DIR = emptyDir;
             try {
                 const wired = await import(`../fleet-sprint/contracts.mjs?packaging-test-empty=${Date.now()}-${Math.random()}`);
-                for (const name of ['planReviewerVerdict', 'reviewerVerdict', 'doerReport', 'deployerReport', 'integReport', 'ciReport', 'harvesterReport']) {
+                for (const name of ['planReviewerVerdict', 'reviewerVerdict', 'doerReport', 'deployerReport', 'integReport', 'regressionReport', 'ciReport', 'harvesterReport']) {
                     assert.strictEqual(wired.SCHEMAS[name], wired.FALLBACK_SCHEMAS[name], `expected ${name} to be the fallback literal`);
                 }
                 const result = wired.validateVerdict('harvesterReport', { status: 'OK', notes: 'ok' });

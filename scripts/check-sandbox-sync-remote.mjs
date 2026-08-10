@@ -97,6 +97,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { execBdSync } from './lib/exec-bd.mjs';
 
 // Substring identifying the real, shared fleet-e2e-toy Dolt remote that the
 // sandbox must never actively sync to. Kept as one constant so both checks
@@ -118,6 +120,46 @@ export function defaultSandboxPath(repoPath) {
 }
 
 /**
+ * Converts a well-formed 'file://' URL string to a filesystem path via
+ * node:url's fileURLToPath(), falling back to normalizing MSYS/git-bash
+ * single-letter-segment drive forms ('file:///c/Users/...' ->
+ * 'file:///C:/Users/...') and retrying, and finally falling back to the raw
+ * remainder-after-'file://' string itself (matching this function's
+ * pre-apra-fleet-xuo.9.1 behavior) when neither parse succeeds -- e.g. a
+ * POSIX-style path ('file:///home/x/...') evaluated on a win32 host, where
+ * fileURLToPath() requires an actual drive letter and would otherwise throw
+ * for a case this function must keep resolving (relative to the current
+ * drive, exactly as path.resolve() always has) rather than reject outright.
+ *
+ * @param {string} fileUrl a string starting with 'file://'
+ * @returns {string}
+ */
+function fileUrlToCandidatePath(fileUrl) {
+  try {
+    return fileURLToPath(fileUrl);
+  } catch {
+    // fall through to the MSYS-normalization retry below
+  }
+
+  const rawRemainder = fileUrl.replace(/^file:\/\//, '');
+  // MSYS/git-bash single-letter drive segment ('/c/Users/...' or
+  // '/c'): normalize to a real drive path ('C:/Users/...') before retrying
+  // fileURLToPath, which requires an actual 'C:'-style drive letter on
+  // win32.
+  const msys = /^\/([a-zA-Z])(\/.*)?$/.exec(rawRemainder);
+  if (msys) {
+    const normalizedUrl = `file:///${msys[1].toUpperCase()}:${msys[2] ?? '/'}`;
+    try {
+      return fileURLToPath(normalizedUrl);
+    } catch {
+      // fall through to the raw-remainder fallback below
+    }
+  }
+
+  return rawRemainder;
+}
+
+/**
  * Does `remoteValue` (a git/Dolt remote URL or filesystem path) resolve to
  * somewhere INSIDE `sandboxPath`?
  *
@@ -129,6 +171,14 @@ export function defaultSandboxPath(repoPath) {
  * (`https://`, `git+https://`, `ssh://`, etc. -- including the real
  * fleet-e2e-toy identity) is never a sandbox-local filesystem path, so it
  * always resolves to "outside" (fail-closed).
+ *
+ * `file://` URLs are converted to filesystem paths via
+ * fileUrlToCandidatePath() (node:url's fileURLToPath(), with a fallback for
+ * MSYS/git-bash drive-letter forms -- apra-fleet-xuo.9.1) rather than a raw
+ * regex-strip + path.resolve(), which mis-resolved well-formed Windows
+ * drive-letter file:// URLs (e.g. 'file:///C:/Users/...' resolved to
+ * 'C:\C:\Users\...', always outside any real sandbox path, a false-FAIL of
+ * this safety guard -- see apra-fleet-xuo.9's bug report).
  *
  * @param {string} remoteValue
  * @param {string} sandboxPath
@@ -146,7 +196,7 @@ export function resolvesInsideSandbox(remoteValue, sandboxPath) {
   const fileUrlMatch = /^file:\/\/(.*)$/.exec(normalizedValue);
   let candidatePath;
   if (fileUrlMatch) {
-    candidatePath = fileUrlMatch[1];
+    candidatePath = fileUrlToCandidatePath(normalizedValue);
   } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedValue)) {
     // Some other URL scheme (https, git+https, ssh, ...) -- never a
     // sandbox-local filesystem path, e.g. the real
@@ -326,6 +376,13 @@ export function parseDoltRemoteList(output) {
   return list;
 }
 
+// Known database directory layouts produced by `bd init`. apra-fleet-2cc.1:
+// .dolt/ and db/ are legacy; embeddeddolt is the current layout from `bd init`.
+// If bd introduces new layouts in the future, add them here to prevent silent
+// regression when checkDoltRemoteAbsent optimizes away the `bd dolt remote list`
+// call.
+const BEADS_DATABASE_DIRS = ['.dolt', 'db', 'embeddeddolt'];
+
 /**
  * Check that every Dolt-level remote (independent of the bd-level
  * sync.remote YAML key checked by checkSyncRemoteInert above) resolves to a
@@ -344,13 +401,48 @@ export function parseDoltRemoteList(output) {
  * @returns {{ok: boolean, message: string}}
  */
 export function checkDoltRemoteAbsent(repoPath, sandboxPath = defaultSandboxPath(repoPath), deps = {}) {
-  const run = deps.execFileSync ?? execFileSync;
+  // apra-fleet-2cc.1: routed through the shared execBdSync helper, which
+  // resolves on Windows via the real `.../bin/bd.js` script the npm `bd`
+  // shim wraps (invoked directly via `process.execPath`, no shell) rather
+  // than `{ shell: true }` -- see scripts/lib/exec-bd.mjs's module doc for
+  // why (a real `{ shell: true }` shell-metacharacter-injection risk was
+  // found and closed here). Every arg on this call is a static literal
+  // (never caller-controlled), so this call site was never exposed either
+  // way, but it shares the one safe helper rather than a second bespoke
+  // invocation. `deps.execFileSync` (test injection) is forwarded through
+  // unchanged -- existing tests that stub it with a fake
+  // `(cmd, args, opts) => output` function are unaffected.
+
+  // Quick check: if there is no .beads directory at all, or no actual Dolt database
+  // within it (no known database directory), skip invoking bd entirely.
+  // A beads DB that hasn't been initialized yet has no database files, so there's
+  // nothing for bd to query. Return the vacuously-safe result without trying to run bd.
+  // (Skip this optimization when deps.execFileSync is provided, to allow tests to
+  // inject custom executors for paths that don't actually exist on disk.)
+  if (!deps.execFileSync) {
+    const beadsDir = path.join(repoPath, '.beads');
+    if (!fs.existsSync(beadsDir)) {
+      return {
+        ok: true,
+        message: `OK: 'bd dolt remote list' unavailable at '${repoPath}' (no .beads directory) -- nothing wired yet.`,
+      };
+    }
+    // Check for any known database directory layout.
+    const hasDatabase = BEADS_DATABASE_DIRS.some((dir) => fs.existsSync(path.join(beadsDir, dir)));
+    if (!hasDatabase) {
+      return {
+        ok: true,
+        message: `OK: 'bd dolt remote list' unavailable at '${repoPath}' (no Dolt database initialized) -- nothing wired yet.`,
+      };
+    }
+  }
+
   let output;
   try {
-    output = run('bd', ['dolt', 'remote', 'list', '--json'], {
+    output = execBdSync(['dolt', 'remote', 'list', '--json'], {
       cwd: repoPath,
       encoding: 'utf-8',
-    });
+    }, deps.execFileSync);
   } catch (err) {
     // No beads DB / no bd binary reachable in this clone (or the command
     // otherwise fails outright): there is nothing to check -- vacuously
@@ -451,6 +543,10 @@ function main() {
     console.error('[check-sandbox-sync-remote] Usage: node scripts/check-sandbox-sync-remote.mjs <toy-repo-path> [sandbox-root-path]');
     process.exit(2);
   }
+  if (!fs.existsSync(repoPath)) {
+    console.error(`[check-sandbox-sync-remote] repo path does not exist: '${repoPath}'`);
+    process.exit(2);
+  }
   const sandboxPath = process.argv[3] ?? defaultSandboxPath(repoPath);
   console.log(`[check-sandbox-sync-remote] using sandbox root '${sandboxPath}' for repo '${repoPath}'.`);
 
@@ -477,6 +573,6 @@ function main() {
 }
 
 // Only run when invoked directly (not when imported for tests).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }

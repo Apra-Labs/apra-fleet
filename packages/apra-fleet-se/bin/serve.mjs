@@ -21,12 +21,14 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
-import { createHistory } from '../src/supervisor/history.mjs';
+import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
-import { createReconciler, registerReservationRoutes } from '../src/supervisor/reconcile.mjs';
+import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
 import { createReadopter } from '../src/supervisor/readopt.mjs';
 import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
+import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
+import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
 // eft.4.8.1: the operator-facing surface -- PID-liveness watchdog (eft.4.3),
@@ -34,7 +36,7 @@ import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt
 // operator endpoints (eft.4.4). These were fully implemented and unit-tested
 // but never imported/registered here -- this is that wiring.
 import { createWatchdog } from '../src/supervisor/watchdog.mjs';
-import { createBacklog } from '../src/supervisor/backlog.mjs';
+import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.mjs';
 // launch-form.mjs (renderLaunchFormHtml/buildLaunchRequestBody) has no
 // register*Routes()/create*() seam of its own -- dashboard.mjs's
 // renderIndexPageHtml() already imports it directly and falls back to
@@ -42,7 +44,8 @@ import { createBacklog } from '../src/supervisor/backlog.mjs';
 // constructing the real dashboard below (instead of the inert stub) is what
 // actually wires the Launch Sprint form onto the page.
 import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
-import { createSprintController, registerSprintRoutes } from '../src/supervisor/api.mjs';
+import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
+import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
 import { listFleetMembers } from '../src/supervisor/fleet-members.mjs';
 import { resolveFleetServerConnection } from './cli.mjs';
 
@@ -56,6 +59,41 @@ Options:
       --port <port>   HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
   -h, --help          Show this help message.
 `.trim();
+
+/**
+ * apra-fleet-k06.1: compose BOTH launch-time overlap guards api.mjs's own
+ * header comment (eft.5.2/eft.5.3) already describes as meant to run
+ * together, as a standalone/exported factory so the composition itself --
+ * not just each guard in isolation -- is directly unit-testable without
+ * booting the real supervisor process (serveMain constructs its real
+ * defaultMemberOverlapGuard/createScopeGuard collaborators and passes them
+ * here; a test can inject fakes/stubs of the SAME shape instead).
+ *
+ * Member axis runs FIRST, preserving its exact pre-existing
+ * behavior/message/status (409, field 'members') for every case it already
+ * covered. The issue-scope axis runs second, over the SAME ledger; a
+ * conflict throws the same ApiError(409, ...) shape the member guard uses
+ * (field 'issue', a formatScopeConflict() message naming the conflicting
+ * sprint(s) and overlapping bead ids) rather than an unhandled 500 --
+ * registerSprintRoutes' onApiError only translates ApiError instances into a
+ * clean JSON error response. Either guard failing rejects the whole launch; a
+ * launch overlapping on neither axis still succeeds.
+ *
+ * @param {{
+ *   memberOverlapGuard: (ctx: { members: string[], issueRoots: string[] }) => Promise<void>|void,
+ *   scopeGuard: { checkLaunch: (issueRoots: string[]) => Promise<{ ok: boolean, conflicts: Array<{sprintId: string, overlappingIds: string[]}> }> },
+ * }} deps
+ * @returns {(ctx: { members: string[], issueRoots: string[] }) => Promise<void>}
+ */
+export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
+    return async ({ members, issueRoots }) => {
+        await memberOverlapGuard({ members, issueRoots });
+        const scopeResult = await scopeGuard.checkLaunch(issueRoots);
+        if (!scopeResult.ok) {
+            throw new ApiError(409, formatScopeConflict(scopeResult.conflicts), 'issue');
+        }
+    };
+}
 
 export function parseServeArgs(argv) {
     try {
@@ -81,6 +119,17 @@ export async function serveMain(argv = process.argv.slice(2)) {
         return { exitCode: 0 };
     }
 
+    // Installed before anything else logs: every console.log/warn/error from
+    // this point on (including the seam-construction comments' own
+    // console.error calls below) is timestamped (local time, not UTC) and
+    // teed to <dataDir>/logs/supervisor.log, in addition to still reaching
+    // the original console (an interactive run or a shell redirect is
+    // unaffected). This is the supervisor's own equivalent of spawner.mjs's
+    // per-sprint-child raw log; a dashboard link to GET /supervisor/log is
+    // registered further down, once `supervisor` exists.
+    const selfLog = installSelfLogTee();
+    process.once('exit', () => selfLog.stop());
+
     let port = DEFAULT_SERVICE_PORT;
     if (values.port !== undefined) {
         port = Number(values.port);
@@ -95,8 +144,61 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // collaborators so a restarted supervisor reconciles against on-disk state.
     const ledger = createLedger();
     const history = createHistory();
-    const spawner = createSpawner();
-    const reconciler = createReconciler({ ledger, history });
+    // apra-fleet-f34.1: pass this supervisor's OWN listening address so every
+    // spawned sprint child's cli.mjs receives --service-url and threads it
+    // into runner.js's HTTP-backed dolt-mutex/id-allocator clients (see
+    // spawner.mjs's buildSprintArgv/createSpawner doc comments).
+    //
+    // apra-fleet-k7b.3: onChildExit is this SAME-INSTANCE spawner's own
+    // 'exit' listener notification (Node's own exit code/signal, keyed by
+    // the launch's runId -- the SAME sprintId createSprintController claims
+    // in the ledger BEFORE spawning, apra-fleet-k7b.1). Persist it two
+    // places: (1) history records a CHILD_EXITED audit event so the exit is
+    // still visible after the reservation is eventually released; (2)
+    // ledger.recordExit() annotates the still-held reservation in place (does
+    // not release it) so the watchdog/dashboard can report e.g. "exited 1 at
+    // ..." instead of a bare "pid gone". Both are independently best-effort --
+    // a missing/already-released reservation (e.g. a force-release raced the
+    // child's own exit) must never crash this listener.
+    //
+    // apra-fleet-xuo.6.1 -- ORDER IS LOAD-BEARING, history FIRST, ledger
+    // SECOND. Both ledger.mjs and history.mjs commit their in-memory view only
+    // after their atomic persist (tmp write + rename), and every observer (the
+    // dashboard/log-view, and the ou7.3/k7b.7 integration tests) polls the
+    // LEDGER's exitCode as the "this child has exited" readiness signal and
+    // then immediately reads history. Recording the ledger first opened a
+    // window one whole history-persist wide in which the ledger already showed
+    // an exitCode while history still had zero CHILD_EXITED events for that
+    // sprint -- the ledger/history mismatch of apra-fleet-xuo.6. Writing
+    // history first makes "the ledger shows an exitCode" imply "history
+    // already carries CHILD_EXITED" for every reader. Do not swap these back.
+    //
+    // apra-fleet-ou7.1: onChildExit also carries logPath (spawner.mjs's own
+    // per-sprint raw stdout/stderr log file) through into the CHILD_EXITED
+    // history event -- the ledger already has it (recorded at claim() time,
+    // see createSprintController's launch()), but history's own copy stays
+    // discoverable even after the reservation is eventually released.
+    const spawner = createSpawner({
+        serviceUrl: `http://localhost:${port}`,
+        onChildExit: async ({ runId, exitCode, signal, at, logPath }) => {
+            if (!runId) return;
+            try {
+                await history.record({ sprintId: runId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode, signal, at, logPath });
+            } catch (err) {
+                console.error(`[spawner] history.record(CHILD_EXITED) failed for '${runId}':`, err);
+            }
+            try {
+                await ledger.recordExit(runId, { exitCode, signal, at });
+            } catch (err) {
+                console.error(`[spawner] ledger.recordExit failed for '${runId}':`, err);
+            }
+        },
+    });
+    // apra-fleet-3i3.1: the real kill-signal implementation is only wired in
+    // HERE -- createReconciler()'s own default is a safe no-op (see
+    // reconcile.mjs's module doc) so nothing outside this production entry
+    // point can accidentally send a real signal to an arbitrary pid.
+    const reconciler = createReconciler({ ledger, history, killPid });
     // eft.4.5: re-adopts still-live children by PID at startup (see below),
     // registering their recovered --viewer-port with the spawner seam so
     // they are tracked/watchdog-monitored/HTTP-proxyable exactly like a
@@ -131,7 +233,11 @@ export async function serveMain(argv = process.argv.slice(2)) {
         if (!entry || entry.childPid == null) return undefined;
         return spawner.getLiveEntry ? spawner.getLiveEntry(entry.childPid)?.port : undefined;
     };
-    const watchdog = createWatchdog({ ledger, resolvePort: resolveSprintPort });
+    // apra-fleet-k7b.2: `history` lets the watchdog append a durable
+    // FINISHED event (terminalReason/verdict) to sprint-history.json the
+    // first time it observes a PID-gone sprint's persisted terminal state,
+    // the same collaborator the spawner's CHILD_EXITED wiring above uses.
+    const watchdog = createWatchdog({ ledger, resolvePort: resolveSprintPort, history });
 
     // eft.6.2: the Backlog-last tree (full tracker minus every active
     // sprint's live-expanded scope). Reused both as the dashboard page's
@@ -153,6 +259,13 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // eft.6.1: GET / -- the Sprint Stack + Backlog + Launch Sprint page.
     registerDashboardRoutes(supervisor, dashboard);
 
+    // supervisor-viewer-parity: GET /api/backlog/tasks -- the flat,
+    // filterable data source the dashboard's Backlog tab re-fetches from
+    // client-side on every filter change (see backlog.mjs's
+    // backlogPanelClientScript()). Additive to GET /api/backlog below (the
+    // sprint controller's older nested-tree shape), not a replacement.
+    registerBacklogRoutes(supervisor, backlog);
+
     // eft.4.4: the six operator-facing sprint/member/backlog endpoints.
     // listMembers is fleet-backed (fleet-members.mjs opens a short-lived MCP
     // connection per call -- see its module doc for why the supervisor never
@@ -160,12 +273,32 @@ export async function serveMain(argv = process.argv.slice(2)) {
     // seam constructed above rather than re-deriving "tracker minus claimed
     // scope" a second way. ledger/spawner/history are the same collaborators
     // every other seam in this file shares.
+    const listMembersForLaunch = () => listFleetMembers({ resolveConnection: resolveFleetServerConnection });
+
+    // apra-fleet-k06.1: compose BOTH launch-time overlap guards api.mjs's own
+    // header comment (eft.5.2/eft.5.3) already describes as meant to run
+    // together. Before this, createSprintController() below was constructed
+    // with no `beforeLaunch` override, so it silently fell back to
+    // defaultMemberOverlapGuard ALONE -- the issue-scope guard
+    // (createScopeGuard, live-expanded subtree overlap) was exercised only by
+    // its own unit tests, never wired into the real POST /api/sprints path.
+    // Two sprints with disjoint member sets but overlapping/nested issue
+    // scopes (e.g. one targets an epic, another one of that epic's children)
+    // could both launch and dispatch against the same beads concurrently.
+    // See composeBeforeLaunch() above for the composition itself (ordering,
+    // error shape) -- extracted as its own export so the composition is
+    // directly unit-testable without booting this whole process.
+    const memberOverlapGuard = defaultMemberOverlapGuard(ledger, listMembersForLaunch);
+    const scopeGuard = createScopeGuard({ ledger });
+    const beforeLaunch = composeBeforeLaunch({ memberOverlapGuard, scopeGuard });
+
     const sprintController = createSprintController({
         ledger,
         spawner,
         history,
-        listMembers: () => listFleetMembers({ resolveConnection: resolveFleetServerConnection }),
+        listMembers: listMembersForLaunch,
         getBacklog: async () => ({ tree: await backlog.buildTree() }),
+        beforeLaunch,
     });
     registerSprintRoutes(supervisor, sprintController);
 
@@ -192,6 +325,19 @@ export async function serveMain(argv = process.argv.slice(2)) {
     const liveProxy = createLiveProxy({ ledger, spawner, renderHistory: (sprintId) => historyView.renderForSprint(sprintId) });
     registerLiveRoutes(supervisor, liveProxy);
     registerHistoryViewRoutes(supervisor, historyView);
+
+    // apra-fleet-ou7.2: raw per-sprint stdout/stderr log, present for a live
+    // sprint AND for an ended one (finished/crashed) -- exactly where the
+    // live SSE viewer above is gone. Looks the sprint's recorded logPath up
+    // by id (ledger first, then history for a released reservation); never
+    // builds a path from the request's :id itself.
+    const logView = createLogView({ ledger, history });
+    registerLogViewRoutes(supervisor, logView);
+
+    // GET /supervisor/log -- the supervisor's OWN stdout/stderr (see
+    // installSelfLogTee() above), linked from the dashboard header.
+    const selfLogView = createSelfLogView({ logPath: selfLog.logPath });
+    registerSelfLogRoutes(supervisor, selfLogView);
 
     // Explicit signals are the out-of-band way to stop cleanly, complementing
     // the in-band POST /api/shutdown route.

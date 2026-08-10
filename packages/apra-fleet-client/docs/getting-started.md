@@ -126,8 +126,13 @@ const result = await fleet.executePrompt({
 `executePrompt` also derives a client-side `McpClient` timeout from those
 same hints (via `deriveTimeoutMs`) plus a 30-second grace margin, so the
 client won't give up before the server's own deadline has a chance to
-fire. To override that client-side timeout independently, pass
-`timeoutMs` explicitly:
+fire. This holds even when the server internally retries a stalled/failed
+attempt once with a fresh session (e.g. after an SSH inactivity timeout):
+the server shares a single `max_total_s` deadline budget across the
+original attempt and that retry rather than granting the retry a whole new
+budget, so the client's derived timeout still covers the worst case. To
+override that client-side timeout independently, pass `timeoutMs`
+explicitly:
 
 ```js
 await fleet.executePrompt({

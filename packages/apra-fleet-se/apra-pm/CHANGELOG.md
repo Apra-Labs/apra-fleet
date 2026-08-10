@@ -1,5 +1,16 @@
 # Changelog
 
+## fix/engine-parity-arch-hygiene -- auto-sprint.js Integ Test scoping made issue_type-agnostic
+
+auto-sprint.js's Integ Test scoping and leaf done-condition are now issue_type-agnostic,
+per the jfo/`classifyVerifySet` design already landed and verified in
+`fleet-sprint/runner.js` (apra-fleet-jfo). A verify-set bead -- a bead of ANY issue_type
+(feature, bug, or task-with-children) whose children are ALL closed while it is still
+open (children-all-closed, parent-open) -- is now scoped and dispatched for verification
+consistently, instead of the prior `type=feature`-only gate. See apra-fleet-2ud and
+`docs/dispatch-patterns.md` / `docs/multiroot-scope-remediation.md` for the corrected
+contract.
+
 ## fix/token-maths -- multi-root scope remediation
 
 Fixes the auto-sprint plan/exit gates that falsely deadlocked a sprint whose goals are
@@ -16,7 +27,8 @@ passed as separate roots with cross-root `blocks` edges (e2e s10 regression). Se
   `bd ready` instruction was replaced with the scoped per-root union check.
 - **plan-reviewer Step 1**: `bd list --status=open` scoped to `--parent <scope>`.
 - **exit-check / no-progress (`parseBlockers` leaf mode)**: the sprint done-condition is now
-  open leaf work in the subtree (open `type=task`, plus `type=feature` only when integ
+  open leaf work in the subtree (open `type=task`, plus any open verify-set bead -- a bead
+  of ANY issue_type whose children are all closed while it is still open -- only when integ
   tests run), excluding roots -- roots close only at Harvest, so the old roots-only count
   made `goalMet` unreachable and forced a false "no progress" abort on cycle 2. The 4-arg
   `parseBlockers` form is unchanged. `test/exit-check-roots-scope.test.mjs` was replaced by

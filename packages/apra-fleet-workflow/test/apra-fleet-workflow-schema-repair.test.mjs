@@ -234,9 +234,9 @@ describe('apra-fleet-unw.8: bounded schema-repair loop', () => {
         const wf = new FleetWorkflow(createMockFleetApi(async () => {
             calls++;
             if (calls === 1) {
-                return { content: [{ text: 'garbage {{{' }], usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 } };
+                return { content: [{ text: 'garbage {{{' }], usage: { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 } };
             }
-            return { content: [{ text: JSON.stringify({ value: 'ok' }) }], usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 } };
+            return { content: [{ text: JSON.stringify({ value: 'ok' }) }], usage: { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 } };
         }));
 
         assert.strictEqual(wf.budget.spent(), 0);

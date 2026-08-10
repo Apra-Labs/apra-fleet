@@ -80,6 +80,58 @@ describe('resolvesInsideSandbox', () => {
   it('is true for other +file:// compound schemes (e.g. hg+file://) resolving inside the sandbox root', () => {
     expect(resolvesInsideSandbox(`hg+file://${sandbox}/.some-remote`, sandbox)).toBe(true);
   });
+
+  // Windows-only: file:// URLs with a drive letter, in the three forms
+  // actually observed in practice (apra-fleet-xuo.9 / xuo.9.1 / xuo.9.2).
+  // Guarded to win32 because fileURLToPath() requires an actual drive
+  // letter to parse these and would throw (or mis-resolve, pre-fix) on
+  // POSIX hosts.
+  //
+  // The fixture path is derived from os.tmpdir() (never a hardcoded
+  // developer home dir like 'C:/Users/<name>/...') so this suite is
+  // deterministic and portable across machines/CI runners -- apra-fleet-
+  // xuo.9.2. resolvesInsideSandbox() is a pure string/path function, so
+  // none of these directories need to actually exist on disk.
+  const winDescribe = os.platform() === 'win32' ? describe : describe.skip;
+  winDescribe('Windows drive-letter and MSYS file:// forms (apra-fleet-xuo.9.1 / xuo.9.2)', () => {
+    const winSandbox = `${os.tmpdir().replace(/\\/g, '/').replace(/\/$/, '')}/.apra-fleet-tests`;
+    const driveLetter = /^([A-Za-z]):/.exec(winSandbox)?.[1] ?? 'C';
+    // 'C:/Users/...' -> '/c/Users/...' (MSYS/git-bash single-letter-segment form)
+    const msysSandbox = `/${driveLetter.toLowerCase()}${winSandbox.slice(2)}`;
+    // Parent of the sandbox root -- genuinely outside it, without hardcoding
+    // any particular machine's directory layout.
+    const outsideDrivePath = path.dirname(winSandbox);
+
+    it('is true for a 3-slash drive file:// URL (file:///C:/...) inside the sandbox root', () => {
+      expect(
+        resolvesInsideSandbox(`file:///${winSandbox}/.apra-fleet-toy-dolt-remote`, winSandbox),
+      ).toBe(true);
+    });
+
+    it('is true for an MSYS/git-bash single-letter-segment form (file:///c/...) inside the sandbox root', () => {
+      expect(
+        resolvesInsideSandbox(`file://${msysSandbox}/.apra-fleet-toy-origin.git`, winSandbox),
+      ).toBe(true);
+    });
+
+    it('is true for the 2-slash drive form emitted by "bd dolt remote list --json" (file://C:/...) inside the sandbox root', () => {
+      expect(
+        resolvesInsideSandbox(`file://${winSandbox}/.apra-fleet-toy-dolt-remote`, winSandbox),
+      ).toBe(true);
+    });
+
+    it('is false for a genuinely outside drive-letter file:// path (safety guard not loosened)', () => {
+      expect(resolvesInsideSandbox(`file:///${outsideDrivePath}`, winSandbox)).toBe(false);
+    });
+
+    it('is false for a sibling directory that merely shares a string prefix, in drive-letter file:// form (no substring false-PASS)', () => {
+      expect(resolvesInsideSandbox(`file:///${winSandbox}-other/repo`, winSandbox)).toBe(false);
+    });
+
+    it('is false for a sibling directory that merely shares a string prefix, in plain path form (no substring false-PASS)', () => {
+      expect(resolvesInsideSandbox(`${winSandbox}-other/repo`, winSandbox)).toBe(false);
+    });
+  });
 });
 
 describe('parseActiveSyncRemoteValue', () => {
@@ -349,6 +401,56 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
     });
     expect(result.ok).toBe(true);
   });
+
+  // apra-fleet-xuo.8.1: exercises the no-injection branch (no deps.execFileSync)
+  // against a real .beads/embeddeddolt directory to ensure the predicate recognizes
+  // all known database layouts and does not silent-return "nothing wired yet" for
+  // directories that actually contain a database.
+  it('recognizes .beads/embeddeddolt as a database layout and invokes bd without short-circuiting', async () => {
+    let tmpDir: string | null = null;
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-embeddeddolt-check-'));
+      const repoPath = path.join(tmpDir, 'toy-repo');
+      const beadsDir = path.join(repoPath, '.beads');
+      fs.mkdirSync(beadsDir, { recursive: true });
+      // Create the embeddeddolt directory layout that bd init produces.
+      fs.mkdirSync(path.join(beadsDir, 'embeddeddolt'));
+      // Also create a minimal config.yaml so the repo looks initialized.
+      fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'sync:\n  remote: file://sandbox-local\n');
+
+      // NO deps.execFileSync injected -- this exercises the real filesystem check
+      // against the embeddeddolt layout. The function should recognize the database
+      // and attempt to run bd, not short-circuit with "nothing wired yet".
+      const result = checkDoltRemoteAbsent(repoPath, tmpDir);
+      expect(result.ok).toBe(true);
+      // The key assertion: the message must NOT be the "no Dolt database initialized"
+      // message that the old code would have returned when it failed to recognize
+      // embeddeddolt. Instead, it should report either an actual Dolt remote status
+      // or an error from trying to run bd.
+      expect(result.message).not.toMatch(/no Dolt database initialized/);
+      // Since we created an empty embeddeddolt with no actual Dolt config,
+      // the message should indicate that bd ran and found no remotes (or found
+      // whatever remotes are configured in this minimal setup).
+      expect(result.message).toMatch(/Dolt-level remotes|unavailable/);
+
+    } finally {
+      // Clean up: on Windows, file locks may persist briefly after the function call,
+      // so retry cleanup with delays to allow locks to be released.
+      if (tmpDir) {
+        const cleanupAttempts = 10;
+        for (let i = 0; i < cleanupAttempts; i++) {
+          try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+            break; // Success
+          } catch (err) {
+            if (i === cleanupAttempts - 1) throw err;
+            // Small delay before retry to allow file handles to be released
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        }
+      }
+    }
+  }, 60000); // Increase timeout for this test due to retry logic
 });
 
 describe('checkGitOriginNotHazard: git-origin resolves-inside-sandbox (apra-fleet-eft.18.6 retarget of apra-fleet-eft.31)', () => {

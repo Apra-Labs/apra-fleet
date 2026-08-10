@@ -1,6 +1,6 @@
 <!-- llm-context: This document explains the internal architecture of apra-fleet  -- the MCP server, member registry, SSH transport, session management, and how tools are dispatched. Read this when a user asks how fleet works under the hood, or when debugging connectivity or session issues. -->
 <!-- keywords: MCP server, member registry, SSH, transport, session, tool dispatch, child process, local member, remote member, architecture -->
-<!-- see-also: ../README.md (getting started), tools-infrastructure.md (tool details), vocabulary.md (terminology) -->
+<!-- see-also: ../README.md (getting started), mcp-tools.md (tool details), vocabulary.md (terminology) -->
 
 # Architecture
 
@@ -151,6 +151,17 @@ All five members use the same `execute_prompt` tool call. The tool builds provid
 - **JSON output format** - Codex emits NDJSON (one event per line). All others emit a single JSON object. Handled transparently by `provider.parseResponse()`.
 - **Session resume** - Claude, Antigravity, and Gemini support resuming specific session IDs. Codex and Copilot resume the most recent local session. OpenCode supports session resume via `--session <id>` or `--continue`.
 - **OpenCode** - uses any OpenAI-compatible endpoint (Ollama, vLLM). The user provisions the endpoint; Fleet installs the CLI and agents. Model tiers are set per member at registration via `model_tiers` (since models vary by deployment). Agent files are transformed from Claude format to OpenCode format at install time (tools allowlist -> permission map).
+- **Antigravity (agy) response capture** - `AgyProvider.parseResponse()` extracts both the reply text and, when the CLI's transcript exposes one, a `conversation_id` that is surfaced as the response's `sessionId` -- mirroring Claude/Gemini session-id capture instead of returning an empty session id for a provider that does expose one.
+
+### Terminal-Signal and Dead-Session Detection Invariants
+
+These invariants apply across all providers that can terminate a dispatch without a clean `execute_prompt` return, and are enforced independently of each other as defense-in-depth -- a failure in one layer must not silently convert into a wasted multi-thousand-second wait for the hard dispatch ceiling:
+
+- **Max-turns detection is channel-agnostic.** A CLI can signal "hit the turn limit" through more than one channel in the same transcript stream -- a `type:result` event's `terminal_reason` field, that same event's `subtype` (`error_max_turns`), a distinct standalone `max_turns_reached` transcript event (which can arrive before, or instead of, any result event, e.g. when a hard-timeout kill truncates the stream first), or a plain-text fallback when no result event terminates the stream at all. `src/providers/claude.ts` normalizes every one of these channels to the same `terminalReason: 'max_turns'` on the parsed response, and `src/providers/provider.ts` exposes a single shared classifier (checking the normalized `terminalReason` OR the raw `error_max_turns` subtype) that every call site uses -- there is exactly one place that decides "was this a max-turns termination," never a per-call-site heuristic. This does not add any new MCP reason-enum value; `max_turns_exhausted` already existed and is now reliably reached from every transcript shape that means it.
+- **Stall detection is a superset backstop, not a replacement.** The transcript-mtime cross-check described in `docs/stall-detector-resilience.md` (section 7) exists specifically so that a terminal-signal-detection gap (like the max-turns case above, or any future one) cannot regress into the old failure mode of a dead session sitting unkilled until the hard ceiling -- a frozen transcript is killed within the configured inactivity window regardless of whether content parsing understood why it went quiet.
+- **A busy-lock rejection is verified against process liveness before being honored.** `execute_prompt`'s in-flight lock (`inFlightAgents`, `src/tools/execute-prompt.ts`) can outlive the process it was guarding (a child reaped without its exit handler firing, or an interactive session's underlying CLI process dying after registration). Before returning a `busy` rejection, the dispatch path probes the locked session's pid for liveness -- locally via a direct signal-0 check, remotely via a fresh independent liveness round trip (never the possibly-wedged channel that produced the stale lock), and via the session registry's last-known pid for interactive sessions -- and self-heals (releases the lock, warns, and proceeds with the new dispatch) only on a **definitive** dead-pid reading. Ambiguity (no pid captured at all, e.g. a dispatch that hasn't reached its pid-capture step yet) is always treated as still-busy, never as staleness evidence, so a self-heal attempt can never race a dispatch that is still starting up. This keeps `fleet_status`'s independently-computed busy/idle view and the dispatch gate's busy/idle view from ever disagreeing for longer than one dead-lock detection cycle.
+- **A confirmed stall cancels the in-flight dispatch, not just the remote process.** Killing the remote pid a stalled dispatch was running is necessary but not sufficient -- the MCP `tools/call` that dispatched it can still be sitting on a pending `execCommand()` promise with no way to reject it, so the client falls back to waiting out its own hard deadline even though the server-side work died minutes earlier. The stall path now threads an `AbortController` through `onStall` that is wired into the same strategy-level `execCommand()` abort signal remote strategies already accept, so a confirmed stall settles the pending call immediately with a typed `stalled` dispatch error instead of silently degrading into a multi-thousand-second client-side timeout wait.
+- **The client's dispatch deadline must cover every server-side retry the request can trigger, not just the first attempt.** When the server's own inactivity-timeout handling retries a dispatch once with a fresh session (same `timeout_s`/`max_total_s`), the total server-side worst case is a multiple of the value the client's deadline was derived from. A client deadline sized for only the first attempt can fire before the server's own retry-and-report-cleanly path gets a chance to run, which surfaces a raw transport timeout to the caller instead of a clean typed error. The fix is a single shared retry-budget helper that both sides size their deadlines from, so "the client waits at least as long as the server's own worst-case retry sequence" is a property of one function, not something every dispatch call site has to remember to compute correctly.
 
 See `docs/provider-matrix.md` for the full comparison table.
 
@@ -288,7 +299,7 @@ build the manifest differently.
 
 The PM skill and its role agent definitions (planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner, ci-watcher, harvester), plus their shared `agents/schemas/` and `agents/_shared/` assets, live in this monorepo at `packages/apra-fleet-se/apra-pm/`. At build time, `scripts/dist-pm.mjs` copies the skill and agent files into `dist/` (and `scripts/gen-sea-config.mjs` embeds them as SEA assets for the standalone binary), so all three install paths -- dev-mode, npm, and SEA binary -- carry the same set. At install time, agents are written to the provider's agents directory (e.g. `~/.claude/agents/`); `uninstall` removes that directory in the same pass. For OpenCode members, agent frontmatter is transformed from Claude format to OpenCode format during installation. Claude installs additionally get the `auto-sprint-args` skill (the args contract for the `/auto-sprint` workflow), written to `~/.claude/skills/auto-sprint-args`.
 
-Remote fleet members do not share the operator's home directory, so `register_member`, `update_member`, and (starting with the first dispatch after an orchestrator upgrade) `execute_prompt` each independently hash-diff the canonical agent set against the remote box and push anything missing or stale. See [docs/tools-lifecycle.md](tools-lifecycle.md) and [docs/tools-work.md](tools-work.md) for the per-tool behavior.
+Remote fleet members do not share the operator's home directory, so `register_member`, `update_member`, and (starting with the first dispatch after an orchestrator upgrade) `execute_prompt` each independently hash-diff the canonical agent set against the remote box and push anything missing or stale. See [docs/mcp-tools.md](mcp-tools.md) for per-tool behavior details.
 
 ## Key Design Decisions
 
@@ -303,6 +314,8 @@ SSH passwords are encrypted with AES-256-GCM before being written to the registr
 ### Connection Pooling with Idle Timeout
 
 SSH connections are expensive to establish (TCP + key exchange + auth). The server pools them in memory and reuses connections across tool calls, with a 5-minute idle timeout that auto-closes unused connections. Timers are `unref()`'d so they don't prevent Node from exiting.
+
+The idle timer is reset by normal pool activity (`execCommand`/`getConnection`), but a stall-detector entry that is still `provisional` (created before it has a log file to poll) does not generate that activity itself -- it only benefits from the stall poller's own incidental probes. The pool's cleanup path therefore never tears down an entry purely on the idle timer firing: it re-checks for an active channel immediately before ending the connection, and only actually closes it when genuinely idle. This closes off a class of latent bug where a long-running dispatch with a provisional-shaped stall entry could otherwise have a live channel reaped out from under it. Separately, pooled SSH connections have keepalive configured (interval + a bounded probe count) so a silently dropped network connection is detected and torn down rather than sitting as a phantom pool entry indefinitely.
 
 ### Base64 Prompt Encoding
 
@@ -322,18 +335,18 @@ Two members cannot share the same working directory on the same device. For remo
 
 ## Tools
 
-The tools break into natural groups. Each group has detailed documentation:
+The tools break into natural groups in **[mcp-tools.md](mcp-tools.md)**:
 
-**[Lifecycle](tools-lifecycle.md)**  -- `register_member`, `list_members`, `update_member`, `remove_member`, `shutdown_server`
+**[Lifecycle](mcp-tools.md#1-lifecycle-tools)**  -- `register_member`, `list_members`, `update_member`, `remove_member`, `shutdown_server`
 Manage the fleet roster and server lifecycle. Registration validates connectivity, detects the OS, and checks that Claude CLI is available. Removal includes best-effort cleanup of auth credentials on the member.
 
-**[Work](tools-work.md)**  -- `send_files`, `execute_prompt`, `execute_command`, `reset_session`
+**[Work](mcp-tools.md#2-work-tools)**  -- `send_files`, `execute_prompt`, `execute_command`, `reset_session`
 The core workflow. Push files to a member, run prompts against it, run shell commands directly, manage conversation sessions.
 
-**[Infrastructure](tools-infrastructure.md)**  -- `provision_llm_auth`, `setup_ssh_key`, `update_llm_cli`
+**[Infrastructure](mcp-tools.md#3-infrastructure-tools)**  -- `provision_llm_auth`, `setup_ssh_key`, `update_llm_cli`
 One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy API key for any provider), migrate from password to key auth, update the LLM CLI on members.
 
-**[Observability](tools-observability.md)**  -- `fleet_status`, `member_detail`
+**[Observability](mcp-tools.md#4-observability-tools)**  -- `fleet_status`, `member_detail`
 Two-layer monitoring. `fleet_status` gives a quick summary table across all members with fleet-aware busy detection (distinguishes between Claude processes serving this member vs unrelated Claude activity). `member_detail` drills into one member with connectivity, CLI version, session state, and system resource metrics.
 
 ## Cross-Platform Support

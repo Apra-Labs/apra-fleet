@@ -16,7 +16,7 @@ import { getStrategy } from './strategy.js';
 import { uploadContentToHome } from './sftp.js';
 import { loadAgentAssets } from '../cli/install.js';
 import { getAgentsDirRelative } from '../cli/config.js';
-import { transformAgentForOpenCode } from '../cli/agent-transform.js';
+import { transformAgentForOpenCode, transformAgentForAgy } from '../cli/agent-transform.js';
 
 export interface CanonicalAgentFile {
   relPath: string;
@@ -35,8 +35,8 @@ function sha256Hex(content: string): string {
 }
 
 /**
- * Load the canonical agent asset set for a provider, applying the same
- * install-time transform (opencode frontmatter rewrite) before hashing so the
+ * Loads the canonical set of agent files from vendor/apra-pm/agents, applying provider-specific transforms
+ * (e.g. OpenCode/AGY frontmatter/rules) if necessary. Standardizes on LF line endings so the computed
  * hash matches what actually gets written to the remote box.
  */
 export function loadCanonicalAgentSet(provider: LlmProvider): CanonicalAgentFile[] {
@@ -47,6 +47,8 @@ export function loadCanonicalAgentSet(provider: LlmProvider): CanonicalAgentFile
     const normalized = content.replace(/\r\n/g, '\n');
     const transformed = provider === 'opencode'
       ? transformAgentForOpenCode(normalized, relPath)
+      : provider === 'agy'
+      ? transformAgentForAgy(normalized, relPath)
       : normalized;
     return { relPath, content: transformed, sha256: sha256Hex(transformed) };
   });

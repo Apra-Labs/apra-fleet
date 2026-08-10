@@ -254,7 +254,12 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
 
   // -- Regular (synchronous) command path --
   const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
-  const wrapped = authPrefix + cmds.wrapInWorkFolder(folder, resolvedCommand);
+  // wrapPidCapture lets a timed-out ssh.ts/strategy.ts execCommand recover a
+  // PID to tree-kill (apra-fleet-kwx precedent) -- without it, a command with
+  // no PID protocol of its own (unlike a provider launch) leaves the remote
+  // process running forever past the timeout, since ssh has no local child
+  // handle to fall back on the way LocalStrategy does.
+  const wrapped = authPrefix + cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, resolvedCommand));
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
