@@ -35,17 +35,38 @@
 // -- never re-derived here or client-side, so there is exactly one
 // "what does this sprint still need to close" definition in the package.
 
+// apra-fleet-x8r.8: runner.js's partitionByGoalMembership() (eft.52.1.3) can
+// place a below-goal-priority bead in the Sprint section via a documented
+// blocks-edge exception -- a bead that BLOCKS an in-goal bead is admitted
+// into 'sprint' placement even though its own priority is below goalMax. That
+// server-computed decision is tagged verbatim onto the row as `placement`
+// ('sprint' | 'backlog') and is exactly what the beads TREE (renderBeadsHtml)
+// honors when deciding which section a row renders in. Before this fix,
+// computeSprintProgress() re-derived membership from raw numeric priority
+// alone (`priority > goalMax` -> excluded), ignoring `placement` -- so a
+// blocks-exception bead could render as an open Sprint row in the tree while
+// being silently excluded from the 'M/N' count directly above it (the bar
+// reads N/N while a visibly-open row sits right below). Reusing `placement`
+// when present (rather than re-deriving from priority) makes the bar and the
+// tree agree on exactly the same admitted set.
 /**
- * @param {Array<{id?: string, status?: string, priority?: number}>} beads the
+ * @param {Array<{id?: string, status?: string, priority?: number, placement?: string}>} beads the
  *   sprint's already-scoped bead list (e.g. dashboard.mjs's `sprintTasks`,
  *   sourced from `bdListScoped('')`)
  * @param {{ goalMax?: number, decomposedParentIds?: Iterable<string> }} [opts]
  *   `goalMax` is the NUMERIC worst priority tier named in the sprint's goal
  *   (e.g. `goalPriorityMax('P1/P2')` -> `'P2'` -> `goalMax: 2`) -- a bead
  *   whose `priority` is a finite number strictly greater than `goalMax` is
- *   below-goal and excluded from `required`/`closed`. `decomposedParentIds`
- *   is the set of bead ids that are themselves someone else's `.parent` (any
- *   status) -- excluded the same way runner.js's exit gate excludes them.
+ *   below-goal and excluded from `required`/`closed`, UNLESS that bead
+ *   carries a server-computed `placement` field (apra-fleet-eft.52.1.3),
+ *   in which case `placement` decides membership instead (`'backlog'` ->
+ *   excluded, anything else, e.g. `'sprint'` -> included) so the bar can
+ *   never disagree with the tree it sits above (apra-fleet-x8r.8). Rows with
+ *   no `placement` field (dashboard.mjs's listAllBeads-sourced rows never
+ *   carry one) fall back to the plain numeric filter, unchanged.
+ *   `decomposedParentIds` is the set of bead ids that are themselves someone
+ *   else's `.parent` (any status) -- excluded the same way runner.js's exit
+ *   gate excludes them, regardless of `placement`.
  *   Omitting `opts` (or either field) applies no filtering on that axis,
  *   preserving the pre-x8r.4 "every bead in scope" behavior.
  * @returns {{ closed: number, required: number, fraction: number }}
@@ -63,6 +84,13 @@ export function computeSprintProgress(beads, opts) {
     const filtered = list.filter((b) => {
         if (!b) return false;
         if (decomposedParentIds && decomposedParentIds.has(b.id)) return false;
+        if (typeof b.placement === 'string') {
+            // Server-computed placement already decided which section this
+            // bead belongs to (including the blocks-edge exception) -- reuse
+            // it verbatim instead of re-deriving from priority, so the bar
+            // agrees with the tree exactly.
+            return b.placement !== 'backlog';
+        }
         if (goalMax !== null && typeof b.priority === 'number' && b.priority > goalMax) return false;
         return true;
     });

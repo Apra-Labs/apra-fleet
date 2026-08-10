@@ -69,6 +69,50 @@ describe('computeSprintProgress', () => {
         assert.deepStrictEqual(computeSprintProgress(beads), { closed: 1, required: 2, fraction: 0.5 });
         assert.deepStrictEqual(computeSprintProgress(beads, {}), { closed: 1, required: 2, fraction: 0.5 });
     });
+
+    // apra-fleet-x8r.8: runner.js's partitionByGoalMembership() (eft.52.1.3)
+    // can admit a below-goal-priority bead into the Sprint section via a
+    // documented blocks-edge exception, tagging it `placement: 'sprint'`.
+    // The beads TREE (renderBeadsHtml) honors that flag when present. Before
+    // this fix, computeSprintProgress() ignored `placement` and re-derived
+    // membership from raw priority alone -- so a blocks-exception bead could
+    // render as an open Sprint row in the tree while the bar above it read
+    // N/N, excluding that same row from the count. This pins the two
+    // surfaces agreeing: a below-goal bead tagged `placement: 'sprint'` is
+    // counted (and, while open, blocks N/N), matching the tree that renders
+    // it as a Sprint row; a below-goal bead tagged `placement: 'backlog'` is
+    // excluded, matching the tree that renders it in the Backlog instead.
+    test('a below-goal bead admitted into the Sprint section via the blocks-edge exception is counted, matching the tree (apra-fleet-x8r.8)', () => {
+        const beads = [
+            // In-goal leaf, closed.
+            { id: 'a', status: 'closed', priority: 1, placement: 'sprint' },
+            // Below-goal by priority (3 > goalMax 1), but admitted into the
+            // Sprint section by the blocks-edge exception -- still OPEN.
+            { id: 'blocks-exception', status: 'open', priority: 3, placement: 'sprint' },
+        ];
+        const result = computeSprintProgress(beads, { goalMax: 1 });
+        // Without placement-awareness this would read closed:1, required:1,
+        // fraction:1 (N/N) despite 'blocks-exception' rendering as an open
+        // Sprint row in the tree. With placement honored, it stays 1/2.
+        assert.deepStrictEqual(result, { closed: 1, required: 2, fraction: 0.5 });
+    });
+
+    test('a below-goal bead NOT admitted into the Sprint section (placement: backlog) is excluded, matching the tree', () => {
+        const beads = [
+            { id: 'a', status: 'closed', priority: 1, placement: 'sprint' },
+            { id: 'below-goal', status: 'open', priority: 3, placement: 'backlog' },
+        ];
+        const result = computeSprintProgress(beads, { goalMax: 1 });
+        assert.deepStrictEqual(result, { closed: 1, required: 1, fraction: 1 });
+    });
+
+    test('rows with no `placement` field fall back to the plain numeric priority filter unchanged (e.g. dashboard.mjs callers)', () => {
+        const beads = [
+            { id: 'a', status: 'closed', priority: 1 },
+            { id: 'below-goal', status: 'open', priority: 3 },
+        ];
+        assert.deepStrictEqual(computeSprintProgress(beads, { goalMax: 1 }), { closed: 1, required: 1, fraction: 1 });
+    });
 });
 
 describe('renderProgressBarHtml', () => {
