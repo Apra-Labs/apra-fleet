@@ -892,7 +892,14 @@ export const beadsExtension = {
             // scope (sprintTasks -- already the bdListScoped('') scope walk
             // threaded through by runner.js/dashboard.mjs, never re-derived
             // here), not the Backlog list alongside it.
-            const progress = computeSprintProgress(lastBeadsData.sprintTasks || []);
+            // apra-fleet-x8r.4: goalMax/decomposedParentIds are runner.js-
+            // computed (updateDashboard()'s payload -- the SAME two axes its
+            // own completion gate filters on) and threaded through verbatim,
+            // never re-derived client-side.
+            const progress = computeSprintProgress(lastBeadsData.sprintTasks || [], {
+                goalMax: lastBeadsData.goalMax,
+                decomposedParentIds: lastBeadsData.decomposedParentIds,
+            });
             container.innerHTML = renderProgressBarHtml(progress)
                 + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
         }

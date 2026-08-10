@@ -243,6 +243,27 @@ describe('dashboard -- createDashboard', () => {
         assert.deepEqual(view.progress, { closed: 2, required: 3, fraction: 2 / 3 });
     });
 
+    test('apra-fleet-x8r.4: below-goal beads and decomposed parents are excluded from progress required/closed, matching the completion gate', async () => {
+        const dashboard = createDashboard({
+            ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),
+            watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+            expandScope: async () => new Set(['root', 'below-goal', 'decomposed-parent', 'decomposed-child']),
+            getSprintMeta: async () => ({ goal: 'P1' }),
+            listAllBeads: async () => [
+                { id: 'root', status: 'closed', priority: 1, parentId: null },
+                // Below goal (P1 -> goalMax 1): excluded even though open.
+                { id: 'below-goal', status: 'open', priority: 3, parentId: null },
+                // Decomposed parent: excluded structurally, even though open.
+                { id: 'decomposed-parent', status: 'open', priority: 1, parentId: null },
+                { id: 'decomposed-child', status: 'closed', priority: 1, parentId: 'decomposed-parent' },
+            ],
+        });
+        const [view] = await dashboard.buildSprintViews();
+        // Eligible set: root, decomposed-child -- both closed -> N/N, even
+        // though the raw scope contains two other, still-open beads.
+        assert.deepEqual(view.progress, { closed: 2, required: 2, fraction: 1 });
+    });
+
     test('apra-fleet-x8r.2: a failed bulk beads fetch leaves progress null (placeholder) for every sprint, without throwing', async () => {
         const dashboard = createDashboard({
             ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: ['root'], childPid: 1 }]),

@@ -33,6 +33,42 @@ describe('computeSprintProgress', () => {
         const beads = [{ status: 'closed' }, { status: 'closed' }];
         assert.deepStrictEqual(computeSprintProgress(beads), { closed: 2, required: 2, fraction: 1 });
     });
+
+    // apra-fleet-x8r.4: `required` must match runner.js's real completion
+    // gate -- below-goal-priority beads and decomposed parent (grouping)
+    // nodes are excluded from the required-to-close set, so a sprint scope
+    // containing either can still reach N/N once every ELIGIBLE bead closes,
+    // even though the raw scope list itself never all-closes.
+    test('a below-goal bead and a decomposed parent are excluded from required -- scope reaches N/N once eligible beads close', () => {
+        const beads = [
+            // In-goal leaf, closed.
+            { id: 'a', status: 'closed', priority: 1 },
+            // In-goal leaf, closed.
+            { id: 'b', status: 'closed', priority: 2, parent: 'a' },
+            // Below-goal bead (priority 3 > goalMax 2) -- still OPEN, but must
+            // not block N/N since it is outside the required set.
+            { id: 'c', status: 'open', priority: 3 },
+            // Decomposed parent (someone else's `.parent`) -- structurally
+            // excluded regardless of priority/status; its own status here is
+            // deliberately 'open' to prove exclusion isn't just "closed
+            // parents don't matter".
+            { id: 'd', status: 'open', priority: 1 },
+            { id: 'e', status: 'closed', priority: 1, parent: 'd' },
+        ];
+        const result = computeSprintProgress(beads, { goalMax: 2, decomposedParentIds: ['d'] });
+        // Eligible set: a, b, e (c is below-goal; d is a decomposed parent).
+        // All three are closed -> N/N.
+        assert.deepStrictEqual(result, { closed: 3, required: 3, fraction: 1 });
+    });
+
+    test('opts is additive-optional -- a bare call keeps the pre-x8r.4 "every bead in scope" behavior', () => {
+        const beads = [
+            { id: 'a', status: 'closed', priority: 1 },
+            { id: 'b', status: 'open', priority: 5 },
+        ];
+        assert.deepStrictEqual(computeSprintProgress(beads), { closed: 1, required: 2, fraction: 0.5 });
+        assert.deepStrictEqual(computeSprintProgress(beads, {}), { closed: 1, required: 2, fraction: 0.5 });
+    });
 });
 
 describe('renderProgressBarHtml', () => {

@@ -43,6 +43,11 @@ import { renderBacklogPanelHtml, bdListAllBeads } from './backlog.mjs';
 // there is exactly one closed/required computation in the package.
 import { computeSprintProgress } from '../../fleet-sprint/sprint-progress.mjs';
 import { renderProgressBarHtml } from '../../fleet-sprint/viewer-extensions.mjs';
+// apra-fleet-x8r.4: goalPriorityMax() is the SAME pure priority-tier parser
+// runner.js's own completion gate uses (goalMax = goalPriorityMax(goal)) --
+// reused here rather than a second parser, so the supervisor's progress bar
+// excludes below-goal beads the identical way the per-sprint viewer's does.
+import { goalPriorityMax } from '../../fleet-sprint/runner.js';
 
 /**
  * Badge color per four-status classifier value; unknown values fall back to
@@ -631,21 +636,16 @@ export function createDashboard(deps = {}) {
         } catch (err) {
             logError('[dashboard] bulk beads fetch failed (progress bars will show placeholders this round):', err);
         }
+        // apra-fleet-x8r.4: structural, project-wide, ANY status -- the same
+        // "is this id someone's .parent" check runner.js's own
+        // decomposedParentIds() applies, built off the same bulk fetch
+        // buildSprintViews() already made above (no extra `bd` call, and
+        // shared across every sprint row rather than recomputed per row).
+        const decomposedParentIdsAll = Array.isArray(allBeads)
+            ? new Set(allBeads.filter((b) => b && b.parentId).map((b) => b.parentId))
+            : null;
         const built = await Promise.all(entries.map(async (entry) => {
             const classification = await watchdog.classifySprint(entry);
-
-            let beadCount = null;
-            let progress = null;
-            try {
-                const scope = await expand(entry.issueRoots ?? []);
-                beadCount = scope.size;
-                if (Array.isArray(allBeads)) {
-                    const beadsInScope = allBeads.filter((b) => b && scope.has(b.id));
-                    progress = computeSprintProgress(beadsInScope);
-                }
-            } catch (err) {
-                logError(`[dashboard] scope expansion failed for sprint '${entry.sprintId}':`, err);
-            }
 
             let meta = {};
             try {
@@ -654,6 +654,31 @@ export function createDashboard(deps = {}) {
                 logError(`[dashboard] getSprintMeta failed for sprint '${entry.sprintId}':`, err);
             }
             const roles = meta.roles && typeof meta.roles === 'object' ? meta.roles : {};
+
+            let beadCount = null;
+            let progress = null;
+            try {
+                const scope = await expand(entry.issueRoots ?? []);
+                beadCount = scope.size;
+                if (Array.isArray(allBeads)) {
+                    const beadsInScope = allBeads.filter((b) => b && scope.has(b.id));
+                    // apra-fleet-x8r.4: goalMax is derived from THIS sprint's
+                    // own goal (falls back to no priority filtering when the
+                    // goal is not recoverable, same as the pre-x8r.4 "every
+                    // bead in scope" behavior) -- never a project-wide
+                    // constant, since two concurrent sprints can have
+                    // different goal bands.
+                    const goalMax = typeof meta.goal === 'string' && meta.goal.length > 0
+                        ? Number(goalPriorityMax(meta.goal).slice(1))
+                        : undefined;
+                    progress = computeSprintProgress(beadsInScope, {
+                        goalMax,
+                        decomposedParentIds: decomposedParentIdsAll,
+                    });
+                }
+            } catch (err) {
+                logError(`[dashboard] scope expansion failed for sprint '${entry.sprintId}':`, err);
+            }
 
             return {
                 sprintId: entry.sprintId,
