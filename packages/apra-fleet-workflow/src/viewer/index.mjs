@@ -7,6 +7,7 @@ import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic } from '
 import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-paths.mjs';
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
+import { buildRunTitle } from './run-title.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -51,6 +52,8 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     body { background: var(--bg); color: var(--text); font-family: sans-serif; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
     .header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--bg-glass); border-bottom: 1px solid var(--border); }
     .header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+    .header-title { display: flex; flex-direction: column; gap: 4px; }
+    .run-title { font-size: 12px; color: var(--text-muted); background: var(--bg-glass); padding: 2px 8px; border-radius: 4px; width: fit-content; }
     .header-actions { display: flex; gap: 12px; align-items: center; }
     
     .stats-banner { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); background: rgba(0,0,0,0.3); padding: 4px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); }
@@ -172,7 +175,16 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 </head>
 <body data-view="${isHistory ? 'history' : 'live'}">
   <div class="header">
-    <h1><span id="workflow-name">Loading...</span></h1>
+    <div class="header-title">
+      <h1><span id="workflow-name">Loading...</span></h1>
+      <!-- apra-fleet-dm5.1: short human "run title" sentence (workflow-
+           specific fields such as members/issue-ids/goal, when the running
+           workflow publishes them), rendered by renderState() below via
+           buildRunTitle(state). Falls back to the plain workflow name
+           (still non-empty, never blank) whenever the relevant fields
+           aren't populated. -->
+      <div id="run-title" class="run-title"></div>
+    </div>
     <div class="header-actions">
       <!-- apra-fleet-eft.37.3: generic, workflow-agnostic display of
            state.result's top-level SCALAR fields -- populated (or hidden,
@@ -256,6 +268,12 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // Shared with dashboard extensions -- see src/viewer/html-utils.mjs for
     // why this is embedded via escapeHtml.toString() instead of duplicated.
     ${escapeHtml.toString()}
+
+    // apra-fleet-dm5.1: buildRunTitle() references escapeHtml by bare name
+    // (not an import) -- embedded here, right after escapeHtml itself, so
+    // that identifier resolves in this plain <script> tag exactly as it
+    // does in run-title.mjs's real ES-module scope.
+    ${buildRunTitle.toString()}
 
     // apra-fleet-eft.27.1: GET /state's lean list-state payload dedupes
     // repeated strings into a shared \`_strings\` table (see
@@ -694,6 +712,13 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
         globalState = state;
 
         document.getElementById('workflow-name').textContent = state.workflowName;
+
+        // apra-fleet-dm5.1: buildRunTitle() returns an ALREADY-ESCAPED HTML
+        // fragment (every user-supplied piece -- member names, bead ids,
+        // goal -- individually run through escapeHtml before being embedded
+        // into the sentence), safe to assign directly here.
+        const runTitleEl = document.getElementById('run-title');
+        if (runTitleEl) runTitleEl.innerHTML = buildRunTitle(state);
 
         const ind = document.getElementById('status-indicator');
         if (state.status === 'running') { ind.innerHTML = '<div class="status-live-indicator"><div class="led"></div> LIVE</div>'; }
