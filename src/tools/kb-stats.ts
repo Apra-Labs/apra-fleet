@@ -14,7 +14,16 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 // the local kb.sqlite, so no CI gate reads this tool or its drift number.
 export const kbStatsSchema = z.object({
   repo: z.string().optional()
-    .describe('Path to the repo root for the canonical-bible drift check (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to the validated session working directory (same validation as kb_export/kb_session_prime); if neither validates, bible.present is reported false and drift equals the full live-CONFIRMED count -- kb_stats never fails because of this.'),
+    .describe('Path to the repo root for the canonical-bible drift check (.fleet/kb-canonical.json). Precedence: this explicit input, when given and valid, wins; otherwise falls back to repo_path, then to the validated session working directory (same validation as kb_export/kb_session_prime); if none validates, bible.present is reported false and drift equals the full live-CONFIRMED count -- kb_stats never fails because of this.'),
+  // apra-fleet-src: every other kb_* tool (kb_list, kb_capture, kb_promote,
+  // kb_session_prime, kb_export) names this input `repo_path`. kb_stats alone
+  // took `repo`, and zod strips unknown keys silently -- so calling it the way
+  // every sibling is called did not error, it fell back to the SERVER's cwd and
+  // reported a fully-zeroed KB for a populated repo. A confidently wrong "there
+  // is nothing here" is worse than a failure, because kb_stats is exactly the
+  // tool an operator reaches for to ask whether the KB is working.
+  repo_path: z.string().optional()
+    .describe('Alias for `repo`, matching the input name used by every other kb_* tool. Ignored when `repo` is also supplied.'),
   symbols: z.array(z.string()).optional()
     .describe('Symbols to check coverage for: per-symbol boolean (a live CONFIRMED entry whose symbols array contains it, exact match) plus the overall fraction.'),
 });
@@ -35,8 +44,10 @@ function resolveRepoPath(explicit?: string): string | null {
 }
 
 export async function kbStats(input: KbStatsInput): Promise<string> {
+  // `repo` wins over the `repo_path` alias so existing callers are unaffected.
+  const requestedRepo = input.repo ?? input.repo_path;
   // Stats must describe the repo asked about, not the server's cwd.
-  const providers = await getKbProviders(resolveRepoPath(input.repo) ?? undefined);
+  const providers = await getKbProviders(resolveRepoPath(requestedRepo) ?? undefined);
   const providerStats = await providers.project.stats({ symbols: input.symbols });
 
   // D5: bible.drift = count of live CONFIRMED entries whose updated_at
@@ -54,7 +65,7 @@ export async function kbStats(input: KbStatsInput): Promise<string> {
     // equals ALL live CONFIRMED entries per D5, never silently lost to 0.
     bible = { present: false, entries: 0, drift: liveConfirmed.length };
 
-    const repoPath = resolveRepoPath(input.repo);
+    const repoPath = resolveRepoPath(requestedRepo);
     const biblePath = repoPath ? path.join(repoPath, '.fleet', 'kb-canonical.json') : null;
 
     if (biblePath && fs.existsSync(biblePath)) {

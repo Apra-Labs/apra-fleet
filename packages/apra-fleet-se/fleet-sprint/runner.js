@@ -3820,6 +3820,51 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
  * @param {{ beadIds: string[], acceptanceCriteriaJson: string, baseBranch: string, branch: string, goal?: string, kbCandidates?: object[] }} opts
  * @returns {string}
  */
+/**
+ * apra-fleet-0ef / apra-fleet-nx7: the "KNOWLEDGE BANK -- promotion candidates"
+ * block, shared verbatim by the per-round reviewer prompt and the Final Review
+ * prompt.
+ *
+ * It lives in one function because the two prompts must state the SAME evidence
+ * bar. Duplicating the text invites them to drift, and a drifted bar is
+ * invisible: both sides would still "work", just to different standards, and the
+ * only symptom would be inconsistent CONFIRMED quality months later.
+ *
+ * Returns a single-element array (or an empty one) so callers can spread it into
+ * their prompt-section list.
+ *
+ * @param {object[]|undefined} kbCandidates
+ * @returns {string[]}
+ */
+export function kbPromotionBlock(kbCandidates) {
+    if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
+    return [
+        'KNOWLEDGE BANK -- promotion candidates. These entries were captured during this '
+        + 'sprint and sit at INFERRED. You are the only role that can promote them to '
+        + 'CONFIRMED. Do NOT call any kb_* tool yourself: return your decisions in the '
+        + '`kb_promotions` field of your structured output as [{id, reason}] and the '
+        + 'orchestrator executes them.\n'
+        + 'Promote ONLY entries whose claim you independently verified during THIS review '
+        + '-- by reading the diff, running the tests, or checking the cited files yourself. '
+        + 'The `reason` must state that evidence (at least 20 characters, e.g. "verified '
+        + 'against server/transit.js:88 and the reopen test"). Evidence, not plausibility: '
+        + 'if an entry merely looks correct, leave it INFERRED -- that is a perfectly good '
+        + 'resting state, and a wrong CONFIRMED entry is worse than no entry. Never '
+        + 'blanket-promote, and never promote by module, tag or timestamp. Promoting '
+        + 'nothing is a valid outcome; return [] in that case.\n'
+        + wrapUntrustedBlock('kb_list --confidence INFERRED', JSON.stringify(
+            kbCandidates.map((e) => ({
+                id: e.id,
+                title: e.title,
+                summary: e.summary,
+                source_files: e.source_files,
+            })),
+            null,
+            2
+        )),
+    ];
+}
+
 export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates }) {
     const ids = Array.isArray(beadIds) ? beadIds : [];
     const scopeWide = ids.length === 0;
@@ -3859,31 +3904,7 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         // this block it could never name an id, so `kb_promotions` came back
         // empty on every round and nothing was ever promoted. The engine reads
         // the candidates and executes; the judgment stays with the reviewer.
-        ...(Array.isArray(kbCandidates) && kbCandidates.length > 0 ? [
-            'KNOWLEDGE BANK -- promotion candidates. These entries were captured during this '
-            + 'sprint and sit at INFERRED. You are the only role that can promote them to '
-            + 'CONFIRMED. Do NOT call any kb_* tool yourself: return your decisions in the '
-            + '`kb_promotions` field of your structured output as [{id, reason}] and the '
-            + 'orchestrator executes them.\n'
-            + 'Promote ONLY entries whose claim you independently verified during THIS review '
-            + '-- by reading the diff, running the tests, or checking the cited files yourself. '
-            + 'The `reason` must state that evidence (at least 20 characters, e.g. "verified '
-            + 'against server/transit.js:88 and the reopen test"). Evidence, not plausibility: '
-            + 'if an entry merely looks correct, leave it INFERRED -- that is a perfectly good '
-            + 'resting state, and a wrong CONFIRMED entry is worse than no entry. Never '
-            + 'blanket-promote, and never promote by module, tag or timestamp. Promoting '
-            + 'nothing is a valid outcome; return [] in that case.\n'
-            + wrapUntrustedBlock('kb_list --confidence INFERRED', JSON.stringify(
-                kbCandidates.map((e) => ({
-                    id: e.id,
-                    title: e.title,
-                    summary: e.summary,
-                    source_files: e.source_files,
-                })),
-                null,
-                2
-            )),
-        ] : []),
+        ...kbPromotionBlock(kbCandidates),
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
@@ -4257,7 +4278,7 @@ export function sanitizePrText(text) {
  * }} opts
  * @returns {string}
  */
-export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [] }) {
+export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], kbCandidates }) {
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
@@ -4324,6 +4345,14 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
         'NEVER touch beads yourself (no bd create/update/reopen) -- the orchestrator applies your ' +
         'newTasks and reopenIds.'
     );
+    // apra-fleet-nx7: the Final Review is the best-positioned promoter in the
+    // whole run -- it has read the entire diff, run the full suite and judged the
+    // sprint as a whole, which is exactly the evidence standard reviewer.md
+    // demands before minting CONFIRMED. It used to receive no candidate block at
+    // all (0ef wired kbCandidates through buildReviewerPrompt only), so anything
+    // captured in a sprint's LAST round reached this reviewer and nobody else,
+    // and was stranded at INFERRED forever.
+    lines.push(...kbPromotionBlock(kbCandidates));
     return lines.join('\n\n');
 }
 
@@ -8880,6 +8909,15 @@ async function runSprintCycle(context) {
         max_total_s: DISPATCH_TIMEOUT_S,
         max_turns: FINAL_REVIEW_MAX_TURNS,
     };
+    // apra-fleet-nx7: offer the final reviewer the same INFERRED candidates a
+    // per-round reviewer gets. Fetched once, before the dispatch, so the retry
+    // and resume paths below reuse the identical block rather than re-querying a
+    // KB that its own earlier promotions may have already changed.
+    const finalReviewRepoPath = kbPriming.folderOf(getMemberForRole('reviewer'));
+    const finalKbCandidates = await kbWork.promotionCandidates(finalReviewRepoPath);
+    if (finalKbCandidates.length > 0) {
+        log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
+    }
     const dispatchFinalReview = () => withGitSync(getMemberForRole('reviewer'), false, () => agent(
         buildFinalVerdictPrompt({
             targetIssues,
@@ -8893,6 +8931,7 @@ async function runSprintCycle(context) {
             integFailures,
             rejectedNewTasks,
             unclosedVerifyIds: finalUnclosedVerifyIds,
+            kbCandidates: finalKbCandidates,
         }),
         // member_name is repeated literally here -- not only via the
         // shared opts object -- so the source-level call-site parse in
@@ -8997,6 +9036,14 @@ async function runSprintCycle(context) {
     // workflow-agnostic Result strip in the dashboard header (state.result --
     // see src/viewer/index.mjs), a second independent reason a raw JSON
     // re-print here would be redundant.
+
+    // apra-fleet-nx7: execute the final reviewer's KB decisions through the same
+    // path every per-round review uses. Deliberately NOT gated on the verdict --
+    // a fact can be verified even when the sprint as a whole fails, and reviewer
+    // contract already says as much ("Not tied to the verdict"). Placed before
+    // the beads/PR work below and kept non-fatal by kbWork.apply itself, so a KB
+    // problem can never change a sprint's outcome.
+    await kbWork.apply(ROLE_REVIEWER, finalReviewRepoPath, finalVerdictResult);
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body

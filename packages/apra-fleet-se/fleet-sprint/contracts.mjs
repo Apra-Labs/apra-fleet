@@ -621,6 +621,25 @@ export const finalVerdict = {
                 required: ['id', 'reason'],
             },
         },
+        // apra-fleet-nx7: the Final Review may promote KB entries, exactly as a
+        // per-round review can. Without this field the final reviewer -- the one
+        // role that has read the whole diff and run the full suite, i.e. the
+        // strongest evidence any promoter ever holds -- had no way to return a
+        // promotion decision, so knowledge captured in a sprint's last round was
+        // stranded at INFERRED with nobody left to verify it. Same {id, reason}
+        // shape as reviewer-output.json's kb_promotions, executed by the same
+        // kbWork.apply path. Optional: promoting nothing is the common answer.
+        kb_promotions: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+                required: ['id', 'reason'],
+            },
+        },
     },
     required: ['verdict', 'notes'],
 };

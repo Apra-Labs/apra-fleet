@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
-import { kbStats } from '../../src/tools/kb-stats.js';
+import { kbStats, kbStatsSchema } from '../../src/tools/kb-stats.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import { vi } from 'vitest';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
@@ -277,5 +277,64 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     expect(result).toHaveProperty('retrieval');
     expect(result).toHaveProperty('promote_ratio');
     expect(result).toHaveProperty('bible');
+  });
+});
+
+// apra-fleet-src: kb_stats was the ONLY kb_* tool naming this input `repo`;
+// kb_list, kb_capture, kb_promote, kb_session_prime and kb_export all take
+// `repo_path`. Zod strips unknown keys silently, so calling kb_stats the way
+// every sibling is called did not error -- it fell back to the SERVER's cwd and
+// returned a confident, fully-zeroed report for a populated KB.
+//
+// That failure mode is worse than an exception: kb_stats is how an operator asks
+// "is the KB working here?", and during the apra-fleet-0ef investigation this
+// exact reading would have corroborated the wrong conclusion (that promotion
+// never happens) while promotion was in fact working.
+describe('kb_stats tool: repo_path input parity with the other kb_* tools (apra-fleet-src)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-stats-repopath-'));
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
+      project: provider,
+      global: provider,
+      projectSlug: 'test',
+    } as any);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it('accepts repo_path and resolves the bible from it, exactly as repo does', async () => {
+    const a = await provider.capture(makeInput({ title: 'A', symbols: ['symA'] }));
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+    await provider.promote(a.id, 'test fixture: verified against the seeded tree');
+
+    const viaRepoPath = JSON.parse(await kbStats({ repo_path: tmpDir } as any));
+    const viaRepo = JSON.parse(await kbStats({ repo: tmpDir }));
+    expect(viaRepoPath.bible).toEqual(viaRepo.bible);
+    expect(viaRepoPath.bible).toEqual({ present: false, entries: 0, drift: 1 });
+  });
+
+  it('repo wins when both are supplied, so existing callers are unaffected', async () => {
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-stats-other-'));
+    const fleetDir = path.join(tmpDir, '.fleet');
+    fs.mkdirSync(fleetDir, { recursive: true });
+    fs.writeFileSync(path.join(fleetDir, 'kb-canonical.json'), JSON.stringify([]));
+    try {
+      // tmpDir has a bible, `other` does not. With repo=tmpDir the bible must be
+      // found even though repo_path points somewhere without one.
+      const result = JSON.parse(await kbStats({ repo: tmpDir, repo_path: other } as any));
+      expect(result.bible.present).toBe(true);
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('the declared schema accepts repo_path rather than silently discarding it', () => {
+    const parsed = kbStatsSchema.parse({ repo_path: '/tmp' });
+    expect((parsed as any).repo_path).toBe('/tmp');
   });
 });
