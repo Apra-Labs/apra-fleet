@@ -218,24 +218,39 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       document.getElementById('tab-' + id).classList.add('active');
     }
     
+    // apra-fleet-4wr.1: the ONE shared h/m/s duration formatter -- every
+    // duration display in this viewer (live elapsed, closed/frozen phase and
+    // activity durations, the stats-banner Uptime) goes through this, so a
+    // closed row and a live row of the same elapsed value render identically
+    // instead of one showing raw/decimal seconds and the other h/m/s.
+    // ms == null (missing -- not yet known) is the ONLY case that renders
+    // the '-' placeholder; a genuine zero or sub-second duration renders
+    // '0s', never '-'.
     function formatTime(ms) {
-      if (!ms) return '-';
-      return (ms / 1000).toFixed(1) + 's';
-    }
-    
-    function formatUptime(ms) {
-      if (!ms || ms < 0) return '0s';
+      if (ms === null || ms === undefined) return '-';
+      if (ms < 0) return '0s';
       let secs = Math.floor(ms / 1000);
       let mins = Math.floor(secs / 60);
       let hrs = Math.floor(mins / 60);
       secs = secs % 60;
       mins = mins % 60;
-      
+
       let out = [];
       if (hrs > 0) out.push(hrs + 'hr');
       if (mins > 0) out.push(mins + 'm');
       out.push(secs + 's');
       return out.join(' ');
+    }
+
+    // Live (still-running) elapsed durations, ticked forward on every
+    // render/poll from Date.now() - startTime -- delegates to formatTime()
+    // for the actual h/m/s formatting (the shared formatter above), only
+    // differing in that a falsy/negative/missing ms (nothing meaningful to
+    // show yet) renders '0s' rather than formatTime's own '-' missing-value
+    // case, since a live row always has SOME elapsed value once it starts.
+    function formatUptime(ms) {
+      if (!ms || ms < 0) return '0s';
+      return formatTime(ms);
     }
     
     // Shared with dashboard extensions -- see src/viewer/html-utils.mjs for

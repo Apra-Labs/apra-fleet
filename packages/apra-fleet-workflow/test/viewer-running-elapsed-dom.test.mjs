@@ -91,12 +91,12 @@ test('on completion (isRunning false) the final duration replaces the elapsed la
         // exactly what the real workflow emits on activity:end.
         act.isRunning = false;
         act.duration = 842;
-        assert.equal(build(act), '0.8s', 'once complete, the final duration (formatTime) replaces the elapsed label, not the last elapsed value');
+        assert.equal(build(act), '0s', 'once complete, the final duration (formatTime) replaces the elapsed label, not the last elapsed value -- a sub-second duration renders "0s", per apra-fleet-4wr.1');
 
         // Further clock advances must have no further effect once complete --
         // the label is pinned to the final duration, not still ticking.
         mockNow += 60_000;
-        assert.equal(build(act), '0.8s', 'a completed row must not keep counting up on later re-renders');
+        assert.equal(build(act), '0s', 'a completed row must not keep counting up on later re-renders');
     } finally {
         Date.now = realNow;
     }
