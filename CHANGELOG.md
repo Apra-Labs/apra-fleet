@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- compose_permissions silent write no-op fix
+
+Sprint goal: fix a bug where `compose_permissions` could report a grant as
+successful while the underlying provider settings file on the target member
+was never actually updated -- a silent no-op reproduced live on a Windows
+member, though the underlying defect was not platform-specific. All in-scope
+work closed. The sprint's own final verdict is FAIL (a reviewer dispatch
+stalled and could not be repaired after a retry), and a same-day regression
+pass also failed for the same stall reason; no carry-over beads were filed
+from the regression pass.
+
+What shipped:
+
+- The config-delivery path used by `compose_permissions` now checks the exit
+  code of every remote directory-creation and write command, and reads the
+  written file back to structurally confirm the intended content actually
+  landed (parsed-and-compared for JSON, substring-matched for TOML/string
+  content) before treating a grant as delivered. Any failure -- a nonzero
+  exit code or a read-back mismatch -- is surfaced as an explicit failure
+  string from `compose_permissions`; the permissions ledger is left
+  untouched in that case, so a failed write can no longer be recorded as if
+  it had succeeded.
+- A new regression test suite drives the real, unmocked local command
+  execution path against a scratch filesystem and asserts on file content
+  read from disk with the standard filesystem API, covering a fresh grant,
+  a grant merged onto an existing settings file (preserving unrelated
+  entries), and a forced write failure. This closes the coverage gap left by
+  the existing test suite, which only asserted on the generated command
+  string and could not have caught this class of bug.
+- Verification note: this sprint's test run exercised the POSIX write path
+  end-to-end on a real filesystem. The Windows write path is covered by
+  code inspection and by existing mocked-command-string assertions, but was
+  not executed end-to-end against a real Windows filesystem in this sprint
+  -- that gap is called out explicitly rather than claimed as covered.
+- Also included on this branch: a fix to the stall-poller's Windows
+  liveness/staleness polling, which removed an intermediate PowerShell
+  `$variable` from a remote one-liner (observed to be silently stripped by
+  the SSH execution path on at least one Windows member, breaking the mtime
+  signal on every poll) and replaced a directory-enumeration pattern that
+  could hang against a nonexistent path with an existence guard ahead of it.
+
+Carried forward: the write-level verification added here does not by
+itself guarantee that a provider CLI reads and honors a correctly-written
+settings file (a separate, already-tracked concern -- see the
+workspace-trust caveat in `docs/missing-grant-recovery-and-playbook-evolution.md`),
+and concurrent grant application against the same member remains an
+unlocked read-modify-write. Both remain open, tracked items.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $2.7463.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.1223 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 12 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- npm-install dependency-packaging fixes
 
 Sprint goal: unblock npm-installed (published-tarball, non-workspace) consumers
