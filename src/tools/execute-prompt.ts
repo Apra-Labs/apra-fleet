@@ -298,7 +298,8 @@ async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
 // (a) normal success: result.code === 0 -> finally sets idle and removes agent from inFlight
 // (b) non-zero exit from execCommand: result.code !== 0 -> finally sets idle and removes agent from inFlight
 // (c) exception in try block (auth, network, crash) -> catch records error type; finally sets offline or idle
-// (d) AbortSignal/MCP client cancellation -> abortHandler kills PID, execCommand resolves, finally clears
+// (d) MCP client disconnection -> remote process continues; SSH stays alive until natural completion or timer
+//     Stall abort -> abortHandler kills PID via onStall, execCommand resolves, finally clears
 // (e) stale session retry -> retried without session ID; finally clears on success or failure
 // (f) server overload retry -> retried after delay; finally clears on success or failure
 // (g) early returns before inFlightAgents.add: busy state never entered
@@ -1013,20 +1014,22 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   };
 
+  // apra-fleet-d64.1: MCP transport drops must NOT kill the remote process.
+  // The remote CLI session is independent of the MCP session and should
+  // continue working. The abort handler only logs the disconnection --
+  // tryKillPid is NOT called here. Explicit kills go through stop_prompt;
+  // stall kills go through the stallDetector's onStall callback (line ~715).
   const abortHandler = () => {
-    scope.abort('cancelled by MCP client');
-    tryKillPid(agent, strategy, cmds).catch(() => {});
+    scope.abort('MCP client disconnected -- remote session continues');
   };
   extra?.signal?.addEventListener('abort', abortHandler);
 
-  // apra-fleet-3c9.1: the signal handed to execCommand fires on EITHER the MCP
-  // client's cancellation OR a confirmed stall (stallAbortController). Merging
-  // them means a stall aborts the pending dispatch exactly as a client cancel
-  // would, while a live (non-stalled) dispatch -- whose controller is never
-  // aborted -- is left completely untouched.
-  const dispatchSignal = extra?.signal
-    ? AbortSignal.any([extra.signal, stallAbortController.signal])
-    : stallAbortController.signal;
+  // apra-fleet-d64.1: dispatchSignal only carries the stall detector's
+  // signal, NOT the MCP client signal. This means an MCP transport drop
+  // does NOT abort the SSH channel or kill the remote process -- the SSH
+  // call continues until the remote CLI finishes (or a timer/stall fires).
+  // A confirmed stall still aborts the dispatch exactly as before.
+  const dispatchSignal = stallAbortController.signal;
 
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
