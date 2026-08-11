@@ -16,7 +16,7 @@ import {
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient } from '../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -734,6 +734,40 @@ async function main() {
         log: (msg) => console.log(msg),
     });
     await sprintReservation.reserveAll();
+
+    // apra-fleet-p2to.4.2: reservation handling across a cooperative
+    // pause/resume (apra-fleet-p2to.1's engine primitive). On 'paused' hand
+    // every member back so another sprint may use it while this one is parked;
+    // on 'resumed' re-acquire them OWNER-CHECKED (a member another sprint
+    // grabbed while we were paused fails the resume, NAMING it) and re-sync
+    // every re-acquired member (git fetch + decideEnsureBranchAction probe +
+    // bd dolt pull) unconditionally before work continues. Both handlers are
+    // best-effort at the process boundary -- a rejected promise here must be
+    // logged, never left unhandled -- but reReserveForResume's own throw (an
+    // unavailable member) is surfaced so the operator sees exactly which
+    // members block the resume.
+    const runGitSoft = async (cmd, member) => {
+        const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
+        const text = res && res.content && res.content[0] ? res.content[0].text : '';
+        return { ok: !(res && res.isError), stdout: text, error: (res && res.isError) ? text : undefined };
+    };
+    workflow.on('paused', () => {
+        sprintReservation.releaseForPause().catch((err) =>
+            console.error('[member-reservation] release-on-pause failed:', err && err.message ? err.message : err));
+    });
+    workflow.on('resumed', () => {
+        sprintReservation.reReserveForResume({
+            resyncMember: (member) => resyncReacquiredMember({
+                member,
+                branch: branchName,
+                baseBranch,
+                runGit: (cmd) => runGitSoft(cmd, member),
+                doltPull: (m) => runCommand('bd dolt pull', m),
+                log: (msg) => console.log(msg),
+            }),
+        }).catch((err) =>
+            console.error('[member-reservation] re-reserve-on-resume failed:', err && err.message ? err.message : err));
+    });
 
     let reservationReleased = false;
     const releaseReservationOnce = async () => {

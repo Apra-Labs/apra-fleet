@@ -5,7 +5,7 @@ import {
     ROLES, normalizeRole, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError, GitSyncError, DoltDivergedError, DoltSyncError, PostDispatchSyncError, PlanReviewDispatchFailedError, MemberReservationResumeError, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
@@ -2046,15 +2046,24 @@ export function createMemberReservationClient(opts = {}) {
         return '';
     }
 
+    // Returns { ok, text } rather than throwing so BOTH the best-effort callers
+    // (reserveAll/releaseAll, which ignore the outcome) and the owner-checked
+    // resume caller (reReserveForResume, which MUST know per-member whether the
+    // reserve was granted or rejected) can share one call path. `ok` is false
+    // on a tool rejection ("already reserved by X") OR a transport throw; the
+    // caller decides what a failure means for its own contract.
     async function callFor(action, member) {
         try {
             const result = await callTool('member_reservation', { member_name: member, action, sprint_id: sprintId });
             const text = resultText(result);
             if ((result && result.isError) || text.startsWith('[-]')) {
                 log(`[member-reservation] ${action} rejected for member '${member}': ${text || '(no detail)'}`);
+                return { ok: false, text };
             }
+            return { ok: true, text };
         } catch (err) {
             log(`[member-reservation] ${action} failed for member '${member}' (non-fatal; execute_prompt's dispatch-time reservedBy check still applies): ${err.message}`);
+            return { ok: false, text: err.message };
         }
     }
 
@@ -2066,6 +2075,58 @@ export function createMemberReservationClient(opts = {}) {
         async releaseAll() {
             if (!active) return;
             for (const member of members) await callFor('release', member);
+        },
+
+        // (apra-fleet-p2to.4.2) Pause hand-back: release EVERY member so a
+        // different sprint may claim it while this one is parked at a
+        // cooperative pause. Best-effort per member, exactly like releaseAll()
+        // -- a pause must never fail on a release hiccup, and execute_prompt's
+        // dispatch-time reservedBy check still fails loudly on any member this
+        // sprint later dispatches to without holding.
+        async releaseForPause() {
+            if (!active) return;
+            for (const member of members) await callFor('release', member);
+        },
+
+        // (apra-fleet-p2to.4.2) Resume re-acquire, OWNER-CHECKED: re-reserve
+        // every member released at pause. A member is "unavailable" when its
+        // reserve is rejected -- another sprint claimed it while we were paused,
+        // so it is no longer ours. We refuse to silently continue on top of a
+        // member some other sprint now owns: collect every unavailable member
+        // and, if any, fail the resume with a single clean error that NAMES
+        // them (MemberReservationResumeError) so the operator knows exactly what
+        // to free before retrying the resume.
+        //
+        // Every successfully re-acquired member then runs `resyncMember` (git
+        // fetch + decideEnsureBranchAction probe + bd dolt pull) UNCONDITIONALLY
+        // before any work continues -- while paused, origin and the beads DB can
+        // have moved (another sprint, a human push), so the re-sync is never
+        // gated on a "looks unchanged" heuristic.
+        //
+        // @param {{ resyncMember?: (member: string) => Promise<void> }} [opts]
+        // @returns {Promise<{ reacquired: string[] }>}
+        async reReserveForResume({ resyncMember } = {}) {
+            if (!active) return { reacquired: [] };
+            const reacquired = [];
+            const unavailable = [];
+            for (const member of members) {
+                const res = await callFor('reserve', member);
+                if (res.ok) reacquired.push(member);
+                else unavailable.push(member);
+            }
+            if (unavailable.length > 0) {
+                // Hand back the ones we DID re-grab so a failed resume does not
+                // leave this sprint holding a partial, unusable reservation set
+                // that blocks the very members another operator may need to free
+                // up the unavailable ones. Best-effort -- the resume is failing
+                // regardless.
+                for (const member of reacquired) await callFor('release', member);
+                throw new MemberReservationResumeError(unavailable);
+            }
+            if (typeof resyncMember === 'function') {
+                for (const member of reacquired) await resyncMember(member);
+            }
+            return { reacquired };
         },
     };
 }
@@ -5710,6 +5771,96 @@ export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, br
         command: `git checkout -B ${branch} ${startPoint}`,
         startPoint,
     };
+}
+
+/**
+ * (apra-fleet-p2to.4.2) Re-sync ONE member that was just re-acquired on resume.
+ * Runs -- UNCONDITIONALLY, never gated on a "looks unchanged" heuristic -- the
+ * same three reconciliation steps a fresh dispatch would rely on, because while
+ * this sprint was paused both origin and the beads DB can have moved (another
+ * sprint, a human push) on top of the released member:
+ *
+ *   1. `git fetch` (base branch, then the sprint branch soft -- a brand-new
+ *      branch legitimately has no remote ref yet).
+ *   2. The pure decideEnsureBranchAction() probe: fetch outcome + a local-branch
+ *      existence probe + (when both tips exist) a two-way ancestor comparison,
+ *      fed into the SAME decision helper the Ensure Sprint Branch phase uses.
+ *      An 'abort' decision (fetch failed for a non-"missing ref" reason, or the
+ *      tips diverged) THROWS rather than touch git -- resuming onto a diverged
+ *      branch could silently discard real pushed work. A 'checkout' decision is
+ *      executed so the member's working branch is reconciled to origin's new
+ *      tip before work continues.
+ *   3. `bd dolt pull` -- re-sync the beads clone to whatever landed while paused.
+ *
+ * All I/O is injected so this stays transport-agnostic and unit-testable:
+ *   - `runGit(cmd)` -> Promise<{ ok: boolean, stdout?: string, error?: string }>
+ *     (a SOFT git runner: it never throws; this function decides which failures
+ *     are fatal).
+ *   - `doltPull(member)` -> Promise<any> (runs `bd dolt pull` on the member).
+ *
+ * @param {{ member: string, branch: string, baseBranch: string,
+ *           runGit: (cmd: string) => Promise<{ ok: boolean, stdout?: string, error?: string }>,
+ *           doltPull: (member: string) => Promise<any>, log?: Function }} opts
+ * @returns {Promise<void>}
+ */
+export async function resyncReacquiredMember(opts = {}) {
+    const { member, branch, baseBranch, runGit, doltPull, log = () => {} } = opts;
+    if (typeof runGit !== 'function' || typeof doltPull !== 'function') {
+        throw new TypeError('resyncReacquiredMember requires runGit() and doltPull() to be injected');
+    }
+
+    async function gitStep(cmd, { failSoft = false } = {}) {
+        const res = await runGit(cmd);
+        if (!failSoft && !(res && res.ok)) {
+            throw new Error(
+                `[resume-resync] '${cmd}' failed on member '${member}': ${(res && (res.error || res.stdout)) || 'unknown error'}`
+            );
+        }
+        return res || { ok: false };
+    }
+
+    // 1. git fetch: base (hard -- a missing base is a real problem) then the
+    //    sprint branch (soft -- a brand-new branch has no remote ref yet).
+    await gitStep(`git fetch origin ${baseBranch} --quiet`);
+    const branchFetch = await gitStep(`git fetch origin ${branch} --quiet`, { failSoft: true });
+
+    // 2. decideEnsureBranchAction probe: local-branch existence + tip comparison.
+    const localProbe = await gitStep(`git rev-parse --verify --quiet refs/heads/${branch}`, { failSoft: true });
+    const localBranchExists = localProbe.ok;
+    let localTipStatus;
+    if (branchFetch.ok && localBranchExists) {
+        const localIsAncestorOfRemote = await gitStep(
+            `git merge-base --is-ancestor ${branch} origin/${branch}`, { failSoft: true }
+        );
+        const remoteIsAncestorOfLocal = await gitStep(
+            `git merge-base --is-ancestor origin/${branch} ${branch}`, { failSoft: true }
+        );
+        if (localIsAncestorOfRemote.ok) {
+            localTipStatus = 'behind-or-equal';
+        } else if (remoteIsAncestorOfLocal.ok) {
+            localTipStatus = 'ahead';
+        } else {
+            localTipStatus = 'diverged';
+        }
+    }
+    const decision = decideEnsureBranchAction({
+        branch,
+        baseBranch,
+        branchFetchOk: branchFetch.ok,
+        branchFetchError: branchFetch.error,
+        localBranchExists,
+        localTipStatus,
+    });
+    if (decision.action === 'abort') {
+        throw new Error(`[resume-resync] ${decision.message} (member '${member}')`);
+    }
+    // Reconcile the member's working branch to origin's (possibly moved) tip.
+    await gitStep(decision.command);
+
+    // 3. bd dolt pull: re-sync the beads clone.
+    await doltPull(member);
+
+    log(`[resume-resync] member '${member}' re-synced (git fetch + branch reconcile + beads D-pull) before work resumed`);
 }
 
 async function runSprintCycle(context) {
