@@ -5,6 +5,18 @@ import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.j
 import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
 import { escapeBatchMetachars } from '../utils/shell-escape.js';
 
+/**
+ * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
+ * Use this for ANY Windows member-bound command instead of sending a raw
+ * PowerShell one-liner over strategy.execCommand -- the raw form only works
+ * if the member's sshd default shell happens to be PowerShell; on a cmd.exe
+ * default it silently produces garbage (apra-fleet-ot2z.10).
+ */
+export function wrapPowerShellEncoded(psScript: string): string {
+  const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+  return `powershell -EncodedCommand ${encoded}`;
+}
+
 const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'GEMINI_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
 
 /**
@@ -160,8 +172,7 @@ export class WindowsCommands implements OsCommands {
 
   writeTextFile(destPath: string, content: string): string {
     const psScript = `$d='${content.replace(/'/g, "''")}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
-    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    return `powershell -EncodedCommand ${encoded}`;
+    return wrapPowerShellEncoded(psScript);
   }
 
   readRemoteJson(destPath: string): string {
@@ -200,8 +211,7 @@ New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Nu
 $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     `.trim().replace(/\\r\\n/g, ' ');
 
-    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    return `powershell -EncodedCommand ${encoded}`;
+    return wrapPowerShellEncoded(psScript);
   }
 
   // --- Auth ---
@@ -212,8 +222,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
 
   credentialFileWrite(content: string, destPath: string): string {
     const psScript = `$d='${content.replace(/'/g, "''")}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
-    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    return `powershell -EncodedCommand ${encoded}`;
+    return wrapPowerShellEncoded(psScript);
   }
 
   credentialFileRemove(destPath: string): string {
@@ -339,7 +348,6 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   hashFilesRecursive(dir: string): string {
     const winDir = dir.replace(/\//g, '\\').replace(/'/g, "''");
     const psScript = `$b = Join-Path $HOME '${winDir}'; if (Test-Path $b) { Get-ChildItem -Path $b -Recurse -File | ForEach-Object { $h = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower(); $r = $_.FullName.Substring($b.Length + 1).Replace('\\', '/'); "$h  ./$r" } }`;
-    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    return `powershell -EncodedCommand ${encoded}`;
+    return wrapPowerShellEncoded(psScript);
   }
 }

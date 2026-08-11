@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 import { getAgentOS } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
@@ -42,15 +43,15 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
   const winTaskDir = `$env:USERPROFILE\\.fleet-tasks\\${input.task_id}`;
 
   const statusCmd = isWindows
-    ? `if (Test-Path "${winTaskDir}\\status.json") { Get-Content "${winTaskDir}\\status.json" -Raw } else { echo '{}' }`
+    ? wrapPowerShellEncoded(`if (Test-Path "${winTaskDir}\\status.json") { Get-Content "${winTaskDir}\\status.json" -Raw } else { echo '{}' }`)
     : `cat ${taskDir}/status.json 2>/dev/null || echo '{}'`;
 
   const pidCmd = isWindows
-    ? `$pidFile = "${winTaskDir}\\task.pid"; if (Test-Path $pidFile) { $p = (Get-Content $pidFile -Raw).Trim() } else { $p = $null }; if ($p -and (Get-Process -Id $p -ErrorAction SilentlyContinue)) { echo alive } else { echo dead }`
+    ? wrapPowerShellEncoded(`$pidFile = "${winTaskDir}\\task.pid"; if (Test-Path $pidFile) { $p = (Get-Content $pidFile -Raw).Trim() } else { $p = $null }; if ($p -and (Get-Process -Id $p -ErrorAction SilentlyContinue)) { echo alive } else { echo dead }`)
     : `cat ${taskDir}/task.pid 2>/dev/null | xargs -r kill -0 2>/dev/null && echo alive || echo dead`;
 
   const logCmd = isWindows
-    ? `if (Test-Path "${winTaskDir}\\task.log") { Get-Content "${winTaskDir}\\task.log" -Tail 20 } else { echo '' }`
+    ? wrapPowerShellEncoded(`if (Test-Path "${winTaskDir}\\task.log") { Get-Content "${winTaskDir}\\task.log" -Tail 20 } else { echo '' }`)
     : `tail -20 ${taskDir}/task.log 2>/dev/null || echo ''`;
 
   // Run in parallel: status.json, PID liveness check, GPU util (cloud only), log tail

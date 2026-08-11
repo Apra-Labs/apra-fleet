@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { removeAgent as removeFromRegistry, getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
@@ -89,7 +90,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
             const keyMatch = parts.slice(0, 2).join(' ');
             const isWindows = getAgentOS(agent) === 'windows';
             const removeKeyCmd = isWindows
-              ? `$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${keyMatch.replace(/'/g, "''")}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`
+              ? wrapPowerShellEncoded(`$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${keyMatch.replace(/'/g, "''")}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`)
               // Escape forward slashes for sed delimiter
               : `sed -i '/${keyMatch.replace(/\//g, '\\/')}/d' ~/.ssh/authorized_keys`;
             await strategy.execCommand(removeKeyCmd, 10000).catch(() => {
