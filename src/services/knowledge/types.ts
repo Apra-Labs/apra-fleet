@@ -250,4 +250,10 @@ export interface MemoryProvider {
   // another machine's bible has no local row and is silently skipped. Returns
   // the number of rows actually bumped.
   touch(ids: string[]): Promise<number>;
+  // KB audit 2026-08-11: one hop across the KB's own graph, limited to the two
+  // edge kinds FTS cannot substitute for -- `refines` ("there is a newer
+  // framing of this claim") and `contradiction_of` ("something disputes it").
+  // shares_file/shares_symbol are deliberately NOT traversed: they encode
+  // topicality, which an FTS match over the same fields already surfaces.
+  relatedClaims(ids: string[], limit?: number): Promise<KBEntry[]>;
 }

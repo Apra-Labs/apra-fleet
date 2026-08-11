@@ -243,6 +243,17 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
+  // Delegated to the local store like getLinked: the graph lives alongside the
+  // entries, and there is no remote route for it. Never throws -- a graph miss
+  // must degrade to "no related claims", not fail a prime.
+  async relatedClaims(ids: string[], limit?: number): Promise<KBEntry[]> {
+    try {
+      return await this.fallback.relatedClaims(ids, limit);
+    } catch {
+      return [];
+    }
+  }
+
   async prime(opts: PrimeOptions): Promise<PrimedContext> {
     await this.tryFlushQueue();
     try {

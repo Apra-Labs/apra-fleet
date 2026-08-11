@@ -36,6 +36,15 @@ export const kbImportSchema = z.object({
     .describe('Explicit path to a bible JSON file. When omitted, resolves to <repo>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). Directives are quarantined to pending proposals either way.'),
   repo: z.string().optional()
     .describe('Repo root used to resolve <repo>/.fleet/kb-canonical.json when --path is omitted, and to anchor the post-import freshness sweep. Validated (must exist and be a directory) or the call fails; when omitted, falls back to the validated process working directory.'),
+  // KB audit 2026-08-11: the apra-fleet-src trap again. Every other kb_* tool
+  // names this input `repo_path`; kb_import alone took `repo`, and zod strips
+  // unknown keys silently -- so calling it the way every sibling is called did
+  // not error, it resolved against the SERVER's cwd and imported an unrelated
+  // repo's bible. Invisible, because it still reports a successful import. The
+  // sprint engine calls this per member, which is precisely the repo-blindness
+  // class per-member path resolution exists to prevent.
+  repo_path: z.string().optional()
+    .describe('Alias for `repo`, matching the input name used by every other kb_* tool. Ignored when `repo` is also supplied.'),
   scope: z.literal('project').optional()
     .describe('Only project scope is supported (imports into the project KB). Global bibles are a separate concern.'),
 });
@@ -111,7 +120,8 @@ export interface KbImportReport {
 }
 
 export async function kbImport(input: KbImportInput): Promise<string> {
-  const repoAnchor = resolveRepoPath(input.repo);
+  // `repo` wins over the `repo_path` alias so existing callers are unaffected.
+  const repoAnchor = resolveRepoPath(input.repo ?? input.repo_path);
   const biblePath = input.path ?? path.join(repoAnchor, '.fleet', 'kb-canonical.json');
 
   // Validate the file resolves and parses to the bible array shape BEFORE

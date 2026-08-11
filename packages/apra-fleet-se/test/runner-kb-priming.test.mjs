@@ -175,6 +175,15 @@ describe('createKbPrimingClient (apra-fleet-e28)', () => {
 //  2. primeAll() discarded prime's return value entirely, so even a warm KB
 //     reached nobody.
 
+/** A primed KB entry, shared by the read-half and work-half suites below. */
+const ENTRY = {
+    id: 'abc123',
+    title: 'resolveZoneBinding returns a discriminated union',
+    summary: 'It does not collapse unknown-zone and unbound-ROI.',
+    confidence: 'CONFIRMED',
+    source_files: ['server/transit.service.ts'],
+};
+
 describe('KB priming reaches the agent (audit 2026-08-11)', () => {
     function primingCallTool(topEntries) {
         const calls = [];
@@ -190,14 +199,6 @@ describe('KB priming reaches the agent (audit 2026-08-11)', () => {
             },
         };
     }
-
-    const ENTRY = {
-        id: 'abc123',
-        title: 'resolveZoneBinding returns a discriminated union',
-        summary: 'It does not collapse unknown-zone and unbound-ROI.',
-        confidence: 'CONFIRMED',
-        source_files: ['server/transit.service.ts'],
-    };
 
     test('primeAll retains the primed entries per member instead of discarding them', async () => {
         const { callTool } = primingCallTool([ENTRY]);
@@ -229,6 +230,44 @@ describe('KB priming reaches the agent (audit 2026-08-11)', () => {
 
         assert.equal(result.primed, 1);
         assert.deepEqual(client.knowledgeOf('alpha'), []);
+    });
+
+    // KB audit follow-up: the cold-seed in kb_session_prime is capped at 5
+    // entries and reads the bible as a FILE, so bible knowledge never becomes
+    // searchable rows. apra-fleet's own bible holds 17 CONFIRMED entries and a
+    // sprint could reach at most 5 arbitrary ones, with FTS unable to rank
+    // them. kb_import lands the whole bible in the warm KB first, which is what
+    // gives the per-dispatch kb_query anything to match against.
+    test('primeAll imports the bible before priming, so the whole bible is searchable', async () => {
+        const { calls, callTool } = primingCallTool([ENTRY]);
+        const client = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        await client.primeAll();
+
+        const names = calls.map((c) => c.name);
+        assert.ok(names.includes('kb_import'), 'the bible must reach the warm KB, not just the cold-seed');
+        assert.ok(
+            names.indexOf('kb_import') < names.indexOf('kb_session_prime'),
+            'importing AFTER priming would leave the very prime it was meant to feed cold',
+        );
+        assert.equal(calls.find((c) => c.name === 'kb_import').args.repo_path, '/srv/alpha/repo');
+    });
+
+    test('a failing kb_import is non-fatal -- priming still runs', async () => {
+        const calls = [];
+        const callTool = async (name, args) => {
+            calls.push({ name, args });
+            if (name === 'member_detail') return { folder: '/srv/alpha/repo' };
+            if (name === 'kb_import') throw new Error('no bible here');
+            if (name === 'kb_session_prime') return { content: [{ text: JSON.stringify({ top_entries: [ENTRY] }) }] };
+            return {};
+        };
+        const client = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        const result = await client.primeAll();
+
+        assert.equal(result.primed, 1);
+        assert.deepEqual(client.knowledgeOf('alpha').map((e) => e.id), ['abc123']);
     });
 
     test('kbKnowledgeBlock is empty for no entries -- a cold KB adds nothing to the prompt', () => {
@@ -452,6 +491,60 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
     // human ran the tool by hand, so promoted CONFIRMED knowledge stayed on the
     // machine that learned it and never reached a teammate or a fresh clone
     // (and the cold-seed in kb_session_prime had nothing to read).
+    // KB audit follow-up: one hint-less prime per member at sprint start gave
+    // every role the same handful of entries regardless of what it was working
+    // on, and left kb_query unused by the engine entirely. This is the
+    // per-dispatch, relevance-ranked read -- and the only path on which the
+    // KB's refines/contradiction_of edges are ever traversed.
+    test('relevantKnowledge queries the KB with the dispatch terms and expands the graph', async () => {
+        const calls = [];
+        const callTool = async (name, args) => {
+            calls.push({ name, args });
+            return { content: [{ text: JSON.stringify({ l1_results: [ENTRY], related_claims: [] }) }] };
+        };
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        const out = await client.relevantKnowledge('/srv/a', ['resolveZoneBinding', 'transit ingest']);
+
+        assert.deepEqual(out.map((e) => e.id), ['abc123']);
+        const q = calls.find((c) => c.name === 'kb_query');
+        assert.equal(q.args.repo_path, '/srv/a');
+        assert.equal(q.args.expand_related, true, 'without this the edges stay unread');
+        assert.match(q.args.query, /resolveZoneBinding/);
+        assert.match(q.args.query, /transit ingest/);
+    });
+
+    test('relevantKnowledge appends related claims below the direct hits', async () => {
+        const related = { id: 'zzz999', title: 'A claim that disputes the above', summary: 'x', confidence: 'UNVERIFIED' };
+        const callTool = async () => ({
+            content: [{ text: JSON.stringify({ l1_results: [ENTRY], related_claims: [related] }) }],
+        });
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        const out = await client.relevantKnowledge('/srv/a', ['anything']);
+
+        assert.deepEqual(out.map((e) => e.id), ['abc123', 'zzz999']);
+        assert.equal(out[1].via, 'kb-graph', 'a related claim must be distinguishable from a direct hit');
+    });
+
+    test('relevantKnowledge without a repo path or terms makes NO call', async () => {
+        const { calls, callTool } = recorder();
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        assert.deepEqual(await client.relevantKnowledge(null, ['x']), []);
+        assert.deepEqual(await client.relevantKnowledge('/srv/a', []), []);
+        assert.equal(calls.length, 0);
+    });
+
+    test('a failing kb_query degrades to no knowledge, never throws', async () => {
+        const client = createKbWorkClient({
+            callTool: async () => { throw new Error('kb down'); },
+            log: () => {},
+        });
+
+        assert.deepEqual(await client.relevantKnowledge('/srv/a', ['x']), []);
+    });
+
     test('exportBible writes the canonical bible for the repo it is given', async () => {
         const { calls, callTool } = recorder();
         const client = createKbWorkClient({ callTool, log: () => {} });

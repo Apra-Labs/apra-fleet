@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
-import { kbImport } from '../../src/tools/kb-import.js';
+import { kbImport, kbImportSchema } from '../../src/tools/kb-import.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 
@@ -376,5 +376,38 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
     expect(report.imported).toBe(1);
     expect(report.skipped).toBe(3);
     expect(provider.hasEntry('good-1')).toBe(true);
+  });
+});
+
+// apra-fleet KB audit follow-up 2026-08-11: the same input-name trap that
+// apra-fleet-src found in kb_stats. Every other kb_* tool names this input
+// `repo_path` (kb_list, kb_capture, kb_promote, kb_session_prime, kb_export,
+// and kb_stats since src); kb_import alone took `repo`. Zod strips unknown keys
+// silently, so calling it the way every sibling is called did not error -- it
+// fell back to the SERVER's working directory and resolved some unrelated
+// repo's bible. A confidently wrong import is worse than a failure, and this
+// one is invisible: it still reports entries imported, just from the wrong
+// place. The sprint engine now calls kb_import per member, which is exactly
+// the repo-blindness class the per-member path resolution exists to prevent.
+describe('kb_import: repo_path input parity with the other kb_* tools', () => {
+  it('the declared schema accepts repo_path rather than silently discarding it', () => {
+    const parsed = kbImportSchema.parse({ repo_path: '/tmp' });
+    expect((parsed as { repo_path?: string }).repo_path).toBe('/tmp');
+  });
+
+  it('resolves the bible from repo_path exactly as repo does', async () => {
+    writeBible([bibleEntry({ id: 'alias-1', symbols: ['aliasSym'] })]);
+
+    const viaRepoPath = JSON.parse(await kbImport({ repo_path: tmpRepo } as never));
+
+    expect(viaRepoPath.imported).toBe(1);
+  });
+
+  it('repo wins when both are supplied, so existing callers are unaffected', async () => {
+    writeBible([bibleEntry({ id: 'alias-2', symbols: ['aliasSym2'] })]);
+
+    const result = JSON.parse(await kbImport({ repo: tmpRepo, repo_path: '/nonexistent-path' } as never));
+
+    expect(result.imported).toBe(1);
   });
 });

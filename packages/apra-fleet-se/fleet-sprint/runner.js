@@ -1566,6 +1566,27 @@ export function createKbPrimingClient(opts = {}) {
                         skipped++;
                         continue;
                     }
+                    // Land the committed bible in the WARM KB before priming.
+                    //
+                    // Without this the bible is reachable only through
+                    // kb_session_prime's cold-seed, which reads it as a FILE
+                    // and caps at 5 entries -- apra-fleet's own bible holds 17,
+                    // so a sprint could see at most 5 arbitrary ones and FTS
+                    // could rank none of them, because they were never rows.
+                    // Importing first is what gives the per-dispatch kb_query
+                    // (see relevantKnowledge) anything to match against.
+                    // Idempotent by id, and best-effort: a repo with no bible,
+                    // or an import that rejects every entry, must not stop the
+                    // prime it was meant to feed.
+                    try {
+                        const imported = parseResult(await callTool('kb_import', { repo_path: repoPath }));
+                        if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
+                            log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for ${repoPath}`);
+                        }
+                    } catch (err) {
+                        log(`[kb-prime] kb_import skipped for ${repoPath} (non-fatal): ${err.message}`);
+                    }
+
                     const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath }));
                     const entries = (primeResult && Array.isArray(primeResult.top_entries))
                         ? primeResult.top_entries.filter((e) => e && typeof e.id === 'string')
@@ -1735,6 +1756,63 @@ export function createKbWorkClient(opts = {}) {
                     .slice(0, KB_MAX_PROMOTION_CANDIDATES);
             } catch (err) {
                 log(`[kb-work] could not list promotion candidates for ${repoPath} (non-fatal): ${err.message}`);
+                return [];
+            }
+        },
+        /**
+         * KB audit follow-up: the per-dispatch, relevance-ranked read.
+         *
+         * primeAll() runs ONCE per member at sprint start with no hints, so
+         * every role received the same handful of entries no matter what it was
+         * about to work on -- and kb_query went unused by this engine entirely.
+         * This asks the KB what it knows about THIS dispatch, using the terms
+         * the engine already holds (bead ids and their titles).
+         *
+         * `expand_related` is what finally reads the KB's own graph. The KB has
+         * been writing `refines` and `contradiction_of` edges since AUDN
+         * shipped and traversing none of them: 554 edges, 0 reads. A role about
+         * to act on an entry is precisely who needs to know that entry has a
+         * newer framing or a standing dispute -- especially since confidence
+         * tier does NOT track correctness across a contradiction chain (the
+         * warehouse chain-A shape, where the incorrect entry outranks both of
+         * its corrections).
+         *
+         * Best-effort, like every other KB read here: no repo path, no terms, a
+         * cold KB or an unreachable one all degrade to "no knowledge", never to
+         * a failed dispatch.
+         */
+        async relevantKnowledge(repoPath, terms) {
+            if (!active || !repoPath || !Array.isArray(terms) || terms.length === 0) return [];
+            const query = terms.filter((t) => typeof t === 'string' && t.trim()).join(' ');
+            if (!query) return [];
+            try {
+                const parsed = parseResult(await callTool('kb_query', {
+                    repo_path: repoPath,
+                    query,
+                    limit: KB_MAX_KNOWLEDGE_ENTRIES,
+                    expand_related: true,
+                }));
+                if (!parsed) return [];
+                const hits = Array.isArray(parsed.l1_results) ? parsed.l1_results : [];
+                const related = Array.isArray(parsed.related_claims) ? parsed.related_claims : [];
+                const seen = new Set();
+                const out = [];
+                for (const e of hits) {
+                    if (!e || typeof e.id !== 'string' || seen.has(e.id)) continue;
+                    seen.add(e.id);
+                    out.push(e);
+                }
+                // Related claims sit BELOW every direct hit and carry a marker,
+                // so a role can tell "the KB matched this" from "the KB says
+                // something about what it matched".
+                for (const e of related) {
+                    if (!e || typeof e.id !== 'string' || seen.has(e.id)) continue;
+                    seen.add(e.id);
+                    out.push({ ...e, via: 'kb-graph' });
+                }
+                return out.slice(0, KB_MAX_KNOWLEDGE_ENTRIES);
+            } catch (err) {
+                log(`[kb-work] kb_query failed for ${repoPath} (non-fatal): ${err.message}`);
                 return [];
             }
         },
@@ -3934,6 +4012,42 @@ export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
  * @param {object[]|undefined} entries
  * @returns {string[]}
  */
+/**
+ * Roles whose prompt BUILDER places the knowledge block itself, at a position
+ * that carries meaning. Everything else receives it from the agent() wrapper.
+ * Listing them here (rather than inside the wrapper) keeps the two halves of
+ * that split visible from the block's own definition -- a role added to one
+ * side and forgotten on the other either gets the block twice or never.
+ */
+export const KB_SELF_INJECTING_ROLES = Object.freeze(new Set([ROLE_DOER, ROLE_REVIEWER]));
+
+/**
+ * FTS terms for a dispatch's kb_query, drawn from what the engine already
+ * holds: the beads being worked and their ids.
+ *
+ * Bead TITLES are the useful half -- they are prose about the change ("stop
+ * collapsing unknown_zone into unbound_roi"), which is what matches an entry's
+ * title/summary/content. Ids are included because a bead id occasionally
+ * appears verbatim in a captured entry, and query() OR-joins its terms, so a
+ * term that matches nothing costs a little ranking noise rather than filtering
+ * the result to empty. Non-string and blank values are dropped so a partially
+ * populated bead cannot produce a malformed query.
+ *
+ * @param {Array<{id?: string, title?: string}>} beads
+ * @param {string[]} beadIds
+ * @returns {string[]}
+ */
+export function kbQueryTerms(beads, beadIds) {
+    const terms = [];
+    for (const b of Array.isArray(beads) ? beads : []) {
+        if (b && typeof b.title === 'string' && b.title.trim()) terms.push(b.title.trim());
+    }
+    for (const id of Array.isArray(beadIds) ? beadIds : []) {
+        if (typeof id === 'string' && id.trim()) terms.push(id.trim());
+    }
+    return terms;
+}
+
 export function kbKnowledgeBlock(entries) {
     if (!Array.isArray(entries) || entries.length === 0) return [];
     return [
@@ -5210,7 +5324,27 @@ async function runSprintCycle(context) {
     // shared fleet HTTP singleton with no per-sprint identity of its own. One
     // wrapper covers every call site in this file; an explicit `sprint_id` in an
     // individual call's opts wins via the spread order.
-    const agent = (prompt, opts = {}) => agentRaw(prompt, { sprint_id: sprintMutexId, ...opts });
+    //
+    // KB audit follow-up: this wrapper is also where the KNOWLEDGE BANK block
+    // reaches the roles whose prompt builders do not place it themselves.
+    //
+    // Every one of the ten role contracts carries a Step 0 telling it to call
+    // kb_session_prime, and on a member dispatch NONE of them can (the fleet MCP
+    // server is disabled there) -- so the engine has to hand the knowledge over
+    // as prompt text. buildDoerPrompt / buildReviewerPrompt / buildFinalVerdict-
+    // Prompt already do that at a position that matters (the reviewer's block
+    // must precede its promotion candidates), so those roles are excluded here
+    // and handled there. Everyone else -- planner, plan-reviewer, deployer, the
+    // two test runners, harvester -- got nothing at all until now, which is
+    // exactly the population most likely to benefit from a `runbook` entry.
+    const agent = (prompt, opts = {}) => {
+        let finalPrompt = prompt;
+        if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
+            const [block] = kbKnowledgeBlock(kbPriming.knowledgeOf(opts.member_name));
+            if (block) finalPrompt = prompt + '\n\n' + block;
+        }
+        return agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts });
+    };
 
     // The global dolt push mutex client. Every D-push below serializes through
     // it so two sprints never push at the same time. Four sources, in
@@ -5895,6 +6029,13 @@ async function runSprintCycle(context) {
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
+        // What the KB knows about the beads UNDER REVIEW, not just whatever the
+        // sprint-start prime happened to surface. Falls back to the primed set
+        // when the query returns nothing (a KB with no matching rows yet).
+        const reviewerQueried = await kbWork.relevantKnowledge(reviewerRepoPath, kbQueryTerms([], beadIds));
+        const reviewerKnowledge = reviewerQueried.length > 0
+            ? reviewerQueried
+            : kbPriming.knowledgeOf(reviewerPool[0]);
         // Stabilization log Issue 9: a full-cycle review is big -- run 6's
         // reviewer genuinely ran out of the fleet's default turn budget
         // (num_turns=51 after ~12 minutes of legitimate review work), and a
@@ -5933,7 +6074,7 @@ async function runSprintCycle(context) {
                 branch: validated.branch,
                 goal: validated.goal,
                 kbCandidates,
-                kbKnowledge: kbPriming.knowledgeOf(reviewerPool[0]),
+                kbKnowledge: reviewerKnowledge,
             }),
             // member_name is repeated literally here -- not only via the
             // shared opts object -- so the source-level call-site parse in
@@ -7698,11 +7839,18 @@ async function runSprintCycle(context) {
                     // The doer cannot read the KB itself (the member's composed
                     // permission config disables the fleet MCP server), so the
                     // entries primed for THIS member travel in its prompt.
+                    // Relevance-ranked read for THESE beads, falling back to the
+                    // sprint-start primed set when the query returns nothing.
+                    // The query terms are the bead ids and titles the engine
+                    // already holds; expand_related on that call is what
+                    // traverses the refines/contradiction_of edges.
+                    const doerRepoPath = kbPriming.folderOf(doerMember);
+                    const doerKnowledge = await kbWork.relevantKnowledge(doerRepoPath, kbQueryTerms(streak, actualBeadIds));
                     const basePrompt = buildDoerPrompt({
                         beadIds: actualBeadIds,
                         branch: validated.branch,
                         feedback: feedbackForStreak || null,
-                        kbKnowledge: kbPriming.knowledgeOf(doerMember),
+                        kbKnowledge: doerKnowledge.length > 0 ? doerKnowledge : kbPriming.knowledgeOf(doerMember),
                     });
                     let doerPrompt = basePrompt;
                     if (batchStreaks) {
@@ -9566,6 +9714,13 @@ async function runSprintCycle(context) {
         // path itself IS worth a line: it is the durable, committed record of
         // the Final Review verdict (and everything else in analysisText) --
         // unlike the verdict object, it survives after this process exits.
+        // harvester-output.json declares kb_captures, and until now nothing
+        // consumed it: the harvester filled the field and the engine dropped it
+        // -- the same "gathered and thrown away" shape kbWork was built to fix
+        // for the doer and reviewer. The harvester is a good capturer precisely
+        // because it has just read the whole sprint's evidence. Capture only:
+        // vetKbWork refuses kb_promotions from any role but the reviewer.
+        await kbWork.apply('harvester', kbPriming.folderOf(getMemberForRole('harvester')), harvesterResult);
         if (harvesterResult.status !== 'OK') {
             log(`Harvester reported FAILED: ${harvesterResult.notes}`);
         } else {

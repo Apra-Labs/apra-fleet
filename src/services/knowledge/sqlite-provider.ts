@@ -1096,6 +1096,47 @@ export class SqliteProvider implements MemoryProvider {
     return rows.map(r => this.rowToEntry(r));
   }
 
+  // KB audit 2026-08-11: the first read of the KB's own graph.
+  //
+  // The KB writes 554 edges across three live stores and traverses none of them
+  // -- retrieval is pure FTS. This reads the two edge kinds FTS cannot stand in
+  // for. shares_file/shares_symbol (520 of the 554) are topicality, which an FTS
+  // match over the same fields already finds; `refines` and `contradiction_of`
+  // are the KB's JUDGEMENT about its own contents ("there is a newer framing of
+  // this", "something disputes this") and exist nowhere else.
+  //
+  // Both are traversed in BOTH directions on purpose. Given an entry, the useful
+  // question is not "what did this supersede" but "is there anything I should
+  // know about this claim" -- and a challenger captured a day later points AT
+  // the entry a doer is holding, not away from it. This is precisely the warehouse
+  // chain-A shape, where the incorrect entry outranks its two corrections on
+  // confidence tier and the edge is the only thing that says so.
+  //
+  // Superseded rows are excluded (they are already retired) and the input ids are
+  // never echoed back. `limit` caps the total, since this rides into a prompt.
+  async relatedClaims(ids: string[], limit: number = 5): Promise<KBEntry[]> {
+    if (ids.length === 0) return [];
+    const db = this.getDb();
+    const ph = ids.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT DISTINCT e.* FROM entries e
+      WHERE e.superseded_at IS NULL
+        AND e.id NOT IN (${ph})
+        AND (
+          EXISTS (
+            SELECT 1 FROM links l
+            WHERE l.link_type = 'refines'
+              AND ((l.from_id = e.id AND l.to_id IN (${ph}))
+                OR (l.to_id = e.id AND l.from_id IN (${ph})))
+          )
+          OR e.contradiction_of IN (${ph})
+          OR e.id IN (SELECT contradiction_of FROM entries WHERE id IN (${ph}) AND contradiction_of IS NOT NULL)
+        )
+      LIMIT ?
+    `).all(...ids, ...ids, ...ids, ...ids, ...ids, limit) as Record<string, unknown>[];
+    return rows.map(r => this.rowToEntry(r));
+  }
+
   async prime(opts: PrimeOptions): Promise<PrimedContext> {
     this.decayConceptEntries(this.getDb(), opts.decay_after_days ?? 30);
 

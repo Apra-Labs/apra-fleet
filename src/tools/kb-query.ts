@@ -14,6 +14,12 @@ export const kbQuerySchema = z.object({
   include_stale: z.boolean().optional().describe('Include stale and superseded entries (default false)'),
   flagged_only: z.boolean().optional()
     .describe('Return all contradiction-flagged entries. When true, query is optional and full content is returned.'),
+  // KB audit 2026-08-11: the first consumer of the KB's own graph. Opt-in and
+  // default-off so every existing caller's result shape is byte-for-byte
+  // unchanged; the sprint engine sets it, because a role about to act on an
+  // entry is exactly who needs to know that entry has been refined or disputed.
+  expand_related: z.boolean().optional()
+    .describe('Append entries connected to the top hits by a refines or contradiction_of edge, as related_claims. These are the KB\'s own judgements about its contents -- "there is a newer framing of this" and "something disputes this" -- which a text match cannot surface. shares_file/shares_symbol edges are NOT traversed: FTS over the same fields already finds those. Default false, in which case related_claims is absent.'),
 });
 
 export type KbQueryInput = z.infer<typeof kbQuerySchema>;
@@ -97,8 +103,23 @@ export async function kbQuery(input: KbQueryInput): Promise<string> {
     }));
   }
 
+  // Graph expansion (opt-in). Keyed off the SAME top ids that were expanded to
+  // L2 above -- the entries the caller is actually going to read -- so a related
+  // claim always attaches to something present in the result. Non-fatal by the
+  // same rule as every other KB read path: a graph miss degrades to no
+  // related_claims, it never costs the caller its search results.
+  let relatedClaims: Awaited<ReturnType<typeof providers.project.relatedClaims>> = [];
+  if (input.expand_related && top5Ids.length > 0) {
+    try {
+      relatedClaims = await providers.project.relatedClaims(top5Ids);
+    } catch {
+      relatedClaims = [];
+    }
+  }
+
   return JSON.stringify({
     l1_results: mergedL1,
     l2_expanded: l2Results,
+    ...(input.expand_related ? { related_claims: relatedClaims } : {}),
   });
 }
