@@ -5791,6 +5791,60 @@ async function runSprintCycle(context) {
             );
         }
     }
+
+    // =======================
+    // 0b. Clock Skew Check: advisory-only probe of each dispatched member's
+    // wall clock against the hub's, so a skewed member clock (observed:
+    // ~215s on fleet-win-dev1) is surfaced as a WARNING in the sprint log
+    // instead of silently causing the stall detector to kill healthy
+    // dispatches later in the sprint. Never throws, never aborts -- both
+    // probe attempts use failSoft: true.
+    // =======================
+    phase('Clock Skew Check');
+    for (const member of branchEnsureMembers) {
+        const hubT0 = Date.now();
+        // Shell-agnostic try/fallback (matches the convention at ~276-282 of
+        // not assuming a member shell): try the POSIX probe first, and only
+        // fall back to the Windows probe if it failed or its output could
+        // not be parsed as an epoch-millis integer. The hub's own OS says
+        // nothing about the member's, so there is no process.platform branch
+        // here.
+        let probeResult = await command(CLOCK_SKEW_PROBE_POSIX, {
+            member_name: member,
+            silent: true,
+            failSoft: true,
+            label: `Probe clock on member '${member}'`,
+        });
+        let memberEpochMs = probeResult.ok ? parseEpochMillis(probeResult.output) : null;
+        if (memberEpochMs === null) {
+            probeResult = await command(CLOCK_SKEW_PROBE_WINDOWS, {
+                member_name: member,
+                silent: true,
+                failSoft: true,
+                label: `Probe clock on member '${member}'`,
+            });
+            memberEpochMs = probeResult.ok ? parseEpochMillis(probeResult.output) : null;
+        }
+        const hubT1 = Date.now();
+
+        const thresholdMs = clockSkewThresholdMs(process.env);
+        const result = evaluateClockSkew({ hubT0, hubT1, memberEpochMs, thresholdMs });
+
+        if (!result.ok) {
+            log(
+                `Clock Skew Check: could not read the clock probe on member '${member}' -- skew was not measured.`
+            );
+        } else if (result.exceeded) {
+            const direction = result.skewMs > 0 ? 'ahead of' : 'behind';
+            const skewSeconds = (Math.abs(result.skewMs) / 1000).toFixed(1);
+            log(
+                `WARNING: Clock Skew Check: member '${member}' clock is ${direction} the hub by ` +
+                `${Math.abs(result.skewMs)}ms (~${skewSeconds}s) -- stall detection may falsely abort this sprint ` +
+                `for this member; resync the member clock.`
+            );
+        }
+    }
+
     publishState('sprint-args', {
         branch: validated.branch,
         baseBranch: validated.baseBranch,
