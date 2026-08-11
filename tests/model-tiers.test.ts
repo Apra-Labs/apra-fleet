@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { resolveModelForTier } from '../src/tools/execute-prompt.js';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, makeConfigAwareExec } from './test-helpers.js';
 import { addAgent, getAgent, getAllAgents } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import { registerMember } from '../src/tools/register-member.js';
@@ -229,7 +229,7 @@ describe('register_member model_tiers normalization', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
   });
 
   afterEach(() => {
@@ -332,7 +332,7 @@ describe('update_member model_tiers normalization', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
   });
 
   afterEach(() => {

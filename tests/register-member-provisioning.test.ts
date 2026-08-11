@@ -6,7 +6,7 @@
  * update_member.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeConfigAwareExec } from './test-helpers.js';
 import { registerMember } from '../src/tools/register-member.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -58,7 +58,7 @@ describe('register_member: agent provisioning integration', () => {
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     // Generic execCommand fallback for OS detect / CLI checks / mkdir.
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
     mockGetInstanceState.mockResolvedValue('running');
   });
@@ -69,9 +69,10 @@ describe('register_member: agent provisioning integration', () => {
 
   it('provisions agent files for a reachable remote member and reports the count', async () => {
     // Remote agents dir is empty -> both canonical files are pushed.
+    const exec = makeConfigAwareExec();
     mockExecCommand.mockImplementation(async (cmd: string) => {
       if (cmd.includes('find . -type f')) return { stdout: '', stderr: '', code: 0 };
-      return { stdout: 'Linux', stderr: '', code: 0 };
+      return exec(cmd);
     });
     mockUploadContentToHome.mockResolvedValue({ success: ['planner.md', 'doer.md'], failed: [] });
 
@@ -91,9 +92,10 @@ describe('register_member: agent provisioning integration', () => {
   });
 
   it('appends a warning but still registers the member when provisioning (probe) fails', async () => {
+    const exec = makeConfigAwareExec();
     mockExecCommand.mockImplementation(async (cmd: string) => {
       if (cmd.includes('find . -type f')) return { stdout: '', stderr: 'boom', code: 1 };
-      return { stdout: 'Linux', stderr: '', code: 0 };
+      return exec(cmd);
     });
 
     const result = await registerMember({
@@ -143,7 +145,7 @@ describe('register_member: invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)'
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: 'Linux', stderr: '', code: 0 });
+    mockExecCommand.mockImplementation(makeConfigAwareExec());
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
     mockGetInstanceState.mockResolvedValue('running');
   });
