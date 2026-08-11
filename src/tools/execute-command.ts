@@ -211,6 +211,17 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   // -- Long-running background task path --
   if (input.long_running) {
     const agentOsVal = getAgentOS(agent);
+
+    // -- Hard-fail on Windows: the wrapper body is a POSIX bash script
+    // (mkdir -p, base64 -d, chmod +x, nohup ... & echo $!) that PowerShell
+    // cannot run. Refuse before minting/registering a task id so no orphan
+    // entry is left in the task-credentials registry. darwin is unaffected --
+    // mkdir -p/chmod/nohup all work there, so its advisory warning below
+    // remains exactly as-is.
+    if (agentOsVal === 'windows') {
+      return `❌ long_running is not supported on "${agent.friendlyName}": long-running tasks require a POSIX shell (bash), but this member's OS is windows.`;
+    }
+
     const longRunningOsWarning = agentOsVal !== 'linux'
       ? `Note: Long-running tasks use a bash wrapper script designed for Linux. The member's OS is ${agentOsVal}, which may not support this feature.\n`
       : '';
