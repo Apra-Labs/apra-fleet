@@ -1723,7 +1723,6 @@ export function clearMemberOsCache() {
 // @returns {Promise<string>}
 export async function resolveMemberOs({ fleetApi, member, log = () => {} }) {
     if (memberOsCache.has(member)) return memberOsCache.get(member);
-    let os = 'linux';
     try {
         if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
             throw new Error('no fleetApi.memberDetail() injected');
@@ -1736,16 +1735,22 @@ export async function resolveMemberOs({ fleetApi, member, log = () => {} }) {
                 : '';
         const parsed = JSON.parse(text);
         if (parsed && typeof parsed.os === 'string' && parsed.os.trim()) {
-            os = parsed.os.trim().toLowerCase();
-        } else {
-            throw new Error('member_detail response carried no "os" field');
+            const os = parsed.os.trim().toLowerCase();
+            // Only a genuine member_detail-derived OS is cached. Caching the
+            // 'linux' fallback below would permanently pin a member that hit a
+            // transient failure (asleep, flaky SSH, MCP hiccup) to POSIX
+            // command construction for the rest of the runner process --
+            // including the auth-retry credential read at raiseVcsPrForMember,
+            // whose entire purpose is to recover from exactly this kind of
+            // transient failure. See apra-fleet-ot2z.13.
+            memberOsCache.set(member, os);
+            return os;
         }
+        throw new Error('member_detail response carried no "os" field');
     } catch (err) {
         log(`Could not resolve OS for member '${member}' from member_detail (${err && err.message ? err.message : err}); assuming POSIX ('linux') for member-bound command construction.`);
-        os = 'linux';
+        return 'linux';
     }
-    memberOsCache.set(member, os);
-    return os;
 }
 
 // Wraps a PowerShell script the same way src/os/windows.ts
