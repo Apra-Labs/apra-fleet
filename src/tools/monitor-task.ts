@@ -32,19 +32,35 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
 
   const strategy = getStrategy(agent);
   const cmds = getOsCommands(getAgentOS(agent));
+  const isWindows = getAgentOS(agent) === 'windows';
+
+  // POSIX (linux/darwin) task dir/commands are byte-identical to before this
+  // change. Windows never has a real task dir today (execute_command hard-fails
+  // long_running on windows), so these just need to be valid PowerShell that
+  // reports the same "not found" outcome the downstream parsers expect.
   const taskDir = `~/.fleet-tasks/${input.task_id}`;
+  const winTaskDir = `$env:USERPROFILE\\.fleet-tasks\\${input.task_id}`;
+
+  const statusCmd = isWindows
+    ? `if (Test-Path "${winTaskDir}\\status.json") { Get-Content "${winTaskDir}\\status.json" -Raw } else { echo '{}' }`
+    : `cat ${taskDir}/status.json 2>/dev/null || echo '{}'`;
+
+  const pidCmd = isWindows
+    ? `$pidFile = "${winTaskDir}\\task.pid"; if (Test-Path $pidFile) { $p = (Get-Content $pidFile -Raw).Trim() } else { $p = $null }; if ($p -and (Get-Process -Id $p -ErrorAction SilentlyContinue)) { echo alive } else { echo dead }`
+    : `cat ${taskDir}/task.pid 2>/dev/null | xargs -r kill -0 2>/dev/null && echo alive || echo dead`;
+
+  const logCmd = isWindows
+    ? `if (Test-Path "${winTaskDir}\\task.log") { Get-Content "${winTaskDir}\\task.log" -Tail 20 } else { echo '' }`
+    : `tail -20 ${taskDir}/task.log 2>/dev/null || echo ''`;
 
   // Run in parallel: status.json, PID liveness check, GPU util (cloud only), log tail
   const [statusResult, pidResult, gpuResult, logResult] = await Promise.allSettled([
-    strategy.execCommand(`cat ${taskDir}/status.json 2>/dev/null || echo '{}'`, 10000),
-    strategy.execCommand(
-      `cat ${taskDir}/task.pid 2>/dev/null | xargs -r kill -0 2>/dev/null && echo alive || echo dead`,
-      10000,
-    ),
+    strategy.execCommand(statusCmd, 10000),
+    strategy.execCommand(pidCmd, 10000),
     agent.cloud
       ? strategy.execCommand(cmds.gpuUtilization(), 10000)
       : Promise.resolve({ stdout: '', stderr: '', code: 0 }),
-    strategy.execCommand(`tail -20 ${taskDir}/task.log 2>/dev/null || echo ''`, 10000),
+    strategy.execCommand(logCmd, 10000),
   ]);
 
   // Parse status.json

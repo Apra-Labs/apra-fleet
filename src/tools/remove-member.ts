@@ -87,12 +87,14 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
             // Use the key type + base64 portion to match (ignore trailing comment)
             const parts = pubKey.split(/\s+/);
             const keyMatch = parts.slice(0, 2).join(' ');
-            // Escape forward slashes for sed delimiter
-            const escapedKey = keyMatch.replace(/\//g, '\\/');
-            await strategy.execCommand(
-              `sed -i '/${escapedKey}/d' ~/.ssh/authorized_keys`,
-              10000,
-            ).catch(() => {});
+            const isWindows = getAgentOS(agent) === 'windows';
+            const removeKeyCmd = isWindows
+              ? `$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${keyMatch.replace(/'/g, "''")}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`
+              // Escape forward slashes for sed delimiter
+              : `sed -i '/${keyMatch.replace(/\//g, '\\/')}/d' ~/.ssh/authorized_keys`;
+            await strategy.execCommand(removeKeyCmd, 10000).catch(() => {
+              warnings.push('Could not clear fleet public key from authorized_keys on the member');
+            });
           } catch { /* pub key file not found — skip */ }
         }
       } else {
