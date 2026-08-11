@@ -830,6 +830,20 @@ update-safe end-to-end; remaining gaps for this feature are tracked as
 individual open issues under `apra-fleet-7pm`, not as a phase-level
 placeholder.
 
+**Cooperative pause/resume** is a generic engine primitive available to any
+workflow run (`requestPause()`/`requestResume()`/`setPauseGuard()`), separate
+from cancellation (`requestStop()`): a pause is deferred until in-flight work
+drains to zero and an optional caller-supplied guard confirms the run is at a
+state boundary it considers clean, rather than landing wherever the request
+happened to arrive. The per-run viewer and the multi-sprint supervisor
+dashboard both surface it, and fleet-sprint is the first workflow to attach
+real domain behavior to it (releasing/re-acquiring member reservations and
+resyncing git/beads state across a pause). See
+[docs/features/workflow-pause-resume.md](features/workflow-pause-resume.md)
+for the full design and
+[packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md](../packages/apra-fleet-workflow/docs/apra-fleet-workflow-architecture.md)
+section 4.7 for the engine-level contract.
+
 **Dev-mode manifest bundling is a transitive-dependency, not a top-level-only,
 contract.** The dev-mode install path bundles `@apralabs/apra-fleet-client`'s
 own package tree so the workflow runtime can load it without a real npm

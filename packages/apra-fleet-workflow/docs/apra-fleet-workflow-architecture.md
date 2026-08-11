@@ -255,6 +255,66 @@ job may keep running to completion even after the workflow run itself unwinds as
 True server-side cancellation would require changes to the external apra-fleet MCP server
 and is out of scope for this package.
 
+### 4.7 Cooperative pause/resume
+
+`FleetWorkflow` also exposes a cooperative **pause/resume** primitive,
+independent of and complementary to cancellation (4.6): `requestPause(reason)`,
+`requestResume(reason)`, and `setPauseGuard(fn)`. This is a generic engine gate
+-- it carries no domain-specific semantics of its own -- not a journaled
+`interrupt()`; a paused run is parked in memory, not checkpointed to disk (see
+section 5 for the separate, journal-based resumability story).
+
+**The gate and when it engages.** Every `agent()`/`command()` call awaits an
+internal pause gate before it becomes "in flight." `requestPause()` fires a
+`pause:requested` event immediately, but the pause itself is **deferred**: it
+only actually engages (fires `paused`, and starts blocking new dispatches at
+the gate) once two conditions hold simultaneously:
+
+1. **Zero in-flight activities.** The engine tracks an in-flight counter,
+   incremented when a call clears the gate and decremented (in a `finally`)
+   when it settles. `paused` is emitted from exactly one place in the engine,
+   guaranteeing it can never fire while work is still running.
+2. **The pause guard, if any, returns truthy.** `setPauseGuard(fn)` lets the
+   *workflow script* declare where a "clean" pause boundary actually is --
+   e.g. never mid-transaction, never between a pull and its matching push --
+   rather than accepting any zero-in-flight gap the engine happens to see. A
+   `null` guard (the default) treats every zero-in-flight point as
+   acceptable. A throwing guard fails **closed**: the pause keeps deferring
+   rather than landing at a point the script couldn't vouch for.
+
+`requestResume()` releases every call parked at the gate and fires `resumed`.
+`requestStop()` (4.6) supersedes a pause outright: it rejects every parked
+call with a `CancelledError` instead of leaving it blocked forever, so a
+paused run tears down the same way a cancelled one does rather than hanging.
+
+**Why deferred rather than immediate.** An immediate pause (block the very
+next call, whatever state it interrupts) would let a workflow's own
+multi-step sync sequence (e.g. pull, dispatch, push) get parked halfway
+through, leaving on-disk/remote state inconsistent for whoever inspects it
+during the pause or for the resume itself. Requiring both quiescence and an
+optional caller-supplied guard means a pause can never land somewhere the
+calling script didn't consider safe to stop.
+
+**Instance-scoped, like `requestStop()`.** All pause state lives on the
+`FleetWorkflow` instance, not per-run, so a single `requestPause()` quiesces
+every run sharing that instance -- consistent with how `requestStop()`
+already behaves.
+
+**What resuming does NOT guarantee for you.** The engine's contract ends at
+"no new `agent()`/`command()` dispatch starts until resumed." Any
+domain-specific state that needs to be released while paused and reacquired
+on resume (e.g. external locks, reservations) is the calling script's
+responsibility, coordinated via `setPauseGuard()` plus the script's own
+`pause:requested`/`paused`/`resumed` listeners -- the engine does not know
+what those resources are. In particular, because `requestResume()` fires
+`resumed` synchronously and releases gate waiters in the same tick, a script
+that needs to reacquire something *before* the first post-resume dispatch
+cannot simply do that work in a `resumed` listener and expect it to finish
+first -- that listener races the next `agent()`/`command()` call rather than
+strictly preceding it. A caller that requires a hard barrier there needs its
+own synchronization (e.g. a dispatch-time ownership check downstream) rather
+than relying on listener ordering.
+
 ## 5. Resumable runs: the execution journal and replay keys
 
 `WorkflowEngine.executeFile(script, args, { journal | resumeJournal })` opts a run into an
@@ -383,6 +443,18 @@ dashboard and subscribes to the given `FleetWorkflow` instance's events:
   status `cancelled`, which is what actually transitions the dashboard's status indicator
   and closes the server (after a grace period) -- there is no `process.exit()` anywhere in
   this path.
+
+`POST /pause` and `POST /resume` follow the same "route only forwards, never
+mutates state directly" pattern as `/stop`: they call
+`workflow.requestPause()`/`requestResume()` (4.7) and nothing else. The
+viewer's own `state.pause` object (`{ status, reason, since, phase, group }`)
+is driven **exclusively** by the engine's `pause:requested`/`paused`/`resumed`
+events, never by the click itself -- so the Pause/Resume button and a "paused
+since" badge always reflect what the engine actually did (including the
+deferred-pause window, surfaced as an intermediate `pausing` status) rather
+than what the browser merely asked for. This route/state separation is
+deliberate: it is the same reason `/stop` doesn't flip the status indicator
+itself and instead waits for the engine's own `end` event.
 
 The dashboard's activity tree renders `group` > `phase` > `activity`/`log` events, tracking
 running/success/error status per activity, token/cost totals, and an "(+N unknown)" suffix

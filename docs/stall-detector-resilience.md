@@ -137,6 +137,57 @@ StallDetector is a centralized polling loop that monitors all active `execute_pr
 
 ---
 
+### 9. Windows Remote-Exec Command Strings Must Avoid Intermediate `$variable` Tokens
+
+**Scenario:** The Windows mtime-probe commands (both the directory-scan probe
+and the single-log-file probe) are PowerShell one-liners sent to a remote
+member over the same shell/SSH execution path every other remote command
+uses. On at least one real Windows member, that execution path was found to
+silently strip bare `$name` tokens (e.g. an intermediate `$i = ...`
+assignment) out of the command string before the nested `powershell -c`
+invocation ever parses it -- turning a working one-liner into a parse error
+on every single poll and killing the mtime signal for that member entirely.
+
+**Decision:** Write these one-liners with **no intermediate `$variable`
+assignment at all** -- pipe straight through to a terminal stage instead of
+assigning an intermediate result and testing it. For the directory-scan
+probe, a `Test-Path` guard (itself effectively instant either way) skips the
+file scan entirely when the directory doesn't exist yet (the common case,
+since this polls the log directory before a session's first turn creates
+it), and the pipeline's final stage formats an ISO-8601 timestamp directly
+rather than constructing a value from an intermediate variable -- a
+zero-object pipeline simply produces no output, not an error. The read side
+correspondingly parses an ISO-8601 string (`Date.parse`) for the Windows
+path, vs. whole epoch seconds for the POSIX path, since the two platforms'
+one-liners now emit different timestamp representations by construction.
+
+**Rationale:** Two variable-based rewrites were tried first and both hung
+(and leaked an unkillable remote PowerShell process, since this probe path
+carries no PID marker for the remote-process-kill machinery to act on) --
+live reproduction traced the hang specifically to a directory-scan pipeline
+run against a **nonexistent** path with errors suppressed, not to anything
+downstream of it or to an existing-but-empty directory. Avoiding the
+intermediate variable end to end, rather than patching only the specific
+hang, is what closes off the class of failure (both the parse-strip issue
+and the hang) at once.
+
+**Invariant to preserve if this code is touched again:** neither Windows
+one-liner may reintroduce an intermediate `$variable` assignment. If a
+null/missing-file guard is needed, it must be expressed as a guard *stage in
+the pipeline* (e.g. `Test-Path`, or a pipeline that naturally produces no
+output on an empty result) rather than as a `$var = ...; if ($var) { ... }`
+pattern -- the latter is exactly the shape that triggered the token-stripping
+failure mode above. Note this also means a single-file mtime probe that
+drops such a guard has no explicit "does the file exist" branch of its own;
+it relies on the pipeline naturally producing nothing (or an error this
+module already treats as "no signal") when the target is absent -- verify
+that behavior with a real test whenever this command string changes, since
+there is currently a known gap: this exact command string was changed
+without new test coverage for either the new command output shape or its
+null/missing-file behavior.
+
+---
+
 ## Consistency Checks
 
 ### Invariants
