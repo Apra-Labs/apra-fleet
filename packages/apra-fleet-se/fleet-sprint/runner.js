@@ -5774,6 +5774,54 @@ export function decideEnsureBranchAction({ branch, baseBranch, branchFetchOk, br
 }
 
 /**
+ * (apra-fleet-p2to.4.2) Map an `execute_command` tool result to the SOFT git
+ * runner contract resyncReacquiredMember() consumes:
+ *   { ok: boolean, stdout?: string, error?: string }
+ *
+ * `ok` MUST be derived from the command's real EXIT CODE, never from an
+ * `isError` flag: the fleet server's `execute_command` tool does NOT set
+ * `isError` on a non-zero exit (see src/services/tool-registry.ts wrapTool() --
+ * it returns `{ content, structuredContent: { exitCode } }` with no isError,
+ * and src/tools/execute-command.ts formats the text as `Exit code: N\n...`).
+ * Reading `isError` here would make EVERY git command look successful, which is
+ * catastrophic for `git merge-base --is-ancestor` where the whole point is that
+ * a NON-zero exit (1 = "not an ancestor") is the meaningful signal: misreading
+ * it as ok=true collapses 'ahead'/'diverged' into 'behind-or-equal' and lets
+ * resyncReacquiredMember() run `git checkout -B <branch> origin/<branch>`,
+ * resetting away committed-but-unpushed work. So: prefer the structured
+ * `exitCode`, else parse the `Exit code: N` line out of the text, and only as a
+ * last resort (no exit code recoverable at all -- e.g. a transport-level string
+ * failure from the tool) fall back to the `isError` flag.
+ *
+ * @param {any} res - an `execute_command` MCP result (`{ content, structuredContent }`),
+ *   a plain string, or `{ isError, ... }`.
+ * @returns {{ ok: boolean, stdout: string, error: string|undefined }}
+ */
+export function commandResultToSoftGit(res) {
+    let text = '';
+    if (typeof res === 'string') {
+        text = res;
+    } else if (res && Array.isArray(res.content)) {
+        text = res.content
+            .map((c) => (c && typeof c.text === 'string' ? c.text : ''))
+            .join('\n');
+    } else if (res && typeof res.text === 'string') {
+        text = res.text;
+    }
+
+    let exitCode;
+    if (res && res.structuredContent && typeof res.structuredContent.exitCode === 'number') {
+        exitCode = res.structuredContent.exitCode;
+    } else {
+        const m = /Exit code:\s*(-?\d+)/.exec(text);
+        if (m) exitCode = Number(m[1]);
+    }
+
+    const ok = exitCode !== undefined ? exitCode === 0 : !(res && res.isError);
+    return { ok, stdout: text, error: ok ? undefined : (text || 'unknown error') };
+}
+
+/**
  * (apra-fleet-p2to.4.2) Re-sync ONE member that was just re-acquired on resume.
  * Runs -- UNCONDITIONALLY, never gated on a "looks unchanged" heuristic -- the
  * same three reconciliation steps a fresh dispatch would rely on, because while

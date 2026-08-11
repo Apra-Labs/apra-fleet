@@ -16,7 +16,7 @@ import {
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
 import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember } from '../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -746,15 +746,29 @@ async function main() {
     // logged, never left unhandled -- but reReserveForResume's own throw (an
     // unavailable member) is surfaced so the operator sees exactly which
     // members block the resume.
+    // `ok` is derived from the command's real exit code (via
+    // commandResultToSoftGit), NOT from an isError flag: execute_command never
+    // sets isError on a non-zero exit, so reading it here would make every git
+    // command -- including the `git merge-base --is-ancestor` tip comparison --
+    // look successful and silently reset committed-but-unpushed work. See
+    // commandResultToSoftGit()'s doc comment in runner.js.
     const runGitSoft = async (cmd, member) => {
         const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
-        const text = res && res.content && res.content[0] ? res.content[0].text : '';
-        return { ok: !(res && res.isError), stdout: text, error: (res && res.isError) ? text : undefined };
+        return commandResultToSoftGit(res);
     };
     workflow.on('paused', () => {
         sprintReservation.releaseForPause().catch((err) =>
             console.error('[member-reservation] release-on-pause failed:', err && err.message ? err.message : err));
     });
+    // NOTE (engine-model limitation): 'resumed' is emitted synchronously by the
+    // engine's requestResume(), so this handler cannot be awaited by the engine
+    // before it resolves pause waiters and lets the sprint loop continue. The
+    // re-reserve + per-member resync therefore run as a best-effort async task
+    // racing the first post-resume dispatch rather than a hard barrier strictly
+    // ahead of it. The dispatch-time reservedBy check in execute_prompt is the
+    // real guard against acting on a member this sprint no longer owns; this
+    // handler's job is to re-grab ownership and re-sync promptly, and to SURFACE
+    // (via reReserveForResume's throw) any member that was taken while paused.
     workflow.on('resumed', () => {
         sprintReservation.reReserveForResume({
             resyncMember: (member) => resyncReacquiredMember({
