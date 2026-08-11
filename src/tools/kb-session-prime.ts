@@ -53,6 +53,25 @@ interface CanonicalBibleEntry {
   updated_at?: string;
 }
 
+// A bible file on disk is one of TWO shapes, and the read path must accept
+// both -- exactly as kb_import already does:
+//   - legacy: a bare JSON array of entries
+//   - v2 (what kb_export has written since KB-TRUST PHASE 3a):
+//     { version: 2, provenance: {commit, branch, entry_count}, entries: [...] }
+// Accepting only the bare array silently killed the cold-start fallback for
+// every bible the current exporter produces (apra-fleet's own bible holds 17
+// CONFIRMED entries prime could not read). Anything else -- a non-array
+// `entries`, a scalar, null -- yields [] so the caller's existing hard-skip
+// contract still applies.
+function bibleEntries(parsed: unknown): unknown[] {
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === 'object') {
+    const envelope = (parsed as { entries?: unknown }).entries;
+    if (Array.isArray(envelope)) return envelope;
+  }
+  return [];
+}
+
 function isCanonicalBibleEntry(value: unknown): value is CanonicalBibleEntry {
   if (!value || typeof value !== 'object') return false;
   const e = value as Record<string, unknown>;
@@ -275,14 +294,14 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
       const canonicalPath = repoRoot ? path.join(repoRoot, '.fleet', 'kb-canonical.json') : null;
       if (canonicalPath && fs.existsSync(canonicalPath)) {
         const raw = fs.readFileSync(canonicalPath, 'utf-8');
-        const parsed = JSON.parse(raw) as unknown;
+        const entries = bibleEntries(JSON.parse(raw) as unknown);
 
-        if (Array.isArray(parsed)) {
+        if (entries.length > 0) {
           const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
           const hintSymbols = input.hint_symbols ?? [];
           const hintModules = input.hint_modules ?? [];
 
-          const valid = parsed
+          const valid = entries
             .filter(isCanonicalBibleEntry)
             .filter(e => !existingIds.has(e.id));
 
@@ -332,14 +351,14 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
       const globalBiblePath = path.join(FLEET_DIR, 'knowledge', 'global', 'kb-canonical-global.json');
       if (fs.existsSync(globalBiblePath)) {
         const raw = fs.readFileSync(globalBiblePath, 'utf-8');
-        const parsed = JSON.parse(raw) as unknown;
+        const entries = bibleEntries(JSON.parse(raw) as unknown);
 
-        if (Array.isArray(parsed)) {
+        if (entries.length > 0) {
           const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
           const hintSymbols = input.hint_symbols ?? [];
           const hintModules = input.hint_modules ?? [];
 
-          const valid = parsed
+          const valid = entries
             .filter(isCanonicalBibleEntry)
             .filter(e => !existingIds.has(e.id));
 

@@ -32,9 +32,14 @@ stating exactly which input is missing and `reopenIds: []`, `newTasks: []`.
 ## Step 0 -- Knowledge Bank (required -- do this BEFORE any other work)
 
 1. Run ToolSearch with query
-   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture"`
+   `"select:mcp__apra-fleet__kb_session_prime,mcp__apra-fleet__kb_capture,mcp__apra-fleet__code_context,mcp__apra-fleet__code_graph,mcp__apra-fleet__code_impact,mcp__apra-fleet__code_query"`
    (`kb_list`/`kb_promote` are deliberately NOT here -- Step 5 promotes through your
    structured output, not through a tool call.)
+   The `code_*` tools answer what the KB cannot: what the changed code actually connects
+   to. Use `code_impact` on each changed file to judge blast radius, and
+   `code_context`/`code_graph`/`code_query` to trace callers before accepting a signature
+   or behaviour change -- prefer them over grep for structural questions. If a call reports
+   the repo is not indexed, fall back to reading the diff and grep; do not build an index.
 2. Call `mcp__apra-fleet__kb_session_prime` with `repo_path` set to the repo under review,
    and `hint_symbols`/`hint_modules` relevant to the files changed in this review round.
    Trust CONFIRMED entries fully. Use INFERRED entries as hints, not facts.

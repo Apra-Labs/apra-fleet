@@ -575,6 +575,41 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
     expect(parsed.top_entries).toHaveLength(ADDED_ENTRY_CAP);
   });
 
+  // apra-fleet KB audit 2026-08-11: kb_export has written the v2 envelope
+  // ({version, provenance, entries}) since KB-TRUST PHASE 3a, but the cold-seed
+  // read path only ever accepted the LEGACY bare array -- and every test above
+  // writes a bare array, so nothing caught it. The result was that the
+  // cold-start fallback was dead against every bible the current exporter
+  // produces: this repo's own .fleet/kb-canonical.json holds 17 CONFIRMED
+  // entries that prime could never read. kb_import already accepts both shapes;
+  // the read path must too.
+  it('accepts the v2 envelope written by kb_export, not just a bare array', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile({
+      version: 2,
+      provenance: { commit: 'abc123', branch: 'main', entry_count: 2 },
+      entries: [canonicalEntry('v1'), canonicalEntry('v2')],
+    });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'v1', 'v2']);
+    expect(parsed.top_entries[1].via).toBe('canonical-bible');
+    expect(parsed.top_entries[2].via).toBe('canonical-bible');
+  });
+
+  it('v2 envelope with a non-array entries field: output identical to today', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile({ version: 2, provenance: {}, entries: 'not-an-array' });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+    expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
   it('prefers canonical entries whose symbols match hint_symbols', async () => {
     mockPrime.mockResolvedValue(primedContext([]));
     writeCanonicalFile([
@@ -756,6 +791,24 @@ describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
 
     expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'g1', 'g2']);
     expect(parsed.top_entries[0].via).toBeUndefined();
+    expect(parsed.top_entries[1].via).toBe('canonical-bible-global');
+    expect(parsed.top_entries[2].via).toBe('canonical-bible-global');
+  });
+
+  // Same v2-envelope gap as the project-bible block above -- the global bible
+  // is written by the identical kb_export code path (scope='global').
+  it('accepts the v2 envelope written by kb_export, not just a bare array', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeGlobalBibleFile({
+      version: 2,
+      provenance: { commit: 'abc123', branch: 'main', entry_count: 2 },
+      entries: [canonicalEntry('gv1'), canonicalEntry('gv2')],
+    });
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'gv1', 'gv2']);
     expect(parsed.top_entries[1].via).toBe('canonical-bible-global');
     expect(parsed.top_entries[2].via).toBe('canonical-bible-global');
   });

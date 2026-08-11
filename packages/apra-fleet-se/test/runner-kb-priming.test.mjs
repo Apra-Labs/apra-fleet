@@ -1,6 +1,13 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKbPrimingClient, createKbWorkClient, vetKbWork } from '../fleet-sprint/runner.js';
+import {
+    createKbPrimingClient,
+    createKbWorkClient,
+    vetKbWork,
+    kbKnowledgeBlock,
+    buildDoerPrompt,
+    buildReviewerPrompt,
+} from '../fleet-sprint/runner.js';
 
 // apra-fleet-e28 / KB trust pipeline Phase 2: the fleet-sprint engine had no KB
 // priming -- it lived only in the Claude workflow copy.
@@ -149,6 +156,130 @@ describe('createKbPrimingClient (apra-fleet-e28)', () => {
 
         assert.equal(result.skipped, 1);
         assert.equal(calls.filter((c) => c.name === 'kb_session_prime').length, 0);
+    });
+});
+
+// --- The READ half: priming must reach the agent, not just the database ---
+//
+// apra-fleet KB audit 2026-08-11: across six sprint batches, 77 entries were
+// captured and 53 promoted, and not one was ever read back to inform work.
+// Two independent causes, both fixed here:
+//
+//  1. Role subagents dispatched to a fleet member have the fleet MCP server
+//     DISABLED (src/providers/claude.ts composePermissionConfig writes
+//     mcpServers:{'apra-fleet':{disabled:true}}), so Step 0's
+//     "call kb_session_prime" is dead prose on every member dispatch. This is
+//     the SAME defect that made kb_promotions structurally empty -- and it has
+//     the same fix: the engine reads, and hands the result to the role in its
+//     prompt. Judgment belongs to the role, execution belongs here.
+//  2. primeAll() discarded prime's return value entirely, so even a warm KB
+//     reached nobody.
+
+describe('KB priming reaches the agent (audit 2026-08-11)', () => {
+    function primingCallTool(topEntries) {
+        const calls = [];
+        return {
+            calls,
+            callTool: async (name, args) => {
+                calls.push({ name, args });
+                if (name === 'member_detail') return { folder: '/srv/alpha/repo' };
+                if (name === 'kb_session_prime') {
+                    return { content: [{ text: JSON.stringify({ top_entries: topEntries }) }] };
+                }
+                return {};
+            },
+        };
+    }
+
+    const ENTRY = {
+        id: 'abc123',
+        title: 'resolveZoneBinding returns a discriminated union',
+        summary: 'It does not collapse unknown-zone and unbound-ROI.',
+        confidence: 'CONFIRMED',
+        source_files: ['server/transit.service.ts'],
+    };
+
+    test('primeAll retains the primed entries per member instead of discarding them', async () => {
+        const { callTool } = primingCallTool([ENTRY]);
+        const client = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        await client.primeAll();
+
+        assert.deepEqual(client.knowledgeOf('alpha').map((e) => e.id), ['abc123']);
+    });
+
+    test('knowledgeOf is [] for a member that was never primed', async () => {
+        const { callTool } = primingCallTool([ENTRY]);
+        const client = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        await client.primeAll();
+
+        assert.deepEqual(client.knowledgeOf('beta'), []);
+    });
+
+    test('an unparseable prime result degrades to no knowledge, never throws', async () => {
+        const callTool = async (name) => {
+            if (name === 'member_detail') return { folder: '/srv/alpha/repo' };
+            if (name === 'kb_session_prime') return { content: [{ text: 'not json' }] };
+            return {};
+        };
+        const client = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        const result = await client.primeAll();
+
+        assert.equal(result.primed, 1);
+        assert.deepEqual(client.knowledgeOf('alpha'), []);
+    });
+
+    test('kbKnowledgeBlock is empty for no entries -- a cold KB adds nothing to the prompt', () => {
+        assert.deepEqual(kbKnowledgeBlock([]), []);
+        assert.deepEqual(kbKnowledgeBlock(undefined), []);
+    });
+
+    test('kbKnowledgeBlock states the trust ladder and wraps the entries as untrusted', () => {
+        const [block] = kbKnowledgeBlock([ENTRY, { ...ENTRY, id: 'def456', confidence: 'INFERRED' }]);
+
+        assert.match(block, /KNOWLEDGE BANK/);
+        assert.match(block, /CONFIRMED/);
+        assert.match(block, /INFERRED/);
+        assert.ok(block.includes('resolveZoneBinding returns a discriminated union'));
+        // The entries are agent-authored text from a prior sprint: they must
+        // arrive labelled as data, exactly like the promotion-candidate block.
+        assert.match(block, /BEGIN UNTRUSTED|untrusted/i);
+    });
+
+    test('the doer prompt carries the knowledge block', () => {
+        const prompt = buildDoerPrompt({
+            beadIds: ['x-1'],
+            branch: 'feat/x',
+            feedback: null,
+            kbKnowledge: [ENTRY],
+        });
+
+        assert.match(prompt, /KNOWLEDGE BANK/);
+        assert.ok(prompt.includes('resolveZoneBinding returns a discriminated union'));
+    });
+
+    test('the doer prompt is unchanged when there is no knowledge to inject', () => {
+        const withNone = buildDoerPrompt({ beadIds: ['x-1'], branch: 'feat/x', feedback: null, kbKnowledge: [] });
+        const legacy = buildDoerPrompt({ beadIds: ['x-1'], branch: 'feat/x', feedback: null });
+
+        assert.equal(withNone, legacy);
+        assert.doesNotMatch(withNone, /KNOWLEDGE BANK/);
+    });
+
+    test('the reviewer prompt carries the knowledge block alongside promotion candidates', () => {
+        const prompt = buildReviewerPrompt({
+            beadIds: ['x-1'],
+            acceptanceCriteriaJson: '{}',
+            baseBranch: 'main',
+            branch: 'feat/x',
+            kbKnowledge: [ENTRY],
+            kbCandidates: [{ id: 'cand1', title: 'A candidate', summary: 's', source_files: ['a.ts'] }],
+        });
+
+        assert.match(prompt, /KNOWLEDGE BANK -- what this repo already knows/);
+        assert.match(prompt, /KNOWLEDGE BANK -- promotion candidates/);
     });
 });
 
@@ -313,6 +444,46 @@ describe('createKbWorkClient (KB trust pipeline Phase 2, fleet-sprint half)', ()
         });
 
         assert.equal(out.captured, 1);
+    });
+
+    // KB audit 2026-08-11: of 17 checked repositories on the operator's machine,
+    // exactly ONE had a .fleet/kb-canonical.json -- because nothing in the
+    // sprint pipeline has ever called kb_export. A bible existed only where a
+    // human ran the tool by hand, so promoted CONFIRMED knowledge stayed on the
+    // machine that learned it and never reached a teammate or a fresh clone
+    // (and the cold-seed in kb_session_prime had nothing to read).
+    test('exportBible writes the canonical bible for the repo it is given', async () => {
+        const { calls, callTool } = recorder();
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        const ok = await client.exportBible('/srv/alpha/repo');
+
+        assert.equal(ok, true);
+        const exportCall = calls.find((c) => c.name === 'kb_export');
+        assert.equal(exportCall.args.repo_path, '/srv/alpha/repo');
+    });
+
+    test('exportBible without a repo path makes NO call -- never the server cwd', async () => {
+        const { calls, callTool } = recorder();
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        const ok = await client.exportBible(null);
+
+        assert.equal(ok, false);
+        assert.equal(calls.filter((c) => c.name === 'kb_export').length, 0);
+    });
+
+    test('a failing kb_export is non-fatal -- a sprint never fails over the bible', async () => {
+        const { callTool } = errorRecorder('export blew up');
+        const client = createKbWorkClient({ callTool, log: () => {} });
+
+        assert.equal(await client.exportBible('/srv/a'), false);
+
+        const throwing = createKbWorkClient({
+            callTool: async () => { throw new Error('transport exploded'); },
+            log: () => {},
+        });
+        assert.equal(await throwing.exportBible('/srv/a'), false);
     });
 
     test('vetKbWork here agrees with apra-pm lib/vet-kb-work.mjs on the reviewer-only rule', () => {

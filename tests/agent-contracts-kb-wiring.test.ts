@@ -62,6 +62,44 @@ describe('every role contract carries working KB wiring', () => {
   });
 });
 
+/**
+ * KB audit 2026-08-11: the seven code_* tools ship in the same MCP server as
+ * the kb_* tools and had 0 calls across six sprint batches. Deferred MCP tools
+ * load only when a ToolSearch query NAMES them, and every contract's Step 0
+ * query listed exactly two KB tools -- so the code index was uncallable from a
+ * role regardless of whether the repo was indexed.
+ *
+ * Scoped to the two roles that read code structurally (the doer, deciding what
+ * a change touches; the reviewer, judging blast radius). The other eight roles
+ * keep the KB-only query -- widening every contract would spend schema budget
+ * in roles that never trace a call chain.
+ */
+const CODE_INTEL_ROLES = ['doer', 'reviewer'];
+const CODE_INTEL_TOOLS = ['code_context', 'code_graph', 'code_impact', 'code_query'];
+
+describe('the code index is reachable from the roles that read code', () => {
+  const byRole = assetsByRole();
+
+  it.each(CODE_INTEL_ROLES)('%s names the code_* tools in its ToolSearch query', (role) => {
+    const content = byRole.get(role)!;
+    const query = /Run ToolSearch with query\s*\n?\s*`([^`]*)`/.exec(content);
+    expect(query, 'Step 0 must carry a single backticked ToolSearch query').not.toBeNull();
+    for (const tool of CODE_INTEL_TOOLS) {
+      expect(query![1]).toContain(`mcp__apra-fleet__${tool}`);
+    }
+  });
+
+  it.each(CODE_INTEL_ROLES)('%s still names the KB tools it must call', (role) => {
+    const query = /Run ToolSearch with query\s*\n?\s*`([^`]*)`/.exec(byRole.get(role)!)!;
+    expect(query[1]).toContain('mcp__apra-fleet__kb_session_prime');
+    expect(query[1]).toContain('mcp__apra-fleet__kb_capture');
+  });
+
+  it.each(CODE_INTEL_ROLES)('%s says what to do when the repo is not indexed', (role) => {
+    expect(byRole.get(role)!).toMatch(/not indexed|no index|unindexed/i);
+  });
+});
+
 describe('promotion stays reviewer-only', () => {
   const byRole = assetsByRole();
 

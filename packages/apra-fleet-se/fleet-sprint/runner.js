@@ -1493,6 +1493,15 @@ export function createMcpChildIdAllocatorClient(opts = {}) {
  * @param {{ callTool?: (name: string, args: object) => Promise<any>, members?: string[], log?: Function }} opts
  * @returns {{ primeAll: () => Promise<{primed: number, skipped: number}> }}
  */
+/**
+ * Cap on primed entries carried into a dispatch prompt. kb_session_prime can
+ * return up to ~28 (10 direct FTS hits + 3 global + 5 graph-neighbour + 5
+ * project-bible + 5 global-bible); a dispatch prompt is not a place to spend
+ * that much budget on context the role may not need, and the entries are
+ * already returned in relevance order.
+ */
+export const KB_MAX_KNOWLEDGE_ENTRIES = 12;
+
 export function createKbPrimingClient(opts = {}) {
     const { callTool, members = [], log = () => {} } = opts;
     const active = typeof callTool === 'function' && members.length > 0;
@@ -1521,9 +1530,26 @@ export function createKbPrimingClient(opts = {}) {
     // than being resolved against the fleet server's cwd.
     const folders = new Map();
 
+    // member -> the entries kb_session_prime returned for that member.
+    //
+    // KB audit 2026-08-11: primeAll() used to `await callTool(...)` and throw
+    // the result away, on the assumption that priming "warms" something the
+    // role's own Step 0 would later read. It does not: prime is a pure read,
+    // and the role CANNOT repeat it -- a member-dispatched subagent has the
+    // fleet MCP server disabled (src/providers/claude.ts
+    // composePermissionConfig), so every contract's Step 0 kb_session_prime is
+    // unreachable there. Nothing consumed the knowledge and nothing could, which
+    // is why six sprints retrieved zero entries. Retaining the result is what
+    // lets kbKnowledgeBlock() hand it to the role in its dispatch prompt --
+    // the same shape of fix that made kb_promotions reachable.
+    const knowledge = new Map();
+
     return {
         folderOf(member) {
             return folders.get(member) || null;
+        },
+        knowledgeOf(member) {
+            return knowledge.get(member) || [];
         },
         async primeAll() {
             if (!active) return { primed: 0, skipped: members.length };
@@ -1540,7 +1566,11 @@ export function createKbPrimingClient(opts = {}) {
                         skipped++;
                         continue;
                     }
-                    await callTool('kb_session_prime', { repo_path: repoPath });
+                    const primeResult = parseResult(await callTool('kb_session_prime', { repo_path: repoPath }));
+                    const entries = (primeResult && Array.isArray(primeResult.top_entries))
+                        ? primeResult.top_entries.filter((e) => e && typeof e.id === 'string')
+                        : [];
+                    if (entries.length > 0) knowledge.set(member, entries.slice(0, KB_MAX_KNOWLEDGE_ENTRIES));
                     primed++;
                 } catch (err) {
                     log(`[kb-prime] failed for member '${member}' (non-fatal): ${err.message}`);
@@ -1764,6 +1794,46 @@ export function createKbWorkClient(opts = {}) {
             }
             if (captured || promoted) log(`[kb-work] ${role}: captured ${captured}, promoted ${promoted}`);
             return { captured, promoted, refused: refused.length };
+        },
+
+        /**
+         * KB audit 2026-08-11: publish this repo's CONFIRMED set to its
+         * canonical bible (<repo>/.fleet/kb-canonical.json).
+         *
+         * Nothing in the pipeline had ever called kb_export, so a bible existed
+         * only where an operator had run the tool by hand -- 1 of 17 repos on
+         * the audited machine. Promotion therefore ended at the local sqlite
+         * store: a teammate, a fresh clone, or a member on another host saw
+         * none of it, and kb_session_prime's cold-seed (which reads exactly
+         * this file) had nothing to fall back on. Promotion is the sprint's
+         * work; publishing it is the step that makes the work leave the
+         * machine.
+         *
+         * Called once, AFTER the final review's promotions have been applied,
+         * so the bible reflects everything this sprint confirmed. Best-effort
+         * like every other KB call here: a sprint must never fail over an
+         * export, and the tool itself is a no-op when the entry set is
+         * unchanged. Committing/pushing the file stays a separate, opt-in
+         * decision (kb_export's own autoCommit config) -- this does not widen
+         * the engine's git authority.
+         */
+        async exportBible(repoPath) {
+            // Same repo-blindness guard as every other call here: without a
+            // path kb_export would resolve against the fleet server's cwd and
+            // write an unrelated project's bible.
+            if (!active || !repoPath) return false;
+            try {
+                const res = await callTool('kb_export', { repo_path: repoPath });
+                if (isToolError(res)) {
+                    log(`[kb-work] kb_export rejected for ${repoPath} (non-fatal): ${toolErrorText(res)}`);
+                    return false;
+                }
+                log(`[kb-work] exported the canonical bible for ${repoPath}`);
+                return true;
+            } catch (err) {
+                log(`[kb-work] kb_export failed for ${repoPath} (non-fatal): ${err.message}`);
+                return false;
+            }
         },
     };
 }
@@ -3761,10 +3831,13 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
  * sprint track branch and is always spelled out: doer.md requires it, and a
  * doer dispatched without one must return "BLOCKED" rather than guess whatever
  * branch happens to be checked out.
- * @param {{ beadIds: string[], branch: string, feedback: string|null }} opts
+ * `kbKnowledge` carries the entries kb_session_prime returned for this member
+ * (see kbKnowledgeBlock): the doer cannot read the KB itself on a member
+ * dispatch, so this prompt is its only route to prior knowledge.
+ * @param {{ beadIds: string[], branch: string, feedback: string|null, kbKnowledge?: object[] }} opts
  * @returns {string}
  */
-export function buildDoerPrompt({ beadIds, branch, feedback }) {
+export function buildDoerPrompt({ beadIds, branch, feedback, kbKnowledge }) {
     const lines = [
         `Sprint track branch to work on: ${branch}. Work on this branch only; do not push to the base branch.`,
         `Assigned bead ids (comma-separated): ${beadIds.join(', ')}`,
@@ -3781,6 +3854,7 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
         'workaround whose purpose is to bypass the block, even for a brand-new file and ' +
         'even if you judge the underlying operation safe. This matches this repo\'s ' +
         'CLAUDE.md permission-block policy.',
+        ...kbKnowledgeBlock(kbKnowledge),
     ];
     if (feedback) {
         lines.push(
@@ -3836,6 +3910,57 @@ export function buildDoerPrompt({ beadIds, branch, feedback }) {
  * @param {object[]|undefined} kbCandidates
  * @returns {string[]}
  */
+/**
+ * KB audit 2026-08-11: the "KNOWLEDGE BANK -- what this repo already knows"
+ * block, shared by the doer and reviewer dispatch prompts.
+ *
+ * WHY THIS EXISTS AT ALL. Every role contract's Step 0 tells the role to call
+ * kb_session_prime itself. On a fleet-member dispatch it cannot: the member's
+ * composed permission config disables the apra-fleet MCP server outright
+ * (src/providers/claude.ts composePermissionConfig), so the tool is not merely
+ * unlisted, it is unreachable. That is the same wall kb_promotions hit, and
+ * this is the same fix -- the engine performs the read and hands the result
+ * over as prompt content. Step 0 stays correct for the OTHER execution path
+ * (an apra-pm orchestrator session running these contracts as local subagents,
+ * where the MCP server is present), so both paths now get knowledge.
+ *
+ * The trust ladder is restated here rather than assumed: these entries are
+ * agent-authored claims from earlier sprints, and CONFIRMED means a reviewer
+ * verified the claim, not that it is currently true of this branch's tree.
+ *
+ * Returns a single-element array (or an empty one) so callers can spread it
+ * into their prompt-section list, matching kbPromotionBlock.
+ *
+ * @param {object[]|undefined} entries
+ * @returns {string[]}
+ */
+export function kbKnowledgeBlock(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return [];
+    return [
+        'KNOWLEDGE BANK -- what this repo already knows. These entries were captured and '
+        + 'verified during earlier work on this repository, and are provided so you do not '
+        + 'rediscover them the hard way. Read them BEFORE you start.\n'
+        + 'CONFIRMED entries were independently verified by a reviewer: trust them. INFERRED '
+        + 'entries are unverified hints: treat them as leads to check, not as facts. An entry '
+        + 'describes the tree it was captured against, so if one contradicts what you actually '
+        + 'observe in the code right now, the code wins -- say so in your notes rather than '
+        + 'bending your work to fit the entry.\n'
+        + 'You do not need to call any kb_* tool to read these. If you discover something '
+        + 'non-obvious and durable while working, report it in the `kb_captures` field of your '
+        + 'structured output and the orchestrator will record it.\n'
+        + wrapUntrustedBlock('kb_session_prime --top_entries', JSON.stringify(
+            entries.map((e) => ({
+                confidence: e.confidence,
+                title: e.title,
+                summary: e.summary,
+                source_files: e.source_files,
+            })),
+            null,
+            2
+        )),
+    ];
+}
+
 export function kbPromotionBlock(kbCandidates) {
     if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
     return [
@@ -3865,7 +3990,7 @@ export function kbPromotionBlock(kbCandidates) {
     ];
 }
 
-export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates }) {
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, goal, kbCandidates, kbKnowledge }) {
     const ids = Array.isArray(beadIds) ? beadIds : [];
     const scopeWide = ids.length === 0;
     // Scope-wide re-reviews are fed `bd list --json` (the whole remaining
@@ -3904,6 +4029,10 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         // this block it could never name an id, so `kb_promotions` came back
         // empty on every round and nothing was ever promoted. The engine reads
         // the candidates and executes; the judgment stays with the reviewer.
+        // Prior knowledge FIRST, then the promotion candidates: the reviewer
+        // judges the work against what the repo already knows before it decides
+        // which of this sprint's captures earned CONFIRMED.
+        ...kbKnowledgeBlock(kbKnowledge),
         ...kbPromotionBlock(kbCandidates),
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
@@ -4278,7 +4407,7 @@ export function sanitizePrText(text) {
  * }} opts
  * @returns {string}
  */
-export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], kbCandidates }) {
+export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], kbCandidates, kbKnowledge }) {
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
         `Branch: ${branch} (base: ${baseBranch}). Goal priority: ${goal}. The sprint ran ${cyclesRun} cycle(s).`,
@@ -4352,6 +4481,7 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, goal
     // all (0ef wired kbCandidates through buildReviewerPrompt only), so anything
     // captured in a sprint's LAST round reached this reviewer and nobody else,
     // and was stranded at INFERRED forever.
+    lines.push(...kbKnowledgeBlock(kbKnowledge));
     lines.push(...kbPromotionBlock(kbCandidates));
     return lines.join('\n\n');
 }
@@ -5803,6 +5933,7 @@ async function runSprintCycle(context) {
                 branch: validated.branch,
                 goal: validated.goal,
                 kbCandidates,
+                kbKnowledge: kbPriming.knowledgeOf(reviewerPool[0]),
             }),
             // member_name is repeated literally here -- not only via the
             // shared opts object -- so the source-level call-site parse in
@@ -7564,7 +7695,15 @@ async function runSprintCycle(context) {
                         );
                     }
 
-                    const basePrompt = buildDoerPrompt({ beadIds: actualBeadIds, branch: validated.branch, feedback: feedbackForStreak || null });
+                    // The doer cannot read the KB itself (the member's composed
+                    // permission config disables the fleet MCP server), so the
+                    // entries primed for THIS member travel in its prompt.
+                    const basePrompt = buildDoerPrompt({
+                        beadIds: actualBeadIds,
+                        branch: validated.branch,
+                        feedback: feedbackForStreak || null,
+                        kbKnowledge: kbPriming.knowledgeOf(doerMember),
+                    });
                     let doerPrompt = basePrompt;
                     if (batchStreaks) {
                         // Mode (i) BATCH: one dispatch carries the whole ordered
@@ -8932,6 +9071,7 @@ async function runSprintCycle(context) {
             rejectedNewTasks,
             unclosedVerifyIds: finalUnclosedVerifyIds,
             kbCandidates: finalKbCandidates,
+            kbKnowledge: kbPriming.knowledgeOf(getMemberForRole('reviewer')),
         }),
         // member_name is repeated literally here -- not only via the
         // shared opts object -- so the source-level call-site parse in
@@ -9044,6 +9184,12 @@ async function runSprintCycle(context) {
     // the beads/PR work below and kept non-fatal by kbWork.apply itself, so a KB
     // problem can never change a sprint's outcome.
     await kbWork.apply(ROLE_REVIEWER, finalReviewRepoPath, finalVerdictResult);
+
+    // Publish what this sprint confirmed. Immediately after the LAST promotion
+    // of the run, so the bible carries every CONFIRMED entry including the ones
+    // minted a line above. Without this the sprint's knowledge never left the
+    // member's local sqlite store -- see createKbWorkClient.exportBible.
+    await kbWork.exportBible(finalReviewRepoPath);
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body
