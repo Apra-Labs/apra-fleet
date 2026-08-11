@@ -976,20 +976,28 @@ describe('MCP disconnect cleanup (T10)', () => {
     }
   });
 
-  it('abort signal unblocks execCommand and triggers finally cleanup when subprocess never exits', async () => {
+  // apra-fleet-d64.1: MCP transport drops must NOT abort the in-flight SSH
+  // dispatch anymore -- dispatchSignal now carries only the stall detector's
+  // signal (see execute-prompt.ts abortHandler/dispatchSignal comments), so
+  // aborting extra.signal (simulating a client disconnect) must NOT reach
+  // strategy.execCommand. The remote command keeps running until it settles
+  // on its own; the dispatch resolves normally once it does.
+  it('MCP client disconnect (aborting extra.signal) does not abort execCommand -- the remote command keeps running until it settles on its own', async () => {
     const controller = new AbortController();
-    const member = makeTestAgent({ friendlyName: 'abort-hang' });
+    const member = makeTestAgent({ friendlyName: 'mcp-disconnect-no-abort' });
     memberId = member.id;
     addAgent(member);
+
+    let dispatchSignalSeen: AbortSignal | undefined;
+    let resolveMain!: (v: SSHExecResult) => void;
 
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
       .mockImplementationOnce((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) => {
-        return new Promise<SSHExecResult>((_resolve, reject) => {
-          signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
-        });
+        dispatchSignalSeen = signal;
+        return new Promise<SSHExecResult>((resolve) => { resolveMain = resolve; });
       })
-      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // tryKillPid + deletePromptFile
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
 
     const promise = executePrompt(
       { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
@@ -998,78 +1006,86 @@ describe('MCP disconnect cleanup (T10)', () => {
 
     // Flush microtasks so executePrompt reaches the main execCommand and attaches the abort listener
     await vi.advanceTimersByTimeAsync(0);
+
+    // Simulate an MCP transport drop.
     controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // dispatchSignal (what execCommand actually receives) must NOT have been
+    // aborted by the MCP client disconnect, and the dispatch must still be
+    // in flight -- it does not settle just because the client went away.
+    expect(dispatchSignalSeen?.aborted).toBe(false);
+    expect(inFlightAgents.has(memberId)).toBe(true);
+
+    // The remote command eventually finishes on its own.
+    resolveMain({ stdout: JSON.stringify({ result: 'done-after-disconnect', session_id: 's1' }), stderr: '', code: 0 });
     await vi.advanceTimersByTimeAsync(0);
     const result = await promise;
 
-    expect(resultText(result)).toContain('aborted');
+    expect(resultText(result)).toContain('done-after-disconnect');
     expect(inFlightAgents.has(memberId)).toBe(false);
     expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
-    expect(vi.mocked(writeStatusline).mock.calls.some(
-      c => c[0] instanceof Map && c[0].get(memberId) === 'idle'
-    )).toBe(true);
   });
 
-  it('finally runs and cleans up even when tryKillPid rejects', async () => {
-    const controller = new AbortController();
+  // apra-fleet-d64.1: the abort handler for extra.signal no longer calls
+  // tryKillPid -- cleanup-despite-a-failed-kill is now exercised via the
+  // stall detector's onStall callback (execute-prompt.ts ~line 716), which
+  // still fires tryKillPid best-effort and swallows its rejection. This test
+  // drives onStall directly, mirroring the "confirmed stall" describe block
+  // below, to prove the finally block still cleans up when that kill fails.
+  it('finally runs and cleans up even when the stall-triggered tryKillPid rejects', async () => {
     const member = makeTestAgent({ friendlyName: 'abort-kill-fail' });
     memberId = member.id;
     addAgent(member);
-    setStoredPid(memberId, 9999);
+    // No PID stored yet -- the pre-check tryKillPid at the top of executePrompt is a no-op.
 
-    let callCount = 0;
-    mockExecCommand.mockImplementation((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) => {
-      callCount++;
-      if (callCount === 1) {
-        // tryKillPid for stored PID 9999
-        return Promise.resolve({ stdout: '', stderr: '', code: 0 });
-      }
-      if (callCount === 2) {
-        // writePromptFile
-        return Promise.resolve({ stdout: '', stderr: '', code: 0 });
-      }
-      if (callCount === 3) {
-        // main execCommand — hangs until abort
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
+      .mockImplementationOnce((_cmd: string, _t?: number, _m?: number, onPidCaptured?: (pid: number) => void, signal?: AbortSignal) => {
+        // Simulate the remote pid being captured mid-flight (as the real
+        // strategy does via setStoredPid + onPidCaptured), then hang until
+        // the stall detector aborts it.
+        setStoredPid(memberId, 9999);
+        onPidCaptured?.(9999);
         return new Promise<SSHExecResult>((_resolve, reject) => {
           signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
         });
-      }
-      if (callCount === 4) {
-        // tryKillPid from abortHandler — rejects (kill failed)
-        return Promise.reject(new Error('kill failed: no such process'));
-      }
-      // deletePromptFile
-      return Promise.resolve({ stdout: '', stderr: '', code: 0 });
-    });
+      })
+      .mockRejectedValueOnce(new Error('kill failed: no such process'))  // tryKillPid from onStall -- rejects (swallowed)
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
 
-    const promise = executePrompt(
-      { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
-      { signal: controller.signal },
-    );
+    const promise = executePrompt({ member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5, max_total_s: 3600 });
 
     await vi.advanceTimersByTimeAsync(0);
-    controller.abort();
+
+    const entry = getStallDetector().getEntry(memberId);
+    expect(entry).toBeDefined();
+
+    // Simulate the poll loop confirming a stall, bypassing the real threshold.
+    entry?.onStall?.();
     await vi.advanceTimersByTimeAsync(0);
     await promise;
 
+    expect(getStoredPid(memberId)).toBeUndefined();
     expect(inFlightAgents.has(memberId)).toBe(false);
     expect(getStallDetector().stallCheckList.has(memberId)).toBe(false);
   });
 
-  it('does not mark agent offline for abort errors', async () => {
+  // apra-fleet-d64.1: an MCP disconnect is now a graceful, logged event (see
+  // abortHandler's scope.abort call) rather than a kill -- it must never mark
+  // the agent offline, and once the remote command finishes on its own the
+  // dispatch settles idle exactly as a normal completion would.
+  it('does not mark agent offline when the MCP client disconnects -- the session settles idle once the remote command finishes', async () => {
     const controller = new AbortController();
     const member = makeTestAgent({ friendlyName: 'abort-not-offline' });
     memberId = member.id;
     addAgent(member);
 
+    let resolveMain!: (v: SSHExecResult) => void;
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
-      .mockImplementationOnce((_cmd: string, _t?: number, _m?: number, _p?: (pid: number) => void, signal?: AbortSignal) => {
-        return new Promise<SSHExecResult>((_resolve, reject) => {
-          signal?.addEventListener('abort', () => reject(new Error('Command aborted by client')), { once: true });
-        });
-      })
-      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+      .mockImplementationOnce(() => new Promise<SSHExecResult>((resolve) => { resolveMain = resolve; }))
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile
 
     const promise = executePrompt(
       { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
@@ -1077,7 +1093,10 @@ describe('MCP disconnect cleanup (T10)', () => {
     );
 
     await vi.advanceTimersByTimeAsync(0);
-    controller.abort();
+    controller.abort();  // simulate an MCP transport drop
+    await vi.advanceTimersByTimeAsync(0);
+
+    resolveMain({ stdout: JSON.stringify({ result: 'ok-after-disconnect', session_id: 's2' }), stderr: '', code: 0 });
     await vi.advanceTimersByTimeAsync(0);
     await promise;
 
