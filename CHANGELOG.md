@@ -59,6 +59,74 @@ Pricing source: all 12 priced dispatch(es) used real per-member rates (get_membe
 Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
 ```
 
+## [Unreleased] -- cross-shell member-bound command construction audit
+
+Sprint goal: fix a PowerShell parse failure that broke PR lookup on a
+Windows fleet member during sprint-abort finalization, then perform a
+holistic, codebase-wide audit for the same underlying bug class -- any
+command string built with POSIX-only shell syntax (bare `$VAR`/`$HOME`
+expansion, `sed`, `xargs`, `tail`, `nohup`) and sent to a member whose
+remote shell may actually be PowerShell rather than bash. All in-scope work
+closed except one coverage-extension task that remains open. The sprint's
+own final verdict is FAIL: the final reviewer dispatch stalled and could not
+be repaired, and a same-day regression pass also failed for the same
+stalled-dispatch reason. No deploy succeeded this sprint -- every deploy
+attempt was blocked at the dependency-install step by a locked native
+build artifact unrelated to this sprint's source changes, so nothing here
+has been rebuilt/repackaged or smoke-tested as a shipped artifact; the
+changes below are described as implemented and unit/integration-tested in
+the source tree, not as verified-deployed.
+
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $14.3110.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 36 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+
+What shipped:
+
+- The credential-file read used during sprint-abort finalization on Windows
+  members no longer relies on POSIX-style `$HOME` path expansion, which
+  PowerShell either parses incorrectly or rejects outright. The value is now
+  resolved to a concrete, OS-appropriate path before the command is built.
+- A shared `wrapPowerShellEncoded` helper now backs every Windows-bound
+  PowerShell script construction site (text/JSON file writes, credential
+  file read/write, recursive file hashing, member-bound file deletion, and
+  the tools below). It base64-encodes the script as a `-EncodedCommand`
+  invocation (removing an entire class of shell-quoting bugs) and forces
+  `$ErrorActionPreference = 'Stop'` with an explicit `exit 0`/`exit 1` so
+  that non-terminating PowerShell errors -- which previously exited 0 and
+  were invisible to callers checking only the exit code -- now surface
+  correctly as failures, while cmdlets that intentionally tolerate a
+  missing file/path keep working via their own explicit `-ErrorAction`.
+- Remote task monitoring, remote log tailing, and member removal's
+  authorized-keys cleanup are now OS-branched: each builds either a POSIX
+  command or a PowerShell command depending on the target member's OS,
+  instead of a single POSIX-flavored string that silently misbehaved (or
+  was silently corrupted in transit) on a PowerShell target. Member removal
+  now also surfaces a warning when the authorized-keys cleanup step fails,
+  instead of failing silently.
+- Long-running background tasks now hard-fail with a clear error on Windows
+  members instead of proceeding with only an advisory warning -- the
+  long-running wrapper is a POSIX bash script with no Windows equivalent, so
+  a warning the caller can ignore was a false-success trap. The hard-fail
+  happens before any task id is registered, so no orphaned task-registry
+  entries are left behind.
+- Member OS detection no longer caches a guessed/fallback value on
+  detection failure -- only a successful, authoritative detection is
+  memoized, so a member is not permanently misrouted to the wrong OS branch
+  after one failed detection attempt.
+- The root test command now also runs the fleet-sprint workspace's own
+  `node --test` suite, which was previously invisible to the root gate
+  because it used a different test runner than the rest of the monorepo; a
+  green root test run previously did not actually exercise this workspace
+  at all.
+
+Carried forward: one coverage-extension task (adding live PowerShell
+exit-code tests for the remaining `wrapPowerShellEncoded` call sites beyond
+the ones this sprint directly touched) remains open and unclosed.
+
 ## [Unreleased] -- npm-install dependency-packaging fixes
 
 Sprint goal: unblock npm-installed (published-tarball, non-workspace) consumers
