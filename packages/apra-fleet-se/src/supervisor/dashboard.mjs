@@ -32,6 +32,8 @@
 // detection.
 // =============================================================================
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
@@ -49,8 +51,60 @@ import { renderProgressBarHtml } from '../../fleet-sprint/viewer-extensions.mjs'
 // excludes below-goal beads the identical way the per-sprint viewer's does.
 import { goalPriorityMax } from '../../fleet-sprint/runner.js';
 
+const execFileAsync = promisify(execFile);
+
 /**
- * Badge color per four-status classifier value; unknown values fall back to
+ * (apra-fleet-p2to.3.1) Base-drift indicator: how many commits the sprint's
+ * base branch (e.g. `main`) has picked up that are NOT yet reachable from the
+ * sprint's own branch -- `git rev-list --count <branch>..<base>` -- i.e. how
+ * far the sprint has fallen behind its base since it forked. Returns `null`
+ * (NEVER throws) when either ref is unknown, the local git checkout has no
+ * knowledge of one of them (a remote branch never fetched into this
+ * checkout, a sprint whose worktree lives elsewhere), or the git invocation
+ * otherwise fails -- "cannot determine drift" is always rendered distinctly
+ * from "zero drift" (renderSprintSection below), never conflated as 0.
+ * @param {string|null|undefined} branch
+ * @param {string|null|undefined} base
+ * @param {{ cwd?: string, exec?: (cmd: string, args: string[], opts: object) => Promise<{ stdout: string }> }} [opts]
+ * @returns {Promise<number|null>}
+ */
+export async function computeBaseDrift(branch, base, opts = {}) {
+    if (typeof branch !== 'string' || branch.length === 0) return null;
+    if (typeof base !== 'string' || base.length === 0) return null;
+    const cwd = opts.cwd ?? process.cwd();
+    const exec = opts.exec ?? execFileAsync;
+    try {
+        const { stdout } = await exec('git', ['rev-list', '--count', `${branch}..${base}`], { cwd, encoding: 'utf-8' });
+        const n = parseInt(String(stdout).trim(), 10);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Renders the base-drift indicator for one row. `driftCount === null` means
+ * "unknown" (base/branch missing, or the git check failed/could not
+ * resolve either ref locally) -- rendered distinctly from a confirmed-zero
+ * drift, never silently coerced to either extreme.
+ * @param {number|null} driftCount
+ * @param {string|null} base
+ * @returns {string}
+ */
+function baseDriftIndicator(driftCount, base) {
+    const baseLabel = base ? escapeHtml(base) : 'base';
+    if (typeof driftCount !== 'number') {
+        return '<span style="color:#71717a; font-size:11px; font-style:italic;">Base drift: unknown</span>';
+    }
+    if (driftCount === 0) {
+        return '<span style="color:var(--success); font-size:11px;">Up to date with ' + baseLabel + '</span>';
+    }
+    return '<span style="color:var(--warning); font-size:11px;" title="commits on ' + baseLabel +
+        ' not yet merged into this branch">Base drift: ' + driftCount + ' commit(s) behind ' + baseLabel + '</span>';
+}
+
+/**
+ * Badge color per classifier status value; unknown values fall back to
  * grey. Uses the same `var(--success)`/`var(--warning)`/`var(--danger)`
  * tokens DASHBOARD_CSS defines below (and fleet-sprint's renderBeadsHtml
  * badges already reference) rather than independent hardcoded hex, so a live
@@ -58,6 +112,11 @@ import { goalPriorityMax } from '../../fleet-sprint/runner.js';
  */
 const STATUS_BADGE_COLORS = Object.freeze({
     [WATCHDOG_STATUS.RUNNING_HEALTHY]: 'var(--success)',
+    // (apra-fleet-p2to.3.1) A live, engine-paused run is an intentional,
+    // operator-visible state -- not a health problem -- but still worth
+    // calling out at a glance, so it shares running-unresponsive's amber
+    // rather than success green or danger red.
+    [WATCHDOG_STATUS.PAUSED]: 'var(--warning)',
     [WATCHDOG_STATUS.RUNNING_UNRESPONSIVE]: 'var(--warning)',
     [WATCHDOG_STATUS.CRASHED]: 'var(--danger)',
     [WATCHDOG_STATUS.FINISHED]: 'var(--text-muted)',
@@ -141,6 +200,33 @@ export function renderSprintSection(view) {
     // one remaining way to see what the child actually printed).
     const logHref = '/sprints/' + encodeURIComponent(view.sprintId) + '/log';
 
+    // (apra-fleet-p2to.3.1) Pause/Resume is only meaningful for a sprint the
+    // watchdog currently sees as a LIVE pid (running-healthy/running-
+    // unresponsive: Pause may still be attempted against an unresponsive
+    // child -- the request itself is what the live proxy forwards, its
+    // success is not gated on the watchdog's last HTTP probe) or already
+    // PAUSED (Resume). A crashed/finished/launch-failed row has no live
+    // child to pause/resume, so neither button renders for it -- unlike
+    // Stop/Restart, which remain meaningful (releasing/relaunching a stale
+    // reservation) regardless of live-pid state.
+    const livePidStatuses = new Set([WATCHDOG_STATUS.RUNNING_HEALTHY, WATCHDOG_STATUS.RUNNING_UNRESPONSIVE]);
+    let pauseResumeButton = '';
+    if (view.status === WATCHDOG_STATUS.PAUSED) {
+        // apra-fleet-p2to.3.1: proxies to the child viewer's OWN POST /resume
+        // (apra-fleet-p2to.2.1) via the live-view reverse proxy (proxy.mjs's
+        // handleResume, /sprints/:id/live/resume) -- never the kill+force-
+        // release route Stop/Restart use.
+        pauseResumeButton = '<button type="button" class="btn btn-secondary btn-resume-sprint" data-sprint-id="' + sprintId + '" ' +
+            'style="font-size: 12px;">Resume</button>';
+    } else if (livePidStatuses.has(view.status)) {
+        // apra-fleet-p2to.3.1: proxies to the child viewer's OWN POST /pause
+        // (apra-fleet-p2to.2.1) via the SAME live-view reverse proxy
+        // (proxy.mjs's handlePause, /sprints/:id/live/pause) -- a cooperative
+        // request the engine may defer, never an immediate kill.
+        pauseResumeButton = '<button type="button" class="btn btn-secondary btn-pause-sprint" data-sprint-id="' + sprintId + '" ' +
+            'style="font-size: 12px;">Pause</button>';
+    }
+
     return (
         '<section data-sprint-id="' + sprintId + '" style="border: 1px solid rgba(255,255,255,0.1); ' +
         'border-radius: 6px; padding: 12px 14px; margin-bottom: 12px;">' +
@@ -157,6 +243,7 @@ export function renderSprintSection(view) {
         // form's formatLaunchError() inline-feedback convention.
         '<button type="button" class="btn btn-secondary btn-stop-sprint" data-sprint-id="' + sprintId + '" ' +
         'style="font-size: 12px;">Stop</button>' +
+        pauseResumeButton +
         // apra-fleet-3i3.3: releases the SAME reservation (via the SAME
         // force-release route Stop uses) then re-launches the SAME sprint via
         // POST /api/sprints, without a separate manual Stop first -- see
@@ -171,6 +258,9 @@ export function renderSprintSection(view) {
         '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + '</div>' +
         '<div><span style="color:#a1a1aa;">Goal:</span> ' + goal + '</div>' +
         '<div><span style="color:#a1a1aa;">Claimed scope:</span> ' + beadCount + ' bead(s) (roots: ' + scopeRoots + ')</div>' +
+        // (apra-fleet-p2to.3.1) base-drift indicator -- see baseDriftIndicator()'s
+        // doc comment for the "unknown" vs "0 drift" distinction.
+        '<div>' + baseDriftIndicator(view.baseDrift ?? null, view.base ?? null) + '</div>' +
         '</div>' +
         '<div style="margin-top: 8px;">' +
         '<span style="color:#a1a1aa; font-size: 12px;">Members:</span><br/>' +
@@ -178,6 +268,7 @@ export function renderSprintSection(view) {
         '</div>' +
         '<div class="stop-result" data-sprint-id="' + sprintId + '" style="margin-top: 6px; font-size: 12px;"></div>' +
         '<div class="restart-result" data-sprint-id="' + sprintId + '" style="margin-top: 6px; font-size: 12px;"></div>' +
+        '<div class="pause-result" data-sprint-id="' + sprintId + '" style="margin-top: 6px; font-size: 12px;"></div>' +
         '</section>'
     );
 }
@@ -471,6 +562,66 @@ const SPRINT_RESTART_SCRIPT = `
 `;
 
 /**
+ * (apra-fleet-p2to.3.1) The Sprint Stack's per-row Pause/Resume button
+ * behavior, as a source string ready to inline into a `<script>` tag (same
+ * `.toString()`-embedding pattern as SPRINT_STOP_SCRIPT/SPRINT_RESTART_SCRIPT
+ * above). Event-delegated on `document`, same discipline as those two: a
+ * click on `.btn-pause-sprint` POSTs `/sprints/:id/live/pause`, a click on
+ * `.btn-resume-sprint` POSTs `/sprints/:id/live/resume` -- BOTH via the
+ * live-view reverse proxy (proxy.mjs), which forwards to the child viewer's
+ * OWN `/pause`/`/resume` (apra-fleet-p2to.2.1), never the kill+force-release
+ * route Stop/Restart use. Unlike Stop, a click here does not remove or
+ * relabel the row: the requested transition is COOPERATIVE and may be
+ * deferred by the engine (apra-fleet-p2to.1's requestPause()), so the button
+ * is only disabled (to prevent a double-submit) and an inline status message
+ * is shown -- the row's own Pause/Resume button + status badge only reflect
+ * the ACTUAL new state on the next full page load, once the watchdog's own
+ * `/state`-based pause probe (watchdog.mjs) has observed it. Every promise
+ * chain ends in a `.catch()`, matching the other two scripts' discipline.
+ */
+const SPRINT_PAUSE_SCRIPT = `
+    ${formatStopError.toString()}
+    function requestPauseResume(btn, action) {
+        var sprintId = btn.getAttribute('data-sprint-id');
+        if (!sprintId) return;
+        var resultEl = document.querySelector('.pause-result[data-sprint-id="' + sprintId + '"]');
+        btn.disabled = true;
+        if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = (action === 'pause' ? 'Pause' : 'Resume') + ' requested...'; }
+        fetch('/sprints/' + encodeURIComponent(sprintId) + '/live/' + action, { method: 'POST' })
+            .then(function (res) {
+                return res.json().catch(function () { return {}; }).then(function (json) {
+                    return { status: res.status, json: json };
+                });
+            }).then(function (r) {
+                if (r.status === 200) {
+                    if (resultEl) {
+                        resultEl.style.color = '#22c55e';
+                        resultEl.textContent = (action === 'pause' ? 'Pause' : 'Resume') + ' requested -- reload to see the updated status.';
+                    }
+                    // Deliberately left disabled: the cooperative transition may
+                    // still be in flight (a deferred pause) or has already
+                    // happened (a resume) -- either way, this row's button/badge
+                    // are only accurate again after a reload, and re-enabling
+                    // it here would let an operator fire the SAME request twice
+                    // before that reload happens.
+                } else {
+                    btn.disabled = false;
+                    if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = formatStopError(r.status, r.json); }
+                }
+            }).catch(function (err) {
+                btn.disabled = false;
+                if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = (action === 'pause' ? 'Pause' : 'Resume') + ' request failed: ' + err.message; }
+            });
+    }
+    document.addEventListener('click', function (ev) {
+        var pauseBtn = ev.target.closest('.btn-pause-sprint');
+        if (pauseBtn) { requestPauseResume(pauseBtn, 'pause'); return; }
+        var resumeBtn = ev.target.closest('.btn-resume-sprint');
+        if (resumeBtn) { requestPauseResume(resumeBtn, 'resume'); return; }
+    });
+`;
+
+/**
  * Renders the full index page (`GET /` document): a header, then a Sprints
  * tab (Sprint Stack alone) and a separate Backlog tab (eft.6.2's cross-sprint
  * free-set view, followed by the Launch Sprint form -- launching starts from
@@ -534,6 +685,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '<script>' + DASHBOARD_TAB_SCRIPT + '</script>\n' +
         '<script>' + SPRINT_STOP_SCRIPT + '</script>\n' +
         '<script>' + SPRINT_RESTART_SCRIPT + '</script>\n' +
+        '<script>' + SPRINT_PAUSE_SCRIPT + '</script>\n' +
         '</body>\n' +
         '</html>\n'
     );
@@ -544,11 +696,13 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  * @property {string} sprintId
  * @property {string|null} branch
  * @property {string|null} goal
- * @property {string} status - one of WATCHDOG_STATUS's four values
+ * @property {string} status - one of WATCHDOG_STATUS's six values
  * @property {string[]} issueRoots
  * @property {number|null} beadCount
  * @property {{ closed: number, required: number, fraction: number }|null} progress
  * @property {Array<{ name: string, role: string|null }>} members
+ * @property {string|null} base - (apra-fleet-p2to.3.1) the sprint's launch `--base` branch, as recorded on the ledger entry
+ * @property {number|null} baseDrift - (apra-fleet-p2to.3.1) commits on `base` not yet reachable from `branch`; `null` when unknown (see computeBaseDrift())
  */
 
 /**
@@ -566,6 +720,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  *   expandScope?: (roots: string[]) => Promise<Set<string>>,
  *   listAllBeads?: () => Promise<Array<{ id: string, status: string }>>,
  *   getSprintMeta?: (sprintId: string) => Promise<{ branch?: string, goal?: string, roles?: Record<string,string> }>|{ branch?: string, goal?: string, roles?: Record<string,string> },
+ *   driftCheck?: (branch: string|null, base: string|null) => Promise<number|null>|number|null,
  *   backlog?: { renderHtml: () => Promise<string>|string },
  *   logger?: { log?: Function, error?: Function },
  * }} [deps]
@@ -610,6 +765,11 @@ export function createDashboard(deps = {}) {
         const entry = ledger.get(sprintId);
         return entry ? { branch: entry.branch ?? null, goal: entry.goal ?? null } : {};
     });
+    // (apra-fleet-p2to.3.1) Base-drift check, injectable so a test can drive a
+    // deterministic commit count without a real git checkout. Defaults to
+    // computeBaseDrift() above, which never throws (resolves to `null` on any
+    // failure -- unresolvable ref, no local git repo, etc).
+    const driftCheck = deps.driftCheck ?? computeBaseDrift;
     // Backlog-last tree (eft.6.2). Injected so the dashboard renders it as the
     // final page section without owning its full-tracker/claim computation. When
     // absent, renderIndexPageHtml() falls back to an explicit empty state.
@@ -654,6 +814,20 @@ export function createDashboard(deps = {}) {
                 logError(`[dashboard] getSprintMeta failed for sprint '${entry.sprintId}':`, err);
             }
             const roles = meta.roles && typeof meta.roles === 'object' ? meta.roles : {};
+            const branch = meta.branch ?? null;
+            // (apra-fleet-p2to.3.1) `base` lives directly on the ledger entry
+            // (ledger.mjs's Reservation.base), the same axis as issueRoots/
+            // members below -- unlike branch/goal, no getSprintMeta
+            // indirection exists for it (nothing has ever needed to override
+            // it independently of the ledger).
+            const base = entry.base ?? null;
+
+            let baseDrift = null;
+            try {
+                baseDrift = (await driftCheck(branch, base)) ?? null;
+            } catch (err) {
+                logError(`[dashboard] base-drift check failed for sprint '${entry.sprintId}':`, err);
+            }
 
             let beadCount = null;
             let progress = null;
@@ -682,13 +856,15 @@ export function createDashboard(deps = {}) {
 
             return {
                 sprintId: entry.sprintId,
-                branch: meta.branch ?? null,
+                branch,
                 goal: meta.goal ?? null,
                 status: classification.status,
                 issueRoots: entry.issueRoots ?? [],
                 beadCount,
                 progress,
                 members: (entry.members ?? []).map((name) => ({ name, role: roles[name] ?? null })),
+                base,
+                baseDrift,
             };
         }));
         return built.filter((v) => v.status !== WATCHDOG_STATUS.FINISHED);
