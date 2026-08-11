@@ -30,6 +30,20 @@ function getText(port, path) {
     });
 }
 
+/** POST (empty body) a supervisor path, resolving the full body once the response ends. */
+function postText(port, path) {
+    return new Promise((resolve, reject) => {
+        const req = http.request({ host: '127.0.0.1', port, path, method: 'POST' }, (res) => {
+            let body = '';
+            res.setEncoding('utf-8');
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+        });
+        req.on('error', reject);
+        req.end();
+    });
+}
+
 /** Start a supervisor with the live proxy routes registered on an ephemeral port. */
 async function startSupervisorWith(proxyDeps) {
     const proxy = createLiveProxy(proxyDeps);
@@ -73,6 +87,20 @@ describe('proxy -- rewriteChildHtml', () => {
         assert.ok(!out.includes("'/extensions/"), 'must not leave a bare /extensions/ path');
         assert.ok(!out.includes("'/activities/"), 'must not leave a bare /activities/ path');
     });
+
+    // apra-fleet-p2to.3.1: the child viewer's own Pause/Resume buttons
+    // (apra-fleet-p2to.2.1's pauseWorkflow()/resumeWorkflow()) call these two
+    // absolute app-paths -- must be rewritten exactly like '/stop' so a
+    // click inside the live-proxied view re-enters the proxy.
+    test('rewrites the child\'s /pause and /resume fetch calls', () => {
+        const prefix = livePrefixFor('sprint-x');
+        const html = "fetch('/pause', { method: 'POST' }); fetch('/resume', { method: 'POST' })";
+        const out = rewriteChildHtml(html, prefix);
+        assert.ok(out.includes("'" + prefix + "/pause'"), out);
+        assert.ok(out.includes("'" + prefix + "/resume'"), out);
+        assert.ok(!out.includes("'/pause'"), 'must not leave a bare /pause path');
+        assert.ok(!out.includes("'/resume'"), 'must not leave a bare /resume path');
+    });
 });
 
 describe('proxy -- livePrefixFor', () => {
@@ -101,8 +129,12 @@ describe('proxy -- HTTP passthrough + no port leak', () => {
     let child;
     let childPort;
     let sup;
+    let pauseResumeCalls;
+    let forceReleaseCalls;
 
     before(async () => {
+        pauseResumeCalls = [];
+        forceReleaseCalls = [];
         // Fake child viewer: serves '/' HTML that references its own endpoints
         // via absolute app-paths, exactly like the real viewer.
         child = http.createServer((req, res) => {
@@ -120,6 +152,22 @@ describe('proxy -- HTTP passthrough + no port leak', () => {
             } else if (req.url === '/activities/act-1/output') {
                 res.writeHead(200, { 'content-type': 'application/json' });
                 res.end(JSON.stringify({ command: 'the full untruncated output' }));
+            } else if (req.url === '/pause' && req.method === 'POST') {
+                // (apra-fleet-p2to.3.1) mirrors the real viewer's cooperative
+                // /pause (apra-fleet-p2to.2.1) -- a bare 200, no body.
+                pauseResumeCalls.push({ url: req.url, method: req.method });
+                res.writeHead(200);
+                res.end();
+            } else if (req.url === '/resume' && req.method === 'POST') {
+                pauseResumeCalls.push({ url: req.url, method: req.method });
+                res.writeHead(200);
+                res.end();
+            } else if (req.url === '/force-release' || req.url.includes('force-release')) {
+                // Must never be hit by the pause/resume proxy routes -- only
+                // the Sprint Stack's Stop/Restart kill route calls this.
+                forceReleaseCalls.push({ url: req.url, method: req.method });
+                res.writeHead(200);
+                res.end();
             } else {
                 res.writeHead(404);
                 res.end();
@@ -165,6 +213,24 @@ describe('proxy -- HTTP passthrough + no port leak', () => {
         const res = await getText(sup.port, '/sprints/s1/live/activities/act-1/output');
         assert.strictEqual(res.status, 200);
         assert.deepStrictEqual(JSON.parse(res.body), { command: 'the full untruncated output' });
+    });
+
+    // apra-fleet-p2to.3.1: POST /sprints/:id/live/pause and /resume proxy to
+    // the child viewer's OWN cooperative /pause and /resume (apra-fleet-
+    // p2to.2.1) -- never the kill+force-release route the Sprint Stack's
+    // Stop/Restart buttons use.
+    test('POST /sprints/:id/live/pause proxies through to the child\'s own /pause, never force-release', async () => {
+        const res = await postText(sup.port, '/sprints/s1/live/pause');
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(pauseResumeCalls.at(-1), { url: '/pause', method: 'POST' });
+        assert.deepStrictEqual(forceReleaseCalls, []);
+    });
+
+    test('POST /sprints/:id/live/resume proxies through to the child\'s own /resume, never force-release', async () => {
+        const res = await postText(sup.port, '/sprints/s1/live/resume');
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(pauseResumeCalls.at(-1), { url: '/resume', method: 'POST' });
+        assert.deepStrictEqual(forceReleaseCalls, []);
     });
 });
 

@@ -9,6 +9,7 @@ import {
     createWatchdog,
     makeChildPidProbe,
     probeChildHttp,
+    probeChildPauseStatus,
     defaultRecordTerminalError,
     formatExitDetail,
     WATCHDOG_STATUS,
@@ -36,6 +37,13 @@ function makeWatchdog(entries, signals = {}) {
             ?? ((pid) => (signals.alivePids ?? new Set()).has(pid)),
         probeHttp: signals.probeHttp
             ?? ((port) => (signals.httpOkPorts ?? new Set()).has(port)),
+        // (apra-fleet-p2to.3.1) Deterministic no-op default ('never paused')
+        // so every PRE-EXISTING test in this file (none of which injects a
+        // pause signal) keeps classifying purely on PID+HTTP, exactly as
+        // before this probe existed -- without this, the real default
+        // (probeChildPauseStatus) would fire an actual network request
+        // against every fake httpOk port in the suite.
+        probePauseState: signals.probePauseState ?? (() => null),
         hasTerminalState: signals.hasTerminalState
             ?? ((id) => (signals.terminalSprints ?? new Set()).has(id)),
         // Default to a no-op recorder so tests that are not specifically
@@ -191,6 +199,211 @@ describe('watchdog -- four-status classifier', () => {
         const [r] = await wd.classifyAll();
         assert.equal(r.status, WATCHDOG_STATUS.RUNNING_UNRESPONSIVE);
         assert.equal(r.port, undefined);
+    });
+});
+
+// apra-fleet-p2to.3.1 -- the sixth classifier status, PAUSED: a live-pid,
+// HTTP-reachable child whose own /state pause.status reads 'paused'. Added
+// per review feedback on apra-fleet-p2to.3.1 (the PAUSED branch, and
+// probeChildPauseStatus's injectable dep, shipped with zero coverage).
+describe('watchdog -- apra-fleet-p2to.3.1: PAUSED classification', () => {
+    test('PID alive + HTTP answering + pause.status "paused" => PAUSED, not running-healthy', async () => {
+        const wd = makeWatchdog(
+            [{ sprintId: 's1', childPid: 100 }],
+            {
+                ports: { s1: 9000 }, alivePids: new Set([100]), httpOkPorts: new Set([9000]),
+                probePauseState: () => 'paused',
+            },
+        );
+        const [r] = await wd.classifyAll();
+        assert.equal(r.status, WATCHDOG_STATUS.PAUSED);
+        assert.equal(r.pidAlive, true);
+        assert.equal(r.httpOk, true);
+        assert.equal(r.pauseStatus, 'paused');
+    });
+
+    test('pause.status "pausing" (deferred, not yet engaged) stays running-healthy, never PAUSED', async () => {
+        const wd = makeWatchdog(
+            [{ sprintId: 's1', childPid: 100 }],
+            {
+                ports: { s1: 9000 }, alivePids: new Set([100]), httpOkPorts: new Set([9000]),
+                probePauseState: () => 'pausing',
+            },
+        );
+        const [r] = await wd.classifyAll();
+        assert.equal(r.status, WATCHDOG_STATUS.RUNNING_HEALTHY);
+    });
+
+    test('pause.status "none" (or null) stays running-healthy', async () => {
+        const wd = makeWatchdog(
+            [{ sprintId: 's1', childPid: 100 }],
+            {
+                ports: { s1: 9000 }, alivePids: new Set([100]), httpOkPorts: new Set([9000]),
+                probePauseState: () => 'none',
+            },
+        );
+        const [r] = await wd.classifyAll();
+        assert.equal(r.status, WATCHDOG_STATUS.RUNNING_HEALTHY);
+    });
+
+    test('the pause probe is never consulted when HTTP is not already known reachable (running-unresponsive stays running-unresponsive)', async () => {
+        let calls = 0;
+        const wd = makeWatchdog(
+            [{ sprintId: 's1', childPid: 100 }],
+            {
+                ports: { s1: 9000 }, alivePids: new Set([100]), httpOkPorts: new Set(), // HTTP silent
+                probePauseState: () => { calls += 1; return 'paused'; },
+            },
+        );
+        const [r] = await wd.classifyAll();
+        assert.equal(r.status, WATCHDOG_STATUS.RUNNING_UNRESPONSIVE);
+        assert.equal(calls, 0, 'an unresponsive child cannot be asked anything -- the pause probe must not fire');
+    });
+
+    test('a throwing probePauseState is caught -- classification still completes as running-healthy, never crashes', async () => {
+        const wd = makeWatchdog(
+            [{ sprintId: 's1', childPid: 100 }],
+            {
+                ports: { s1: 9000 }, alivePids: new Set([100]), httpOkPorts: new Set([9000]),
+                probePauseState: () => { throw new Error('boom'); },
+            },
+        );
+        const [r] = await wd.classifyAll();
+        assert.equal(r.status, WATCHDOG_STATUS.RUNNING_HEALTHY);
+    });
+
+    test('a probePauseState that resolves null (probe failure/timeout) is never conflated with paused', async () => {
+        const wd = makeWatchdog(
+            [{ sprintId: 's1', childPid: 100 }],
+            {
+                ports: { s1: 9000 }, alivePids: new Set([100]), httpOkPorts: new Set([9000]),
+                probePauseState: () => null,
+            },
+        );
+        const [r] = await wd.classifyAll();
+        assert.equal(r.status, WATCHDOG_STATUS.RUNNING_HEALTHY);
+        assert.equal(r.pauseStatus, undefined, 'a null/unknown probe result must not be stamped onto the result');
+    });
+
+    test('a PAUSED sprint is never routed through the terminal-error recorder / force-release path, even across repeated ticks', async () => {
+        const calls = [];
+        const wd = makeWatchdog(
+            [{ sprintId: 's1', childPid: 100 }],
+            {
+                ports: { s1: 9000 }, alivePids: new Set([100]), httpOkPorts: new Set([9000]),
+                probePauseState: () => 'paused',
+                recordTerminalError: (info) => calls.push(info),
+            },
+        );
+        await wd.classifyAll();
+        await wd.classifyAll();
+        assert.equal(calls.length, 0, 'PAUSED is a live, non-terminal status -- the reservation must never be force-released for it');
+    });
+
+    test('every classification is exactly one of the six documented statuses, and PAUSED is one of them', async () => {
+        const six = new Set(Object.values(WATCHDOG_STATUS));
+        assert.equal(six.size, 6);
+        assert.ok(six.has(WATCHDOG_STATUS.PAUSED));
+        const wd = makeWatchdog(
+            [{ sprintId: 's1', childPid: 100 }],
+            {
+                ports: { s1: 9000 }, alivePids: new Set([100]), httpOkPorts: new Set([9000]),
+                probePauseState: () => 'paused',
+            },
+        );
+        const [r] = await wd.classifyAll();
+        assert.ok(six.has(r.status));
+        assert.equal(r.status, WATCHDOG_STATUS.PAUSED);
+    });
+});
+
+// apra-fleet-p2to.3.1 -- probeChildPauseStatus() against a REAL HTTP server:
+// the injectable default createWatchdog() falls back to when the caller
+// supplies no deps.probePauseState. "cannot verify" (network error, timeout,
+// non-JSON body) must resolve null, never be conflated with "not paused" in
+// a way that masks a genuine probe failure, and must never throw.
+describe('probeChildPauseStatus (apra-fleet-p2to.3.1) -- real HTTP server', () => {
+    test('reads pause.status from a live child /state response', async () => {
+        const server = http.createServer((req, res) => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ pause: { status: 'paused', reason: 'manual' } }));
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const port = server.address().port;
+        try {
+            assert.equal(await probeChildPauseStatus(port), 'paused');
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    test('returns "none" verbatim (not coerced to null) when the child reports it', async () => {
+        const server = http.createServer((req, res) => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ pause: { status: 'none' } }));
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const port = server.address().port;
+        try {
+            assert.equal(await probeChildPauseStatus(port), 'none');
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    test('returns null when the response body is not valid JSON', async () => {
+        const server = http.createServer((req, res) => {
+            res.writeHead(200, { 'content-type': 'text/plain' });
+            res.end('not json');
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const port = server.address().port;
+        try {
+            assert.equal(await probeChildPauseStatus(port), null);
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    test('returns null when the child response carries no pause field at all', async () => {
+        const server = http.createServer((req, res) => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ status: 'running' }));
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const port = server.address().port;
+        try {
+            assert.equal(await probeChildPauseStatus(port), null);
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    test('returns null (never throws) for a dead port', async () => {
+        const server = http.createServer((req, res) => { res.writeHead(200); res.end('{}'); });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const port = server.address().port;
+        await new Promise((resolve) => server.close(resolve));
+        // Port is now closed -- connection refused.
+        assert.equal(await probeChildPauseStatus(port, { timeoutMs: 300 }), null);
+    });
+
+    test('returns null on a genuine timeout (server accepts but never responds)', async () => {
+        const server = http.createServer(() => { /* never respond */ });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const port = server.address().port;
+        try {
+            assert.equal(await probeChildPauseStatus(port, { timeoutMs: 100 }), null);
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    test('returns null (never throws) for an invalid/non-positive port, without touching the network', async () => {
+        assert.equal(await probeChildPauseStatus(0), null);
+        assert.equal(await probeChildPauseStatus(-1), null);
+        assert.equal(await probeChildPauseStatus(null), null);
+        assert.equal(await probeChildPauseStatus(undefined), null);
     });
 });
 

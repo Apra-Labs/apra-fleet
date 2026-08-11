@@ -9,6 +9,7 @@ import {
     renderSprintSection,
     statusBadge,
     formatStopError,
+    computeBaseDrift,
 } from '../src/supervisor/dashboard.mjs';
 import { WATCHDOG_STATUS } from '../src/supervisor/watchdog.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
@@ -173,6 +174,156 @@ describe('dashboard -- renderSprintStackHtml / renderSprintSection', () => {
         assert.ok(html.includes('btn-restart-sprint'));
         assert.ok(html.includes('restart-result'));
         assert.ok(/Restart</.test(html));
+    });
+
+    // apra-fleet-p2to.3.1: Pause/Resume row controls. Unlike Stop/Restart
+    // (meaningful regardless of live-pid state), Pause/Resume only render
+    // for statuses the watchdog currently sees as a live child: Pause for a
+    // live pid (running-healthy/running-unresponsive), Resume once PAUSED;
+    // neither renders for a dead/finished row (nothing live left to pause).
+    describe('apra-fleet-p2to.3.1: Pause/Resume row controls', () => {
+        function sectionFor(status) {
+            return renderSprintSection({
+                sprintId: 'sprint-1', branch: 'feat/x', goal: 'P1', status,
+                issueRoots: [], beadCount: 0, members: [],
+            });
+        }
+
+        test('running-healthy renders a Pause button (not Resume)', () => {
+            const html = sectionFor(WATCHDOG_STATUS.RUNNING_HEALTHY);
+            assert.ok(html.includes('btn-pause-sprint'));
+            assert.ok(!html.includes('btn-resume-sprint'));
+            assert.ok(/Pause</.test(html));
+            assert.ok(html.includes('data-sprint-id="sprint-1"'));
+        });
+
+        test('running-unresponsive also renders a Pause button -- a hung child can still be asked to pause', () => {
+            const html = sectionFor(WATCHDOG_STATUS.RUNNING_UNRESPONSIVE);
+            assert.ok(html.includes('btn-pause-sprint'));
+            assert.ok(!html.includes('btn-resume-sprint'));
+        });
+
+        test('paused renders a Resume button (not Pause)', () => {
+            const html = sectionFor(WATCHDOG_STATUS.PAUSED);
+            assert.ok(html.includes('btn-resume-sprint'));
+            assert.ok(!html.includes('btn-pause-sprint'));
+            assert.ok(/Resume</.test(html));
+        });
+
+        test('crashed/finished render neither button -- no live child to pause/resume', () => {
+            for (const status of [WATCHDOG_STATUS.CRASHED, WATCHDOG_STATUS.FINISHED]) {
+                const html = sectionFor(status);
+                assert.ok(!html.includes('btn-pause-sprint'), `${status} must not render Pause`);
+                assert.ok(!html.includes('btn-resume-sprint'), `${status} must not render Resume`);
+            }
+        });
+
+        test('renders a per-row inline pause-result element, keyed by sprintId, regardless of status', () => {
+            const html = sectionFor(WATCHDOG_STATUS.RUNNING_HEALTHY);
+            assert.ok(html.includes('pause-result'));
+            assert.ok(html.includes('class="pause-result" data-sprint-id="sprint-1"') || /pause-result[^>]*data-sprint-id="sprint-1"/.test(html));
+        });
+    });
+
+    // apra-fleet-p2to.3.1: base-drift indicator. `driftCount === null` (unknown)
+    // must render distinctly from a confirmed-zero drift, never conflated.
+    describe('apra-fleet-p2to.3.1: base-drift indicator', () => {
+        function sectionWithDrift(baseDrift, base) {
+            return renderSprintSection({
+                sprintId: 'sprint-1', branch: 'feat/x', goal: 'P1', status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+                issueRoots: [], beadCount: 0, members: [], baseDrift, base,
+            });
+        }
+
+        test('unknown drift (null/undefined) renders "Base drift: unknown", not zero', () => {
+            const html = sectionWithDrift(null, 'main');
+            assert.ok(html.includes('Base drift: unknown'));
+            assert.ok(!html.includes('Up to date'));
+        });
+
+        test('missing baseDrift field entirely (view built before this feature) also renders "unknown", never throws', () => {
+            const html = renderSprintSection({
+                sprintId: 'sprint-1', branch: 'feat/x', goal: 'P1', status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+                issueRoots: [], beadCount: 0, members: [],
+            });
+            assert.ok(html.includes('Base drift: unknown'));
+        });
+
+        test('zero drift renders "Up to date with <base>", distinct from unknown', () => {
+            const html = sectionWithDrift(0, 'main');
+            assert.ok(html.includes('Up to date with main'));
+            assert.ok(!html.includes('Base drift: unknown'));
+            assert.ok(!html.includes('Base drift:'));
+        });
+
+        test('positive drift renders the commit count and base name', () => {
+            const html = sectionWithDrift(5, 'main');
+            assert.ok(html.includes('Base drift: 5 commit(s) behind main'));
+        });
+
+        test('a missing base name falls back to the literal "base"', () => {
+            const html = sectionWithDrift(3, null);
+            assert.ok(html.includes('behind base'));
+        });
+
+        test('an untrusted base branch name is HTML-escaped', () => {
+            const html = sectionWithDrift(2, '<script>x</script>');
+            assert.ok(!html.includes('<script>x</script>'));
+        });
+    });
+});
+
+describe('dashboard -- apra-fleet-p2to.3.1: computeBaseDrift', () => {
+    test('returns the commit count parsed from the injected exec (git rev-list --count branch..base)', async () => {
+        let calledWith = null;
+        const n = await computeBaseDrift('feat/x', 'main', {
+            cwd: '/repo',
+            exec: async (cmd, args, opts) => {
+                calledWith = { cmd, args, opts };
+                return { stdout: '5\n' };
+            },
+        });
+        assert.equal(n, 5);
+        assert.equal(calledWith.cmd, 'git');
+        assert.deepEqual(calledWith.args, ['rev-list', '--count', 'feat/x..main']);
+        assert.equal(calledWith.opts.cwd, '/repo');
+    });
+
+    test('zero drift is reported as 0, not null/falsy-coerced', async () => {
+        const n = await computeBaseDrift('feat/x', 'main', { exec: async () => ({ stdout: '0\n' }) });
+        assert.strictEqual(n, 0);
+    });
+
+    test('returns null when branch or base is missing/empty, without invoking exec', async () => {
+        let called = false;
+        const exec = async () => { called = true; return { stdout: '0' }; };
+        assert.strictEqual(await computeBaseDrift(null, 'main', { exec }), null);
+        assert.strictEqual(await computeBaseDrift('feat/x', null, { exec }), null);
+        assert.strictEqual(await computeBaseDrift('', 'main', { exec }), null);
+        assert.strictEqual(await computeBaseDrift('feat/x', '', { exec }), null);
+        assert.strictEqual(await computeBaseDrift(undefined, undefined, { exec }), null);
+        assert.equal(called, false, 'exec must never run when either ref is missing');
+    });
+
+    test('returns null (never throws) when the injected exec rejects -- e.g. an unresolvable ref or no local git repo', async () => {
+        const n = await computeBaseDrift('feat/x', 'main', {
+            exec: async () => { throw new Error("fatal: bad revision 'feat/x..main'"); },
+        });
+        assert.strictEqual(n, null);
+    });
+
+    test('returns null when stdout is not a parseable non-negative integer', async () => {
+        assert.strictEqual(await computeBaseDrift('feat/x', 'main', { exec: async () => ({ stdout: 'not-a-number' }) }), null);
+        assert.strictEqual(await computeBaseDrift('feat/x', 'main', { exec: async () => ({ stdout: '' }) }), null);
+        assert.strictEqual(await computeBaseDrift('feat/x', 'main', { exec: async () => ({ stdout: '-3' }) }), null);
+    });
+
+    test('defaults cwd to process.cwd() when not supplied', async () => {
+        let calledWith = null;
+        await computeBaseDrift('feat/x', 'main', {
+            exec: async (cmd, args, opts) => { calledWith = opts; return { stdout: '0' }; },
+        });
+        assert.equal(calledWith.cwd, process.cwd());
     });
 });
 
@@ -362,6 +513,56 @@ describe('dashboard -- createDashboard', () => {
         assert.ok(html.startsWith('<!DOCTYPE html>'));
         assert.ok(html.includes('No sprints are currently running'));
     });
+
+    // apra-fleet-p2to.3.1: base-drift wiring on the view-builder. `base`
+    // lives directly on the ledger entry (no getSprintMeta indirection, per
+    // the impl's doc comment); `baseDrift` comes from the injectable
+    // driftCheck, called with (branch, base) so a test can drive a
+    // deterministic count without a real git checkout.
+    describe('apra-fleet-p2to.3.1: base-drift view wiring', () => {
+        test('buildSprintViews resolves base from the ledger entry and baseDrift via the injected driftCheck(branch, base)', async () => {
+            let calledWith = null;
+            const dashboard = createDashboard({
+                ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1, base: 'main' }]),
+                watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+                expandScope: async () => new Set(),
+                getSprintMeta: async () => ({ branch: 'feat/x' }),
+                driftCheck: async (branch, base) => { calledWith = { branch, base }; return 7; },
+            });
+            const [view] = await dashboard.buildSprintViews();
+            assert.deepEqual(calledWith, { branch: 'feat/x', base: 'main' });
+            assert.equal(view.base, 'main');
+            assert.equal(view.baseDrift, 7);
+        });
+
+        test('base defaults to null when the ledger entry carries none; baseDrift defaults to null when driftCheck is not injected (falls back to the real computeBaseDrift, which fails closed with no such branch)', async () => {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1 }]),
+                watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+                expandScope: async () => new Set(),
+            });
+            const [view] = await dashboard.buildSprintViews();
+            assert.equal(view.base, null);
+            // No branch/base recorded at all -> the real computeBaseDrift's
+            // own missing-ref guard returns null without ever shelling out.
+            assert.equal(view.baseDrift, null);
+        });
+
+        test('a throwing driftCheck is isolated per-sprint: baseDrift stays null, the rest of the view (and the whole page) still renders', async () => {
+            const dashboard = createDashboard({
+                ledger: fakeLedger([{ sprintId: 's1', members: [], issueRoots: [], childPid: 1, base: 'main' }]),
+                watchdog: fakeWatchdog({ s1: WATCHDOG_STATUS.RUNNING_HEALTHY }),
+                expandScope: async () => new Set(),
+                getSprintMeta: async () => ({ branch: 'feat/x' }),
+                driftCheck: async () => { throw new Error('git boom'); },
+                logger: { log() {}, error() {} },
+            });
+            const views = await dashboard.buildSprintViews();
+            assert.equal(views.length, 1);
+            assert.equal(views[0].baseDrift, null);
+            assert.equal(views[0].branch, 'feat/x', 'a driftCheck failure must not clobber the rest of the view');
+        });
+    });
 });
 
 describe('dashboard -- registerDashboardRoutes / GET /', () => {
@@ -447,5 +648,22 @@ describe('dashboard -- renderIndexPageHtml', () => {
         assert.ok(html.includes("fetch('/api/sprints'"));
         assert.ok(html.includes('audit.branch'));
         assert.ok(html.includes('audit.issueRoots'));
+    });
+
+    test('apra-fleet-p2to.3.1: embeds the Pause/Resume button client script, event-delegated and proxying through /live/pause and /live/resume (never the kill route)', () => {
+        const html = renderIndexPageHtml([{
+            sprintId: 'sprint-1', branch: 'feat/x', goal: 'P1', status: WATCHDOG_STATUS.RUNNING_HEALTHY,
+            issueRoots: [], beadCount: 0, members: [],
+        }]);
+        assert.ok(html.includes('btn-pause-sprint'));
+        assert.ok(html.includes('btn-resume-sprint'));
+        assert.ok(html.includes("'/live/' + action"), 'must proxy through the live-view routes, not construct a kill-route URL');
+        // Distinguish it from the Stop/Restart scripts' own force-release
+        // wiring: the pause script itself must never mention force-release.
+        const pauseScriptStart = html.indexOf('function requestPauseResume');
+        assert.ok(pauseScriptStart !== -1, 'pause/resume client script must be embedded');
+        const pauseScriptEnd = html.indexOf('</script>', pauseScriptStart);
+        const pauseScript = html.slice(pauseScriptStart, pauseScriptEnd);
+        assert.ok(!pauseScript.includes('force-release'), 'the cooperative pause/resume script must never reference the kill+force-release route');
     });
 });
