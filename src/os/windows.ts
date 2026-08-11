@@ -11,9 +11,32 @@ import { escapeBatchMetachars } from '../utils/shell-escape.js';
  * PowerShell one-liner over strategy.execCommand -- the raw form only works
  * if the member's sshd default shell happens to be PowerShell; on a cmd.exe
  * default it silently produces garbage (apra-fleet-ot2z.10).
+ *
+ * `powershell -EncodedCommand <script>` exits 0 unless a *terminating* error
+ * occurs -- non-terminating failures (Set-Content access-denied, Remove-Item
+ * failure, a cmdlet erroring under the default
+ * $ErrorActionPreference='Continue') write to stderr but still return exit
+ * code 0, so callers checking the exit code can't see them
+ * (apra-fleet-ot2z.12). Force $ErrorActionPreference = 'Stop' for the
+ * duration of the script and re-throw any caught error via `exit 1`, so
+ * non-terminating errors become terminating ones and surface as a non-zero
+ * exit code. Call sites that intentionally tolerate a failure (e.g.
+ * strategy.ts's deleteFiles) pass an explicit `-ErrorAction
+ * SilentlyContinue`/`-ErrorAction Stop` on the individual cmdlet, which
+ * overrides the global preference for that cmdlet and keeps its original
+ * tolerate-missing-path behavior.
+ *
+ * A trailing `exit 0` is appended inside the try block: without it,
+ * powershell.exe's own exit code falls back to reflecting `$?` of the last
+ * statement, which PowerShell sets to $false whenever *any* error record was
+ * written to the error stream during the session -- even one suppressed by
+ * -ErrorAction SilentlyContinue on an individual cmdlet. That quirk would
+ * otherwise turn every intentionally-tolerated failure (e.g. deleteFiles
+ * removing an already-gone file) into a false non-zero exit.
  */
 export function wrapPowerShellEncoded(psScript: string): string {
-  const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+  const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; exit 0 } catch { Write-Error $_; exit 1 }`;
+  const encoded = Buffer.from(guarded, 'utf16le').toString('base64');
   return `powershell -EncodedCommand ${encoded}`;
 }
 
