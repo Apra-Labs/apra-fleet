@@ -386,3 +386,90 @@ against an allowlisted character set before any shell-involving fallback
 path could see it; this extra check is appropriate there specifically
 because that caller's inputs are narrow enough to allowlist safely, not
 because it is a stronger guarantee than the shim-resolution fix itself.
+
+## `compose_permissions` reported success on a config write that never landed
+
+**Symptom:** a `compose_permissions` grant call returned a success message
+("Granted N permissions" / "Permissions composed"), but the target member's
+provider settings file (`.claude/settings.local.json` and equivalents) was
+unchanged on disk -- the grant silently had no effect. Reproduced on Windows,
+but the underlying defect was platform-agnostic.
+
+**Root cause:** the delivery path (`deliverConfigFile`) ran a remote `mkdir`
+command and a remote write command via the strategy's `execCommand`, but
+never inspected the returned exit code or stderr of either command, and never
+read the file back to confirm the intended content actually landed. Any
+failure along that path -- a nonzero exit code, a quoting fault that wrote
+nothing, or a write that resolved against the wrong path -- was silently
+discarded, and the caller unconditionally returned a success string and
+updated the permissions ledger as if the grant had taken effect.
+
+**Why the existing test suite didn't catch it:** the pre-existing test file
+for this tool mocked the command-execution layer entirely and asserted only
+on the *generated command string*, never on what a real write actually
+produces. A write command that would fail against a real filesystem still
+"looked correct" as a string, so the no-op shipped unnoticed.
+
+**Fix shape (the durable pattern, not tied to any one call site):**
+1. Treat "the write command executed" and "the write took effect" as two
+   separate facts that both need checking. A nonzero exit code from either
+   the directory-creation or the write command is a hard failure.
+2. After writing, read the target file back and verify the *actual content*,
+   not just the exit code -- an exit-code-only check still misses a write
+   that "succeeds" against the wrong path or one that silently produces an
+   empty file. For structured (JSON) content, parse and structurally compare
+   against the intended merged document (key order must not matter); for
+   opaque/string content (TOML, etc.), confirm the expected marker text is
+   present in the read-back.
+3. Surface any verification failure as an explicit, typed error at the point
+   of delivery, and have every caller of the delivery function translate that
+   into an explicit failure return -- never a success string -- and skip any
+   side effect (like a ledger update) that implies the grant took effect.
+4. A regression test for this class of bug must exercise the real,
+   unmocked execution strategy against a scratch filesystem and assert on
+   file content read from disk with the standard filesystem API -- not on the
+   tool's return value and not against a mocked command executor. Mocking the
+   executor is exactly what let the original bug ship, so the regression
+   test's entire value is in refusing to do that.
+
+**Known residual gap:** write-level verification (did the intended bytes
+land on disk) is a different guarantee from CLI-level uptake (does the
+consuming provider CLI actually read and honor that file once written -- see
+the workspace-trust caveat elsewhere in this document, where a syntactically
+correct settings file is present but ignored because the workspace isn't
+trusted). Fixing the write-level no-op does not by itself guarantee the
+CLI applies the grant; that remains a separate, already-tracked concern.
+Verifying the Windows write path specifically also still depends on running
+the actual PowerShell write command against a real filesystem on a Windows
+host -- a POSIX-only test run can inspect that code path but cannot execute
+it, and should say so explicitly rather than claim full coverage.
+
+## Windows stall-poller: avoid intermediate `$variable` tokens in remote PowerShell one-liners
+
+On at least one Windows member, the SSH execution path was observed to strip
+bare `$name` tokens (e.g. a loop variable like `$i`) out of a command string
+before a nested `powershell -c` invocation ever parsed it, turning an
+otherwise-correct one-liner into a parse error on every invocation. This
+broke an mtime-based liveness/staleness signal that polled a remote
+directory or file for its most recent write time, on every poll, on that
+class of member.
+
+The durable fix is to write remote PowerShell one-liners used for this kind
+of polling as a single pipeline with no intermediate variable assignment --
+lean on the pipeline's own terminal stage (e.g. resolving straight through to
+a formatting cmdlet) rather than capturing an intermediate result in a
+`$variable` and referencing it in a later statement. A `Test-Path` (or
+equivalent existence) guard ahead of the expensive part of the pipeline is
+cheap and avoids running that part of the pipeline against a path that does
+not exist yet -- both the guard and the pipeline's happy path stay
+one-liners with no `$variable`.
+
+**Trap to avoid when redesigning this kind of poll:** a pipeline stage that
+enumerates a directory recursively can hang indefinitely when pointed at a
+path that does not exist and errors are suppressed, rather than failing
+fast -- this is easy to miss because the same stage against an existing-but-
+empty directory returns instantly, so a quick manual check against a real
+directory will not reveal the hang. Isolate each pipeline stage individually
+(e.g. run each stage as its own job with a timeout) before trusting that a
+suppressed-errors pipeline is safe to chain unconditionally against a path
+whose existence you have not confirmed.
