@@ -276,14 +276,6 @@ export class ApraFleet {
     }
 
     /**
-     * Check progress of work dispatched via execute_prompt.
-     * @param {{ member_id?: string, member_name?: string, since_commit?: string, max_commits?: number }} options
-     */
-    async promptProgress(options) {
-        return this.mcpClient.callTool('prompt_progress', options);
-    }
-
-    /**
      * Get a member's cheap/standard/premium tier resolved to a concrete
      * model and its real per-1M-token price (apra-fleet-dv5.5/dv5.6).
      * @param {{ member_id?: string, member_name?: string }} options
