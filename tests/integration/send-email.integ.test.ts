@@ -8,16 +8,15 @@
  *
  * Non-secret config comes from tests/integration/email-test-config.json
  * (gitignored -- copy email-test-config.json.example and fill in values).
+ * The test is gated on this file existing -- no env vars needed.
  *
  * Run:
- *   SEND_EMAIL_INTEG=1 npx vitest run tests/integration/send-email.integ.test.ts
+ *   npx vitest run tests/integration/send-email.integ.test.ts
  */
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { sendEmail } from '../../src/tools/send-email.js';
-
-const INTEG_OPTED_IN = process.env.SEND_EMAIL_INTEG === '1';
 
 const CONFIG_PATH = resolve(import.meta.dirname, 'email-test-config.json');
 const HAS_CONFIG = existsSync(CONFIG_PATH);
@@ -31,7 +30,7 @@ const testConfig: TestConfig | null = HAS_CONFIG
   ? JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
   : null;
 
-describe.skipIf(!INTEG_OPTED_IN)('send-email integration (credential store paths)', () => {
+describe.skipIf(!HAS_CONFIG)('send-email integration (credential store paths)', () => {
   describe.skipIf(!testConfig?.smtp)('SMTP', () => {
     it('sends with pre-stored credential (CLI path)', async () => {
       const result = JSON.parse(await sendEmail({
@@ -75,13 +74,4 @@ describe.skipIf(!INTEG_OPTED_IN)('send-email integration (credential store paths
     });
   });
 
-  it('requires test config file when opted in', () => {
-    if (!HAS_CONFIG) {
-      throw new Error(
-        'SEND_EMAIL_INTEG=1 but tests/integration/email-test-config.json not found. ' +
-        'Copy email-test-config.json.example and fill in your values.'
-      );
-    }
-    expect(HAS_CONFIG).toBe(true);
-  });
 });

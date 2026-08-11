@@ -307,7 +307,9 @@ export async function main(context) {
 ```
 
 The SMTP password resolves from the credential store automatically. It never
-appears in the workflow.
+appears in the workflow. See `examples/workflows/email-notify/` for a
+complete runnable example and `docs/email-workflow-guide.md` for the full
+walkthrough.
 
 ### send_email Tool Reference
 
