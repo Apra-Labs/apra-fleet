@@ -139,6 +139,7 @@ const mockContext = vi.hoisted(() => vi.fn());
 const mockGetProvider = vi.hoisted(() => vi.fn());
 const mockGetKbProviders = vi.hoisted(() => vi.fn());
 const mockValidateFilePaths = vi.hoisted(() => vi.fn());
+const mockTouch = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/knowledge/kb-providers.js', () => ({
   getKbProviders: mockGetKbProviders,
@@ -222,10 +223,12 @@ describe('kb_session_prime graph-neighbor expansion', () => {
     mockGetProvider.mockReset();
     mockGetKbProviders.mockReset();
     mockValidateFilePaths.mockReset();
+    mockTouch.mockReset();
+    mockTouch.mockResolvedValue(0);
 
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
     mockGetKbProviders.mockResolvedValue({
-      project: { prime: mockPrime, query: mockProjectQuery },
+      project: { prime: mockPrime, query: mockProjectQuery, touch: mockTouch },
       global: { query: mockGlobalQuery },
       projectSlug: 'test',
     });
@@ -464,10 +467,12 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
     mockGetProvider.mockReset();
     mockGetKbProviders.mockReset();
     mockValidateFilePaths.mockReset();
+    mockTouch.mockReset();
+    mockTouch.mockResolvedValue(0);
 
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
     mockGetKbProviders.mockResolvedValue({
-      project: { prime: mockPrime, query: mockProjectQuery },
+      project: { prime: mockPrime, query: mockProjectQuery, touch: mockTouch },
       global: { query: mockGlobalQuery },
       projectSlug: 'test',
     });
@@ -597,6 +602,45 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
     expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'v1', 'v2']);
     expect(parsed.top_entries[1].via).toBe('canonical-bible');
     expect(parsed.top_entries[2].via).toBe('canonical-bible');
+  });
+
+  // KB audit 2026-08-11, retrieval telemetry: prime() bumps use_count via
+  // query() for every LIVE hit, but cold-seed entries are read out of a JSON
+  // file and bypassed that entirely -- so an entry delivered to an agent from
+  // the bible was invisible to use_count/last_accessed and to
+  // kb_stats.retrieval. Since the engine primes without hints, the bible is the
+  // ONLY thing it delivers, which is why hit_rate read 0 across six sprints
+  // while entries were genuinely being handed out. Delivery is retrieval:
+  // touch() records it for the ids that exist in this KB.
+  it('records delivery telemetry for the cold-seed entries it returns', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    writeCanonicalFile([canonicalEntry('c1'), canonicalEntry('c2')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({});
+
+    expect(mockTouch).toHaveBeenCalledWith(['c1', 'c2']);
+  });
+
+  it('does not touch anything when the cold-seed adds nothing', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a'), entry('b'), entry('c')]));
+    writeCanonicalFile([canonicalEntry('c1')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    await kbSessionPrime({});
+
+    expect(mockTouch).not.toHaveBeenCalled();
+  });
+
+  it('a failing touch never breaks priming -- telemetry is not the product', async () => {
+    mockPrime.mockResolvedValue(primedContext([]));
+    mockTouch.mockRejectedValue(new Error('db locked'));
+    writeCanonicalFile([canonicalEntry('c1')]);
+
+    const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+    const parsed = JSON.parse(await kbSessionPrime({}));
+
+    expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['c1']);
   });
 
   it('v2 envelope with a non-array entries field: output identical to today', async () => {
@@ -755,10 +799,12 @@ describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
     mockGetProvider.mockReset();
     mockGetKbProviders.mockReset();
     mockValidateFilePaths.mockReset();
+    mockTouch.mockReset();
+    mockTouch.mockResolvedValue(0);
 
     mockGlobalQuery.mockResolvedValue({ results: [], total: 0, l1_only: true });
     mockGetKbProviders.mockResolvedValue({
-      project: { prime: mockPrime, query: mockProjectQuery },
+      project: { prime: mockPrime, query: mockProjectQuery, touch: mockTouch },
       global: { query: mockGlobalQuery },
       projectSlug: 'test',
     });

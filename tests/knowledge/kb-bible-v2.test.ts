@@ -86,10 +86,15 @@ afterEach(() => {
 describe('kb_export writes the v2 envelope with its export commit', () => {
   it('records version, commit, branch and entry_count', async () => {
     await seedConfirmed(['Alpha claim', 'Beta claim']);
+    // HEAD *before* the export. Since the 2026-08-11 default flip, kb_export
+    // auto-commits the bible, which moves HEAD -- and the recorded commit is
+    // deliberately the tree the entries were VERIFIED against, not the commit
+    // that stored them (see the note above nextEntriesJson in kb-export.ts).
+    // Reading HEAD afterwards would assert the opposite of that contract.
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
     await kbExport({ repo_path: repo });
 
     const bible = readBible();
-    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
 
     expect(bible.version).toBe(2);
     expect(bible.provenance.commit).toBe(head);

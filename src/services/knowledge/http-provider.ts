@@ -232,6 +232,17 @@ export class HttpKbProvider implements MemoryProvider {
     return this.fallback.getLinked(id);
   }
 
+  // Delegated to the local fallback store like getLinked: delivery telemetry is
+  // a property of the KB the entries were read out of, and there is no remote
+  // route for it. Never throws -- a telemetry write must not fail a prime.
+  async touch(ids: string[]): Promise<number> {
+    try {
+      return await this.fallback.touch(ids);
+    } catch {
+      return 0;
+    }
+  }
+
   async prime(opts: PrimeOptions): Promise<PrimedContext> {
     await this.tryFlushQueue();
     try {

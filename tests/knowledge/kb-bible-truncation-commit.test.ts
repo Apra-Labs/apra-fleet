@@ -26,12 +26,19 @@ import { FLEET_DIR } from '../../src/paths.js';
  *
  *   1. Phase 1 refuses a missing/absent basis at CAPTURE, so those entries are
  *      COUNTED as rejected at import rather than silently vanishing later.
- *   2. Auto-commit defaults to off, so a shrunken export lands as a reviewable
- *      working-tree diff and the committed artifact at HEAD is untouched.
+ *   2. Under the DEFAULT, auto-commit refuses a SHRINKING export, so a
+ *      truncation lands as a reviewable working-tree diff and the committed
+ *      artifact at HEAD is untouched.
+ *
+ * Point 2 used to be "auto-commit defaults to off". The 2026-08-11 directive
+ * flipped that default ON -- an export nobody commits is knowledge nobody else
+ * ever sees, which is how 16 of 17 repositories ended up with no bible at all.
+ * The protection is therefore now an explicit size guard rather than a side
+ * effect of the default, and these two cases pin it directly.
  *
  * The last case is deliberately unflattering: it records that an explicit
  * autoCommit opt-in STILL commits a truncation. That is the documented override
- * path, not a guarantee -- the protection here is the default, not a size guard.
+ * path, not a guarantee.
  */
 
 function git(dir: string, args: string[]): string {

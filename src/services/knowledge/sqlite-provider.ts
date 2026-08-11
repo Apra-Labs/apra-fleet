@@ -873,6 +873,30 @@ export class SqliteProvider implements MemoryProvider {
     return row !== undefined;
   }
 
+  // KB audit 2026-08-11: the write half of "delivery is retrieval".
+  //
+  // query() bumps use_count/last_accessed for everything it returns, but an
+  // entry delivered to an agent from the canonical-bible cold-seed never goes
+  // through query() -- it is parsed out of a JSON file. Since the sprint engine
+  // primes without hints, the bible is the ONLY thing it delivers, so every
+  // delivery was invisible to the retrieval telemetry and hit_rate read 0 while
+  // entries were genuinely being handed out.
+  //
+  // Existence-tolerant BY DESIGN, not by accident: a bible is exported from one
+  // machine and read on another, so an id with no local row is the normal case,
+  // not an error. Returns how many rows were actually bumped -- the caller can
+  // tell "delivered from our own KB" from "delivered from someone else's".
+  async touch(ids: string[]): Promise<number> {
+    if (ids.length === 0) return 0;
+    const db = this.getDb();
+    const placeholders = ids.map(() => '?').join(',');
+    const res = db.prepare(`
+      UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+      WHERE id IN (${placeholders})
+    `).run(new Date().toISOString(), ...ids);
+    return res.changes;
+  }
+
   async query(opts: QueryOptions): Promise<KBResult> {
     const db = this.getDb();
     const conditions: string[] = [];

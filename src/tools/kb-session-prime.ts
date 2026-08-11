@@ -321,6 +321,15 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
 
           if (additions.length > 0) {
             result.top_entries = [...(result.top_entries ?? []), ...additions];
+            // Delivery is retrieval. Live hits above were bumped by query()
+            // inside prime(); a bible entry never passes through query(), so
+            // without this it reaches an agent while staying invisible to
+            // use_count / last_accessed / kb_stats.retrieval -- which is
+            // exactly why hit_rate read 0 across six sprints. Awaited but
+            // isolated: telemetry must never cost us the priming result.
+            try {
+              await providers.project.touch(additions.map(e => e.id));
+            } catch {}
           }
         }
       }
@@ -378,6 +387,15 @@ export async function kbSessionPrime(input: KbSessionPrimeInput): Promise<string
 
           if (additions.length > 0) {
             result.top_entries = [...(result.top_entries ?? []), ...additions];
+            // Delivery is retrieval. Live hits above were bumped by query()
+            // inside prime(); a bible entry never passes through query(), so
+            // without this it reaches an agent while staying invisible to
+            // use_count / last_accessed / kb_stats.retrieval -- which is
+            // exactly why hit_rate read 0 across six sprints. Awaited but
+            // isolated: telemetry must never cost us the priming result.
+            try {
+              await providers.project.touch(additions.map(e => e.id));
+            } catch {}
           }
         }
       }

@@ -242,4 +242,12 @@ export interface MemoryProvider {
   // SqliteProvider, unlike list()) because D4 binds HttpKbProvider to a
   // documented not-supported result rather than an absent method.
   stats(opts?: { symbols?: string[] }): Promise<ProviderStats>;
+  // KB audit 2026-08-11: record that these entries were DELIVERED to an agent,
+  // for entries that did not arrive through query() (which bumps its own
+  // telemetry). The canonical-bible cold-seed is the case that matters: it
+  // reads a JSON file, so its deliveries were invisible to use_count /
+  // last_accessed / kb_stats.retrieval. Existence-tolerant -- an id from
+  // another machine's bible has no local row and is silently skipped. Returns
+  // the number of rows actually bumped.
+  touch(ids: string[]): Promise<number>;
 }

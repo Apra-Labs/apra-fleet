@@ -161,24 +161,70 @@ function resolveRepoPath(explicit?: string): string {
 // same KB config file kb-setup.ts writes (FLEET_DIR/knowledge/config.json),
 // under a { bible: { autoCommit?: boolean } } section.
 //
-// KB-TRUST PHASE 1 (decided 2026-08-03): the default is now FALSE. kb_import
+// USER DIRECTIVE 2026-08-11: the default is TRUE.
+//
+// KB-TRUST PHASE 1 (2026-08-03) had set it FALSE, reasoning that kb_import
 // preserves a bible's CONFIRMED confidence as its sole exemption from the D1
-// clamp, justified in-code because "the bible is a git-reviewed, human-merged
-// artifact". Auto-committing the export as pm-kb <kb@pm.local>, mid-sprint, on
-// a feature branch, made that review a bot commit nobody was asked to look at.
-// The default should make human review possible rather than pre-empt it.
-// Missing file, missing section, or malformed JSON all degrade to the default
-// (FALSE) -- kb_export never fails because the config is absent or bad, and a
-// config problem must not silently start committing on the team's behalf.
+// clamp -- justified in-code because "the bible is a git-reviewed, human-merged
+// artifact" -- and that auto-committing as pm-kb <kb@pm.local>, mid-sprint, on
+// a feature branch made that review a bot commit nobody was asked to look at.
+//
+// The KB audit of 2026-08-11 showed the opposite failure was the real one: with
+// the default off, and nothing in the pipeline calling kb_export at all, 1 of 17
+// repositories had a bible. Knowledge that never gets written down cannot be
+// reviewed either, and an export left uncommitted on one machine is knowledge
+// nobody else will ever see. The auto-commit lands as a diff on the sprint's own
+// feature branch, which a human reads in that sprint's PR -- review later in the
+// loop than Phase 1 wanted, but review nonetheless. The commit remains
+// pathspec-scoped to the bible file, keeps its dedicated pm-kb identity, and is
+// still NEVER pushed automatically.
+//
+// Missing file and missing section degrade to the default (TRUE). A MALFORMED
+// config still degrades to FALSE: "I could not read your settings" must not be
+// the moment the tool starts committing on the team's behalf.
 const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
 
-function autoCommitEnabled(): boolean {
+// 'off'      -- explicitly disabled, or the config is unreadable.
+// 'default'  -- nobody expressed a preference; commit, but refuse to commit a
+//               SHRINKING export (see maybeAutoCommitBible).
+// 'explicit' -- the operator set autoCommit:true. A deliberate override: it
+//               commits whatever the export produced, shrink included. That is
+//               the documented contract the apra-fleet-ong chain test pins.
+type AutoCommitMode = 'off' | 'default' | 'explicit';
+
+function autoCommitMode(): AutoCommitMode {
   try {
-    if (!fs.existsSync(KB_CONFIG_PATH)) return false;
+    if (!fs.existsSync(KB_CONFIG_PATH)) return 'default';
     const raw = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8')) as { bible?: { autoCommit?: boolean } };
-    return raw.bible?.autoCommit ?? false;
+    const configured = raw.bible?.autoCommit;
+    if (configured === true) return 'explicit';
+    if (configured === false) return 'off';
+    return 'default';
   } catch {
-    return false;
+    // Unreadable config only: see the note above on why this one case is
+    // conservative regardless of which way the default points.
+    return 'off';
+  }
+}
+
+function autoCommitEnabled(): boolean {
+  return autoCommitMode() !== 'off';
+}
+
+// The entry count of the bible ALREADY on disk, read before we overwrite it.
+// Accepts both shapes (legacy bare array, v2 envelope) like entriesUnchanged.
+// null means "no comparable prior bible" -- absent file, or unparseable -- in
+// which case there is no shrink to detect and the export is a first write.
+function bibleEntryCount(outPath: string): number | null {
+  if (!fs.existsSync(outPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+    const existing = Array.isArray(parsed)
+      ? parsed
+      : (parsed && Array.isArray(parsed.entries) ? parsed.entries : null);
+    return existing === null ? null : existing.length;
+  } catch {
+    return null;
   }
 }
 
@@ -213,9 +259,38 @@ function bibleContentChanged(repoPath: string, outPath: string): boolean {
 // logged via log-helpers and NON-FATAL: the export itself already succeeded
 // by the time this runs, and stays successful regardless of what happens
 // here. Push is NOT automatic (D5: rides the existing per-turn sprint pushes).
-function maybeAutoCommitBible(repoPath: string, outPath: string, entryCount: number, scope: 'project' | 'global' = 'project'): boolean {
-  if (!autoCommitEnabled()) return false;
+//
+// SHRINK GUARD (added with the 2026-08-11 default flip to ON). apra-fleet-ong
+// was exactly this composition: import into a worktree missing cited files ->
+// sweep correctly stales them -> export correctly emits only live CONFIRMED ->
+// 82 of 97 entries vanish from the COMMITTED artifact other machines import
+// from, with no human in the loop. The only thing standing between that
+// incident and the team was the default being off, so turning it on without a
+// guard would re-open it. Under the DEFAULT, an export that produces fewer
+// entries than the bible it is replacing is written to disk but NOT committed:
+// the loss lands as a reviewable working-tree diff, which is the outcome the
+// off-default was protecting. An explicit autoCommit:true is still an operator
+// override and commits the shrink -- documented behavior, not an accident.
+function maybeAutoCommitBible(
+  repoPath: string,
+  outPath: string,
+  entryCount: number,
+  scope: 'project' | 'global' = 'project',
+  previousEntryCount: number | null = null,
+): boolean {
+  const mode = autoCommitMode();
+  if (mode === 'off') return false;
   if (!isGitRepo(repoPath)) return false;
+
+  if (mode === 'default' && previousEntryCount !== null && entryCount < previousEntryCount) {
+    logWarn(
+      'kb-export',
+      'bible SHRANK from ' + previousEntryCount + ' to ' + entryCount + ' entries -- written to disk but NOT '
+      + 'auto-committed. Review the diff and commit it yourself if the loss is intended '
+      + '(set { bible: { autoCommit: true } } to commit shrinking exports unattended).',
+    );
+    return false;
+  }
 
   try {
     if (!bibleContentChanged(repoPath, outPath)) return false;
@@ -304,9 +379,12 @@ export async function kbExport(input: KbExportInput): Promise<string> {
     },
     entries: canonical,
   };
+  // Read the OUTGOING count before the write below destroys it -- the shrink
+  // guard in maybeAutoCommitBible compares against the bible being replaced.
+  const previousEntryCount = bibleEntryCount(outPath);
   fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
 
-  const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope);
+  const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope, previousEntryCount);
 
   return JSON.stringify({ exported: canonical.length, path: outPath, scope, committed });
 }

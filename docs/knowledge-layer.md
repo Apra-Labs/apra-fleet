@@ -232,7 +232,9 @@ is deliberately narrow:
 - **Non-fatal:** any git failure (not a repo, no git binary, hook rejects, index
   lock) is logged and swallowed -- the export already succeeded.
 - **Off-switch:** `{ "bible": { "autoCommit": false } }` in the KB config
-  disables it. Missing/malformed config degrades to the default (ON).
+  disables it. A missing config or a config with no `bible` section degrades to
+  the default (ON). A *malformed* config degrades to OFF -- "I could not read
+  your settings" must not be the moment the tool starts committing for you.
 - **No push.** The commit rides the branch's existing push flow; `kb_export`
   never pushes.
 
