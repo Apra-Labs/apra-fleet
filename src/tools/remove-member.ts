@@ -93,9 +93,14 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
               ? wrapPowerShellEncoded(`$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${keyMatch.replace(/'/g, "''")}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`)
               // Escape forward slashes for sed delimiter
               : `sed -i '/${keyMatch.replace(/\//g, '\\/')}/d' ~/.ssh/authorized_keys`;
-            await strategy.execCommand(removeKeyCmd, 10000).catch(() => {
+            try {
+              const removeKeyResult = await strategy.execCommand(removeKeyCmd, 10000);
+              if (removeKeyResult.code !== 0) {
+                warnings.push('Could not clear fleet public key from authorized_keys on the member');
+              }
+            } catch {
               warnings.push('Could not clear fleet public key from authorized_keys on the member');
-            });
+            }
           } catch { /* pub key file not found — skip */ }
         }
       } else {
