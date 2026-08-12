@@ -60,6 +60,10 @@ COPILOT-INSTRUCTIONS.md
 # Fleet-sprint orchestrator run artifacts left in repo root
 /fleet-sprint-eft-*.log*
 
+# Per-run sprint scaffold (handoff docs and run logs)
+/HANDOFF-*.md
+/sprint-*.log
+
 # Fleet log dumps (e.g. .fleet-log-win-excerpt.txt) -- local debug artifacts, never commit
 .fleet-log-*
 
