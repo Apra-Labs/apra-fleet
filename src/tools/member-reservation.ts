@@ -43,7 +43,16 @@ export async function memberReservation(input: MemberReservationInput): Promise<
       return `[-] Member "${existing.friendlyName}" is already reserved by "${currentOwner}". Use force_release to clear a wedged reservation, or release it as that sprint first.`;
     }
     const updated = updateAgent(existing.id, { reservedBy: input.sprint_id });
-    if (!updated) return `Failed to reserve member "${existing.id}".`;
+    // Store-write failure (updateAgent returned falsy): this is a hard
+    // failure of the reserve, not a success. Without the leading '[-]'
+    // marker, runner.js's callFor() (fleet-sprint/runner.js) has nothing to
+    // distinguish this from a genuine "[OK] ... reserved" string and
+    // default-trusts it as ok:true -- which let a resume re-reserve
+    // (reReserveForResume) continue as if the member had actually been
+    // re-acquired even though the reservation store never recorded it.
+    // Marking it '[-]' routes it through callFor()'s existing rejection
+    // branch alongside the "already reserved by X" case above.
+    if (!updated) return `[-] Failed to reserve member "${existing.id}".`;
     logLine('member_reservation', `action=reserve id=${updated.id} name=${updated.friendlyName} reservedBy=${input.sprint_id}`, updated);
     writeStatusline();
     return currentOwner === input.sprint_id
