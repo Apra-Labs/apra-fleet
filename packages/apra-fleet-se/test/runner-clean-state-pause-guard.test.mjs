@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { runCmd, setupMinimal, buildMockFleetApi, teardown, defaultMockCallTool, uniqueMockBranch } from './helpers/mock-sprint-harness.mjs';
+import { createMemberReservationClient } from '../fleet-sprint/runner.js';
 
 // apra-fleet-p2to.4.1 -- runner.js's clean-state pause guard: an
 // `openSyncBracketCount` counter registered with the engine's
@@ -249,5 +250,128 @@ describe('apra-fleet-p2to.4.1: clean-state pause guard wiring (mock-sprint integ
             }
             await teardown(tempDir);
         }
+    });
+});
+
+// ============================================================================
+// apra-fleet-p2to.4.4.2 -- verifies the apra-fleet-p2to.4.4/.4.4.1 fix: closing
+// the LAST open sync bracket must itself engage a deferred pause (emitting
+// 'paused', which in turn triggers releaseForPause()) even when NO further
+// agent()/command() dispatch follows the bracket close. Before the fix,
+// openSyncBracketCount-- never re-consulted the engine's pause-engage check,
+// so a pause requested while a bracket was open stayed stranded until some
+// later dispatch happened to hit the gate -- and a sprint that ends right
+// after the last bracket closes never emitted 'paused' at all, silently
+// skipping the reservation hand-back. These use the SAME verbatim source
+// extraction as the apra-fleet-p2to.4.1 suite above (a real FleetWorkflow
+// instance wired to the real, unmodified withOpenSyncBracket()/setPauseGuard
+// registration out of runner.js), but drive it directly -- no full mock
+// sprint -- so the assertion is precisely "the bracket closing alone is
+// what engages the pause", not "some dispatch after it happened to".
+// ============================================================================
+
+function createNoopFleetApi() {
+    return {
+        async executePrompt() {
+            return { content: [{ text: 'ok' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
+        },
+        async executeCommand() {
+            return { content: [{ text: 'ok' }], isError: false };
+        },
+    };
+}
+
+describe('apra-fleet-p2to.4.4.2: deferred pause engages on sync-bracket guard clear; releaseForPause hands back reservations', () => {
+    test('AC1: a pause requested while a bracket is open engages (emits paused) the instant the LAST bracket closes -- no further dispatch involved', async () => {
+        const wf = new FleetWorkflow(createNoopFleetApi());
+        const internals = loadRealOpenSyncBracketInternals(wf.setPauseGuard.bind(wf));
+
+        let pausedFired = false;
+        wf.on('paused', () => { pausedFired = true; });
+
+        await internals.withOpenSyncBracket(async () => {
+            wf.requestPause('apra-fleet-p2to.4.4.2 mid-bracket');
+            // Still inside the bracket: the pause must stay deferred.
+            assert.equal(wf._paused, false, 'must not engage while the bracket is still open');
+            assert.equal(pausedFired, false);
+        });
+
+        // The bracket has now fully closed (its `finally` already ran) and NO
+        // agent()/command() dispatch has happened since -- this is the exact
+        // "sprint ends right after the last bracket closes" scenario the bug
+        // described. The pause must already be engaged at this point.
+        assert.equal(pausedFired, true, "'paused' must fire the instant the last open bracket closes, with zero further dispatch");
+        assert.equal(wf._paused, true);
+    });
+
+    test('AC1 (nested): the pause only engages once the OUTER (truly last) bracket closes, not when an inner one closes', async () => {
+        const wf = new FleetWorkflow(createNoopFleetApi());
+        const internals = loadRealOpenSyncBracketInternals(wf.setPauseGuard.bind(wf));
+
+        let pausedFired = false;
+        wf.on('paused', () => { pausedFired = true; });
+
+        await internals.withOpenSyncBracket(async () => {
+            await internals.withOpenSyncBracket(async () => {
+                wf.requestPause('apra-fleet-p2to.4.4.2 nested mid-bracket');
+            });
+            // The inner bracket just closed and poked the guard, but the outer
+            // bracket is still open -- must NOT engage yet.
+            assert.equal(pausedFired, false, 'an inner bracket closing must not engage a pause while the outer bracket is still open');
+            assert.equal(wf._paused, false);
+        });
+
+        assert.equal(pausedFired, true, 'the outer bracket closing (the true last bracket) must engage the pause');
+        assert.equal(wf._paused, true);
+    });
+
+    test('AC2: releaseForPause() hands back every member reservation in that same engage-on-clear path, wired exactly like cli.mjs\'s workflow.on(\'paused\', ...)', async () => {
+        const wf = new FleetWorkflow(createNoopFleetApi());
+        const internals = loadRealOpenSyncBracketInternals(wf.setPauseGuard.bind(wf));
+
+        const calls = [];
+        const sprintReservation = createMemberReservationClient({
+            callTool: async (name, args) => { calls.push(args); return '[OK] released'; },
+            members: ['alice', 'bob'],
+            sprintId: 'feat/workflow-pause-resume',
+        });
+        // Mirror cli.mjs's real wiring verbatim: workflow.on('paused', () =>
+        // sprintReservation.releaseForPause().catch(...)).
+        let releasePromise = null;
+        wf.on('paused', () => {
+            releasePromise = sprintReservation.releaseForPause().catch((err) => {
+                throw err;
+            });
+        });
+
+        await internals.withOpenSyncBracket(async () => {
+            wf.requestPause('apra-fleet-p2to.4.4.2 mid-bracket');
+            // Bracket still open: releaseForPause() must not have run yet.
+            assert.equal(calls.length, 0, 'must not release members before the pause has actually engaged');
+        });
+
+        assert.ok(releasePromise, "the 'paused' handler (and therefore releaseForPause()) must have fired synchronously as the bracket closed, with no dispatch in between");
+        await releasePromise;
+        assert.deepEqual(calls.map((a) => a.member_name), ['alice', 'bob'], 'every member must be handed back');
+        assert.ok(calls.every((a) => a.action === 'release' && a.sprint_id === 'feat/workflow-pause-resume'));
+    });
+
+    test('AC3: releaseForPause and releaseAll are the exact same de-duplicated implementation (guards against a byte-identical second copy reappearing)', async () => {
+        const calls = [];
+        const client = createMemberReservationClient({
+            callTool: async (name, args) => { calls.push(args); return '[OK] released'; },
+            members: ['alice', 'bob'],
+            sprintId: 'feat/workflow-pause-resume',
+        });
+
+        assert.equal(client.releaseForPause, client.releaseAll, 'releaseForPause must be the SAME function reference as releaseAll, not a duplicate implementation');
+
+        // Behavioral confirmation: calling either produces the identical
+        // release-every-member call sequence.
+        await client.releaseAll();
+        const viaReleaseAll = calls.splice(0, calls.length);
+        await client.releaseForPause();
+        const viaReleaseForPause = calls.splice(0, calls.length);
+        assert.deepEqual(viaReleaseForPause, viaReleaseAll, 'releaseForPause() must produce an identical call sequence to releaseAll()');
     });
 });
