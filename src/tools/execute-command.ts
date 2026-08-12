@@ -128,6 +128,8 @@ export interface ExecuteCommandStructured {
   exitCode: number;
   stdout: string;
   stderr: string;
+  isError?: boolean;
+  reason?: string;
   [key: string]: unknown;
 }
 
@@ -152,7 +154,16 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   if (agent.agentType !== 'local') {
     const preflight = await preflightCheck(agent, { skipAuth: true });
     if (!preflight.ok) {
-      return `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`;
+      return {
+        text: `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`,
+        structuredContent: {
+          isError: true,
+          reason: 'preflight_failed',
+          exitCode: -1,
+          stdout: '',
+          stderr: preflight.reason ?? 'preflight check failed',
+        },
+      };
     }
   }
 
