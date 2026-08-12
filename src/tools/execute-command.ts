@@ -13,7 +13,6 @@ import { credentialResolve, registerTaskCredentials } from '../services/credenti
 import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
-import { tryKillPid } from '../utils/pid-helpers.js';
 import type { Agent } from '../types.js';
 
 export function resolveTilde(p: string): string {
@@ -150,9 +149,12 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
 
   const cmds = getOsCommands(getAgentOS(agent));
   const agentOs = getAgentOS(agent);
+    // apra-fleet-d64.1: MCP transport drops must NOT kill the remote process.
+    // The remote command is independent of the MCP session and should continue
+    // running. The abort handler only logs the disconnection -- tryKillPid is
+    // NOT called here. Same pattern as execute-prompt.ts.
     const abortHandler = () => {
-      scope.abort('cancelled by MCP client');
-      tryKillPid(agent, strategy, cmds).catch(() => {});
+      scope.abort('MCP client disconnected -- remote session continues');
     };
     extra?.signal?.addEventListener('abort', abortHandler);
   try {
