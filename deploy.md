@@ -5,7 +5,7 @@
 Commands below require these prefixes in `.claude/settings.json` under `permissions.allow`:
 - `Bash(*apra-fleet-installer-* install *)`
 - `Bash(*apra-fleet* --version)`
-- `Bash(*apra-fleet* start)`
+- `Bash(*apra-fleet* run *)`
 - `Bash(node scripts/preflight-clear-build-locks.mjs)` -- pre-`npm ci` stale
   build-tool lock cleanup, see Deploy below
 - `Bash(npm ci)`
@@ -65,7 +65,14 @@ INSTALLER="dist/apra-fleet-installer-${PLATFORM}-${SEA_ARCH}"
 [ "$PLATFORM" = "win" ] && INSTALLER="${INSTALLER}.exe"
 
 "$INSTALLER" install --force
-"$HOME/.apra-fleet/bin/apra-fleet" start || "$HOME/.apra-fleet/bin/apra-fleet.exe" start
+
+# Use `run`, not `start` -- `start`'s Windows scheduled task requires an
+# interactive logon session and silently no-ops without one. Launch detached:
+# POSIX:   nohup "$HOME/.apra-fleet/bin/apra-fleet" run --transport http >> "$HOME/.apra-fleet/data/fleet.log" 2>&1 & disown
+# Windows: plain background launch dies with the SSH channel -- use a real
+#          detached child process (e.g. Invoke-CimMethod Win32_Process Create)
+#          running: apra-fleet.exe run --transport http >> fleet.log 2>&1
+# Then poll fleet.log / port 7523 to confirm it actually came up.
 ```
 
 ## Smoke test
