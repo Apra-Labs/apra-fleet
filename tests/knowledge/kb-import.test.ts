@@ -411,3 +411,71 @@ describe('kb_import: repo_path input parity with the other kb_* tools', () => {
     expect(result.imported).toBe(1);
   });
 });
+
+// KB audit follow-up 2026-08-12, found by a LIVE sprint rather than by review.
+//
+// The sprint engine calls kb_import per member at sprint start so the committed
+// bible reaches the warm KB as searchable rows. kb_import also runs a FULL-KB
+// freshnessSweep() afterwards, and that second effect is destructive in this
+// position: on a repo whose files have simply moved on since capture, the sweep
+// staled 16 of 17 CONFIRMED entries at sprint start. Observed cascade, all three
+// in one run:
+//   1. retrieval degraded    -- kb_query had 1 non-stale entry to match, not 17
+//   2. bible truncation      -- kb_export wrote 9 over a 17-entry bible (the
+//                               shrink guard refused the commit, but every
+//                               sprint would dirty the working tree)
+//   3. promotion emptied     -- kb_list filters stale=0, so the reviewer's
+//                               candidate list came back [] and promoted 0.
+//                               That is apra-fleet-0ef ("kb_promote can never
+//                               fire") reintroduced by a side door.
+//
+// The sweep is an AUDIT operation, not something a sprint-start import should
+// trigger. prime()'s own bounded checkFreshness still protects each entry it
+// actually returns, so skipping the global sweep does not reintroduce stale
+// reads -- it only stops one import from re-judging the entire KB.
+describe('kb_import: skip_sweep (audit 2026-08-12)', () => {
+  it('the declared schema accepts skip_sweep', () => {
+    expect(kbImportSchema.parse({ skip_sweep: true }).skip_sweep).toBe(true);
+  });
+
+  // The basis file must EXIST for the entry to import at all (capture refuses an
+  // uncheckable basis).
+  function seedBasisFile(): void {
+    fs.mkdirSync(path.join(tmpRepo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRepo, 'src', 'fixture.ts'), 'export const fixture = 1;\n', 'utf-8');
+  }
+
+  // Asserted against the provider call itself rather than the reported counts:
+  // freshnessSweep only tallies entries whose stored basis resolves, so a
+  // count-based assertion would pass for the wrong reason on a fixture whose
+  // basis paths do not resolve. Whether the sweep RUNS is the actual contract.
+  it('skip_sweep does not run the sweep at all', async () => {
+    seedBasisFile();
+    writeBible([bibleEntry({ id: 'sweep-1', symbols: ['sweepSym'] })]);
+    const spy = vi.spyOn(provider, 'freshnessSweep');
+
+    const report = JSON.parse(await kbImport({ repo: tmpRepo, skip_sweep: true } as never));
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(report.imported).toBe(1);
+    expect(report.sweep).toEqual({ checked: 0, staled: 0, unstaled: 0 });
+  });
+
+  it('the default still sweeps -- this is opt-out, not a behaviour change', async () => {
+    seedBasisFile();
+    writeBible([bibleEntry({ id: 'sweep-2', symbols: ['sweepSym2'] })]);
+    const spy = vi.spyOn(provider, 'freshnessSweep');
+
+    await kbImport({ repo: tmpRepo });
+
+    expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it('skip_sweep still imports -- only the sweep is skipped', async () => {
+    seedBasisFile();
+    writeBible([bibleEntry({ id: 'sweep-3', symbols: ['sweepSym3'] })]);
+    const report = JSON.parse(await kbImport({ repo: tmpRepo, skip_sweep: true } as never));
+
+    expect(report.imported).toBe(1);
+  });
+});

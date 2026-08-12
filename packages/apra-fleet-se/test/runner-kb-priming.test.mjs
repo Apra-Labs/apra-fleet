@@ -253,6 +253,24 @@ describe('KB priming reaches the agent (audit 2026-08-11)', () => {
         assert.equal(calls.find((c) => c.name === 'kb_import').args.repo_path, '/srv/alpha/repo');
     });
 
+    // KB audit 2026-08-12, found by a live sprint: kb_import's post-import
+    // freshnessSweep re-judges the WHOLE KB against the member's worktree. At
+    // sprint start that staled 16 of 17 CONFIRMED entries simply because the
+    // repo had moved on since capture -- which degraded retrieval, made
+    // kb_export attempt a 17 -> 9 truncation, and emptied the reviewer's
+    // promotion candidates (kb_list filters stale=0), reintroducing
+    // apra-fleet-0ef. The engine imports to WARM the KB, never to audit it.
+    test('primeAll imports with skip_sweep -- warming the KB must not re-judge it', async () => {
+        const { calls, callTool } = primingCallTool([ENTRY]);
+        const client = createKbPrimingClient({ callTool, members: ['alpha'], log: () => {} });
+
+        await client.primeAll();
+
+        const imp = calls.find((c) => c.name === 'kb_import');
+        assert.equal(imp.args.skip_sweep, true,
+            'without skip_sweep the sprint-start import mass-stales the KB it is meant to warm');
+    });
+
     test('a failing kb_import is non-fatal -- priming still runs', async () => {
         const calls = [];
         const callTool = async (name, args) => {

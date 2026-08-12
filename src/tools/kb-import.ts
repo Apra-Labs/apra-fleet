@@ -47,6 +47,17 @@ export const kbImportSchema = z.object({
     .describe('Alias for `repo`, matching the input name used by every other kb_* tool. Ignored when `repo` is also supplied.'),
   scope: z.literal('project').optional()
     .describe('Only project scope is supported (imports into the project KB). Global bibles are a separate concern.'),
+  // KB audit 2026-08-12, found by a LIVE sprint rather than by review. The
+  // sprint engine imports the bible per member at sprint start; the sweep that
+  // follows re-judged the WHOLE KB against that worktree and staled 16 of 17
+  // CONFIRMED entries, purely because the repo had moved on since capture.
+  // Three observed consequences in one run: retrieval degraded to a single
+  // matchable entry, kb_export tried to write 9 over a 17-entry bible, and
+  // kb_list (which filters stale=0) handed the reviewer an EMPTY promotion
+  // candidate list -- reintroducing apra-fleet-0ef, "kb_promote can never
+  // fire", by a side door. Opt-out, defaulting to today's behaviour.
+  skip_sweep: z.boolean().optional()
+    .describe('Skip the post-import freshness sweep. The sweep re-judges EVERY entry in the KB against this worktree, which is right for a deliberate audit but wrong for a routine import: an import performed to warm the KB should not mass-stale it because unrelated files have changed since capture. prime() still runs its own bounded freshness check on the entries it actually returns, so skipping this does not surface stale claims. Default false (sweep runs, unchanged).'),
 });
 
 export type KbImportInput = z.infer<typeof kbImportSchema>;
@@ -246,7 +257,12 @@ export async function kbImport(input: KbImportInput): Promise<string> {
   // which threads the anchor straight into computeFileHashBatch's { cwd }
   // option with no global side effect at all. Behavior is unchanged (absolute
   // basis paths remain cwd-independent either way).
-  const sweep = await provider.freshnessSweep(repoAnchor);
+  // skip_sweep (audit 2026-08-12): report the same shape with zeroes rather
+  // than omitting the field, so every existing caller reading report.sweep
+  // keeps working.
+  const sweep = input.skip_sweep
+    ? { checked: 0, staled: 0, unstaled: 0 }
+    : await provider.freshnessSweep(repoAnchor);
 
   const report: KbImportReport = { imported, skipped, linked, flagged, rejected, sweep };
   return JSON.stringify(report);

@@ -1578,8 +1578,21 @@ export function createKbPrimingClient(opts = {}) {
                     // Idempotent by id, and best-effort: a repo with no bible,
                     // or an import that rejects every entry, must not stop the
                     // prime it was meant to feed.
+                    //
+                    // skip_sweep IS LOAD-BEARING (audit 2026-08-12, caught by a
+                    // live sprint). kb_import's post-import freshnessSweep
+                    // re-judges the ENTIRE KB against this member's worktree. At
+                    // sprint start that staled 16 of 17 CONFIRMED entries purely
+                    // because the repo had moved on since capture, and the
+                    // damage cascaded: retrieval fell to one matchable entry,
+                    // kb_export attempted a 17 -> 9 bible truncation, and
+                    // kb_list (stale=0) returned an EMPTY promotion candidate
+                    // list -- reinstating apra-fleet-0ef, "kb_promote can never
+                    // fire". This import exists to WARM the KB, never to audit
+                    // it; prime()'s own bounded checkFreshness still guards each
+                    // entry it actually returns.
                     try {
-                        const imported = parseResult(await callTool('kb_import', { repo_path: repoPath }));
+                        const imported = parseResult(await callTool('kb_import', { repo_path: repoPath, skip_sweep: true }));
                         if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
                             log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for ${repoPath}`);
                         }
