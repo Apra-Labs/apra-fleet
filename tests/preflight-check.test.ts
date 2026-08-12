@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+// Undo the global preflight mock from tests/setup.ts so we test the real implementation
+vi.unmock('../src/services/preflight-check.js');
 import { preflightCheck, invalidatePreflightCache, clearPreflightCache } from '../src/services/preflight-check.js';
 import type { Agent } from '../src/types.js';
 
