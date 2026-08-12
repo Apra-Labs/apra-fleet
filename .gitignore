@@ -25,6 +25,17 @@ CLAUDE.md
 *.db
 .beads-credential-key
 .beads/
+
+# .claude/settings.json is already tracked (git add -f was used, apra-fleet-tm7.12)
+# -- content is machine-independent (the bd prime SessionStart hook plus
+# deploy.md's permission prefixes) and `bd setup claude`/`bd init` merge into
+# it idempotently rather than overwrite it, so tracking does not leave a
+# clone with a permanently dirty working tree (verified: re-running `bd
+# setup claude` against the tracked content is byte-for-byte a no-op, and
+# `apra-fleet install`'s own settings write targets the user's HOME
+# .claude/settings.json, never this project-local one). This entry only
+# prevents a new local settings.json variant from being accidentally staged
+# over the tracked one -- it does not untrack the existing file.
 .claude/settings.json
 
 # E2E test fixtures (local only, never commit)
