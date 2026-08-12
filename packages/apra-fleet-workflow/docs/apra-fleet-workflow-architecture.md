@@ -259,10 +259,11 @@ and is out of scope for this package.
 
 `FleetWorkflow` also exposes a cooperative **pause/resume** primitive,
 independent of and complementary to cancellation (4.6): `requestPause(reason)`,
-`requestResume(reason)`, and `setPauseGuard(fn)`. This is a generic engine gate
--- it carries no domain-specific semantics of its own -- not a journaled
-`interrupt()`; a paused run is parked in memory, not checkpointed to disk (see
-section 5 for the separate, journal-based resumability story).
+`requestResume(reason)`, `setPauseGuard(fn)`, and `setPreResumeHook(fn)`. This
+is a generic engine gate -- it carries no domain-specific semantics of its own
+-- not a journaled `interrupt()`; a paused run is parked in memory, not
+checkpointed to disk (see section 5 for the separate, journal-based
+resumability story).
 
 **The gate and when it engages.** Every `agent()`/`command()` call awaits an
 internal pause gate before it becomes "in flight." `requestPause()` fires a
@@ -282,10 +283,12 @@ the gate) once two conditions hold simultaneously:
    acceptable. A throwing guard fails **closed**: the pause keeps deferring
    rather than landing at a point the script couldn't vouch for.
 
-`requestResume()` releases every call parked at the gate and fires `resumed`.
-`requestStop()` (4.6) supersedes a pause outright: it rejects every parked
-call with a `CancelledError` instead of leaving it blocked forever, so a
-paused run tears down the same way a cancelled one does rather than hanging.
+`requestResume()` (`async`, returns a `Promise<void>`) releases every call
+parked at the gate and fires `resumed` -- but only after it has drained the
+pre-resume hook described below, if one is registered. `requestStop()` (4.6)
+supersedes a pause outright: it rejects every parked call with a
+`CancelledError` instead of leaving it blocked forever, so a paused run tears
+down the same way a cancelled one does rather than hanging.
 
 **Why deferred rather than immediate.** An immediate pause (block the very
 next call, whatever state it interrupts) would let a workflow's own
@@ -300,20 +303,30 @@ calling script didn't consider safe to stop.
 every run sharing that instance -- consistent with how `requestStop()`
 already behaves.
 
-**What resuming does NOT guarantee for you.** The engine's contract ends at
-"no new `agent()`/`command()` dispatch starts until resumed." Any
-domain-specific state that needs to be released while paused and reacquired
-on resume (e.g. external locks, reservations) is the calling script's
-responsibility, coordinated via `setPauseGuard()` plus the script's own
-`pause:requested`/`paused`/`resumed` listeners -- the engine does not know
-what those resources are. In particular, because `requestResume()` fires
-`resumed` synchronously and releases gate waiters in the same tick, a script
-that needs to reacquire something *before* the first post-resume dispatch
-cannot simply do that work in a `resumed` listener and expect it to finish
-first -- that listener races the next `agent()`/`command()` call rather than
-strictly preceding it. A caller that requires a hard barrier there needs its
-own synchronization (e.g. a dispatch-time ownership check downstream) rather
-than relying on listener ordering.
+**What resuming does NOT guarantee for you, unless you register a barrier.**
+The engine's baseline contract is "no new `agent()`/`command()` dispatch
+starts until resumed." Any domain-specific state that needs to be released
+while paused and reacquired on resume (e.g. external locks, reservations) is
+the calling script's responsibility, coordinated via `setPauseGuard()` plus
+the script's own `pause:requested`/`paused`/`resumed` listeners -- the engine
+does not know what those resources are.
+
+A plain `resumed` listener is **not** a barrier: listeners fire after pause
+state has already cleared and gate waiters have already been released, so a
+listener that tries to reacquire something races the next `agent()`/
+`command()` call rather than strictly preceding it. A caller that needs its
+reacquire/resync work to complete strictly *before* the first post-resume
+dispatch registers it with `setPreResumeHook(fn)` instead: `requestResume()`
+`await`s this hook FIRST, while the run is still paused -- before it clears
+pause state, releases any gate waiter, or emits `resumed` -- so the hook's
+work cannot be raced by a fresh dispatch. If the hook rejects,
+`requestResume()` rejects too and pause state is left untouched (the run
+stays parked) rather than the rejection being swallowed. `setPreResumeHook`
+accepts a single hook (or `null` to clear it); it throws a `TypeError` for
+any non-function, non-null argument. It carries no domain-specific semantics
+of its own -- it is a generic barrier point, not a fleet-sprint-specific
+affordance -- so a caller that has nothing to do before resuming simply
+never registers one and `requestResume()` proceeds immediately, as before.
 
 ## 5. Resumable runs: the execution journal and replay keys
 

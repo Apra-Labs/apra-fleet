@@ -17,8 +17,9 @@ on; this document covers how the layers above it use that contract.
 ## Layering
 
 ```
-Engine (FleetWorkflow)      requestPause/requestResume/setPauseGuard,
-                             pause:requested/paused/resumed events.
+Engine (FleetWorkflow)      requestPause/requestResume/setPauseGuard/
+                             setPreResumeHook, pause:requested/paused/resumed
+                             events.
         |
 Viewer (per-run dashboard)  Pause/Resume buttons forward to the engine only;
                              button state + "paused since" badge are derived
@@ -34,8 +35,10 @@ dashboard + watchdog)       child viewer's own /pause and /resume (never the
         |
 fleet-sprint (a workflow    Registers a pause guard so a pause only ever
 script)                     lands at a clean git/dolt-sync boundary; releases
-                             its member reservations on pause and re-acquires
-                             (owner-checked) plus re-syncs them on resume.
+                             its member reservations on pause; registers its
+                             re-acquire (owner-checked) plus resync as a
+                             pre-resume hook so it runs as a hard barrier
+                             ahead of the first post-resume dispatch.
 ```
 
 ## Engine gate: deferred, not immediate
@@ -121,16 +124,26 @@ unconditional -- never gated on a "looks unchanged" heuristic -- because
 while paused, both the git remote and the beads database can have moved
 independently of this sprint (another sprint's work, a human push).
 
-**Known limitation: resume re-reserve/resync is best-effort, not a hard
-barrier.** Because the engine emits `resumed` synchronously and releases
-gate waiters in the same tick, fleet-sprint's resume-time reservation
-re-acquire and resync work is dispatched as an async task that *races* the
-very first post-resume dispatch rather than strictly completing ahead of it.
-The actual safety net against dispatching to a member this sprint no longer
-owns is the dispatch-time ownership check the fleet execution layer already
-performs independently of this feature. Closing this gap with a true
-pre-resume barrier would require an engine-level affordance (e.g. an
-awaitable pre-resume hook) that does not exist yet.
+**The resume re-reserve/resync is a hard barrier, not best-effort.** The
+engine exposes an awaitable pre-resume hook (`setPreResumeHook(fn)`):
+`requestResume()` awaits this hook FIRST -- while the run is still paused, so
+no gate waiter is released and no post-resume dispatch can start -- and only
+once it resolves does the engine clear pause state, release waiters, and
+emit `resumed`. fleet-sprint registers its reservation re-acquire and resync
+work through this hook, so it is guaranteed to complete strictly *before* the
+first post-resume dispatch rather than racing it. A hook rejection (e.g. the
+`MemberReservationResumeError` naming unavailable members) propagates out of
+`requestResume()` with pause state left intact -- the run stays parked
+instead of resuming on a half-restored reservation set. The dispatch-time
+ownership check the fleet execution layer performs independently of this
+feature remains a second, defense-in-depth safety net, but it is no longer
+the *only* thing standing between a resume and dispatching to a member this
+sprint no longer owns.
+
+A plain `resumed` event listener remains unsuitable for this: listeners fire
+only after pause state has already cleared, so they still race the next
+dispatch. The pre-resume hook is a distinct, earlier extension point built
+specifically to close that race.
 
 ## Distinguishing exit-code truth from a rejection flag
 
