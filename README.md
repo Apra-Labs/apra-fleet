@@ -211,7 +211,10 @@ MCP tools that ship with the KB:
 
 Every KB tool call, including the automatic post-prompt `kb_harvest`, is
 scoped to the repo it is about -- a fleet server handling many members across
-many repos never lets one repo's learnings land in another repo's KB.
+many repos never lets one repo's learnings land in another repo's KB. This
+isolation is proven for local members today; a remote member's harvested
+learnings currently land in a shared `default` KB rather than colliding
+with another repo's KB, pending per-repo routing for remote members.
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.
