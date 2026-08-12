@@ -323,6 +323,15 @@ describe('parseDoltRemoteList', () => {
   it('throws when the parsed JSON is not an array', () => {
     expect(() => parseDoltRemoteList('{"name":"origin"}')).toThrow();
   });
+
+  it('treats the JSON literal null as no remotes (bd prints null, not [], when none are configured)', () => {
+    expect(parseDoltRemoteList('null')).toEqual([]);
+    expect(parseDoltRemoteList(' null\n')).toEqual([]);
+  });
+
+  it('still throws on a non-array, non-null JSON value (e.g. a bare number)', () => {
+    expect(() => parseDoltRemoteList('42')).toThrow();
+  });
 });
 
 describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra-fleet-eft.18.6 retarget of apra-fleet-eft.30)', () => {
