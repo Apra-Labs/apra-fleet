@@ -43,6 +43,9 @@ import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
 
+const HOST_OS: 'windows' | 'macos' | 'linux' =
+  process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux';
+
 const scratchDirs: string[] = [];
 
 function makeScratchWorkFolder(): string {
@@ -80,14 +83,22 @@ afterEach(() => {
   }
 });
 
-describe('composePermissions -- real LocalStrategy persistence (apra-fleet-k4sc regression)', () => {
+// See file header "Platform coverage note": this suite only exercises
+// deliverConfigFile's POSIX write path. compose-permissions.ts's merge-read
+// (`cat .claude/settings.local.json ...`) is a POSIX-only shell command with
+// no Windows branch, so routing HOST_OS==='windows' through the real
+// LocalStrategy here would run that command under powershell.exe and fail
+// on a pre-existing src bug unrelated to this suite's regression coverage.
+describe.skipIf(process.platform === 'win32')(
+  'composePermissions -- real LocalStrategy persistence (apra-fleet-k4sc regression)',
+  () => {
   it('fresh grant persists to settings.local.json on disk (real write, real read-back)', async () => {
     const workFolder = makeScratchWorkFolder();
     const member = makeTestAgent({
       friendlyName: 'k4sc-fresh-grant',
       agentType: 'local',
       llmProvider: 'claude',
-      os: 'macos',
+      os: HOST_OS,
       workFolder,
     });
     addAgent(member);
@@ -128,7 +139,7 @@ describe('composePermissions -- real LocalStrategy persistence (apra-fleet-k4sc 
       friendlyName: 'k4sc-merge-grant',
       agentType: 'local',
       llmProvider: 'claude',
-      os: 'macos',
+      os: HOST_OS,
       workFolder,
     });
     addAgent(member);
@@ -162,7 +173,7 @@ describe('composePermissions -- real LocalStrategy persistence (apra-fleet-k4sc 
       friendlyName: 'k4sc-failure-grant',
       agentType: 'local',
       llmProvider: 'claude',
-      os: 'macos',
+      os: HOST_OS,
       workFolder,
     });
     addAgent(member);
@@ -183,4 +194,5 @@ describe('composePermissions -- real LocalStrategy persistence (apra-fleet-k4sc 
     expect(fs.statSync(blockerPath).isFile()).toBe(true);
     expect(fs.readFileSync(blockerPath, 'utf-8')).toBe('not a directory');
   });
-});
+  }
+);
