@@ -1388,9 +1388,9 @@ export class FleetWorkflow extends EventEmitter {
             if (!failSoft) throw err;
             return { ok: false, output: '', error: err.message };
         };
-        if (!opts.member_name && !opts.member_id) {
-            throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
-        }
+        // (apra-fleet-p2to.2.3) The member-argument guard lives solely in the
+        // public command() entrypoint above; _commandDispatch() is only ever
+        // reached through it, so a second copy here was dead code. Removed.
 
         const effectivePhase = opts.phase || this._currentPhase();
         const runId = this._currentRunId();
