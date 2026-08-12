@@ -19,15 +19,17 @@ vi.mock('../src/services/strategy.js', () => ({
 vi.mock('../src/os/index.js', () => ({
   getOsCommands: () => ({
     credentialFileCheck: (path: string) => `test -f "${path}" && echo found || echo not-found`,
+    readTextFile: (path: string) => `readTextFile "${path}"`,
     apiKeyCheck: (envVar: string) => `echo $${envVar}`,
   }),
 }));
 
 // Mock provider
 const mockOauthCredentialFiles = vi.fn();
+let mockProviderName = 'claude';
 vi.mock('../src/providers/index.js', () => ({
   getProvider: () => ({
-    name: 'claude',
+    get name() { return mockProviderName; },
     authEnvVar: 'ANTHROPIC_API_KEY',
     oauthCredentialFiles: mockOauthCredentialFiles,
   }),
@@ -42,6 +44,8 @@ vi.mock('../src/utils/agent-helpers.js', () => ({
 vi.mock('../src/utils/log-helpers.js', () => ({
   logLine: vi.fn(),
 }));
+import { logLine as mockLogLine } from '../src/utils/log-helpers.js';
+const mockLogLineFn = vi.mocked(mockLogLine);
 
 // ---- Helpers ----
 function makeAgent(overrides?: Partial<Agent>): Agent {
@@ -63,6 +67,7 @@ describe('preflightCheck', () => {
   beforeEach(() => {
     clearPreflightCache();
     vi.clearAllMocks();
+    mockProviderName = 'claude';
     mockOauthCredentialFiles.mockReturnValue([
       { localPath: '~/.claude/.credentials.json', remotePath: '~/.claude/.credentials.json' },
     ]);
@@ -308,5 +313,50 @@ describe('preflightCheck', () => {
     const result = await preflightCheck(agent);
     expect(result.ok).toBe(true);
     expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  // ---- F4: non-Claude provider logs a warning instead of silent no-op ----
+  it('logs warning for non-Claude provider when OAuth freshness check cannot parse', async () => {
+    mockProviderName = 'gemini';
+    const agent = makeAgent({ llmProvider: 'gemini' });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValueOnce({ stdout: 'found', stderr: '', code: 0 }); // credentialFileCheck
+    mockExecCommand.mockResolvedValueOnce({
+      stdout: JSON.stringify({ geminiOauth: { token: 'some-token' } }),
+      stderr: '',
+      code: 0,
+    }); // readTextFile -- non-Claude shape
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck
+
+    const result = await preflightCheck(agent);
+    expect(result.ok).toBe(true);
+    expect(mockLogLineFn).toHaveBeenCalledWith(
+      'preflight',
+      expect.stringContaining('OAuth freshness check not implemented for provider gemini'),
+      agent,
+    );
+  });
+
+  // ---- F5: readTextFile helper is used (not hand-rolled) ----
+  it('uses cmds.readTextFile for reading credential files', async () => {
+    const agent = makeAgent();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValueOnce({ stdout: 'found', stderr: '', code: 0 }); // credentialFileCheck
+    mockExecCommand.mockResolvedValueOnce({
+      stdout: JSON.stringify({ claudeAiOauth: { expiresAt: new Date(Date.now() + 3600_000).toISOString() } }),
+      stderr: '',
+      code: 0,
+    }); // readTextFile
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck
+
+    await preflightCheck(agent);
+
+    // The second execCommand call should be the readTextFile helper output,
+    // not the hand-rolled powershell/cat command. The mock OS commands module
+    // doesn't transform the path, but verifying it was called with a string
+    // NOT containing 'powershell' or raw 'cat' confirms the helper is used.
+    const readCmd = mockExecCommand.mock.calls[1][0];
+    expect(readCmd).not.toContain('powershell -Command');
+    expect(readCmd).not.toMatch(/^cat "/);
   });
 });

@@ -152,9 +152,7 @@ export async function preflightCheck(
       // If OAuth file exists, try to read and validate its freshness
       if (oauthFilePresent) {
         try {
-          const catCmd = getAgentOS(agent) === 'windows'
-            ? `powershell -Command "Get-Content '${oauthFiles[0].remotePath.replace(/'/g, "''")}' -Raw"`
-            : `cat "${oauthFiles[0].remotePath}"`;
+          const catCmd = cmds.readTextFile(oauthFiles[0].remotePath);
           const catResult = await strategy.execCommand(catCmd, 10_000);
           if (catResult.code === 0 && catResult.stdout.trim()) {
             const cs = validateCredentials(catResult.stdout.trim());
@@ -174,6 +172,8 @@ export async function preflightCheck(
               }
               // expired-refreshable is OK -- the CLI will auto-refresh
               // near-expiry is OK -- still valid
+            } else if (provider.name !== 'claude') {
+              logLine('preflight', `OAuth freshness check not implemented for provider ${provider.name}, skipping`, agent);
             }
           }
         } catch {
