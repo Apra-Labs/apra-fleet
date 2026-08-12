@@ -7,6 +7,7 @@ import { credentialResolve } from '../services/credential-store.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
 import { logLine } from '../utils/log-helpers.js';
+import { invalidatePreflightCache } from '../services/preflight-check.js';
 import type { Agent } from '../types.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
@@ -228,6 +229,15 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   }
   logLine('update_member', `id=${updated.id} name=${updated.friendlyName}`, updated);
   writeStatusline();
+
+  // Invalidate preflight cache when connection or credential identity changes
+  const identityChanged = hostChanged || portChanged ||
+    input.auth_type !== undefined || resolvedPassword !== undefined ||
+    preEncryptedPassword !== undefined || input.key_path !== undefined ||
+    input.llm_provider !== undefined;
+  if (identityChanged) {
+    invalidatePreflightCache(existing.id);
+  }
 
   // --- Re-provision role-agent files for remote members ---
   // Cheap (one probe round trip when up to date); also doubles as the manual retry

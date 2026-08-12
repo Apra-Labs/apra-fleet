@@ -98,13 +98,15 @@ export async function preflightCheck(
 
   // ---- Step 1: Connectivity ----
   let latencyMs: number;
+  let connectivityTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const conn = await Promise.race([
       strategy.testConnection(),
-      new Promise<{ ok: false; latencyMs: 0; error: string }>((_, reject) =>
-        setTimeout(() => reject(new Error('preflight connectivity timeout (10s)')), 10_000),
-      ),
+      new Promise<never>((_, reject) => {
+        connectivityTimer = setTimeout(() => reject(new Error('preflight connectivity timeout (10s)')), 10_000);
+      }),
     ]);
+    clearTimeout(connectivityTimer);
     if (!conn.ok) {
       logLine('preflight', `FAIL connectivity: ${conn.error}`, agent);
       return {
@@ -118,6 +120,7 @@ export async function preflightCheck(
     }
     latencyMs = conn.latencyMs;
   } catch (err: any) {
+    clearTimeout(connectivityTimer);
     logLine('preflight', `FAIL connectivity: ${err.message}`, agent);
     return {
       ok: false,
@@ -139,64 +142,54 @@ export async function preflightCheck(
   let apiKeyPresent = false;
   let credentialStatus: CredentialStatus | undefined;
 
-  // Check OAuth credential files
+  // Parallelize OAuth file read and API key check into a single batch
+  // (F8: reduces sequential SSH round trips). readRemoteJson combines
+  // file-exists + content-read into one command (returns '{}' when missing).
   const oauthFiles = provider.oauthCredentialFiles?.();
-  if (oauthFiles && oauthFiles.length > 0) {
-    try {
-      const checkResult = await strategy.execCommand(
-        cmds.credentialFileCheck(oauthFiles[0].remotePath),
-        10_000,
-      );
-      oauthFilePresent = checkResult.stdout.trim() === 'found';
 
-      // If OAuth file exists, try to read and validate its freshness
-      if (oauthFilePresent) {
-        try {
-          const catCmd = cmds.readTextFile(oauthFiles[0].remotePath);
-          const catResult = await strategy.execCommand(catCmd, 10_000);
-          if (catResult.code === 0 && catResult.stdout.trim()) {
-            const cs = validateCredentials(catResult.stdout.trim());
-            if (cs) {
-              credentialStatus = cs;
-              if (cs.status === 'expired-no-refresh') {
-                logLine('preflight', `FAIL auth: OAuth token expired with no refresh token`, agent);
-                return {
-                  ok: false,
-                  connectivity: true,
-                  authValid: false,
-                  reason: `LLM auth on "${agent.friendlyName}" is expired (no refresh token). Run /login to refresh your credentials, then run provision_llm_auth to deploy them.`,
-                  code: 'auth_expired',
-                  credentialStatus: cs,
-                  latencyMs,
-                };
-              }
-              // expired-refreshable is OK -- the CLI will auto-refresh
-              // near-expiry is OK -- still valid
-            } else if (provider.name !== 'claude') {
-              logLine('preflight', `OAuth freshness check not implemented for provider ${provider.name}, skipping`, agent);
-            }
-          }
-        } catch {
-          // Could not read the file contents -- the file-exists check passed,
-          // so we proceed; actual auth validation happens on dispatch
+  const oauthPromise = oauthFiles && oauthFiles.length > 0
+    ? strategy.execCommand(cmds.readRemoteJson(oauthFiles[0].remotePath), 10_000).catch(() => null)
+    : Promise.resolve(null);
+
+  const apiKeyPromise = provider.authEnvVar
+    ? strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10_000).catch(() => null)
+    : Promise.resolve(null);
+
+  const [oauthResult, apiKeyResult] = await Promise.all([oauthPromise, apiKeyPromise]);
+
+  // Process OAuth result
+  if (oauthResult && oauthResult.code === 0) {
+    const content = oauthResult.stdout.trim();
+    // readRemoteJson returns '{}' when file is missing
+    oauthFilePresent = content.length > 2 && content !== '{}';
+
+    if (oauthFilePresent) {
+      const cs = validateCredentials(content);
+      if (cs) {
+        credentialStatus = cs;
+        if (cs.status === 'expired-no-refresh') {
+          logLine('preflight', `FAIL auth: OAuth token expired with no refresh token`, agent);
+          return {
+            ok: false,
+            connectivity: true,
+            authValid: false,
+            reason: `LLM auth on "${agent.friendlyName}" is expired (no refresh token). Run /login to refresh your credentials, then run provision_llm_auth to deploy them.`,
+            code: 'auth_expired',
+            credentialStatus: cs,
+            latencyMs,
+          };
         }
+        // expired-refreshable is OK -- the CLI will auto-refresh
+        // near-expiry is OK -- still valid
+      } else if (provider.name !== 'claude') {
+        logLine('preflight', `OAuth freshness check not implemented for provider ${provider.name}, skipping`, agent);
       }
-    } catch {
-      // credentialFileCheck itself failed -- proceed to API key check
     }
   }
 
-  // Check API key env var
-  if (provider.authEnvVar) {
-    try {
-      const apiKeyResult = await strategy.execCommand(
-        cmds.apiKeyCheck(provider.authEnvVar),
-        10_000,
-      );
-      apiKeyPresent = apiKeyResult.stdout.trim().length > 5;
-    } catch {
-      // ignore -- API key check failed
-    }
+  // Process API key result
+  if (apiKeyResult) {
+    apiKeyPresent = apiKeyResult.stdout.trim().length > 5;
   }
 
   // Also check stored encrypted env vars (provision-auth stores API keys here)

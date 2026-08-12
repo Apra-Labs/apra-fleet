@@ -17,6 +17,7 @@ import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import type { Agent } from '../types.js';
 import type { VcsProviderService } from '../services/vcs/types.js';
 import { logLine } from '../utils/log-helpers.js';
+import { invalidatePreflightCache } from '../services/preflight-check.js';
 
 const vcsProviders: Record<string, VcsProviderService> = {
   github: githubProvider,
@@ -128,6 +129,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   }
 
   const removed = removeFromRegistry(agent.id);
+  invalidatePreflightCache(agent.id);
   getStallDetector().remove(agent.id);
   writeStatusline();
 
