@@ -2067,15 +2067,17 @@ export function createMemberReservationClient(opts = {}) {
         }
     }
 
+    async function releaseAll() {
+        if (!active) return;
+        for (const member of members) await callFor('release', member);
+    }
+
     return {
         async reserveAll() {
             if (!active) return;
             for (const member of members) await callFor('reserve', member);
         },
-        async releaseAll() {
-            if (!active) return;
-            for (const member of members) await callFor('release', member);
-        },
+        releaseAll,
 
         // (apra-fleet-p2to.4.2) Pause hand-back: release EVERY member so a
         // different sprint may claim it while this one is parked at a
@@ -2083,10 +2085,18 @@ export function createMemberReservationClient(opts = {}) {
         // -- a pause must never fail on a release hiccup, and execute_prompt's
         // dispatch-time reservedBy check still fails loudly on any member this
         // sprint later dispatches to without holding.
-        async releaseForPause() {
-            if (!active) return;
-            for (const member of members) await callFor('release', member);
-        },
+        //
+        // (apra-fleet-p2to.4.4.1) releaseForPause() is intentionally the SAME
+        // operation as releaseAll() -- both release every member,
+        // best-effort, with no distinct behavior of their own -- so this
+        // calls straight through to releaseAll() rather than keeping a
+        // byte-identical second copy of the loop to drift out of sync. The
+        // two names stay separate call sites (not aliased) because they mean
+        // different things to a caller even though today they do the same
+        // work: this is intended to change independently if a pause hand-back
+        // ever needs behavior releaseAll() should not have (e.g. skipping a
+        // member expected back imminently).
+        releaseForPause: releaseAll,
 
         // (apra-fleet-p2to.4.2) Resume re-acquire, OWNER-CHECKED: re-reserve
         // every member released at pause. A member is "unavailable" when its
@@ -5956,6 +5966,22 @@ async function runSprintCycle(context) {
             return await fn();
         } finally {
             openSyncBracketCount -= 1;
+            // (apra-fleet-p2to.4.4.1) Closing the LAST open sync bracket is
+            // itself a clean-state boundary a deferred pause may complete at,
+            // but the engine only re-checks its pause-engage condition
+            // (WorkflowEngine._maybeEngagePause()) at specific trigger points
+            // -- requestPause(), an in-flight activity draining to zero, the
+            // gate at the next agent()/command() dispatch, or setPauseGuard()
+            // itself (which re-checks as a side effect of registering). None
+            // of those necessarily fire here: this bracket can close with no
+            // further dispatch immediately following. Re-registering the SAME
+            // guard predicate is a deliberate poke -- it engages a pause
+            // requested while sync brackets were open the instant this guard
+            // opens, rather than leaving it stranded until some later
+            // dispatch happens to hit the gate.
+            if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
+                setPauseGuard(() => openSyncBracketCount === 0);
+            }
         }
     }
 
@@ -6505,6 +6531,15 @@ async function runSprintCycle(context) {
         return dispatchResult;
       } finally {
         openSyncBracketCount -= 1;
+        // (apra-fleet-p2to.4.4.1) See withOpenSyncBracket()'s matching
+        // comment above: poke the engine's pause-engage check by
+        // re-registering the same guard predicate the instant this bracket
+        // -- the whole pre-dispatch sync/dispatch/post-dispatch sync unit --
+        // closes, so a pause deferred for its duration engages right away
+        // rather than waiting on whatever dispatch happens to come next.
+        if (openSyncBracketCount === 0 && typeof setPauseGuard === 'function') {
+          setPauseGuard(() => openSyncBracketCount === 0);
+        }
       }
     }
 
