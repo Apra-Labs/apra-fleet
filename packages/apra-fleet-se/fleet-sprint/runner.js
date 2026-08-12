@@ -5807,6 +5807,23 @@ async function runSprintCycle(context) {
             const { sprintTasks: sprintPlaced, backlogTasks } = partitionByGoalMembership(sprintTasks, validated.goal);
             const payload = { sprintTasks: sprintPlaced };
             if (backlogTasks.length > 0) payload.backlogTasks = backlogTasks;
+            // apra-fleet-x8r.4: plumbs the SAME two axes runner.js's own
+            // completion gate (~line 8134: bdListScoped(--priority-max=
+            // goalMax) MINUS decomposedParentIds()) filters on, so the
+            // viewer's computeSprintProgress() required/closed counts match
+            // what actually gates sprint exit -- never re-derived
+            // client-side. Not `const goalMax` from the outer closure: this
+            // function's FIRST call happens before that `const` initializes
+            // (TDZ), so the numeric max is derived fresh here instead, from
+            // the same pure goalPriorityMax() helper.
+            payload.goalMax = Number(goalPriorityMax(validated.goal).slice(1));
+            // sprintTasks is already this cycle's `bdListScoped('')` result
+            // (any status, full scope) -- decomposedParentIds() re-derives
+            // from that same no-args query, so building the set directly off
+            // sprintTasks here is identical output with no extra `bd` call.
+            payload.decomposedParentIds = [...new Set(
+                sprintTasks.filter((b) => b && b.parent).map((b) => b.parent)
+            )];
             publishState('beads', payload);
         }
     }

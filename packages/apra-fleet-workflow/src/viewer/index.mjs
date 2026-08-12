@@ -7,6 +7,7 @@ import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic } from '
 import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-paths.mjs';
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
+import { buildRunTitle } from './run-title.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -51,6 +52,8 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     body { background: var(--bg); color: var(--text); font-family: sans-serif; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
     .header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--bg-glass); border-bottom: 1px solid var(--border); }
     .header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+    .header-title { display: flex; flex-direction: column; gap: 4px; }
+    .run-title { font-size: 12px; color: var(--text-muted); background: var(--bg-glass); padding: 2px 8px; border-radius: 4px; width: fit-content; }
     .header-actions { display: flex; gap: 12px; align-items: center; }
     
     .stats-banner { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); background: rgba(0,0,0,0.3); padding: 4px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); }
@@ -168,11 +171,32 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
        the only way to shrink total height. Flex here still wins on
        specificity but no longer conflicts with .panel's own flex layout. */
     .tab-content.active { display: flex; min-height: 0; }
+
+    /* apra-fleet-4yr.1: in-page replacements for window.confirm()/alert()
+       on the Stop path -- native OS dialogs clash with the dark-glass UI.
+       Modal reuses .btn-stop's danger color for its Stop action; toast is
+       non-blocking and auto-dismisses. */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 1000; }
+    .modal-overlay.open { display: flex; }
+    .modal-box { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 20px; max-width: 360px; width: 90%; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    .modal-box p { color: var(--text); font-size: 13px; margin-bottom: 16px; line-height: 1.4; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .toast { position: fixed; bottom: 24px; right: 24px; background: var(--bg-glass); border: 1px solid var(--border); color: var(--text); padding: 10px 16px; border-radius: 6px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 1001; }
+    .toast.show { opacity: 1; transform: translateY(0); }
   </style>
 </head>
 <body data-view="${isHistory ? 'history' : 'live'}">
   <div class="header">
-    <h1><span id="workflow-name">Loading...</span></h1>
+    <div class="header-title">
+      <h1><span id="workflow-name">Loading...</span></h1>
+      <!-- apra-fleet-dm5.1: short human "run title" sentence (workflow-
+           specific fields such as members/issue-ids/goal, when the running
+           workflow publishes them), rendered by renderState() below via
+           buildRunTitle(state). Falls back to the plain workflow name
+           (still non-empty, never blank) whenever the relevant fields
+           aren't populated. -->
+      <div id="run-title" class="run-title"></div>
+    </div>
     <div class="header-actions">
       <!-- apra-fleet-eft.37.3: generic, workflow-agnostic display of
            state.result's top-level SCALAR fields -- populated (or hidden,
@@ -187,6 +211,16 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       ${isHistory ? '' : '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>'}
     </div>
   </div>
+  ${isHistory ? '' : `<div class="modal-overlay" id="stop-modal-overlay">
+    <div class="modal-box">
+      <p>Are you sure you want to forcibly stop the workflow?</p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeStopModal()">Cancel</button>
+        <button class="btn btn-stop" onclick="confirmStopWorkflow()">Stop</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="stop-toast">Stop signal sent.</div>`}
   <div class="main-content">
     <div class="content-area">
       <div class="tab-bar" id="tab-bar">
@@ -218,29 +252,55 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       document.getElementById('tab-' + id).classList.add('active');
     }
     
+    // apra-fleet-4wr.1: the ONE shared h/m/s duration formatter -- every
+    // duration display in this viewer (live elapsed, closed/frozen phase and
+    // activity durations, the stats-banner Uptime) goes through this, so a
+    // closed row and a live row of the same elapsed value render identically
+    // instead of one showing raw/decimal seconds and the other h/m/s.
+    // ms == null (missing -- not yet known) is the ONLY case that renders
+    // the '-' placeholder; a genuine zero or sub-second duration renders
+    // '0s', never '-'.
     function formatTime(ms) {
-      if (!ms) return '-';
-      return (ms / 1000).toFixed(1) + 's';
-    }
-    
-    function formatUptime(ms) {
-      if (!ms || ms < 0) return '0s';
+      if (ms === null || ms === undefined) return '-';
+      // apra-fleet-x8r.6: a frozen phase carrying an end timestamp but no/
+      // invalid start timestamp (or any other NaN-producing input) must fall
+      // back to the same '-' placeholder as the missing-value case above,
+      // never the literal string 'NaNs'.
+      if (!Number.isFinite(ms)) return '-';
+      if (ms < 0) return '0s';
       let secs = Math.floor(ms / 1000);
       let mins = Math.floor(secs / 60);
       let hrs = Math.floor(mins / 60);
       secs = secs % 60;
       mins = mins % 60;
-      
+
       let out = [];
       if (hrs > 0) out.push(hrs + 'hr');
       if (mins > 0) out.push(mins + 'm');
       out.push(secs + 's');
       return out.join(' ');
     }
+
+    // Live (still-running) elapsed durations, ticked forward on every
+    // render/poll from Date.now() - startTime -- delegates to formatTime()
+    // for the actual h/m/s formatting (the shared formatter above), only
+    // differing in that a falsy/negative/missing ms (nothing meaningful to
+    // show yet) renders '0s' rather than formatTime's own '-' missing-value
+    // case, since a live row always has SOME elapsed value once it starts.
+    function formatUptime(ms) {
+      if (!ms || ms < 0) return '0s';
+      return formatTime(ms);
+    }
     
     // Shared with dashboard extensions -- see src/viewer/html-utils.mjs for
     // why this is embedded via escapeHtml.toString() instead of duplicated.
     ${escapeHtml.toString()}
+
+    // apra-fleet-dm5.1: buildRunTitle() references escapeHtml by bare name
+    // (not an import) -- embedded here, right after escapeHtml itself, so
+    // that identifier resolves in this plain <script> tag exactly as it
+    // does in run-title.mjs's real ES-module scope.
+    ${buildRunTitle.toString()}
 
     // apra-fleet-eft.27.1: GET /state's lean list-state payload dedupes
     // repeated strings into a shared \`_strings\` table (see
@@ -262,12 +322,36 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       a.click();
     }
     
-    async function stopWorkflow() {
-      if (confirm('Are you sure you want to forcibly stop the workflow?')) {
-        await fetch('/stop', { method: 'POST' });
-        alert('Stop signal sent.');
-      }
+    // apra-fleet-4yr.1: in-page modal replaces window.confirm() for the
+    // Stop confirmation step (the safety check itself stays -- only the
+    // native dialog is replaced), and a non-blocking toast replaces
+    // window.alert() once /stop resolves.
+    function stopWorkflow() {
+      const overlay = document.getElementById('stop-modal-overlay');
+      if (overlay) overlay.classList.add('open');
     }
+
+    function closeStopModal() {
+      const overlay = document.getElementById('stop-modal-overlay');
+      if (overlay) overlay.classList.remove('open');
+    }
+
+    function showStopToast() {
+      const toast = document.getElementById('stop-toast');
+      if (!toast) return;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+
+    async function confirmStopWorkflow() {
+      closeStopModal();
+      await fetch('/stop', { method: 'POST' });
+      showStopToast();
+    }
+
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') closeStopModal();
+    });
 
     let allExpanded = true;
     function toggleAllGlobal() {
@@ -680,6 +764,13 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 
         document.getElementById('workflow-name').textContent = state.workflowName;
 
+        // apra-fleet-dm5.1: buildRunTitle() returns an ALREADY-ESCAPED HTML
+        // fragment (every user-supplied piece -- member names, bead ids,
+        // goal -- individually run through escapeHtml before being embedded
+        // into the sentence), safe to assign directly here.
+        const runTitleEl = document.getElementById('run-title');
+        if (runTitleEl) runTitleEl.innerHTML = buildRunTitle(state);
+
         const ind = document.getElementById('status-indicator');
         if (state.status === 'running') { ind.innerHTML = '<div class="status-live-indicator"><div class="led"></div> LIVE</div>'; }
         else if (state.status === 'success') { ind.innerHTML = '<span style="color:var(--success)">DONE</span>'; }
@@ -808,6 +899,23 @@ function findActivityById(state, id) {
 // for).
 export { HTML_TEMPLATE };
 
+/**
+ * Creates a live dashboard viewer HTTP server for a workflow run.
+ * @param {import('../workflow/index.mjs').FleetWorkflow} workflow
+ * @param {Object} opts - Options object
+ * @param {number} [opts.port=8080] - HTTP server port
+ * @param {string} [opts.runId] - Stable per-run identifier (generated if not provided)
+ * @param {string} [opts.name] - Workflow display name
+ * @param {string} [opts.debouncedStatePath] - Path to write state JSON (uses default if not provided)
+ * @param {*} [opts.launchArgs] - Opaque, free-form per-workflow metadata (NOT argv).
+ *   `launchArgs` is passed through unchanged into state.args and is never inspected
+ *   or interpreted by core -- consumers must feature-detect the fields they need
+ *   rather than assuming a type. Examples: argv array from test callers
+ *   (['--track', 'eft-service'], ['--foo', 'bar']), or a structured object from
+ *   fleet-sprint (e.g., { members, targetIssues, goal }). Defaults to null if omitted.
+ * @param {Array} [opts.dashboardExtensions] - Dashboard widget extensions
+ * @param {Object} [opts.env] - Environment variables (defaults to process.env)
+ */
 export function createDashboardViewer(workflow, opts = {}) {
     const port = (typeof opts.port === 'number') ? opts.port : 8080;
     const dashboardExtensions = opts.dashboardExtensions || [];
@@ -852,6 +960,12 @@ export function createDashboardViewer(workflow, opts = {}) {
         // a mid-run read of the file shows in-progress state, not just
         // the terminal shape.
         runId,
+        // apra-fleet-x8r.10: launchArgs is opaque, free-form, per-workflow
+        // metadata (NOT argv). Core never inspects or interprets it; consumers
+        // must feature-detect the fields they need rather than assuming a type.
+        // Examples: argv array from test callers (['--track', 'eft-service'],
+        // ['--foo', 'bar']), or a structured object from fleet-sprint
+        // ({ members, targetIssues, goal }).
         args: opts.launchArgs ?? null,
         // apra-fleet-eft.37.3: `result` is the workflow script's own return
         // value, stored WHOLESALE and OPAQUELY -- core never inspects or
