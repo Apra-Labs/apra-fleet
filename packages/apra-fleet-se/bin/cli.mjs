@@ -445,6 +445,39 @@ export function attachViewerErrorHandler(server, port, opts = {}) {
     return server;
 }
 
+// (apra-fleet-p2to.4.2) Owner-checked re-reserve executed on the workflow's
+// 'resumed' event. reReserveForResume() re-grabs every member released at pause
+// and, on the happy path, re-syncs each; if any member was claimed by another
+// sprint while we were paused it throws a MemberReservationResumeError that
+// NAMES exactly those members.
+//
+// The prior review (PR #397) reopened this bead because the 'resumed' handler
+// wrapped that call in `.catch(console.error)`, which SWALLOWED the naming
+// throw: the sprint then resumed anyway while holding ZERO reservations, and
+// the designed clean-failure path never fired. This helper is the fix -- it
+// does NOT swallow. On failure it re-pauses the run (requestPause) so no further
+// dispatch lands on a member this sprint no longer owns, and then RETHROWS so
+// the failure -- and precisely which members block the resume -- is surfaced to
+// the operator instead of lost to a console.error line. Extracted and exported
+// so the rethrow-and-name behavior is unit-testable without a live engine.
+export async function reReserveOnResume({ sprintReservation, resyncMember, requestPause, log = () => {} } = {}) {
+    try {
+        return await sprintReservation.reReserveForResume({ resyncMember });
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        // Re-park the run: the resume cannot proceed on a reservation set we no
+        // longer fully own. This keeps the sprint from silently continuing on
+        // zero reservations (the exact regression the review flagged).
+        if (typeof requestPause === 'function') {
+            requestPause(`resume blocked -- ${msg}`);
+        }
+        log(`[member-reservation] resume failed (run re-paused; free the named members and resume again): ${msg}`);
+        // Surface, do not swallow: the operator must see which members block the
+        // resume (MemberReservationResumeError.members names them).
+        throw err;
+    }
+}
+
 async function main() {
     const { values } = parseCliArgs(process.argv.slice(2));
 
@@ -741,11 +774,13 @@ async function main() {
     // on 'resumed' re-acquire them OWNER-CHECKED (a member another sprint
     // grabbed while we were paused fails the resume, NAMING it) and re-sync
     // every re-acquired member (git fetch + decideEnsureBranchAction probe +
-    // bd dolt pull) unconditionally before work continues. Both handlers are
-    // best-effort at the process boundary -- a rejected promise here must be
-    // logged, never left unhandled -- but reReserveForResume's own throw (an
-    // unavailable member) is surfaced so the operator sees exactly which
-    // members block the resume.
+    // bd dolt pull) unconditionally before work continues. The 'paused' handler
+    // is best-effort (a release hiccup must never fail a pause). The 'resumed'
+    // handler, by contrast, FAILS the resume when a member was taken while
+    // paused: reReserveForResume's throw (an unavailable member) is surfaced --
+    // the run is re-paused and the error rethrown -- so the operator sees
+    // exactly which members block the resume instead of the sprint silently
+    // continuing on zero reservations.
     // `ok` is derived from the command's real exit code (via
     // commandResultToSoftGit), NOT from an isError flag: execute_command never
     // sets isError on a non-zero exit, so reading it here would make every git
@@ -767,10 +802,19 @@ async function main() {
     // racing the first post-resume dispatch rather than a hard barrier strictly
     // ahead of it. The dispatch-time reservedBy check in execute_prompt is the
     // real guard against acting on a member this sprint no longer owns; this
-    // handler's job is to re-grab ownership and re-sync promptly, and to SURFACE
-    // (via reReserveForResume's throw) any member that was taken while paused.
+    // handler's job is to re-grab ownership and re-sync promptly, and to FAIL
+    // the resume when a member was taken while paused.
+    //
+    // reReserveOnResume() does NOT swallow that failure (the old
+    // `.catch(console.error)` did, silently resuming on zero reservations). It
+    // re-pauses the run and rethrows the MemberReservationResumeError that NAMES
+    // the unavailable members. The outer .catch here only prevents a
+    // process-level unhandled rejection AFTER the run has already been safely
+    // re-parked and the failure logged inside reReserveOnResume -- it is not a
+    // swallow of the original resume, which has by then already been failed.
     workflow.on('resumed', () => {
-        sprintReservation.reReserveForResume({
+        reReserveOnResume({
+            sprintReservation,
             resyncMember: (member) => resyncReacquiredMember({
                 member,
                 branch: branchName,
@@ -779,8 +823,9 @@ async function main() {
                 doltPull: (m) => runCommand('bd dolt pull', m),
                 log: (msg) => console.log(msg),
             }),
-        }).catch((err) =>
-            console.error('[member-reservation] re-reserve-on-resume failed:', err && err.message ? err.message : err));
+            requestPause: (reason) => workflow.requestPause(reason),
+            log: (msg) => console.error(msg),
+        }).catch(() => { /* already re-paused + logged + surfaced above */ });
     });
 
     let reservationReleased = false;
