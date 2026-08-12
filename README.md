@@ -251,7 +251,11 @@ Secrets are entered out-of-band into a credential store and referenced as
 any LLM or log. Credentials scope to members, expire on TTL, and can carry
 a network egress policy (allow / deny / confirm). Every member runs with
 composed, provider-native permission files -- allow-listed tools, not
-god-mode. VCS access is provisioned and revocable per member.
+god-mode. VCS access is provisioned and revocable per member. Permission
+composition verifies its own delivery: a grant is read back off the target
+member and structurally compared against what was intended before it is
+reported as applied, so a failed or partial write is surfaced as an
+explicit failure rather than a false success.
 
 ## The packages
 

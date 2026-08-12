@@ -211,28 +211,81 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
   return result;
 }
 
+/** Raised by deliverConfigFile when a config write does not verifiably land on
+ *  the member (nonzero mkdir/write exit, or a read-back that does not match the
+ *  intended content). Carries the target path so the caller can surface exactly
+ *  which delivery failed. See apra-fleet-k4sc: the previous code discarded the
+ *  exit code and never read the file back, so a failed write was reported as a
+ *  successful grant (a silent no-op). */
+export class ConfigDeliveryError extends Error {
+  constructor(public readonly filePath: string, message: string) {
+    super(message);
+    this.name = 'ConfigDeliveryError';
+  }
+}
+
+/** Short, single-line excerpt of a command's stderr for error messages. */
+function stderrExcerpt(stderr: string | undefined): string {
+  const s = (stderr ?? '').replace(/\s+/g, ' ').trim();
+  return s ? `: ${s.slice(0, 300)}` : '';
+}
+
+/** Order-independent structural serialization used to compare a read-back JSON
+ *  document against the intended merged content (keys sorted recursively). */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  if (isPlainObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
 /** Deliver a single config file to the member.
  *  Creates parent directory and writes the content (JSON object or TOML string).
  *  JSON object content is deep-merged into whatever the file already
  *  contains remotely, rather than overwriting it wholesale -- other tools
- *  (e.g. register_member's mcpServers entry) may share the same file. */
+ *  (e.g. register_member's mcpServers entry) may share the same file.
+ *
+ *  Every remote step is verified so a failed write can never be reported as a
+ *  successful grant (apra-fleet-k4sc):
+ *   1. mkdir and write exit codes are inspected; a nonzero code throws a
+ *      ConfigDeliveryError carrying the command's exit code and stderr excerpt.
+ *   2. After writing, the file is read back (cat on POSIX, Get-Content -Raw on
+ *      Windows) and the intended content is confirmed to have landed -- for JSON
+ *      the parsed document must structurally match the merged content; for a
+ *      TOML/string payload the expected text must be present. A mismatch (empty
+ *      file, wrong path, quoting fault, etc.) throws a ConfigDeliveryError. */
 async function deliverConfigFile(
   strategy: Awaited<ReturnType<typeof getStrategy>>,
   agentOs: string,
   filePath: string,
   content: Record<string, unknown> | string,
 ): Promise<void> {
+  const isWindows = agentOs === 'windows';
+  const winPath = filePath.replace(/\//g, '\\');
   const dir = filePath.split('/').slice(0, -1).join('/');
-  const mkdirCmd = agentOs === 'windows'
+  const mkdirCmd = isWindows
     ? `New-Item -ItemType Directory -Force "${dir.replace(/\//g, '\\')}"`
     : `mkdir -p ${dir}`;
-  await strategy.execCommand(mkdirCmd, 5000);
+  const mkdirResult = await strategy.execCommand(mkdirCmd, 5000);
+  if (mkdirResult.code !== 0) {
+    throw new ConfigDeliveryError(
+      filePath,
+      `could not create parent directory "${dir}" (exit ${mkdirResult.code})${stderrExcerpt(mkdirResult.stderr)}`,
+    );
+  }
+
+  const readCmd = isWindows
+    ? `Get-Content -Raw "${winPath}" -ErrorAction SilentlyContinue`
+    : `cat ${filePath} 2>/dev/null || true`;
 
   let mergedContent: Record<string, unknown> | string = content;
   if (isPlainObject(content)) {
-    const readCmd = agentOs === 'windows'
-      ? `Get-Content -Raw "${filePath.replace(/\//g, '\\')}" -ErrorAction SilentlyContinue`
-      : `cat ${filePath} 2>/dev/null || true`;
     const readResult = await strategy.execCommand(readCmd, 5000);
     let existing: Record<string, unknown> = {};
     try {
@@ -248,10 +301,53 @@ async function deliverConfigFile(
     ? mergedContent
     : JSON.stringify(mergedContent, null, 2);
 
-  const writeCmd = agentOs === 'windows'
-    ? `[System.IO.File]::WriteAllText("${filePath.replace(/\//g, '\\')}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
+  const writeCmd = isWindows
+    ? `[System.IO.File]::WriteAllText("${winPath}", '${contentStr.replace(/'/g, "''")}', (New-Object System.Text.UTF8Encoding($false)))`
     : `cat > ${filePath} << 'FLEET_PERMS_EOF'\n${contentStr}\nFLEET_PERMS_EOF`;
-  await strategy.execCommand(writeCmd, 5000);
+  const writeResult = await strategy.execCommand(writeCmd, 5000);
+  if (writeResult.code !== 0) {
+    throw new ConfigDeliveryError(
+      filePath,
+      `write command failed (exit ${writeResult.code})${stderrExcerpt(writeResult.stderr)}`,
+    );
+  }
+
+  // Read the file back and confirm the intended content actually landed. This
+  // catches the silent no-op class of failure that a nonzero exit code alone
+  // would miss (e.g. a write that "succeeds" but resolves to the wrong path, or
+  // a PowerShell quoting fault that writes nothing).
+  const verifyResult = await strategy.execCommand(readCmd, 5000);
+  const readBack = verifyResult.stdout.trim();
+  if (!readBack) {
+    throw new ConfigDeliveryError(
+      filePath,
+      `read-back verification failed: file is empty or missing after a write that reported success`,
+    );
+  }
+  if (typeof mergedContent === 'string') {
+    if (!readBack.includes(contentStr.trim())) {
+      throw new ConfigDeliveryError(
+        filePath,
+        `read-back verification failed: expected content is not present on disk`,
+      );
+    }
+  } else {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readBack);
+    } catch {
+      throw new ConfigDeliveryError(
+        filePath,
+        `read-back verification failed: file on disk is not valid JSON`,
+      );
+    }
+    if (stableStringify(parsed) !== stableStringify(mergedContent)) {
+      throw new ConfigDeliveryError(
+        filePath,
+        `read-back verification failed: merged permissions did not land on disk`,
+      );
+    }
+  }
 }
 
 export async function composePermissions(input: ComposePermissionsInput): Promise<string> {
@@ -306,11 +402,20 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
     const configs = provider.composePermissionConfig(mode, allow);
     const paths = provider.permissionConfigPaths();
-    for (let i = 0; i < paths.length; i++) {
-      await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+    try {
+      for (let i = 0; i < paths.length; i++) {
+        await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+      }
+    } catch (e) {
+      if (e instanceof ConfigDeliveryError) {
+        // Delivery did not verifiably land -- surface the failure and do NOT
+        // touch the ledger or report a successful grant (apra-fleet-k4sc).
+        return `❌ Failed to persist permissions to ${e.filePath} on "${agent.friendlyName}" (${provider.name}): ${e.message}`;
+      }
+      throw e;
     }
 
-    // Update ledger
+    // Update ledger (only reached when every config file verifiably landed)
     if (input.project_folder) {
       const reason = input.grant_reason ?? 'granted mid-sprint';
       const date = new Date().toISOString().slice(0, 10);
@@ -334,20 +439,29 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   const projectSubdir = input.project_folder ? path.basename(input.project_folder) : undefined;
   const stacks = await detectStacks(agent, projectSubdir);
 
-  // Update ledger stacks
-  if (input.project_folder) {
-    ledger.stacks = stacks;
-    saveLedger(input.project_folder, ledger);
-  }
-
   const allow = input.tags?.length
     ? composeFromTags(profilesDir, mode, input.tags, stacks, ledger)
     : compose(profilesDir, mode, stacks, ledger);
   const configs = provider.composePermissionConfig(mode, allow);
   const paths = provider.permissionConfigPaths();
 
-  for (let i = 0; i < paths.length; i++) {
-    await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+  try {
+    for (let i = 0; i < paths.length; i++) {
+      await deliverConfigFile(strategy, agent.os ?? 'linux', paths[i], configs[i]);
+    }
+  } catch (e) {
+    if (e instanceof ConfigDeliveryError) {
+      // Delivery did not verifiably land -- surface the failure and do NOT
+      // update the ledger stacks or report success (apra-fleet-k4sc).
+      return `❌ Failed to persist permissions to ${e.filePath} on "${agent.friendlyName}" (${provider.name}): ${e.message}`;
+    }
+    throw e;
+  }
+
+  // Update ledger stacks (only reached when every config file verifiably landed)
+  if (input.project_folder) {
+    ledger.stacks = stacks;
+    saveLedger(input.project_folder, ledger);
   }
 
   // apra-fleet-eft.40.2: self-healing -- repair workspace trust on EVERY

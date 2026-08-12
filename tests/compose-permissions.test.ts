@@ -28,6 +28,45 @@ vi.mock('../src/services/strategy.js', () => ({
 
 const OK: SSHExecResult = { stdout: '', stderr: '', code: 0 };
 
+/**
+ * Stateful in-memory filesystem mock for strategy.execCommand.
+ *
+ * deliverConfigFile now reads each config file back after writing it and fails
+ * loudly if the intended content did not land (apra-fleet-k4sc). A mock that
+ * returns empty stdout for every command therefore looks exactly like the
+ * silent-no-op bug and (correctly) makes delivery fail. This handler simulates a
+ * real member filesystem: it records what the write command persists (POSIX
+ * heredoc or Windows WriteAllText) and serves it back on the matching read
+ * (cat / Get-Content), so an actually-delivered write verifies as landed.
+ *
+ * `seed` pre-populates files keyed by the exact path string used in the command
+ * (forward slashes for POSIX, back slashes for Windows).
+ */
+function makeFsHandler(seed: Record<string, string> = {}): (cmd: string, timeout?: number) => Promise<SSHExecResult> {
+  const files = new Map<string, string>(Object.entries(seed));
+  return async (cmd: string): Promise<SSHExecResult> => {
+    // POSIX write (heredoc)
+    let m = cmd.match(/^cat > (.+?) << 'FLEET_PERMS_EOF'\n([\s\S]*)\nFLEET_PERMS_EOF$/);
+    if (m) { files.set(m[1], m[2]); return { stdout: '', stderr: '', code: 0 }; }
+    // Windows write (WriteAllText); PowerShell single-quote escaping doubles quotes
+    m = cmd.match(/\[System\.IO\.File\]::WriteAllText\("(.+?)", '([\s\S]*)', \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)/);
+    if (m) { files.set(m[1], m[2].replace(/''/g, "'")); return { stdout: '', stderr: '', code: 0 }; }
+    // POSIX read (cat <path> 2>/dev/null ...) -- both merge-read and read-back
+    m = cmd.match(/^cat (.+?) 2>\/dev\/null/);
+    if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
+    // Windows read (Get-Content -Raw "<path>" ...)
+    m = cmd.match(/Get-Content -Raw "(.+?)"/);
+    if (m) { return { stdout: files.get(m[1]) ?? '', stderr: '', code: 0 }; }
+    // mkdir, detectStacks (ls), workspace-trust writes/reads, everything else
+    return { stdout: '', stderr: '', code: 0 };
+  };
+}
+
+/** Install a fresh stateful filesystem mock as the execCommand implementation. */
+function installFsMock(seed: Record<string, string> = {}): void {
+  mockExecCommand.mockImplementation(makeFsHandler(seed));
+}
+
 /** Helper: collect all execCommand calls and return the write-command calls (cat > or Set-Content) */
 function writeCalls(calls: string[][]): string[] {
   return calls.map(c => c[0]).filter(cmd => cmd.includes('cat >') || cmd.includes('Set-Content'));
@@ -64,7 +103,7 @@ describe('composePermissions -- Claude proactive', () => {
     addAgent(member);
 
     // detectStacks: ls markers + *.sln/*.csproj
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -91,7 +130,7 @@ describe('composePermissions -- Claude proactive', () => {
   it('delivers reviewer config with restricted allow list', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-reviewer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({ member_id: member.id, role: 'reviewer' });
     expect(result).toContain('reviewer');
@@ -109,7 +148,7 @@ describe('composePermissions -- Gemini proactive', () => {
   it('delivers settings.json + fleet.toml for doer', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -141,7 +180,7 @@ describe('composePermissions -- Gemini proactive', () => {
   it('delivers default mode for reviewer', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-reviewer', llmProvider: 'gemini', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     await composePermissions({ member_id: member.id, role: 'reviewer' });
 
@@ -164,7 +203,7 @@ describe('composePermissions -- AGY proactive', () => {
   it('delivers settings.json with AGY native permission rule objects for doer', async () => {
     const member = makeTestAgent({ friendlyName: 'agy-doer', llmProvider: 'agy', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -193,7 +232,7 @@ describe('composePermissions -- Codex proactive', () => {
   it('delivers config.toml with full-auto for doer', async () => {
     const member = makeTestAgent({ friendlyName: 'codex-doer', llmProvider: 'codex', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -215,7 +254,7 @@ describe('composePermissions -- Codex proactive', () => {
   it('delivers config.toml with suggest for reviewer', async () => {
     const member = makeTestAgent({ friendlyName: 'codex-reviewer', llmProvider: 'codex', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     await composePermissions({ member_id: member.id, role: 'reviewer' });
 
@@ -233,7 +272,7 @@ describe('composePermissions -- Copilot proactive', () => {
   it('delivers settings.local.json with allow-all-tools for doer', async () => {
     const member = makeTestAgent({ friendlyName: 'copilot-doer', llmProvider: 'copilot', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -252,7 +291,7 @@ describe('composePermissions -- Copilot proactive', () => {
   it('delivers restrictive JSON for reviewer', async () => {
     const member = makeTestAgent({ friendlyName: 'copilot-reviewer', llmProvider: 'copilot', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     await composePermissions({ member_id: member.id, role: 'reviewer' });
 
@@ -275,7 +314,7 @@ describe('composePermissions -- Claude reactive grant', () => {
     // First call is the read of existing settings.local.json
     mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
     // mkdir + write calls
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({
       member_id: member.id,
@@ -323,7 +362,7 @@ describe('composePermissions -- Gemini reactive grant', () => {
   it('delivers updated TOML policy with granted tools', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({
       member_id: member.id,
@@ -371,7 +410,7 @@ describe('composePermissions -- no llmProvider defaults to Claude', () => {
     const member = makeTestAgent({ friendlyName: 'legacy-member', os: 'linux' });
     delete (member as any).llmProvider;
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -392,7 +431,7 @@ describe('composePermissions -- fleet-mcp disabled in member config (#151)', () 
   it('includes mcpServers.apra-fleet.disabled in Claude settings.local.json (proactive)', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -410,7 +449,7 @@ describe('composePermissions -- fleet-mcp disabled in member config (#151)', () 
 
     const existing = JSON.stringify({ permissions: { allow: ['Read', 'Write'] } });
     mockExecCommand.mockResolvedValueOnce({ stdout: existing, stderr: '', code: 0 });
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(npm:*)'] });
 
@@ -438,12 +477,9 @@ describe('composePermissions -- preserves register_member mcpServers entry (apra
         },
       },
     });
-    mockExecCommand.mockImplementation(async (cmd: string) => {
-      if (cmd.includes('cat .claude/settings.local.json') || cmd.includes('cat .claude\\settings.local.json')) {
-        return { stdout: registeredByMember, stderr: '', code: 0 };
-      }
-      return OK;
-    });
+    // Seed the file exactly as register_member left it; the merge-read returns
+    // it, the merged write persists it, and the read-back verifies it landed.
+    installFsMock({ '.claude/settings.local.json': registeredByMember });
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -466,6 +502,87 @@ describe('composePermissions -- preserves register_member mcpServers entry (apra
 });
 
 // ---------------------------------------------------------------------------
+// apra-fleet-k4sc.1 -- deliverConfigFile verifies writes and fails loudly on a
+// no-op grant (never reports success when the config did not land)
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- fails loudly when a config write does not land (apra-fleet-k4sc)', () => {
+  it('returns an explicit failure (never a success string) when the write command exits nonzero', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // mkdir/read succeed, but the write reports a hard failure.
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('cat >')) return { stdout: '', stderr: 'bash: cannot create: No space left on device', code: 1 };
+      return OK;
+    });
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(result).toContain('Failed to persist');
+    expect(result).toContain('.claude/settings.local.json');
+    expect(result).toContain('exit 1');
+    // Must NOT masquerade as success
+    expect(result).not.toContain('composed');
+    expect(result).not.toContain('Granted');
+  });
+
+  it('returns an explicit failure when the write "succeeds" but the file did not land (silent no-op)', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // Every command reports exit 0 but nothing is ever persisted: the exact
+    // silent-no-op shape from the original bug (write reports success, read-back
+    // comes back empty).
+    mockExecCommand.mockResolvedValue(OK);
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(result).toContain('Failed to persist');
+    expect(result).toContain('read-back verification failed');
+    expect(result).not.toContain('composed');
+  });
+
+  it('does not update the ledger when a reactive grant fails to persist', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // Write reports success but read-back is empty -> delivery verification fails.
+    mockExecCommand.mockResolvedValue(OK);
+
+    const saveSpy = vi.spyOn(fs, 'writeFileSync');
+
+    const result = await composePermissions({
+      member_id: member.id,
+      role: 'doer',
+      grant: ['Bash(docker:*)'],
+      grant_reason: 'sprint needs docker',
+      project_folder: '/tmp/fleet-k4sc-nonexistent-project',
+    });
+
+    expect(result).toContain('Failed to persist');
+    // The ledger (permissions.json) must never be written when delivery failed.
+    const wroteLedger = saveSpy.mock.calls.some(c => String(c[0]).endsWith('permissions.json'));
+    expect(wroteLedger).toBe(false);
+
+    saveSpy.mockRestore();
+  });
+
+  it('reports success only after a verified read-back confirms the content landed', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // Realistic filesystem: the write is stored and served back on read.
+    installFsMock();
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    expect(result).toContain('composed');
+    expect(result).not.toContain('Failed to persist');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Task T4: deliverConfigFile() BOM-free Windows write (#219)
 // ---------------------------------------------------------------------------
 
@@ -473,7 +590,7 @@ describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
   it('uses WriteAllText with UTF8Encoding($false) on Windows, not Set-Content', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-win', llmProvider: 'gemini', os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -491,7 +608,7 @@ describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
   it('uses heredoc form (cat >) on Linux', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-linux', llmProvider: 'gemini', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -505,7 +622,7 @@ describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
   it('doubles single quotes in content for PowerShell string safety on Windows', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-win-quotes', llmProvider: 'gemini', os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     // Grant a permission containing a single quote -- it must be double-escaped in the PowerShell write command
     await composePermissions({
@@ -543,7 +660,7 @@ describe('composePermissions -- tag-aware: tags:[doer] == role:doer (backward co
     addAgent(memberTags);
 
     // Run role:'doer'
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberRole.id, role: 'doer' });
     const roleCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const roleWrite = roleCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -552,7 +669,7 @@ describe('composePermissions -- tag-aware: tags:[doer] == role:doer (backward co
     vi.clearAllMocks();
 
     // Run tags:['doer']
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberTags.id, tags: ['doer'] });
     const tagCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const tagWrite = tagCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -575,7 +692,7 @@ describe('composePermissions -- tag-aware: tags:[reviewer] == role:reviewer (bac
     addAgent(memberTags);
 
     // Run role:'reviewer'
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberRole.id, role: 'reviewer' });
     const roleCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const roleWrite = roleCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -584,7 +701,7 @@ describe('composePermissions -- tag-aware: tags:[reviewer] == role:reviewer (bac
     vi.clearAllMocks();
 
     // Run tags:['reviewer']
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberTags.id, tags: ['reviewer'] });
     const tagCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const tagWrite = tagCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -602,7 +719,7 @@ describe('composePermissions -- tag-aware: tags:[doer,gpu] merges doer+gpu profi
   it('includes gpu-specific permissions in the allow list', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer-gpu', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({ member_id: member.id, tags: ['doer', 'gpu'] });
 
@@ -629,7 +746,7 @@ describe('composePermissions -- tag-aware: tags:[doer,gpu] merges doer+gpu profi
     addAgent(memberGpu);
 
     // Doer-only
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberDoer.id, tags: ['doer'] });
     const doerCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const doerWrite = doerCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -638,7 +755,7 @@ describe('composePermissions -- tag-aware: tags:[doer,gpu] merges doer+gpu profi
     vi.clearAllMocks();
 
     // Doer + gpu
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberGpu.id, tags: ['doer', 'gpu'] });
     const gpuCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const gpuWrite = gpuCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -657,7 +774,7 @@ describe('composePermissions -- tag-aware: role:doer backward compat', () => {
   it('still works with role-only (no tags) for doer', async () => {
     const member = makeTestAgent({ friendlyName: 'role-compat-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const result = await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -680,7 +797,7 @@ describe('composePermissions -- tag-aware: both role and tags -> tags wins', () 
     addAgent(memberRoleDoer);
 
     // tags:[doer] + role:reviewer -> tags wins -> mode=doer
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberTagsWin.id, role: 'reviewer', tags: ['doer'] });
     const tagsWinCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const tagsWinWrite = tagsWinCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -689,7 +806,7 @@ describe('composePermissions -- tag-aware: both role and tags -> tags wins', () 
     vi.clearAllMocks();
 
     // role:doer alone for reference
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberRoleDoer.id, role: 'doer' });
     const roleDoerCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const roleDoerWrite = roleDoerCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -702,7 +819,7 @@ describe('composePermissions -- tag-aware: both role and tags -> tags wins', () 
   it('when role=doer and tags=[reviewer], output uses reviewer mode (tags win)', async () => {
     const member = makeTestAgent({ friendlyName: 'tags-reviewer-over-role', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     // tags:['reviewer'] + role:'doer' -> tags win -> reviewer mode
     await composePermissions({ member_id: member.id, role: 'doer', tags: ['reviewer'] });
@@ -725,7 +842,7 @@ describe('composePermissions -- tag-aware: unknown tag -> no error, no extra per
     addAgent(memberBase);
 
     // tags with unknown tag
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     const result = await composePermissions({ member_id: memberUnknown.id, tags: ['doer', 'nonexistent-tag-xyz'] });
 
     // Should succeed (not throw, not return error)
@@ -740,7 +857,7 @@ describe('composePermissions -- tag-aware: unknown tag -> no error, no extra per
     vi.clearAllMocks();
 
     // Same as just doer
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberBase.id, tags: ['doer'] });
     const baseCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const baseWrite = baseCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -759,7 +876,7 @@ describe('composePermissions -- tag-aware: tags with no mode tag defaults to doe
     addAgent(memberDoerGpu);
 
     // tags=['gpu'] with no mode tag -> should default to doer
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberGpuOnly.id, tags: ['gpu'] });
     const noModeCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const noModeWrite = noModeCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -769,7 +886,7 @@ describe('composePermissions -- tag-aware: tags with no mode tag defaults to doe
     vi.clearAllMocks();
 
     // tags=['doer','gpu'] -> explicit doer+gpu
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberDoerGpu.id, tags: ['doer', 'gpu'] });
     const doerGpuCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const doerGpuWrite = doerGpuCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -788,7 +905,7 @@ describe('composePermissions -- tag-aware: primary mode = first mode tag', () =>
     addAgent(memberDoerFirst);
 
     // reviewer first -> reviewer mode
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberReviewerFirst.id, tags: ['reviewer', 'doer'] });
     const reviewerFirstCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const reviewerFirstWrite = reviewerFirstCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -797,7 +914,7 @@ describe('composePermissions -- tag-aware: primary mode = first mode tag', () =>
     vi.clearAllMocks();
 
     // doer first -> doer mode
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
     await composePermissions({ member_id: memberDoerFirst.id, tags: ['doer', 'reviewer'] });
     const doerFirstCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
     const doerFirstWrite = doerFirstCmds.find(cmd => cmd.includes('.claude/settings.local.json') && cmd.includes('FLEET_PERMS_EOF'))!;
@@ -827,7 +944,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
   it('calls ensureWorkspaceTrusted with the resolved work_folder on proactive compose (Claude)', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
 
@@ -841,7 +958,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
   it('calls ensureWorkspaceTrusted on reactive grant compose too', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const spy = vi.spyOn(ClaudeProvider.prototype, 'ensureWorkspaceTrusted');
 
@@ -869,12 +986,9 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
     addAgent(member);
 
-    // No ~/.claude.json on the member yet (fresh/never-trusted), and all other
-    // exec calls (mkdir/detect stacks/deliver config) succeed trivially.
-    mockExecCommand.mockImplementation(async (cmd: string) => {
-      if (cmd.includes('.claude.json')) return { stdout: '', stderr: '', code: 0 };
-      return OK;
-    });
+    // No ~/.claude.json on the member yet (fresh/never-trusted); config delivery
+    // verifiably lands (fs mock), so trust seeding is reached afterwards.
+    installFsMock();
 
     await composePermissions({ member_id: member.id, role: 'doer' });
 
@@ -889,7 +1003,7 @@ describe('composePermissions -- invokes ensureWorkspaceTrusted (apra-fleet-eft.4
   it('is a no-op for non-Claude providers (e.g. Gemini) -- never touches the trust delivery channel', async () => {
     const member = makeTestAgent({ friendlyName: 'gemini-doer', llmProvider: 'gemini', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const spy = vi.spyOn(GeminiProvider.prototype, 'ensureWorkspaceTrusted');
 
@@ -906,7 +1020,7 @@ describe('composePermissions -- fresh/empty permissions.json', () => {
   it('does not crash when permissions.json exists but contains only {}', async () => {
     const member = makeTestAgent({ friendlyName: 'claude-doer', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue(OK);
+    installFsMock();
 
     const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
       const s = String(p);
