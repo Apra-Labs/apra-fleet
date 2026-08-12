@@ -17,7 +17,7 @@ materials/*
 .claude/settings.local.json
 
 # CLAUDE.md is already tracked (git add -f was used), so this entry only prevents
-# new untracked CLAUDE.md files from being accidentally staged — it does not untrack the existing file.
+# new untracked CLAUDE.md files from being accidentally staged -- it does not untrack the existing file.
 CLAUDE.md
 
 # Beads / Dolt files (added by bd init)
@@ -41,11 +41,17 @@ CLAUDE.md
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/
 
-# Sprint-log transcripts and analyses are per-run artifacts, not deliverables.
-# Files already tracked before this rule stay tracked (gitignore does not
-# untrack existing files) -- this only stops new ones from being committed.
-**/sprint-logs/*.jsonl
-**/sprint-logs/*.analysis.md
+# sprint-logs/ holds durable per-branch sprint-cost artifacts that the sprint
+# workflow explicitly commits (apra-fleet-tm7.13; see
+# packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md's "committed to the
+# branch" and packages/apra-fleet-se/apra-pm/skills/pm/cost.md's "Commit it."
+# instructions for calibration.json) -- so *.jsonl, *.analysis.md, and
+# calibration.json are intentionally NOT ignored here (an earlier version of
+# this rule ignored *.jsonl/*.analysis.md too, which silently fought that
+# documented, still-current commit practice). Only the per-run STATE SNAPSHOT
+# bin/cli.mjs writes on every sprint exit (sprint-logs/sprint_*.json, any
+# depth -- see packages/apra-fleet-se/bin/cli.mjs's stateSnapshotDir/
+# stateSnapshotPrefix) is genuine scratch and stays ignored below.
 **/sprint-logs/sprint_*.json
 
 # Provider agent context files are tracked project deliverables (git add -f was used).
@@ -89,9 +95,15 @@ COPILOT-INSTRUCTIONS.md
 /integ-suite-heartbeat.json
 /integ-suite-run.log
 
-# Per-run sprint state dumps (bin/cli.mjs writes one automatically on every
-# sprint exit) -- local scratch, not a project deliverable.
-/sprint-logs/
+# apra-fleet-tm7.13: the blanket top-level '/sprint-logs/' rule that used to
+# live here has been removed -- it blocked the durable *.jsonl/*.analysis.md/
+# calibration.json artifacts documented above (**/sprint-logs/sprint_*.json)
+# from ever being staged (a directory-level ignore shadows everything inside
+# it, including files an unrelated pattern elsewhere tries to un-ignore), so
+# every new sprint-cost log needed a manual 'git add -f' despite the sprint
+# workflow's own docs saying to just commit it. The scoped
+# '**/sprint-logs/sprint_*.json' rule above is what actually needs ignoring
+# (bin/cli.mjs's per-run state snapshot) and covers this on its own.
 
 # Per-member installed agent role files -- must stay on disk, never committed
 .claude/agents/
