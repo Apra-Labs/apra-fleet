@@ -136,6 +136,50 @@ describe('apra-fleet-p2to.4.2: reReserveForResume()', () => {
         assert.equal(resyncCalled, false, 'no member may be re-synced when the resume is failing');
     });
 
+    // apra-fleet-p2to.4.5: independent review found that a reservation-store
+    // WRITE failure (member-reservation.ts's updateAgent() call itself
+    // failing, as opposed to the "already reserved by X" owner-check
+    // rejection above) returned a plain, unmarked "Failed to reserve member
+    // ..." string -- no isError, no leading '[-]' -- so callFor()'s success
+    // predicate (isError || text.startsWith('[-]')) default-trusted it as a
+    // successful reacquire. apra-fleet-p2to.4.5.1 fixed this by adding the
+    // '[-]' marker to that return string (member-reservation.ts ~line 55) so
+    // it now routes through the SAME rejection branch as the owner-check
+    // case. This proves callFor(), unchanged, correctly classifies that now-
+    // marked store-write-failure text as a FAILURE here in the re-reserve
+    // path -- not a successful reacquire -- mirroring the "single unavailable
+    // member" test above but with the store-write-failure text instead of
+    // the "already reserved by" text.
+    test('a reservation-store write failure ("[-] Failed to reserve member ...", no isError) is treated as unavailable, not a successful reacquire', async () => {
+        const calls = [];
+        const client = createMemberReservationClient({
+            callTool: async (name, args) => {
+                calls.push({ action: args.action, member: args.member_name });
+                if (args.action === 'reserve' && args.member_name === 'bob') {
+                    return '[-] Failed to reserve member "bob".';
+                }
+                return '[OK]';
+            },
+            members: ['alice', 'bob'],
+            sprintId: 'feat/pause-resume',
+        });
+        await assert.rejects(
+            () => client.reReserveForResume(),
+            (err) => {
+                assert.ok(err instanceof MemberReservationResumeError);
+                assert.deepEqual(err.members, ['bob'], 'a store-write failure must be named as unavailable, exactly like an owner-check rejection -- never silently trusted as a reacquire');
+                return true;
+            },
+        );
+        // alice was reserved, bob's store-write failed, then alice released
+        // again (same partial-rollback contract as the owner-check case).
+        assert.deepEqual(calls, [
+            { action: 'reserve', member: 'alice' },
+            { action: 'reserve', member: 'bob' },
+            { action: 'release', member: 'alice' },
+        ], 'the already-reacquired alice must be released so a failed resume holds no partial reservation set');
+    });
+
     test('multiple unavailable members: names ALL of them and releases every member that WAS re-acquired', async () => {
         const releases = [];
         const client = createMemberReservationClient({
