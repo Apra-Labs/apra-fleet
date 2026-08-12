@@ -254,3 +254,81 @@ describe('apra-fleet-p2to.1.1: workflow engine pause/resume primitive', () => {
         assert.strictEqual(typeof wf.requestResume, 'function');
     });
 });
+
+// (apra-fleet-p2to.1.3.2) The pre-resume hook (setPreResumeHook), registered by
+// callers like fleet-sprint's cli.mjs to re-reserve/resync members on resume,
+// must be a HARD BARRIER strictly ahead of the first post-resume agent()/
+// command() dispatch -- not a race with it -- and a rejecting hook must
+// propagate out of requestResume() rather than being swallowed.
+describe('apra-fleet-p2to.1.3.2: resume pre-resume hook is a barrier ahead of the first post-resume dispatch', () => {
+    test('requestResume() awaits the pre-resume hook before releasing gate waiters / emitting resumed, and the hook completes before the first post-resume dispatch starts', async () => {
+        const api = createImmediateFleetApi();
+        const wf = new FleetWorkflow(api);
+        const order = [];
+
+        let releaseHook;
+        const hookGate = new Promise((resolve) => { releaseHook = resolve; });
+        wf.setPreResumeHook(async () => {
+            order.push('hook:start');
+            await hookGate;
+            order.push('hook:end');
+        });
+
+        wf.requestPause();
+        assert.strictEqual(wf._paused, true);
+
+        // Queue a post-resume dispatch that will block at the gate until
+        // requestResume() actually resumes the run.
+        const dispatch = wf.agent('hello', { member_name: 'fleet-dev' }).then((r) => {
+            order.push('dispatch:start');
+            return r;
+        });
+        await nextTick();
+        assert.strictEqual(wf._pauseWaiters.length, 1, 'dispatch parked at the gate, not yet in flight');
+
+        let resumedFired = false;
+        wf.on('resumed', () => { resumedFired = true; });
+
+        const resumePromise = wf.requestResume();
+        await nextTick();
+        // The hook must be running, but requestResume() has not resolved yet,
+        // pause state must still be intact, and the parked dispatch must NOT
+        // have been released -- no race with the barrier.
+        assert.deepStrictEqual(order, ['hook:start']);
+        assert.strictEqual(wf._paused, true, 'pause state stays intact while the hook is in flight');
+        assert.strictEqual(resumedFired, false, "'resumed' must not fire until the hook resolves");
+
+        // Let the hook complete: only now should requestResume() resolve,
+        // 'resumed' fire, and the parked dispatch be allowed to proceed.
+        releaseHook();
+        await resumePromise;
+        assert.strictEqual(resumedFired, true);
+        assert.strictEqual(wf._paused, false);
+
+        const result = await dispatch;
+        assert.strictEqual(result, 'echo: hello');
+        // The hook's full completion is strictly ahead of the dispatch actually
+        // starting -- no interleaving of 'dispatch:start' before 'hook:end'.
+        assert.deepStrictEqual(order, ['hook:start', 'hook:end', 'dispatch:start']);
+    });
+
+    test('a rejecting pre-resume hook propagates out of requestResume() instead of being swallowed, and the run stays paused', async () => {
+        const wf = new FleetWorkflow(createImmediateFleetApi());
+        const hookError = new Error('re-reserve failed: member taken');
+        wf.setPreResumeHook(async () => { throw hookError; });
+
+        wf.requestPause();
+        assert.strictEqual(wf._paused, true);
+
+        let resumedFired = false;
+        wf.on('resumed', () => { resumedFired = true; });
+
+        await assert.rejects(wf.requestResume(), (err) => err === hookError);
+
+        // Pause state is left intact on the reject path -- not silently
+        // resumed on a half-restored (failed re-reserve) state.
+        assert.strictEqual(wf._paused, true);
+        assert.strictEqual(wf._pauseRequested, true);
+        assert.strictEqual(resumedFired, false);
+    });
+});
