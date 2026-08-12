@@ -1551,7 +1551,14 @@ export function createDashboardViewer(workflow, opts = {}) {
             // state.pause once it fires.
             console.log('[Viewer] Resume requested via dashboard /resume endpoint.');
             if (typeof workflow.requestResume === 'function') {
-                workflow.requestResume('Resume requested via dashboard /resume endpoint');
+                // (apra-fleet-p2to.1.3) requestResume() is now async -- it
+                // awaits a pre-resume barrier (member re-reserve/resync) before
+                // it completes. Don't block the HTTP response on that barrier,
+                // but do catch a barrier rejection so it surfaces as a log line
+                // rather than an unhandled promise rejection; the run stays
+                // paused on failure, exactly as the engine leaves it.
+                Promise.resolve(workflow.requestResume('Resume requested via dashboard /resume endpoint'))
+                    .catch((err) => console.error('[Viewer] resume barrier failed (run stays paused):', err && err.message ? err.message : err));
             }
             debouncedWriter.flushSync();
             res.writeHead(200);

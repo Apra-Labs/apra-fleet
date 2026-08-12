@@ -453,9 +453,19 @@ export class FleetWorkflow extends EventEmitter {
         //                     them (they re-check and proceed); requestStop()
         //                     rejects them with a CancelledError so a paused
         //                     run tears down instead of hanging.
+        //   _preResumeHook  : optional async hook (set via setPreResumeHook)
+        //                     that requestResume() awaits as a HARD BARRIER
+        //                     before it clears pause state, releases any gate
+        //                     waiter, or emits 'resumed' -- so a caller's
+        //                     re-reserve/resync completes strictly ahead of the
+        //                     first post-resume dispatch. A hook rejection
+        //                     rejects requestResume() (the run stays paused)
+        //                     rather than being swallowed. Null means no
+        //                     barrier -- resume proceeds immediately.
         this._pauseRequested = false;
         this._paused = false;
         this._pauseGuard = null;
+        this._preResumeHook = null;
         this._inFlight = 0;
         this._pauseWaiters = [];
     }
@@ -584,6 +594,31 @@ export class FleetWorkflow extends EventEmitter {
     }
 
     /**
+     * (apra-fleet-p2to.1.3) Registers (or clears, with null) an async
+     * pre-resume hook that requestResume() awaits as a HARD BARRIER before it
+     * clears pause state, releases any gate waiter, or emits 'resumed'. This is
+     * the point at which a caller re-grabs/re-syncs whatever it released at
+     * pause (fleet-sprint's member re-reserve/resync) with the guarantee that
+     * the work completes strictly BEFORE the first post-resume agent()/
+     * command() dispatch -- no race with the resumed sprint loop.
+     *
+     * The hook is awaited; if it rejects, requestResume() rejects too and the
+     * run stays paused (pause state is never cleared on the reject path), so a
+     * failure surfaces to the caller instead of being silently swallowed --
+     * consistent with reReserveOnResume()'s rethrow contract.
+     *
+     * Generic engine hook only -- it carries no caller-specific semantics.
+     *
+     * @param {((reason: string) => (void | Promise<void>)) | null} fn
+     */
+    setPreResumeHook(fn) {
+        if (fn !== null && typeof fn !== 'function') {
+            throw new TypeError('[Workflow Error] setPreResumeHook() requires a function or null');
+        }
+        this._preResumeHook = fn;
+    }
+
+    /**
      * (apra-fleet-p2to.1) Requests a cooperative pause of every run sharing
      * this instance. Fires 'pause:requested' immediately, but the pause is
      * DEFERRED: it only takes effect ('paused' fires, new dispatches block) at
@@ -608,10 +643,29 @@ export class FleetWorkflow extends EventEmitter {
      * Clears the pause state and releases every call blocked at the gate so
      * they proceed. Fires 'resumed'. No-op if not paused/pause-requested.
      *
+     * (apra-fleet-p2to.1.3) When a pre-resume hook is registered (see
+     * setPreResumeHook), it is awaited as a HARD BARRIER FIRST -- while the run
+     * is still paused, so no gate waiter is released and no new dispatch slips
+     * through -- and only once it resolves are the waiters released and
+     * 'resumed' emitted. This guarantees the caller's re-reserve/resync
+     * completes strictly ahead of the first post-resume dispatch. A hook
+     * rejection propagates out of requestResume() with the pause state left
+     * intact (run stays paused), rather than being swallowed.
+     *
      * @param {string} [reason]
+     * @returns {Promise<void>}
      */
-    requestResume(reason = 'Workflow run resumed via requestResume()') {
+    async requestResume(reason = 'Workflow run resumed via requestResume()') {
         if (!this._paused && !this._pauseRequested) return;
+        // Barrier: drain the pre-resume hook BEFORE touching pause state. The
+        // run is still paused here, so waiters remain blocked and any fresh
+        // agent()/command() dispatch blocks at the gate -- the hook's work
+        // (e.g. member re-reserve/resync) cannot race the resumed loop. A
+        // rejection here surfaces to the caller with pause state untouched, so
+        // the run stays parked instead of resuming on a half-restored state.
+        if (this._preResumeHook) {
+            await this._preResumeHook(reason);
+        }
         this._paused = false;
         this._pauseRequested = false;
         const waiters = this._pauseWaiters;

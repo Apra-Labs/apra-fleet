@@ -795,38 +795,36 @@ async function main() {
         sprintReservation.releaseForPause().catch((err) =>
             console.error('[member-reservation] release-on-pause failed:', err && err.message ? err.message : err));
     });
-    // NOTE (engine-model limitation): 'resumed' is emitted synchronously by the
-    // engine's requestResume(), so this handler cannot be awaited by the engine
-    // before it resolves pause waiters and lets the sprint loop continue. The
-    // re-reserve + per-member resync therefore run as a best-effort async task
-    // racing the first post-resume dispatch rather than a hard barrier strictly
-    // ahead of it. The dispatch-time reservedBy check in execute_prompt is the
-    // real guard against acting on a member this sprint no longer owns; this
-    // handler's job is to re-grab ownership and re-sync promptly, and to FAIL
-    // the resume when a member was taken while paused.
+    // (apra-fleet-p2to.1.3) The re-reserve + per-member resync is registered as
+    // an AWAITABLE pre-resume hook, not a fire-and-forget 'resumed' listener.
+    // requestResume() drains this hook as a hard barrier -- while the run is
+    // still paused, so no post-resume agent()/command() dispatch can land ahead
+    // of it -- and only then releases the gate waiters and emits 'resumed'. The
+    // re-reserve therefore completes strictly BEFORE the first post-resume
+    // dispatch, closing the race the old 'resumed' handler left open.
     //
-    // reReserveOnResume() does NOT swallow that failure (the old
+    // reReserveOnResume() does NOT swallow a re-reserve failure (the old
     // `.catch(console.error)` did, silently resuming on zero reservations). It
-    // re-pauses the run and rethrows the MemberReservationResumeError that NAMES
-    // the unavailable members. The outer .catch here only prevents a
-    // process-level unhandled rejection AFTER the run has already been safely
-    // re-parked and the failure logged inside reReserveOnResume -- it is not a
-    // swallow of the original resume, which has by then already been failed.
-    workflow.on('resumed', () => {
-        reReserveOnResume({
-            sprintReservation,
-            resyncMember: (member) => resyncReacquiredMember({
-                member,
-                branch: branchName,
-                baseBranch,
-                runGit: (cmd) => runGitSoft(cmd, member),
-                doltPull: (m) => runCommand('bd dolt pull', m),
-                log: (msg) => console.log(msg),
-            }),
-            requestPause: (reason) => workflow.requestPause(reason),
-            log: (msg) => console.error(msg),
-        }).catch(() => { /* already re-paused + logged + surfaced above */ });
-    });
+    // rethrows the MemberReservationResumeError that NAMES the unavailable
+    // members; because the hook runs before requestResume() clears pause state,
+    // that rejection leaves the run parked (still paused) and propagates out of
+    // requestResume() to the resume caller instead of being lost -- the operator
+    // sees exactly which members block the resume. requestPause() is still
+    // passed for the exported helper's standalone contract; here it is a no-op
+    // because the run has not yet been unpaused.
+    workflow.setPreResumeHook(() => reReserveOnResume({
+        sprintReservation,
+        resyncMember: (member) => resyncReacquiredMember({
+            member,
+            branch: branchName,
+            baseBranch,
+            runGit: (cmd) => runGitSoft(cmd, member),
+            doltPull: (m) => runCommand('bd dolt pull', m),
+            log: (msg) => console.log(msg),
+        }),
+        requestPause: (reason) => workflow.requestPause(reason),
+        log: (msg) => console.error(msg),
+    }));
 
     let reservationReleased = false;
     const releaseReservationOnce = async () => {
