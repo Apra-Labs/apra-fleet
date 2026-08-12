@@ -165,6 +165,13 @@
 
 /**
  * @typedef {Object} SendEmailOptions
+ * @property {"sendgrid" | "smtp"} [provider] - Email provider to use (default "sendgrid").
+ *   Secrets are resolved server-side from the credential store ("sendgrid_api_key" / "smtp_password").
+ * @property {string} from - Sender email address (required)
+ * @property {string} [host] - SMTP server hostname (required for smtp provider)
+ * @property {number} [port] - SMTP server port (default 587)
+ * @property {string} [user] - SMTP username (required for smtp provider)
+ * @property {boolean} [secure] - Use implicit TLS, e.g. port 465 (default false)
  * @property {string | string[]} to - Recipient email address, or list of addresses
  * @property {string} subject - Email subject line
  * @property {string} body - Plain-text email body

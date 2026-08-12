@@ -84,13 +84,9 @@ if (!hasCredential) {
 
 // --- Phase 4: Send email ---
 //
-// Alternative: set credentials programmatically in a CI pipeline by pulling
-// from a vault and injecting via execute_command:
-//
-//   await mcpClient.callTool('execute_command', {
-//     member_name: 'local',
-//     command: 'echo "$SECRET_FROM_VAULT" | apra-fleet secret --set smtp_password --persist -y',
-//   });
+// CI note: in a pipeline with no human present, seed the credential by
+// running the CLI directly in a pipeline step (stdin, never a command
+// string): see docs/email-workflow-guide.md "CI / Pipeline" section.
 
 console.log(`[..] Sending email to ${config.to}...`);
 

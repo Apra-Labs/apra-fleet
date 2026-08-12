@@ -36,6 +36,8 @@ export interface SmtpConfig {
   secure?: boolean;
   auth: { user: string; pass: string };
   from: string;
+  /** Connect / per-response timeout in ms (default 30000). */
+  timeoutMs?: number;
 }
 
 export interface EmailConfig {

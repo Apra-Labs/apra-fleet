@@ -8,6 +8,26 @@ interface SmtpResponse {
   lines: string[];
 }
 
+/** Default ceiling for connect and per-response waits (overridable via SmtpConfig.timeoutMs). */
+const SMTP_TIMEOUT_MS = 30_000;
+
+interface Waiter {
+  resolve: (res: SmtpResponse) => void;
+  reject: (err: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+/**
+ * Header/command injection guard: any value spliced into an SMTP command or
+ * MIME header line must not contain CR/LF, or a crafted "from"/"subject" can
+ * inject extra recipients or headers into the protocol stream.
+ */
+function assertHeaderSafe(field: string, value: string): void {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`Invalid ${field}: must not contain CR/LF characters.`);
+  }
+}
+
 /**
  * Minimal SMTP client (no `nodemailer` dependency required).
  * Supports plain sockets, implicit TLS (port 465) and STARTTLS (e.g. port 587),
@@ -17,9 +37,9 @@ interface SmtpResponse {
 class SmtpConnection {
   private socket: net.Socket | tls.TLSSocket;
   private buffer = '';
-  private waiters: ((res: SmtpResponse) => void)[] = [];
+  private waiters: Waiter[] = [];
 
-  constructor(socket: net.Socket | tls.TLSSocket) {
+  constructor(socket: net.Socket | tls.TLSSocket, private readonly timeoutMs: number = SMTP_TIMEOUT_MS) {
     this.socket = socket;
     this.socket.on('data', (chunk) => this.onData(chunk));
   }
@@ -43,12 +63,27 @@ class SmtpConnection {
     }
 
     const code = parseInt(match[1], 10);
-    const resolve = this.waiters.shift();
-    if (resolve) resolve({ code, lines });
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      waiter.resolve({ code, lines });
+    }
   }
 
   waitForResponse(): Promise<SmtpResponse> {
-    return new Promise((resolve) => this.waiters.push(resolve));
+    return new Promise((resolve, reject) => {
+      const waiter: Waiter = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          const idx = this.waiters.indexOf(waiter);
+          if (idx !== -1) this.waiters.splice(idx, 1);
+          this.socket.destroy();
+          reject(new Error(`SMTP response timeout after ${this.timeoutMs}ms.`));
+        }, this.timeoutMs),
+      };
+      this.waiters.push(waiter);
+    });
   }
 
   async command(cmd: string): Promise<SmtpResponse> {
@@ -72,30 +107,58 @@ class SmtpConnection {
   }
 }
 
-function connectSocket(host: string, port: number, secure: boolean): Promise<net.Socket | tls.TLSSocket> {
+function connectSocket(host: string, port: number, secure: boolean, timeoutMs: number): Promise<net.Socket | tls.TLSSocket> {
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`SMTP connect timeout to ${host}:${port} after ${timeoutMs}ms.`));
+    }, timeoutMs);
+    const onConnect = () => {
+      clearTimeout(timer);
+      resolve(socket);
+    };
     const socket = secure
-      ? tls.connect({ host, port }, () => resolve(socket))
-      : net.connect({ host, port }, () => resolve(socket));
-    socket.once('error', reject);
+      ? tls.connect({ host, port }, onConnect)
+      : net.connect({ host, port }, onConnect);
+    socket.once('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
-function starttls(socket: net.Socket, host: string): Promise<tls.TLSSocket> {
+function starttls(socket: net.Socket, host: string, timeoutMs: number): Promise<tls.TLSSocket> {
   return new Promise((resolve, reject) => {
-    const secureSocket = tls.connect({ socket, host }, () => resolve(secureSocket));
-    secureSocket.once('error', reject);
+    const timer = setTimeout(() => {
+      secureSocket.destroy();
+      reject(new Error(`STARTTLS handshake timeout after ${timeoutMs}ms.`));
+    }, timeoutMs);
+    const secureSocket = tls.connect({ socket, host }, () => {
+      clearTimeout(timer);
+      resolve(secureSocket);
+    });
+    secureSocket.once('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
 function buildMimeMessage(msg: EmailMessage, from: string): string {
   const boundary = `----apra-fleet-${crypto.randomBytes(12).toString('hex')}`;
   const to = Array.isArray(msg.to) ? msg.to.join(', ') : msg.to;
+  assertHeaderSafe('from', from);
+  assertHeaderSafe('to', to);
+  assertHeaderSafe('subject', msg.subject);
   const headers: string[] = [
     `From: ${from}`,
     `To: ${to}`,
   ];
-  if (msg.cc && msg.cc.length > 0) headers.push(`Cc: ${msg.cc.join(', ')}`);
+  if (msg.cc && msg.cc.length > 0) {
+    const cc = msg.cc.join(', ');
+    assertHeaderSafe('cc', cc);
+    headers.push(`Cc: ${cc}`);
+  }
   headers.push(`Subject: ${msg.subject}`);
   headers.push('MIME-Version: 1.0');
 
@@ -123,6 +186,8 @@ function buildMimeMessage(msg: EmailMessage, from: string): string {
   }
 
   for (const att of msg.attachments ?? []) {
+    assertHeaderSafe('attachment filename', att.filename);
+    if (att.contentType) assertHeaderSafe('attachment contentType', att.contentType);
     parts.push(
       `--${boundary}\r\nContent-Type: ${att.contentType ?? 'application/octet-stream'}; name="${att.filename}"\r\n` +
       `Content-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename="${att.filename}"\r\n\r\n${att.content}`
@@ -144,8 +209,21 @@ export class SmtpProvider implements EmailProvider {
 
   async send(msg: EmailMessage): Promise<EmailSendResult> {
     const { host, port, secure, auth, from } = this.config;
-    const socket = await connectSocket(host, port, !!secure);
-    let conn = new SmtpConnection(socket);
+    const timeoutMs = this.config.timeoutMs ?? SMTP_TIMEOUT_MS;
+
+    // Reject CR/LF in command-bound values up front, before any network I/O.
+    const sender = msg.from ?? from;
+    assertHeaderSafe('from', sender);
+    const recipients = [
+      ...(Array.isArray(msg.to) ? msg.to : [msg.to]),
+      ...(msg.cc ?? []),
+      ...(msg.bcc ?? []),
+    ];
+    for (const rcpt of recipients) assertHeaderSafe('recipient', rcpt);
+    assertHeaderSafe('subject', msg.subject);
+
+    const socket = await connectSocket(host, port, !!secure, timeoutMs);
+    const conn = new SmtpConnection(socket, timeoutMs);
 
     const greeting = await conn.waitForResponse();
     if (greeting.code !== 220) throw new Error(`SMTP server did not greet: ${greeting.lines.join(' ')}`);
@@ -156,7 +234,7 @@ export class SmtpProvider implements EmailProvider {
     if (!secure && ehlo.lines.some(l => /STARTTLS/i.test(l))) {
       const startTlsResp = await conn.command('STARTTLS');
       if (startTlsResp.code !== 220) throw new Error(`STARTTLS failed: ${startTlsResp.lines.join(' ')}`);
-      const tlsSocket = await starttls(socket as net.Socket, host);
+      const tlsSocket = await starttls(socket as net.Socket, host, timeoutMs);
       conn.swapSocket(tlsSocket);
       ehlo = await conn.command(`EHLO localhost`);
       if (ehlo.code !== 250) throw new Error(`SMTP EHLO (after STARTTLS) failed: ${ehlo.lines.join(' ')}`);
@@ -171,14 +249,9 @@ export class SmtpProvider implements EmailProvider {
       if (passResp.code !== 235) throw new Error(`SMTP AUTH failed: ${passResp.lines.join(' ')}`);
     }
 
-    const fromResp = await conn.command(`MAIL FROM:<${msg.from ?? from}>`);
+    const fromResp = await conn.command(`MAIL FROM:<${sender}>`);
     if (fromResp.code !== 250) throw new Error(`MAIL FROM rejected: ${fromResp.lines.join(' ')}`);
 
-    const recipients = [
-      ...(Array.isArray(msg.to) ? msg.to : [msg.to]),
-      ...(msg.cc ?? []),
-      ...(msg.bcc ?? []),
-    ];
     for (const rcpt of recipients) {
       const rcptResp = await conn.command(`RCPT TO:<${rcpt}>`);
       if (rcptResp.code !== 250 && rcptResp.code !== 251) {
@@ -189,7 +262,7 @@ export class SmtpProvider implements EmailProvider {
     const dataResp = await conn.command('DATA');
     if (dataResp.code !== 354) throw new Error(`DATA command rejected: ${dataResp.lines.join(' ')}`);
 
-    const mimeMessage = buildMimeMessage(msg, msg.from ?? from);
+    const mimeMessage = buildMimeMessage(msg, sender);
     const finishPending = conn.waitForResponse();
     conn.write(dotStuff(mimeMessage) + '\r\n.\r\n');
     const finishResp = await finishPending;

@@ -1,13 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockCredentialResolve, MockSendGridProvider, MockSmtpProvider } = vi.hoisted(() => ({
+const { mockCredentialResolve, MockSendGridProvider, MockSmtpProvider, mockFindBySessionId, mockGetAgentOrFail } = vi.hoisted(() => ({
   mockCredentialResolve: vi.fn(),
   MockSendGridProvider: vi.fn(),
   MockSmtpProvider: vi.fn(),
+  mockFindBySessionId: vi.fn(),
+  mockGetAgentOrFail: vi.fn(),
 }));
 
 vi.mock('../src/services/credential-store.js', () => ({
   credentialResolve: mockCredentialResolve,
+}));
+
+vi.mock('../src/services/session-registry.js', () => ({
+  sessionRegistry: { findBySessionId: mockFindBySessionId },
+}));
+
+vi.mock('../src/utils/agent-helpers.js', () => ({
+  getAgentOrFail: mockGetAgentOrFail,
 }));
 
 vi.mock('../src/providers/email/sendgrid.js', () => ({
@@ -25,6 +35,8 @@ beforeEach(() => {
   mockCredentialResolve.mockReturnValue(null);
   MockSendGridProvider.mockReset();
   MockSmtpProvider.mockReset();
+  mockFindBySessionId.mockReset();
+  mockGetAgentOrFail.mockReset();
 });
 
 describe('sendEmail provider resolution', () => {
@@ -127,6 +139,8 @@ describe('sendEmail provider resolution', () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/host/);
+    // Cheap field checks run before the credential-store round trip.
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
   });
 
   it('returns error when SMTP is selected but user is missing', async () => {
@@ -146,6 +160,64 @@ describe('sendEmail provider resolution', () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/user/);
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendEmail credential scoping', () => {
+  it('resolves with the member friendly name when called from a member session', async () => {
+    mockFindBySessionId.mockReturnValue({ member_id: 'uuid-1' });
+    mockGetAgentOrFail.mockReturnValue({ friendlyName: 'worker-1' });
+    mockCredentialResolve.mockReturnValue({ plaintext: 'sg-key', meta: {} });
+    const mockSend = vi.fn().mockResolvedValue({ messageId: 'msg-2' });
+    MockSendGridProvider.mockImplementation(function (this: any) { this.name = 'sendgrid'; this.send = mockSend; });
+
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }, { sessionId: 'sess-1' }));
+
+    expect(result.ok).toBe(true);
+    expect(mockFindBySessionId).toHaveBeenCalledWith('sess-1');
+    expect(mockCredentialResolve).toHaveBeenCalledWith('sendgrid_api_key', 'worker-1');
+  });
+
+  it('surfaces a scoping denial instead of a misleading not-found error', async () => {
+    mockFindBySessionId.mockReturnValue({ member_id: 'uuid-1' });
+    mockGetAgentOrFail.mockReturnValue({ friendlyName: 'worker-1' });
+    mockCredentialResolve.mockReturnValue({ denied: "Credential 'sendgrid_api_key' is not accessible to member 'worker-1'. Allowed: ops-bot" });
+
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }, { sessionId: 'sess-1' }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/not accessible to member 'worker-1'/);
+    expect(result.error).not.toMatch(/credential_store_set/);
+  });
+
+  it('falls back to operator scope when there is no session id (stdio orchestrator)', async () => {
+    mockCredentialResolve.mockReturnValue({ plaintext: 'sg-key', meta: {} });
+    const mockSend = vi.fn().mockResolvedValue({ messageId: 'msg-3' });
+    MockSendGridProvider.mockImplementation(function (this: any) { this.name = 'sendgrid'; this.send = mockSend; });
+
+    await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    });
+
+    expect(mockCredentialResolve).toHaveBeenCalledWith('sendgrid_api_key', '*');
+    expect(mockFindBySessionId).not.toHaveBeenCalled();
   });
 });
 
@@ -175,5 +247,33 @@ describe('sendEmail address validation', () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/Invalid.*cc.*address/);
+  });
+
+  it('rejects an invalid from address', async () => {
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'not-an-email',
+      to: 'valid@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Invalid.*from.*address/);
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
+  });
+
+  it('rejects a subject containing CR/LF (header injection)', async () => {
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'valid@example.com',
+      subject: 'Hi\r\nBcc: evil@example.com',
+      body: 'Hello',
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/subject.*CR\/LF/);
+    expect(mockCredentialResolve).not.toHaveBeenCalled();
   });
 });

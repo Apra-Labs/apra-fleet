@@ -119,6 +119,10 @@ class FakeSocket extends EventEmitter {
     this.emit('end');
   }
 
+  destroy(): void {
+    this.emit('close');
+  }
+
   removeAllListeners(event?: string | symbol): this {
     return super.removeAllListeners(event);
   }
@@ -229,6 +233,79 @@ describe('SmtpProvider', () => {
 
     await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
       /MAIL FROM rejected/,
+    );
+  });
+
+  it('rejects a subject containing CR/LF before any network I/O', async () => {
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: 'user@example.com', pass: 'secret' },
+      from: 'from@example.com',
+    });
+
+    await expect(
+      provider.send({ to: 'to@example.com', subject: 'Hi\r\nBcc: evil@example.com', body: 'Hello' }),
+    ).rejects.toThrow(/subject.*must not contain CR\/LF/);
+    expect(mockNetConnect).not.toHaveBeenCalled();
+  });
+
+  it('rejects a from address containing CR/LF before any network I/O', async () => {
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: 'user@example.com', pass: 'secret' },
+      from: 'from@example.com\r\nRCPT TO:<evil@example.com>',
+    });
+
+    await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
+      /from.*must not contain CR\/LF/,
+    );
+    expect(mockNetConnect).not.toHaveBeenCalled();
+  });
+
+  it('times out when the server never sends a response', async () => {
+    const socket = new FakeSocket([]);
+
+    mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
+      setTimeout(() => cb(), 0);
+      // Connect succeeds but the server never greets.
+      return socket;
+    });
+
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: 'user@example.com', pass: 'secret' },
+      from: 'from@example.com',
+      timeoutMs: 50,
+    });
+
+    await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
+      /SMTP response timeout after 50ms/,
+    );
+  });
+
+  it('times out when the connection never completes', async () => {
+    const socket = new FakeSocket([]);
+
+    // Connect callback never fires.
+    mockNetConnect.mockImplementation(() => socket);
+
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: 'user@example.com', pass: 'secret' },
+      from: 'from@example.com',
+      timeoutMs: 50,
+    });
+
+    await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
+      /SMTP connect timeout to smtp.example.com:587 after 50ms/,
     );
   });
 });

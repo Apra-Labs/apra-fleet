@@ -126,18 +126,24 @@ secret once. All subsequent `send_email` calls resolve it automatically.
 ## CI / Pipeline: setting credentials programmatically
 
 In a CI pipeline or automated environment where no human is present to type
-the secret, pull it from your vault and inject it via `execute_command`:
+the secret, run the CLI directly in a pipeline step and pipe the value from
+your vault over stdin:
 
-```javascript
-await mcpClient.callTool('execute_command', {
-  member_name: 'local',
-  command: 'echo "$SECRET_FROM_VAULT" | apra-fleet secret --set smtp_password --persist -y',
-});
+```bash
+# In your CI step (not via execute_command):
+aws secretsmanager get-secret-value --secret-id smtp-password \
+  --query SecretString --output text \
+  | apra-fleet secret --set smtp_password --persist -y
 ```
 
 The `-y` flag reads the value from stdin instead of opening the OOB terminal.
-Replace `$SECRET_FROM_VAULT` with however your pipeline injects secrets (AWS
-Secrets Manager, Azure Key Vault, environment variable from CI, etc.).
+Swap the left-hand side for however your vault exposes secrets (Azure Key
+Vault, HashiCorp Vault, a CI-masked environment variable, etc.).
+
+Do NOT route this through the `execute_command` MCP tool: the secret would
+be embedded in the command string, which is visible to the LLM session and
+recorded in the command audit trail. Piping over stdin in a direct CI step
+keeps the value out of command strings and process listings.
 
 ## Complete example
 
