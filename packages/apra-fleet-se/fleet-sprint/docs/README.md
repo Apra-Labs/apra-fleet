@@ -111,6 +111,12 @@ like `--max-cycle` aborts instead of quietly applying the default.
 - If a member's LLM session is stale or unauthenticated (dispatch fails with
   `empty_response`, or "member CLI likely died"), re-run `provision_llm_auth`
   for that member before retrying.
+- Sprint Setup automatically runs an advisory `Clock Skew Check` per member
+  before dispatch and logs a WARNING if a member's clock is far enough out
+  of sync with the hub to risk false stall-detector kills. This never
+  aborts the sprint by itself -- if you see the warning, resync the named
+  member's clock before relying on stall-detector timing for that member.
+  See `docs/features/clock-skew-check.md` for the design.
 
 ## How to make one bead represent a whole set (epics / manifest beads)
 
