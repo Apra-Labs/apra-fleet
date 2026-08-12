@@ -268,7 +268,12 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 // The two bumps above are independent (different commits, different
 // history) and both land in this rebase, so the deltas combine:
 // 40 - 3 + 1 + 1 = 39.
-const EXPECTED_COMMAND_COUNT = 39;
+// 39 -> 41 (apra-fleet-lgz0.1.2): Clock Skew Check phase at Sprint Setup
+// gained two new command() call sites -- the POSIX epoch probe and its
+// Windows fallback probe, both dispatched per member with failSoft: true.
+// Both carry member_name: member (see runner.js's Clock Skew Check phase),
+// so the invariant this file checks is unaffected.
+const EXPECTED_COMMAND_COUNT = 41;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant
