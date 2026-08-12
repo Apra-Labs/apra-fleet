@@ -66,9 +66,19 @@ console.log('[OK] Connected to fleet server.');
 
 const credentialName = config.provider === 'smtp' ? 'smtp_password' : 'sendgrid_api_key';
 
+// Tool results may carry display-only blocks (<apra-fleet-display>) ahead of
+// the payload -- pick the first content item that parses as JSON.
+function parseToolJson(result) {
+  for (const item of result.content ?? []) {
+    try { return JSON.parse(item.text); } catch { /* not the payload */ }
+  }
+  throw new Error('No JSON payload in tool result');
+}
+
 const credListResult = await mcpClient.callTool('credential_store_list', {});
-const credList = JSON.parse(credListResult.content[0].text);
-const hasCredential = credList.credentials?.some(c => c.name === credentialName);
+// credential_store_list returns a JSON array of { name, scope, ... } entries.
+const credList = parseToolJson(credListResult);
+const hasCredential = Array.isArray(credList) && credList.some(c => c.name === credentialName);
 
 if (!hasCredential) {
   console.log(`[..] Credential "${credentialName}" not found. Prompting for it now...`);
@@ -77,7 +87,8 @@ if (!hasCredential) {
     prompt: `Enter your ${config.provider === 'smtp' ? 'SMTP password' : 'SendGrid API key'}`,
     persist: true,
   });
-  console.log(`[OK] ${setResult.content[0].text}`);
+  const setText = (setResult.content ?? []).map(c => c.text).filter(t => t && !t.includes('<apra-fleet-display>')).join(' ');
+  console.log(`[OK] ${setText}`);
 } else {
   console.log(`[OK] Credential "${credentialName}" found in store.`);
 }
@@ -106,7 +117,7 @@ if (config.provider === 'smtp') {
 }
 
 const sendResult = await fleetApi.sendEmail(sendArgs);
-const result = JSON.parse(sendResult.content[0].text);
+const result = parseToolJson(sendResult);
 
 if (result.ok) {
   console.log(`[OK] Email sent. messageId=${result.messageId}`);

@@ -107,8 +107,9 @@ not need to run a separate CLI command first.
 ```javascript
 const credentialName = config.provider === 'smtp' ? 'smtp_password' : 'sendgrid_api_key';
 
+// credential_store_list returns a JSON array of { name, scope, ... } entries.
 const credList = JSON.parse(await fleetApi.credentialStoreList({}));
-const hasCredential = credList.credentials?.some(c => c.name === credentialName);
+const hasCredential = Array.isArray(credList) && credList.some(c => c.name === credentialName);
 
 if (!hasCredential) {
   console.log(`Credential "${credentialName}" not found. Prompting...`);
