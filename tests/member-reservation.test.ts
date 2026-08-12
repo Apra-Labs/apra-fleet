@@ -1,7 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
-import { addAgent, getAgent } from '../src/services/registry.js';
+import { addAgent, getAgent, updateAgent } from '../src/services/registry.js';
 import { memberReservation } from '../src/tools/member-reservation.js';
+
+// apra-fleet-p2to.3.3 -- updateAgent is wrapped with vi.fn(actual.updateAgent)
+// so every existing test in this file keeps exercising the REAL registry
+// read/write path unchanged, while the store-write-failure test below can
+// force a single call to return falsy (simulating a reservation-store write
+// failure) without touching any other test's behavior.
+vi.mock('../src/services/registry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/registry.js')>();
+  return {
+    ...actual,
+    updateAgent: vi.fn(actual.updateAgent),
+  };
+});
 
 describe('memberReservation', () => {
   beforeEach(() => {
@@ -51,6 +64,27 @@ describe('memberReservation', () => {
 
       expect(result).toContain('already held by this sprint');
       expect(getAgent(member.id)?.reservedBy).toBe('sprint-1');
+    });
+
+    // apra-fleet-p2to.3.3 / apra-fleet-p2to.4.5: a reservation-store WRITE
+    // failure (updateAgent() itself returning falsy, as opposed to the
+    // "already reserved by X" owner-check rejection above) must be reported
+    // as a failed reserve, not silently treated as success. This pins the
+    // '[-]' marker on that return string (member-reservation.ts ~line 55) --
+    // without it, runner.js's callFor() (fleet-sprint/runner.js) default-
+    // trusts unmarked text as a successful reacquire (apra-fleet-p2to.4.5).
+    it('treats a reservation-store write failure as a failed reserve, marked with a leading "[-]"', async () => {
+      const member = makeTestAgent();
+      addAgent(member);
+
+      vi.mocked(updateAgent).mockReturnValueOnce(undefined);
+
+      const result = await memberReservation({ member_id: member.id, action: 'reserve', sprint_id: 'sprint-1' });
+
+      expect(result.startsWith('[-]')).toBe(true);
+      expect(result).toContain('Failed to reserve');
+      // The store write never actually happened -- reservedBy stays unset.
+      expect(getAgent(member.id)?.reservedBy ?? null).toBeNull();
     });
   });
 
