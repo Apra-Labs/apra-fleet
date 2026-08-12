@@ -1412,7 +1412,7 @@ ${process.platform === 'win32' ? '    taskkill /F /IM apra-fleet.exe' : '    pki
       // already installed - skip
     } catch {
       // not installed - install it
-      execFileSync('npm', ['install', '-g', '@beads/bd@1.0.4'], { stdio: 'inherit', shell: true });
+      execFileSync('npm', ['install', '-g', '@beads/bd@1.1.2'], { stdio: 'inherit', shell: true });
     }
   } catch (err) {
     // non-fatal: warn but don't fail the install
