@@ -411,6 +411,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // command()) failure deterministically, without depending on real
         // filesystem/process flakiness.
         commandFailurePattern = null,
+        // apra-fleet-lgz0.1.3: optional (opts) => string|null|undefined
+        // override for a specific command's stdout. commandFailurePattern
+        // above can only ever inject a NONZERO exit -- it cannot express
+        // "this command succeeds with exactly this reading", which the
+        // Clock Skew Check integration test needs to simulate a skewed (or
+        // precisely-offset) member clock deterministically instead of
+        // depending on real host-clock behavior. Checked once per
+        // executeCommand() call, after commandFailurePattern and before the
+        // real pass-through exec below; returning null/undefined for a given
+        // command falls through unchanged.
+        commandStdoutOverride = null,
         // apra-fleet-unw2.4 (N4): per-member modeling. `commandLogDetailed`,
         // when provided, receives one `{ command, member }` entry per
         // executeCommand() call so a test can assert WHICH member each
@@ -700,6 +711,17 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 // src/tools/execute-command.ts and return normal nonzero-exit
                 // data instead of isError.
                 return mockCmdResult(1, '', `mock command failure (injected) for: ${opts.command}`);
+            }
+
+            // apra-fleet-lgz0.1.3: see the `commandStdoutOverride` option
+            // comment above -- a deterministic success with caller-chosen
+            // stdout, for commands where the real-execution fallthrough
+            // below would be non-deterministic (e.g. a clock-skew probe).
+            if (commandStdoutOverride) {
+                const overriddenStdout = commandStdoutOverride(opts);
+                if (overriddenStdout !== null && overriddenStdout !== undefined) {
+                    return mockCmdResult(0, overriddenStdout, '');
+                }
             }
 
             // No stale intercepts here otherwise: runner.js's Deploy/Integ
@@ -1258,6 +1280,9 @@ export async function runDevelopLoopScenario(tag, {
     planReviewerHandler,
     // apra-fleet-unw.17 additions:
     deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
+    // apra-fleet-lgz0.1.3: see buildMockFleetApi's `commandStdoutOverride`
+    // option comment above.
+    commandStdoutOverride,
     // apra-fleet-417.4: optional (opts, tempDir, runCmd, epicBead) => result
     // override for the 'regression-test-runner' dispatch -- see
     // buildMockFleetApi's option comment above. Paired with
@@ -1368,6 +1393,7 @@ export async function runDevelopLoopScenario(tag, {
             finalReviewHandler,
             regressionHandler,
             commandFailurePattern,
+            commandStdoutOverride,
             commandLogDetailed,
             memberGitState,
             gitGhFailurePattern,

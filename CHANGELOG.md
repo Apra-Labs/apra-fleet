@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- advisory hub/member clock skew check at Sprint Setup
+
+Sprint goal: detect hub/member clock skew during fleet-sprint's Sprint Setup
+phase and surface it to the operator, so a member with a badly drifted clock
+is flagged before it burns a sprint's dispatch retries against false stall
+kills. All in-scope work closed; final verdict is PASS with strong,
+non-redundant test coverage (unit helper tests, five mocked-sprint scenarios,
+and a real-shell probe reality check) and no regressions.
+
+What shipped:
+
+- fleet-sprint's Sprint Setup group now runs a `Clock Skew Check` phase once
+  per dispatched member, immediately after the existing `Ensure Sprint
+  Branch` phase and before any real work is dispatched. For each member it
+  brackets hub time around a member-side epoch-milliseconds probe (`hub_t0`
+  before, `hub_t1` after) and treats the member's reported time as in-sync if
+  it falls inside that bracket; otherwise skew is the signed distance outside
+  the bracket.
+- The warning threshold is derived from the same env-overridable stall
+  detector threshold the sprint already uses (a quarter of it, 30s at the
+  120s default) rather than a separate hardcoded constant, so retuning the
+  stall threshold moves the clock-skew warning threshold with it.
+- The check is advisory only: a failed probe, unparsable probe output, or an
+  over-threshold skew logs a WARNING (or, if the probe couldn't be read at
+  all, a distinct "could not measure" advisory line) but never aborts or
+  fails the sprint. Both probe attempts use fail-soft semantics and the
+  underlying evaluation helper is a pure function that never throws.
+- The probe tries a POSIX epoch command first and falls back to a PowerShell
+  probe if that fails or is unparsable, rather than branching on a stored
+  member-OS field -- matching an existing cross-shell dispatch convention
+  already used elsewhere in the runner.
+- No MCP tool schema changed (this is a log-only, orchestration-internal
+  check), so the MCP client SDK package was correctly left untouched this
+  sprint; surfacing skew in tool output (e.g. member/registration details)
+  is an explicitly deferred follow-up that would need its own schema change
+  and matching client update.
+
+Carried forward: this cycle's Deploy phase did not run -- it stopped at a
+permission-allowlist check because a separately-merged change to the deploy
+launch command now requires a broader permission grant than the effective
+allowlist currently provides. That is a permissions/config drift external to
+the clock-skew feature itself (which lives entirely in fleet-sprint's JS
+orchestration path, not the server binary the Deploy phase would have
+exercised) and is tracked as a pending permission grant for the operator to
+apply before the next deploy attempt. A same-day regression pass also failed
+because its own test-runner dispatch stalled; no carry-over beads were filed
+from that pass.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $4.6768.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 10 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- compose_permissions silent write no-op fix
 
 Sprint goal: fix a bug where `compose_permissions` could report a grant as
