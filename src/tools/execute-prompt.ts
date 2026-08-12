@@ -573,6 +573,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
   }
 
+  // Peek at session state early so the preflight check can skip interactive
+  // members whose dispatch routes through a live MCP push channel, not SSH.
+  const earlyWorkspaceId = getTokenIssuer().workspaceId();
+  const earlySession = sessionRegistry.get(earlyWorkspaceId, agent.id);
+  const isChannelCapable = !!earlySession?.channelCapable;
+
   // Pre-dispatch readiness check (apra-fleet preflight-check): verify
   // connectivity and LLM auth BEFORE the expensive prompt dispatch
   // (writePromptFile + CLI invocation). Catches expired OAuth, missing
@@ -581,7 +587,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // (local shares this machine's credentials; interactive sessions have
   // their own liveness probes). The check is cached for 60s so
   // back-to-back dispatches do not add latency.
-  if (agent.agentType !== 'local') {
+  if (agent.agentType !== 'local' && !isChannelCapable) {
     const preflight = await preflightCheck(agent);
     if (!preflight.ok) {
       return {
@@ -621,8 +627,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // gives it basic MCP tool access, apra-fleet-fnz.1-3) without that meaning
   // it can receive or act on this push -- routing to it anyway would silently
   // spend the full timeout_s waiting for a response that can never arrive.
-  const workspaceId = getTokenIssuer().workspaceId();
-  const rawSession = sessionRegistry.get(workspaceId, agent.id);
+  const workspaceId = earlyWorkspaceId;
+  const rawSession = earlySession;
   // apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
   // opt-in handshake, not mere JWT registration. A plain subprocess
   // connect-back (a Doer that opened an MCP tool-access session with a member

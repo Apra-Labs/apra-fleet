@@ -271,6 +271,35 @@ describe('preflightCheck', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
+  // ---- F2: skipAuth cache must not satisfy full-auth lookups ----
+  it('conn-only cache does not satisfy a subsequent full-auth check', async () => {
+    const agent = makeAgent();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: 'found', stderr: '', code: 0 });
+
+    // First call: conn-only (skipAuth)
+    await preflightCheck(agent, { skipAuth: true });
+    const connCalls = mockTestConnection.mock.calls.length;
+
+    // Second call: full auth -- must NOT get a cache hit from the conn pass
+    await preflightCheck(agent);
+    expect(mockTestConnection.mock.calls.length).toBe(connCalls + 1);
+  });
+
+  it('full-auth cache satisfies a subsequent conn-only check', async () => {
+    const agent = makeAgent();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: 'found', stderr: '', code: 0 });
+
+    // First call: full auth
+    await preflightCheck(agent);
+    const fullCalls = mockTestConnection.mock.calls.length;
+
+    // Second call: conn-only -- full cache should satisfy it
+    await preflightCheck(agent, { skipAuth: true });
+    expect(mockTestConnection.mock.calls.length).toBe(fullCalls);
+  });
+
   // ---- none provider ----
   it('skips auth check for none provider', async () => {
     const agent = makeAgent({ llmProvider: 'none' });

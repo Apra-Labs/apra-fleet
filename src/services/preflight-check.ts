@@ -54,7 +54,8 @@ const preflightCache = new Map<string, { passedAt: number }>();
 
 /** Clear a single member's cache entry (e.g. after a known auth change). */
 export function invalidatePreflightCache(memberId: string): void {
-  preflightCache.delete(memberId);
+  preflightCache.delete(`${memberId}:conn`);
+  preflightCache.delete(`${memberId}:full`);
 }
 
 /** Clear the entire cache (e.g. on credential rotation). */
@@ -78,10 +79,16 @@ export async function preflightCheck(
     return { ok: true, connectivity: true, authValid: true };
   }
 
-  // Cache hit: a recent successful preflight skips the remote probes
+  // Cache hit: a recent successful preflight skips the remote probes.
+  // Keys are scoped by auth level so a conn-only pass cannot satisfy a
+  // full-auth lookup (F2 cache-poisoning fix). A full pass also covers
+  // connectivity, so conn lookups check both keys.
   if (!options?.skipCache) {
-    const cached = preflightCache.get(agent.id);
-    if (cached && Date.now() - cached.passedAt < CACHE_TTL_MS) {
+    const level = options?.skipAuth ? 'conn' : 'full';
+    const cached = preflightCache.get(`${agent.id}:${level}`);
+    const fallback = level === 'conn' ? preflightCache.get(`${agent.id}:full`) : null;
+    const effective = cached ?? fallback;
+    if (effective && Date.now() - effective.passedAt < CACHE_TTL_MS) {
       return { ok: true, connectivity: true, authValid: true };
     }
   }
@@ -123,7 +130,7 @@ export async function preflightCheck(
 
   // ---- Step 2: Auth presence (skip for no-LLM members or when caller opts out) ----
   if (options?.skipAuth || agent.llmProvider === 'none') {
-    preflightCache.set(agent.id, { passedAt: Date.now() });
+    preflightCache.set(`${agent.id}:conn`, { passedAt: Date.now() });
     return { ok: true, connectivity: true, authValid: true, latencyMs };
   }
 
@@ -214,7 +221,7 @@ export async function preflightCheck(
 
   // All checks passed
   logLine('preflight', `OK (${latencyMs}ms, oauth=${oauthFilePresent}, apikey=${apiKeyPresent})`, agent);
-  preflightCache.set(agent.id, { passedAt: Date.now() });
+  preflightCache.set(`${agent.id}:full`, { passedAt: Date.now() });
   return {
     ok: true,
     connectivity: true,
