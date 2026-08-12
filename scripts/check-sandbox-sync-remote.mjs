@@ -360,6 +360,15 @@ export function checkNoOutboundCommits(repoPath, deps = {}) {
  * Parse the JSON array 'bd dolt remote list --json' prints (one entry per
  * configured Dolt remote, each with at least {name, url}).
  *
+ * apra-fleet-tm7.11: a real `bd` prints the JSON literal `null` (not `[]`)
+ * for "no remotes configured" -- confirmed against both a fresh `bd init`
+ * with no remote added and an embeddeddolt directory with no actual Dolt
+ * database underneath it, e.g. this file's own
+ * checkDoltRemoteAbsent-embeddeddolt-recognition test's fixture. `null` is
+ * treated the same as `[]` here; any other non-array JSON value (an object,
+ * a number, ...) still throws, since that shape is not one `bd` is known to
+ * produce and is worth surfacing rather than silently swallowing.
+ *
  * @param {string} output
  * @returns {Array<{name: string, url?: string}>}
  */
@@ -370,6 +379,7 @@ export function parseDoltRemoteList(output) {
   } catch (err) {
     throw new Error(`Unexpected 'bd dolt remote list --json' output: '${output}'`);
   }
+  if (list === null) return [];
   if (!Array.isArray(list)) {
     throw new Error(`Unexpected 'bd dolt remote list --json' output (not an array): '${output}'`);
   }
