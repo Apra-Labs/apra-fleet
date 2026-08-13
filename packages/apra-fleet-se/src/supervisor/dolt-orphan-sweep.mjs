@@ -26,6 +26,8 @@
 // ASCII only.
 // =============================================================================
 
+import { DEFAULT_PORT_RANGE } from '../../fleet-sprint/dolt-settle.mjs';
+
 /** How often the sweep runs. Settles take seconds; this is a safety net. */
 export const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -33,9 +35,11 @@ export const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
  *  is left alone. Settle's own bounded waits are far shorter than this. */
 export const DEFAULT_MAX_AGE_MS = 10 * 60 * 1000;
 
-/** Settle's ephemeral port range (dolt-settle.mjs DEFAULT_PORT_RANGE). Only a
+/** Settle's ephemeral port range. Re-exported from dolt-settle.mjs's
+ *  DEFAULT_PORT_RANGE -- never re-derive these bounds by hand, so the sweep
+ *  can never drift out of sync with the range settle actually uses. Only a
  *  server bound inside this range can be settle residue. */
-export const SETTLE_PORT_RANGE = Object.freeze({ start: 13300, end: 13400 });
+export const SETTLE_PORT_RANGE = DEFAULT_PORT_RANGE;
 
 /** Normalize a member registry `os` value to the shell family we must speak. */
 export function memberShellFamily(os) {
@@ -55,19 +59,32 @@ export function memberShellFamily(os) {
  */
 export function buildSweepCommand(family, maxAgeMs = DEFAULT_MAX_AGE_MS) {
     const maxAgeSeconds = Math.floor(maxAgeMs / 1000);
+    // Exact numeric bounds, never a hand-derived digit-prefix regex: matching
+    // must be EXACT on [SETTLE_PORT_RANGE.start, SETTLE_PORT_RANGE.end) so an
+    // operator's own long-lived server (e.g. --port 1337, or ANY 4-digit port,
+    // or a 5-digit port merely starting with the same leading digits like
+    // --port 13400) is never a false positive -- see the module doc above.
+    const portLo = SETTLE_PORT_RANGE.start;
+    const portHi = SETTLE_PORT_RANGE.end - 1; // inclusive upper bound
     if (family === 'win32') {
         return [
             `$cutoff = (Get-Date).AddSeconds(-${maxAgeSeconds})`,
             '$procs = Get-CimInstance Win32_Process -Filter "Name=\'dolt.exe\'" -ErrorAction SilentlyContinue |'
             + ' Where-Object { $_.CommandLine -match \'sql-server\''
-            + ` -and $_.CommandLine -match '--port 13[3-9][0-9]'`
+            + ` -and $_.CommandLine -match '--port (\\d+)' -and [int]$Matches[1] -ge ${portLo} -and [int]$Matches[1] -le ${portHi}`
             + ' -and $_.CreationDate -lt $cutoff }',
             'foreach ($p in $procs) { Write-Output "ORPHAN:$($p.ProcessId):$($p.CommandLine)"; Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }',
         ].join('; ');
     }
     // POSIX: etimes is the process age in seconds, so no clock skew maths.
+    // awk has no lookahead, so the port bound is an actual numeric range
+    // check (match() + substr() to pull the digits, then compare) rather than
+    // a digit-prefix regex -- exact, not "harmlessly overbroad".
     return [
-        `ps -eo pid=,etimes=,args= | awk '$2 > ${maxAgeSeconds} && /sql-server/ && /--port 13[3-9][0-9]/ { printf "ORPHAN:%s:", $1; for (i=3; i<=NF; i++) printf "%s ", $i; print "" }'`,
+        `ps -eo pid=,etimes=,args= | awk -v lo=${portLo} -v hi=${portHi} '$2 > ${maxAgeSeconds} && /sql-server/ && match($0, /--port [0-9]+/) {`
+        + ' port = substr($0, RSTART + 7, RLENGTH - 7) + 0;'
+        + ' if (port >= lo && port <= hi) { printf "ORPHAN:%s:", $1; for (i=3; i<=NF; i++) printf "%s ", $i; print "" }'
+        + " }'",
         '| tee /dev/stderr',
         "| sed -n 's/^ORPHAN:\\([0-9]*\\):.*/\\1/p'",
         '| xargs -r kill -9',

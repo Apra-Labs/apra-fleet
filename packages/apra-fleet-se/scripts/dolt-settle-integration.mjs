@@ -312,8 +312,8 @@ async function runScenario({ name, member, platform, runA, runB, beadId, aEdit, 
  *  mode flip, no leftover ephemeral log. */
 async function assertNoResidue({ run, platform, evidence }) {
     const cmd = platform === 'win32'
-        ? "Get-CimInstance Win32_Process -Filter \"Name='dolt.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'sql-server' -and $_.CommandLine -match '--port 13[3-9][0-9]' } | ForEach-Object { Write-Output \"RESIDUE:$($_.ProcessId)\" }"
-        : "ps -eo pid=,args= | awk '/sql-server/ && /--port 13[3-9][0-9]/ { print \"RESIDUE:\" $1 }'";
+        ? "Get-CimInstance Win32_Process -Filter \"Name='dolt.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'sql-server' -and $_.CommandLine -match '--port 133[0-9][0-9]' } | ForEach-Object { Write-Output \"RESIDUE:$($_.ProcessId)\" }"
+        : "ps -eo pid=,args= | awk '/sql-server/ && /--port 133[0-9][0-9]/ { print \"RESIDUE:\" $1 }'";
     const res = await run(cmd);
     const residue = String(res.output || '').match(/RESIDUE:\d+/g) || [];
     assertTrue(residue.length === 0, `settle left ${residue.length} ephemeral sql-server process(es) running: ${residue.join(', ')}`);

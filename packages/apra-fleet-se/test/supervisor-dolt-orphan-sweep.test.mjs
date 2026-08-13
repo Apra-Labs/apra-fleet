@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
     createDoltOrphanSweep,
     buildSweepCommand,
@@ -26,12 +27,50 @@ import { DEFAULT_PORT_RANGE } from '../fleet-sprint/dolt-settle.mjs';
 const silent = { log: () => {}, error: () => {} };
 
 test('the sweep only ever targets settle`s own ephemeral port range', () => {
-    assert.equal(SETTLE_PORT_RANGE.start, DEFAULT_PORT_RANGE.start, 'the sweep range must track dolt-settle.mjs`s range');
-    assert.equal(SETTLE_PORT_RANGE.end, DEFAULT_PORT_RANGE.end);
-    for (const family of ['win32', 'posix']) {
-        const cmd = buildSweepCommand(family);
-        assert.match(cmd, /--port 13\[3-9\]\[0-9\]/, `${family} probe must be scoped to the 133xx-139xx settle range`);
-        assert.match(cmd, /sql-server/, `${family} probe must only match sql-server processes`);
+    assert.equal(SETTLE_PORT_RANGE, DEFAULT_PORT_RANGE, 'the sweep range must be the SAME object as dolt-settle.mjs`s range, never re-derived');
+    assert.equal(SETTLE_PORT_RANGE.start, 13300);
+    assert.equal(SETTLE_PORT_RANGE.end, 13400);
+    const win = buildSweepCommand('win32');
+    assert.match(win, /-ge 13300 -and \[int\]\$Matches\[1\] -le 13399/, 'win32 probe must be an EXACT numeric range check, not a digit-prefix regex');
+    assert.match(win, /sql-server/, 'win32 probe must only match sql-server processes');
+    const posix = buildSweepCommand('posix');
+    assert.match(posix, /lo=13300/);
+    assert.match(posix, /hi=13399/);
+    assert.match(posix, /sql-server/, 'posix probe must only match sql-server processes');
+});
+
+test('the port bound is EXACT: an operator`s own --port 1337 server is never a false positive, --port 13345 is settle residue', () => {
+    // Windows: reproduce the regex-extraction + numeric-compare the generated
+    // PowerShell performs, since we cannot execute PowerShell in this test env.
+    const winCmdLine = (port) => `"C:\\Program Files\\Dolt\\bin\\dolt.exe" sql-server --host 127.0.0.1 --port ${port} --data-dir C:\\data`;
+    const evalWinMatch = (port) => {
+        const m = winCmdLine(port).match(/--port (\d+)/);
+        return Boolean(m) && Number(m[1]) >= 13300 && Number(m[1]) <= 13399;
+    };
+    assert.equal(evalWinMatch(1337), false, 'an operator`s own --port 1337 server must NOT be flagged');
+    assert.equal(evalWinMatch(13345), true, '--port 13345 IS settle residue and must be flagged');
+    assert.equal(evalWinMatch(13400), false, 'a 5-digit port merely starting with the same leading digits must NOT be flagged');
+    assert.equal(evalWinMatch(134001), false);
+    assert.equal(evalWinMatch(13300), true);
+    assert.equal(evalWinMatch(13399), true);
+
+    // POSIX: actually run the generated awk against a fabricated `ps` line
+    // for each case, exactly as the real sweep would see it.
+    const psLine = (pid, etimes, port) => `${pid} ${etimes} dolt sql-server --host 127.0.0.1 --port ${port} --data-dir /home/x/data\n`;
+    const runAwk = (port) => {
+        const cmd = buildSweepCommand('posix', 0); // maxAgeMs=0 -> any etimes qualifies
+        // Extract just the awk stage (before the pipe to tee/sed/xargs) and run
+        // it directly against a fabricated ps line, to avoid depending on a
+        // real `ps`/`xargs` on the test runner's machine.
+        const awkStage = cmd.split(' | tee /dev/stderr')[0];
+        const fullPipeline = `printf '%s' "${psLine(999, 9999, port).replace(/"/g, '\\"').trim()}" | ${awkStage.replace(/^ps -eo pid=,etimes=,args= \| /, '')}`;
+        const out = execFileSync('bash', ['-c', fullPipeline], { encoding: 'utf8' });
+        return out.includes('ORPHAN:999:');
+    };
+    if (process.platform !== 'win32') {
+        assert.equal(runAwk(1337), false, 'an operator`s own --port 1337 server must NOT be flagged (awk)');
+        assert.equal(runAwk(13345), true, '--port 13345 IS settle residue and must be flagged (awk)');
+        assert.equal(runAwk(13400), false, 'a 5-digit port merely starting with the same leading digits must NOT be flagged (awk)');
     }
 });
 
