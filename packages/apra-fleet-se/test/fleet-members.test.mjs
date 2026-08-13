@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { listFleetMembers } from '../src/supervisor/fleet-members.mjs';
+import { listFleetMembers, executeFleetCommand } from '../src/supervisor/fleet-members.mjs';
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 
@@ -140,6 +140,75 @@ describe('listFleetMembers (apra-fleet-eft.4.8.7)', () => {
                 assert.match(err.message, /resolveConnection/);
                 return true;
             },
+        );
+    });
+});
+
+// apra-fleet review finding 2 (dolt-sync-redesign.md design-author review,
+// 2026-08-13): executeFleetCommand() previously never inspected the MCP
+// tool-call result's `isError` field, so a genuinely FAILED member command
+// came back as `{ ok: true, output: <error text> }` -- the orphan sweep
+// (dolt-orphan-sweep.mjs) would then find zero ORPHAN: lines in that error
+// text and silently read a probe failure as "no orphans found" instead of
+// counting it as an error. This mirrors the correct handling already used by
+// bin/cli.mjs's own runCommand() (cli.mjs:632-638), which checks res.isError
+// and throws.
+describe('executeFleetCommand (apra-fleet dolt-sync-redesign review finding 2)', () => {
+    test('a tool-call result with isError:true resolves to { ok: false, error } -- NOT a false-clean ok:true', async (t) => {
+        t.mock.method(StreamableHttpTransport.prototype, 'start', async () => {});
+        const stopMock = t.mock.method(StreamableHttpTransport.prototype, 'stop', function stop() { /* no-op stub */ });
+        t.mock.method(ApraFleet.prototype, 'executeCommand', async () => ({
+            isError: true,
+            content: [{ type: 'text', text: 'ssh: connection refused' }],
+        }));
+
+        const result = await executeFleetCommand({
+            member: 'fleet-lin-dev1',
+            command: 'ps -eo pid=,etimes=,args=',
+            resolveConnection: async () => ({ mode: 'http', url: 'http://127.0.0.1:9451/mcp' }),
+            logger: { error: () => {} },
+        });
+
+        assert.deepEqual(result, { ok: false, error: 'ssh: connection refused' });
+        assert.equal(stopMock.mock.callCount(), 1);
+    });
+
+    test('a successful tool-call result (no isError) resolves to { ok: true, output }', async (t) => {
+        t.mock.method(StreamableHttpTransport.prototype, 'start', async () => {});
+        t.mock.method(StreamableHttpTransport.prototype, 'stop', function stop() { /* no-op stub */ });
+        t.mock.method(ApraFleet.prototype, 'executeCommand', async () => ({
+            content: [{ type: 'text', text: 'no orphans here' }],
+        }));
+
+        const result = await executeFleetCommand({
+            member: 'fleet-lin-dev1',
+            command: 'ps -eo pid=,etimes=,args=',
+            resolveConnection: async () => ({ mode: 'http', url: 'http://127.0.0.1:9451/mcp' }),
+            logger: { error: () => {} },
+        });
+
+        assert.deepEqual(result, { ok: true, output: 'no orphans here' });
+    });
+
+    test('resolveConnection() throwing resolves to { ok: false, error }', async () => {
+        const result = await executeFleetCommand({
+            member: 'fleet-lin-dev1',
+            command: 'echo hi',
+            resolveConnection: async () => { throw new Error('boom'); },
+            logger: { error: () => {} },
+        });
+        assert.equal(result.ok, false);
+        assert.match(result.error, /boom/);
+    });
+
+    test('requires member/command/resolveConnection (fails loud on a wiring mistake)', async () => {
+        await assert.rejects(
+            () => executeFleetCommand({ member: 'm', command: 'echo hi' }),
+            (err) => { assert.ok(err instanceof TypeError); assert.match(err.message, /resolveConnection/); return true; },
+        );
+        await assert.rejects(
+            () => executeFleetCommand({ command: 'echo hi', resolveConnection: async () => ({ mode: 'http', url: 'x' }) }),
+            (err) => { assert.ok(err instanceof TypeError); return true; },
         );
     });
 });

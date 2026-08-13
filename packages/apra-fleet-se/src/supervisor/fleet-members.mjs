@@ -114,6 +114,9 @@ export async function executeFleetCommand(opts = {}) {
         const fleetApi = new ApraFleet(new McpClient(transport));
         const res = await fleetApi.executeCommand({ command, member_name: member, timeout_s: timeoutSeconds });
         const text = res && res.content && res.content[0] ? res.content[0].text : (typeof res === 'string' ? res : JSON.stringify(res));
+        if (res && res.isError) {
+            return { ok: false, error: String(text ?? 'unknown error') };
+        }
         return { ok: true, output: String(text ?? '') };
     } catch (err) {
         logError(`[fleet-members] execute_command failed on member '${member}':`, err);
