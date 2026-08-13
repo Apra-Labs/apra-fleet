@@ -275,6 +275,23 @@ describe('remove_member authorized_keys cleanup command safety', () => {
     expect(result.toLowerCase()).toContain('authorized_keys');
   });
 
+  it('item 5b: cleanup command that resolves with a non-zero code (not a throw) is also surfaced as a warning', async () => {
+    const member = makeTestAgent({ friendlyName: 'win-remove-nonzero', os: 'windows' as any, keyPath });
+    addAgent(member);
+
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (decodeIfEncoded(cmd).includes('authorized_keys')) {
+        return { stdout: '', stderr: 'access denied', code: 1 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).toContain('Warnings');
+    expect(result.toLowerCase()).toContain('authorized_keys');
+  });
+
   it('item 5 (linux/posix): cleanup command failure is surfaced as a warning, not swallowed', async () => {
     const member = makeTestAgent({ friendlyName: 'linux-remove-fail', os: 'linux' as any, keyPath });
     addAgent(member);
