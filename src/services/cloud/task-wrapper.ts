@@ -189,8 +189,21 @@ export function generateTaskWrapperWindows(config: TaskConfig): string {
     '$Retries = 0',
     '$ExitCode = 0',
     'try {',
+    // $LASTEXITCODE is set only by native (non-cmdlet) commands; a failing
+    // PowerShell cmdlet (Get-Item on a missing path, Write-Error, etc.) never
+    // throws under $ErrorActionPreference = "Continue" and leaves
+    // $LASTEXITCODE untouched, so relying on it alone silently reports
+    // status "completed" / exitCode 0 for a genuinely failed command and
+    // makes $MaxRetries inert for that class of failure. $? is NOT a
+    // reliable substitute here: it reflects whether Invoke-Expression
+    // itself completed, not whether the command string it evaluated hit a
+    // non-terminating error internally (verified live -- $? is $true even
+    // when the evaluated cmdlet fails). Comparing $Error.Count before/after
+    // does detect it, without changing execution flow.
+    '  $Error.Clear()',
     '  Invoke-Expression $MainCmd *>> "$TaskDir\\task.log"',
-    '  $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } else { 0 }',
+    '  $HadCmdletError = $Error.Count -gt 0',
+    '  $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } elseif ($HadCmdletError) { 1 } else { 0 }',
     '} catch {',
     '  "$_" | Out-File -FilePath "$TaskDir\\task.log" -Append',
     '  $ExitCode = 1',
@@ -201,9 +214,12 @@ export function generateTaskWrapperWindows(config: TaskConfig): string {
     '  Write-TaskStatus "retrying" $ExitCode $Retries $StartedAt',
     "  \"[fleet-task] retry $Retries/$MaxRetries at $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))\" | Out-File -FilePath \"$TaskDir\\task.log\" -Append",
     '  $ExitCode = 0',
+    '  $LASTEXITCODE = $null',
     '  try {',
+    '    $Error.Clear()',
     '    Invoke-Expression $RestartCmd *>> "$TaskDir\\task.log"',
-    '    $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } else { 0 }',
+    '    $HadCmdletError = $Error.Count -gt 0',
+    '    $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } elseif ($HadCmdletError) { 1 } else { 0 }',
     '  } catch {',
     '    "$_" | Out-File -FilePath "$TaskDir\\task.log" -Append',
     '    $ExitCode = 1',

@@ -243,7 +243,20 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
         `[IO.File]::WriteAllBytes("${runPs1}", [Convert]::FromBase64String('${scriptB64}'))`,
         `$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "${escapeWindowsArg(psCommandLine)}"; CurrentDirectory = "${escapeWindowsArg(folder)}" }`,
         `if ($result.ReturnValue -ne 0) { Write-Error "Win32_Process.Create failed with code $($result.ReturnValue)"; exit 1 }`,
-        `Write-Output "FLEET_PID:$($result.ProcessId)"`,
+        // Deliberately NOT the FLEET_PID: marker -- that label is matched by
+        // ssh.ts's onPidCaptured regex, which arms killRemoteTree() to
+        // taskkill this PID on inactivity/max-total/abort. $result.ProcessId
+        // here is the detached run.ps1 task process itself (WMI-spawned to
+        // survive SSH channel teardown), NOT the short-lived launcher/SSH
+        // command process -- the process killRemoteTree exists to reap. If
+        // this launch channel stalls after this line but before it closes,
+        // matching FLEET_PID would kill the very task detachment protects.
+        // The task's real PID is durably recorded in task.pid inside its own
+        // task dir (written by the wrapper script itself; see
+        // generateTaskWrapperWindows in task-wrapper.ts) and read from there
+        // by monitor_task -- nothing reads this value off this channel, so
+        // it exists solely as human-readable launch confirmation.
+        `Write-Output "TASK_PID:$($result.ProcessId)"`,
       ].join('; '));
     } else {
       const wrapperScript = generateTaskWrapper({
