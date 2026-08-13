@@ -62,14 +62,13 @@ discriminate these instead of assuming either.
   (`authHealAttempted`) guarantees the heal fires at most once; heal must positively confirm
   success ("a failed provision must never... report success", runner.js:1654-1656); exactly one
   retry of the original operation; every transition logged with a distinguishing prefix.
-- *Dolt conflict ladder* (dolt-recovery.mjs:198-344, dolt-recovery-path-b.mjs:230-339,
-  dolt-recovery-tier2.mjs:76-268, composed at dolt-recovery-tier2.mjs:327-360): scripted rungs
-  gated by deterministic predicates (`assessConflictGates`, dolt-recovery.mjs:118-150) that
-  *return* rejection rather than throwing, so the ladder can escalate; a complete "wedged state"
-  snapshot recorded before any agent is involved (`recordWedgedState`, dolt-recovery-tier2.mjs:76-95);
-  exactly one agent dispatch armed with a written runbook (`docs/dolt-tier2-runbook.md`,
-  dispatch at dolt-recovery-tier2.mjs:148-162), whose success is verified mechanically by the
-  caller, never self-asserted.
+- *Dolt conflict ladder (historical)*: the scripted-rung, agent-dispatch-armed-with-a-runbook
+  ladder this bullet used to cite (`dolt-recovery.mjs` et al.) was retired and deleted on branch
+  `fix/dolt-settle-recovery`. It is replaced by the deterministic `settleDoltConflicts()`
+  (`fleet-sprint/dolt-settle.mjs`), which resolves every row-level conflict shape with zero LLM
+  dispatch. Dolt/beads-sync wedging is explicitly out of scope for sprint-doctor -- see the
+  registry exclusion note in section 4 (symptom/remedy registry) and
+  `fleet-sprint/docs/dolt-sync-redesign.md` (Parts 2, 7.4, 8.4).
 - *LLM-auth self-heal* on non-retryable doer failures: one `provision_llm_auth`-backed heal + one
   bounded retry (runner.js:7290-7313).
 - *Structured-verdict contracts*: every role dispatch passes an ajv schema from `contracts.mjs`
@@ -179,8 +178,10 @@ The single most important boundary decision: **the doctor's in-sprint decision c
 tools.** The runner pre-assembles all evidence into the prompt; the doctor returns a
 schema-validated verdict; the runner executes the chosen action through its own existing verbs.
 This mirrors the reviewer contract (verdict data -> orchestrator applies, runner.js:3955-3957) and
-the Tier-2 dolt posture (dispatch never self-judges success; the caller verifies mechanically,
-dolt-recovery-tier2.mjs:148-162).
+(historically) the retired Tier-2 dolt ladder's posture of never letting a dispatch self-judge
+success. Dolt/beads-sync wedging is no longer part of this precedent at all -- it is excluded from
+sprint-doctor's scope entirely (section 4) and resolved deterministically by
+`settleDoltConflicts()` (`fleet-sprint/dolt-settle.mjs`).
 
 Why zero tools rather than a restricted toolset:
 - It is the only enforcement that is structural rather than configurational. The fleet has a
@@ -361,7 +362,7 @@ names components from evidence it was shown, not from hardcoded engine paths; se
 
 | action.kind | Executor mapping (existing verbs only) | Bound |
 |---|---|---|
-| repair_environment_then_retry | Registry remedies (section 4): `provision_llm_auth` / `provisionVcsAuthForMember()` (runner.js:1616-1659) / `stop_prompt` + `memberSessionGuard.killIfAlive` (used at runner.js:7260) / `member_reservation force_release` (src/tools/member-reservation.ts:17-27) / dolt Path A refresh (gated, dolt-recovery.mjs:118-150) / `git fetch` via `command()` | each remedy latched once per member per sprint (the `authHealAttempted` pattern, runner.js:703); exactly one post-repair retry of the failed dispatch |
+| repair_environment_then_retry | Registry remedies (section 4): `provision_llm_auth` / `provisionVcsAuthForMember()` (runner.js:1616-1659) / `stop_prompt` + `memberSessionGuard.killIfAlive` (used at runner.js:7260) / `member_reservation force_release` (src/tools/member-reservation.ts:17-27) / `git fetch` via `command()`. **Dolt/beads-sync wedging is explicitly excluded from this remedy set** -- `settleDoltConflicts()` (`fleet-sprint/dolt-settle.mjs`) is the terminal, non-LLM answer for that failure class; see section 4 | each remedy latched once per member per sprint (the `authHealAttempted` pattern, runner.js:703); exactly one post-repair retry of the failed dispatch |
 | retry_same | one redispatch with `timeout_s` scaled by `timeoutMultiplier` (<= 2 -- matches the integ-test 2x ceiling precedent in the stabilization log, and open bead apra-fleet-aw8's escalate-timeout-on-retry recommendation) | once per bead per sprint |
 | retry_different_member | re-lane the bead via existing streak re-lane, with a doctor-set member exclusion respected by streak assignment (member selection machinery runner.js:4890-4926) | once per bead; doubles as the environment-vs-task-shape probe |
 | swap_model_tier | runner-side per-bead tier override map consulted where the bead's `metadata.model` tier is read (runner.js:2664-2665); no `bd update` of the bead's stored metadata (keeps the DB as the planner wrote it) | one swap per bead |
@@ -429,7 +430,7 @@ The rejected alternative: throw a `PauseRequested` signal at request time (or in
 next `agent()`/`command()` call), caught only by the engine. Any script-VISIBLE exception is
 disqualified by runner.js's own error handling: its broad catch blocks swallow or misroute
 anything not on their curated lists (doer generic retry arm runner.js:7314-7330, planner ladder
-6244-6280, `runGitStep()` 701-729, dolt ladder composition dolt-recovery-tier2.mjs:223-268), and
+6244-6280, `runGitStep()` 701-729; historically also the now-deleted dolt ladder composition), and
 the one exception that must pierce them today -- `CancelledError` -- survives only via explicit
 guards at every layer (index.mjs:1100-1108, runner.js:4187-4189, 4201, 4227). A second
 must-pierce exception type would mean auditing every broad catch in a 9400-line file forever.
@@ -678,7 +679,7 @@ using existing verbs are pure data.
 | stale-vcs-credential | VCS kind AUTH_EXPIRED (errors.mjs:25-28) | reprovision_vcs_auth (runner.js:1616-1659) | re-run failed git step once (runGitStep already does this) | human (AUTH_DENIED explicitly needs an operator grant, errors.mjs:29-32) |
 | wedged-reservation | execute_prompt rejected: member reserved by a sprint id whose pid/ledger entry is dead (reservation enforcement in execute-prompt.ts; ledger liveness via supervisor watchdog states) | member_reservation force_release (src/tools/member-reservation.ts:17-27) | reserve succeeds for THIS sprint | human (never force-release a reservation whose owner is alive -- referral includes the owning sprint id and its watchdog status) |
 | hung-remote-session | T2 pattern on one member; probes time out or `member_session_state` shows a stuck in-flight prompt | stop_prompt + kill session (memberSessionGuard.killIfAlive pattern, runner.js:7260), then redispatch | trivial probe (`CLI --version`) returns within timeout | human (example A referral: host-level ssh) |
-| stale-dolt-clone | bd reads inconsistent with cross-member state; `bd dolt pull` conflict matching `isDoltPullConflict()` (dolt-recovery.mjs:96-116) | dolt Path A refresh (gated by assessConflictGates, dolt-recovery.mjs:118-150); NEVER Path B mid-sprint (enablePathB:false precedent, dolt-recovery-tier2.mjs:327-360) | `bd dolt status` clean + re-read matches | escalate-unclear -> existing Tier 2 ladder |
+| stale-dolt-clone | **OUT OF SCOPE for sprint-doctor.** Dolt/beads-sync wedging is excluded from LLM-escalatable scope entirely: `settleDoltConflicts()` (`fleet-sprint/dolt-settle.mjs`) resolves every row-level conflict shape deterministically, with zero LLM dispatch, wired at both divergence terminals in `dolt-sync.mjs`. An LLM escalation here would reintroduce the no-guaranteed-rollback recovery class the redesign eliminated. See `fleet-sprint/docs/dolt-sync-redesign.md` (Parts 2, 7.4, 8.4). | n/a -- not a registry entry | n/a | n/a |
 | branch-not-synced-false-alarm | git fetch fails with `/couldn't find remote ref/i` on a branch another member just pushed (the one benign fetch-failure signature, runner.js:4588) | refetch_branch: bounded wait (30s) + one `git fetch` retry | ref present | retry-once, then human |
 | member-cli-version-drift | `member_cli_version` probe differs from fleet baseline / known-bad version | none in v1 (update_llm_cli exists as an MCP tool but mid-sprint CLI upgrades are riskier than the disease) | n/a | human (referral: run update_llm_cli between sprints) |
 
@@ -817,10 +818,10 @@ binary asset) so npm-global and single-binary installs both ship it, provider-ag
 4. *Output contract* -- the section-2.3 schema, including classification, humanActionRequired
    referral rules, and the "referral must be actionable" bar with examples A/B.
 5. *In-sprint mode* -- states that the engine assembles inputs and executes actions; the skill's
-   doctrine text is what the runner embeds into the doctor persona's prompt (the same
-   pattern as the Tier-2 dolt dispatch being armed with `docs/dolt-tier2-runbook.md`,
-   dolt-recovery-tier2.mjs:148-162). The persona markdown references the skill doctrine so the
-   two cannot drift.
+   doctrine text is what the runner embeds into the doctor persona's prompt (historically the same
+   pattern as the now-retired Tier-2 dolt dispatch being armed with a runbook -- dolt is no longer
+   part of this precedent; see section 4). The persona markdown references the skill doctrine so
+   the two cannot drift.
 6. *Post-mortem mode* -- operator/agent-invoked over a BATCH of runs.
 
 **How the two modes differ:**

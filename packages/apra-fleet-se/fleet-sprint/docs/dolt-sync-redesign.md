@@ -14,7 +14,7 @@ design's `settle()` step is built from.
 | 3.1-3.2, 5 | `fleet-sprint/dolt-settle.mjs` + `test/dolt-settle.test.mjs` | DONE |
 | 3.2 step 4 | `labels` set-union (real INSERT, live-read uniqueness key) | DONE |
 | 2.4, 3.2 | settle wired at the push AND pull/readiness divergence terminals | DONE |
-| 2.4 | old ladder (`dolt-recovery*.mjs`, tier-2 runbook) retired | PENDING |
+| 2.4 | old ladder (`dolt-recovery*.mjs`, tier-2 runbook) retired | DONE (deleted) |
 | 3.4 | mutex lease renewal while held | PENDING |
 | 3.3 | supervisor orphaned-sql-server sweep | PENDING |
 | 5.5 V2 | `dolt-manual-recovery-verified.md` step 1 corrected to the pinned installer | PENDING |
