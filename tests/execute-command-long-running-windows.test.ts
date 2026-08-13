@@ -59,7 +59,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('1. windows + long_running=true: launches via Invoke-CimMethod, "Task launched", no POSIX-shell error', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'FLEET_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
 
     const result = resultText(await executeCommand({
       member_id: member.id,
@@ -75,7 +75,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('2. windows + long_running=true: dispatches exactly one Win32_Process.Create command, no POSIX tokens', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'FLEET_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
 
     await executeCommand({
       member_id: member.id,
@@ -99,7 +99,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('3. windows + long_running=true: a task id IS registered in the task-credentials registry (no error path)', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'FLEET_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
 
     const result = resultText(await executeCommand({
       member_id: member.id,
@@ -170,7 +170,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('7. windows + long_running=true: the CIM CommandLine launches run.ps1 rooted at $env:USERPROFILE\\.fleet-tasks\\<taskId>', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'FLEET_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
 
     await executeCommand({
       member_id: member.id,
@@ -182,6 +182,6 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
     const decoded = decodeIfEncoded(mockExecCommand.mock.calls[0][0] as string);
     expect(decoded).toContain('$env:USERPROFILE\\.fleet-tasks\\task-');
     expect(decoded).toContain('run.ps1');
-    expect(decoded).toContain('FLEET_PID:$($result.ProcessId)');
+    expect(decoded).toContain('TASK_PID:$($result.ProcessId)');
   });
 });
