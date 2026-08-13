@@ -640,6 +640,135 @@ describe('deliverConfigFile -- Windows BOM-free write (T4)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// apra-fleet-xj7v.2: PowerShell-safe commands for win32 members
+// (compose-permissions.ts detectStacks marker/glob checks + settings.local.json
+// read, OS-branched by apra-fleet-xj7v.1)
+// ---------------------------------------------------------------------------
+
+/** wrapPowerShellEncoded() base64/utf16le-encodes the PowerShell script into
+ *  `powershell -EncodedCommand <base64>`. Decode back to plain text so tests
+ *  can assert on the actual script content rather than opaque base64. Commands
+ *  that are not `-EncodedCommand` (e.g. plain POSIX shell strings) pass through
+ *  unchanged. */
+function decodeCommand(cmd: string): string {
+  const m = cmd.match(/^powershell -EncodedCommand (\S+)$/);
+  if (!m) return cmd;
+  return Buffer.from(m[1], 'base64').toString('utf16le');
+}
+
+/** POSIX-only constructs that must never appear in a command emitted for a
+ *  windows-target member (they are meaningless/broken under PowerShell). */
+function assertNoPosixOnlyConstructs(rawCmd: string): void {
+  const cmd = decodeCommand(rawCmd);
+  expect(cmd).not.toContain('2>/dev/null');
+  expect(cmd).not.toContain(' && ');
+  expect(cmd).not.toContain(' || ');
+  expect(cmd).not.toMatch(/(^|[|&]\s*)cat\s/);
+  expect(cmd).not.toMatch(/(^|[|&]\s*)ls\s/);
+}
+
+describe('composePermissions -- win32-safe shell commands (xj7v.2)', () => {
+  it('emits no POSIX-only constructs for a win32 target member (detectStacks + settings.local.json read)', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-win-doer', llmProvider: 'claude', os: 'windows' });
+    addAgent(member);
+    installFsMock();
+
+    // Proactive compose exercises detectStacks (marker check + dotnet glob check).
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    const proactiveCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(proactiveCmds.length).toBeGreaterThan(0);
+    for (const cmd of proactiveCmds) assertNoPosixOnlyConstructs(cmd);
+
+    vi.clearAllMocks();
+    installFsMock();
+
+    // Reactive grant exercises the settings.local.json read-and-merge site.
+    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(docker:*)'] });
+    const grantCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(grantCmds.length).toBeGreaterThan(0);
+    for (const cmd of grantCmds) assertNoPosixOnlyConstructs(cmd);
+    // Confirm the settings.local.json read site was actually exercised (not
+    // just other unrelated commands that happen not to be POSIX).
+    expect(grantCmds.some(cmd => cmd.includes('settings.local.json'))).toBe(true);
+  });
+
+  it('leaves the posix branch byte-identical to the pre-fix strings (regression guard)', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-posix-doer', llmProvider: 'claude', os: 'linux', workFolder: '/home/testuser/project' });
+    addAgent(member);
+    installFsMock();
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    const proactiveCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(proactiveCmds).toContain('cd "/home/testuser/project" 2>/dev/null && ls package.json Cargo.toml requirements.txt pyproject.toml setup.py go.mod build.gradle pom.xml Makefile CMakeLists.txt composer.json 2>/dev/null || true');
+    expect(proactiveCmds).toContain('cd "/home/testuser/project" 2>/dev/null && ls *.sln *.csproj 2>/dev/null || true');
+
+    vi.clearAllMocks();
+    installFsMock();
+
+    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(docker:*)'] });
+    const grantCmds = mockExecCommand.mock.calls.map(c => c[0] as string);
+    expect(grantCmds).toContain('cat .claude/settings.local.json 2>/dev/null || echo "{}"');
+  });
+
+  it('degrades the same way POSIX does when the win32 detectStacks branch fails or finds nothing (missing dir / missing settings file)', async () => {
+    // Only the detectStacks calls (marker check / dotnet glob check) fail --
+    // config delivery (mkdir/write/read-back) still uses the normal fs mock so
+    // we can observe that a failed/empty stack detection alone does not abort
+    // permission composition.
+    const detectStacksFailingHandler = (base: (cmd: string, timeout?: number) => Promise<SSHExecResult>) =>
+      async (cmd: string, timeout?: number): Promise<SSHExecResult> => {
+        const decoded = decodeCommand(cmd);
+        if (decoded.includes('Test-Path') || decoded.includes('Get-ChildItem') || /^cd "/.test(decoded)) {
+          return { stdout: '', stderr: 'not found', code: 1 };
+        }
+        return base(cmd, timeout);
+      };
+
+    const member = makeTestAgent({ friendlyName: 'claude-win-missing', llmProvider: 'claude', os: 'windows' });
+    addAgent(member);
+    mockExecCommand.mockImplementation(detectStacksFailingHandler(makeFsHandler()));
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    vi.clearAllMocks();
+    const posixMember = makeTestAgent({ friendlyName: 'claude-posix-missing', llmProvider: 'claude', os: 'linux' });
+    addAgent(posixMember);
+    mockExecCommand.mockImplementation(detectStacksFailingHandler(makeFsHandler()));
+    const posixResult = await composePermissions({ member_id: posixMember.id, role: 'doer' });
+
+    // Both must reach the same successful outcome (delivery still attempted
+    // and succeeds despite detectStacks finding nothing) rather than throwing
+    // or aborting composition.
+    expect(result).toContain('Permissions composed');
+    expect(posixResult).toContain('Permissions composed');
+  });
+
+  it('quotes a win32 workFolder containing spaces correctly in the detectStacks commands', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'claude-win-spaces',
+      llmProvider: 'claude',
+      os: 'windows',
+      workFolder: 'C:\\Users\\Test User\\project',
+    });
+    addAgent(member);
+    installFsMock();
+
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    const cmds = mockExecCommand.mock.calls.map(c => decodeCommand(c[0] as string));
+
+    // The path (with its embedded space) must appear fully double-quoted for
+    // PowerShell -LiteralPath, not split on the space into two arguments.
+    // Scope to the detectStacks commands themselves (LiteralPath), not
+    // unrelated commands (e.g. mcpServers/.mcp.json reads) that happen to
+    // also mention the work folder.
+    const withPath = cmds.filter(cmd => cmd.includes('LiteralPath') && cmd.includes('Test User'));
+    expect(withPath.length).toBeGreaterThan(0);
+    for (const cmd of withPath) {
+      expect(cmd).toContain('"C:\\Users\\Test User\\project"');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tag-aware permission composition
 // ---------------------------------------------------------------------------
 
