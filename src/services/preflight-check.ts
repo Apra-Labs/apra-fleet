@@ -142,6 +142,20 @@ export async function preflightCheck(
   let apiKeyPresent = false;
   let credentialStatus: CredentialStatus | undefined;
 
+  // Build the full set of env var names that could hold a valid credential.
+  // provisionApiKey (provision-auth.ts) uses provider.authEnvVarForToken to
+  // pick the var name, which for Claude returns ANTHROPIC_API_KEY for sk-ant-*
+  // tokens and CLAUDE_CODE_OAUTH_TOKEN for everything else. Checking only
+  // provider.authEnvVar (ANTHROPIC_API_KEY) misses the OAuth-token env var
+  // path entirely. Derive the complete set by probing representative shapes.
+  const authEnvVarSet = new Set<string>();
+  if (provider.authEnvVar) authEnvVarSet.add(provider.authEnvVar);
+  if (provider.authEnvVarForToken) {
+    authEnvVarSet.add(provider.authEnvVarForToken('sk-ant-probe'));
+    authEnvVarSet.add(provider.authEnvVarForToken('non-sk-ant-probe'));
+  }
+  const authEnvVars = [...authEnvVarSet];
+
   // Parallelize OAuth file read and API key check into a single batch
   // (F8: reduces sequential SSH round trips). readRemoteJson combines
   // file-exists + content-read into one command (returns '{}' when missing).
@@ -151,11 +165,29 @@ export async function preflightCheck(
     ? strategy.execCommand(cmds.readRemoteJson(oauthFiles[0].remotePath), 10_000).catch(() => null)
     : Promise.resolve(null);
 
-  const apiKeyPromise = provider.authEnvVar
-    ? strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 10_000).catch(() => null)
-    : Promise.resolve(null);
+  const apiKeyPromises = authEnvVars.map(envVar =>
+    strategy.execCommand(cmds.apiKeyCheck(envVar), 10_000).catch(() => null)
+  );
 
-  const [oauthResult, apiKeyResult] = await Promise.all([oauthPromise, apiKeyPromise]);
+  const [oauthResult, ...apiKeyResults] = await Promise.all([oauthPromise, ...apiKeyPromises]);
+
+  // Process API key results -- any env var hit counts
+  for (const result of apiKeyResults) {
+    if (result && result.stdout.trim().length > 5) {
+      apiKeyPresent = true;
+      break;
+    }
+  }
+
+  // Also check stored encrypted env vars (provision-auth stores API keys here)
+  if (!apiKeyPresent && agent.encryptedEnvVars) {
+    for (const envVar of authEnvVars) {
+      if (agent.encryptedEnvVars[envVar]) {
+        apiKeyPresent = true;
+        break;
+      }
+    }
+  }
 
   // Process OAuth result
   if (oauthResult && oauthResult.code === 0) {
@@ -168,35 +200,28 @@ export async function preflightCheck(
       if (cs) {
         credentialStatus = cs;
         if (cs.status === 'expired-no-refresh') {
-          logLine('preflight', `FAIL auth: OAuth token expired with no refresh token`, agent);
-          return {
-            ok: false,
-            connectivity: true,
-            authValid: false,
-            reason: `LLM auth on "${agent.friendlyName}" is expired (no refresh token). Run /login to refresh your credentials, then run provision_llm_auth to deploy them.`,
-            code: 'auth_expired',
-            credentialStatus: cs,
-            latencyMs,
-          };
+          // R2-F4: if an API key is present, treat as pass -- the key is a
+          // working fallback credential even though the OAuth token is expired.
+          if (apiKeyPresent) {
+            logLine('preflight', `OAuth expired (no refresh) but API key present -- treating as pass`, agent);
+          } else {
+            logLine('preflight', `FAIL auth: OAuth token expired with no refresh token`, agent);
+            return {
+              ok: false,
+              connectivity: true,
+              authValid: false,
+              reason: `LLM auth on "${agent.friendlyName}" is expired (no refresh token). Run /login to refresh your credentials, then run provision_llm_auth to deploy them.`,
+              code: 'auth_expired',
+              credentialStatus: cs,
+              latencyMs,
+            };
+          }
         }
         // expired-refreshable is OK -- the CLI will auto-refresh
         // near-expiry is OK -- still valid
       } else if (provider.name !== 'claude') {
         logLine('preflight', `OAuth freshness check not implemented for provider ${provider.name}, skipping`, agent);
       }
-    }
-  }
-
-  // Process API key result
-  if (apiKeyResult) {
-    apiKeyPresent = apiKeyResult.stdout.trim().length > 5;
-  }
-
-  // Also check stored encrypted env vars (provision-auth stores API keys here)
-  if (!apiKeyPresent && agent.encryptedEnvVars) {
-    const authEnvVar = provider.authEnvVar;
-    if (authEnvVar && agent.encryptedEnvVars[authEnvVar]) {
-      apiKeyPresent = true;
     }
   }
 
