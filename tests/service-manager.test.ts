@@ -19,7 +19,11 @@ vi.mock('../src/services/service-manager/index.js', () => ({
   gracefulStopByServerJson: mockGracefulStop,
 }));
 
-import { WindowsServiceManager, hasInteractiveSession } from '../src/services/service-manager/windows.js';
+import {
+  WindowsServiceManager,
+  hasInteractiveSession,
+  readServiceRegistrationMode,
+} from '../src/services/service-manager/windows.js';
 import { LinuxServiceManager } from '../src/services/service-manager/linux.js';
 import { MacOSServiceManager } from '../src/services/service-manager/macos.js';
 
@@ -33,6 +37,7 @@ describe('WindowsServiceManager', () => {
     vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any);
     vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
     vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   describe('register', () => {
@@ -49,12 +54,74 @@ describe('WindowsServiceManager', () => {
       expect(call[1]).toContain('"--transport" "http"');
     });
 
-    it('calls schtasks /create with onlogon trigger and limited run-level', async () => {
+    it('prefers a SYSTEM onstart registration (headless-capable) and records the mode', async () => {
+      const mgr = new WindowsServiceManager();
+      await mgr.register('/bin/apra-fleet.exe', ['--transport', 'http'], '/logs/fleet.log');
+      expect(execFileSync).toHaveBeenCalledWith('schtasks', expect.arrayContaining([
+        '/create', '/tn', 'ApraFleet', '/sc', 'onstart', '/ru', 'SYSTEM', '/rl', 'highest', '/f',
+      ]));
+      // Only one /create attempt: the onlogon fallback must not also run.
+      expect(vi.mocked(execFileSync).mock.calls.filter(c => c[0] === 'schtasks')).toHaveLength(1);
+      const record = vi.mocked(fs.writeFileSync).mock.calls
+        .find(c => String(c[0]).includes('service-registration.json'));
+      expect(record).toBeDefined();
+      expect(String(record![1])).toContain('system-onstart');
+    });
+
+    it('falls back to schtasks /create with onlogon trigger and limited run-level when SYSTEM is refused', async () => {
+      vi.mocked(execFileSync).mockImplementationOnce(() => { throw new Error('ERROR: Access is denied.'); });
       const mgr = new WindowsServiceManager();
       await mgr.register('/bin/apra-fleet.exe', ['--transport', 'http'], '/logs/fleet.log');
       expect(execFileSync).toHaveBeenCalledWith('schtasks', expect.arrayContaining([
         '/create', '/tn', 'ApraFleet', '/sc', 'onlogon', '/rl', 'limited', '/f',
       ]));
+      const record = vi.mocked(fs.writeFileSync).mock.calls
+        .find(c => String(c[0]).includes('service-registration.json'));
+      expect(String(record![1])).toContain('onlogon-interactive');
+    });
+
+    it('keeps an existing registration (deriving its mode) when both /create attempts fail', async () => {
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => { throw new Error('Access is denied.'); })
+        .mockImplementationOnce(() => { throw new Error('Access is denied.'); })
+        .mockReturnValueOnce('TaskName: \\ApraFleet\r\nRun As User: SYSTEM\r\n' as any);
+      const mgr = new WindowsServiceManager();
+      await expect(mgr.register('/bin/apra-fleet.exe', [], '/logs/fleet.log')).resolves.not.toThrow();
+      const record = vi.mocked(fs.writeFileSync).mock.calls
+        .find(c => String(c[0]).includes('service-registration.json'));
+      expect(String(record![1])).toContain('system-onstart');
+    });
+
+    it('throws when no /create attempt lands and no task exists', async () => {
+      vi.mocked(execFileSync).mockImplementation(() => { throw new Error('Access is denied.'); });
+      const mgr = new WindowsServiceManager();
+      await expect(mgr.register('/bin/apra-fleet.exe', [], '/logs/fleet.log'))
+        .rejects.toThrow(/failed to register the ApraFleet scheduled task/);
+    });
+
+    it('pins USERPROFILE into the wrapper so a SYSTEM-run server keeps the user home', async () => {
+      const prev = process.env.USERPROFILE;
+      process.env.USERPROFILE = 'C:\\Users\\mockuser';
+      try {
+        await new WindowsServiceManager().register('/bin/apra-fleet.exe', [], '/logs/fleet.log');
+      } finally {
+        if (prev === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prev;
+      }
+      const wrapper = vi.mocked(fs.writeFileSync).mock.calls
+        .find(c => String(c[0]).includes('apra-fleet-service.bat'));
+      expect(String(wrapper![1])).toContain('set "USERPROFILE=C:\\Users\\mockuser"');
+    });
+  });
+
+  describe('readServiceRegistrationMode', () => {
+    it('returns the recorded mode', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ mode: 'system-onstart' }) as any);
+      expect(readServiceRegistrationMode()).toBe('system-onstart');
+    });
+
+    it('defaults to onlogon-interactive when no record exists', () => {
+      vi.mocked(fs.readFileSync).mockImplementation(() => { throw new Error('ENOENT'); });
+      expect(readServiceRegistrationMode()).toBe('onlogon-interactive');
     });
   });
 
