@@ -1277,27 +1277,34 @@ describe('dispatch-exception retry (apra-fleet-02s.1)', () => {
     expect(resultText(result)).toContain('inactivity timeout again');
   });
 
-  it('does not retry when the client already cancelled the request (signal aborted)', async () => {
+  it('retries even when the MCP client has already disconnected (signal aborted) -- d64.1 follow-up', async () => {
+    // apra-fleet-d64.1 follow-up: since dispatchSignal no longer carries
+    // extra.signal, an MCP disconnect is independent of the dispatch error.
+    // Retry should proceed for unrelated SSH/stream errors regardless of
+    // whether the MCP client also disconnected.
     const controller = new AbortController();
     controller.abort();
-    const member = makeTestAgent({ friendlyName: 'dispatch-retry-skip-on-abort' });
+    const member = makeTestAgent({ friendlyName: 'dispatch-retry-despite-abort' });
     memberId = member.id;
     addAgent(member);
 
     mockExecCommand
       .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })  // writePromptFile
-      .mockRejectedValueOnce(new Error('Command aborted by client')) // main execCommand throws
-      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });  // deletePromptFile (finally block)
+      .mockRejectedValueOnce(new Error('SSH stream closed'))        // main execCommand throws
+      // tryKillPid is a no-op here (no pid was captured before the throw)
+      .mockResolvedValueOnce({ stdout: '{"type":"result","result":"recovered","session_id":"s1"}', stderr: '', code: 0 })  // retry execCommand succeeds
+      .mockResolvedValue({ stdout: '', stderr: '', code: 0 });     // deletePromptFile (finally block)
 
     const result = await executePrompt(
       { member_id: memberId, prompt: 'hi', resume: false, timeout_s: 5 },
       { signal: controller.signal },
     );
 
-    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'dispatch_failed' });
-    // 3 calls: writePromptFile + the one failed main call (no retry attempt) +
-    // deletePromptFile in the finally block.
-    expect(mockExecCommand).toHaveBeenCalledTimes(3);
+    // Retry succeeded -- the result should NOT be an error
+    expect(resultText(result)).toContain('recovered');
+    // Verify a retry attempt was made (more than 3 calls: writePromptFile +
+    // main dispatch + tryKillPid + retry dispatch + deletePromptFile).
+    expect(mockExecCommand.mock.calls.length).toBeGreaterThan(3);
   });
 });
 
