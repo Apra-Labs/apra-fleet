@@ -246,6 +246,7 @@ function makeSettleFixture({
     const state = {
         conflicts: conflictTables,
         resolvedTables: [],
+        resolveFlags: [],  // every { table, flag } DOLT_CONFLICTS_RESOLVE actually issued
         merged: false,
         committed: false,
         inserts: [],   // every INSERT INTO ... statement settle issued
@@ -277,8 +278,11 @@ function makeSettleFixture({
 
         // Single-port TCP probes (wait-for-ready + teardown-verify). Only the
         // port the server actually spawned on (once spawned, and until torn
-        // down) answers. Written per shell dialect -- PowerShell TcpClient on
-        // Windows, /dev/tcp on POSIX -- so both shapes are matched here.
+        // down) answers. Both platforms now probe via `node -e` (design doc
+        // Part 4.1 finding #6 -- no portable shell one-liner exists: `cmd ||
+        // fallback` is a PowerShell 5.1 parse error, and `/dev/tcp` is
+        // bash-only, silently absent on fleet-mac's zsh), so the same
+        // `net.connect(port, ...)` shape is matched for both.
         if (/PROBE:True/.test(cmd)) {
             const portMatch = cmd.match(/net.connect\((\d+),/);
             const probedPort = portMatch ? Number(portMatch[1] || portMatch[2]) : null;
@@ -286,9 +290,22 @@ function makeSettleFixture({
             return { ok: true, output: up ? 'PROBE:True' : 'PROBE:False', error: null };
         }
 
-        // Step 2: spawn ephemeral server (Win32_Process.Create on Windows,
-        // nohup+disown on POSIX).
-        if (/Invoke-CimMethod/.test(cmd) || /nohup .* sql-server/.test(cmd)) {
+        // Step 2: spawn ephemeral server. Deliberately tight matches (design
+        // doc Part 4.1 findings #5/#7) -- a plain `Invoke-CimMethod`/`nohup ...
+        // sql-server` match would ALSO match the old, live-broken forms, so it
+        // cannot pin the fix:
+        //   - POSIX (#5): must be a genuinely detached SUBSHELL with `< /dev/null`
+        //     and the pid read via `pgrep`, not bare `nohup ... & disown` /`$!`
+        //     (that form hung the dispatch to its 300s timeout under the
+        //     fleet's bash wrapper on fleet-lin-dev1).
+        //   - Windows (#7): the command line must be assembled from an
+        //     EXPANDED PowerShell variable ($exe = ...), not
+        //     `$env:USERPROFILE\...` interpolated straight into
+        //     Win32_Process.Create's single-quoted CommandLine (ReturnValue 9
+        //     / "path not found" on fleet-win-dev1), and must check ReturnValue.
+        const isPosixSpawn = /\(\s*\$SETSID nohup .+sql-server.+< \/dev\/null\s*&\s*\)/.test(cmd) && /pgrep -f/.test(cmd);
+        const isWinSpawn = /\$exe\s*=/.test(cmd) && /Invoke-CimMethod/.test(cmd) && /ReturnValue/.test(cmd);
+        if (isWinSpawn || isPosixSpawn) {
             const portMatch = cmd.match(/--port (\d+)/);
             activePort = portMatch ? Number(portMatch[1]) : null;
             return { ok: true, output: 'PID:4242', error: null };
@@ -337,8 +354,11 @@ function makeSettleFixture({
             }
             if (/UPDATE `/.test(q)) { state.updates.push(q); return { ok: true, output: '', error: null }; }
             if (/CALL DOLT_CONFLICTS_RESOLVE/.test(q)) {
-                const m = q.match(/DOLT_CONFLICTS_RESOLVE\\?\('[^']+',\s*'([^']+)'\)/);
-                if (m) state.resolvedTables.push(m[1]);
+                const m = q.match(/DOLT_CONFLICTS_RESOLVE\\?\('([^']+)',\s*'([^']+)'\)/);
+                if (m) {
+                    state.resolvedTables.push(m[2]);
+                    state.resolveFlags.push({ table: m[2], flag: m[1] });
+                }
                 return { ok: true, output: '', error: null };
             }
             if (/CALL DOLT_COMMIT/.test(q)) { state.committed = true; return { ok: true, output: '', error: null }; }
@@ -448,6 +468,80 @@ test('settleDoltConflicts: a union table whose columns cannot be read degrades t
     assert.equal(result.ok, true);
     assert.equal(state.inserts.length, 0, 'no INSERT may be issued when the column list is unknown');
     check(state.resolvedTables.includes('labels'), 'settle must still resolve the table (totality), just via plain --theirs');
+});
+
+// ---------------------------------------------------------------------------
+// Regression pins for design doc Part 4.1's live-testing findings -- these
+// four (findings #1, #2, #5, #7) previously had NO assertion that would fail
+// if reverted to the original, live-disproven behavior (findings #3, #4, #6
+// were already pinned above/elsewhere).
+// ---------------------------------------------------------------------------
+
+test('REGRESSION (Part 4.1 finding #1): LWW/union tables resolve with --ours AFTER the merged row is written, never --theirs', async () => {
+    const { command: cmdIssues, state: stateIssues } = makeSettleFixture({ conflictTables: [{ table: 'issues' }] });
+    await settleDoltConflicts('m1', { command: cmdIssues, platform: 'linux' });
+    const issuesFlag = stateIssues.resolveFlags.find((r) => r.table === 'issues');
+    check(issuesFlag, 'issues must have issued a DOLT_CONFLICTS_RESOLVE');
+    assert.equal(issuesFlag.flag, '--ours', 'issues (LWW) must resolve with --ours -- --theirs CLOBBERS the merged row DOLT_CONFLICTS_RESOLVE just wrote (Part 4.1 #1, fleet-lin-dev1)');
+
+    const { command: cmdLabels, state: stateLabels } = makeSettleFixture({
+        conflictTables: [{ table: 'labels' }],
+        schema: { labels: { columns: ['issue_id', 'label'], pk: ['issue_id', 'label'] } },
+    });
+    await settleDoltConflicts('m1', { command: cmdLabels, platform: 'linux' });
+    const labelsFlag = stateLabels.resolveFlags.find((r) => r.table === 'labels');
+    check(labelsFlag, 'labels must have issued a DOLT_CONFLICTS_RESOLVE');
+    assert.equal(labelsFlag.flag, '--ours', 'labels (set-union) must resolve with --ours -- --theirs would drop the rows the union just inserted (Part 4.1 #1)');
+});
+
+test('REGRESSION (Part 4.1 finding #2): the LWW UPDATE compares each field against base_*, not just whole-row updated_at recency', async () => {
+    // win32, not linux: the fixture's UPDATE-detection regex looks for a
+    // literal "UPDATE `" substring, which only survives intact through
+    // PowerShell's doubled-backtick escaping -- bash's backslash-escaped
+    // backtick inserts a character between them.
+    const { command, state } = makeSettleFixture({ conflictTables: [{ table: 'issues' }] });
+    await settleDoltConflicts('m1', { command, platform: 'win32' });
+    check(state.updates.length === 1, `issues LWW must issue exactly one UPDATE (got ${state.updates.length})`);
+    const sql = state.updates[0];
+    // The whole-row "CASE on updated_at recency alone" form this replaces
+    // would overwrite an unchanged-by-them field with a stale value whenever
+    // OUR side happened to be newer (Part 4.1 #2, disjoint-field loss on
+    // fleet-lin-dev1) -- a per-field merge against base_* is what prevents
+    // that: untouched-by-us takes theirs, untouched-by-them takes ours, and
+    // ONLY a genuinely both-sides-changed field falls through to LWW.
+    check(/c\.our_\w+ <=> c\.base_\w+/.test(sql), `the UPDATE must compare OUR value against base_* per field (untouched-by-us -> theirs): ${sql}`);
+    check(/c\.their_\w+ <=> c\.base_\w+/.test(sql), `the UPDATE must compare THEIR value against base_* per field (untouched-by-them -> ours): ${sql}`);
+    check(/c\.their_updated_at >= c\.our_updated_at/.test(sql), 'a genuinely both-sides-changed field must still fall back to LWW-by-updated_at');
+});
+
+test('REGRESSION (Part 4.1 finding #5): POSIX spawn must be a detached subshell with < /dev/null and a pgrep-based pid read, not bare nohup+disown', async () => {
+    const { command, state } = makeSettleFixture({ conflictTables: [{ table: 'issues' }] });
+    const result = await settleDoltConflicts('m1', { command, platform: 'linux' });
+    assert.equal(result.ok, true, 'settle must succeed against the real (corrected) POSIX spawn shape the fixture requires');
+    void state;
+
+    // Prove the fixture's spawn-detection is actually discriminating: the
+    // OLD, live-broken form (`nohup dolt sql-server ... & disown`, pid from
+    // $!, no subshell, no < /dev/null, no pgrep) must NOT satisfy it.
+    const oldBrokenForm = 'nohup dolt sql-server --host 127.0.0.1 --port 13300 --data-dir /tmp/x > /tmp/log 2>&1 & disown; echo "PID:$!"';
+    const isPosixSpawnOld = /\(\s*\$SETSID nohup .+sql-server.+< \/dev\/null\s*&\s*\)/.test(oldBrokenForm) && /pgrep -f/.test(oldBrokenForm);
+    assert.equal(isPosixSpawnOld, false, 'the old bare nohup+disown form must NOT match the corrected-spawn detection');
+});
+
+test('REGRESSION (Part 4.1 finding #7): WMI spawn must assemble the command line from an EXPANDED PowerShell variable, not raw $env:USERPROFILE interpolation', async () => {
+    const { command, state } = makeSettleFixture({ conflictTables: [{ table: 'issues' }] });
+    const result = await settleDoltConflicts('m1', { command, platform: 'win32' });
+    assert.equal(result.ok, true, 'settle must succeed against the real (corrected) WMI spawn shape the fixture requires');
+    void state;
+
+    // Prove the fixture's spawn-detection is actually discriminating: the
+    // OLD, live-broken form (raw $env:USERPROFILE interpolated directly into
+    // Win32_Process.Create's single-quoted CommandLine, no $exe variable, no
+    // ReturnValue check) must NOT satisfy it -- it failed live with
+    // ReturnValue 9 / "path not found" on fleet-win-dev1.
+    const oldBrokenForm = "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '$env:USERPROFILE\\.apra-fleet\\bin\\dolt.exe sql-server --host 127.0.0.1 --port 13300 --data-dir C:\\data' }";
+    const isWinSpawnOld = /\$exe\s*=/.test(oldBrokenForm) && /Invoke-CimMethod/.test(oldBrokenForm) && /ReturnValue/.test(oldBrokenForm);
+    assert.equal(isWinSpawnOld, false, 'the old raw $env:USERPROFILE-interpolation form must NOT match the corrected-spawn detection');
 });
 
 test('settleDoltConflicts: requires platform to be explicitly supplied, never assumes process.platform', async () => {
