@@ -156,6 +156,11 @@ export function createSupervisor(deps = {}) {
         // their own register*Routes() helpers (see bin/serve.mjs).
         doltMutex: deps.doltMutex ?? makeSeamStub('doltMutex'),
         idAllocator: deps.idAllocator ?? makeSeamStub('idAllocator'),
+        // docs/dolt-sync-redesign.md Part 3.3: the backstop for the one case
+        // settle's own try/finally teardown cannot cover -- an orchestrator
+        // process killed mid-settle, leaving a detached ephemeral
+        // `dolt sql-server` holding a member's beads data-dir lock.
+        doltOrphanSweep: deps.doltOrphanSweep ?? makeSeamStub('doltOrphanSweep'),
     };
 
     /** @type {Map<string, Function>} keyed by `METHOD path` (exact paths). */
@@ -288,7 +293,7 @@ export function createSupervisor(deps = {}) {
             });
             // Stop seams in reverse of a natural start order; isolate each so
             // one failing seam cannot block the others' teardown.
-            for (const seam of [seams.idAllocator, seams.doltMutex, seams.dashboard, seams.watchdog, seams.spawner, seams.ledger]) {
+            for (const seam of [seams.doltOrphanSweep, seams.idAllocator, seams.doltMutex, seams.dashboard, seams.watchdog, seams.spawner, seams.ledger]) {
                 try { await seam.stop?.(); } catch (err) { logError(`[supervisor] seam ${seam.name ?? ''} stop failed:`, err); }
             }
             shutdownResolve();
@@ -303,7 +308,7 @@ export function createSupervisor(deps = {}) {
     async function start() {
         // Start seams first so the API never serves before its collaborators
         // are ready. Stubs are no-ops.
-        for (const seam of [seams.ledger, seams.spawner, seams.watchdog, seams.dashboard, seams.doltMutex, seams.idAllocator]) {
+        for (const seam of [seams.ledger, seams.spawner, seams.watchdog, seams.dashboard, seams.doltMutex, seams.idAllocator, seams.doltOrphanSweep]) {
             await seam.start?.();
         }
 

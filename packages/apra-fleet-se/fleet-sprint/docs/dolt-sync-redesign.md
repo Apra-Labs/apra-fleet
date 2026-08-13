@@ -16,7 +16,7 @@ design's `settle()` step is built from.
 | 2.4, 3.2 | settle wired at the push AND pull/readiness divergence terminals | DONE |
 | 2.4 | old ladder (`dolt-recovery*.mjs`, tier-2 runbook) retired | DONE (deleted) |
 | 3.4 | mutex lease renewal while held | DONE |
-| 3.3 | supervisor orphaned-sql-server sweep | PENDING |
+| 3.3 | supervisor orphaned-sql-server sweep | DONE |
 | 5.5 V2 | `dolt-manual-recovery-verified.md` step 1 corrected to the pinned installer | PENDING |
 | 6 | `scripts/dolt-settle-integration.mjs` | PENDING |
 | 4 | live 3-OS verification | PENDING |
