@@ -172,11 +172,28 @@ describe('generateTaskWrapperWindows - structure', () => {
     expect(script).toContain('$ErrorActionPreference = "Stop"');
     expect(script).toContain('$ErrorActionPreference = "Continue"');
     expect(script).toMatch(/\$ExitCode = if \(\$null -ne \$LASTEXITCODE\) \{ \$LASTEXITCODE \} else \{ 0 \}/);
-    expect(script).toMatch(/\$ExitCode = if \(\$null -ne \$LASTEXITCODE\) \{ \$LASTEXITCODE \} else \{ 1 \}/);
     // Error stream (2) must not be merged into the log redirection -- only
     // 1/3/4/5/6 -- to avoid Windows PowerShell reclassifying a successful
     // native command's stderr as a terminating error under "Stop".
     expect(script).toContain('3>&1 4>&1 5>&1 6>&1 1>>');
+  });
+
+  it('does not let a stale $LASTEXITCODE=0 from an earlier native command mask a later genuine cmdlet failure in the catch block', () => {
+    // A prior version's catch block used `if ($null -ne $LASTEXITCODE)`,
+    // which treats a leftover 0 (set by an earlier successful native
+    // command in the same compound $MainCmd, e.g. `git pull; Get-Content
+    // missing.json`) as "a real exit code" and reports ExitCode 0 for a
+    // command that actually threw. The catch block must use PowerShell
+    // truthiness (0 is falsy) so a stale 0 falls through to the
+    // exception-implies-failure default of 1, while a real nonzero native
+    // code set immediately before the throw is still preferred.
+    const script = generateTaskWrapperWindows(baseConfig);
+    const catchBlocks = script.match(/\} catch \{[\s\S]*?\} finally/g) || [];
+    expect(catchBlocks.length).toBeGreaterThan(0);
+    for (const block of catchBlocks) {
+      expect(block).not.toMatch(/\$ExitCode = if \(\$null -ne \$LASTEXITCODE\)/);
+      expect(block).toMatch(/\$ExitCode = if \(\$LASTEXITCODE\) \{ \$LASTEXITCODE \} else \{ 1 \}/);
+    }
   });
 });
 
@@ -284,6 +301,21 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     );
     expect(result.status).toBe('completed');
     expect(result.exitCode).toBe(0);
+  });
+
+  it('a genuine cmdlet failure after an earlier successful native command is still reported as failed, not masked by the stale exit code', () => {
+    // Regression test for the catch-block bug: cmd /c exit 0 sets
+    // $LASTEXITCODE = 0, then Get-Item on a missing path throws under
+    // $ErrorActionPreference = "Stop" and lands in the catch block with
+    // that stale 0 still set. `if ($null -ne $LASTEXITCODE)` would treat 0
+    // as "a real exit code" and wrongly report completed/0; the fix must
+    // use truthiness so a stale 0 falls through to the failure default.
+    const result = runScenario(
+      'wt-stale-exitcode-' + Date.now(),
+      'cmd /c exit 0; Get-Item C:\\this\\path\\does\\not\\exist-fleet-test'
+    );
+    expect(result.status).toBe('failed');
+    expect(result.exitCode).not.toBe(0);
   });
 
   it('a false-failure scenario (stderr-only, SilentlyContinue, handled try/catch) does not burn a retry', () => {

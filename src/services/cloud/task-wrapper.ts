@@ -188,6 +188,7 @@ export function generateTaskWrapperWindows(config: TaskConfig): string {
     '',
     '$Retries = 0',
     '$ExitCode = 0',
+    '$LASTEXITCODE = $null',
     'try {',
     // Comparing $Error.Count before/after Invoke-Expression (the previous
     // approach) correctly catches failing cmdlets, but $Error accumulates
@@ -225,14 +226,27 @@ export function generateTaskWrapperWindows(config: TaskConfig): string {
     // real cmdlet failure still throws under "Stop" regardless of stream
     // redirection (that promotion is not redirection-triggered). Tradeoff:
     // stderr text from a *successful* native command no longer lands in
-    // task.log; the exception detail for a genuine failure still does, via
-    // the catch block below.
+    // task.log; a failing NATIVE command's stderr is also lost this way
+    // (it throws nothing, so the catch block below never runs) -- only a
+    // failing cmdlet's exception detail is captured. Linux's `2>&1` has no
+    // such gap. Accepted tradeoff for now (see PR #405 review).
+    //
+    // In the catch block, $LASTEXITCODE must be checked for TRUTHINESS, not
+    // just non-null: after a successful native command sets it to 0, a
+    // SUBSEQUENT cmdlet failure in the same $MainCmd (e.g.
+    // `git pull; Get-Content missing.json`) throws under "Stop" and lands
+    // here with $LASTEXITCODE still the stale 0 from the earlier native
+    // call -- `$null -ne 0` is true, so that stale 0 would wrongly report
+    // the genuine failure as ExitCode 0 (verified live). `if ($LASTEXITCODE)`
+    // treats 0 as falsy and correctly falls through to the exception-implies-
+    // failure default of 1, while still preferring a real nonzero native
+    // code (e.g. the failure was `cmd /c exit 7`) when one is set.
     '  $ErrorActionPreference = "Stop"',
     '  Invoke-Expression $MainCmd 3>&1 4>&1 5>&1 6>&1 1>> "$TaskDir\\task.log"',
     '  $ExitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }',
     '} catch {',
     '  "$_" | Out-File -FilePath "$TaskDir\\task.log" -Append',
-    '  $ExitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 }',
+    '  $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } else { 1 }',
     '} finally {',
     '  $ErrorActionPreference = "Continue"',
     '}',
@@ -249,7 +263,7 @@ export function generateTaskWrapperWindows(config: TaskConfig): string {
     '    $ExitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }',
     '  } catch {',
     '    "$_" | Out-File -FilePath "$TaskDir\\task.log" -Append',
-    '    $ExitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 }',
+    '    $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } else { 1 }',
     '  } finally {',
     '    $ErrorActionPreference = "Continue"',
     '  }',
