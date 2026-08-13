@@ -106,6 +106,9 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
   const checkDir = projectSubdir
     ? `${agent.workFolder}/${projectSubdir}`.replace(/\\/g, '/')
     : agent.workFolder.replace(/\\/g, '/');
+  // TODO: unbranched POSIX && / || / 2>/dev/null -- same defect class as
+  // orphan-recovery.ts's pid-alive/file-read commands (apra-fleet review,
+  // fix/cross-shell-home-var). Not yet OS-branched for Windows members.
   const result = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls ${markers} 2>/dev/null || true`, 10000);
   const found = new Set<string>();
   for (const line of result.stdout.split('\n')) {
@@ -113,6 +116,7 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
     if (STACK_MAP[file]) found.add(STACK_MAP[file]);
   }
   // .sln/.csproj need glob - check separately
+  // TODO: same unbranched-POSIX defect class as above -- not yet OS-branched.
   const dotnetCheck = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls *.sln *.csproj 2>/dev/null || true`, 5000);
   if (dotnetCheck.stdout.trim()) found.add('dotnet');
   return [...found];
@@ -385,6 +389,8 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
     if (provider.name === 'claude') {
       // Claude: read existing allow list and merge
+      // TODO: unbranched POSIX `2>/dev/null || echo` -- same defect class as
+      // orphan-recovery.ts's pid-alive/file-read commands. Not yet OS-branched.
       const readResult = await strategy.execCommand('cat .claude/settings.local.json 2>/dev/null || echo "{}"', 5000);
       let current: any;
       try {

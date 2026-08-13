@@ -473,3 +473,24 @@ directory will not reveal the hang. Isolate each pipeline stage individually
 (e.g. run each stage as its own job with a timeout) before trusting that a
 suppressed-errors pipeline is safe to chain unconditionally against a path
 whose existence you have not confirmed.
+
+## Cross-shell member-bound command construction
+
+See `docs/cross-shell-command-construction.md` for the full pattern. Short
+version: never rely on shell-level variable expansion (`$HOME`, `$VAR`, `~`)
+or POSIX-only utilities in a command string sent to a member -- the remote
+shell may be PowerShell, not bash, and the two disagree on syntax and
+sometimes silently corrupt bare `$name` tokens in transit. Resolve values
+host-side in JS or branch explicitly on `agent.os`, and route any
+Windows-bound PowerShell script through the shared `wrapPowerShellEncoded`
+helper so encoding and exit-code semantics stay centralized rather than
+reimplemented per call site.
+
+## Root test gate must exercise every workspace's own test runner
+
+A workspace that runs its tests via a different test runner than the root
+(e.g. `node --test` alongside a root `vitest run`) is invisible to the root
+test command unless that workspace's script is explicitly chained into it.
+A green root test run is only a meaningful gate if it actually executes
+every workspace's suite -- silently excluding one because it uses a
+different runner lets regressions in that workspace pass CI unnoticed.

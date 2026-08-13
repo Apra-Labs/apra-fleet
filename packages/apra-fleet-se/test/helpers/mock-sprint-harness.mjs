@@ -1355,6 +1355,21 @@ export async function runDevelopLoopScenario(tag, {
     const priorInstantRetryBackoff = process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF;
     process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = '1';
     let passed = false;
+    // apra-fleet-ot2z.14: runner.js's main() acquires the machine-local
+    // sprint pidfile mutex (fleet-sprint/sprint-lock.mjs) keyed on
+    // (branch, members) against the OS-tmpdir-wide default lock directory
+    // unless APRA_FLEET_SPRINT_LOCK_DIR is set. uniqueMockBranch()/the
+    // tag-derived branch above already prevent two mock scenarios from
+    // colliding on the SAME key, but every scenario still shared that one
+    // real, machine-global lock directory -- so under `--test-concurrency=8`
+    // a mock run here could spuriously hit SprintLockHeldError against an
+    // unrelated REAL fleet-sprint concurrently running on the same host (or
+    // its stale lockfile). Give every scenario invocation its own private,
+    // throwaway lock directory so it can never contend with a real sprint or
+    // any other test process; restored/cleaned up in the finally below.
+    const priorSprintLockDir = process.env.APRA_FLEET_SPRINT_LOCK_DIR;
+    const sprintLockDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-sprint-lock-mock-'));
+    process.env.APRA_FLEET_SPRINT_LOCK_DIR = sprintLockDir;
     try {
         const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
             planReviewerMode: 'approve-immediately',
@@ -1456,6 +1471,12 @@ export async function runDevelopLoopScenario(tag, {
         } else {
             process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = priorInstantRetryBackoff;
         }
+        if (priorSprintLockDir === undefined) {
+            delete process.env.APRA_FLEET_SPRINT_LOCK_DIR;
+        } else {
+            process.env.APRA_FLEET_SPRINT_LOCK_DIR = priorSprintLockDir;
+        }
+        await fs.rm(sprintLockDir, { recursive: true, force: true }).catch(() => { /* best-effort */ });
         await teardown(tempDir);
     }
 }

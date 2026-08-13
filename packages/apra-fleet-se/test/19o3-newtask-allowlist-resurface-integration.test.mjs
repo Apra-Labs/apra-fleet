@@ -2,6 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import os from 'node:os';
 
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
@@ -10,6 +12,18 @@ import { setupMinimal, buildMockFleetApi, runCmd, teardown, withScenarioMarkers 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER_SCRIPT = path.join(__dirname, '../fleet-sprint/runner.js');
+
+// apra-fleet-ot2z.14: runner.js's main() acquires the machine-local sprint
+// pidfile mutex (fleet-sprint/sprint-lock.mjs) keyed on (branch, members)
+// against the OS-tmpdir-wide default lock directory unless
+// APRA_FLEET_SPRINT_LOCK_DIR is set. This file's `branch: 'auto-sprint/
+// 19o3-resurface'` is a fixed literal, so without isolation it could
+// spuriously collide with an unrelated REAL fleet-sprint concurrently
+// running on the same host under `--test-concurrency=8`. Node's test runner
+// spawns one process per test file, so setting this once at module scope (a
+// fresh throwaway dir for this file's whole process lifetime) safely
+// isolates this file without affecting other files.
+process.env.APRA_FLEET_SPRINT_LOCK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sprint-lock-19o3-'));
 
 // =============================================================================
 // apra-fleet-19o.3 -- end-to-end integration coverage for apra-fleet-19o.1

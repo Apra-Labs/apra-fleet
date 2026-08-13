@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { removeAgent as removeFromRegistry, getAllAgents } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
@@ -87,12 +88,19 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
             // Use the key type + base64 portion to match (ignore trailing comment)
             const parts = pubKey.split(/\s+/);
             const keyMatch = parts.slice(0, 2).join(' ');
-            // Escape forward slashes for sed delimiter
-            const escapedKey = keyMatch.replace(/\//g, '\\/');
-            await strategy.execCommand(
-              `sed -i '/${escapedKey}/d' ~/.ssh/authorized_keys`,
-              10000,
-            ).catch(() => {});
+            const isWindows = getAgentOS(agent) === 'windows';
+            const removeKeyCmd = isWindows
+              ? wrapPowerShellEncoded(`$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${keyMatch.replace(/'/g, "''")}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`)
+              // Escape forward slashes for sed delimiter
+              : `sed -i '/${keyMatch.replace(/\//g, '\\/')}/d' ~/.ssh/authorized_keys`;
+            try {
+              const removeKeyResult = await strategy.execCommand(removeKeyCmd, 10000);
+              if (removeKeyResult.code !== 0) {
+                warnings.push('Could not clear fleet public key from authorized_keys on the member');
+              }
+            } catch {
+              warnings.push('Could not clear fleet public key from authorized_keys on the member');
+            }
           } catch { /* pub key file not found — skip */ }
         }
       } else {
