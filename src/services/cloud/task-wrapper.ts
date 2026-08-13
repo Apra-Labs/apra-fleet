@@ -189,24 +189,52 @@ export function generateTaskWrapperWindows(config: TaskConfig): string {
     '$Retries = 0',
     '$ExitCode = 0',
     'try {',
-    // $LASTEXITCODE is set only by native (non-cmdlet) commands; a failing
-    // PowerShell cmdlet (Get-Item on a missing path, Write-Error, etc.) never
-    // throws under $ErrorActionPreference = "Continue" and leaves
-    // $LASTEXITCODE untouched, so relying on it alone silently reports
-    // status "completed" / exitCode 0 for a genuinely failed command and
-    // makes $MaxRetries inert for that class of failure. $? is NOT a
-    // reliable substitute here: it reflects whether Invoke-Expression
-    // itself completed, not whether the command string it evaluated hit a
-    // non-terminating error internally (verified live -- $? is $true even
-    // when the evaluated cmdlet fails). Comparing $Error.Count before/after
-    // does detect it, without changing execution flow.
-    '  $Error.Clear()',
-    '  Invoke-Expression $MainCmd *>> "$TaskDir\\task.log"',
-    '  $HadCmdletError = $Error.Count -gt 0',
-    '  $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } elseif ($HadCmdletError) { 1 } else { 0 }',
+    // Comparing $Error.Count before/after Invoke-Expression (the previous
+    // approach) correctly catches failing cmdlets, but $Error accumulates
+    // ANY handled/suppressed error during the command's run, not just fatal
+    // ones -- a native command that writes to stderr while exiting 0, a
+    // cmdlet call using -ErrorAction SilentlyContinue, or a cmdlet error the
+    // user's own try/catch already handled all leave a stray $Error entry,
+    // so that approach wrongly reported completed work as failed/1 and
+    // burned through $MaxRetries re-running commands that already
+    // succeeded (verified live). Flipping $ErrorActionPreference to "Stop"
+    // for the duration of the user's command instead makes any
+    // non-terminating cmdlet error the user did NOT explicitly downgrade
+    // (no -ErrorAction override, no enclosing try/catch) throw a real
+    // terminating exception, which this try/catch turns into ExitCode 1 --
+    // mirroring how the bash wrapper's `bash -c "$MAIN_CMD" || EXIT_CODE=$?`
+    // only fails on the child's own real exit status. A command that sets
+    // its own -ErrorAction (SilentlyContinue/Continue/Ignore) or that
+    // catches its own error keeps running past it, exactly as the user
+    // intended, so $ExitCode stays 0 for those cases (verified live).
+    // $ErrorActionPreference is reset in `finally` so this scoped
+    // strictness never leaks into the wrapper's own bookkeeping
+    // (Write-TaskStatus, activity job, etc.) below.
+    //
+    // The log redirection deliberately merges streams 3/4/5/6 (Warning/
+    // Verbose/Debug/Information) into stream 1 (Output) but leaves stream 2
+    // (Error) unredirected -- on Windows PowerShell, redirecting a NATIVE
+    // command's stderr with *any* stream-2 syntax (*>>, 2>&1, 2>$null, ...)
+    // makes PowerShell wrap that stderr text as a non-terminating
+    // ErrorRecord, which $ErrorActionPreference = "Stop" above then
+    // promotes to a terminating exception -- so a perfectly successful
+    // native command that merely logs to stderr (git/npm/curl/etc.) would
+    // throw and be reported failed/1 (verified live). Leaving stream 2
+    // unredirected sidesteps that reclassification entirely: native stderr
+    // just flows to the process's inherited stderr handle as before, and a
+    // real cmdlet failure still throws under "Stop" regardless of stream
+    // redirection (that promotion is not redirection-triggered). Tradeoff:
+    // stderr text from a *successful* native command no longer lands in
+    // task.log; the exception detail for a genuine failure still does, via
+    // the catch block below.
+    '  $ErrorActionPreference = "Stop"',
+    '  Invoke-Expression $MainCmd 3>&1 4>&1 5>&1 6>&1 1>> "$TaskDir\\task.log"',
+    '  $ExitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }',
     '} catch {',
     '  "$_" | Out-File -FilePath "$TaskDir\\task.log" -Append',
-    '  $ExitCode = 1',
+    '  $ExitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 }',
+    '} finally {',
+    '  $ErrorActionPreference = "Continue"',
     '}',
     '',
     'while ($ExitCode -ne 0 -and $Retries -lt $MaxRetries) {',
@@ -216,13 +244,14 @@ export function generateTaskWrapperWindows(config: TaskConfig): string {
     '  $ExitCode = 0',
     '  $LASTEXITCODE = $null',
     '  try {',
-    '    $Error.Clear()',
-    '    Invoke-Expression $RestartCmd *>> "$TaskDir\\task.log"',
-    '    $HadCmdletError = $Error.Count -gt 0',
-    '    $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } elseif ($HadCmdletError) { 1 } else { 0 }',
+    '    $ErrorActionPreference = "Stop"',
+    '    Invoke-Expression $RestartCmd 3>&1 4>&1 5>&1 6>&1 1>> "$TaskDir\\task.log"',
+    '    $ExitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }',
     '  } catch {',
     '    "$_" | Out-File -FilePath "$TaskDir\\task.log" -Append',
-    '    $ExitCode = 1',
+    '    $ExitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 1 }',
+    '  } finally {',
+    '    $ErrorActionPreference = "Continue"',
     '  }',
     '}',
     '',

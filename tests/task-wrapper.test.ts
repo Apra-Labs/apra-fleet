@@ -136,15 +136,47 @@ describe('generateTaskWrapperWindows - structure', () => {
   // that whole class of failure (see the live-verified table in the
   // describe.runIf block below). These assertions pin the generated
   // script's structure so that regression can't reappear silently.
+  //
+  // The implementation went through two prior shapes, both live-verified
+  // and both replaced:
+  //   1. $LASTEXITCODE alone -- missed cmdlet-only failures entirely.
+  //   2. $Error.Count before/after each Invoke-Expression call -- caught
+  //      cmdlet failures, but $Error also accumulates any handled/
+  //      suppressed error (native stderr-while-exit-0, a command's own
+  //      -ErrorAction SilentlyContinue, an error the user's own try/catch
+  //      already handled), so it wrongly failed those three cases too and
+  //      burned through $MaxRetries re-running commands that had already
+  //      succeeded.
+  // The current shape instead scopes $ErrorActionPreference = "Stop" around
+  // each Invoke-Expression call: a non-terminating cmdlet error the user did
+  // not explicitly downgrade becomes a real terminating exception (caught
+  // below, ExitCode 1+), while a command's own -ErrorAction override or its
+  // own try/catch keeps running past its error exactly as intended, so
+  // ExitCode stays 0 for those. Native command stderr is deliberately left
+  // unredirected (only streams 1/3/4/5/6 go to task.log) because on Windows
+  // PowerShell, redirecting a native command's stderr at all reclassifies
+  // it as a non-terminating ErrorRecord, which "Stop" would then wrongly
+  // promote to a terminating exception for a perfectly successful command.
   it('does not compute $ExitCode from $LASTEXITCODE alone -- also accounts for a non-native (cmdlet) failure', () => {
     const script = generateTaskWrapperWindows(baseConfig);
     // The naive/buggy form that only ever reports native exit codes:
     expect(script).not.toMatch(/\$ExitCode = if \(\$LASTEXITCODE\) \{ \$LASTEXITCODE \} else \{ 0 \}/);
-    // A cmdlet-only failure (no $LASTEXITCODE set) must still be detectable
-    // from the script's own bookkeeping around each Invoke-Expression call.
-    expect(script).toContain('$Error.Clear()');
-    expect(script).toMatch(/\$HadCmdletError = \$Error\.Count -gt 0/);
-    expect(script).toMatch(/\$ExitCode = if \(\$LASTEXITCODE\) \{ \$LASTEXITCODE \} elseif \(\$HadCmdletError\) \{ 1 \} else \{ 0 \}/);
+    // The replaced $Error.Count-based shape must be gone -- it false-failed
+    // suppressed/handled errors and successful-but-noisy native commands.
+    expect(script).not.toContain('$Error.Clear()');
+    expect(script).not.toMatch(/\$HadCmdletError/);
+    // Current shape: scope $ErrorActionPreference to "Stop" around the
+    // command, compute ExitCode from $LASTEXITCODE when a native command
+    // set it, and reset the preference in `finally` so it never leaks into
+    // the wrapper's own bookkeeping below.
+    expect(script).toContain('$ErrorActionPreference = "Stop"');
+    expect(script).toContain('$ErrorActionPreference = "Continue"');
+    expect(script).toMatch(/\$ExitCode = if \(\$null -ne \$LASTEXITCODE\) \{ \$LASTEXITCODE \} else \{ 0 \}/);
+    expect(script).toMatch(/\$ExitCode = if \(\$null -ne \$LASTEXITCODE\) \{ \$LASTEXITCODE \} else \{ 1 \}/);
+    // Error stream (2) must not be merged into the log redirection -- only
+    // 1/3/4/5/6 -- to avoid Windows PowerShell reclassifying a successful
+    // native command's stderr as a terminating error under "Stop".
+    expect(script).toContain('3>&1 4>&1 5>&1 6>&1 1>>');
   });
 });
 
@@ -215,5 +247,66 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     const result = runScenario('wt-success-' + Date.now(), 'Write-Output hello');
     expect(result.status).toBe('completed');
     expect(result.exitCode).toBe(0);
+  });
+
+  // These three cover the false-failure regressions introduced by the prior
+  // $Error.Count-based approach: all three are legitimately successful runs
+  // that must NOT be reported as failed (and must not burn a retry).
+  it('a native command that writes to stderr but exits 0 is reported as completed', () => {
+    // git/npm/curl/etc. routinely write progress/warnings to stderr on a
+    // normal successful run. On Windows PowerShell, redirecting a native
+    // command's stderr at all makes PowerShell reclassify that text as a
+    // non-terminating ErrorRecord (verified live), so a wrapper that merges
+    // the error stream into its log capture while running under
+    // $ErrorActionPreference = "Stop" would wrongly throw and report
+    // failed/1 here.
+    const result = runScenario('wt-stderr-ok-' + Date.now(), 'cmd /c "echo warn 1>&2"');
+    expect(result.status).toBe('completed');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('a command using -ErrorAction SilentlyContinue is reported as completed', () => {
+    // The user explicitly downgraded this cmdlet's error handling; that
+    // per-call -ErrorAction override takes precedence over the wrapper's
+    // ambient $ErrorActionPreference = "Stop", so it must not throw.
+    const result = runScenario(
+      'wt-silently-continue-' + Date.now(),
+      'Get-Item C:\\this\\path\\does\\not\\exist-fleet-test -ErrorAction SilentlyContinue'
+    );
+    expect(result.status).toBe('completed');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('a command that handles its own error in try/catch is reported as completed', () => {
+    const result = runScenario(
+      'wt-try-catch-' + Date.now(),
+      "try { Get-Item C:\\this\\path\\does\\not\\exist-fleet-test -ErrorAction Stop } catch { Write-Host 'handled' }"
+    );
+    expect(result.status).toBe('completed');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('a false-failure scenario (stderr-only, SilentlyContinue, handled try/catch) does not burn a retry', () => {
+    const script = generateTaskWrapperWindows({
+      taskId: 'wt-no-retry-burn-' + Date.now(),
+      command: 'cmd /c "echo warn 1>&2"',
+      maxRetries: 3,
+      activityIntervalSec: 300,
+    });
+    const scriptPath = join(tmpDir, 'wt-no-retry-burn.ps1');
+    writeFileSync(scriptPath, script);
+    try {
+      execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, { stdio: 'ignore' });
+    } catch {
+      // expected to not throw here, but keep symmetry with runScenario()
+    }
+    // Read retries straight from status.json written under the real taskId
+    // embedded in the generated script.
+    const match = script.match(/\$TaskId = '([^']+)'/);
+    const taskDirReal = join(process.env.USERPROFILE ?? '', '.fleet-tasks', match![1]);
+    const status = JSON.parse(readFileSync(join(taskDirReal, 'status.json'), 'utf-8'));
+    rmSync(taskDirReal, { recursive: true, force: true });
+    expect(status.status).toBe('completed');
+    expect(status.retries).toBe(0);
   });
 });
