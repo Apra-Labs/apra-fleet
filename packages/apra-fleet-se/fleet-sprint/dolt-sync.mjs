@@ -239,6 +239,13 @@ const DOLT_BACKOFF_MAX_MS = 8000;
  * @param {number} [maxMs]
  * @returns {number}
  */
+/** How often the push mutex's lease is renewed while this bracket holds it.
+ *  Well under the supervisor mutex's 60s lease (src/supervisor/dolt-mutex.mjs
+ *  DEFAULT_LEASE_MS), so a legitimately long hold -- push + reconcile +
+ *  settle -- never loses mutual exclusion to reclaimExpired(). Design doc
+ *  Part 3.4. */
+export const DOLT_MUTEX_RENEW_INTERVAL_MS = 20_000;
+
 export function doltBackoffDelayMs(attempt, baseMs = DOLT_BACKOFF_BASE_MS, maxMs = DOLT_BACKOFF_MAX_MS) {
     const n = Math.max(1, Number(attempt) || 1);
     return Math.min(maxMs, baseMs * Math.pow(2, n - 1));
@@ -589,7 +596,7 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, settledTables?: string[] }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, settle } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -613,13 +620,38 @@ export async function doltPushAfter(member, opts = {}) {
 
     // Serialize this push behind the global mutex: acquire (waiting our FIFO
     // turn) before touching the remote; release on every exit.
+    //
+    // LEASE RENEWAL (docs/dolt-sync-redesign.md Part 3.4): the mutex lease is
+    // 60s and reclaimExpired() force-evicts at expiry EVEN IF the holder is
+    // alive. This bracket can legitimately outlive that -- a push, a reconcile
+    // pull, and now a full settle (ephemeral server spawn + merge + resolve +
+    // republish) -- so acquiring once and never renewing silently loses mutual
+    // exclusion mid-operation. Renew on an interval well under the lease while
+    // we hold it, and stop renewing in the same `finally` that releases.
     let grant = null;
     if (mutex && typeof mutex.acquire === 'function') {
         grant = await mutex.acquire(sprintId || member, { pid: process.pid });
     }
+    let renewTimer = null;
+    if (grant && mutex && typeof mutex.renew === 'function') {
+        renewTimer = setInterval(() => {
+            Promise.resolve()
+                .then(() => mutex.renew(grant.token))
+                .then((renewed) => {
+                    if (renewed === false) {
+                        log(`[Dolt] mutex lease renewal for member '${member}' was REFUSED (the lease was already reclaimed) -- another sprint may now hold the push mutex.`);
+                    }
+                })
+                .catch((renewErr) => {
+                    log(`[Dolt] mutex lease renewal for member '${member}' failed (non-fatal; the lease may expire): ${(renewErr && renewErr.message) || renewErr}`);
+                });
+        }, renewIntervalMs);
+        if (typeof renewTimer.unref === 'function') renewTimer.unref();
+    }
     try {
         return await doltPushGuarded();
     } finally {
+        if (renewTimer) clearInterval(renewTimer);
         if (grant && mutex && typeof mutex.release === 'function') {
             try {
                 await mutex.release(grant.token);

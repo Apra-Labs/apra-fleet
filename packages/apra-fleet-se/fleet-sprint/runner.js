@@ -1204,6 +1204,22 @@ export function createHttpDoltPushMutexClient(opts = {}) {
                 return false;
             }
         },
+        // Lease renewal (docs/dolt-sync-redesign.md Part 3.4): doltPushAfter()
+        // renews on an interval while it holds the mutex, so a legitimately
+        // long hold (push + reconcile + settle) is never force-evicted by the
+        // supervisor's 60s lease expiry while this sprint is still pushing.
+        async renew(token) {
+            if (token == null) return false;
+            const id = boundSprintId;
+            if (!id) throw new Error('[dolt-mutex] renew requires a bound sprintId');
+            try {
+                const payload = await postJson(routeFor(id, 'renew'), { token });
+                return Boolean(payload.renewed);
+            } catch (err) {
+                log(`[dolt-mutex] renew failed (non-fatal; the lease may expire): ${err.message}`);
+                return false;
+            }
+        },
     };
 }
 
@@ -1370,6 +1386,18 @@ export function createMcpDoltPushMutexClient(opts = {}) {
                 // Non-fatal: the holder's lease expiry reclaims the mutex even
                 // if this release never lands (same posture as the HTTP client).
                 log(`[dolt-mutex/mcp] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+        // Same lease-renewal contract as the HTTP client above (design doc
+        // Part 3.4); the fleet tool exposes action 'renew'.
+        async renew(token) {
+            if (token == null) return false;
+            try {
+                const payload = await call({ action: 'renew', token });
+                return Boolean(payload.renewed);
+            } catch (err) {
+                log(`[dolt-mutex/mcp] renew failed (non-fatal; the lease may expire): ${err.message}`);
                 return false;
             }
         },
