@@ -1054,10 +1054,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // mechanisms below, since those only fire on a non-throwing nonzero
       // exit, never on a thrown exception. Retry once with a fresh session
       // before giving up, mirroring the stale-session/server-overloaded
-      // retries' bounded, single-attempt shape. Skip the retry if the client
-      // itself cancelled the request -- there is nothing to recover from a
-      // deliberate cancellation.
-      if (extra?.signal?.aborted) throw dispatchErr;
+      // retries' bounded, single-attempt shape.
+      //
+      // apra-fleet-d64.1 follow-up: the old `extra?.signal?.aborted` guard
+      // here skipped retry when the MCP client disconnected. But since
+      // dispatchSignal no longer carries extra.signal, an MCP disconnect is
+      // independent of the dispatch error -- retry should proceed for
+      // unrelated SSH/stream errors regardless of MCP client state. The
+      // stall case (stallAbortController) is handled directly below.
       // apra-fleet-3c9.1: a stall-triggered abort is terminal. onStall already
       // killed the remote process and its session is gone, so retrying in a
       // fresh session would just re-dispatch onto a member we just tore down.
@@ -1378,11 +1382,14 @@ session: ${parsed.sessionId}`;
       },
     };
   } catch (err: any) {
-    // apra-fleet-3c9.1: a confirmed stall aborted the in-flight execCommand (and
-    // NOT the MCP client). Surface it as a typed 'stalled' error so the dispatch
-    // settles here -- well under the client hard timeout -- instead of being
-    // mislabeled dispatch_failed or waiting out the full deadline.
-    if (stallAbortController.signal.aborted && !extra?.signal?.aborted) {
+    // apra-fleet-3c9.1: a confirmed stall aborted the in-flight execCommand.
+    // dispatchSignal only carries stallAbortController (not extra.signal), so
+    // when stallAbortController fires it is always a stall -- no need to
+    // disambiguate against extra.signal. Surface it as a typed 'stalled' error
+    // so the dispatch settles here -- well under the client hard timeout --
+    // instead of being mislabeled dispatch_failed or waiting out the full
+    // deadline.
+    if (stallAbortController.signal.aborted) {
       _epError = 'dispatch aborted by confirmed stall';
       return {
         text: `[FAIL] execute_prompt on "${agent.friendlyName}" was aborted after a confirmed stall -- the remote turn made no progress for the stall threshold, its process was killed, and the in-flight dispatch was cancelled immediately rather than waiting out the client timeout.`,
