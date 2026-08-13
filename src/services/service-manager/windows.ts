@@ -111,6 +111,79 @@ export interface InteractiveSessionResult {
   raw: string;
 }
 
+/**
+ * Thrown by start() when the ApraFleet scheduled task did not fire and the
+ * machine has zero interactive logon sessions -- the documented
+ * onlogon-interactive-mode failure mode (apra-fleet-i8qj). Distinguishable
+ * from other start() failures (task missing, access denied) via `name` or
+ * the stable `code` field, so src/cli/start.ts (apra-fleet-i8qj.4) can branch
+ * on it without parsing message text.
+ */
+export class NoInteractiveSessionError extends Error {
+  readonly code = 'NO_INTERACTIVE_SESSION' as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoInteractiveSessionError';
+    Object.setPrototypeOf(this, NoInteractiveSessionError.prototype);
+  }
+}
+
+/** Type guard for NoInteractiveSessionError, robust across require/import boundaries. */
+export function isNoInteractiveSessionError(err: unknown): err is NoInteractiveSessionError {
+  return err instanceof NoInteractiveSessionError
+    || (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'NO_INTERACTIVE_SESSION');
+}
+
+/** Parsed subset of 'schtasks /query /fo list /v' output that start()/query() need. */
+interface TaskQueryInfo {
+  installed: boolean;
+  status?: string;
+  lastRunTime?: string;
+  lastResult?: string;
+}
+
+/** Splits 'Key:     Value' verbose schtasks output lines into a lookup map. */
+function parseSchtasksVerbose(out: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const rawLine of out.split(/\r?\n/)) {
+    const idx = rawLine.indexOf(':');
+    if (idx === -1) continue;
+    const key = rawLine.slice(0, idx).trim();
+    const value = rawLine.slice(idx + 1).trim();
+    if (!key) continue;
+    map[key] = value;
+  }
+  return map;
+}
+
+/**
+ * Queries the ApraFleet task's verbose state via 'schtasks /query /fo list /v'
+ * (unlike the terse '/fo csv /nh' form, this exposes Last Run Time / Last
+ * Result, which start() needs to confirm a run actually fired and query()
+ * needs to derive 'registeredButNeverFired').
+ */
+function queryTaskInfo(): TaskQueryInfo {
+  try {
+    const out = execFileSync(
+      'schtasks', ['/query', '/tn', WINDOWS_TASK_NAME, '/fo', 'list', '/v'],
+      { encoding: 'utf8' },
+    );
+    const map = parseSchtasksVerbose(out);
+    return {
+      installed: true,
+      status: map['Status'],
+      lastRunTime: map['Last Run Time'],
+      lastResult: map['Last Result'],
+    };
+  } catch {
+    return { installed: false };
+  }
+}
+
+/** 'Last Run Time' as reported by schtasks when the task has never fired. */
+const NEVER_FIRED_SENTINEL = 'N/A';
+
 /** Injectable command runner seam: takes (cmd, args), returns combined stdout+stderr text. */
 export type SessionQueryRunner = (cmd: string, args: string[]) => string;
 
@@ -252,15 +325,55 @@ export class WindowsServiceManager implements ServiceManager {
     clearRegistrationMode();
   }
 
+  /**
+   * Runs 'schtasks /run' and confirms the task actually fired before
+   * resolving. Never returns success on a silent no-op: a task stuck in
+   * 'onlogon-interactive' mode with zero logon sessions accepts /run without
+   * error but never launches (apra-fleet-i8qj), so success is only reported
+   * once Last Run Time has advanced past its pre-run value.
+   */
   async start(): Promise<void> {
-    // Use spawn (detached) so schtasks /run does not block the installer.
-    // schtasks /run returns quickly but on some Windows versions it waits
-    // for the launched process -- detaching avoids that.
-    const { spawn } = await import('node:child_process');
-    const child = spawn('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME], {
-      detached: true, stdio: 'ignore',
-    });
-    child.unref();
+    const before = queryTaskInfo();
+
+    let runError: Error | undefined;
+    try {
+      execFileSync('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME], { encoding: 'utf8' });
+    } catch (err) {
+      runError = err as Error;
+    }
+
+    if (runError) {
+      // schtasks /run itself failed (task missing, access denied, ...) --
+      // these are distinct, identifiable failures and must not be
+      // mislabelled as the interactive-session case even if the machine
+      // also happens to have zero interactive sessions.
+      throw new Error(`apra-fleet: failed to start the ApraFleet scheduled task: ${runError.message}`);
+    }
+
+    const after = queryTaskInfo();
+    const fired = !!after.lastRunTime
+      && after.lastRunTime !== NEVER_FIRED_SENTINEL
+      && after.lastRunTime !== before.lastRunTime;
+    if (fired) return;
+
+    // 'schtasks /run' reported success but the task never actually fired --
+    // this is the silent failure mode. Fail fast (no server-liveness wait)
+    // and distinguish the interactive-session cause from anything else.
+    const session = hasInteractiveSession();
+    if (!session.hasInteractive) {
+      throw new NoInteractiveSessionError(
+        "apra-fleet: the ApraFleet scheduled task did not start because there is no interactive " +
+        "logon session on this machine. The task is registered in interactive-only ('onlogon') " +
+        "logon mode, which 'schtasks /run' cannot launch headlessly. Sign in interactively " +
+        '(console or RDP) once, or re-run apra-fleet install from an elevated shell so the task ' +
+        'can be registered in headless SYSTEM/onstart mode instead.',
+      );
+    }
+
+    throw new Error(
+      `apra-fleet: the ApraFleet scheduled task did not start (status: '${after.status ?? 'unknown'}', ` +
+      "Last Run Time unchanged after 'schtasks /run').",
+    );
   }
 
   async stop(): Promise<void> {
@@ -270,19 +383,19 @@ export class WindowsServiceManager implements ServiceManager {
   }
 
   async query(): Promise<ServiceStatus> {
-    try {
-      const out = execFileSync(
-        'schtasks', ['/query', '/tn', WINDOWS_TASK_NAME, '/fo', 'csv', '/nh'],
-        { encoding: 'utf8' },
-      );
-      // CSV line: "TaskName","Next Run Time","Status"
-      const line = out.trim().split(/\r?\n/)[0] ?? '';
-      const cols = line.split('","');
-      const status = (cols[2] ?? '').replace(/"/g, '').trim();
-      return { installed: true, running: status === 'Running' };
-    } catch {
-      return { installed: false, running: false };
-    }
+    const info = queryTaskInfo();
+    if (!info.installed) return { installed: false, running: false };
+
+    const registeredButNeverFired = !info.lastRunTime || info.lastRunTime === NEVER_FIRED_SENTINEL;
+    return {
+      installed: true,
+      running: info.status === 'Running',
+      lastRunTime: info.lastRunTime,
+      lastResult: info.lastResult,
+      // Only set when true so callers relying on the pre-existing
+      // { installed, running } shape (toEqual-style comparisons) are unaffected.
+      registeredButNeverFired: registeredButNeverFired || undefined,
+    };
   }
 
   async isInstalled(): Promise<boolean> {

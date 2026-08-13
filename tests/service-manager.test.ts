@@ -23,6 +23,8 @@ import {
   WindowsServiceManager,
   hasInteractiveSession,
   readServiceRegistrationMode,
+  NoInteractiveSessionError,
+  isNoInteractiveSessionError,
 } from '../src/services/service-manager/windows.js';
 import { LinuxServiceManager } from '../src/services/service-manager/linux.js';
 import { MacOSServiceManager } from '../src/services/service-manager/macos.js';
@@ -141,14 +143,68 @@ describe('WindowsServiceManager', () => {
   });
 
   describe('start', () => {
-    it('calls schtasks /run via detached spawn', async () => {
-      const { spawn } = await import('node:child_process');
-      const mockChild = { unref: vi.fn() };
-      vi.mocked(spawn).mockReturnValueOnce(mockChild as any);
+    // Minimal 'schtasks /query /fo list /v' text carrying just the fields
+    // start()/query() read.
+    const verboseOut = (status: string, lastRunTime: string, lastResult = '0') =>
+      `Folder: \\\r\nTaskName:                             \\ApraFleet\r\n` +
+      `Status:                               ${status}\r\n` +
+      `Last Run Time:                        ${lastRunTime}\r\n` +
+      `Last Result:                          ${lastResult}\r\n`;
+
+    const noSessionOutput = 'No User exists for *\r\n';
+    const activeSessionOutput =
+      ' USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\r\n' +
+      '>alice                 console             1  Active          .  8/12/2026 9:00 AM\r\n';
+
+    it('resolves once Last Run Time advances after schtasks /run', async () => {
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
+        .mockImplementationOnce(() => '' as any) // schtasks /run
+        .mockImplementationOnce(() => verboseOut('Ready', '8/13/2026 9:00:00 AM') as any); // post-run query
       const mgr = new WindowsServiceManager();
-      await mgr.start();
-      expect(spawn).toHaveBeenCalledWith('schtasks', ['/run', '/tn', 'ApraFleet'], { detached: true, stdio: 'ignore' });
-      expect(mockChild.unref).toHaveBeenCalled();
+      await expect(mgr.start()).resolves.toBeUndefined();
+      expect(execFileSync).toHaveBeenNthCalledWith(2, 'schtasks', ['/run', '/tn', 'ApraFleet'], { encoding: 'utf8' });
+      // Did not need to consult session state -- the task demonstrably fired.
+      expect(execFileSync).toHaveBeenCalledTimes(3);
+    });
+
+    it('throws NoInteractiveSessionError when the task never fires and there is no interactive session', async () => {
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
+        .mockImplementationOnce(() => '' as any) // schtasks /run "succeeds"
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // post-run query: unchanged
+        .mockImplementationOnce(() => noSessionOutput as any); // query user
+      const mgr = new WindowsServiceManager();
+      const err = await mgr.start().catch(e => e);
+      expect(isNoInteractiveSessionError(err)).toBe(true);
+      expect(err).toBeInstanceOf(NoInteractiveSessionError);
+      expect(err.code).toBe('NO_INTERACTIVE_SESSION');
+      expect(err.message).toMatch(/no interactive logon session/i);
+    });
+
+    it('throws a distinct (non-interactive-session) error when the task never fires despite an active session', async () => {
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any)
+        .mockImplementationOnce(() => '' as any)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any)
+        .mockImplementationOnce(() => activeSessionOutput as any);
+      const mgr = new WindowsServiceManager();
+      const err = await mgr.start().catch(e => e);
+      expect(isNoInteractiveSessionError(err)).toBe(false);
+      expect(err).not.toBeInstanceOf(NoInteractiveSessionError);
+      expect(err.message).toMatch(/did not start/i);
+    });
+
+    it('throws a distinct error (not mislabelled as the interactive-session case) when schtasks /run itself fails', async () => {
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
+        .mockImplementationOnce(() => { throw new Error('ERROR: Access is denied.'); }); // schtasks /run fails
+      const mgr = new WindowsServiceManager();
+      const err = await mgr.start().catch(e => e);
+      expect(isNoInteractiveSessionError(err)).toBe(false);
+      expect(err.message).toMatch(/Access is denied/);
+      // Must fail fast on the /run error alone -- no session check, no extra query.
+      expect(execFileSync).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -170,16 +226,35 @@ describe('WindowsServiceManager', () => {
   });
 
   describe('query', () => {
-    it('returns installed=true, running=false for Ready status', async () => {
-      vi.mocked(execFileSync).mockReturnValue('"ApraFleet","N/A","Ready"\r\n' as any);
+    const verboseOut = (status: string, lastRunTime: string, lastResult = '0') =>
+      `Folder: \\\r\nTaskName:                             \\ApraFleet\r\n` +
+      `Status:                               ${status}\r\n` +
+      `Last Run Time:                        ${lastRunTime}\r\n` +
+      `Last Result:                          ${lastResult}\r\n`;
+
+    it('returns installed=true, running=false, registeredButNeverFired=true for a Ready task that never ran', async () => {
+      vi.mocked(execFileSync).mockReturnValue(verboseOut('Ready', 'N/A') as any);
       const mgr = new WindowsServiceManager();
-      expect(await mgr.query()).toEqual({ installed: true, running: false });
+      expect(await mgr.query()).toEqual({
+        installed: true,
+        running: false,
+        lastRunTime: 'N/A',
+        lastResult: '0',
+        registeredButNeverFired: true,
+      });
     });
 
-    it('returns installed=true, running=true for Running status', async () => {
-      vi.mocked(execFileSync).mockReturnValue('"ApraFleet","N/A","Running"\r\n' as any);
+    it('returns installed=true, running=true, registeredButNeverFired unset once it has fired', async () => {
+      vi.mocked(execFileSync).mockReturnValue(verboseOut('Running', '8/13/2026 9:00:00 AM', '267009') as any);
       const mgr = new WindowsServiceManager();
-      expect(await mgr.query()).toEqual({ installed: true, running: true });
+      // registeredButNeverFired is omitted (undefined) once Last Run Time is real --
+      // toEqual treats a missing key and an explicit undefined key the same way.
+      expect(await mgr.query()).toEqual({
+        installed: true,
+        running: true,
+        lastRunTime: '8/13/2026 9:00:00 AM',
+        lastResult: '267009',
+      });
     });
 
     it('returns installed=false when task is not found', async () => {

@@ -8,6 +8,12 @@ export interface ServiceStatus {
   running: boolean;
   pid?: number;
   enabled?: boolean;
+  /** Windows-only: raw 'Last Run Time' from 'schtasks /query /fo list /v'. */
+  lastRunTime?: string;
+  /** Windows-only: raw 'Last Result' from 'schtasks /query /fo list /v'. */
+  lastResult?: string;
+  /** Windows-only: true when the task is registered but has never fired. */
+  registeredButNeverFired?: boolean;
 }
 
 export interface ServiceManager {
