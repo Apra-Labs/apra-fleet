@@ -48,45 +48,46 @@
  * purpose-based API incrementally; they are IMPLEMENTATION DETAIL of the three
  * entry points above, not a second supported surface.
  *
- * RECOVERY-LADDER DISPOSITION (apra-fleet-417.2.1 AC3; EXECUTED by
- * apra-fleet-vkc.1)
+ * CONFLICT-RECOVERY DISPOSITION (docs/dolt-sync-redesign.md Parts 2.2/2.4)
  * -------------------------------------------------------------------------
- * Decision: WIRE, not decommission -- and, as of apra-fleet-vkc.1, DONE.
- * dolt-recovery.mjs (Path A: gated allowlist resolve-in-place),
- * dolt-recovery-path-b.mjs (Path B: discard-and-re-bootstrap from the shared
- * remote) and dolt-recovery-tier2.mjs (Tier 2: agent escalation against
- * docs/dolt-tier2-runbook.md) were previously imported only by their own
- * tests -- doltPushAfter()'s diverged path threw DoltDivergedError with no
- * recovery attempt. They are NOT decommissioned because the failure they
- * handle is real and was sprint-fatal: a wedged beads clone stops the whole
- * sprint, and the ladder is the only written-down remedy for it.
+ * The old 3-tier ladder (dolt-recovery.mjs Path A, dolt-recovery-path-b.mjs
+ * Path B, dolt-recovery-tier2.mjs Tier 2 + docs/dolt-tier2-runbook.md) is
+ * RETIRED, not merely rewired. In production it could never resolve anything:
+ * Path A threw its precondition guard on every invocation (no sql runtime was
+ * ever injected at its call site), Path B was hard-disabled for a correct
+ * reason, and Tier 2 only DISPATCHED an LLM -- it never verified, so
+ * recoverDoltConflict() returned `ok: false` by construction, 100% of the
+ * time. Worse, its teardown was an instruction step an agent could abandon
+ * mid-procedure (apra-fleet-5mqg).
  *
- * How it is wired (apra-fleet-vkc.1): dolt-recovery-tier2.mjs now exports
- * buildDoltRecoveryLadder(member, opts), the ONE place the three paths are
- * composed into a single zero-argument callback. doltPushAfter() accepts that
- * callback as `opts.recover` and invokes it at its divergence terminal -- the
- * single place a divergence outlives the bounded first-successful-pusher-wins
- * reconcile -- logging each tier's outcome and surfacing the DoltDivergedError
- * (-> BEADS_SYNC_CONFLICT) only if the whole ladder fails. runner.js's
- * post-dispatch sync bracket (syncMemberAfterOrdered) builds the callback and
- * threads it through DoltSync.syncAfter(), so every one of runner.js's D-push
- * call sites inherits recovery without opting in. DoltSync.repair() runs the
- * same ladder (capabilities().supportsRepair is now true).
+ * It is replaced by ONE deterministic function: settleDoltConflicts()
+ * (fleet-sprint/dolt-settle.mjs), total over every row-level conflict shape
+ * this data model can produce -- no gates, no allowlist, no escalation, no
+ * LLM -- with a real `finally` teardown. This module holds it as
+ * `opts.settle`: a zero-argument callback (buildSettleCallback(), same file)
+ * that RESOLVES on a verified recovery, because settle itself republishes and
+ * verifies before returning.
  *
- * Kept unchanged on purpose: with NO `recover` callback wired, doltPushAfter()
- * behaves exactly as before (DoltDivergedError propagates immediately), so the
+ * Where it is wired -- BOTH divergence terminals, not just the push side:
+ *   - doltPushAfter()'s terminal, where a divergence outlives the bounded
+ *     first-successful-pusher-wins reconcile (where the ladder used to sit).
+ *   - doltPullBefore()'s diverged terminal, which had NO recovery at all: a
+ *     clone wedged by an earlier failed reconcile used to hard-abort the next
+ *     sprint at the readiness gate (preflightBeadsHealthGate delegates here,
+ *     so it inherits the same self-heal).
+ *   - repair(), the operator/tool entry point -- same one implementation.
+ *
+ * Kept unchanged on purpose: with NO `settle` callback wired, both brackets
+ * behave exactly as before (the typed error propagates immediately), so the
  * degraded-by-default path (apra-fleet-417.3.1) and every existing call site
- * keep their pre-vkc.1 semantics. Path A additionally requires an injected
- * sql()/spawnSqlServer() runtime; runner.js does not yet supply one, so in
- * production Path A is reached and cleanly self-defers to Path B (no silent
- * dead module) until such a runtime is injected -- see buildDoltRecoveryLadder.
+ * keep their prior semantics.
  *
  * ASCII only.
  */
 
 import { DoltDivergedError, DoltSyncError } from './errors.mjs';
 import { classifyFailure, toDoltVerdict } from './vcs-module.mjs';
-import { buildDoltRecoveryLadder } from './dolt-recovery-tier2.mjs';
+import { buildSettleCallback } from './dolt-settle.mjs';
 
 // ---------------------------------------------------------------------------
 // Dolt sync brackets: D-pull / D-push
@@ -339,8 +340,42 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
  * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, skipPull?: boolean, onAuthFailure?: Function }} opts
  * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh' }>}
  */
+/**
+ * Invoke the injected settle callback at a divergence terminal, if one is
+ * wired. Returns the settle result on a verified recovery, or null when there
+ * is no callback / settle itself failed -- in which case the caller surfaces
+ * its typed error exactly as it did before settle existed.
+ *
+ * A settle failure is an OPERATIONAL failure (no usable dolt binary, server
+ * would not start, a SQL statement errored), never "this conflict is
+ * unresolvable" -- there is no such outcome. It is logged and folded into the
+ * existing divergence terminal rather than being escalated anywhere.
+ *
+ * @param {{ settle?: Function, member: string, operation: string, error: Error, log: Function }} ctx
+ * @returns {Promise<object|null>}
+ */
+async function attemptSettle({ settle, member, operation, error, log }) {
+    if (typeof settle !== 'function') return null;
+    log(`[Dolt] ${operation} for member '${member}' diverged; running settleDoltConflicts() (deterministic, no escalation) before surfacing BEADS_SYNC_CONFLICT.`);
+    let result = null;
+    try {
+        result = await settle({ operation, error });
+    } catch (settleErr) {
+        log(`[Dolt] settle itself failed operationally for member '${member}' (treated as unrecovered; this is an infra failure, NOT an unresolvable conflict): ${(settleErr && settleErr.message) || settleErr}`);
+        return null;
+    }
+    if (result && result.ok) {
+        const tables = (result.resolvedTables || []).join(', ') || 'none';
+        log(`[Dolt] settle RESOLVED the divergence for member '${member}' (tables: ${tables}) and republished; ${operation} reconciled.`);
+        for (const warning of result.warnings || []) log(`[Dolt] settle warning for member '${member}': ${warning}`);
+        return result;
+    }
+    log(`[Dolt] settle returned no verified recovery for member '${member}'; surfacing the divergence.`);
+    return null;
+}
+
 export async function doltPullBefore(member, opts = {}) {
-    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs } = opts;
+    const { command, log = () => {}, maxTransientRetries = 1, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, settle } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -379,10 +414,22 @@ export async function doltPullBefore(member, opts = {}) {
             return { ok: true, member, skipped: true, reason: 'empty-remote' };
         }
         if (pull.kind === 'diverged') {
-            throw new DoltDivergedError(
+            // The pull-side divergence terminal. Before this was wired
+            // (docs/dolt-sync-redesign.md Part 2.3), a clone wedged by an
+            // earlier failed reconcile had NO recovery seam here at all and
+            // hard-aborted the next sprint at its readiness gate.
+            const diverged = new DoltDivergedError(
                 `[Dolt] D-pull for member '${member}' hit an unmergeable beads conflict and must not be auto-resolved by judgment: ${pull.error}`,
                 { member, doltOutput: pull.error, operation: 'pull' },
             );
+            const settled = await attemptSettle({ settle, member, operation: 'D-pull', error: diverged, log });
+            if (settled) {
+                // settle ends with its own `bd dolt pull` + `bd dolt push`, so
+                // a resolved settle means this clone is already current --
+                // there is nothing left for this bracket to pull.
+                return { ok: true, member, recovered: true, settledTables: settled.resolvedTables || [] };
+            }
+            throw diverged;
         }
         if (pull.kind === 'auth') {
             // apra-fleet-spp: a credential failure is its own class. It is NOT
@@ -531,18 +578,18 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * (including the reconcile/re-push) -- see runDoltStep's AUTH SELF-HEAL
  * CONTRACT.
  *
- * `opts.recover` (apra-fleet-vkc.1) is the optional Path A -> Path B -> Tier 2
- * recovery ladder callback (buildDoltRecoveryLadder, dolt-recovery-tier2.mjs).
- * When present, a divergence that outlives the bounded reconcile attempts the
- * ladder before the DoltDivergedError is surfaced as BEADS_SYNC_CONFLICT; when
- * absent the divergence propagates immediately (pre-vkc.1 behavior).
+ * `opts.settle` is the optional deterministic conflict-settlement callback
+ * (buildSettleCallback, dolt-settle.mjs). When present, a divergence that
+ * outlives the bounded reconcile runs settle before the DoltDivergedError is
+ * surfaced as BEADS_SYNC_CONFLICT; when absent the divergence propagates
+ * immediately (pre-settle behavior).
  *
  * @param {string} member
- * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function, recover?: () => Promise<{ ok: boolean, tier: string }> }} opts
- * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, recoveryTier?: string }>}
+ * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function, settle?: () => Promise<{ ok: boolean, resolvedTables?: string[] }> }} opts
+ * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, settledTables?: string[] }>}
  */
 export async function doltPushAfter(member, opts = {}) {
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, recover } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries = 1, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, settle } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPushAfter requires an injected command() in opts");
     }
@@ -582,35 +629,21 @@ export async function doltPushAfter(member, opts = {}) {
         }
     }
 
-    // apra-fleet-vkc.1: the recovery ladder terminal. A divergence that
-    // outlives the bounded first-successful-pusher-wins reconcile is exactly
-    // the wedged-clone failure the Path A -> Path B -> Tier 2 ladder exists
-    // for. When an `opts.recover` ladder callback is wired (runner.js builds it
-    // via buildDoltRecoveryLadder and threads it through DoltSync.syncAfter),
-    // the diverged terminal attempts it -- logging each outcome -- and only
-    // surfaces the DoltDivergedError (which runner.js classifies as the
-    // terminal BEADS_SYNC_CONFLICT) if the whole ladder fails to close the
-    // clone. With no recover callback wired the behavior is unchanged: the
-    // DoltDivergedError propagates immediately, so every existing call site and
-    // the degraded-by-default path keep their pre-vkc.1 semantics.
+    // The push-side divergence terminal. A divergence that outlives the
+    // bounded first-successful-pusher-wins reconcile is exactly the
+    // wedged-clone failure settleDoltConflicts() exists for. When an
+    // `opts.settle` callback is wired (runner.js builds it via
+    // buildSettleCallback and threads it through DoltSync.syncAfter), this
+    // terminal runs it, and only surfaces the DoltDivergedError (which
+    // runner.js classifies as the terminal BEADS_SYNC_CONFLICT) if settle
+    // itself failed operationally. Unlike the retired Tier 2, a settle that
+    // resolves IS a verified recovery: it republishes and verifies the push
+    // before returning. With no settle callback wired the behavior is
+    // unchanged: the DoltDivergedError propagates immediately.
     async function surfaceDivergence(divergedError, operation) {
-        if (typeof recover === 'function') {
-            log(`[Dolt] D-push for member '${member}' diverged (${operation}); attempting the recovery ladder (Path A -> Path B -> Tier 2) before surfacing BEADS_SYNC_CONFLICT.`);
-            let ladder = null;
-            try {
-                ladder = await recover({ operation, error: divergedError });
-            } catch (recErr) {
-                log(`[Dolt] recovery ladder itself threw for member '${member}' (treated as unrecovered): ${(recErr && recErr.message) || recErr}`);
-            }
-            if (ladder && ladder.ok) {
-                log(`[Dolt] recovery ladder RESOLVED the divergence for member '${member}' at tier '${ladder.tier}' -- D-push reconciled.`);
-                return { ok: true, member, pushed: true, reconciled: true, recovered: true, recoveryTier: ladder.tier };
-            }
-            log(
-                `[Dolt] recovery ladder did NOT resolve the divergence for member '${member}'` +
-                `${ladder ? ` (last tier '${ladder.tier}'${ladder.escalated ? ', escalated to Tier 2' : ''})` : ' (no ladder result)'}; ` +
-                'surfacing DoltDivergedError -> BEADS_SYNC_CONFLICT.',
-            );
+        const settled = await attemptSettle({ settle, member, operation: `D-push (${operation})`, error: divergedError, log });
+        if (settled) {
+            return { ok: true, member, pushed: true, reconciled: true, recovered: true, settledTables: settled.resolvedTables || [] };
         }
         throw divergedError;
     }
@@ -882,10 +915,10 @@ export function toNeutralDegradedKind(kind) {
  * adapter: declares which neutral degraded.kind values this backend can ever
  * produce, plus the booleans callers use instead of assuming Dolt semantics.
  *
- * `supportsRepair: true` (apra-fleet-vkc.1) reflects that `repair()` below now
- * runs the real Path A -> Path B -> Tier 2 recovery ladder
- * (buildDoltRecoveryLadder, dolt-recovery-tier2.mjs) rather than being a named
- * seam only -- see the RECOVERY-LADDER DISPOSITION note in this file's header.
+ * `supportsRepair: true` reflects that `repair()` below runs the real
+ * deterministic settle (settleDoltConflicts, dolt-settle.mjs) rather than
+ * being a named seam only -- see the CONFLICT-RECOVERY DISPOSITION note in
+ * this file's header.
  *
  * @returns {{ wholeStatePublish: boolean, supportsRepair: boolean, supportsCoordinationLock: boolean, kinds: string[] }}
  */
@@ -1070,10 +1103,9 @@ export async function syncBefore(member, opts = {}) {
  * `fatal: true` at a call site that must still hard-abort (the post-dispatch
  * sync bracket does, so an unreachable close can never be advertised).
  *
- * This is the seam the recovery ladder is wired behind (apra-fleet-vkc.1): an
- * `opts.recover` ladder callback is passed straight through to doltPushAfter(),
- * whose divergence terminal invokes it -- see the RECOVERY-LADDER DISPOSITION
- * note in the module header.
+ * This is the seam settle is wired behind: an `opts.settle` callback is passed
+ * straight through to doltPushAfter(), whose divergence terminal invokes it --
+ * see the CONFLICT-RECOVERY DISPOSITION note in the module header.
  *
  * `opts.mutatedItemIds` (ADR Decision 2/3, apra-fleet-417.5) is accepted per
  * the TaskDBModule contract but INTENTIONALLY NOT CONSUMED by this adapter:
@@ -1194,38 +1226,40 @@ export function flush(filter = {}) {
  * credential re-provisioning. Called by operators/tools and by ensureReady();
  * never inline from a per-operation sync path."
  *
- * WIRED (apra-fleet-vkc.1): runs the real Path A -> Path B -> Tier 2 recovery
- * ladder (buildDoltRecoveryLadder, dolt-recovery-tier2.mjs) against a wedged
- * beads clone and reports whether it was repaired. This is the operator/tool
- * entry point onto the SAME ladder doltPushAfter()'s divergence terminal
- * invokes -- one composed implementation, two callers -- so a manual repair
- * and an automatic one behave identically. `command` is required (every
- * recovery path issues `bd dolt` commands through it); the Path A sql runtime
- * and the Tier 2 `agent` are optional (see buildDoltRecoveryLadder for how
- * each path degrades when its dependency is absent).
+ * WIRED: runs the real deterministic settle (settleDoltConflicts,
+ * dolt-settle.mjs) against a wedged beads clone and reports whether it was
+ * repaired. This is the operator/tool entry point onto the SAME function both
+ * divergence terminals invoke -- one implementation, three callers -- so a
+ * manual repair and an automatic one behave identically. `command` is
+ * required (settle issues every `bd dolt`/`dolt` command through it);
+ * `platform`/`arch` are optional and probed from the member when absent.
+ * `opts.settle` may be supplied to override the callback (tests do this).
  *
  * @param {string} member
- * @param {{ command?: Function, log?: Function, agent?: Function, [key: string]: any }} [opts]
- * @returns {Promise<{ repaired: boolean, tier?: string, escalation?: string, result?: object }>}
+ * @param {{ command?: Function, log?: Function, platform?: string, arch?: string, settle?: Function, [key: string]: any }} [opts]
+ * @returns {Promise<{ repaired: boolean, escalation?: string, result?: object }>}
  */
 export async function repair(member, opts = {}) {
-    const { command, log = () => {} } = opts;
+    const { command, log = () => {}, platform, arch } = opts;
     if (typeof command !== 'function') {
-        return { repaired: false, escalation: 'not-configured: repair() requires an injected command() to run the recovery ladder' };
+        return { repaired: false, escalation: 'not-configured: repair() requires an injected command() to run settle' };
     }
-    const ladder = buildDoltRecoveryLadder(member, opts);
-    const result = await ladder();
+    const settle = typeof opts.settle === 'function'
+        ? opts.settle
+        : buildSettleCallback(member, { command, log, platform, arch });
+    let result = null;
+    try {
+        result = await settle({ operation: 'repair' });
+    } catch (err) {
+        log(`[Dolt] repair() failed operationally for member '${member}' (an infra failure, NOT an unresolvable conflict): ${(err && err.message) || err}`);
+        return { repaired: false, escalation: 'settle-operational-failure', result: { error: (err && err.message) || String(err) } };
+    }
     if (result && result.ok) {
-        log(`[Dolt] repair() resolved member '${member}' via the recovery ladder at tier '${result.tier}'.`);
-        return { repaired: true, tier: result.tier, result };
+        log(`[Dolt] repair() settled member '${member}' (tables: ${(result.resolvedTables || []).join(', ') || 'none'}).`);
+        return { repaired: true, result };
     }
-    log(`[Dolt] repair() did NOT resolve member '${member}' (tier '${result && result.tier}'${result && result.escalated ? ', escalated to Tier 2' : ''}).`);
-    return {
-        repaired: false,
-        tier: result && result.tier,
-        escalation: result && result.escalated ? 'tier-2-dispatched' : 'unrecovered',
-        result,
-    };
+    log(`[Dolt] repair() did NOT settle member '${member}'.`);
+    return { repaired: false, escalation: 'unrecovered', result };
 }
 
 export const DoltSync = {

@@ -674,6 +674,62 @@ export async function settleDoltConflicts(member, opts = {}) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Section 8: the wiring seam -- what dolt-sync.mjs/runner.js actually hold.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the MEMBER's platform/arch (never the orchestrator's -- see design
+ * doc Part 5.3). Callers that already have registry metadata should pass
+ * `platform`/`arch` explicitly; this probe is the fallback for callers (like
+ * the sprint runner's sync brackets) that only hold a member name and a
+ * command(). Members necessarily have node, since `bd` is npm-installed.
+ *
+ * @returns {Promise<{ platform: 'win32'|'linux'|'darwin', arch: string }>}
+ */
+export async function detectMemberPlatform({ command, member }) {
+    const res = await command('node -e "console.log(process.platform + \' \' + process.arch)"', {
+        member_name: member, silent: true, failSoft: true, label: `settle: detect platform for '${member}'`,
+    });
+    const text = String((res && (res.output || res.error)) || '');
+    const match = text.match(/\b(win32|linux|darwin)\b\s+(\S+)/);
+    if (!match) {
+        throw new DoltSyncError(
+            `[Dolt Settle] could not detect the platform of member '${member}' -- settle refuses to assume the orchestrator's own platform. Raw: ${text.slice(0, 200)}`,
+            { member, doltOutput: text },
+        );
+    }
+    return { platform: match[1], arch: match[2] === 'arm64' ? 'arm64' : 'x64' };
+}
+
+/**
+ * Build the zero-argument settle callback the sync brackets hold at their
+ * divergence terminals (`opts.settle` in dolt-sync.mjs). This is the single
+ * seam that REPLACES buildDoltRecoveryLadder(): one deterministic function,
+ * no tiers, no agent/model threading, and -- unlike the old ladder -- a
+ * resolved promise IS a verified recovery, because settle republishes and
+ * verifies before returning.
+ *
+ * The member's platform is resolved lazily on first invocation (nothing is
+ * probed unless a divergence actually happens) and cached for the callback's
+ * lifetime.
+ *
+ * @param {string} member
+ * @param {{ command: Function, log?: Function, platform?: string, arch?: string }} opts
+ * @returns {() => Promise<{ ok: true, resolvedTables: string[], warnings: string[], doltVersionUsed: string }>}
+ */
+export function buildSettleCallback(member, opts = {}) {
+    const { command, log = () => {}, platform, arch } = opts;
+    if (!member) throw new Error('buildSettleCallback requires a member');
+    if (typeof command !== 'function') throw new Error('buildSettleCallback requires an injected command() in opts');
+
+    let resolved = platform ? { platform, arch: arch || 'x64' } : null;
+    return async () => {
+        if (!resolved) resolved = await detectMemberPlatform({ command, member });
+        return settleDoltConflicts(member, { command, log, platform: resolved.platform, arch: resolved.arch });
+    };
+}
+
 /** Ephemeral port selection: probe sequentially, refuse to reuse a port
  *  that's already answering (design doc Part 3.5 -- an already-listening
  *  server on our intended port is orphaned residue, not a free port). */

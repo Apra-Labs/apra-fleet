@@ -465,21 +465,18 @@ test('repair() with no injected command() reports not-configured rather than pre
     assert.match(result.escalation, /not-configured/);
 });
 
-test('repair() runs the real recovery ladder (apra-fleet-vkc.1): Path B closes a wedged clone', async () => {
-    // Path A has no sql runtime injected here, so it self-defers; Path B
-    // (discard-and-re-bootstrap) needs only command() + its fs defaults, which
-    // we stub so no real filesystem/bootstrap is touched.
-    const { command } = makeCommandMock({
-        'bd bootstrap': [OK],
-        'bd dolt push': [OK],
-    });
-    const result = await DoltSync.repair('local', {
-        command,
-        // Path B fs seams, injected so the test touches no real disk.
-        readConfig: async () => ({ exists: true, raw: 'sync:\n  remote: origin\n', hasSyncRemote: true }),
-        removePath: async () => {},
-        listLocalState: async () => ['(test) nothing to discard'],
-    });
+test('repair() runs the real deterministic settle: a wedged clone is closed with no ladder, no tier, no agent', async () => {
+    // The operator/tool entry point onto the SAME settleDoltConflicts() both
+    // divergence terminals use. An injected settle stand-in keeps this a pure
+    // wiring test (dolt-settle.test.mjs owns settle's own mechanics).
+    const { command } = makeCommandMock({});
+    let invoked = 0;
+    const settle = async () => { invoked += 1; return { ok: true, resolvedTables: ['issues'], warnings: [], doltVersionUsed: '2.2.0' }; };
+
+    const result = await DoltSync.repair('local', { command, settle });
     assert.equal(result.repaired, true);
-    assert.equal(result.tier, 'path-b');
+    assert.equal(invoked, 1);
+    assert.deepEqual(result.result.resolvedTables, ['issues']);
+    assert.equal(result.tier, undefined, 'there are no recovery tiers any more');
+    assert.equal(DoltSync.capabilities().supportsRepair, true);
 });
