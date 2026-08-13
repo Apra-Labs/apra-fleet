@@ -35,6 +35,11 @@ import { deriveTimeoutMs } from '@apralabs/apra-fleet-client';
 // ClaudeProvider.ensureWorkspaceTrusted exec sequence -- that real
 // implementation is already covered by tests/ensure-workspace-trusted.test.ts.
 import { seedWorkspaceTrust } from '../src/utils/workspace-trust.js';
+// tests/setup.ts globally mocks preflight-check.js (preflightCheck always
+// resolves {ok: true} by default) so pre-existing dispatch tests are
+// unaffected -- overridden per-test below to assert the preflight_* reason
+// code mapping at the execute-prompt call site.
+import { preflightCheck } from '../src/services/preflight-check.js';
 
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
@@ -2347,6 +2352,117 @@ describe('context-headroom admission gate at the execute_prompt boundary (apra-f
       const promptCmdCalls = mockExecCommand.mock.calls.filter(c => c[0].includes('claude'));
       expect(promptCmdCalls).toHaveLength(1);
     });
+  });
+});
+
+// ---- R3 regression coverage: preflight_* reason code mapping ----
+describe('executePrompt -- preflight reason code mapping', () => {
+  const mockPreflightCheck = vi.mocked(preflightCheck);
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    provisionedRemoteAgents.clear();
+    mockPreflightCheck.mockReset();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+    vi.useRealTimers();
+  });
+
+  it('maps preflight code "offline" to reason preflight_offline and skips dispatch', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-offline-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({
+      ok: false,
+      connectivity: false,
+      authValid: false,
+      reason: 'Member is unreachable',
+      code: 'offline',
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason).toBe('preflight_offline');
+    expect(result.structuredContent?.isError).toBe(true);
+    expect(resultText(result)).toContain('Pre-dispatch check failed');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('maps preflight code "auth_missing" to reason preflight_auth_missing and skips dispatch', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-auth-missing-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({
+      ok: false,
+      connectivity: true,
+      authValid: false,
+      reason: 'No LLM credentials found',
+      code: 'auth_missing',
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason).toBe('preflight_auth_missing');
+    expect(result.structuredContent?.isError).toBe(true);
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('maps preflight code "auth_expired" to reason preflight_auth_expired and skips dispatch', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-auth-expired-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({
+      ok: false,
+      connectivity: true,
+      authValid: false,
+      reason: 'OAuth token expired',
+      code: 'auth_expired',
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason).toBe('preflight_auth_expired');
+    expect(result.structuredContent?.isError).toBe(true);
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('falls back to reason dispatch_failed for an unrecognized preflight code', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-unknown-code-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({
+      ok: false,
+      connectivity: true,
+      authValid: false,
+      reason: 'Something else went wrong',
+      code: undefined,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason).toBe('dispatch_failed');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to dispatch when preflight passes (ok: true)', async () => {
+    const member = makeTestAgent({ friendlyName: 'preflight-ok-member' });
+    addAgent(member);
+    mockPreflightCheck.mockResolvedValue({ ok: true, connectivity: true, authValid: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '{"is_error": false, "result": "done"}', stderr: '', code: 0 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+    expect(result.structuredContent?.reason ?? '').not.toMatch(/^preflight_/);
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('skips the preflight check entirely for local members', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-preflight-local-test-'));
+    try {
+      const member = makeTestLocalAgent({ friendlyName: 'preflight-local-member', workFolder: tmpDir });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue({ stdout: '{"is_error": false, "result": "done"}', stderr: '', code: 0 });
+
+      await executePrompt({ member_id: member.id, prompt: 'task', resume: false, timeout_s: 5 });
+      expect(mockPreflightCheck).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
