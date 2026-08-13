@@ -20,7 +20,7 @@ design's `settle()` step is built from.
 | 5.5 V2 | `dolt-manual-recovery-verified.md` step 1 corrected to the pinned installer | DONE |
 | 6 | `scripts/dolt-settle-integration.mjs` | DONE |
 | 4 | live 3-OS verification | DONE (all 3 PASS, 2026-08-13 -- see Part 4) |
-| 8 | beads audit executed | PENDING |
+| 8 | beads audit executed | DONE (2026-08-13 -- see Part 8 dispositions) |
 
 Produced by a deep architecture review (apra-fleet-ga61, apra-fleet-5mqg
 evidence chains, full reads of dolt-sync.mjs / dolt-recovery*.mjs / runner.js /
@@ -1312,6 +1312,29 @@ a whole parent epic whose disposition assumed the old ladder was working.
 None of this list should be actioned automatically -- each item needs a
 deliberate close/reopen/comment decision once `dolt-settle.mjs` actually
 lands and passes the Part 6 integration script, not before.
+
+**EXECUTED 2026-08-13**, after Part 4's live 3-OS pass. What was actually done,
+so the list below reads as history rather than as a pending action:
+
+- 8.1 -- `apra-fleet-ga61` and `apra-fleet-5mqg`: CLOSED, each with an
+  evidence comment citing the shipped code, the commit range, and the live
+  3-OS table. ga61's close comment explicitly scopes OUT the separate bd-side
+  auto-start "database not found" readiness race, which this work does not
+  claim to fix (it did not occur in any live run -- bd stayed embedded).
+- 8.2 -- `apra-fleet-vkc` and `apra-fleet-vkc.1`: NOT reopened; each received
+  a superseding comment correcting its inaccurate close reason (the ladder was
+  "wired" only in the literal sense) and recording that option (b),
+  decommission, is what finally shipped. `apra-fleet-vkc.2`: comment only, its
+  narrower claim was and remains true.
+- 8.3 -- `apra-fleet-417`: bookkeeping comment only; status untouched and
+  `apra-fleet-66u` deliberately not touched. `apra-fleet-k7b.4` / `k7b.8`:
+  naming/semantics comment only, no reopen -- `BEADS_SYNC_CONFLICT` is kept
+  as-is (public terminal string) despite now firing only on operational
+  failure.
+- 8.4 -- `apra-fleet-iiny`: not touched. The exclusion was made doc-side
+  instead, in `escalate-to-llm-design.md` (Dolt/beads-sync wedging is out of
+  sprint-doctor's symptom scope, pointing here).
+- 8.5 -- no action taken, as specified.
 
 ### 8.1 Close once settle() lands and is verified (Part 4/6 green on all 3 OSes)
 
