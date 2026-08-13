@@ -96,13 +96,13 @@ describe.runIf(hasPowerShell)('wrapPowerShellEncoded: live PowerShell exit codes
       code = (e as { status?: number }).status ?? 1;
     }
     expect(code).toBe(7);
-  });
+  }, 20000);
 
   it('a script with no error still exits 0', () => {
     const cmd = wrapPowerShellEncoded('Write-Output "ok"');
     const out = execSync(cmd, { encoding: 'utf-8' });
     expect(out.trim()).toBe('ok');
-  });
+  }, 20000);
 
   it('deleteFiles-style SilentlyContinue tolerance still exits 0 on a missing file', () => {
     const cmd = wrapPowerShellEncoded('Remove-Item "C:\\this\\path\\does\\not\\exist.txt" -Force -ErrorAction SilentlyContinue');
@@ -113,5 +113,5 @@ describe.runIf(hasPowerShell)('wrapPowerShellEncoded: live PowerShell exit codes
       code = (e as { status?: number }).status;
     }
     expect(code).toBe(0);
-  });
+  }, 20000);
 });

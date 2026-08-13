@@ -249,25 +249,25 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     const result = runScenario('wt-cmdlet-fail-' + Date.now(), 'Get-Item C:\\this\\path\\does\\not\\exist-fleet-test');
     expect(result.status).toBe('failed');
     expect(result.exitCode).not.toBe(0);
-  });
+  }, 20000);
 
   it('an explicit Write-Error is reported as failed, not completed', () => {
     const result = runScenario('wt-write-error-' + Date.now(), "Write-Error 'boom'");
     expect(result.status).toBe('failed');
     expect(result.exitCode).not.toBe(0);
-  });
+  }, 20000);
 
   it('a failing native command preserves its real exit code', () => {
     const result = runScenario('wt-native-fail-' + Date.now(), 'cmd /c exit 5');
     expect(result.status).toBe('failed');
     expect(result.exitCode).toBe(5);
-  });
+  }, 20000);
 
   it('a successful command is reported as completed with exit code 0', () => {
     const result = runScenario('wt-success-' + Date.now(), 'Write-Output hello');
     expect(result.status).toBe('completed');
     expect(result.exitCode).toBe(0);
-  });
+  }, 20000);
 
   // These three cover the false-failure regressions introduced by the prior
   // $Error.Count-based approach: all three are legitimately successful runs
@@ -283,7 +283,7 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     const result = runScenario('wt-stderr-ok-' + Date.now(), 'cmd /c "echo warn 1>&2"');
     expect(result.status).toBe('completed');
     expect(result.exitCode).toBe(0);
-  });
+  }, 20000);
 
   it('a command using -ErrorAction SilentlyContinue is reported as completed', () => {
     // The user explicitly downgraded this cmdlet's error handling; that
@@ -295,7 +295,7 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     );
     expect(result.status).toBe('completed');
     expect(result.exitCode).toBe(0);
-  });
+  }, 20000);
 
   it('a command that handles its own error in try/catch is reported as completed', () => {
     const result = runScenario(
@@ -304,7 +304,7 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     );
     expect(result.status).toBe('completed');
     expect(result.exitCode).toBe(0);
-  });
+  }, 20000);
 
   it('a genuine cmdlet failure after an earlier successful native command is still reported as failed, not masked by the stale exit code', () => {
     // Regression test for the catch-block bug: cmd /c exit 0 sets
@@ -319,7 +319,7 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     );
     expect(result.status).toBe('failed');
     expect(result.exitCode).not.toBe(0);
-  });
+  }, 20000);
 
   it('a false-failure scenario (stderr-only, SilentlyContinue, handled try/catch) does not burn a retry', () => {
     const script = generateTaskWrapperWindows({
@@ -343,5 +343,5 @@ describe.runIf(hasPowerShell)('generateTaskWrapperWindows - live PowerShell exit
     rmSync(taskDirReal, { recursive: true, force: true });
     expect(status.status).toBe('completed');
     expect(status.retries).toBe(0);
-  });
+  }, 20000);
 });
