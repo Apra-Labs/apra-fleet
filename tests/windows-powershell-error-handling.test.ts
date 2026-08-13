@@ -59,10 +59,13 @@ describe('WindowsCommands.gitCurrentBranch: no POSIX shell constructs', () => {
   });
 });
 
-// Only run the live PowerShell assertions where a real `powershell` binary is
-// available (Windows dev machines / windows-latest CI runners). Other
-// platforms in the CI OS matrix skip this without failing the suite.
-const hasPowerShell = (() => {
+// Only run the live PowerShell assertions on actual Windows where a real
+// `powershell` binary is available (Windows dev machines / windows-latest CI
+// runners). These tests use Windows-only constructs (cmd.exe, batch exit
+// codes) that a `powershell`/`pwsh` binary on macOS/Linux won't behave the
+// same for, so require the platform check too, not just binary presence.
+// Other platforms in the CI OS matrix skip this without failing the suite.
+const hasPowerShell = process.platform === 'win32' && (() => {
   try {
     execSync('powershell -Command "$true"', { stdio: 'ignore' });
     return true;

@@ -197,12 +197,15 @@ describe('generateTaskWrapperWindows - structure', () => {
   });
 });
 
-// Only run the live PowerShell assertions where a real `powershell` binary is
-// available (Windows dev machines / windows-latest CI runners). Other
+// Only run the live PowerShell assertions on actual Windows where a real
+// `powershell` binary is available (Windows dev machines / windows-latest CI
+// runners). This suite relies on Windows-only env vars (e.g. $env:USERPROFILE)
+// that a `powershell`/`pwsh` binary on macOS/Linux won't populate the same
+// way, so require the platform check too, not just binary presence. Other
 // platforms in the CI OS matrix skip this without failing the suite.
 // See tests/windows-powershell-error-handling.test.ts for the established
 // hasPowerShell / describe.runIf pattern this follows.
-const hasPowerShell = (() => {
+const hasPowerShell = process.platform === 'win32' && (() => {
   try {
     execSync('powershell -Command "$true"', { stdio: 'ignore' });
     return true;
