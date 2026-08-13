@@ -19,7 +19,7 @@ vi.mock('../src/services/service-manager/index.js', () => ({
   gracefulStopByServerJson: mockGracefulStop,
 }));
 
-import { WindowsServiceManager } from '../src/services/service-manager/windows.js';
+import { WindowsServiceManager, hasInteractiveSession } from '../src/services/service-manager/windows.js';
 import { LinuxServiceManager } from '../src/services/service-manager/linux.js';
 import { MacOSServiceManager } from '../src/services/service-manager/macos.js';
 
@@ -131,6 +131,53 @@ describe('WindowsServiceManager', () => {
     it('returns false when schtasks query throws', async () => {
       vi.mocked(execFileSync).mockImplementation(() => { throw new Error('not found'); });
       expect(await new WindowsServiceManager().isInstalled()).toBe(false);
+    });
+  });
+
+  describe('hasInteractiveSession', () => {
+    // Captured real 'query user' text, one active console session.
+    const activeSessionOutput =
+      ' USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\r\n' +
+      '>alice                 console             1  Active          .  8/12/2026 9:00 AM\r\n';
+
+    // Captured real 'query user' text when there is zero interactive sessions:
+    // the command exits non-zero and prints this message instead of a table.
+    const noSessionOutput = 'No User exists for *\r\n';
+
+    it('returns hasInteractive=true and preserves raw text for an active session', () => {
+      const runner = vi.fn().mockReturnValue(activeSessionOutput);
+      const result = hasInteractiveSession(runner);
+      expect(result).toEqual({ hasInteractive: true, raw: activeSessionOutput });
+      expect(runner).toHaveBeenCalledWith('query', ['user']);
+    });
+
+    it('returns hasInteractive=false for the zero-session "No User exists for *" case', () => {
+      const runner = vi.fn().mockReturnValue(noSessionOutput);
+      const result = hasInteractiveSession(runner);
+      expect(result).toEqual({ hasInteractive: false, raw: noSessionOutput });
+    });
+
+    it('falls back to "query session" when "query user" produces no output', () => {
+      const runner = vi.fn()
+        .mockReturnValueOnce('')
+        .mockReturnValueOnce(activeSessionOutput);
+      const result = hasInteractiveSession(runner);
+      expect(runner).toHaveBeenNthCalledWith(1, 'query', ['user']);
+      expect(runner).toHaveBeenNthCalledWith(2, 'query', ['session']);
+      expect(result.hasInteractive).toBe(true);
+    });
+
+    it('does not throw and returns hasInteractive=false when the runner throws', () => {
+      const runner = vi.fn().mockImplementation(() => { throw new Error('command not found'); });
+      expect(() => hasInteractiveSession(runner)).not.toThrow();
+      expect(hasInteractiveSession(runner)).toEqual({ hasInteractive: false, raw: '' });
+    });
+
+    it('uses defaultSessionQueryRunner (execFileSync) when no runner is injected', () => {
+      vi.mocked(execFileSync).mockReturnValue(activeSessionOutput as any);
+      const result = hasInteractiveSession();
+      expect(result.hasInteractive).toBe(true);
+      expect(execFileSync).toHaveBeenCalledWith('query', ['user'], { encoding: 'utf8' });
     });
   });
 });

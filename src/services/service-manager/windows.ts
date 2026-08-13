@@ -8,6 +8,64 @@ import { BIN_DIR } from '../../cli/config.js';
 
 const WRAPPER_PATH = path.join(BIN_DIR, 'apra-fleet-service.bat');
 
+export interface InteractiveSessionResult {
+  hasInteractive: boolean;
+  raw: string;
+}
+
+/** Injectable command runner seam: takes (cmd, args), returns combined stdout+stderr text. */
+export type SessionQueryRunner = (cmd: string, args: string[]) => string;
+
+function runCaptureOutput(cmd: string, args: string[]): string {
+  try {
+    return execFileSync(cmd, args, { encoding: 'utf8' });
+  } catch (err) {
+    const e = err as { stdout?: string | Buffer; stderr?: string | Buffer };
+    const stdout = e.stdout ? e.stdout.toString() : '';
+    const stderr = e.stderr ? e.stderr.toString() : '';
+    return stdout + stderr;
+  }
+}
+
+/** Default runner used in production: shells out to 'query user' / 'query session'. */
+export const defaultSessionQueryRunner: SessionQueryRunner = (cmd, args) => runCaptureOutput(cmd, args);
+
+/**
+ * Reports whether the current Windows machine has an interactive logon session,
+ * by parsing 'query user' output (falling back to 'query session' if the first
+ * command produced no output at all, e.g. it is absent on this Windows edition).
+ *
+ * Both commands exit non-zero and print "No User exists for *" when there are
+ * zero sessions -- that is treated as hasInteractive=false, not as an error.
+ * Never throws: any failure of the underlying command runner also resolves to
+ * hasInteractive=false with whatever raw text (possibly empty) was captured.
+ */
+export function hasInteractiveSession(
+  runner: SessionQueryRunner = defaultSessionQueryRunner,
+): InteractiveSessionResult {
+  let raw = '';
+  try {
+    raw = runner('query', ['user']);
+    if (!raw.trim()) {
+      raw = runner('query', ['session']);
+    }
+  } catch {
+    raw = '';
+  }
+
+  if (!raw.trim() || /No User exists for/i.test(raw)) {
+    return { hasInteractive: false, raw };
+  }
+
+  const dataLines = raw
+    .split(/\r?\n/)
+    .filter(line => line.trim().length > 0)
+    .filter(line => !/^\s*>?\s*(USERNAME|SESSIONNAME)\b/i.test(line));
+
+  const hasInteractive = dataLines.some(line => /\bActive\b/i.test(line));
+  return { hasInteractive, raw };
+}
+
 export class WindowsServiceManager implements ServiceManager {
   async register(binaryPath: string, args: string[], logPath: string): Promise<void> {
     fs.mkdirSync(path.dirname(WRAPPER_PATH), { recursive: true });
