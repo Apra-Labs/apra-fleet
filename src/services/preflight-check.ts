@@ -52,6 +52,22 @@ export interface PreflightResult {
 const CACHE_TTL_MS = 60_000; // 1 minute
 const preflightCache = new Map<string, { passedAt: number }>();
 
+/** R2-F8: hard cap on cache size. When exceeded, the oldest entries (by
+ *  passedAt) are evicted down to 80% of the cap. A fleet with 500 members
+ *  running back-to-back dispatches would otherwise grow the Map unboundedly
+ *  (entries only expire passively on lookup, never proactively). */
+const CACHE_MAX_SIZE = 500;
+
+function evictOldestEntries(): void {
+  if (preflightCache.size <= CACHE_MAX_SIZE) return;
+  const entries = [...preflightCache.entries()]
+    .sort((a, b) => a[1].passedAt - b[1].passedAt);
+  const evictCount = preflightCache.size - Math.floor(CACHE_MAX_SIZE * 0.8);
+  for (let i = 0; i < evictCount && i < entries.length; i++) {
+    preflightCache.delete(entries[i][0]);
+  }
+}
+
 /** Clear a single member's cache entry (e.g. after a known auth change). */
 export function invalidatePreflightCache(memberId: string): void {
   preflightCache.delete(`${memberId}:conn`);
@@ -99,9 +115,13 @@ export async function preflightCheck(
   // ---- Step 1: Connectivity ----
   let latencyMs: number;
   let connectivityTimer: ReturnType<typeof setTimeout> | undefined;
+  // R2-F7: hoisted so the catch block can attach a no-op .catch to prevent
+  // an unhandled rejection when the timeout wins the race.
+  let connPromise: ReturnType<AgentStrategy['testConnection']> | undefined;
   try {
+    connPromise = strategy.testConnection();
     const conn = await Promise.race([
-      strategy.testConnection(),
+      connPromise,
       new Promise<never>((_, reject) => {
         connectivityTimer = setTimeout(() => reject(new Error('preflight connectivity timeout (10s)')), 10_000);
       }),
@@ -121,6 +141,10 @@ export async function preflightCheck(
     latencyMs = conn.latencyMs;
   } catch (err: any) {
     clearTimeout(connectivityTimer);
+    // R2-F7: when the timeout wins the race, testConnection() keeps running
+    // with no await. Attach a no-op .catch so its eventual rejection does not
+    // surface as an unhandled promise rejection.
+    connPromise?.catch(() => {});
     logLine('preflight', `FAIL connectivity: ${err.message}`, agent);
     return {
       ok: false,
@@ -134,6 +158,7 @@ export async function preflightCheck(
   // ---- Step 2: Auth presence (skip for no-LLM members or when caller opts out) ----
   if (options?.skipAuth || agent.llmProvider === 'none') {
     preflightCache.set(`${agent.id}:conn`, { passedAt: Date.now() });
+    evictOldestEntries();
     return { ok: true, connectivity: true, authValid: true, latencyMs };
   }
 
@@ -240,6 +265,7 @@ export async function preflightCheck(
   // All checks passed
   logLine('preflight', `OK (${latencyMs}ms, oauth=${oauthFilePresent}, apikey=${apiKeyPresent})`, agent);
   preflightCache.set(`${agent.id}:full`, { passedAt: Date.now() });
+  evictOldestEntries();
   return {
     ok: true,
     connectivity: true,
