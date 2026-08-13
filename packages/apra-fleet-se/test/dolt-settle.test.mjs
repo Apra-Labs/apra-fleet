@@ -168,12 +168,24 @@ test('ensurePinnedDolt: hard install failure (not a lock) throws DoltBinaryUnava
  * strings settleDoltConflicts() issues: version probe, WMI spawn, TCP probe,
  * `dolt --no-tls ... sql -r json -q "..."`, `bd dolt pull/push`, kill.
  */
-function makeSettleFixture({ conflictTables = [{ table: 'issues' }], issuesHasUpdatedAt = true, pushOk = true } = {}) {
+function makeSettleFixture({
+    conflictTables = [{ table: 'issues' }],
+    issuesHasUpdatedAt = true,
+    pushOk = true,
+    // Per-table schema the fake information_schema answers with. `columns` is
+    // what information_schema.columns returns; `pk` is what
+    // key_column_usage returns for CONSTRAINT_NAME = 'PRIMARY'.
+    schema = {
+        labels: { columns: ['issue_id', 'label'], pk: ['issue_id', 'label'] },
+    },
+} = {}) {
     const state = {
         conflicts: conflictTables,
         resolvedTables: [],
         merged: false,
         committed: false,
+        inserts: [],   // every INSERT INTO ... statement settle issued
+        updates: [],   // every UPDATE ... statement settle issued
     };
     const timeline = [];
     let serverKilledBeforePush = null;
@@ -230,12 +242,23 @@ function makeSettleFixture({ conflictTables = [{ table: 'issues' }], issuesHasUp
                 return { ok: true, output: JSON.stringify(state.conflicts), error: null };
             }
             if (/information_schema\.columns/.test(q)) {
-                const cols = issuesHasUpdatedAt
+                const t = (q.match(/TABLE_NAME = '([^']+)'/) || [])[1];
+                const defaultCols = issuesHasUpdatedAt
                     ? ['id', 'title', 'status', 'updated_at']
                     : ['id', 'title', 'status'];
+                const cols = (schema[t] && schema[t].columns) || defaultCols;
                 return { ok: true, output: JSON.stringify(cols.map((c) => ({ COLUMN_NAME: c }))), error: null };
             }
-            if (/UPDATE `issues`/.test(q)) return { ok: true, output: '', error: null };
+            if (/information_schema\.key_column_usage/.test(q)) {
+                const t = (q.match(/TABLE_NAME = '([^']+)'/) || [])[1];
+                const pk = (schema[t] && schema[t].pk) || [];
+                return { ok: true, output: JSON.stringify(pk.map((c) => ({ COLUMN_NAME: c }))), error: null };
+            }
+            if (/INSERT INTO /.test(q)) {
+                state.inserts.push(q);
+                return { ok: true, output: '', error: null };
+            }
+            if (/UPDATE `/.test(q)) { state.updates.push(q); return { ok: true, output: '', error: null }; }
             if (/CALL DOLT_CONFLICTS_RESOLVE/.test(q)) {
                 const m = q.match(/DOLT_CONFLICTS_RESOLVE\\?\('[^']+',\s*'([^']+)'\)/);
                 if (m) state.resolvedTables.push(m[1]);
@@ -289,6 +312,65 @@ test('settleDoltConflicts: a table with no updated_at column resolves via plain 
     const result = await settleDoltConflicts('fleet-mac', { command, platform: 'darwin' });
     assert.equal(result.ok, true);
     check(state.resolvedTables.includes('issues'), 'issues must still resolve even without updated_at');
+});
+
+// ---------------------------------------------------------------------------
+// labels set-union (design doc Part 3.2 step 4). A plain --theirs resolve is
+// NOT enough for an add/add conflict: it drops the other side's added rows.
+// Settle must INSERT the missing their_* rows first, keyed on the table's REAL
+// uniqueness key read from information_schema, and only then clear the markers.
+// ---------------------------------------------------------------------------
+
+test('settleDoltConflicts: labels conflict fires a real set-union INSERT keyed on the live-read primary key, then clears the markers', async () => {
+    const { command, state } = makeSettleFixture({
+        conflictTables: [{ table: 'labels' }],
+        schema: { labels: { columns: ['issue_id', 'label'], pk: ['issue_id', 'label'] } },
+    });
+    const result = await settleDoltConflicts('m1', { command, platform: 'linux' });
+    assert.equal(result.ok, true);
+
+    check(state.inserts.length === 1, `labels must be resolved with exactly one set-union INSERT (got ${state.inserts.length})`);
+    const sql = state.inserts[0];
+    check(/INSERT INTO `labels` \(`issue_id`, `label`\)/.test(sql), `the INSERT must target the real column list read from information_schema: ${sql}`);
+    check(/SELECT c\.their_issue_id, c\.their_label/.test(sql), 'the union must select the their_* projection (our rows are already in the working set)');
+    check(/FROM dolt_conflicts_labels c/.test(sql), 'the union must read from the table-specific dolt_conflicts_ view');
+    check(/NOT EXISTS/.test(sql), 'the union must skip their_* rows already present on our side, never blind-insert duplicates');
+    check(/t\.`issue_id` = c\.their_issue_id AND t\.`label` = c\.their_label/.test(sql), `the NOT EXISTS identity must use EVERY primary-key column, not a hardcoded single column: ${sql}`);
+    check(!/hardcoded|our_issue_id/.test(sql), 'settle must not re-insert our own rows -- they already exist in the working set');
+    check(state.resolvedTables.includes('labels'), 'the conflict markers must still be cleared after the data-level union');
+});
+
+test('settleDoltConflicts: labels set-union honours a DIFFERENT uniqueness key without any hardcoded column names', async () => {
+    const { command, state } = makeSettleFixture({
+        conflictTables: [{ table: 'labels' }],
+        schema: { labels: { columns: ['bead_id', 'name', 'created_at'], pk: ['bead_id', 'name'] } },
+    });
+    await settleDoltConflicts('m1', { command, platform: 'linux' });
+    const sql = state.inserts[0];
+    check(/INSERT INTO `labels` \(`bead_id`, `name`, `created_at`\)/.test(sql), `column list must come from the live schema: ${sql}`);
+    check(/t\.`bead_id` = c\.their_bead_id AND t\.`name` = c\.their_name/.test(sql), `identity must come from the live PK, not a guessed (issue_id,label): ${sql}`);
+    check(!/created_at` = c\.their_created_at/.test(sql), 'a non-key audit column must not participate in the uniqueness identity');
+});
+
+test('settleDoltConflicts: labels with no declared PRIMARY KEY falls back to whole-row identity rather than skipping the union', async () => {
+    const { command, state } = makeSettleFixture({
+        conflictTables: [{ table: 'labels' }],
+        schema: { labels: { columns: ['issue_id', 'label'], pk: [] } },
+    });
+    await settleDoltConflicts('m1', { command, platform: 'linux' });
+    const sql = state.inserts[0];
+    check(/t\.`issue_id` = c\.their_issue_id AND t\.`label` = c\.their_label/.test(sql), `with no PK the union must fall back to full-row identity: ${sql}`);
+});
+
+test('settleDoltConflicts: a union table whose columns cannot be read degrades to --theirs instead of issuing a broken INSERT', async () => {
+    const { command, state } = makeSettleFixture({
+        conflictTables: [{ table: 'labels' }],
+        schema: { labels: { columns: [], pk: [] } },
+    });
+    const result = await settleDoltConflicts('m1', { command, platform: 'linux' });
+    assert.equal(result.ok, true);
+    assert.equal(state.inserts.length, 0, 'no INSERT may be issued when the column list is unknown');
+    check(state.resolvedTables.includes('labels'), 'settle must still resolve the table (totality), just via plain --theirs');
 });
 
 test('settleDoltConflicts: requires platform to be explicitly supplied, never assumes process.platform', async () => {

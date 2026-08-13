@@ -1,10 +1,26 @@
 # Dolt sync redesign: from a 3-tier recovery ladder to one deterministic settle step
 
-Status: DESIGN, not yet implemented. Written 2026-08-13 on branch
-`fix/dolt-settle-recovery`. This is the design this branch's implementation
-work encodes -- see `dolt-manual-recovery-verified.md` for the live-verified
-mechanical spec (exact flags, exact commands, exact OS-specific detachment
-technique) this design's `settle()` step is built from.
+Status: BEING IMPLEMENTED on branch `fix/dolt-settle-recovery` (written
+2026-08-13). Per-part implementation status is tracked in "Implementation
+status" immediately below; Part 4's verification table is the live-run record.
+See `dolt-manual-recovery-verified.md` for the live-verified mechanical spec
+(exact flags, exact commands, exact OS-specific detachment technique) this
+design's `settle()` step is built from.
+
+### Implementation status
+
+| Part | Item | Status |
+|------|------|--------|
+| 3.1-3.2, 5 | `fleet-sprint/dolt-settle.mjs` + `test/dolt-settle.test.mjs` | DONE |
+| 3.2 step 4 | `labels` set-union (real INSERT, live-read uniqueness key) | DONE |
+| 2.4, 3.2 | settle wired at the push AND pull/readiness divergence terminals | PENDING |
+| 2.4 | old ladder (`dolt-recovery*.mjs`, tier-2 runbook) retired | PENDING |
+| 3.4 | mutex lease renewal while held | PENDING |
+| 3.3 | supervisor orphaned-sql-server sweep | PENDING |
+| 5.5 V2 | `dolt-manual-recovery-verified.md` step 1 corrected to the pinned installer | PENDING |
+| 6 | `scripts/dolt-settle-integration.mjs` | PENDING |
+| 4 | live 3-OS verification | PENDING |
+| 8 | beads audit executed | PENDING |
 
 Produced by a deep architecture review (apra-fleet-ga61, apra-fleet-5mqg
 evidence chains, full reads of dolt-sync.mjs / dolt-recovery*.mjs / runner.js /
