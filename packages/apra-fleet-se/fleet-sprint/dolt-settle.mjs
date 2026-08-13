@@ -243,7 +243,11 @@ async function installPinnedDolt({ command, member, platform, arch, doltPath, lo
  *  platform, corrupted download) that must still throw? */
 function isBinaryLockedError(output) {
     const text = String(output || '');
-    return /being used by another process|Access to the path .* is denied|ETXTBSY|EBUSY|text file busy|Permission denied/i.test(text);
+    // NOTE: deliberately no bare "Permission denied" -- that also matches an
+    // ordinary POSIX EACCES (wrong perms, non-lock cause), which would waste
+    // a kill-and-retry cycle on a failure the retry can never fix. ETXTBSY /
+    // EBUSY / "text file busy" already cover the real POSIX in-use case.
+    return /being used by another process|Access to the path .* is denied|ETXTBSY|EBUSY|text file busy/i.test(text);
 }
 
 /** Kill any process whose executable path is exactly the fleet-managed dolt
@@ -787,9 +791,15 @@ export async function settleDoltConflicts(member, opts = {}) {
             const dataDir = status.dataDir || DEFAULT_EMBEDDED_DATA_DIR;
             port = await pickFreePort({ command, member, platform, portRangeStart, portRangeEnd });
 
-            // A stray already-listening server on our chosen port/data dir is
-            // orphaned residue from an interrupted prior attempt, not a
-            // legitimate second target -- kill it, then spawn fresh (Part 3.5).
+            // A busy candidate port is SKIPPED, not killed-and-reused: pickFreePort
+            // only ever hands back a port nothing answers on (design doc Part 3.5,
+            // amended -- see pickFreePort's own docstring below for why). A
+            // stray already-listening server on/near our data dir is left for
+            // the supervisor's orphan sweep to reap; settle does not attempt to
+            // distinguish "genuinely orphaned residue" from "another concurrent
+            // settle legitimately in progress" inline, since getting that
+            // distinction wrong (killing a live settle) is worse than the
+            // bounded wait on the sweep.
             const spawned = await spawnEphemeralServer({ command, member, platform, doltPath: doltInfo.doltPath, dataDir, host, port, log });
             pid = spawned.pid;
             weSpawnedTheServer = true;
@@ -798,15 +808,14 @@ export async function settleDoltConflicts(member, opts = {}) {
 
         // If not preflight-validated by the pin ladder, the fallback dolt
         // must pass a harmless functional preflight before any real data is
-        // touched (Part 5.6 step 3).
+        // touched (Part 5.6 step 3). runDoltSql() already throws a
+        // DoltSyncError on any command failure (res.ok === false) and
+        // otherwise always returns an array (parseDoltJsonRows never returns
+        // a non-array) -- so that throw IS the gate; there is no reachable
+        // "succeeded but returned something unusable" case to additionally
+        // check here.
         if (!doltInfo.pinned) {
-            const preflight = await runDoltSql({ command, member, platform, doltPath: doltInfo.doltPath, host, port, query: 'SELECT 1;', log });
-            if (!Array.isArray(preflight)) {
-                throw new DoltBinaryUnavailableError(
-                    `[Dolt Settle] fallback dolt ${doltInfo.version} on member '${member}' failed its functional preflight -- refusing to reopen the merge with an unverified client.`,
-                    { member, probedPath: doltInfo.doltPath, repairCommand: `manually replace the dolt binary on ${member}` },
-                );
-            }
+            await runDoltSql({ command, member, platform, doltPath: doltInfo.doltPath, host, port, query: 'SELECT 1;', log });
         }
 
         // Step 3/4: re-open the merge, enumerate every conflicted table.
@@ -932,10 +941,17 @@ export function buildSettleCallback(member, opts = {}) {
  * one dispatch per candidate port -- a 100-port range would otherwise be 100
  * SSH round trips.
  *
- * A port already answering is NOT reused even though it might be a settle
- * server: per design doc Part 3.5 an already-listening server on our intended
- * port is orphaned residue from an interrupted run, not a legitimate target
- * (the supervisor's orphan sweep is what reaps it).
+ * A port already answering is NOT reused even though it might be an orphaned
+ * settle server: per design doc Part 3.5, this is a DELIBERATE, accepted
+ * trade-off, not the originally-sketched "kill it, then spawn fresh" -- a
+ * same-data-dir orphan cannot be safely distinguished inline from another
+ * concurrent settle legitimately in progress without risking killing a live
+ * one, so settle always skips to the next free port and leaves reaping to the
+ * supervisor's orphan sweep (dolt-orphan-sweep.mjs). Consequence: if the
+ * orchestrator dies mid-settle, a fresh settle attempt against the SAME data
+ * dir can be blocked (lock held / falls back read-only) for up to the sweep's
+ * age threshold plus its run interval (~15 minutes with the current
+ * defaults) until the sweep reaps the orphan.
  */
 async function pickFreePort({ command, member, platform, portRangeStart, portRangeEnd }) {
     // Same node-based probe as tcpProbeScript, scanning the range member-side

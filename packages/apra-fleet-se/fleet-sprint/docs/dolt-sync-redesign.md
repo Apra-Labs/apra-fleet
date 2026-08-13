@@ -599,16 +599,40 @@ route, and `dolt-mutex.mjs`'s `reclaimExpired()` logic already supports the
 concept (it is literally what a lease renewal resets) -- this is additive,
 not a behavior change to the reclaim logic itself.
 
-### 3.5 Handling a pre-existing live server on the target port/data dir
+### 3.5 Handling a pre-existing live server on the target port/data dir -- IMPLEMENTATION NOTE: option (b), not kill-and-reuse
 
 If step 0/2's probe finds an already-listening server (from an interrupted
 prior settle attempt, or -- per the earlier live investigation -- a stray
 `.beads/dolt` per-project-mode-looking directory that turned out to be
 orphaned residue from an old interrupted recovery): do NOT assume it is safe
-to route through. Kill it first (same teardown path as 3.2 step 6, applied
-proactively), THEN start a fresh one against the canonical data dir from
-step 0. This keeps `settleDoltConflicts` idempotent and self-healing against
-its own prior failures, not just against ordinary merge conflicts.
+to route through.
+
+**As shipped, `pickFreePort` does NOT kill-and-reuse a busy port.** The
+originally-sketched behavior above ("kill it first, then start a fresh one")
+was evaluated during implementation review and deliberately NOT built: safely
+scoping a same-data-dir kill requires distinguishing "genuinely orphaned
+residue" from "another concurrent settle legitimately in progress" without a
+race, and getting that distinction wrong (killing a live settle mid-merge) is
+worse than the bounded wait below. Instead, `pickFreePort` skips any busy
+candidate port outright and moves to the next free one; a stray orphaned
+server is left for the supervisor's orphan sweep (Part 3.3) to reap on its
+own schedule.
+
+**This is a deliberate, accepted, WEAKER guarantee than "idempotent and
+self-healing against its own prior failures" as originally stated below.**
+Concretely: if the orchestrator dies mid-settle, the orphaned server still
+holds the data dir's exclusive chunk-journal lock, and a fresh settle attempt
+against the SAME data dir can fail or come up read-only for up to the sweep's
+age threshold plus its run interval (~15 minutes with the current
+`DEFAULT_MAX_AGE_MS`/`DEFAULT_SWEEP_INTERVAL_MS` defaults) until the sweep
+reaps the orphan. Settle remains self-healing against ORDINARY merge
+conflicts (the common case) unconditionally; self-healing against its own
+prior orchestrator-death failure on the SAME data dir is bounded by the sweep
+window above, not instantaneous. 15 minutes was judged an acceptable
+worst-case bound given this failure mode requires BOTH a mid-settle
+orchestrator death AND a same-data-dir retry inside that window -- narrow
+enough that tightening the sweep's interval/threshold further was not judged
+worth the added risk of the sweep interrupting a slow-but-live settle.
 
 ### 3.6 Manual verification plan across all 3 OSes
 
@@ -946,9 +970,11 @@ process (most plausibly settle's own orphaned ephemeral server, the Part
 3. **Only then: warn and fall back, per explicit direction -- but gated,
    not blind.** Settle logs and returns a WARNING ("pin not enforced on
    <member>: could not replace <path>; proceeding with dolt <version> at
-   <path/PATH>"), selects a fallback binary -- the existing runnable binary
-   at the fleet path first, else `dolt` on the member's PATH -- and
-   requires it to pass a functional gate before any data is touched:
+   <path>"), selects a fallback binary -- the existing runnable (wrong-version)
+   binary already at the fleet-managed path (`ensurePinnedDolt()`'s actual
+   implementation never falls back further, to `dolt` on the member's PATH or
+   anywhere else) -- and requires it to pass a functional gate before any
+   data is touched:
    `dolt version` must run, and the FIRST statement issued through the
    ephemeral server must be a harmless
    `dolt --no-tls --host=... --port=... sql -q "SELECT 1"` preflight. That
