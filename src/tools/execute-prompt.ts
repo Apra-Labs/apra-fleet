@@ -25,6 +25,7 @@ import { recoverOrphanedDispatch, isRemoteProcessAlive } from '../services/orpha
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { durableOutputPath } from '../os/linux.js';
 import { LogScope, maskSecrets, truncateForLog, logWarn } from '../utils/log-helpers.js';
+import { attachMcpDisconnectHandler } from '../services/dispatch-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import { sessionRegistry } from '../services/session-registry.js';
@@ -1019,10 +1020,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // continue working. The abort handler only logs the disconnection --
   // tryKillPid is NOT called here. Explicit kills go through stop_prompt;
   // stall kills go through the stallDetector's onStall callback (line ~715).
-  const abortHandler = () => {
-    scope.abort('MCP client disconnected -- remote session continues');
-  };
-  extra?.signal?.addEventListener('abort', abortHandler);
+  const detachMcpHandler = attachMcpDisconnectHandler(extra?.signal, scope);
 
   // apra-fleet-d64.1: dispatchSignal only carries the stall detector's
   // signal, NOT the MCP client signal. This means an MCP transport drop
@@ -1404,7 +1402,7 @@ session: ${parsed.sessionId}`;
       structuredContent: { isError: true, reason: 'dispatch_failed' },
     };
   } finally {
-    extra?.signal?.removeEventListener('abort', abortHandler);
+    detachMcpHandler();
     const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens}` : '';
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);

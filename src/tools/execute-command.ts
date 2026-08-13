@@ -12,6 +12,7 @@ import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine } from '../utils/log-helpers.js';
+import { attachMcpDisconnectHandler } from '../services/dispatch-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import type { Agent } from '../types.js';
 
@@ -153,10 +154,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     // The remote command is independent of the MCP session and should continue
     // running. The abort handler only logs the disconnection -- tryKillPid is
     // NOT called here. Same pattern as execute-prompt.ts.
-    const abortHandler = () => {
-      scope.abort('MCP client disconnected -- remote session continues');
-    };
-    extra?.signal?.addEventListener('abort', abortHandler);
+    const detachMcpHandler = attachMcpDisconnectHandler(extra?.signal, scope);
   try {
 
 
@@ -310,5 +308,5 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     scope.abort(err.message);
     return `Failed to execute command on "${agent.friendlyName}": ${err.message}`;
   }
-} finally { extra?.signal?.removeEventListener('abort', abortHandler); }
+} finally { detachMcpHandler(); }
 }
