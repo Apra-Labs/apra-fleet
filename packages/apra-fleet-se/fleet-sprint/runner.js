@@ -1754,16 +1754,20 @@ export async function resolveMemberOs({ fleetApi, member, log = () => {} }) {
 }
 
 // Wraps a PowerShell script the same way src/os/windows.ts
-// wrapPowerShellEncoded() does (lines 37-41): the guard clause makes a
-// non-terminating PowerShell failure surface as a non-zero exit (apra-fleet-
-// ot2z.9's fix), and -EncodedCommand (base64 UTF-16LE) removes every quoting
-// question about which shell the transport hands the string to. runner.js is
-// a separate package and cannot import src/os/windows.ts, so the shape is
-// mirrored here, not reused.
+// wrapPowerShellEncoded() does: the guard clause makes a non-terminating
+// PowerShell failure surface as a non-zero exit (apra-fleet-ot2z.9's fix),
+// -EncodedCommand (base64 UTF-16LE) removes every quoting question about
+// which shell the transport hands the string to, and the $LASTEXITCODE check
+// before the trailing `exit 0` preserves a native command's exit code (e.g.
+// this file's own credential-read `& "<helper>.bat"` invocation below) that
+// would otherwise be masked -- without it, a broken credential-helper .bat
+// silently reports success with no `password=` line. runner.js is a separate
+// package and cannot import src/os/windows.ts, so the shape is mirrored
+// here, not reused.
 // @param {string} psScript
 // @returns {string}
 function wrapPowerShellEncodedForMember(psScript) {
-    const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; exit 0 } catch { Write-Error $_; exit 1 }`;
+    const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
     return `powershell -EncodedCommand ${Buffer.from(guarded, 'utf16le').toString('base64')}`;
 }
 
@@ -1777,14 +1781,23 @@ function wrapPowerShellEncodedForMember(psScript) {
 //   cmds.wrapPidCapture(cmds.wrapInWorkFolder(folder, cmd)) and then straight
 //   to the strategy's execCommand (src/tools/execute-command.ts:273 ->
 //   src/services/ssh.ts execCommand, which does NO shell branching of its
-//   own). For a Windows member that wrapper is raw PowerShell text
-//   (`Set-Location "<folder>"; ...`, `Write-Output "FLEET_PID:$pid"; ...` --
-//   src/os/windows.ts:328-335), yet the codebase deliberately does NOT rely on
-//   the member's default exec shell being PowerShell (src/services/member-
-//   home.ts wraps with `powershell -NoProfile -c` for exactly that reason, and
-//   src/os/windows.ts wraps with `powershell -EncodedCommand`). So this
-//   wraps EXPLICITLY with -EncodedCommand: that string is valid to launch from
-//   PowerShell AND from cmd.exe, so it is correct either way.
+//   own). wrapInWorkFolder/wrapPidCapture (src/os/windows.ts:328-335) still
+//   emit RAW PowerShell text (`Set-Location "<folder>"; ...`,
+//   `Write-Output "FLEET_PID:$pid"; ...`), NOT shell-normalized/encoded --
+//   they are NOT wrapped with -EncodedCommand, so on a Windows member whose
+//   sshd default shell is cmd.exe (not PowerShell) that outer wrapping is
+//   still garbage regardless of what this function returns. This function's
+//   own return value (the inner payload wrapPidCapture/wrapInWorkFolder wrap
+//   around) IS explicitly -EncodedCommand and is valid to launch from either
+//   PowerShell or cmd.exe on its own -- but that only protects the inner
+//   payload, not the outer Set-Location/Write-Output wrapper the codebase
+//   composes around it. Correctness end-to-end still depends on the target
+//   member's default shell being PowerShell.
+//   TODO: normalize wrapInWorkFolder/wrapPidCapture (and
+//   gitCredentialHelperWrite/gitCredentialHelperRemove/deploySSHPublicKey,
+//   which have the same raw-PowerShell issue on the write side) through a
+//   single shell-detecting wrapper so the whole composite string -- not just
+//   this function's inner payload -- is shell-agnostic.
 //
 // WHY $env:USERPROFILE AND NOT A JS-RESOLVED HOME PATH: the WRITE side
 // (src/os/windows.ts:289 gitCredentialHelperWrite) writes the helper to

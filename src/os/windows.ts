@@ -12,30 +12,34 @@ import { escapeBatchMetachars } from '../utils/shell-escape.js';
  * if the member's sshd default shell happens to be PowerShell; on a cmd.exe
  * default it silently produces garbage (apra-fleet-ot2z.10).
  *
- * `powershell -EncodedCommand <script>` exits 0 unless a *terminating* error
- * occurs -- non-terminating failures (Set-Content access-denied, Remove-Item
- * failure, a cmdlet erroring under the default
- * $ErrorActionPreference='Continue') write to stderr but still return exit
- * code 0, so callers checking the exit code can't see them
- * (apra-fleet-ot2z.12). Force $ErrorActionPreference = 'Stop' for the
- * duration of the script and re-throw any caught error via `exit 1`, so
- * non-terminating errors become terminating ones and surface as a non-zero
- * exit code. Call sites that intentionally tolerate a failure (e.g.
- * strategy.ts's deleteFiles) pass an explicit `-ErrorAction
+ * On PS 5.1, `powershell -EncodedCommand <script>`'s raw exit-code behavior
+ * already surfaces most non-terminating cmdlet failures as exit 1 (verified
+ * live: Get-Item on a missing path, Set-Content to an unwritable path both
+ * already exit 1 with no wrapping at all). The wrapper's actual value here is
+ * (a) correctly suppressing exit 1 for a failure the caller genuinely opted
+ * out of via an explicit `-ErrorAction SilentlyContinue` on an individual
+ * cmdlet (apra-fleet-ot2z.12's real, verified case), and (b) preserving the
+ * exit code of a *native* command (e.g. `& "some.bat"`, `icacls ...`) that is
+ * the last statement in the script, which would otherwise be masked by the
+ * unconditional `exit 0` below. Call sites that intentionally tolerate a
+ * failure (e.g. strategy.ts's deleteFiles) pass an explicit `-ErrorAction
  * SilentlyContinue`/`-ErrorAction Stop` on the individual cmdlet, which
  * overrides the global preference for that cmdlet and keeps its original
  * tolerate-missing-path behavior.
  *
- * A trailing `exit 0` is appended inside the try block: without it,
- * powershell.exe's own exit code falls back to reflecting `$?` of the last
- * statement, which PowerShell sets to $false whenever *any* error record was
- * written to the error stream during the session -- even one suppressed by
- * -ErrorAction SilentlyContinue on an individual cmdlet. That quirk would
- * otherwise turn every intentionally-tolerated failure (e.g. deleteFiles
- * removing an already-gone file) into a false non-zero exit.
+ * Before the trailing `exit 0`, `$LASTEXITCODE` is checked and propagated if
+ * set and non-zero: without it, a failing native command's exit code would be
+ * discarded, since PowerShell's own exit code otherwise falls back to
+ * whatever `exit 0` (or `$?` of the last statement, which PowerShell sets to
+ * $false whenever *any* error record was written to the error stream during
+ * the session -- even one suppressed by -ErrorAction SilentlyContinue on an
+ * individual cmdlet) says. That quirk would otherwise turn every
+ * intentionally-tolerated failure (e.g. deleteFiles removing an
+ * already-gone file) into a false non-zero exit, which is why the fallback
+ * stays `exit 0` rather than propagating `$?`.
  */
 export function wrapPowerShellEncoded(psScript: string): string {
-  const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; exit 0 } catch { Write-Error $_; exit 1 }`;
+  const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
   const encoded = Buffer.from(guarded, 'utf16le').toString('base64');
   return `powershell -EncodedCommand ${encoded}`;
 }
@@ -336,7 +340,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- Git ---
 
   gitCurrentBranch(folder: string): string {
-    return `git -C "${escapeWindowsArg(folder)}" branch --show-current 2>/dev/null || true`;
+    return `try { git -C "${escapeWindowsArg(folder)}" branch --show-current 2>$null } catch {}`;
   }
 
   // --- Process management ---
