@@ -33,6 +33,8 @@ vi.mock('../src/providers/index.js', () => ({
     get name() { return mockProviderName; },
     authEnvVar: 'ANTHROPIC_API_KEY',
     oauthCredentialFiles: mockOauthCredentialFiles,
+    authEnvVarForToken: (token: string) =>
+      token.startsWith('sk-ant-') ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN',
   }),
 }));
 
@@ -112,13 +114,14 @@ describe('preflightCheck', () => {
   it('passes when OAuth credential file exists', async () => {
     const agent = makeAgent();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 15 });
-    // readRemoteJson (returns file content) and apiKeyCheck run in parallel
+    // readRemoteJson (returns file content) and apiKeyCheck(s) run in parallel
     mockExecCommand.mockResolvedValueOnce({
       stdout: JSON.stringify({ claudeAiOauth: { expiresAt: new Date(Date.now() + 3600_000).toISOString() } }),
       stderr: '',
       code: 0,
     }); // readRemoteJson
-    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
 
     const result = await preflightCheck(agent);
     expect(result.ok).toBe(true);
@@ -135,7 +138,8 @@ describe('preflightCheck', () => {
       stderr: '',
       code: 0,
     }); // readRemoteJson (expired, no refreshToken)
-    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
 
     const result = await preflightCheck(agent);
     expect(result.ok).toBe(false);
@@ -143,6 +147,23 @@ describe('preflightCheck', () => {
     expect(result.authValid).toBe(false);
     expect(result.code).toBe('auth_expired');
     expect(result.reason).toContain('expired');
+  });
+
+  // ---- R2-F4: OAuth expired but API key present = pass ----
+  it('passes when OAuth is expired (no refresh) but API key is present', async () => {
+    const agent = makeAgent();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 10 });
+    mockExecCommand.mockResolvedValueOnce({
+      stdout: JSON.stringify({ claudeAiOauth: { expiresAt: new Date(Date.now() - 3600_000).toISOString() } }),
+      stderr: '',
+      code: 0,
+    }); // readRemoteJson (expired, no refreshToken)
+    mockExecCommand.mockResolvedValueOnce({ stdout: 'sk-ant-api03-XXXXX', stderr: '', code: 0 }); // apiKeyCheck ANTHROPIC_API_KEY (found!)
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
+
+    const result = await preflightCheck(agent);
+    expect(result.ok).toBe(true);
+    expect(result.authValid).toBe(true);
   });
 
   // ---- Auth: OAuth expired but refreshable ----
@@ -159,7 +180,8 @@ describe('preflightCheck', () => {
       stderr: '',
       code: 0,
     }); // readRemoteJson (expired but refreshable)
-    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck (not found)
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
 
     const result = await preflightCheck(agent);
     expect(result.ok).toBe(true);
@@ -174,7 +196,21 @@ describe('preflightCheck', () => {
     ]);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValueOnce({ stdout: '{}', stderr: '', code: 0 }); // readRemoteJson (file missing)
-    mockExecCommand.mockResolvedValueOnce({ stdout: 'sk-ant-api03-XXXXX', stderr: '', code: 0 }); // apiKeyCheck
+    mockExecCommand.mockResolvedValueOnce({ stdout: 'sk-ant-api03-XXXXX', stderr: '', code: 0 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
+
+    const result = await preflightCheck(agent);
+    expect(result.ok).toBe(true);
+    expect(result.authValid).toBe(true);
+  });
+
+  // ---- R2-F2: CLAUDE_CODE_OAUTH_TOKEN env var counts ----
+  it('passes when CLAUDE_CODE_OAUTH_TOKEN env var is present (no OAuth file, no ANTHROPIC_API_KEY)', async () => {
+    const agent = makeAgent();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValueOnce({ stdout: '{}', stderr: '', code: 0 }); // readRemoteJson (file missing)
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY (not found)
+    mockExecCommand.mockResolvedValueOnce({ stdout: 'oauth-token-value-here', stderr: '', code: 0 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN (found!)
 
     const result = await preflightCheck(agent);
     expect(result.ok).toBe(true);
@@ -186,7 +222,8 @@ describe('preflightCheck', () => {
     const agent = makeAgent();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValueOnce({ stdout: '{}', stderr: '', code: 0 }); // readRemoteJson (file missing)
-    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
 
     const result = await preflightCheck(agent);
     expect(result.ok).toBe(false);
@@ -203,7 +240,23 @@ describe('preflightCheck', () => {
     });
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValueOnce({ stdout: '{}', stderr: '', code: 0 }); // readRemoteJson (file missing)
-    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck (not in env)
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
+
+    const result = await preflightCheck(agent);
+    expect(result.ok).toBe(true);
+    expect(result.authValid).toBe(true);
+  });
+
+  // ---- R2-F2: stored CLAUDE_CODE_OAUTH_TOKEN in encryptedEnvVars counts ----
+  it('passes when agent has stored CLAUDE_CODE_OAUTH_TOKEN in encryptedEnvVars', async () => {
+    const agent = makeAgent({
+      encryptedEnvVars: { CLAUDE_CODE_OAUTH_TOKEN: 'encrypted-oauth-value' },
+    });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValueOnce({ stdout: '{}', stderr: '', code: 0 }); // readRemoteJson (file missing)
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
 
     const result = await preflightCheck(agent);
     expect(result.ok).toBe(true);
@@ -214,13 +267,14 @@ describe('preflightCheck', () => {
   it('returns cached result for a recently passing member', async () => {
     const agent = makeAgent();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    // readRemoteJson and apiKeyCheck run in parallel
+    // readRemoteJson and apiKeyCheck(s) run in parallel
     mockExecCommand.mockResolvedValueOnce({
       stdout: JSON.stringify({ claudeAiOauth: { expiresAt: new Date(Date.now() + 3600_000).toISOString() } }),
       stderr: '',
       code: 0,
     }); // readRemoteJson
-    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
 
     // First call
     const result1 = await preflightCheck(agent);
@@ -325,7 +379,10 @@ describe('preflightCheck', () => {
       stderr: '',
       code: 0,
     }); // readRemoteJson -- non-Claude shape, file present
-    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck
+    // authEnvVarForToken returns same name for both probes for non-Claude,
+    // but our mock always returns ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck 1
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck 2
 
     const result = await preflightCheck(agent);
     expect(result.ok).toBe(true);
@@ -345,7 +402,8 @@ describe('preflightCheck', () => {
       stderr: '',
       code: 0,
     }); // readRemoteJson
-    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
 
     await preflightCheck(agent);
 
@@ -366,15 +424,17 @@ describe('preflightCheck', () => {
       stderr: '',
       code: 0,
     }); // readRemoteJson
-    mockExecCommand.mockResolvedValueOnce({ stdout: 'sk-ant-api03-XXXXX', stderr: '', code: 0 }); // apiKeyCheck
+    mockExecCommand.mockResolvedValueOnce({ stdout: 'sk-ant-api03-XXXXX', stderr: '', code: 0 }); // apiKeyCheck ANTHROPIC_API_KEY
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN
 
     await preflightCheck(agent);
 
-    // Both readRemoteJson and apiKeyCheck should have been called (2 total)
-    expect(mockExecCommand).toHaveBeenCalledTimes(2);
+    // readRemoteJson + 2 apiKeyCheck calls (ANTHROPIC_API_KEY + CLAUDE_CODE_OAUTH_TOKEN)
+    expect(mockExecCommand).toHaveBeenCalledTimes(3);
     // First call: readRemoteJson
     expect(mockExecCommand.mock.calls[0][0]).toContain('readRemoteJson');
-    // Second call: apiKeyCheck
+    // Second + third calls: apiKeyCheck for both env vars
     expect(mockExecCommand.mock.calls[1][0]).toContain('echo $');
+    expect(mockExecCommand.mock.calls[2][0]).toContain('echo $');
   });
 });
