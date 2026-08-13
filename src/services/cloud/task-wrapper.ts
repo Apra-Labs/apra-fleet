@@ -124,3 +124,104 @@ export function generateTaskWrapper(config: TaskConfig): string {
 
   return lines.join('\n') + '\n';
 }
+
+/**
+ * Generate a self-contained PowerShell wrapper script for a long-running
+ * task on a Windows member. Mirrors generateTaskWrapper()'s bash script
+ * feature-for-feature (status.json shape, task.pid, task.log, F3 activity
+ * marker, F1 retry-with-restart-command) so monitor_task's Windows branch
+ * (src/tools/monitor-task.ts, already built to read
+ * $env:USERPROFILE\.fleet-tasks\<taskId>\{status.json,task.pid,task.log})
+ * needs no changes.
+ *
+ * The launcher (execute-command.ts) writes this script to
+ * $env:USERPROFILE\.fleet-tasks\<taskId>\run.ps1 and starts it detached via
+ * `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` -- spawning
+ * through the WMI provider host (session 0) rather than as a child of the
+ * current process, so the task survives the SSH session's job object being
+ * torn down when the channel closes (verified live: a plain background
+ * launch dies with the SSH channel; Win32_Process.Create does not).
+ */
+export function generateTaskWrapperWindows(config: TaskConfig): string {
+  const cmdB64 = Buffer.from(config.command, 'utf-8').toString('base64');
+  const restartB64 = Buffer.from(config.restartCommand ?? config.command, 'utf-8').toString('base64');
+  const taskId = config.taskId.replace(/'/g, "''");
+
+  const lines: string[] = [
+    "$ErrorActionPreference = 'Continue'",
+    `$TaskId = '${taskId}'`,
+    '$TaskDir = "$env:USERPROFILE\\.fleet-tasks\\$TaskId"',
+    `$MaxRetries = ${config.maxRetries}`,
+    `$ActivityInterval = ${config.activityIntervalSec}`,
+    'New-Item -Path $TaskDir -ItemType Directory -Force | Out-Null',
+    '',
+    '# Decode commands from base64 to avoid script-embedding escaping issues',
+    `$MainCmd = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${cmdB64}'))`,
+    `$RestartCmd = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${restartB64}'))`,
+    '',
+    'function Write-TaskStatus($status, $exitCode, $retries, $started) {',
+    '  $obj = [ordered]@{',
+    '    taskId = $TaskId',
+    '    status = $status',
+    '    started = $started',
+    "    updated = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')",
+    '    exitCode = $exitCode',
+    '    retries = $retries',
+    '  }',
+    '  ($obj | ConvertTo-Json -Compress) | Set-Content -Path "$TaskDir\\status.json" -NoNewline',
+    '}',
+    '',
+    "$StartedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')",
+    'Write-TaskStatus "running" $null 0 $StartedAt',
+    '',
+    '# Write our own PID (this script process, not the CIM launcher call)',
+    'Set-Content -Path "$TaskDir\\task.pid" -Value $PID -NoNewline',
+    '',
+    '# F3: background activity marker loop, mirrors the bash wrapper\'s `kill -0` poll',
+    '$ActivityJob = Start-Job -ScriptBlock {',
+    '  param($Dir, $ParentPid, $Interval)',
+    '  while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {',
+    '    Get-Date | Out-File -FilePath "$Dir\\activity" -Force',
+    '    Start-Sleep -Seconds $Interval',
+    '  }',
+    '} -ArgumentList $TaskDir, $PID, $ActivityInterval',
+    '',
+    '$Retries = 0',
+    '$ExitCode = 0',
+    'try {',
+    '  Invoke-Expression $MainCmd *>> "$TaskDir\\task.log"',
+    '  $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } else { 0 }',
+    '} catch {',
+    '  "$_" | Out-File -FilePath "$TaskDir\\task.log" -Append',
+    '  $ExitCode = 1',
+    '}',
+    '',
+    'while ($ExitCode -ne 0 -and $Retries -lt $MaxRetries) {',
+    '  $Retries++',
+    '  Write-TaskStatus "retrying" $ExitCode $Retries $StartedAt',
+    "  \"[fleet-task] retry $Retries/$MaxRetries at $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))\" | Out-File -FilePath \"$TaskDir\\task.log\" -Append",
+    '  $ExitCode = 0',
+    '  try {',
+    '    Invoke-Expression $RestartCmd *>> "$TaskDir\\task.log"',
+    '    $ExitCode = if ($LASTEXITCODE) { $LASTEXITCODE } else { 0 }',
+    '  } catch {',
+    '    "$_" | Out-File -FilePath "$TaskDir\\task.log" -Append',
+    '    $ExitCode = 1',
+    '  }',
+    '}',
+    '',
+    'Stop-Job $ActivityJob -ErrorAction SilentlyContinue | Out-Null',
+    'Remove-Job $ActivityJob -ErrorAction SilentlyContinue | Out-Null',
+    'Remove-Item -Path "$TaskDir\\task.pid" -Force -ErrorAction SilentlyContinue',
+    '',
+    'if ($ExitCode -eq 0) {',
+    '  Write-TaskStatus "completed" 0 $Retries $StartedAt',
+    '} else {',
+    '  Write-TaskStatus "failed" $ExitCode $Retries $StartedAt',
+    '}',
+    '',
+    'exit $ExitCode',
+  ];
+
+  return lines.join('\n') + '\n';
+}

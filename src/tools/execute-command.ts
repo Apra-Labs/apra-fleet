@@ -7,8 +7,9 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { buildAuthEnvPrefix } from '../utils/auth-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
-import { generateTaskWrapper } from '../services/cloud/task-wrapper.js';
-import { escapeShellArg, escapePowerShellArg } from '../utils/shell-escape.js';
+import { generateTaskWrapper, generateTaskWrapperWindows } from '../services/cloud/task-wrapper.js';
+import { escapeShellArg, escapePowerShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 import { credentialResolve, registerTaskCredentials } from '../services/credential-store.js';
 import { collectOobConfirm } from '../services/auth-socket.js';
 import { LogScope, maskSecrets, truncateForLog, logLine } from '../utils/log-helpers.js';
@@ -212,39 +213,57 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   if (input.long_running) {
     const agentOsVal = getAgentOS(agent);
 
-    // -- Hard-fail on Windows: the wrapper body is a POSIX bash script
-    // (mkdir -p, base64 -d, chmod +x, nohup ... & echo $!) that PowerShell
-    // cannot run. Refuse before minting/registering a task id so no orphan
-    // entry is left in the task-credentials registry. darwin is unaffected --
-    // mkdir -p/chmod/nohup all work there, so its advisory warning below
-    // remains exactly as-is.
-    if (agentOsVal === 'windows') {
-      return `❌ long_running is not supported on "${agent.friendlyName}": long-running tasks require a POSIX shell (bash), but this member's OS is windows.`;
-    }
-
-    const longRunningOsWarning = agentOsVal !== 'linux'
+    const longRunningOsWarning = (agentOsVal !== 'linux' && agentOsVal !== 'windows')
       ? `Note: Long-running tasks use a bash wrapper script designed for Linux. The member's OS is ${agentOsVal}, which may not support this feature.\n`
       : '';
 
     const taskId = 'task-' + Date.now().toString(36);
     registerTaskCredentials(taskId, credentials);
-    const wrapperScript = generateTaskWrapper({
-      taskId,
-      command: resolvedCommand,
-      restartCommand: resolvedRestartCommand,
-      maxRetries: input.max_retries ?? 3,
-      activityIntervalSec: 300,
-    });
-    const scriptB64 = Buffer.from(wrapperScript).toString('base64');
 
-    // Create task dir, decode + write wrapper script, chmod, launch with nohup
-    const launchCmd = cmds.wrapInWorkFolder(
-      folder,
-      `mkdir -p ~/.fleet-tasks/${taskId} && ` +
-      `printf '%s' '${scriptB64}' | base64 -d > ~/.fleet-tasks/${taskId}/run.sh && ` +
-      `chmod +x ~/.fleet-tasks/${taskId}/run.sh && ` +
-      `nohup bash ~/.fleet-tasks/${taskId}/run.sh > /dev/null 2>&1 & echo $!`,
-    );
+    let launchCmd: string;
+    if (agentOsVal === 'windows') {
+      // Detached spawn via WMI (Invoke-CimMethod Win32_Process.Create): the
+      // process is created under the WMI provider host's own session
+      // (session 0), independent of the SSH session's job object -- a plain
+      // background launch dies with the SSH channel on Windows (verified
+      // live), so `nohup ... &`'s POSIX equivalent does not exist here.
+      const wrapperScript = generateTaskWrapperWindows({
+        taskId,
+        command: resolvedCommand,
+        restartCommand: resolvedRestartCommand,
+        maxRetries: input.max_retries ?? 3,
+        activityIntervalSec: 300,
+      });
+      const scriptB64 = Buffer.from(wrapperScript, 'utf-8').toString('base64');
+      const taskDir = `$env:USERPROFILE\\.fleet-tasks\\${taskId}`;
+      const runPs1 = `${taskDir}\\run.ps1`;
+      const psCommandLine = `powershell -NoProfile -ExecutionPolicy Bypass -File "${runPs1}"`;
+      launchCmd = wrapPowerShellEncoded([
+        `New-Item -Path "${taskDir}" -ItemType Directory -Force | Out-Null`,
+        `[IO.File]::WriteAllBytes("${runPs1}", [Convert]::FromBase64String('${scriptB64}'))`,
+        `$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "${escapeWindowsArg(psCommandLine)}"; CurrentDirectory = "${escapeWindowsArg(folder)}" }`,
+        `if ($result.ReturnValue -ne 0) { Write-Error "Win32_Process.Create failed with code $($result.ReturnValue)"; exit 1 }`,
+        `Write-Output "FLEET_PID:$($result.ProcessId)"`,
+      ].join('; '));
+    } else {
+      const wrapperScript = generateTaskWrapper({
+        taskId,
+        command: resolvedCommand,
+        restartCommand: resolvedRestartCommand,
+        maxRetries: input.max_retries ?? 3,
+        activityIntervalSec: 300,
+      });
+      const scriptB64 = Buffer.from(wrapperScript).toString('base64');
+
+      // Create task dir, decode + write wrapper script, chmod, launch with nohup
+      launchCmd = cmds.wrapInWorkFolder(
+        folder,
+        `mkdir -p ~/.fleet-tasks/${taskId} && ` +
+        `printf '%s' '${scriptB64}' | base64 -d > ~/.fleet-tasks/${taskId}/run.sh && ` +
+        `chmod +x ~/.fleet-tasks/${taskId}/run.sh && ` +
+        `nohup bash ~/.fleet-tasks/${taskId}/run.sh > /dev/null 2>&1 & echo $!`,
+      );
+    }
 
     writeStatusline(new Map([[agent.id, 'busy']]));
     try {

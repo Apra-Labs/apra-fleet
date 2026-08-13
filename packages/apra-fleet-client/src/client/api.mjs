@@ -41,7 +41,12 @@
 /**
  * @typedef {Object} ExecuteCommandOptions
  * @property {string} command - The shell command to execute
- * @property {boolean} [long_running] - Run as background task
+ * @property {boolean} [long_running] - Run as background task. Supported on linux and windows
+ *   members. Windows launches the task detached via `Invoke-CimMethod Win32_Process.Create`
+ *   (WMI provider host / session 0), independent of the SSH session's job object, since a plain
+ *   background launch dies with the SSH channel there. darwin gets an advisory warning (the
+ *   wrapper script is designed for Linux) but is not blocked. Matches
+ *   src/tools/execute-command.ts's long_running branch exactly.
  * @property {number} [max_retries] - Max crash retries (long_running only)
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member

@@ -36,9 +36,11 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
   const isWindows = getAgentOS(agent) === 'windows';
 
   // POSIX (linux/darwin) task dir/commands are byte-identical to before this
-  // change. Windows never has a real task dir today (execute_command hard-fails
-  // long_running on windows), so these just need to be valid PowerShell that
-  // reports the same "not found" outcome the downstream parsers expect.
+  // change. Windows members now get a real task dir too: execute-command.ts's
+  // long_running path writes generateTaskWrapperWindows()'s run.ps1 to this
+  // same $env:USERPROFILE\.fleet-tasks\<taskId> path and launches it detached
+  // via Invoke-CimMethod Win32_Process.Create, so these commands read the
+  // same status.json/task.pid/task.log shape that script writes.
   const taskDir = `~/.fleet-tasks/${input.task_id}`;
   const winTaskDir = `$env:USERPROFILE\\.fleet-tasks\\${input.task_id}`;
 
