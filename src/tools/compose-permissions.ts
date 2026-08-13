@@ -10,6 +10,8 @@ import { getStrategy } from '../services/strategy.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getProvider } from '../providers/index.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
+import { escapePowerShellArg } from '../utils/shell-escape.js';
 import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
@@ -99,6 +101,7 @@ function saveLedger(projectFolder: string, ledger: Ledger): void {
 
 async function detectStacks(agent: Agent, projectSubdir?: string): Promise<string[]> {
   const strategy = getStrategy(agent);
+  const isWindows = (agent.os ?? 'linux') === 'windows';
   const markers = Object.keys(STACK_MAP).join(' ');
   // Resolve the directory to check on the member: prefer <workFolder>/<projectSubdir>,
   // fall back to workFolder root. Using an absolute cd ensures remote (SSH) members
@@ -106,19 +109,36 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
   const checkDir = projectSubdir
     ? `${agent.workFolder}/${projectSubdir}`.replace(/\\/g, '/')
     : agent.workFolder.replace(/\\/g, '/');
-  // TODO: unbranched POSIX && / || / 2>/dev/null -- same defect class as
-  // orphan-recovery.ts's pid-alive/file-read commands (apra-fleet review,
-  // fix/cross-shell-home-var). Not yet OS-branched for Windows members.
-  const result = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls ${markers} 2>/dev/null || true`, 10000);
+
   const found = new Set<string>();
-  for (const line of result.stdout.split('\n')) {
-    const file = line.trim();
-    if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+
+  if (isWindows) {
+    const checkDirWin = checkDir.replace(/\//g, '\\');
+    const markerList = Object.keys(STACK_MAP).map(m => escapePowerShellArg(m)).join(',');
+    // Missing directory degrades to empty output, matching the POSIX `cd ... || true`
+    // fallback, rather than a non-zero failure that would abort permission composition.
+    const markerScript = `if (Test-Path -LiteralPath "${checkDirWin}") { Get-ChildItem -LiteralPath "${checkDirWin}" -Name -ErrorAction SilentlyContinue | Where-Object { @(${markerList}) -contains $_ } }`;
+    const result = await strategy.execCommand(wrapPowerShellEncoded(markerScript), 10000);
+    for (const line of result.stdout.split('\n')) {
+      const file = line.trim();
+      if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+    }
+
+    // .sln/.csproj need glob - check separately
+    const dotnetScript = `if (Test-Path -LiteralPath "${checkDirWin}") { Get-ChildItem -Path (Join-Path "${checkDirWin}" '*') -Include *.sln,*.csproj -Name -ErrorAction SilentlyContinue }`;
+    const dotnetCheck = await strategy.execCommand(wrapPowerShellEncoded(dotnetScript), 5000);
+    if (dotnetCheck.stdout.trim()) found.add('dotnet');
+  } else {
+    const result = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls ${markers} 2>/dev/null || true`, 10000);
+    for (const line of result.stdout.split('\n')) {
+      const file = line.trim();
+      if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+    }
+    // .sln/.csproj need glob - check separately
+    const dotnetCheck = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls *.sln *.csproj 2>/dev/null || true`, 5000);
+    if (dotnetCheck.stdout.trim()) found.add('dotnet');
   }
-  // .sln/.csproj need glob - check separately
-  // TODO: same unbranched-POSIX defect class as above -- not yet OS-branched.
-  const dotnetCheck = await strategy.execCommand(`cd "${checkDir}" 2>/dev/null && ls *.sln *.csproj 2>/dev/null || true`, 5000);
-  if (dotnetCheck.stdout.trim()) found.add('dotnet');
+
   return [...found];
 }
 
@@ -389,9 +409,13 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
     if (provider.name === 'claude') {
       // Claude: read existing allow list and merge
-      // TODO: unbranched POSIX `2>/dev/null || echo` -- same defect class as
-      // orphan-recovery.ts's pid-alive/file-read commands. Not yet OS-branched.
-      const readResult = await strategy.execCommand('cat .claude/settings.local.json 2>/dev/null || echo "{}"', 5000);
+      const isWindows = (agent.os ?? 'linux') === 'windows';
+      // Missing file degrades to '{}' on both branches rather than a non-zero
+      // failure that would abort permission composition.
+      const readCmd = isWindows
+        ? wrapPowerShellEncoded(`if (Test-Path ".claude\\settings.local.json") { Get-Content -Raw ".claude\\settings.local.json" } else { '{}' }`)
+        : 'cat .claude/settings.local.json 2>/dev/null || echo "{}"';
+      const readResult = await strategy.execCommand(readCmd, 5000);
       let current: any;
       try {
         current = JSON.parse(readResult.stdout.trim());
