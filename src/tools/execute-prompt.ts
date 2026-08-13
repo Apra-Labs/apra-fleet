@@ -627,8 +627,11 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // gives it basic MCP tool access, apra-fleet-fnz.1-3) without that meaning
   // it can receive or act on this push -- routing to it anyway would silently
   // spend the full timeout_s waiting for a response that can never arrive.
-  const workspaceId = earlyWorkspaceId;
-  const rawSession = earlySession;
+  // R2-F3: re-query session registry after the preflight await (10-20s) so
+  // interactive routing sees sessions that became channelCapable during that
+  // window, rather than using the stale pre-preflight snapshot.
+  const workspaceId = getTokenIssuer().workspaceId();
+  const rawSession = sessionRegistry.get(workspaceId, agent.id);
   // apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
   // opt-in handshake, not mere JWT registration. A plain subprocess
   // connect-back (a Doer that opened an MCP tool-access session with a member
