@@ -232,6 +232,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
 
   // Invalidate preflight cache when connection or credential identity changes
   const identityChanged = hostChanged || portChanged ||
+    input.username !== undefined ||
     input.auth_type !== undefined || resolvedPassword !== undefined ||
     preEncryptedPassword !== undefined || input.key_path !== undefined ||
     input.llm_provider !== undefined;
