@@ -191,7 +191,8 @@ test('runner.js production wiring: buildSettleCallback probes the MEMBER platfor
         if (cmd.includes('process.platform')) return { ok: true, output: 'linux x64\n', error: null };
         if (cmd === 'bd dolt status') { insideSettle = true; return { ok: true, output: 'Dolt engine: embedded (in-process, no server)\n  Data: /home/u/.beads/embeddeddolt\n', error: null }; }
         if (/version"?$/.test(cmd.trim())) return { ok: true, output: 'dolt version 2.2.0\n', error: null };
-        if (/TcpTestSucceeded|dev\/tcp/.test(cmd)) return { ok: true, output: serverUp ? 'True' : 'False', error: null };
+        if (/FREEPORT/.test(cmd)) return { ok: true, output: 'FREEPORT:13300', error: null };
+        if (/PROBE:True/.test(cmd)) return { ok: true, output: serverUp ? 'PROBE:True' : 'PROBE:False', error: null };
         if (/nohup .* sql-server/.test(cmd)) { serverUp = true; return { ok: true, output: 'PID:1234', error: null }; }
         if (/^kill 1234/.test(cmd)) { serverUp = false; return OK; }
         if (/--no-tls --host=/.test(cmd)) {

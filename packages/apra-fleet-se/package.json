@@ -18,6 +18,7 @@
     "test:unit": "node scripts/run-tests.mjs mock",
     "test:integration": "node scripts/run-tests.mjs real",
     "test:record": "node scripts/run-tests.mjs record",
+    "test:dolt-settle-integration": "node scripts/dolt-settle-integration.mjs",
     "update-golden": "node -e \"require('child_process').execFileSync(process.execPath,['--test','test/golden-transcript.test.mjs'],{stdio:'inherit',env:{...process.env,UPDATE_GOLDEN:'1'}})\""
   },
   "dependencies": {

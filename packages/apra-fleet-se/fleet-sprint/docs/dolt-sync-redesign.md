@@ -18,8 +18,8 @@ design's `settle()` step is built from.
 | 3.4 | mutex lease renewal while held | DONE |
 | 3.3 | supervisor orphaned-sql-server sweep | DONE |
 | 5.5 V2 | `dolt-manual-recovery-verified.md` step 1 corrected to the pinned installer | DONE |
-| 6 | `scripts/dolt-settle-integration.mjs` | PENDING |
-| 4 | live 3-OS verification | PENDING |
+| 6 | `scripts/dolt-settle-integration.mjs` | DONE |
+| 4 | live 3-OS verification | DONE (all 3 PASS, 2026-08-13 -- see Part 4) |
 | 8 | beads audit executed | PENDING |
 
 Produced by a deep architecture review (apra-fleet-ga61, apra-fleet-5mqg
@@ -649,13 +649,75 @@ Windows (`fleet-win-dev1`), Linux (`fleet-lin-dev1`), and macOS (`fleet-mac`):
 
 ---
 
-## Part 4 -- manual verification log (fill in as runs happen)
+## Part 4 -- verification log
+
+VERIFIED 2026-08-13, all three OSes green in ONE sequential run of
+`node scripts/dolt-settle-integration.mjs --members fleet-win-dev1,fleet-lin-dev1,fleet-mac`
+(exit 0). Every row below is the script's own emitted output, pasted verbatim
+-- not a hand-written claim. Each run manufactured TWO real conflicts per
+member from two independent clones, asserted each was genuinely unmergeable
+via a failing `bd dolt pull` BEFORE settle was credited with anything, then
+asserted the settled row's VALUES (not merely "no conflicts"), convergence in
+the other clone, and zero residue.
 
 | OS | Date | Spawn technique verified? | Flag set verified? | LWW correctness verified? | Teardown clean? | Notes |
 |----|------|---------------------------|---------------------|----------------------------|------------------|-------|
-| Windows (fleet-win-dev1) | | | | | | |
-| Linux (fleet-lin-dev1) | | | | | | |
-| macOS (fleet-mac) | | | | | | |
+| fleet-win-dev1 (win32) | 2026-08-13 | yes | yes | yes | yes | PASS; dolt 2.2.0 |
+| fleet-lin-dev1 (linux) | 2026-08-13 | yes | yes | yes | yes | PASS; dolt 2.2.0 |
+| fleet-mac (darwin) | 2026-08-13 | yes | yes | yes | yes | PASS; dolt 2.2.0 |
+
+Precondition V0/V1 (Part 5.5) satisfied: all three members ran the PINNED
+`dolt 2.2.0` from `~/.apra-fleet/bin`, recorded by the script before and after
+each run; no run completed via the 5.6 degraded fallback (a DEGRADED verdict
+would have been reported instead of PASS).
+
+### 4.1 What the live runs CHANGED in this design (findings, not confirmations)
+
+The pass above was not reached by running the design as written. Seven
+mechanical claims in Parts 3/5 turned out to be wrong on real members; each
+was corrected in `dolt-settle.mjs` and is now pinned by a unit test:
+
+1. **`--theirs` after the LWW UPDATE clobbers the merged row.** Part 3.2 step
+   4 flagged this as "the one step to validate most carefully" -- and it was
+   indeed wrong. `DOLT_CONFLICTS_RESOLVE` rewrites the working-set row from the
+   chosen side, so the carefully merged row was overwritten with theirs
+   (fleet-lin-dev1: a row whose later `updated_at` was ours came back with
+   their older value). Settle now resolves LWW/union tables with `--ours`
+   AFTER writing the merged row, and separately INSERTs their-side-only rows
+   so nothing is dropped.
+2. **Whole-row recency is NOT a per-field merge.** Part 3.2's "CASE on
+   updated_at recency is total and simpler ... the unchanged side's CASE
+   branches are no-ops" is false for DISJOINT edits: the newer side's stale
+   value overwrites the other side's real change (A set `status`, B set
+   `priority`, B was newer, A's status was lost). The merge now compares each
+   field against `base_*`: untouched-by-us takes theirs, untouched-by-them
+   takes ours, both-changed falls back to LWW-by-`updated_at` with the theirs
+   tiebreak.
+3. **Each `dolt sql -q` is its own SESSION.** `SET @@dolt_allow_commit_conflicts
+   = 1` issued as a separate invocation is lost, and `DOLT_MERGE` then fails
+   with "Merge conflict detected, @autocommit transaction rolled back". Every
+   query now carries the SET in its preamble.
+4. **`dolt sql -r json` emits one JSON document PER STATEMENT**, concatenated
+   (`{}` for non-SELECTs). Parsing the output as a single document silently
+   returned zero conflicted tables on a genuinely conflicted clone.
+5. **POSIX detachment needed more than `nohup ... & disown`.** Under the
+   fleet's own bash wrapper the dispatch hung to its 300s timeout while the
+   server was up and holding the lock. The working form is a detached
+   SUBSHELL, `< /dev/null`, and the pid read from `pgrep` (not `$!`). `setsid`
+   does not exist on macOS and is resolved at runtime.
+6. **There is no portable shell one-liner for a TCP probe.** `cmd || fallback`
+   is a PowerShell 5.1 parse error; `/dev/tcp` is bash-only and fleet-mac's
+   shell is ZSH, where the probe silently reported "nothing listening" while
+   the server logged "Server ready". Both the probe and the port scan are now
+   `node -e` (every member has node) -- and PowerShell strips double quotes
+   from native arguments, so the JS is backslash-escaped there.
+7. **WMI needs an EXPANDED path.** Passing `$env:USERPROFILE\...` inside
+   Win32_Process.Create's single-quoted argument fails with ReturnValue 9
+   ("path not found"); the command line is now assembled from an expanded
+   PowerShell variable.
+
+Timings, for scale: a full settle (spawn, merge, resolve, commit, teardown,
+republish) takes roughly 8s on macOS, 15s on Windows and 20s on Linux.
 
 ---
 

@@ -131,6 +131,50 @@ function memberDoltPath(platform) {
 }
 
 // ---------------------------------------------------------------------------
+// Section 1b: shell dialect. Every command below is dispatched into the
+// MEMBER's own shell -- PowerShell (5.1, so no `&&`/`||`) on Windows, bash on
+// POSIX -- and the two disagree about things settle depends on. All of this
+// was found by running settle against real members, not by reading docs:
+//
+//   - Invoking a quoted absolute path needs PowerShell's call operator
+//     (`& "..."`); a leading `&` in bash is a syntax error outright.
+//   - Inside a double-quoted string, bash treats a backtick as command
+//     substitution while PowerShell treats it as its escape character, so a
+//     SQL identifier quote must be escaped differently for each (and SQL that
+//     can avoid backticks entirely simply does).
+//   - `cmd 2>$null || fallback` parses in bash but is a hard parse ERROR in
+//     PowerShell 5.1, so no single "works everywhere" probe string exists.
+// ---------------------------------------------------------------------------
+
+/** Invoke an executable at a quoted path with arguments, in the member's shell. */
+function invokeBinary(platform, quotedPath, args) {
+    return platform === 'win32' ? `& ${quotedPath} ${args}` : `${quotedPath} ${args}`;
+}
+
+/**
+ * Escape a SQL string so it survives as ONE double-quoted argument in the
+ * member's shell. Backticks and `$` are the dangerous characters in both
+ * dialects, for opposite reasons.
+ */
+export function escapeSqlForShell(platform, sql) {
+    const bq = String.fromCharCode(96);
+    if (platform === 'win32') {
+        // PowerShell: ` escapes; a literal backtick is a doubled backtick, a
+        // literal quote is `" and a literal $ is `$.
+        return String(sql)
+            .split(bq).join(bq + bq)
+            .replace(/\$/g, `${bq}$`)
+            .replace(/"/g, `${bq}"`);
+    }
+    // bash: backslash escapes inside double quotes.
+    return String(sql)
+        .replace(/\\/g, '\\\\')
+        .split(bq).join('\\' + bq)
+        .replace(/\$/g, '\\$')
+        .replace(/"/g, '\\"');
+}
+
+// ---------------------------------------------------------------------------
 // Section 2: `bd dolt status` parsing -- resolve the REAL data dir/mode.
 // ---------------------------------------------------------------------------
 
@@ -160,8 +204,8 @@ export async function resolveDoltStatus({ command, member, log = () => {} }) {
 // ---------------------------------------------------------------------------
 
 /** Probe an existing binary at `doltPath` for exit-0 + parseable version. */
-async function probeDoltVersion({ command, member, doltPath }) {
-    const res = await command(`& ${doltPath} version`, { member_name: member, silent: true, failSoft: true, label: `settle: probe dolt version for '${member}'` });
+async function probeDoltVersion({ command, member, doltPath, platform }) {
+    const res = await command(invokeBinary(platform, doltPath, 'version'), { member_name: member, silent: true, failSoft: true, label: `settle: probe dolt version for '${member}'` });
     const text = String((res && (res.output || res.error)) || '');
     const match = text.match(/dolt version (\d+\.\d+\.\d+\S*)/i);
     return { ok: !!(res && res.ok !== false) && !!match, version: match ? match[1] : null, raw: text };
@@ -228,7 +272,7 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
     const doltPath = memberDoltPath(platform);
     const warnings = [];
 
-    const initial = await probeDoltVersion({ command, member, doltPath });
+    const initial = await probeDoltVersion({ command, member, doltPath, platform });
     if (initial.ok && initial.version === DOLT_VERSION.replace(/^v/, '')) {
         return { doltPath, version: initial.version, pinned: true, warnings };
     }
@@ -252,11 +296,11 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
         await killProcessAtPath({ command, member, platform, doltPath, log });
         const retry = await installPinnedDolt({ command, member, platform, arch, doltPath, log });
         if (!(retry && retry.ok === false)) {
-            const reprobed = await probeDoltVersion({ command, member, doltPath });
+            const reprobed = await probeDoltVersion({ command, member, doltPath, platform });
             if (reprobed.ok) return { doltPath, version: reprobed.version, pinned: true, warnings };
         }
         // Still blocked after kill+retry -- warn and fall back (Part 5.6 step 3).
-        const fallback = await probeDoltVersion({ command, member, doltPath });
+        const fallback = await probeDoltVersion({ command, member, doltPath, platform });
         if (fallback.ok) {
             const warn = `[Dolt Settle] pin not enforced on '${member}': could not replace ${doltPath} (locked even after kill+retry); proceeding with dolt ${fallback.version} as a functionally-probed fallback. Landmines unverified on this version -- see docs/dolt-sync-redesign.md Part 5.6.`;
             log(warn);
@@ -276,7 +320,7 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
         );
     }
 
-    const reprobed = await probeDoltVersion({ command, member, doltPath });
+    const reprobed = await probeDoltVersion({ command, member, doltPath, platform });
     if (!reprobed.ok) {
         throw new DoltBinaryUnavailableError(
             `[Dolt Settle] pinned dolt install reported success but the binary still fails 'dolt version' on member '${member}' -- likely a corrupted download.`,
@@ -297,9 +341,17 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
     log(`[Dolt Settle] starting ephemeral dolt sql-server for member '${member}' at ${host}:${port} --data-dir ${dataDir}`);
 
     if (platform === 'win32') {
+        // The command line is assembled in PowerShell, from a DOUBLE-quoted
+        // $exe, so `$env:USERPROFILE` actually expands: passing the raw
+        // '$env:USERPROFILE\...' text inside WMI's single-quoted argument
+        // makes Win32_Process.Create fail with ReturnValue 9 / "path not
+        // found" (verified live on fleet-win-dev1). Paths are quoted inside
+        // the command line so a space in either survives.
         const script = [
-            `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${doltPath.replace(/^"|"$/g, '')} sql-server --host ${host} --port ${port} --data-dir ${dataDir}' }`,
-            'if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create failed with ReturnValue $($r.ReturnValue)" }',
+            `$exe = ${doltPath}`,
+            `$cl = '"' + $exe + '" sql-server --host ${host} --port ${port} --data-dir ' + '"${dataDir}"'`,
+            '$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cl }',
+            'if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create failed with ReturnValue $($r.ReturnValue) for command line: $cl" }',
             'Write-Output "PID:$($r.ProcessId)"',
         ].join('; ');
         const res = await command(script, { member_name: member, silent: true, failSoft: true, label: `settle: spawn ephemeral sql-server on '${member}'` });
@@ -313,8 +365,26 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
         return { pid: Number(pidMatch[1]) };
     }
 
+    // POSIX detachment, every piece of it verified live on fleet-lin-dev1
+    // because the obvious form does NOT work under the fleet's own bash
+    // wrapper (which backgrounds the command and `wait`s on it):
+    //   - `( ... & )` -- a SUBSHELL the dispatching shell never waits on.
+    //     A plain `nohup ... & echo PID; disown` left the dispatch hanging
+    //     until its 300s inactivity timeout while the server was actually up
+    //     and holding the data dir lock: a "spawn failure" that silently
+    //     leaves a live orphan behind.
+    //   - `setsid` -- own session, so it outlives the SSH session.
+    //   - `< /dev/null` -- otherwise the server inherits the dispatch's stdin
+    //     and the SSH channel never closes.
+    //   - the pid comes from `pgrep` on the port, not `$!`: `$!` belongs to
+    //     the subshell, not to the server we must be able to kill.
     const logPath = `/tmp/dolt-settle-${member}-${port}.log`;
-    const script = `nohup ${doltPath} sql-server --host ${host} --port ${port} --data-dir ${dataDir} > ${logPath} 2>&1 & echo "PID:$!"; disown`;
+    const matcher = `sql-server --host ${host} --port ${port}`;
+    // `setsid` does NOT exist on macOS (verified live on fleet-mac: the spawn
+    // silently produced no pid), so it is resolved at runtime and simply
+    // omitted where absent -- `nohup` inside the detached subshell is what
+    // actually keeps the server alive there.
+    const script = `SETSID=$(command -v setsid || true); ( $SETSID nohup ${doltPath} sql-server --host ${host} --port ${port} --data-dir ${dataDir} > ${logPath} 2>&1 < /dev/null & ) ; sleep 1; echo "PID:$(pgrep -f '${matcher}' | head -1)"`;
     const res = await command(script, { member_name: member, silent: true, failSoft: true, label: `settle: spawn ephemeral sql-server on '${member}'` });
     if (res && res.ok === false) {
         throw new DoltSyncError(`[Dolt Settle] failed to spawn ephemeral sql-server for member '${member}': ${res.error}`, { member, doltOutput: res.error });
@@ -328,9 +398,9 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
 
 /** Bounded poll for the server to actually accept connections -- never
  *  sleep-and-hope. */
-export async function waitForServerReady({ command, member, host, port, log = () => {}, attempts = 10, intervalMs = 500 }) {
+export async function waitForServerReady({ command, member, platform, host, port, log = () => {}, attempts = 10, intervalMs = 500 }) {
     for (let i = 0; i < attempts; i += 1) {
-        const probe = platformAwareTcpProbe({ command, member, host, port });
+        const probe = platformAwareTcpProbe({ command, member, platform, host, port });
         // eslint-disable-next-line no-await-in-loop -- intentional bounded poll
         const res = await probe;
         if (res) return true;
@@ -340,26 +410,63 @@ export async function waitForServerReady({ command, member, host, port, log = ()
     throw new DoltSyncError(`[Dolt Settle] ephemeral sql-server for member '${member}' never became reachable at ${host}:${port} after ${attempts} attempts.`, { member });
 }
 
-async function platformAwareTcpProbe({ command, member, host, port }) {
-    const res = await command(
-        `powershell -NoProfile -Command "(Test-NetConnection -ComputerName ${host} -Port ${port} -WarningAction SilentlyContinue).TcpTestSucceeded" 2>$null || (echo > /dev/tcp/${host}/${port}) 2>/dev/null && echo True`,
-        { member_name: member, silent: true, failSoft: true, label: `settle: TCP probe for '${member}'` },
-    );
-    return !!(res && res.ok !== false && /True/i.test(String(res.output || '')));
+/**
+ * Is something listening on host:port on the member?
+ *
+ * Done in NODE, not in the member's shell, because no shell one-liner works
+ * everywhere -- all of this is live-verified, not assumed:
+ *   - `cmd || fallback` is a hard PARSE ERROR in PowerShell 5.1
+ *     (fleet-win-dev1), so no single string can cover both families.
+ *   - `/dev/tcp` is a BASH feature and fleet-mac's shell is ZSH, where it does
+ *     not exist -- the probe silently reported "nothing listening" while the
+ *     server was up and logging "Server ready. Accepting connections."
+ * Every member necessarily has node (bd is npm-installed), and a single-quoted
+ * JS string survives both bash and PowerShell unchanged.
+ */
+/**
+ * Wrap a JS snippet as a `node -e` argument for the member's shell.
+ *
+ * PowerShell 5.1's native-argument passing STRIPS the double quotes inside a
+ * single-quoted string, so `require("net")` arrived at node as
+ * `require(net)` and died with a SyntaxError (verified live on
+ * fleet-win-dev1). Backslash-escaping them is the documented workaround --
+ * and must NOT be applied on POSIX, where the backslashes would survive
+ * literally into the JS.
+ */
+function nodeEval(platform, js) {
+    return `node -e '${platform === 'win32' ? js.replace(/"/g, '\\"') : js}'`;
+}
+
+function tcpProbeScript(platform, host, port, timeoutMs = 2000) {
+    return nodeEval(platform, `const net=require("net");const s=net.connect(${port},"${host}");const done=(v)=>{try{s.destroy()}catch(e){};console.log(v?"PROBE:True":"PROBE:False");process.exit(0)};s.on("connect",()=>done(true));s.on("error",()=>done(false));setTimeout(()=>done(false),${timeoutMs})`);
+}
+
+async function platformAwareTcpProbe({ command, member, platform, host, port }) {
+    const res = await command(tcpProbeScript(platform, host, port), { member_name: member, silent: true, failSoft: true, label: `settle: TCP probe for '${member}'` });
+    return /PROBE:True/i.test(String((res && res.output) || ''));
 }
 
 /** Kill the server + verify the port is actually closed. Best-effort by
  *  design (called from the happy path AND the unconditional `finally` --
  *  see settleDoltConflicts). */
 async function killServerAndVerify({ command, member, platform, pid, host, port, log = () => {} }) {
+    // Kill the recorded pid AND, belt-and-braces, anything still bound to our
+    // ephemeral port: the recorded pid is resolved by a pattern match at spawn
+    // time, so a mis-resolved pid must not be able to leave the real server
+    // running (which would hold the data dir lock and wedge the republish).
+    // Both forms are scoped to settle's own port, never to dolt at large.
+    const matcher = `sql-server --host ${host} --port ${port}`;
     if (platform === 'win32') {
-        await command(`Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`, { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` });
+        await command(
+            `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '--port ${port}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+            { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` },
+        );
     } else {
-        await command(`kill ${pid} 2>/dev/null || true`, { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` });
+        await command(`kill ${pid} 2>/dev/null; pkill -f '${matcher}' 2>/dev/null; true`, { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` });
     }
     for (let i = 0; i < 6; i += 1) {
         // eslint-disable-next-line no-await-in-loop -- bounded teardown-verify poll
-        const stillUp = await platformAwareTcpProbe({ command, member, host, port });
+        const stillUp = await platformAwareTcpProbe({ command, member, platform, host, port });
         if (!stillUp) {
             log(`[Dolt Settle] torn down ephemeral sql-server (pid ${pid}) for member '${member}'; port ${port} confirmed closed.`);
             return;
@@ -384,32 +491,69 @@ async function killServerAndVerify({ command, member, platform, pid, host, port,
  *
  * @returns {Promise<object[]>} parsed rows (empty array for statements with no result set)
  */
-export async function runDoltSql({ command, member, doltPath, host, port, query, log = () => {} }) {
-    const fullQuery = `USE beads; ${query}`.replace(/"/g, '\\"');
-    const cmd = `& ${doltPath} --no-tls --host=${host} --port=${port} sql -r json -q "${fullQuery}"`;
+export async function runDoltSql({ command, member, platform, doltPath, host, port, query, log = () => {} }) {
+    // EVERY invocation is its own SQL SESSION -- `dolt sql -q` connects,
+    // runs, and disconnects -- so session-scoped state does NOT carry over
+    // between calls. `@@dolt_allow_commit_conflicts` is therefore set on each
+    // one, not once up front: without it DOLT_MERGE fails outright with
+    // "Merge conflict detected, @autocommit transaction rolled back"
+    // (verified live on fleet-lin-dev1). The conflict data itself IS durable
+    // -- it lives in the working set -- which is what lets the subsequent
+    // resolve/commit statements run in later sessions.
+    const preamble = 'USE beads; SET @@dolt_allow_commit_conflicts = 1;';
+    const fullQuery = escapeSqlForShell(platform, `${preamble} ${query}`);
+    const cmd = invokeBinary(platform, doltPath, `--no-tls --host=${host} --port=${port} sql -r json -q "${fullQuery}"`);
     const res = await command(cmd, { member_name: member, silent: true, failSoft: true, label: `settle: dolt sql for '${member}'` });
     if (res && res.ok === false) {
         throw new DoltSyncError(`[Dolt Settle] dolt sql query failed for member '${member}': ${res.error}\nquery: ${query}`, { member, doltOutput: res.error });
     }
-    const raw = String((res && res.output) || '').trim();
+    return parseDoltJsonRows(res && res.output);
+}
+
+/**
+ * Parse the rows out of a `dolt sql -r json` batch.
+ *
+ * A multi-statement `-q` emits ONE JSON document PER STATEMENT, concatenated
+ * (`{}` for a statement with no result set, `{"rows": [...]}` for a SELECT),
+ * so a plain JSON.parse of the whole output throws and silently yielded []
+ * -- which made settle believe a genuinely conflicted clone had no conflicted
+ * tables at all, and then fail at DOLT_COMMIT with "the table(s) issues are
+ * in conflict". Verified live on fleet-lin-dev1. Every settle query carries a
+ * `USE beads; SET ...;` preamble, so this is the NORMAL shape, not an edge
+ * case: take the last row-bearing document.
+ *
+ * @param {string|null|undefined} output
+ * @returns {object[]}
+ */
+export function parseDoltJsonRows(output) {
+    const raw = String(output || '').trim();
     if (!raw) return [];
     try {
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : (Array.isArray(parsed && parsed.rows) ? parsed.rows : []);
-    } catch {
-        // CALL statements with no SELECT-shaped result, or a warning line
-        // ahead of the JSON -- not every dolt sql invocation returns JSON.
-        return [];
+        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed && parsed.rows)) return parsed.rows;
+    } catch { /* the multi-document shape below is the common case */ }
+
+    let rows = [];
+    for (const line of raw.split('\n')) {
+        const text = line.trim();
+        if (!text.startsWith('{')) continue;
+        try {
+            const doc = JSON.parse(text);
+            if (Array.isArray(doc)) rows = doc;
+            else if (Array.isArray(doc.rows)) rows = doc.rows;
+        } catch { /* not a complete JSON document on this line */ }
     }
+    return rows;
 }
 
 // ---------------------------------------------------------------------------
 // Section 6: the settle rulebook -- TOTAL over every conflicted table.
 // ---------------------------------------------------------------------------
 
-async function tableColumns({ command, member, doltPath, host, port, table }) {
+async function tableColumns({ command, member, platform, doltPath, host, port, table }) {
     const rows = await runDoltSql({
-        command, member, doltPath, host, port,
+        command, member, platform, doltPath, host, port,
         query: `SELECT COLUMN_NAME FROM information_schema.columns WHERE TABLE_NAME = '${table}';`,
     });
     return rows.map((r) => r.COLUMN_NAME || r.column_name).filter(Boolean);
@@ -420,9 +564,9 @@ async function tableColumns({ command, member, doltPath, host, port, table }) {
  *  `their_*` row is already present on our side. Falls back to the full column
  *  list (whole-row identity) when a table declares no PRIMARY KEY, which is
  *  still a correct -- if conservative -- set-union identity. */
-async function tablePrimaryKey({ command, member, doltPath, host, port, table }) {
+async function tablePrimaryKey({ command, member, platform, doltPath, host, port, table }) {
     const rows = await runDoltSql({
-        command, member, doltPath, host, port,
+        command, member, platform, doltPath, host, port,
         query: `SELECT COLUMN_NAME FROM information_schema.key_column_usage WHERE TABLE_NAME = '${table}' AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION;`,
     });
     return rows.map((r) => r.COLUMN_NAME || r.column_name).filter(Boolean);
@@ -432,18 +576,36 @@ async function tablePrimaryKey({ command, member, doltPath, host, port, table })
  *  that has an `updated_at` column -- this is what makes settle TOTAL rather
  *  than gated to a fixed table list. Falls back to a plain `--theirs`
  *  resolve for a table with no `updated_at` column. */
-async function resolveLwwTable({ command, member, doltPath, host, port, table, log }) {
+async function resolveLwwTable({ command, member, platform, doltPath, host, port, table, log }) {
     const bq = String.fromCharCode(96); // backtick, built at runtime -- avoids a literal backslash-backtick sequence in source
-    const cols = await tableColumns({ command, member, doltPath, host, port, table });
+    const cols = await tableColumns({ command, member, platform, doltPath, host, port, table });
     if (!cols.includes('updated_at')) {
         log(`[Dolt Settle] table '${table}' has no updated_at column -- resolving via plain --theirs (no per-field merge possible).`);
-        await runDoltSql({ command, member, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
+        await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
         return;
     }
     const pk = cols.includes('id') ? 'id' : cols[0];
     const mutable = cols.filter((c) => c !== pk);
+    // TRUE per-field merge, against the BASE row -- not the design doc's
+    // original whole-row "recency wins every column" simplification, which the
+    // live disjoint-fields scenario disproved on fleet-lin-dev1: with A
+    // changing `status` and B changing `priority`, B's row was simply newer,
+    // so every column took B's value and A's status change was silently lost.
+    //
+    // Per field, in order:
+    //   1. we did not touch it (ours == base) -> take theirs
+    //   2. they did not touch it (theirs == base) -> take ours
+    //   3. BOTH changed it -> last-writer-wins on updated_at, tie to theirs
+    //      (consistent with first-successful-pusher-wins: the remote already
+    //      published)
+    // `<=>` is null-safe equality, so a NULL base (add/add, no base row) falls
+    // through to the LWW branch rather than matching everything.
     const setClauses = mutable
-        .map((c) => `  t.${bq}${c}${bq} = CASE WHEN c.their_updated_at >= c.our_updated_at THEN c.their_${c} ELSE c.our_${c} END`)
+        .map((c) => `  t.${bq}${c}${bq} = CASE`
+            + ` WHEN c.our_${c} <=> c.base_${c} THEN c.their_${c}`
+            + ` WHEN c.their_${c} <=> c.base_${c} THEN c.our_${c}`
+            + ` WHEN c.their_updated_at >= c.our_updated_at THEN c.their_${c}`
+            + ` ELSE c.our_${c} END`)
         .join(',\n    ');
     const updateSql = `
         UPDATE ${bq}${table}${bq} t
@@ -453,8 +615,50 @@ async function resolveLwwTable({ command, member, doltPath, host, port, table, l
         t.updated_at = GREATEST(c.our_updated_at, c.their_updated_at)
         WHERE t.${bq}${pk}${bq} IN (SELECT our_${pk} FROM dolt_conflicts_${table});
     `;
-    await runDoltSql({ command, member, doltPath, host, port, query: updateSql });
-    await runDoltSql({ command, member, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
+    await runDoltSql({ command, member, platform, doltPath, host, port, query: updateSql });
+
+    // Their-side-only rows (an add they made that we do not have) would be
+    // DROPPED by the --ours resolve below, so carry them over first.
+    const keyCols = (await tablePrimaryKey({ command, member, platform, doltPath, host, port, table })).length > 0
+        ? await tablePrimaryKey({ command, member, platform, doltPath, host, port, table })
+        : [pk];
+    await runDoltSql({ command, member, platform, doltPath, host, port, query: buildTheirMissingInsert(table, cols, keyCols) });
+
+    // --ours, NOT --theirs. The design doc flagged this as the one step to
+    // validate live, and the live run settled it: DOLT_CONFLICTS_RESOLVE
+    // rewrites the working-set row from the chosen side, so '--theirs' after
+    // the LWW UPDATE CLOBBERS the merged row (verified on fleet-lin-dev1: a
+    // row whose later updated_at was ours came back with their older value).
+    // '--ours' keeps the row the UPDATE just merged, which is the whole point
+    // of computing it.
+    await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--ours', '${table}');` });
+}
+
+/**
+ * INSERT every `their_*` row from dolt_conflicts_<table> that is not already
+ * present on our side, keyed on `keyCols`. Shared by the LWW resolver (where
+ * it carries over their-side-only adds before an --ours resolve) and the
+ * set-union resolver (where it IS the union).
+ */
+function buildTheirMissingInsert(table, cols, keyCols) {
+    const bq = String.fromCharCode(96);
+    const quote = (c) => `${bq}${c}${bq}`;
+    const insertCols = cols.map(quote).join(', ');
+    const selectCols = cols.map((c) => `c.their_${c}`).join(', ');
+    const notNullGuard = keyCols.map((c) => `c.their_${c} IS NOT NULL`).join(' AND ');
+    // NOTE: built by concatenation, not a template literal, purely so the
+    // source never contains a backtick immediately followed by 't' -- the
+    // repo's pre-commit PowerShell-escape guard flags that 2-char sequence.
+    const matchOnKey = keyCols.map((c) => 't.' + quote(c) + ` = c.their_${c}`).join(' AND ');
+    return `
+        INSERT INTO ${quote(table)} (${insertCols})
+        SELECT ${selectCols}
+        FROM dolt_conflicts_${table} c
+        WHERE ${notNullGuard}
+          AND NOT EXISTS (
+            SELECT 1 FROM ${quote(table)} t WHERE ${matchOnKey}
+          );
+    `;
 }
 
 /**
@@ -477,45 +681,31 @@ async function resolveLwwTable({ command, member, doltPath, host, port, table, l
  * rather than issuing an INSERT it cannot construct correctly -- settle stays
  * total either way.
  */
-async function resolveUnionTable({ command, member, doltPath, host, port, table, log }) {
-    const bq = String.fromCharCode(96); // backtick, built at runtime -- avoids a literal backslash-backtick sequence in source
-    const quote = (c) => `${bq}${c}${bq}`;
-    const cols = await tableColumns({ command, member, doltPath, host, port, table });
+async function resolveUnionTable({ command, member, platform, doltPath, host, port, table, log }) {
+    const cols = await tableColumns({ command, member, platform, doltPath, host, port, table });
     if (cols.length === 0) {
         log(`[Dolt Settle] table '${table}' set-union: could not read its columns from information_schema -- falling back to a plain --theirs resolve.`);
-        await runDoltSql({ command, member, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
+        await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
         return;
     }
 
-    const pkFromSchema = await tablePrimaryKey({ command, member, doltPath, host, port, table });
+    const pkFromSchema = await tablePrimaryKey({ command, member, platform, doltPath, host, port, table });
     const keyCols = pkFromSchema.length > 0 ? pkFromSchema : cols;
     log(`[Dolt Settle] table '${table}' conflict: resolving as a set-union (both sides' rows kept; identity = ${keyCols.join(' + ')}).`);
 
-    const insertCols = cols.map(quote).join(', ');
-    const selectCols = cols.map((c) => `c.their_${c}`).join(', ');
-    const notNullGuard = keyCols.map((c) => `c.their_${c} IS NOT NULL`).join(' AND ');
-    // NOTE: built by concatenation, not a template literal, purely so the
-    // source never contains a backtick immediately followed by 't' -- the
-    // repo's pre-commit PowerShell-escape guard flags that 2-char sequence.
-    const matchOnKey = keyCols.map((c) => 't.' + quote(c) + ` = c.their_${c}`).join(' AND ');
-    const insertSql = `
-        INSERT INTO ${quote(table)} (${insertCols})
-        SELECT ${selectCols}
-        FROM dolt_conflicts_${table} c
-        WHERE ${notNullGuard}
-          AND NOT EXISTS (
-            SELECT 1 FROM ${quote(table)} t WHERE ${matchOnKey}
-          );
-    `;
-    await runDoltSql({ command, member, doltPath, host, port, query: insertSql });
-    await runDoltSql({ command, member, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
+    await runDoltSql({ command, member, platform, doltPath, host, port, query: buildTheirMissingInsert(table, cols, keyCols) });
+    // --ours, not --theirs (same live finding as resolveLwwTable): the resolve
+    // rewrites the working-set row from the chosen side, so --theirs here
+    // would undo the union by dropping the rows only WE had. Their rows have
+    // just been inserted, so --ours is what actually keeps both sides.
+    await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--ours', '${table}');` });
 }
 
 /** Plain theirs -- machine-local/config rows, and append-only tables
  *  (comments/events) where both sides already survive by construction. */
-async function resolveTheirsTable({ command, member, doltPath, host, port, table, log }) {
+async function resolveTheirsTable({ command, member, platform, doltPath, host, port, table, log }) {
     log(`[Dolt Settle] table '${table}' conflict: resolving --theirs.`);
-    await runDoltSql({ command, member, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
+    await runDoltSql({ command, member, platform, doltPath, host, port, query: `CALL DOLT_CONFLICTS_RESOLVE('--theirs', '${table}');` });
 }
 
 /** Dispatch a single conflicted table to its rulebook entry, or the generic
@@ -603,14 +793,14 @@ export async function settleDoltConflicts(member, opts = {}) {
             const spawned = await spawnEphemeralServer({ command, member, platform, doltPath: doltInfo.doltPath, dataDir, host, port, log });
             pid = spawned.pid;
             weSpawnedTheServer = true;
-            await waitForServerReady({ command, member, host, port, log });
+            await waitForServerReady({ command, member, platform, host, port, log });
         }
 
         // If not preflight-validated by the pin ladder, the fallback dolt
         // must pass a harmless functional preflight before any real data is
         // touched (Part 5.6 step 3).
         if (!doltInfo.pinned) {
-            const preflight = await runDoltSql({ command, member, doltPath: doltInfo.doltPath, host, port, query: 'SELECT 1;', log });
+            const preflight = await runDoltSql({ command, member, platform, doltPath: doltInfo.doltPath, host, port, query: 'SELECT 1;', log });
             if (!Array.isArray(preflight)) {
                 throw new DoltBinaryUnavailableError(
                     `[Dolt Settle] fallback dolt ${doltInfo.version} on member '${member}' failed its functional preflight -- refusing to reopen the merge with an unverified client.`,
@@ -620,12 +810,15 @@ export async function settleDoltConflicts(member, opts = {}) {
         }
 
         // Step 3/4: re-open the merge, enumerate every conflicted table.
-        const ctx = { command, member, doltPath: doltInfo.doltPath, host, port, log };
-        await runDoltSql({ ...ctx, query: 'SET @@dolt_allow_commit_conflicts = 1;' });
+        const ctx = { command, member, platform, doltPath: doltInfo.doltPath, host, port, log };
         await runDoltSql({ ...ctx, query: `CALL DOLT_MERGE('${remote}/${branch}');` });
 
-        const conflictRows = await runDoltSql({ ...ctx, query: 'SELECT `table` FROM dolt_conflicts;' });
-        const tables = conflictRows.map((r) => r.table).filter(Boolean);
+        // NOTE: `SELECT *`, not a backtick-quoted `table` column -- dolt_conflicts'
+        // only other column is num_conflicts, and avoiding the identifier quote
+        // keeps this one (very frequently issued) query free of the shell's
+        // backtick minefield entirely.
+        const conflictRows = await runDoltSql({ ...ctx, query: 'SELECT * FROM dolt_conflicts;' });
+        const tables = conflictRows.map((r) => r.table || r.TABLE).filter(Boolean);
 
         if (tables.length === 0) {
             log(`[Dolt Settle] no conflicted tables found for member '${member}' after DOLT_MERGE -- nothing to resolve (the clone may have already been fixed).`);
@@ -688,7 +881,10 @@ export async function settleDoltConflicts(member, opts = {}) {
  * @returns {Promise<{ platform: 'win32'|'linux'|'darwin', arch: string }>}
  */
 export async function detectMemberPlatform({ command, member }) {
-    const res = await command('node -e "console.log(process.platform + \' \' + process.arch)"', {
+    // Quote-free JS on purpose: PowerShell 5.1 mangles quotes inside native
+    // arguments, so a snippet with no quotes at all is the one form that
+    // survives every member shell unchanged.
+    const res = await command("node -e 'console.log(process.platform,process.arch)'", {
         member_name: member, silent: true, failSoft: true, label: `settle: detect platform for '${member}'`,
     });
     const text = String((res && (res.output || res.error)) || '');
@@ -730,14 +926,31 @@ export function buildSettleCallback(member, opts = {}) {
     };
 }
 
-/** Ephemeral port selection: probe sequentially, refuse to reuse a port
- *  that's already answering (design doc Part 3.5 -- an already-listening
- *  server on our intended port is orphaned residue, not a free port). */
+/**
+ * Ephemeral port selection: find the first port in the range nothing is
+ * answering on. Deliberately ONE dispatch that scans member-side rather than
+ * one dispatch per candidate port -- a 100-port range would otherwise be 100
+ * SSH round trips.
+ *
+ * A port already answering is NOT reused even though it might be a settle
+ * server: per design doc Part 3.5 an already-listening server on our intended
+ * port is orphaned residue from an interrupted run, not a legitimate target
+ * (the supervisor's orphan sweep is what reaps it).
+ */
 async function pickFreePort({ command, member, platform, portRangeStart, portRangeEnd }) {
-    for (let p = portRangeStart; p < portRangeEnd; p += 1) {
-        // eslint-disable-next-line no-await-in-loop -- sequential port probing is intentional and bounded
-        const busy = await platformAwareTcpProbe({ command, member, host: RECOVERY_SQL_SERVER_HOST, port: p });
-        if (!busy) return p;
+    // Same node-based probe as tcpProbeScript, scanning the range member-side
+    // in ONE dispatch: a round trip per candidate port would be 100 SSH
+    // sessions, and no shell one-liner is portable across PowerShell 5.1,
+    // bash and zsh (see tcpProbeScript for the live evidence).
+    const script = nodeEval(platform,
+        `const net=require("net");const host="${RECOVERY_SQL_SERVER_HOST}";`
+        + 'const free=(p)=>new Promise((r)=>{const s=net.connect(p,host);const done=(v)=>{try{s.destroy()}catch(e){};r(v)};'
+        + 's.on("connect",()=>done(false));s.on("error",()=>done(true));setTimeout(()=>done(true),500)});'
+        + `(async()=>{for(let p=${portRangeStart};p<${portRangeEnd};p++){if(await free(p)){console.log("FREEPORT:"+p);break}}})()`);
+    const res = await command(script, { member_name: member, silent: true, failSoft: true, label: `settle: pick a free ephemeral port for '${member}'` });
+    const match = String((res && res.output) || '').match(/FREEPORT:(\d+)/);
+    if (!match) {
+        throw new DoltSyncError(`[Dolt Settle] no free port in range [${portRangeStart}, ${portRangeEnd}) for member '${member}'.`, { member, doltOutput: (res && (res.output || res.error)) || '' });
     }
-    throw new DoltSyncError(`[Dolt Settle] no free port in range [${portRangeStart}, ${portRangeEnd}) for member '${member}'.`, { member });
+    return Number(match[1]);
 }

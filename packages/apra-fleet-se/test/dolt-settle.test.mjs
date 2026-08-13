@@ -12,6 +12,8 @@ import {
     DEFAULT_EMBEDDED_DATA_DIR,
     RECOVERY_SQL_SERVER_HOST,
     DEFAULT_PORT_RANGE,
+    escapeSqlForShell,
+    parseDoltJsonRows,
 } from '../fleet-sprint/dolt-settle.mjs';
 import { DoltDivergedError, DoltSyncError, DoltBinaryUnavailableError } from '../fleet-sprint/errors.mjs';
 
@@ -56,6 +58,68 @@ test('resolveDoltAsset: unsupported platform/arch throws rather than silently no
     assert.throws(() => resolveDoltAsset('win32', 'arm64'), /unsupported platform\/arch/i);
     assert.throws(() => resolveDoltAsset('linux', 'arm64'), /unsupported platform\/arch/i);
     assert.throws(() => resolveDoltAsset('freebsd', 'x64'), /unsupported platform\/arch/i);
+});
+
+// ---------------------------------------------------------------------------
+// Shell dialect. Every settle command runs in the MEMBER's own shell, and the
+// two dialects disagree in ways that broke settle outright when it assumed one
+// of them (found by running against real members):
+//   - bash treats a backtick inside double quotes as command substitution;
+//     PowerShell treats it as its escape character.
+//   - a leading `&` is PowerShell's call operator and a bash syntax error.
+// ---------------------------------------------------------------------------
+
+test('escapeSqlForShell: a backtick-quoted SQL identifier survives bash command substitution', () => {
+    const bq = String.fromCharCode(96);
+    const sql = `SELECT ${bq}table${bq} FROM dolt_conflicts;`;
+    const escaped = escapeSqlForShell('linux', sql);
+    check(escaped.includes('\\' + bq), 'bash needs the backtick backslash-escaped or the shell would EXECUTE the identifier');
+    check(!/(^|[^\\])`/.test(escaped), 'no unescaped backtick may survive into a bash double-quoted argument');
+});
+
+test('escapeSqlForShell: PowerShell gets doubled backticks and backtick-escaped quotes/dollars, not backslashes', () => {
+    const bq = String.fromCharCode(96);
+    const escaped = escapeSqlForShell('win32', `SELECT ${bq}x${bq} FROM t WHERE a = "b" AND c = '$d';`);
+    check(escaped.includes(bq + bq), 'a literal backtick in PowerShell is a DOUBLED backtick');
+    check(escaped.includes(bq + '"'), 'a literal double quote in PowerShell is backtick-quote');
+    check(escaped.includes(bq + '$'), 'a literal $ must be escaped or PowerShell would expand it as a variable');
+    check(!escaped.includes('\\' + bq), 'backslash is NOT an escape character in PowerShell');
+});
+
+test('escapeSqlForShell: single quotes (every DOLT_CONFLICTS_RESOLVE argument) pass through untouched in both dialects', () => {
+    const sql = "CALL DOLT_CONFLICTS_RESOLVE('--theirs', 'issues');";
+    assert.equal(escapeSqlForShell('linux', sql), sql);
+    assert.equal(escapeSqlForShell('win32', sql), sql);
+});
+
+// ---------------------------------------------------------------------------
+// `dolt sql -r json` output shape. VERBATIM from fleet-lin-dev1: a
+// multi-statement -q emits one JSON document PER STATEMENT, concatenated. Every
+// settle query carries a `USE beads; SET ...;` preamble, so this is the normal
+// shape -- and parsing only the first/whole document made settle see ZERO
+// conflicted tables on a genuinely conflicted clone.
+// ---------------------------------------------------------------------------
+
+/** The real concatenated-document shape, used by the fixtures below. */
+function realDoltJson(rows) {
+    return `{}\n\n${JSON.stringify({ rows })}\n`;
+}
+
+test('parseDoltJsonRows: reads the LAST row-bearing document out of a real multi-statement batch', () => {
+    const live = '{}\n\n{"rows": [{"num_conflicts":"1","table":"issues"}]}\n';
+    assert.deepEqual(parseDoltJsonRows(live), [{ num_conflicts: '1', table: 'issues' }]);
+});
+
+test('parseDoltJsonRows: no-result statements and empty output yield no rows, never a throw', () => {
+    assert.deepEqual(parseDoltJsonRows('{}\n{}\n'), []);
+    assert.deepEqual(parseDoltJsonRows(''), []);
+    assert.deepEqual(parseDoltJsonRows(null), []);
+    assert.deepEqual(parseDoltJsonRows('Warning: something\nnot json at all'), []);
+});
+
+test('parseDoltJsonRows: a single well-formed document still parses (both legacy shapes)', () => {
+    assert.deepEqual(parseDoltJsonRows('{"rows": [{"a":1}]}'), [{ a: 1 }]);
+    assert.deepEqual(parseDoltJsonRows('[{"a":1}]'), [{ a: 1 }]);
 });
 
 // ---------------------------------------------------------------------------
@@ -205,19 +269,26 @@ function makeSettleFixture({
             return { ok: true, output: `dolt version ${DOLT_VERSION.replace(/^v/, '')}\n`, error: null };
         }
 
-        // TCP probes (port-free check + wait-for-ready + teardown-verify), one
-        // per candidate port. Only the port the server actually spawned on
-        // (once spawned, and until torn down) reports busy/True.
-        if (/TcpTestSucceeded|dev\/tcp/.test(cmd)) {
-            const portMatch = cmd.match(/-Port (\d+)|\/dev\/tcp\/[^/]+\/(\d+)/);
+        // Port selection: ONE dispatch that scans the range member-side (never
+        // one round trip per candidate port) and prints the first free one.
+        if (/FREEPORT/.test(cmd)) {
+            return { ok: true, output: 'FREEPORT:13300', error: null };
+        }
+
+        // Single-port TCP probes (wait-for-ready + teardown-verify). Only the
+        // port the server actually spawned on (once spawned, and until torn
+        // down) answers. Written per shell dialect -- PowerShell TcpClient on
+        // Windows, /dev/tcp on POSIX -- so both shapes are matched here.
+        if (/PROBE:True/.test(cmd)) {
+            const portMatch = cmd.match(/net.connect\((\d+),/);
             const probedPort = portMatch ? Number(portMatch[1] || portMatch[2]) : null;
             const up = activePort !== null && probedPort === activePort && serverKilledBeforePush !== true;
-            return { ok: true, output: up ? 'True' : 'False', error: null };
+            return { ok: true, output: up ? 'PROBE:True' : 'PROBE:False', error: null };
         }
 
         // Step 2: spawn ephemeral server (Win32_Process.Create on Windows,
         // nohup+disown on POSIX).
-        if (/Win32_Process/.test(cmd) || /nohup .* sql-server/.test(cmd)) {
+        if (/Invoke-CimMethod/.test(cmd) || /nohup .* sql-server/.test(cmd)) {
             const portMatch = cmd.match(/--port (\d+)/);
             activePort = portMatch ? Number(portMatch[1]) : null;
             return { ok: true, output: 'PID:4242', error: null };
@@ -236,10 +307,13 @@ function makeSettleFixture({
             check(!/--user|--password/.test(cmd), 'settle must NEVER pass --user/--password (the ga61 credential-prompt landmine)');
             const q = cmd;
 
-            if (/SET @@dolt_allow_commit_conflicts/.test(q)) return { ok: true, output: '', error: null };
+            // NOTE: every query now carries the SET preamble (each dolt sql
+            // invocation is its own session), so this must NOT be matched as
+            // a statement in its own right -- it would swallow every query.
+            check(/SET @@dolt_allow_commit_conflicts = 1;/.test(q), 'every settle query must carry the allow-commit-conflicts preamble, since each dolt sql invocation is a fresh session');
             if (/CALL DOLT_MERGE/.test(q)) { state.merged = true; return { ok: true, output: '', error: null }; }
-            if (/SELECT `table` FROM dolt_conflicts/.test(q)) {
-                return { ok: true, output: JSON.stringify(state.conflicts), error: null };
+            if (/SELECT \* FROM dolt_conflicts/.test(q)) {
+                return { ok: true, output: realDoltJson(state.conflicts), error: null };
             }
             if (/information_schema\.columns/.test(q)) {
                 const t = (q.match(/TABLE_NAME = '([^']+)'/) || [])[1];
@@ -247,15 +321,18 @@ function makeSettleFixture({
                     ? ['id', 'title', 'status', 'updated_at']
                     : ['id', 'title', 'status'];
                 const cols = (schema[t] && schema[t].columns) || defaultCols;
-                return { ok: true, output: JSON.stringify(cols.map((c) => ({ COLUMN_NAME: c }))), error: null };
+                return { ok: true, output: realDoltJson(cols.map((c) => ({ COLUMN_NAME: c }))), error: null };
             }
             if (/information_schema\.key_column_usage/.test(q)) {
                 const t = (q.match(/TABLE_NAME = '([^']+)'/) || [])[1];
                 const pk = (schema[t] && schema[t].pk) || [];
-                return { ok: true, output: JSON.stringify(pk.map((c) => ({ COLUMN_NAME: c }))), error: null };
+                return { ok: true, output: realDoltJson(pk.map((c) => ({ COLUMN_NAME: c }))), error: null };
             }
             if (/INSERT INTO /.test(q)) {
-                state.inserts.push(q);
+                // Store the UNESCAPED SQL: runDoltSql escapes backticks/quotes
+                // for the member shell dialect, which is not what the union
+                // assertions below are about.
+                state.inserts.push(q.split('\\' + String.fromCharCode(96)).join(String.fromCharCode(96)).split('\\"').join('"'));
                 return { ok: true, output: '', error: null };
             }
             if (/UPDATE `/.test(q)) { state.updates.push(q); return { ok: true, output: '', error: null }; }
@@ -266,7 +343,7 @@ function makeSettleFixture({
             }
             if (/CALL DOLT_COMMIT/.test(q)) { state.committed = true; return { ok: true, output: '', error: null }; }
             if (/SELECT COUNT\(\*\) AS n FROM dolt_conflicts/.test(q)) {
-                return { ok: true, output: JSON.stringify([{ n: 0 }]), error: null };
+                return { ok: true, output: realDoltJson([{ n: 0 }]), error: null };
             }
             return { ok: true, output: '', error: null };
         }
@@ -395,8 +472,9 @@ test('settleDoltConflicts: teardown still runs on a mid-procedure throw (finally
     const command = async (cmd) => {
         if (cmd === 'bd dolt status') return { ok: true, output: `Dolt engine: embedded (in-process, no server)\n  Data: ${DEFAULT_EMBEDDED_DATA_DIR}\n`, error: null };
         if (/version"?$/.test(cmd.trim())) return { ok: true, output: `dolt version ${DOLT_VERSION.replace(/^v/, '')}\n`, error: null };
-        if (/TcpTestSucceeded|dev\/tcp/.test(cmd)) return { ok: true, output: (serverSpawned && !killedInFinally) ? 'True' : 'False', error: null };
-        if (/Win32_Process/.test(cmd)) { serverSpawned = true; return { ok: true, output: 'PID:9999', error: null }; }
+        if (/FREEPORT/.test(cmd)) return { ok: true, output: 'FREEPORT:13300', error: null };
+        if (/PROBE:True/.test(cmd)) return { ok: true, output: (serverSpawned && !killedInFinally) ? 'PROBE:True' : 'PROBE:False', error: null };
+        if (/Invoke-CimMethod/.test(cmd)) { serverSpawned = true; return { ok: true, output: 'PID:9999', error: null }; }
         if (/Stop-Process -Id 9999/.test(cmd)) { killedInFinally = true; return { ok: true, output: '', error: null }; }
         if (/--no-tls --host=/.test(cmd) && /CALL DOLT_MERGE/.test(cmd)) {
             throw new DoltSyncError('simulated mid-procedure SQL failure', { member: 'm1' });
