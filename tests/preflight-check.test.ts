@@ -28,13 +28,18 @@ vi.mock('../src/os/index.js', () => ({
 // Mock provider
 const mockOauthCredentialFiles = vi.fn();
 let mockProviderName = 'claude';
+// R3 regression: a provider like OpenCode has NO env-var-based auth at all --
+// authEnvVar is '' and authEnvVarForToken always returns ''. Override these
+// per-test to simulate that shape without hardcoding it into every test.
+let mockAuthEnvVar: string = 'ANTHROPIC_API_KEY';
+let mockAuthEnvVarForToken: ((token: string) => string) | undefined =
+  (token: string) => (token.startsWith('sk-ant-') ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN');
 vi.mock('../src/providers/index.js', () => ({
   getProvider: () => ({
     get name() { return mockProviderName; },
-    authEnvVar: 'ANTHROPIC_API_KEY',
+    get authEnvVar() { return mockAuthEnvVar; },
     oauthCredentialFiles: mockOauthCredentialFiles,
-    authEnvVarForToken: (token: string) =>
-      token.startsWith('sk-ant-') ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN',
+    get authEnvVarForToken() { return mockAuthEnvVarForToken; },
   }),
 }));
 
@@ -71,6 +76,9 @@ describe('preflightCheck', () => {
     clearPreflightCache();
     vi.clearAllMocks();
     mockProviderName = 'claude';
+    mockAuthEnvVar = 'ANTHROPIC_API_KEY';
+    mockAuthEnvVarForToken = (token: string) =>
+      token.startsWith('sk-ant-') ? 'ANTHROPIC_API_KEY' : 'CLAUDE_CODE_OAUTH_TOKEN';
     mockOauthCredentialFiles.mockReturnValue([
       { localPath: '~/.claude/.credentials.json', remotePath: '~/.claude/.credentials.json' },
     ]);
@@ -436,5 +444,49 @@ describe('preflightCheck', () => {
     // Second + third calls: apiKeyCheck for both env vars
     expect(mockExecCommand.mock.calls[1][0]).toContain('echo $');
     expect(mockExecCommand.mock.calls[2][0]).toContain('echo $');
+  });
+
+  // ---- R3 regression: providers with no env-var-based auth (e.g. OpenCode)
+  // must resolve auth_missing, not reject ----
+  it('resolves {ok: false, code: auth_missing} for a provider with empty authEnvVar/authEnvVarForToken (opencode-like)', async () => {
+    mockProviderName = 'opencode';
+    mockAuthEnvVar = '';
+    mockAuthEnvVarForToken = () => '';
+    mockOauthCredentialFiles.mockReturnValue(null);
+
+    const agent = makeAgent({ llmProvider: 'opencode' as Agent['llmProvider'] });
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+
+    // No oauth credential files -> oauthPromise resolves to Promise.resolve(null)
+    // with no execCommand call for it. No valid env var names -> apiKeyPromises
+    // must be empty too, so execCommand should never be invoked at all -- and
+    // critically, preflightCheck must not reject.
+    await expect(preflightCheck(agent)).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        connectivity: true,
+        authValid: false,
+        code: 'auth_missing',
+      }),
+    );
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('filters out an empty authEnvVarForToken probe while still honoring a real authEnvVar', async () => {
+    // A hypothetical provider with a real authEnvVar but a token-probe fn that
+    // returns '' for some inputs -- only the empty entries should be dropped.
+    mockAuthEnvVar = 'MY_PROVIDER_KEY';
+    mockAuthEnvVarForToken = () => '';
+    mockOauthCredentialFiles.mockReturnValue(null);
+
+    const agent = makeAgent();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValueOnce({ stdout: 'some-key-value', stderr: '', code: 0 }); // apiKeyCheck MY_PROVIDER_KEY
+
+    const result = await preflightCheck(agent);
+    expect(result.ok).toBe(true);
+    expect(result.authValid).toBe(true);
+    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+    expect(mockExecCommand.mock.calls[0][0]).toContain('MY_PROVIDER_KEY');
   });
 });

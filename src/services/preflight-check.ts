@@ -179,7 +179,16 @@ export async function preflightCheck(
     authEnvVarSet.add(provider.authEnvVarForToken('sk-ant-probe'));
     authEnvVarSet.add(provider.authEnvVarForToken('non-sk-ant-probe'));
   }
-  const authEnvVars = [...authEnvVarSet];
+  // R3 regression fix: providers with no env-var-based auth (e.g. OpenCode,
+  // whose authEnvVar/authEnvVarForToken always return '') would otherwise
+  // populate authEnvVars with ''. getOsCommands(...).apiKeyCheck('') builds a
+  // command via a var-name validator that THROWS synchronously on an invalid
+  // name (see os/linux.ts and os/windows.ts's /^[A-Z_][A-Z0-9_]*$/ check) --
+  // that throw happens before the .catch(() => null) below can attach, so it
+  // rejects preflightCheck's returned promise instead of yielding a normal
+  // {ok: false, code: 'auth_missing'} result. Filter out empty/invalid names
+  // so such providers fall straight through to "no API key found".
+  const authEnvVars = [...authEnvVarSet].filter(envVar => /^[A-Z_][A-Z0-9_]*$/i.test(envVar));
 
   // Parallelize OAuth file read and API key check into a single batch
   // (F8: reduces sequential SSH round trips). readRemoteJson combines
