@@ -43,7 +43,7 @@ import { preflightCheck } from '../services/preflight-check.js';
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'stalled';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'stalled' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -590,11 +590,20 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   if (agent.agentType !== 'local' && !isChannelCapable) {
     const preflight = await preflightCheck(agent);
     if (!preflight.ok) {
+      // R2-F5: use preflight-specific reason codes so fleet-sprint can
+      // distinguish pre-dispatch failures from in-dispatch ones and avoid
+      // inappropriate self-heal loops (e.g. re-provisioning auth when the
+      // member is simply offline).
+      const preflightReason: ExecutePromptStructured['reason'] =
+        preflight.code === 'offline' ? 'preflight_offline'
+        : preflight.code === 'auth_expired' ? 'preflight_auth_expired'
+        : preflight.code === 'auth_missing' ? 'preflight_auth_missing'
+        : 'dispatch_failed';
       return {
         text: `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`,
         structuredContent: {
           isError: true,
-          reason: preflight.code === 'offline' ? 'dispatch_failed' : 'auth',
+          reason: preflightReason,
         },
       };
     }
