@@ -40,11 +40,14 @@ is passed inline. The credential store provides the password/API key
 automatically.
 
 ```javascript
+import { parseToolJson } from '@apralabs/apra-fleet-client';
 import { connectFleet } from '@apralabs/apra-fleet-client/server-resolution';
 
 const { fleetApi } = await connectFleet({ env: process.env });
 
-const result = JSON.parse(await fleetApi.sendEmail({
+// fleetApi wrappers return the raw MCP tool result ({ content: [...] }),
+// not a JSON string -- parseToolJson extracts the payload.
+const result = parseToolJson(await fleetApi.sendEmail({
   provider: 'smtp',
   host: 'smtp.gmail.com',
   port: 587,
@@ -108,7 +111,7 @@ not need to run a separate CLI command first.
 const credentialName = config.provider === 'smtp' ? 'smtp_password' : 'sendgrid_api_key';
 
 // credential_store_list returns a JSON array of { name, scope, ... } entries.
-const credList = JSON.parse(await fleetApi.credentialStoreList({}));
+const credList = parseToolJson(await fleetApi.credentialStoreList({}));
 const hasCredential = Array.isArray(credList) && credList.some(c => c.name === credentialName);
 
 if (!hasCredential) {
@@ -157,11 +160,20 @@ demonstrates the full pattern:
 4. Sends the email
 5. Reports success or failure
 
-To run it:
+To run it (example workflows are not installed as named workflows, so run
+the file directly with node):
 
 ```bash
 cd examples/workflows/email-notify
 cp config.json.example config.json   # edit with your values
+node main.mjs
+```
+
+To make it available as `apra-fleet workflow email-notify`, copy the folder
+into your workflows directory first:
+
+```bash
+cp -r examples/workflows/email-notify ~/.apra-fleet/workflows/email-notify
 apra-fleet workflow email-notify
 ```
 

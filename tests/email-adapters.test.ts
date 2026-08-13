@@ -98,6 +98,7 @@ describe('SendGridProvider', () => {
 
 class FakeSocket extends EventEmitter {
   public written: string[] = [];
+  public destroyed = false;
   private script: string[];
 
   constructor(script: string[]) {
@@ -120,6 +121,7 @@ class FakeSocket extends EventEmitter {
   }
 
   destroy(): void {
+    this.destroyed = true;
     this.emit('close');
   }
 
@@ -287,6 +289,157 @@ describe('SmtpProvider', () => {
     await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
       /SMTP response timeout after 50ms/,
     );
+  });
+
+  it('normalizes bare-LF line endings to CRLF and dot-stuffs lines the LF form would smuggle past', async () => {
+    const script = [
+      '250 smtp.example.com\r\n', // EHLO (no auth -- skipped)
+      '250 OK\r\n', // MAIL FROM
+      '250 OK\r\n', // RCPT TO
+      '354 Start mail input\r\n', // DATA
+      '250 OK queued as XYZ\r\n', // message body
+      '221 Bye\r\n', // QUIT
+    ];
+    const socket = new FakeSocket(script);
+    mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
+      setTimeout(() => cb(), 0);
+      setTimeout(() => socket.emit('data', Buffer.from('220 ready\r\n')), 5);
+      return socket;
+    });
+
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: '', pass: '' },
+      from: 'from@example.com',
+    });
+
+    await provider.send({ to: 'to@example.com', subject: 'Hi', body: 'line1\n.\nline2' });
+
+    const payload = socket.written.find(w => w.includes('line1'));
+    expect(payload).toBeDefined();
+    // Bare LFs normalized to CRLF, and the '.' line dot-stuffed to '..'.
+    expect(payload).toContain('line1\r\n..\r\nline2');
+    expect(payload).not.toMatch(/[^\r]\n/);
+  });
+
+  it('emits Date and Message-ID headers and wraps base64 attachments at 76 chars', async () => {
+    const script = [
+      '250 smtp.example.com\r\n',
+      '250 OK\r\n',
+      '250 OK\r\n',
+      '354 Start mail input\r\n',
+      '250 OK queued as XYZ\r\n',
+      '221 Bye\r\n',
+    ];
+    const socket = new FakeSocket(script);
+    mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
+      setTimeout(() => cb(), 0);
+      setTimeout(() => socket.emit('data', Buffer.from('220 ready\r\n')), 5);
+      return socket;
+    });
+
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: '', pass: '' },
+      from: 'from@example.com',
+    });
+
+    const bigContent = 'A'.repeat(300); // base64-ish payload, longer than 76 chars
+    await provider.send({
+      to: 'to@example.com',
+      subject: 'Hi',
+      body: 'Hello',
+      attachments: [{ filename: 'a.bin', content: bigContent }],
+    });
+
+    const payload = socket.written.find(w => w.includes('Message-ID'));
+    expect(payload).toBeDefined();
+    expect(payload).toMatch(/Date: [A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} .+\+0000/);
+    expect(payload).toMatch(/Message-ID: <[0-9a-f]{32}@example\.com>/);
+    // No line in the attachment body exceeds 76 chars.
+    const attLines = payload!.split('\r\n').filter(l => /^A+$/.test(l));
+    expect(attLines.length).toBeGreaterThan(1);
+    for (const line of attLines) expect(line.length).toBeLessThanOrEqual(76);
+  });
+
+  it('destroys the socket when a protocol step fails (no socket leak)', async () => {
+    const script = [
+      '250 smtp.example.com\r\n', // EHLO
+      '550 Mailbox unavailable\r\n', // MAIL FROM rejected
+    ];
+    const socket = new FakeSocket(script);
+    mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
+      setTimeout(() => cb(), 0);
+      setTimeout(() => socket.emit('data', Buffer.from('220 ready\r\n')), 5);
+      return socket;
+    });
+
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: '', pass: '' },
+      from: 'from@example.com',
+    });
+
+    await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
+      /MAIL FROM rejected/,
+    );
+    expect(socket.destroyed).toBe(true);
+  });
+
+  it('rejects the in-flight wait with the socket error instead of hanging until timeout', async () => {
+    const socket = new FakeSocket([]);
+    mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
+      setTimeout(() => cb(), 0);
+      setTimeout(() => socket.emit('data', Buffer.from('220 ready\r\n')), 5);
+      // Mid-session reset while EHLO response is pending.
+      setTimeout(() => socket.emit('error', new Error('read ECONNRESET')), 15);
+      return socket;
+    });
+
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: '', pass: '' },
+      from: 'from@example.com',
+      timeoutMs: 5000,
+    });
+
+    await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
+      /ECONNRESET/,
+    );
+  });
+
+  it('delivers two responses coalesced into one data event to two queued waiters in order', async () => {
+    const socket = new FakeSocket([]);
+    const { SmtpConnection } = await import('../src/providers/email/smtp.js');
+    const conn = new SmtpConnection(socket as any, 1000);
+
+    const p1 = conn.waitForResponse();
+    const p2 = conn.waitForResponse();
+    socket.emit('data', Buffer.from('250-smtp.example.com\r\n250 OK\r\n354 Start mail input\r\n'));
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1.code).toBe(250);
+    expect(r1.lines).toEqual(['250-smtp.example.com', '250 OK']);
+    expect(r2.code).toBe(354);
+    expect(r2.lines).toEqual(['354 Start mail input']);
+  });
+
+  it('queues a response that arrives before anyone waits for it', async () => {
+    const socket = new FakeSocket([]);
+    const { SmtpConnection } = await import('../src/providers/email/smtp.js');
+    const conn = new SmtpConnection(socket as any, 1000);
+
+    socket.emit('data', Buffer.from('220 smtp.example.com ready\r\n'));
+    const greeting = await conn.waitForResponse();
+    expect(greeting.code).toBe(220);
   });
 
   it('times out when the connection never completes', async () => {

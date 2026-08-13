@@ -222,6 +222,27 @@ export function deriveTimeoutMs(payload = {}) {
     return hintSeconds * 1000 + TIMEOUT_GRACE_MS;
 }
 
+/**
+ * Extract the JSON payload from a raw MCP tool-call result.
+ *
+ * Every ApraFleet wrapper returns the raw callTool() result --
+ * `{ content: [{ type: 'text', text }, ...] }` -- NOT a JSON string, so
+ * `JSON.parse(result)` on it throws. Tool results can also carry
+ * display-only items (e.g. an `<apra-fleet-display>` onboarding block)
+ * AHEAD of the payload, so content[0] is not reliable either. This helper
+ * returns the first content item that parses as JSON.
+ *
+ * @param {{ content?: { text?: string }[] }} result - raw callTool() result
+ * @returns {any} the parsed JSON payload
+ * @throws {Error} when no content item contains valid JSON
+ */
+export function parseToolJson(result) {
+    for (const item of result?.content ?? []) {
+        try { return JSON.parse(item.text); } catch { /* not the payload */ }
+    }
+    throw new Error('No JSON payload in tool result');
+}
+
 export class ApraFleet {
     /**
      * @param {{ callTool: (name: string, args: Record<string, any>, opts?: { timeoutMs?: number, signal?: AbortSignal }) => Promise<any> }} mcpClient
@@ -368,6 +389,44 @@ export class ApraFleet {
      */
     async sendEmail(options) {
         return this.mcpClient.callTool('send_email', options);
+    }
+
+    /**
+     * Collect a secret from the user out-of-band and store it in the fleet
+     * credential store. The secret value never passes through the caller.
+     * @param {{ name: string, prompt: string, persist?: boolean,
+     *           network_policy?: 'allow'|'confirm'|'deny', members?: string,
+     *           ttl_seconds?: number }} options
+     */
+    async credentialStoreSet(options) {
+        return this.mcpClient.callTool('credential_store_set', options);
+    }
+
+    /**
+     * List stored credentials (names and metadata only -- no values).
+     * The result payload is a JSON array of { name, scope, ... } entries;
+     * extract it with parseToolJson().
+     */
+    async credentialStoreList() {
+        return this.mcpClient.callTool('credential_store_list', {});
+    }
+
+    /**
+     * Delete a named credential from the store.
+     * @param {{ name: string }} options
+     */
+    async credentialStoreDelete(options) {
+        return this.mcpClient.callTool('credential_store_delete', options);
+    }
+
+    /**
+     * Update metadata (members, TTL, network policy) on an existing
+     * credential without re-entering the secret.
+     * @param {{ name: string, members?: string, ttl_seconds?: number,
+     *           network_policy?: 'allow'|'confirm'|'deny' }} options
+     */
+    async credentialStoreUpdate(options) {
+        return this.mcpClient.callTool('credential_store_update', options);
     }
 
     /**

@@ -10,7 +10,9 @@
  *   2. Store your secret:
  *      apra-fleet secret --set smtp_password --persist    (for SMTP)
  *      apra-fleet secret --set sendgrid_api_key --persist (for SendGrid)
- *   3. Run: apra-fleet workflow email-notify
+ *   3. Run directly: node main.mjs
+ *      (or copy this folder to ~/.apra-fleet/workflows/email-notify to run
+ *      it as: apra-fleet workflow email-notify)
  *
  * The workflow checks if the required credential exists. If not, it calls
  * credential_store_set to trigger the OOB prompt so the user can enter it.
@@ -48,13 +50,15 @@ console.log(`[OK] Config loaded: provider=${config.provider}, to=${config.to}`);
 
 const { connectFleet } = await import('@apralabs/apra-fleet-client/server-resolution')
   .catch(() => ({}));
+const { parseToolJson } = await import('@apralabs/apra-fleet-client')
+  .catch(() => ({}));
 
-if (!connectFleet) {
+if (!connectFleet || !parseToolJson) {
   console.error('[FAIL] Could not import @apralabs/apra-fleet-client. Is fleet installed?');
   process.exit(1);
 }
 
-const { fleetApi, mcpClient } = await connectFleet({ env: process.env }).catch(e => {
+const { fleetApi } = await connectFleet({ env: process.env }).catch(e => {
   console.error(`[FAIL] Could not connect to fleet server: ${e.message}`);
   process.exit(1);
   return {};
@@ -66,23 +70,13 @@ console.log('[OK] Connected to fleet server.');
 
 const credentialName = config.provider === 'smtp' ? 'smtp_password' : 'sendgrid_api_key';
 
-// Tool results may carry display-only blocks (<apra-fleet-display>) ahead of
-// the payload -- pick the first content item that parses as JSON.
-function parseToolJson(result) {
-  for (const item of result.content ?? []) {
-    try { return JSON.parse(item.text); } catch { /* not the payload */ }
-  }
-  throw new Error('No JSON payload in tool result');
-}
-
-const credListResult = await mcpClient.callTool('credential_store_list', {});
 // credential_store_list returns a JSON array of { name, scope, ... } entries.
-const credList = parseToolJson(credListResult);
+const credList = parseToolJson(await fleetApi.credentialStoreList());
 const hasCredential = Array.isArray(credList) && credList.some(c => c.name === credentialName);
 
 if (!hasCredential) {
   console.log(`[..] Credential "${credentialName}" not found. Prompting for it now...`);
-  const setResult = await mcpClient.callTool('credential_store_set', {
+  const setResult = await fleetApi.credentialStoreSet({
     name: credentialName,
     prompt: `Enter your ${config.provider === 'smtp' ? 'SMTP password' : 'SendGrid API key'}`,
     persist: true,

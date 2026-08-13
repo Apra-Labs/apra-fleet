@@ -28,6 +28,8 @@ export interface EmailProvider {
 export interface SendgridConfig {
   apiKey: string;
   from: string;
+  /** Request timeout in ms (default 30000). */
+  timeoutMs?: number;
 }
 
 export interface SmtpConfig {

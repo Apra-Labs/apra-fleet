@@ -203,6 +203,24 @@ describe('sendEmail credential scoping', () => {
     expect(result.error).not.toMatch(/credential_store_set/);
   });
 
+  it('fails closed for an unresolvable session id: scoped credentials deny instead of operator bypass', async () => {
+    mockFindBySessionId.mockReturnValue(undefined); // session not in registry
+    mockCredentialResolve.mockReturnValue({ denied: "Credential 'sendgrid_api_key' is not accessible to member 'session:sess-x'. Allowed: ops-bot" });
+
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }, { sessionId: 'sess-x' }));
+
+    expect(result.ok).toBe(false);
+    // The synthetic non-member identity is passed through -- NOT the '*' bypass.
+    expect(mockCredentialResolve).toHaveBeenCalledWith('sendgrid_api_key', 'session:sess-x');
+    expect(result.error).toMatch(/not accessible/);
+  });
+
   it('falls back to operator scope when there is no session id (stdio orchestrator)', async () => {
     mockCredentialResolve.mockReturnValue({ plaintext: 'sg-key', meta: {} });
     const mockSend = vi.fn().mockResolvedValue({ messageId: 'msg-3' });

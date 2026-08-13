@@ -26,28 +26,4 @@ const engine = WorkflowEngine ? 'resolved' : 'missing';
 
 console.log(`[OK] hello-world: args=${args.join(',')} engine=${engine}`);
 
-// Email phase: demonstrates send_email with credential store.
-// Gated -- skips if fleet is not connected or email is not configured.
-const { fleetApi } = await import('@apralabs/apra-fleet-client/server-resolution')
-  .then(m => m.connectFleet({ env: process.env }))
-  .catch(() => ({}));
-
-if (fleetApi) {
-  const emailResult = await fleetApi.sendEmail({
-    provider: 'sendgrid',
-    from: 'hello@example.com',
-    to: 'team@example.com',
-    subject: 'Hello from apra-fleet workflow',
-    body: 'Sent without any secrets in this file.',
-  }).then(r => JSON.parse(r)).catch(e => ({ ok: false, error: e.message }));
-
-  if (emailResult.ok) {
-    console.log(`[OK] email sent: messageId=${emailResult.messageId}`);
-  } else {
-    console.log(`[SKIP] email: ${emailResult.error}`);
-  }
-} else {
-  console.log('[SKIP] email phase: no fleet connection');
-}
-
 process.exit(0);

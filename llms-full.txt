@@ -289,21 +289,24 @@ The workflow passes non-secret config inline and calls `send_email`. Load
 your config however you prefer (JSON file, hardcoded, etc.):
 
 ```javascript
-export async function main(context) {
-  const { fleetApi, log } = context;
+import { parseToolJson } from '@apralabs/apra-fleet-client';
+import { connectFleet } from '@apralabs/apra-fleet-client/server-resolution';
 
-  const result = await fleetApi.sendEmail({
-    provider: 'smtp',
-    host: 'smtp.example.com',
-    port: 587,
-    user: 'notifications@example.com',
-    from: 'noreply@example.com',
-    to: 'team@example.com',
-    subject: 'Sprint Report',
-    body: 'All tasks completed.'
-  });
-  log(`Sent: ${JSON.parse(result).messageId}`);
-}
+const { fleetApi } = await connectFleet({ env: process.env });
+
+// fleetApi wrappers return the raw MCP tool result ({ content: [...] });
+// parseToolJson extracts the JSON payload.
+const result = parseToolJson(await fleetApi.sendEmail({
+  provider: 'smtp',
+  host: 'smtp.example.com',
+  port: 587,
+  user: 'notifications@example.com',
+  from: 'noreply@example.com',
+  to: 'team@example.com',
+  subject: 'Sprint Report',
+  body: 'All tasks completed.'
+}));
+console.log(`Sent: ${result.messageId}`);
 ```
 
 The SMTP password resolves from the credential store automatically. It never

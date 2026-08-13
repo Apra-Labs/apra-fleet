@@ -77,15 +77,22 @@ function validateInput(input: SendEmailInput): string[] {
  * Derive the caller identity for credential scoping. A connected member
  * session is identified by its MCP session (extra.sessionId, populated by the
  * SDK's HTTP transport) and gets its member friendly name -- so allowedMembers
- * restrictions on email credentials are enforced. A caller with no registered
- * member session (the orchestrator on stdio or HTTP) is the fleet operator
- * and resolves with the '*' operator scope, same as the CLI.
+ * restrictions on email credentials are enforced.
+ *
+ * Fail-closed rule: only a stdio caller (no sessionId at all -- the fleet
+ * operator's own MCP connection) gets the '*' operator scope. An HTTP session
+ * that is NOT a registered member session (http-transport admits
+ * unauthenticated connections, and session churn can leave a sid
+ * unresolvable) gets a synthetic non-member identity instead of '*': it can
+ * still use credentials whose allowedMembers is '*' (the default -- this is
+ * what workflow clients rely on), but member-scoped credentials are denied
+ * rather than silently bypassed.
  */
 function resolveCallingMember(extra?: { sessionId?: string }): string {
   const sessionId = extra?.sessionId;
   if (!sessionId) return '*';
   const session = sessionRegistry.findBySessionId(sessionId);
-  if (!session) return '*';
+  if (!session) return `session:${sessionId}`;
   const agent = getAgentOrFail(session.member_id);
   return typeof agent === 'string' ? session.member_id : agent.friendlyName;
 }

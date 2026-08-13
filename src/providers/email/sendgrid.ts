@@ -2,6 +2,9 @@ import type { EmailMessage, EmailSendResult, EmailProvider, SendgridConfig } fro
 
 const SENDGRID_API_URL = 'https://api.sendgrid.com/v3/mail/send';
 
+/** Default request ceiling, mirroring the SMTP provider's timeout. */
+const SENDGRID_TIMEOUT_MS = 30_000;
+
 function toAddressList(to: string | string[]): { email: string }[] {
   const list = Array.isArray(to) ? to : [to];
   return list.map(email => ({ email }));
@@ -39,14 +42,24 @@ export class SendGridProvider implements EmailProvider {
       }));
     }
 
-    const response = await fetch(SENDGRID_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    const timeoutMs = this.config.timeoutMs ?? SENDGRID_TIMEOUT_MS;
+    let response: Response;
+    try {
+      response = await fetch(SENDGRID_API_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        throw new Error(`SendGrid request timeout after ${timeoutMs}ms.`);
+      }
+      throw err;
+    }
 
     if (!response.ok) {
       const errText = await response.text().catch(() => response.statusText);
