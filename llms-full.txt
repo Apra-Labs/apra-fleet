@@ -2359,14 +2359,14 @@ For VCS tokens specifically, re-run `provision_vcs_auth`.
 Check what actually happened on the member:
 ask Fleet to run `cat progress.json` on it.
 
-**Long-running background task refused on a Windows member**
+**Long-running background task fails to launch on a Windows member**
 
-`execute_command`'s `long_running` mode requires a POSIX shell (its wrapper
-script uses `nohup`, `chmod +x`, and background-job semantics that have no
-Windows equivalent). On a Windows member it now fails immediately with a
-clear error instead of attempting the operation and only warning -- there is
-no partial/degraded mode. Run long-running background tasks on a Linux or
-macOS member instead.
+`execute_command`'s `long_running` mode on Windows launches the task
+detached via `Invoke-CimMethod Win32_Process.Create` (WMI). If this fails,
+check that the WMI service (`Winmgmt`) is running on the member and that the
+fleet SSH user has permission to create processes via WMI -- `monitor_task`
+will otherwise report the task as immediately failed/missing rather than
+running.
 
 ## Permissions
 

@@ -95,11 +95,10 @@ What shipped:
   file read/write, recursive file hashing, member-bound file deletion, and
   the tools below). It base64-encodes the script as a `-EncodedCommand`
   invocation (removing an entire class of shell-quoting bugs) and forces
-  `$ErrorActionPreference = 'Stop'` with an explicit `exit 0`/`exit 1` so
-  that non-terminating PowerShell errors -- which previously exited 0 and
-  were invisible to callers checking only the exit code -- now surface
-  correctly as failures, while cmdlets that intentionally tolerate a
-  missing file/path keep working via their own explicit `-ErrorAction`.
+  `$ErrorActionPreference = 'Stop'` with a try/catch so a script-opted-out
+  `-ErrorAction SilentlyContinue` failure stays suppressed while every other
+  failure surfaces correctly, including a native command's exit code (via
+  `$LASTEXITCODE`), which the wrapper's own `exit 0` previously masked.
 - Remote task monitoring, remote log tailing, and member removal's
   authorized-keys cleanup are now OS-branched: each builds either a POSIX
   command or a PowerShell command depending on the target member's OS,
@@ -107,12 +106,17 @@ What shipped:
   was silently corrupted in transit) on a PowerShell target. Member removal
   now also surfaces a warning when the authorized-keys cleanup step fails,
   instead of failing silently.
-- Long-running background tasks now hard-fail with a clear error on Windows
-  members instead of proceeding with only an advisory warning -- the
-  long-running wrapper is a POSIX bash script with no Windows equivalent, so
-  a warning the caller can ignore was a false-success trap. The hard-fail
-  happens before any task id is registered, so no orphaned task-registry
-  entries are left behind.
+- Long-running background tasks are now supported on Windows members: the
+  task is launched detached via `Invoke-CimMethod Win32_Process.Create`
+  (spawned under the WMI provider host's own session, independent of the
+  SSH session's job object -- a plain background launch dies with the SSH
+  channel on Windows), running a PowerShell wrapper script that mirrors the
+  POSIX bash wrapper's status.json/task.pid/task.log/activity-marker/retry
+  behavior. `monitor_task` reads the same task-directory shape on both OSes.
+- Remote pid-liveness and durable-output-file probes (the orphan-recovery
+  lease-of-life gate) are now OS-branched the same way -- previously they
+  always dispatched POSIX `kill -0`/`cat`, so on a Windows member the probe
+  could never report a genuinely-alive process as alive.
 - Member OS detection no longer caches a guessed/fallback value on
   detection failure -- only a successful, authoritative detection is
   memoized, so a member is not permanently misrouted to the wrong OS branch
