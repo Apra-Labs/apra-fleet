@@ -75,13 +75,44 @@ INSTALLER="dist/apra-fleet-installer-${PLATFORM}-${SEA_ARCH}"
 
 "$INSTALLER" install --force
 
-# Use `run`, not `start` -- `start`'s Windows scheduled task requires an
-# interactive logon session and silently no-ops without one. Launch detached:
-# POSIX:   nohup "$HOME/.apra-fleet/bin/apra-fleet" run --transport http >> "$HOME/.apra-fleet/data/fleet.log" 2>&1 & disown
-# Windows: plain background launch dies with the SSH channel -- use a real
-#          detached child process (e.g. Invoke-CimMethod Win32_Process Create)
-#          running: apra-fleet.exe run --transport http >> fleet.log 2>&1
-# Then poll fleet.log / port 7523 to confirm it actually came up.
+# Use `run`, not `start` -- on Windows, `apra-fleet start`'s scheduled-task
+# registration falls back to an interactive-logon-only trigger whenever it
+# cannot obtain elevated/stored credentials, so it silently no-ops with no
+# interactive session present (apra-fleet-i8qj.2); see README.md and
+# docs/transport-and-service-mode.md / docs/fleet-sprint-getting-started.md
+# (owned by apra-fleet-i8qj.7) for the full treatment. Launch detached instead:
+#
+# POSIX:
+#   nohup "$HOME/.apra-fleet/bin/apra-fleet" run --transport http >> "$HOME/.apra-fleet/data/fleet.log" 2>&1 & disown
+#
+# Windows: a plain background launch dies with the SSH channel. Use the
+# single supported launch path below -- both commands route through the
+# hidden-launch helper (launchDetachedHidden, src/os/windows.ts) so the
+# child gets no visible console window and survives the launching shell
+# exiting. Do NOT hand-roll Invoke-CimMethod / "cmd /c start" launches:
+# cmd.exe's quote-stripping silently killed earlier ad hoc attempts, and an
+# un-hidden window alarms the user for no reason. These two commands are the
+# only sanctioned way to start these processes on Windows.
+#
+#   MCP server (port 7523), from the installed binary:
+#     node dist/cli/launch-mcp-server-windows.js
+#   Poll: port 7523 and %USERPROFILE%\.apra-fleet\data\fleet.log
+#
+#   Fleet-sprint supervisor (port 8787), from this repo checkout:
+#     node dist/cli/launch-fleet-supervisor-windows.js <repoRoot> [port]
+#   Poll: port 8787 and %USERPROFILE%\.apra-fleet\data\fleet-supervisor.log
+#
+# Neither launcher ever passes the opt-out `showWindow: true` flag, so on
+# Windows neither process can produce a console window through this path --
+# hiding is not just the default, it is the only behaviour these two call
+# sites can produce. If you ever DO see a console window for one of these
+# processes, it did not come from these launchers; it is a hand-rolled
+# fallback outside this contract, titled "Apra Fleet MCP Server -- do not
+# close" (the helper's only defined opt-out title, src/os/windows.ts
+# DETACHED_VISIBLE_WINDOW_TITLE), and closing that window kills the service.
+# The supervisor has no distinct opt-out title yet (follow-up:
+# apra-fleet-1vq0); treat any visible window carrying either process's
+# launch command as that process regardless of title.
 ```
 
 ## Smoke test
