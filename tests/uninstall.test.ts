@@ -91,6 +91,7 @@ describe('uninstall', () => {
       PM_SKILLS_DIR: claudePaths.skillsDir,
       ARGS_SKILL_DIR: path.join(claudePaths.configDir, 'skills', 'auto-sprint-args'),
       CLI_SKILL_DIR: path.join(claudePaths.configDir, 'skills', 'fleet-sprint-cli'),
+      SUPERVISOR_SKILL_DIR: path.join(claudePaths.configDir, 'skills', 'fleet-supervisor'),
       AGENTS_DIR: claudePaths.agentsDir!,
       FLEET_SKILLS_DIR: claudePaths.fleetSkillsDir,
       NODE_MODULES_DIR: config.NODE_MODULES_DIR,
