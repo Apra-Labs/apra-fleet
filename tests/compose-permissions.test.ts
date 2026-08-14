@@ -766,6 +766,64 @@ describe('composePermissions -- win32-safe shell commands (xj7v.2)', () => {
       expect(cmd).toContain('"C:\\Users\\Test User\\project"');
     }
   });
+
+  it('detects marker files with case variants (e.g. Package.json, CARGO.TOML)', async () => {
+    // PowerShell -contains is case-insensitive, so the marker filter passes files
+    // with different casings. The lookup must also be case-insensitive to match.
+    const caseVariantHandler = (base: (cmd: string, timeout?: number) => Promise<SSHExecResult>) =>
+      async (cmd: string, timeout?: number): Promise<SSHExecResult> => {
+        const decoded = decodeCommand(cmd);
+        // For the marker check (contains Get-ChildItem and -Name), return case-variant filenames
+        if (decoded.includes('Get-ChildItem') && decoded.includes('-Name') && decoded.includes('@(')) {
+          return { stdout: 'Package.json\nCARGO.TOML\nrequirements.txt\nMAKEFILE', stderr: '', code: 0 };
+        }
+        // For the .sln/.csproj check, return empty
+        if (decoded.includes('.sln') || decoded.includes('.csproj')) {
+          return { stdout: '', stderr: '', code: 0 };
+        }
+        // Everything else (mkdir, write, read): delegate to base handler
+        return base(cmd, timeout);
+      };
+
+    const member = makeTestAgent({ friendlyName: 'claude-win-case-variant', llmProvider: 'claude', os: 'windows' });
+    addAgent(member);
+    mockExecCommand.mockImplementation(caseVariantHandler(makeFsHandler()));
+
+    const result = await composePermissions({ member_id: member.id, role: 'doer' });
+
+    // Should detect all stacks despite case variants
+    expect(result).toContain('node');
+    expect(result).toContain('rust');
+    expect(result).toContain('python');
+    expect(result).toContain('cpp');
+
+    vi.clearAllMocks();
+
+    // Verify exact-case path still works (regression guard for mixed-case names)
+    const exactCaseHandler = (base: (cmd: string, timeout?: number) => Promise<SSHExecResult>) =>
+      async (cmd: string, timeout?: number): Promise<SSHExecResult> => {
+        const decoded = decodeCommand(cmd);
+        if (decoded.includes('Get-ChildItem') && decoded.includes('-Name') && decoded.includes('@(')) {
+          // Return exact-case names (Cargo.toml, Makefile, CMakeLists.txt)
+          return { stdout: 'package.json\nCargo.toml\nMakefile\nCMakeLists.txt', stderr: '', code: 0 };
+        }
+        if (decoded.includes('.sln') || decoded.includes('.csproj')) {
+          return { stdout: '', stderr: '', code: 0 };
+        }
+        return base(cmd, timeout);
+      };
+
+    const memberExact = makeTestAgent({ friendlyName: 'claude-win-exact-case', llmProvider: 'claude', os: 'windows' });
+    addAgent(memberExact);
+    mockExecCommand.mockImplementation(exactCaseHandler(makeFsHandler()));
+
+    const exactResult = await composePermissions({ member_id: memberExact.id, role: 'doer' });
+
+    // Exact-case names should also be detected
+    expect(exactResult).toContain('node');
+    expect(exactResult).toContain('rust');
+    expect(exactResult).toContain('cpp');
+  });
 });
 
 // ---------------------------------------------------------------------------

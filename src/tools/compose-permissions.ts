@@ -40,6 +40,13 @@ const STACK_MAP: Record<string, string> = {
   'composer.json': 'php',
 };
 
+// Case-insensitive lookup: maps lowercase filename to stack type.
+// Derived from STACK_MAP to match Windows' case-insensitive filesystem semantics
+// (a file named CARGO.TOML on Windows is a Rust project, so detectStacks should find it).
+const STACK_MAP_CI: Record<string, string> = Object.fromEntries(
+  Object.entries(STACK_MAP).map(([k, v]) => [k.toLowerCase(), v]),
+);
+
 // Co-occurrence: granting one tool often means needing related tools
 const CO_OCCURRENCE: Record<string, string[]> = {
   'Bash(docker:*)': ['Bash(docker-compose:*)', 'Bash(docker buildx:*)'],
@@ -121,7 +128,10 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
     const result = await strategy.execCommand(wrapPowerShellEncoded(markerScript), 10000);
     for (const line of result.stdout.split('\n')) {
       const file = line.trim();
-      if (STACK_MAP[file]) found.add(STACK_MAP[file]);
+      // PowerShell -contains is case-insensitive, so the filter passes files like Package.json or CARGO.TOML.
+      // Use case-insensitive lookup to match: a CARGO.TOML on Windows is a Rust project.
+      const stack = STACK_MAP_CI[file.toLowerCase()];
+      if (stack) found.add(stack);
     }
 
     // .sln/.csproj need glob - check separately
