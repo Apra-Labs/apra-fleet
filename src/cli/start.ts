@@ -7,6 +7,7 @@ import { checkRunningInstance } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import { LOG_FILE_PATH, FLEET_DIR, isNonDefaultInstance } from '../paths.js';
 import { BIN_DIR } from './config.js';
+import { isNoInteractiveSessionError } from '../services/service-manager/windows.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -70,13 +71,32 @@ export async function runStart(_args: string[]): Promise<void> {
       await svcMgr.start();
       console.log('Server starting via service manager...');
     } catch (err: any) {
-      // isInstalled() can report true from a unit file alone even when
-      // registration never fully completed (e.g. daemon-reload failed for
-      // lack of a D-Bus/systemd user session on a headless runner) -- in
-      // that case svcMgr.start() fails the same way. Fall back to a direct
-      // spawn instead of hard-failing, same as the "not installed" path.
-      console.warn(`Service manager start failed (${err.message}); falling back to direct spawn.`);
-      directSpawn();
+      if (isNoInteractiveSessionError(err)) {
+        // Distinct, identifiable cause (apra-fleet-i8qj): the scheduled task is
+        // registered in interactive-only ('onlogon') logon mode and cannot be
+        // launched by 'schtasks /run' with zero interactive logon sessions on
+        // the machine. Diagnose it explicitly instead of folding it into the
+        // generic warning below, then direct-spawn so the server still comes
+        // up (per apra-fleet-i8qj.2's chosen direction).
+        console.warn(
+          'apra-fleet: no interactive logon session -- the ApraFleet scheduled task cannot be ' +
+          'launched by schtasks /run in this state. Falling back to a direct spawn.',
+        );
+        console.warn(
+          'apra-fleet: WARNING - this instance will NOT auto-restart after a reboot. ' +
+          'Sign in interactively (console or RDP) once, or re-run apra-fleet install from an ' +
+          'elevated shell to register the task in headless SYSTEM/onstart mode instead.',
+        );
+        directSpawn();
+      } else {
+        // isInstalled() can report true from a unit file alone even when
+        // registration never fully completed (e.g. daemon-reload failed for
+        // lack of a D-Bus/systemd user session on a headless runner) -- in
+        // that case svcMgr.start() fails the same way. Fall back to a direct
+        // spawn instead of hard-failing, same as the "not installed" path.
+        console.warn(`Service manager start failed (${err.message}); falling back to direct spawn.`);
+        directSpawn();
+      }
     }
   } else {
     directSpawn();
