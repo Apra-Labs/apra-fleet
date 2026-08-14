@@ -3827,8 +3827,8 @@ export function normalizeTierToken(raw) {
  * validation, so a description is not rejected wholesale over characters that
  * lose no meaning when normalized. This is a fixed substitution table, not a
  * general Unicode stripper: anything still outside the allowlist afterwards is
- * still a hard rejection. Deliberately scoped to description only -- title
- * stays on the tighter SAFE_TEXT_RE shell-safety allowlist.
+ * still a hard rejection. See sanitizeNewTaskTitle() below for title's own,
+ * stricter table.
  * @param {string} description
  * @returns {string}
  */
@@ -3838,6 +3838,38 @@ export function sanitizeNewTaskDescription(description) {
         .replace(/[\u2018\u2019]/g, "'") // curly single quotes (\u2018 \u2019)
         .replace(/[\u201C\u201D]/g, '"') // curly double quotes (\u201C \u201D)
         .replace(/\u2026/g, '...'); // horizontal ellipsis (\u2026)
+}
+
+/**
+ * Same idea as sanitizeNewTaskDescription() above, for title -- but with a
+ * STRICTER substitution table, since title still has to pass the tighter
+ * SAFE_TEXT_RE shell-safety allowlist afterwards (it is interpolated inline
+ * into a `bd create "..."` command; description is not). Every substitution
+ * here maps to a character SAFE_TEXT_RE already admits, so this never
+ * reopens the injection surface that allowlist exists to close -- it only
+ * rescues titles that would otherwise be needlessly rejected over benign,
+ * common LLM punctuation choices. Observed live (apra-fleet-vk0a's sibling
+ * finding): a reviewer wrote a title referencing a CLI command in backticks
+ * (`` `apra-fleet status` ``, ordinary Markdown inline-code style), which
+ * SAFE_TEXT_RE rejects outright (backtick is excluded as a POSIX
+ * command-substitution risk) -- the finding was then silently demoted to a
+ * freetext note on the parent bead instead of becoming its own actionable
+ * task. Backtick has no special meaning in a bd title (bd has no
+ * code-formatting concept), so it is rewritten to a single quote here rather
+ * than dropped or preserved. A literal `"`/`$`/backslash in a title is NOT
+ * rewritten (there is no safe ASCII stand-in that preserves meaning without
+ * reopening the injection question) -- those still hard-reject via
+ * SAFE_TEXT_RE below, exactly as before this function existed.
+ * @param {string} title
+ * @returns {string}
+ */
+export function sanitizeNewTaskTitle(title) {
+    return String(title ?? '')
+        .replace(/[\u2014\u2013]/g, '--') // em dash (\u2014), en dash (\u2013)
+        .replace(/[\u2018\u2019]/g, "'") // curly single quotes (\u2018 \u2019)
+        .replace(/[\u201C\u201D]/g, "'") // curly double quotes -> single quote (a literal `"` stays disallowed in title, unlike description)
+        .replace(/\u2026/g, '...') // horizontal ellipsis (\u2026)
+        .replace(/`/g, "'"); // backtick (Markdown inline-code marker) -> single quote
 }
 
 /**
@@ -3857,7 +3889,7 @@ export function validateNewTask(newTask) {
     if (!SAFE_PRIORITY_RE.test(priority)) {
         return { ok: false, reason: `priority '${priority}' does not match required pattern ${SAFE_PRIORITY_RE}` };
     }
-    const title = String(newTask && newTask.title);
+    const title = sanitizeNewTaskTitle(newTask && newTask.title);
     if (!title || !SAFE_TEXT_RE.test(title)) {
         return { ok: false, reason: `title fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(title)}` };
     }

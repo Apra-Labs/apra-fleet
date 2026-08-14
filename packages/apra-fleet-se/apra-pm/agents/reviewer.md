@@ -130,7 +130,14 @@ applies the reopen/create transitions:
   field is equivalent to an empty array: no criteria-defect flag is raised, and behavior
   is unchanged from before this field existed.
 - `newTasks`: array of `{ title, description, priority }` for follow-up work the review
-  surfaced that is not covered by an existing task (empty array if none)
+  surfaced that is not covered by an existing task (empty array if none). `title` is
+  PLAIN TEXT ONLY: letters, digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -` -- nothing
+  else. No backticks, double quotes, `$`, or backslash. Do NOT wrap a command/flag/
+  filename in backticks in the title (e.g. write "Surface the Windows service
+  registration mode in apra-fleet status", not `` `apra-fleet status` `` with
+  backticks) -- a title outside this set is silently dropped as its own task and only
+  survives as a note on the parent bead. `description` has no such restriction; put any
+  code/command formatting there instead.
 
 **APPROVED** means all acceptance criteria met, tests pass, no regressions, no hygiene issues.
 `reopenIds` and `newTasks` are both empty on APPROVED.

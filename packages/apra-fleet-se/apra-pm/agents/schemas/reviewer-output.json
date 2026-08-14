@@ -28,7 +28,11 @@
         "type": "object",
         "required": ["title", "description", "priority"],
         "properties": {
-          "title": { "type": "string" },
+          "title": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9 .,:;!?()'_/\\[\\]-]+$",
+            "description": "Plain text only: letters, digits, space, and . , : ; ! ? ( ) ' _ / [ ] - -- nothing else. No backticks, double quotes, $, or backslash (the title is interpolated into a shell command downstream). Do NOT wrap a command/flag/filename in backticks here -- write it plain (e.g. \"Surface the Windows service registration mode in apra-fleet status\") or move the formatted detail into description instead, which has no such restriction."
+          },
           "description": { "type": "string" },
           "priority": { "type": "string" }
         }
