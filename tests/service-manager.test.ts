@@ -156,7 +156,12 @@ describe('WindowsServiceManager', () => {
       ' USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\r\n' +
       '>alice                 console             1  Active          .  8/12/2026 9:00 AM\r\n';
 
-    it('resolves once Last Run Time advances after schtasks /run', async () => {
+    /** Registration-mode record read by resolveRegistrationModeForStartFailure(). */
+    const mockRegistrationRecord = (mode: 'system-onstart' | 'onlogon-interactive') => {
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ mode }) as any);
+    };
+
+    it('resolves once Last Run Time advances after schtasks /run, on the first check (no poll wait)', async () => {
       vi.mocked(execFileSync)
         .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
         .mockImplementationOnce(() => '' as any) // schtasks /run
@@ -164,35 +169,68 @@ describe('WindowsServiceManager', () => {
       const mgr = new WindowsServiceManager();
       await expect(mgr.start()).resolves.toBeUndefined();
       expect(execFileSync).toHaveBeenNthCalledWith(2, 'schtasks', ['/run', '/tn', 'ApraFleet'], { encoding: 'utf8' });
-      // Did not need to consult session state -- the task demonstrably fired.
+      // Did not need to poll further or consult session state -- fired on the first check.
       expect(execFileSync).toHaveBeenCalledTimes(3);
     });
 
-    it('throws NoInteractiveSessionError when the task never fires and there is no interactive session', async () => {
+    it('polls Last Run Time (not a single sample) and resolves once it advances a few checks later', async () => {
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
+        .mockImplementationOnce(() => '' as any) // schtasks /run
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // poll 1: still stale (async update lag)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // poll 2: still stale
+        .mockImplementationOnce(() => verboseOut('Ready', '8/13/2026 9:00:00 AM') as any); // poll 3: advanced
+      const mgr = new WindowsServiceManager();
+      await expect(mgr.start({ pollBudgetMs: 1000, pollIntervalMs: 5 })).resolves.toBeUndefined();
+      // pre-run + /run + 3 polls, no session/mode check needed -- the task demonstrably fired.
+      expect(execFileSync).toHaveBeenCalledTimes(5);
+    });
+
+    it('throws NoInteractiveSessionError when the task never fires, is registered onlogon-interactive, and there is no interactive session', async () => {
+      mockRegistrationRecord('onlogon-interactive');
       vi.mocked(execFileSync)
         .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
         .mockImplementationOnce(() => '' as any) // schtasks /run "succeeds"
         .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // post-run query: unchanged
         .mockImplementationOnce(() => noSessionOutput as any); // query user
       const mgr = new WindowsServiceManager();
-      const err = await mgr.start().catch(e => e);
+      const err = await mgr.start({ pollBudgetMs: 0 }).catch(e => e);
       expect(isNoInteractiveSessionError(err)).toBe(true);
       expect(err).toBeInstanceOf(NoInteractiveSessionError);
       expect(err.code).toBe('NO_INTERACTIVE_SESSION');
       expect(err.message).toMatch(/no interactive logon session/i);
     });
 
-    it('throws a distinct (non-interactive-session) error when the task never fires despite an active session', async () => {
+    it('throws a distinct (non-interactive-session) error when onlogon-interactive and the task never fires despite an active session', async () => {
+      mockRegistrationRecord('onlogon-interactive');
       vi.mocked(execFileSync)
         .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any)
         .mockImplementationOnce(() => '' as any)
         .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any)
         .mockImplementationOnce(() => activeSessionOutput as any);
       const mgr = new WindowsServiceManager();
-      const err = await mgr.start().catch(e => e);
+      const err = await mgr.start({ pollBudgetMs: 0 }).catch(e => e);
       expect(isNoInteractiveSessionError(err)).toBe(false);
       expect(err).not.toBeInstanceOf(NoInteractiveSessionError);
       expect(err.message).toMatch(/did not start/i);
+    });
+
+    it('throws a distinct, non-NO_INTERACTIVE_SESSION error when a SYSTEM/onstart task never fires (never mislabelled)', async () => {
+      mockRegistrationRecord('system-onstart');
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
+        .mockImplementationOnce(() => '' as any) // schtasks /run "succeeds"
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any); // post-run query: unchanged
+      const mgr = new WindowsServiceManager();
+      const err = await mgr.start({ pollBudgetMs: 0 }).catch(e => e);
+      // A SYSTEM/onstart task has no interactive-session requirement at all --
+      // it must never be reported as the interactive-session case, even if the
+      // machine also happens to have zero interactive sessions.
+      expect(isNoInteractiveSessionError(err)).toBe(false);
+      expect(err).not.toBeInstanceOf(NoInteractiveSessionError);
+      expect(err.message).toMatch(/did not start/i);
+      // Must not have consulted session state at all for a SYSTEM/onstart task.
+      expect(execFileSync).toHaveBeenCalledTimes(3);
     });
 
     it('throws a distinct error (not mislabelled as the interactive-session case) when schtasks /run itself fails', async () => {
@@ -200,7 +238,7 @@ describe('WindowsServiceManager', () => {
         .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
         .mockImplementationOnce(() => { throw new Error('ERROR: Access is denied.'); }); // schtasks /run fails
       const mgr = new WindowsServiceManager();
-      const err = await mgr.start().catch(e => e);
+      const err = await mgr.start({ pollBudgetMs: 0 }).catch(e => e);
       expect(isNoInteractiveSessionError(err)).toBe(false);
       expect(err.message).toMatch(/Access is denied/);
       // Must fail fast on the /run error alone -- no session check, no extra query.

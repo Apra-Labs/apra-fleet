@@ -184,6 +184,43 @@ function queryTaskInfo(): TaskQueryInfo {
 /** 'Last Run Time' as reported by schtasks when the task has never fired. */
 const NEVER_FIRED_SENTINEL = 'N/A';
 
+/** True once 'after' demonstrably reflects a run that happened since 'before'. */
+function taskFired(after: TaskQueryInfo, before: TaskQueryInfo): boolean {
+  return !!after.lastRunTime
+    && after.lastRunTime !== NEVER_FIRED_SENTINEL
+    && after.lastRunTime !== before.lastRunTime;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Which registration mode to hold responsible when start() cannot confirm a
+ * fired run. Prefers the persisted record (fast, no extra 'schtasks' call);
+ * when it is absent, derives live from the task definition rather than
+ * silently assuming the historical 'onlogon-interactive' default, since that
+ * default would misclassify a SYSTEM/onstart task in this exact decision
+ * (apra-fleet-i8qj review round 1, defect 1).
+ */
+function resolveRegistrationModeForStartFailure(): ServiceRegistrationMode {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(MODE_RECORD_PATH, 'utf8')) as { mode?: string };
+    if (parsed.mode === 'system-onstart' || parsed.mode === 'onlogon-interactive') return parsed.mode;
+  } catch {
+    // Absent/corrupt record -- fall through to live derivation.
+  }
+  return deriveRegistrationModeFromQuery() ?? 'onlogon-interactive';
+}
+
+/** Tuning knobs for start()'s post-'/run' poll; overridable only by tests. */
+export interface WindowsStartOptions {
+  /** Total time budget to wait for Last Run Time to advance, in ms. */
+  pollBudgetMs?: number;
+  /** Delay between polls, in ms. */
+  pollIntervalMs?: number;
+}
+
 /** Injectable command runner seam: takes (cmd, args), returns combined stdout+stderr text. */
 export type SessionQueryRunner = (cmd: string, args: string[]) => string;
 
@@ -331,8 +368,16 @@ export class WindowsServiceManager implements ServiceManager {
    * 'onlogon-interactive' mode with zero logon sessions accepts /run without
    * error but never launches (apra-fleet-i8qj), so success is only reported
    * once Last Run Time has advanced past its pre-run value.
+   *
+   * 'schtasks /run' only submits the run -- Task Scheduler updates Last Run
+   * Time asynchronously, so a task that DID start can still report the
+   * pre-run value in the instant right after /run returns. A single
+   * immediate sample would race that update and produce a false negative
+   * (review round 1, defect 2), so this polls for up to pollBudgetMs before
+   * declaring the task not-started.
    */
-  async start(): Promise<void> {
+  async start(options: WindowsStartOptions = {}): Promise<void> {
+    const { pollBudgetMs = 1500, pollIntervalMs = 250 } = options;
     const before = queryTaskInfo();
 
     let runError: Error | undefined;
@@ -350,24 +395,34 @@ export class WindowsServiceManager implements ServiceManager {
       throw new Error(`apra-fleet: failed to start the ApraFleet scheduled task: ${runError.message}`);
     }
 
-    const after = queryTaskInfo();
-    const fired = !!after.lastRunTime
-      && after.lastRunTime !== NEVER_FIRED_SENTINEL
-      && after.lastRunTime !== before.lastRunTime;
-    if (fired) return;
+    const deadline = Date.now() + pollBudgetMs;
+    let after = queryTaskInfo();
+    while (!taskFired(after, before) && Date.now() < deadline) {
+      await sleep(pollIntervalMs);
+      after = queryTaskInfo();
+    }
+    if (taskFired(after, before)) return;
 
     // 'schtasks /run' reported success but the task never actually fired --
-    // this is the silent failure mode. Fail fast (no server-liveness wait)
-    // and distinguish the interactive-session cause from anything else.
-    const session = hasInteractiveSession();
-    if (!session.hasInteractive) {
-      throw new NoInteractiveSessionError(
-        "apra-fleet: the ApraFleet scheduled task did not start because there is no interactive " +
-        "logon session on this machine. The task is registered in interactive-only ('onlogon') " +
-        "logon mode, which 'schtasks /run' cannot launch headlessly. Sign in interactively " +
-        '(console or RDP) once, or re-run apra-fleet install from an elevated shell so the task ' +
-        'can be registered in headless SYSTEM/onstart mode instead.',
-      );
+    // this is the silent failure mode. Fail fast (bounded poll only, no
+    // server-liveness wait) and distinguish the interactive-session cause
+    // from anything else. Only a task actually registered in
+    // 'onlogon-interactive' mode can have failed for that reason -- a
+    // SYSTEM/onstart task that never fires has some other cause and must not
+    // be mislabelled as the interactive-session case (review round 1,
+    // defect 1).
+    const mode = resolveRegistrationModeForStartFailure();
+    if (mode === 'onlogon-interactive') {
+      const session = hasInteractiveSession();
+      if (!session.hasInteractive) {
+        throw new NoInteractiveSessionError(
+          "apra-fleet: the ApraFleet scheduled task did not start because there is no interactive " +
+          "logon session on this machine. The task is registered in interactive-only ('onlogon') " +
+          "logon mode, which 'schtasks /run' cannot launch headlessly. Sign in interactively " +
+          '(console or RDP) once, or re-run apra-fleet install from an elevated shell so the task ' +
+          'can be registered in headless SYSTEM/onstart mode instead.',
+        );
+      }
     }
 
     throw new Error(
