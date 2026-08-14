@@ -197,9 +197,15 @@ export function stripCliXmlEnvelope(raw: string): string {
   const re = /<S S="Error">([\s\S]*?)<\/S>/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(raw)) !== null) {
-    const decoded = m[1].replace(/_x([0-9A-Fa-f]{4})_/g, (_all, hex: string) =>
-      String.fromCharCode(parseInt(hex, 16)),
-    );
+    const decoded = m[1]
+      .replace(/_x([0-9A-Fa-f]{4})_/g, (_all, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/&#x([0-9A-Fa-f]+);/g, (_all, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/&#([0-9]+);/g, (_all, dec: string) => String.fromCharCode(parseInt(dec, 10)))
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, '&');
     messages.push(decoded);
   }
   if (messages.length === 0) return raw;

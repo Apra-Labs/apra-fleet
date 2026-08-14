@@ -183,7 +183,7 @@ describe('stripCliXmlEnvelope: decode CLIXML down to a readable message (apra-fl
     const decoded = stripCliXmlEnvelope(raw);
     expect(decoded).not.toContain('CLIXML');
     expect(decoded).not.toContain('_x000D_');
-    expect(decoded).toContain("The term &#39;nope&#39; is not recognized");
+    expect(decoded).toContain("The term 'nope' is not recognized");
     expect(decoded).toContain('At line:1 char:1');
   });
 
