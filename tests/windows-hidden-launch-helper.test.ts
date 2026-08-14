@@ -14,6 +14,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   buildDetachedHiddenLaunchCommand,
   launchDetachedHidden,
+  stripCliXmlEnvelope,
   DETACHED_VISIBLE_WINDOW_TITLE,
   type DetachedLaunchOptions,
   type DetachedLaunchExecutor,
@@ -157,6 +158,41 @@ describe('launchDetachedHidden: structured failure on non-zero/error return, no 
     const { executor } = makeStubExecutor(0, { status: 0, stdout: 'no marker here' });
     const result = launchDetachedHidden(baseOpts, executor);
     expect(result).toEqual(expect.objectContaining({ ok: false }));
+  });
+});
+
+describe('stripCliXmlEnvelope: decode CLIXML down to a readable message (apra-fleet-i8qj.14)', () => {
+  it('7a. leaves plain (non-CLIXML) stderr untouched', () => {
+    expect(stripCliXmlEnvelope('access denied')).toBe('access denied');
+    expect(stripCliXmlEnvelope('')).toBe('');
+  });
+
+  it('7b. extracts and decodes the <S S="Error"> text out of a CLIXML envelope', () => {
+    const raw =
+      '#< CLIXML\r\n' +
+      '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">' +
+      '<S S="Error">The term &#39;nope&#39; is not recognized_x000D__x000A_</S>' +
+      '<S S="Error">At line:1 char:1_x000D__x000A_</S>' +
+      '</Objs>';
+    const decoded = stripCliXmlEnvelope(raw);
+    expect(decoded).not.toContain('CLIXML');
+    expect(decoded).not.toContain('_x000D_');
+    expect(decoded).toContain("The term &#39;nope&#39; is not recognized");
+    expect(decoded).toContain('At line:1 char:1');
+  });
+
+  it('7c. launchDetachedHidden folds a CLIXML stderr down to a single readable message on failure', () => {
+    const cliXmlStderr =
+      '#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">' +
+      '<S S="Error">hidden launch failed with exit code 1_x000D__x000A_</S></Objs>';
+    const { executor } = makeStubExecutor(0, { status: 1, stderr: cliXmlStderr, stdout: '' });
+    const result = launchDetachedHidden(baseOpts, executor);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.stderr).not.toContain('CLIXML');
+      expect(result.stderr).not.toContain('_x000D_');
+      expect(result.error).toContain('hidden launch failed with exit code 1');
+    }
   });
 });
 

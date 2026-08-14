@@ -143,8 +143,36 @@ export function buildDetachedHiddenLaunchCommand(opts: DetachedLaunchOptions): s
 }
 
 function defaultDetachedLaunchExecutor(command: string): { stdout: string; stderr?: string; status?: number } {
-  const stdout = execSync(command, { encoding: 'utf-8', windowsHide: true });
+  // stdio is explicit here (rather than relying on execSync's default) so the
+  // child's stderr is captured only, never inherited into our own stderr --
+  // execSync's documented default behaviour is to ALSO stream stderr straight
+  // to the parent process' stderr even though it's captured for the thrown
+  // error too, which otherwise prints a failing PowerShell script's CLIXML
+  // wall of text twice (apra-fleet-i8qj.14).
+  const stdout = execSync(command, { encoding: 'utf-8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   return { stdout, stderr: '', status: 0 };
+}
+
+/**
+ * Strip a PowerShell CLIXML envelope (the `#< CLIXML` marker followed by the
+ * serialized error-stream `<Objs>`/`<S S="Error">` XML that PowerShell emits
+ * whenever an error record crosses a non-interactive stderr) down to just the
+ * human-readable message(s) it carries. Returns `raw` unchanged if it does
+ * not look like CLIXML.
+ */
+export function stripCliXmlEnvelope(raw: string): string {
+  if (!raw || !raw.includes('#< CLIXML')) return raw;
+  const messages: string[] = [];
+  const re = /<S S="Error">([\s\S]*?)<\/S>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    const decoded = m[1].replace(/_x([0-9A-Fa-f]{4})_/g, (_all, hex: string) =>
+      String.fromCharCode(parseInt(hex, 16)),
+    );
+    messages.push(decoded);
+  }
+  if (messages.length === 0) return raw;
+  return messages.join('').replace(/\r\n/g, '\n').trim();
 }
 
 /**
@@ -178,16 +206,25 @@ export function launchDetachedHidden(
   }
 
   if (status !== 0) {
-    return { ok: false, error: `hidden launch failed with exit code ${status}`, stderr, returnValue: parseCreateReturnValue(stderr), command };
+    const cleanStderr = stripCliXmlEnvelope(stderr);
+    const detail = cleanStderr ? `: ${cleanStderr}` : '';
+    return {
+      ok: false,
+      error: `hidden launch failed with exit code ${status}${detail}`,
+      stderr: cleanStderr,
+      returnValue: parseCreateReturnValue(stderr),
+      command,
+    };
   }
 
   const match = new RegExp(`${LAUNCH_PID_MARKER}\\s*(\\d+)`).exec(stdout);
   const pid = match ? Number(match[1]) : NaN;
   if (!match || !Number.isFinite(pid) || pid <= 0) {
+    const cleanStderr = stripCliXmlEnvelope(stderr || stdout);
     return {
       ok: false,
       error: 'hidden launch produced no usable PID',
-      stderr: stderr || stdout,
+      stderr: cleanStderr,
       returnValue: parseCreateReturnValue(stderr),
       command,
     };
