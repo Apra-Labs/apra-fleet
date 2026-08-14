@@ -398,6 +398,16 @@ Options:
         anythingRemoved = true;
       }
     }
+    // fleet-supervisor helper skill -- same provider-agnostic install/removal
+    // rationale as fleet-sprint-cli above.
+    if (skillMode === 'all' || skillMode === 'pm' || skillMode === 'fleet') {
+      const supervisorSkillDir = path.join(paths.configDir, 'skills', 'fleet-supervisor');
+      if (fs.existsSync(supervisorSkillDir)) {
+        console.log(`  - Removing fleet-supervisor skill: ${supervisorSkillDir}`);
+        if (!dryRun) fs.rmSync(supervisorSkillDir, { recursive: true, force: true });
+        anythingRemoved = true;
+      }
+    }
     if (skillMode === 'all' || skillMode === 'fleet') {
       if (fs.existsSync(paths.fleetSkillsDir)) {
         console.log(`  - Removing fleet skills: ${paths.fleetSkillsDir}`);

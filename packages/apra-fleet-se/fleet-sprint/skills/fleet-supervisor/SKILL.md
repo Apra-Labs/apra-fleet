@@ -1,9 +1,9 @@
 ---
-name: fleet-sprint
+name: fleet-supervisor
 description: How to start, check, and kill fleet-sprints via the supervisor HTTP API only (POST /api/sprints on localhost:8787). Never call the fleet-sprint CLI directly. Trigger whenever asked to start/launch/check/stop/kill a sprint.
 ---
 
-# fleet-sprint (supervisor API)
+# fleet-supervisor (supervisor API)
 
 Sprints are started, checked, and killed through the supervisor's HTTP API.
 Default port: **8787**. Never invoke `apra-fleet workflow fleet-sprint` or

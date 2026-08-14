@@ -108,6 +108,14 @@ const fleetSprintCliSkill = collectFiles(
   'packages/apra-fleet-se/fleet-sprint/skills/fleet-sprint-cli',
   'packages/apra-fleet-se/fleet-sprint/skills/fleet-sprint-cli'
 );
+// fleet-supervisor helper skill -- how to drive fleet-sprints via the
+// supervisor HTTP API (start/check/kill), as opposed to fleet-sprint-cli
+// above (the direct CLI invocation). Ships alongside it, same rationale.
+const fleetSupervisorSkill = collectFiles(
+  join(root, 'packages', 'apra-fleet-se', 'fleet-sprint', 'skills', 'fleet-supervisor'),
+  'packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor',
+  'packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor'
+);
 
 if (Object.keys(skills).length === 0) {
   console.error('Error: apra-pm directory is missing (skills/pm is empty).');
@@ -207,6 +215,7 @@ const manifest = {
   builtinWorkflows,
   autoSprintArgsSkill,
   fleetSprintCliSkill,
+  fleetSupervisorSkill,
 };
 
 writeFileSync(join(distDir, 'sea-manifest.json'), JSON.stringify(manifest, null, 2));
@@ -222,6 +231,7 @@ console.log(`  Agent schemas:      ${Object.keys(agentSchemas).length} files`);
 console.log(`  Built-in workflows: ${Object.keys(builtinWorkflows).length} files`);
 console.log(`  Skill (auto-sprint-args): ${Object.keys(autoSprintArgsSkill).length} files`);
 console.log(`  Skill (fleet-sprint-cli): ${Object.keys(fleetSprintCliSkill).length} files`);
+console.log(`  Skill (fleet-supervisor): ${Object.keys(fleetSupervisorSkill).length} files`);
 
 // Build SEA config with assets
 const assets = {};
@@ -275,6 +285,10 @@ for (const [, relPath] of Object.entries(autoSprintArgsSkill)) {
 }
 // Add fleet-sprint-cli skill files
 for (const [, relPath] of Object.entries(fleetSprintCliSkill)) {
+  assets[relPath] = join(root, relPath);
+}
+// Add fleet-supervisor skill files
+for (const [, relPath] of Object.entries(fleetSupervisorSkill)) {
   assets[relPath] = join(root, relPath);
 }
 
