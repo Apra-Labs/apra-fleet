@@ -75,7 +75,7 @@ describe('buildDetachedHiddenLaunchCommand: SW_HIDE / STARTUPINFO contract', () 
   it('2. sets ShowWindow = $SW_HIDE (0) and calls Win32_Process Create, by default', () => {
     const decoded = decodeEncodedCommand(buildDetachedHiddenLaunchCommand(baseOpts));
     expect(decoded).toContain('$SW_HIDE = 0');
-    expect(decoded).toMatch(/ShowWindow\s*=\s*\$SW_HIDE/);
+    expect(decoded).toMatch(/ShowWindow\s*=\s*(\[uint16\])?\$SW_HIDE/);
     expect(decoded).toContain('Win32_Process');
     expect(decoded).toContain('-MethodName Create');
     // STARTF_USESHOWWINDOW is implicit in WMI's ShowWindow property (WMI sets
@@ -199,7 +199,7 @@ describe('stripCliXmlEnvelope: decode CLIXML down to a readable message (apra-fl
 describe('buildDetachedHiddenLaunchCommand: opt-out titled-window path', () => {
   it('5a. hiding is the default when no opt-out is passed', () => {
     const decoded = decodeEncodedCommand(buildDetachedHiddenLaunchCommand(baseOpts));
-    expect(decoded).toMatch(/ShowWindow\s*=\s*\$SW_HIDE/);
+    expect(decoded).toMatch(/ShowWindow\s*=\s*(\[uint16\])?\$SW_HIDE/);
     expect(decoded).not.toContain(DETACHED_VISIBLE_WINDOW_TITLE);
   });
 
@@ -207,7 +207,7 @@ describe('buildDetachedHiddenLaunchCommand: opt-out titled-window path', () => {
     const decoded = decodeEncodedCommand(
       buildDetachedHiddenLaunchCommand({ ...baseOpts, showWindow: true }),
     );
-    expect(decoded).toMatch(/ShowWindow\s*=\s*\$SW_SHOWNORMAL/);
+    expect(decoded).toMatch(/ShowWindow\s*=\s*(\[uint16\])?\$SW_SHOWNORMAL/);
     expect(decoded).toContain(DETACHED_VISIBLE_WINDOW_TITLE);
   });
 
@@ -234,7 +234,7 @@ describe('call sites route through the shared hidden-launch helper (apra-fleet-5
     expect(calls[0]).toMatch(/^powershell -EncodedCommand \S+$/);
     const decoded = decodeEncodedCommand(calls[0]);
     expect(decoded).toContain('Win32_Process');
-    expect(decoded).toMatch(/ShowWindow\s*=\s*\$SW_HIDE/);
+    expect(decoded).toMatch(/ShowWindow\s*=\s*(\[uint16\])?\$SW_HIDE/);
     expect(decoded).toContain('run');
     expect(decoded).toContain('--transport');
     expect(decoded).toContain('http');
@@ -251,7 +251,7 @@ describe('call sites route through the shared hidden-launch helper (apra-fleet-5
     expect(calls[0]).toMatch(/^powershell -EncodedCommand \S+$/);
     const decoded = decodeEncodedCommand(calls[0]);
     expect(decoded).toContain('Win32_Process');
-    expect(decoded).toMatch(/ShowWindow\s*=\s*\$SW_HIDE/);
+    expect(decoded).toMatch(/ShowWindow\s*=\s*(\[uint16\])?\$SW_HIDE/);
     expect(decoded).toContain('serve.mjs');
     expect(result).toEqual(expect.objectContaining({ ok: true, pid: 2222 }));
   });

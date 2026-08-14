@@ -95,9 +95,12 @@ function psSingleQuote(value: string): string {
  * Mechanism: `Win32_Process.Create` with a `Win32_ProcessStartup` instance
  * carrying `ShowWindow`. WMI maps that property onto `STARTUPINFO.wShowWindow`
  * and implicitly sets `dwFlags |= STARTF_USESHOWWINDOW` -- there is no separate
- * `dwFlags` property to set, so `ShowWindow = $SW_HIDE` (0) is the whole
- * hidden-window contract. `CreateFlags = CREATE_NO_WINDOW` keeps the console
- * host itself windowless. No DETACHED_PROCESS on top: it conflicts, and is
+ * `dwFlags` property to set, so `ShowWindow = [uint16]$SW_HIDE` (0) is the
+ * whole hidden-window contract. `CreateFlags` (e.g. `CREATE_NO_WINDOW`) is
+ * deliberately NOT set: verified live, this WMI provider returns
+ * ReturnValue=21 (invalid parameter) whenever `CreateFlags` is present at
+ * all, and it is not needed -- `ShowWindow` alone already hides the child's
+ * console window. No DETACHED_PROCESS on top either: it conflicts, and is
  * unnecessary because a Win32_Process child is parented to WmiPrvSE, so it
  * already outlives the launching process / SSH channel.
  *
@@ -123,14 +126,24 @@ export function buildDetachedHiddenLaunchCommand(opts: DetachedLaunchOptions): s
   // cmd.exe itself, which is why the inner tokens stay individually quoted.
   const cmdLine = `cmd.exe /c "${childCommand} > ${quoteForCmd(logFile)} 2>&1"`;
 
+  // ShowWindow must be cast to [uint16] -- Win32_ProcessStartup.ShowWindow's
+  // CIM type is UInt16, and an untyped PowerShell int literal (Int32) trips
+  // WMI's strict type check with a bare "Type mismatch" (HRESULT
+  // 0x80041005), verified live on a real Windows host. CreateFlags is
+  // omitted entirely: also verified live, Invoke-CimMethod's Win32_Process
+  // Create returns ReturnValue=21 (invalid parameter) on this WMI provider
+  // when CreateFlags=CREATE_NO_WINDOW is set at all (typed or not) -- and
+  // it isn't needed for the hidden-window contract anyway: ShowWindow=
+  // SW_HIDE alone (with WMI's implicit STARTF_USESHOWWINDOW) already hides
+  // the child's console window, per Windows' documented CreateProcess
+  // wShowWindow behaviour.
   const startupProps = showWindow
-    ? `@{ ShowWindow = $SW_SHOWNORMAL; Title = '${psSingleQuote(title)}' }`
-    : '@{ ShowWindow = $SW_HIDE; CreateFlags = $CREATE_NO_WINDOW }';
+    ? `@{ ShowWindow = [uint16]$SW_SHOWNORMAL; Title = '${psSingleQuote(title)}' }`
+    : '@{ ShowWindow = [uint16]$SW_HIDE }';
 
   const psScript = [
     '$SW_HIDE = 0',
     '$SW_SHOWNORMAL = 1',
-    '$CREATE_NO_WINDOW = 134217728',
     `$logDir = Split-Path -Path '${psSingleQuote(logFile)}' -Parent`,
     'if ($logDir) { New-Item -Path $logDir -ItemType Directory -Force | Out-Null }',
     `$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property ${startupProps}`,
