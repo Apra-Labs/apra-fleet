@@ -2,6 +2,85 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Windows headless service start and hidden background launches
+
+Sprint goal: make `apra-fleet start` work on a headless Windows machine (no
+interactive logon session), close the remaining POSIX-only shell strings in the
+permission-composition tool, and give Windows background process launches (the MCP
+server, the fleet-sprint supervisor) a single standardized hidden-window mechanism
+instead of ad hoc per-session PowerShell. The sprint's final verdict is FAIL: two of
+the three in-scope items landed with tests, but the third (standardized hidden
+launch) is only partially wired into its call sites, the working tree carried
+uncommitted work for that item at review time, no build/test run could be executed
+because of an unrelated environment defect (a locked native module blocked package
+install), and a documentation defect was found in already-shipped work. Details
+below; all three scope items carry forward.
+
+What shipped:
+
+- The permission-composition tool's remaining POSIX-only shell strings (directory
+  listing and settings-file reads) are now OS-branched: the Windows side routes
+  through the standard base64-encoded PowerShell wrapper (`Test-Path` +
+  `Get-ChildItem` / `Get-Content -Raw`), preserving the same missing-dir/missing-file
+  degrade-to-empty behavior on both branches. Regression tests decode the encoded
+  command and assert no POSIX-only tokens leak into a Windows member's command, plus
+  a byte-identical regression guard for the POSIX branch and coverage for a work
+  folder path containing a space.
+- Windows service registration now attempts a SYSTEM-mode, boot-time trigger first
+  (headless-capable, survives reboot) and degrades to the historical per-logon-only
+  trigger only when SYSTEM registration isn't available (e.g. no elevation), with the
+  resolved mode persisted to disk so callers can tell which mode is active. Firing
+  the registered task is now bounded by a timeout and confirmed by polling the
+  task's own last-run timestamp rather than trusting the launcher's exit code alone.
+  When the resolved mode is the interactive-only fallback and no interactive session
+  exists, `apra-fleet start` now fails fast with a specific, named diagnosis instead
+  of the previous silent multi-minute timeout, then falls back to a direct process
+  spawn with an explicit warning that the fallback will not auto-restart on reboot. A
+  documentation defect shipped alongside this change was caught in review: the docs
+  told users to run `apra-fleet status` to see which registration mode is active, but
+  no code path actually surfaces that from `status` -- the docs have been corrected
+  in this harvest to point at the on-disk registration-state file instead, and the
+  underlying gap (teaching `status` to report registration mode) remains open work.
+- A standardized helper for launching a detached, hidden-window background process on
+  Windows was added and unit-tested: it drives `Win32_Process.Create` with a
+  `Win32_ProcessStartup` CIM instance to hide the console window by default (an
+  explicit, titled opt-out remains available for the rare case a visible window is
+  wanted), transmits the launch script via the existing base64-encoded PowerShell
+  wrapper rather than raw interpolation, and returns a structured success/failure
+  result (including the parsed WMI return code) instead of throwing. Routing the
+  MCP server's and the fleet-sprint supervisor's actual launch call sites through
+  this helper, and documenting the single supported launch command in the deploy
+  runbook, were not completed and land in a future sprint -- see the carry-forward
+  note below.
+
+Carried forward:
+- Wiring the standardized hidden-launch helper into the actual MCP-server and
+  fleet-sprint-supervisor launch call sites, and documenting the single supported
+  launch invocation in the deploy runbook, remain outstanding; only the helper
+  itself and its unit tests are complete.
+- Live verification on a real Windows machine (of both the headless service start
+  behavior and the hidden-launch helper's nested-quoting behavior under a real
+  `cmd.exe`/PowerShell pair) did not happen this sprint because deploy could not
+  complete -- see below.
+- Teaching `apra-fleet status` to report the Windows service registration mode
+  (SYSTEM/headless vs. per-logon-only) remains open; today only the on-disk
+  registration-state file carries that information.
+- Deploy failed at dependency install every attempt this sprint due to a locked
+  native module blocking a clean reinstall -- an environment issue, not a defect in
+  the code shipped this sprint. As a consequence, no build, lint, or automated test
+  run backed the closed work in this round, and a same-day regression pass was also
+  blocked by the same broken dependency tree; a carry-over issue tracks getting the
+  environment back to a clean, buildable state.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $19.1880.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0000 -- no integ-test-runner dispatch ran this sprint (no playbook found, or deploy never succeeded).
+Pricing source: all 45 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- compose_permissions silent write no-op fix
 
 Sprint goal: fix a bug where `compose_permissions` could report a grant as
