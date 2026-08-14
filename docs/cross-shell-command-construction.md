@@ -128,3 +128,12 @@ or via a tool handler) is a potential instance of this bug class if it:
 New command-construction call sites should resolve the OS-appropriate
 command explicitly (via the OS-command abstraction or an explicit `agent.os`
 branch) rather than writing one string and hoping it works on every shell.
+
+The permission-composition tool (the code that reads a member's settings/allowlist
+files to compute effective permissions) has since had its remaining POSIX-only
+call sites brought in line with this pattern: directory-listing and settings-file-read
+strings that previously assumed `cd ... && ls ... || true` / `cat ... || echo "{}"`
+now branch on `agent.os` and route the Windows side through `wrapPowerShellEncoded`
+(`Test-Path` + `Get-ChildItem` / `Get-Content -Raw`, with the same missing-dir/missing-file
+degrade-to-empty behavior preserved on both branches). Treat this module as the
+reference example when auditing other tools for the same defect class.

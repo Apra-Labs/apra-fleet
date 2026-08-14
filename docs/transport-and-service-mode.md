@@ -86,14 +86,28 @@ survives terminal close and restarts automatically:
   enabling headless operation (the server fires even with zero interactive logon
   sessions) and surviving machine reboot with automatic restart. When run without
   elevation, the task falls back to a per-user OnLogon registration (cannot fire
-  headless, restarts only after a user logs in). Use `apra-fleet status` or check
-  `~/.apra-fleet/data/service-registration.json` to verify which mode you have. If you
+  headless, restarts only after a user logs in). Check
+  `~/.apra-fleet/data/service-registration.json` to verify which mode you have --
+  `apra-fleet status` does not currently surface this; it only reports whether a
+  service is installed/enabled, not which trigger mode it was registered with. If you
   need headless start on Windows without restarting the machine, run `apra-fleet
   install` elevated once. If the task is stuck in interactive-only mode and you
   cannot elevate, `apra-fleet start` falls back to direct process spawn (which will
   not survive a machine reboot).
 - Linux: a systemd user unit (`systemctl --user`)
 - macOS: a LaunchAgent in `~/Library/LaunchAgents/`
+
+**Fast failure instead of a silent timeout (Windows).** Firing the scheduled task
+(`schtasks /run`) is bounded by a short timeout rather than left to fire-and-forget,
+and the result is confirmed by polling the task's last-run timestamp rather than
+trusting the launcher's own exit code (the launcher can report success even when the
+task body never actually executed). If the resolved registration mode is the
+onlogon/interactive-only fallback and no interactive session exists on the machine,
+`apra-fleet start` diagnoses this specific cause immediately and prints a clear
+warning naming it (plus a warning that the direct-spawn fallback it falls back to will
+not auto-restart on reboot), instead of the previous generic multi-minute timeout with
+no explanation. A generic scheduled-task failure (wrong cause) still takes the old
+generic error path rather than being misreported as a no-interactive-session failure.
 
 Four verbs manage the lifecycle directly:
 
