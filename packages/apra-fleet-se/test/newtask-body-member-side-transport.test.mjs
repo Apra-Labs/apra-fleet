@@ -205,7 +205,9 @@ describe('apra-fleet-eft.73.2 -- newTask/notes body reaches member-side without 
 
         // Also cover the notes fallback path end-to-end against the same
         // remote-member fake, for a newTask that fails residual validation.
-        const rejected = { title: 'Run `whoami`', description: 'looks fine', priority: 'P1' };
+        // $(...) title (unlike a backtick, this is NOT sanitized -- see
+        // apra-fleet-vk0a) still fails residual validation.
+        const rejected = { title: 'Run $(whoami)', description: 'looks fine', priority: 'P1' };
         const validation = validateNewTask(rejected);
         assert.strictEqual(validation.ok, false);
 
