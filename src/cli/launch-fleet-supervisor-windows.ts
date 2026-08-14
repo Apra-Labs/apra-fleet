@@ -87,6 +87,13 @@ export function launchFleetSupervisorPosix(
       detached: true,
       stdio: ['ignore', out, err],
     });
+    // A nonexistent executable (or other spawn failure) sets child.pid to
+    // undefined synchronously, but the underlying ENOENT/EACCES only
+    // surfaces asynchronously as an 'error' event -- with no listener
+    // attached, Node's default EventEmitter behaviour is to rethrow it as
+    // an unhandled exception and crash the process. Swallow it here: the
+    // pid check below already reports the structured failure synchronously.
+    child.on('error', () => {});
     child.unref();
     if (child.pid == null) return { ok: false, error: 'spawn produced no pid' };
     return { ok: true, pid: child.pid };
