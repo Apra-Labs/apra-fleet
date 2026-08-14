@@ -121,10 +121,14 @@ function psSingleQuote(value: string): string {
  * the ad hoc attempts this helper replaces (apra-fleet-5ti7).
  *
  * Redirection: `Win32_Process.Create` cannot redirect handles, so the child is
- * launched under `cmd.exe /c` with `> logFile 2>&1`. Consequence, deliberately
- * surfaced rather than hidden: the PID returned is that cmd.exe wrapper, which
- * owns the real child, exits when it exits (so liveness-by-PID holds) and is
- * killed with the child by `taskkill /F /T /PID`.
+ * launched under `cmd.exe /c` with `>> logFile 2>&1` (append, not truncate --
+ * matching the POSIX fallbacks' `fs.openSync(logFile, 'a')` and deploy.md's
+ * documented `>> fleet.log` form, apra-fleet-5ti7.2 review fix: `>` truncated
+ * the log on every relaunch, destroying evidence of why the previous instance
+ * died). Consequence, deliberately surfaced rather than hidden: the PID
+ * returned is that cmd.exe wrapper, which owns the real child, exits when it
+ * exits (so liveness-by-PID holds) and is killed with the child by
+ * `taskkill /F /T /PID`.
  *
  * Every path is resolved by the caller in JavaScript; nothing in the emitted
  * script relies on shell expansion (`~`, `$HOME`, backticks, `%VAR%`).
@@ -134,9 +138,11 @@ export function buildDetachedHiddenLaunchCommand(opts: DetachedLaunchOptions): s
   const title = opts.title ?? DETACHED_VISIBLE_WINDOW_TITLE;
 
   const childCommand = [command, ...args].map(quoteForCmd).join(' ');
-  // cmd.exe /c "<child> > "<log>" 2>&1" -- the outer quotes are stripped by
+  // cmd.exe /c "<child> >> "<log>" 2>&1" -- the outer quotes are stripped by
   // cmd.exe itself, which is why the inner tokens stay individually quoted.
-  const cmdLine = `cmd.exe /c "${childCommand} > ${quoteForCmd(logFile)} 2>&1"`;
+  // `>>` appends rather than truncating, matching the POSIX fallbacks' 'a'
+  // mode and deploy.md's documented `>> fleet.log` form.
+  const cmdLine = `cmd.exe /c "${childCommand} >> ${quoteForCmd(logFile)} 2>&1"`;
 
   // ShowWindow is still cast to [uint16] -- Win32_ProcessStartup.ShowWindow's
   // CIM type is UInt16 -- even though the legacy [wmiclass] binding below is

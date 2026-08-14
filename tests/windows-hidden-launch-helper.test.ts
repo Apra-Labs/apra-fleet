@@ -10,7 +10,8 @@
  * structured (exported helpers, injectable executor stub) so that append can
  * happen cleanly.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import fs from 'node:fs';
 import {
   buildDetachedHiddenLaunchCommand,
   launchDetachedHidden,
@@ -226,7 +227,12 @@ describe('buildDetachedHiddenLaunchCommand: opt-out titled-window path', () => {
 });
 
 describe('call sites route through the shared hidden-launch helper (apra-fleet-5ti7.2)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('6a. launchMcpServerWindows routes through the injected hidden-launch executor, not a hand-rolled command', () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
     const { executor, calls } = makeStubExecutor(1111);
     const result = launchMcpServerWindows(
       { execPath: 'C:\\Program Files\\Apra Fleet\\apra-fleet.exe', cwd: 'C:\\Users\\svc account\\apra-fleet', logFile: 'C:\\Users\\svc account\\apra-fleet\\logs\\fleet.log' },
@@ -247,6 +253,7 @@ describe('call sites route through the shared hidden-launch helper (apra-fleet-5
   });
 
   it('6b. launchFleetSupervisorWindows routes through the injected hidden-launch executor, not a hand-rolled command', () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
     const { executor, calls } = makeStubExecutor(2222);
     const result = launchFleetSupervisorWindows(
       { repoRoot: 'C:\\Users\\svc account\\apra-fleet' },
@@ -259,5 +266,30 @@ describe('call sites route through the shared hidden-launch helper (apra-fleet-5
     expect(decoded).toMatch(/ShowWindow\s*=\s*(\[uint16\])?\$SW_HIDE/);
     expect(decoded).toContain('serve.mjs');
     expect(result).toEqual(expect.objectContaining({ ok: true, pid: 2222 }));
+  });
+
+  it('6c. launchMcpServerWindows fails fast (no executor call) when execPath does not exist -- apra-fleet-5ti7.2 AC4', () => {
+    const { executor, calls } = makeStubExecutor(9999);
+    const result = launchMcpServerWindows(
+      { execPath: 'C:\\nonexistent\\apra-fleet-xyz.exe', cwd: 'C:\\Users\\svc account\\apra-fleet', logFile: 'C:\\Users\\svc account\\apra-fleet\\logs\\fleet.log' },
+      executor,
+    );
+    // The failure must be reported (non-zero exit / structured error), not a
+    // silent no-op that returns success for a wrapper process while the real
+    // target never started.
+    expect(calls).toHaveLength(0);
+    expect(result.ok).toBe(false);
+    expect(result).toEqual(expect.objectContaining({ ok: false, error: expect.stringContaining('C:\\nonexistent\\apra-fleet-xyz.exe') }));
+  });
+
+  it('6d. launchFleetSupervisorWindows fails fast (no executor call) when serve.mjs does not exist -- apra-fleet-5ti7.2 AC4', () => {
+    const { executor, calls } = makeStubExecutor(9999);
+    const result = launchFleetSupervisorWindows(
+      { repoRoot: 'C:\\nonexistent\\apra-fleet-checkout' },
+      executor,
+    );
+    expect(calls).toHaveLength(0);
+    expect(result.ok).toBe(false);
+    expect(result).toEqual(expect.objectContaining({ ok: false, error: expect.stringContaining('serve.mjs') }));
   });
 });

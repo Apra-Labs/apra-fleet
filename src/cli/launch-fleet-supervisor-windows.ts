@@ -74,6 +74,16 @@ export function launchFleetSupervisorWindows(
   exec?: DetachedLaunchExecutor,
 ): DetachedLaunchResult {
   const { command, args, cwd, logFile } = resolveOptions(opts);
+  // apra-fleet-5ti7.2 review fix (AC4): Win32_Process.Create runs the target
+  // through `cmd.exe /c "<target> >> log 2>&1"`, and cmd.exe always exists --
+  // so a missing serve.mjs still returns ReturnValue=0 with the wrapper's PID,
+  // reporting success while nothing came up (the exact silent-death mode this
+  // bead exists to eliminate). Fail fast here instead, before ever calling the
+  // helper.
+  const scriptPath = serveScriptPath(opts.repoRoot);
+  if (!fs.existsSync(scriptPath)) {
+    return { ok: false, error: `Supervisor script not found: ${scriptPath}`, stderr: '', command };
+  }
   return launchDetachedHidden({ command, args, cwd, logFile }, exec);
 }
 
