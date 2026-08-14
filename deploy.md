@@ -31,12 +31,21 @@ either wait for them to finish or be ready to force-release their stale
 reservations and relaunch afterward.
 
 ```bash
-# Ownership-scoped pre-flight: kills any process still holding a lock on a
-# file under THIS repo's node_modules (e.g. an orphaned esbuild.exe from a
-# prior crashed/killed build) so `npm ci` doesn't fail with EPERM/unlink.
-# Never name-based -- only kills processes whose own executable path/cmdline
-# points inside this exact checkout's node_modules, so it cannot collide
-# with an unrelated project's same-named process.
+# Ownership-scoped pre-flight: finds any process still holding a lock on a
+# file under THIS repo's node_modules -- both an orphaned in-tree build tool
+# (node_modules/@esbuild/*/esbuild.exe) and an OUT-OF-TREE node.exe that has
+# one of this repo's native modules (@rollup/*/*.node) mapped -- so `npm ci`
+# doesn't fail with EPERM/unlink. Never name-based: a kill requires the
+# holder's own executable to live inside this exact checkout's node_modules,
+# or its image to be in the script's small build-toolchain allowlist; this
+# process and every ancestor of it are never killed, and anything else (AV,
+# editors) is reported for manual resolution rather than killed.
+#
+# Exits non-zero and names the holder PID + image + locked file path when a
+# lock cannot be cleared (2 = "holder unknown"), so STOP and resolve it before
+# running `npm ci` -- npm ci prunes before installing, so a failure here
+# leaves node_modules unusable for every later build/test step. Add
+# `--report-only` to diagnose without killing anything.
 node scripts/preflight-clear-build-locks.mjs
 
 npm ci
