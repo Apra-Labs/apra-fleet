@@ -44,6 +44,164 @@ export function wrapPowerShellEncoded(psScript: string): string {
   return `powershell -EncodedCommand ${encoded}`;
 }
 
+/** Default console title used when a caller explicitly opts out of hiding. */
+export const DETACHED_VISIBLE_WINDOW_TITLE = 'Apra Fleet MCP Server -- do not close';
+
+export interface DetachedLaunchOptions {
+  /** Absolute path to the executable (resolved in JS -- no ~, $HOME, %VAR%). */
+  command: string;
+  /** Arguments, passed verbatim; quoted here as needed. */
+  args?: string[];
+  /** Absolute working directory for the child. */
+  cwd: string;
+  /** Absolute path of the file that receives the child's stdout AND stderr. */
+  logFile: string;
+  /**
+   * Explicit opt-out of the hidden-window behaviour (SANCTIONED FALLBACK).
+   * Defaults to false: hidden is always the default, never a visible window.
+   */
+  showWindow?: boolean;
+  /** Console title for the opt-out visible-window path only. */
+  title?: string;
+}
+
+export type DetachedLaunchResult =
+  | { ok: true; pid: number; command: string }
+  | { ok: false; error: string; stderr: string; returnValue?: number; command: string };
+
+/** Injectable executor so callers/tests can run or observe the built command. */
+export type DetachedLaunchExecutor = (command: string) => {
+  stdout: string;
+  stderr?: string;
+  status?: number;
+};
+
+const LAUNCH_PID_MARKER = 'FLEET_LAUNCH_PID:';
+
+/** Quote a single cmd.exe token; paths must already be JS-resolved. */
+function quoteForCmd(token: string): string {
+  return `"${token.replace(/"/g, '""')}"`;
+}
+
+/** Escape a JS string for embedding inside a PowerShell single-quoted literal. */
+function psSingleQuote(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+/**
+ * Build the `powershell -EncodedCommand ...` invocation that starts `command`
+ * detached, with NO visible console window.
+ *
+ * Mechanism: `Win32_Process.Create` with a `Win32_ProcessStartup` instance
+ * carrying `ShowWindow`. WMI maps that property onto `STARTUPINFO.wShowWindow`
+ * and implicitly sets `dwFlags |= STARTF_USESHOWWINDOW` -- there is no separate
+ * `dwFlags` property to set, so `ShowWindow = $SW_HIDE` (0) is the whole
+ * hidden-window contract. `CreateFlags = CREATE_NO_WINDOW` keeps the console
+ * host itself windowless. No DETACHED_PROCESS on top: it conflicts, and is
+ * unnecessary because a Win32_Process child is parented to WmiPrvSE, so it
+ * already outlives the launching process / SSH channel.
+ *
+ * The command is always emitted through `wrapPowerShellEncoded` -- a raw
+ * interpolated PowerShell string is what cmd.exe quote-stripping destroyed in
+ * the ad hoc attempts this helper replaces (apra-fleet-5ti7).
+ *
+ * Redirection: `Win32_Process.Create` cannot redirect handles, so the child is
+ * launched under `cmd.exe /c` with `> logFile 2>&1`. Consequence, deliberately
+ * surfaced rather than hidden: the PID returned is that cmd.exe wrapper, which
+ * owns the real child, exits when it exits (so liveness-by-PID holds) and is
+ * killed with the child by `taskkill /F /T /PID`.
+ *
+ * Every path is resolved by the caller in JavaScript; nothing in the emitted
+ * script relies on shell expansion (`~`, `$HOME`, backticks, `%VAR%`).
+ */
+export function buildDetachedHiddenLaunchCommand(opts: DetachedLaunchOptions): string {
+  const { command, args = [], cwd, logFile, showWindow = false } = opts;
+  const title = opts.title ?? DETACHED_VISIBLE_WINDOW_TITLE;
+
+  const childCommand = [command, ...args].map(quoteForCmd).join(' ');
+  // cmd.exe /c "<child> > "<log>" 2>&1" -- the outer quotes are stripped by
+  // cmd.exe itself, which is why the inner tokens stay individually quoted.
+  const cmdLine = `cmd.exe /c "${childCommand} > ${quoteForCmd(logFile)} 2>&1"`;
+
+  const startupProps = showWindow
+    ? `@{ ShowWindow = $SW_SHOWNORMAL; Title = '${psSingleQuote(title)}' }`
+    : '@{ ShowWindow = $SW_HIDE; CreateFlags = $CREATE_NO_WINDOW }';
+
+  const psScript = [
+    '$SW_HIDE = 0',
+    '$SW_SHOWNORMAL = 1',
+    '$CREATE_NO_WINDOW = 134217728',
+    `$logDir = Split-Path -Path '${psSingleQuote(logFile)}' -Parent`,
+    'if ($logDir) { New-Item -Path $logDir -ItemType Directory -Force | Out-Null }',
+    `$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property ${startupProps}`,
+    `$created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${psSingleQuote(cmdLine)}'; CurrentDirectory = '${psSingleQuote(cwd)}'; ProcessStartupInformation = $startup }`,
+    'if ($created.ReturnValue -ne 0) { Write-Error ("Win32_Process Create failed ReturnValue=" + $created.ReturnValue); exit 1 }',
+    `Write-Output ('${LAUNCH_PID_MARKER}' + $created.ProcessId)`,
+  ].join('; ');
+
+  return wrapPowerShellEncoded(psScript);
+}
+
+function defaultDetachedLaunchExecutor(command: string): { stdout: string; stderr?: string; status?: number } {
+  const stdout = execSync(command, { encoding: 'utf-8', windowsHide: true });
+  return { stdout, stderr: '', status: 0 };
+}
+
+/**
+ * Launch a detached, console-window-free background process on Windows.
+ *
+ * Returns the created PID on success (see the wrapper-PID note on
+ * {@link buildDetachedHiddenLaunchCommand}) or a STRUCTURED failure with the
+ * raw PowerShell stderr preserved -- it never throws, so callers can branch and
+ * nothing is silently swallowed.
+ */
+export function launchDetachedHidden(
+  opts: DetachedLaunchOptions,
+  exec: DetachedLaunchExecutor = defaultDetachedLaunchExecutor,
+): DetachedLaunchResult {
+  const command = buildDetachedHiddenLaunchCommand(opts);
+
+  let stdout = '';
+  let stderr = '';
+  let status = 0;
+  try {
+    const res = exec(command);
+    stdout = res.stdout ?? '';
+    stderr = res.stderr ?? '';
+    status = res.status ?? 0;
+  } catch (err) {
+    const e = err as { stdout?: string | Buffer; stderr?: string | Buffer; status?: number; message?: string };
+    stdout = e.stdout ? e.stdout.toString() : '';
+    stderr = e.stderr ? e.stderr.toString() : (e.message ?? String(err));
+    status = e.status ?? 1;
+    if (status === 0) status = 1;
+  }
+
+  if (status !== 0) {
+    return { ok: false, error: `hidden launch failed with exit code ${status}`, stderr, returnValue: parseCreateReturnValue(stderr), command };
+  }
+
+  const match = new RegExp(`${LAUNCH_PID_MARKER}\\s*(\\d+)`).exec(stdout);
+  const pid = match ? Number(match[1]) : NaN;
+  if (!match || !Number.isFinite(pid) || pid <= 0) {
+    return {
+      ok: false,
+      error: 'hidden launch produced no usable PID',
+      stderr: stderr || stdout,
+      returnValue: parseCreateReturnValue(stderr),
+      command,
+    };
+  }
+
+  return { ok: true, pid, command };
+}
+
+/** Pull Win32_Process Create's ReturnValue out of stderr (2=access denied, 9=path not found, 21=invalid parameter). */
+function parseCreateReturnValue(stderr: string): number | undefined {
+  const m = /ReturnValue=(\d+)/.exec(stderr ?? '');
+  return m ? Number(m[1]) : undefined;
+}
+
 const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'GEMINI_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
 
 /**
