@@ -2,6 +2,66 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] -- Windows headless service start and hidden background launches (follow-up)
+
+Continuation of the Windows headless-service-start sprint below: the two carry-forward
+items called out in that entry -- wiring the standardized hidden-launch helper into the
+actual launch call sites, and documenting the single supported launch command in the
+deploy runbook -- are now done. The sprint's overall verdict is still FAIL, scoped to one
+remaining item; the rest of this entry explains what changed and what is still open.
+
+What shipped since the entry below:
+
+- The MCP server launcher and the fleet-sprint supervisor launcher now both route through
+  the single standardized hidden-launch helper instead of ad hoc per-session PowerShell.
+  `deploy.md` documents the two concrete, copy-pasteable launch commands this produces,
+  states that hand-rolled `Invoke-CimMethod`/`cmd /c start` launches are no longer an
+  acceptable substitute, and points at the fuller `apra-fleet start` docs instead of
+  restating them.
+- Fixed a launch-time defect found during live verification: `Invoke-CimMethod` against
+  `Win32_Process`/`Create` throws a bare type-mismatch error when an embedded process-startup
+  CIM instance is passed as an argument. The helper now uses the legacy WMI COM binding
+  instead, which accepts the same call shape and returns success with a real PID.
+- Output redirection for the hidden-launch wrapper now appends to the log file instead of
+  truncating it, matching the POSIX fallback launchers and the deploy runbook's own
+  documented behavior -- a Windows relaunch no longer destroys the previous instance's log.
+- Both launchers now fail fast with a structured error when their target executable is
+  missing, instead of reporting a false success with an empty log (the wrapping shell
+  always exists even when the real target does not, so a naive "did the wrapper start"
+  check could not previously catch this).
+- A live run on a real Windows host confirmed PID liveness, no visible window, redirected
+  output reaching the log file, and clean process-tree teardown with no orphans. The
+  positive-control half of that verification (proving a launch that opts out of hiding is
+  actually detected as visible, discriminating it from the hidden case) could not be
+  exercised from this run: window visibility is scoped to the caller's own session, and a
+  non-interactive session cannot show a window regardless of the hide setting, so hidden
+  and opted-out-visible launches are indistinguishable there. That discriminator still
+  needs to be proven from a real interactive Windows logon (RDP or physical console)
+  before the item can be considered fully closed.
+- Also landed this round: hardened the preflight build-lock-clearing step to also detect
+  out-of-tree processes holding a native module open (not just processes launched from
+  inside the checkout's own `node_modules`), CLIXML stderr from failed encoded-PowerShell
+  scripts is now fully decoded and de-escaped instead of double-printed or partially
+  mangled, and a case-sensitivity mismatch in stack-marker detection on Windows was fixed.
+
+Carried forward:
+- Proving the hidden-launch positive-control discriminator from a real interactive Windows
+  logon remains open -- this is an environment/session-type constraint, not a code defect.
+- Live-verifying headless `apra-fleet start` end-to-end (the original sprint goal) on a
+  real deployed build remains open; deploy has been blocked before reaching that step by
+  a Windows-only pre-existing permission-provisioning gap in the deploy checkout (the
+  effective permission allowlist for deploy commands was empty because neither settings
+  file existed in that checkout) -- an operator/orchestrator action, not a code defect.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $12.8547.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.0625 across 1 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 40 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
 ## [Unreleased] -- Windows headless service start and hidden background launches
 
 Sprint goal: make `apra-fleet start` work on a headless Windows machine (no
