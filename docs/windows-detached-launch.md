@@ -32,6 +32,15 @@ instead of being improvised per call site:
   `DETACHED_PROCESS` flag is added on top because it conflicts and is unnecessary --
   a `Win32_Process` child is parented to the WMI provider host process, which already
   outlives the launching process (or SSH channel) that requested it.
+- **Binding choice matters, not just the call shape.** `Invoke-CimMethod` against
+  `Win32_Process`/`Create` throws a bare `Type mismatch` (`HRESULT 0x80041005`) when an
+  embedded `Win32_ProcessStartup` CIM instance is passed via `-Arguments` -- confirmed
+  live on a real Windows host. The helper uses the legacy `[wmiclass]` COM binding
+  instead, which accepts the same embedded startup-info object and returns
+  `ReturnValue=0` with a real PID for the identical logical call. If a future
+  refactor is tempted to "modernize" this to `Invoke-CimMethod`/`New-CimInstance`,
+  re-verify against a live Windows host first -- this failure mode does not surface
+  in a syntax check or a mocked unit test.
 - **Hidden is the default, not an opt-in.** A caller must explicitly opt out
   (`showWindow: true`) to get a visible window; that opt-out path also takes an
   explicit console title so a user who does see the window can identify what it is
@@ -41,12 +50,22 @@ instead of being improvised per call site:
   string -- that raw-interpolation approach is exactly what `cmd.exe`'s quote-stripping
   destroyed in the ad hoc attempts this helper replaces.
 - **Output redirection:** `Win32_Process.Create` cannot redirect handles itself, so
-  the real child is wrapped in `cmd.exe /c "<child> > <logfile> 2>&1"`. This is a
+  the real child is wrapped in `cmd.exe /c "<child> >> <logfile> 2>&1"`. Redirection
+  uses **append** (`>>`), not truncate (`>`), deliberately matching the POSIX
+  fallback launchers and `deploy.md`'s own documented redirection -- a Windows
+  relaunch must not destroy the previous instance's log evidence. This is a
   deliberate, surfaced trade-off, not an oversight: the PID handed back to the caller
   is the `cmd.exe` wrapper's PID, not the child's. This is safe for liveness checks
   and termination because the wrapper owns the real child directly -- it exits when
   the child exits, and killing the wrapper's process tree (`taskkill /F /T`) takes the
   child with it.
+- **Fails fast on a missing launch target.** Because the real child runs via
+  `cmd.exe /c`, and `cmd.exe` itself always exists, a missing target executable
+  (e.g. an unresolved `serve.mjs` path) previously came back as `ReturnValue=0`
+  with a live wrapper PID -- a silent-death "success" report with nothing in the
+  log to explain it. Callers now `fs.existsSync()` the resolved target before
+  invoking the helper and return a structured `{ ok: false }` failure when it is
+  missing, instead of launching a wrapper doomed to produce an empty log.
 - **Every path passed to the helper is resolved by the caller in JavaScript before
   the command is built.** Nothing in the emitted script relies on shell-side
   expansion (`~`, `$HOME`, backticks, `%VAR%`) -- consistent with the general
@@ -58,19 +77,35 @@ instead of being improvised per call site:
   out (`2` = access denied, `9` = path not found, `21` = invalid parameter) -- callers
   can branch on the specific cause instead of only knowing "it failed."
 
+## Current status
+
+Both the MCP server launcher and the fleet-sprint supervisor launcher route through
+this single helper, and `deploy.md` documents the two concrete, copy-pasteable launch
+commands instead of leaving the mechanics to be improvised per session. Hand-rolled
+`Invoke-CimMethod`/`cmd /c start` launches are no longer an acceptable substitute for
+either process.
+
+A live run on a real Windows host confirmed: the process stays alive (PID liveness
+via `tasklist`), it has no visible window (`MainWindowHandle 0` / `tasklist /V`
+showing `Window Title: N/A`), redirected output reaches the log file on disk, and
+`taskkill` teardown leaves no orphaned processes.
+
 ## Known limitation, not yet closed out
 
-The helper itself is a self-contained, unit-tested building block. Two things a
-caller building on it should be aware of:
-
-1. Routing every Windows background-process launch site (the MCP server process,
-   the fleet-sprint supervisor process) through this single helper, and documenting
-   the one supported launch command in the deploy runbook so launch mechanics are no
-   longer improvised per session, is a separate integration step from the helper's
-   existence -- verify call sites actually use it before assuming ad hoc
-   `Invoke-CimMethod`/`Start-Process` launches have been fully retired.
-2. The nested-quote handling in the `cmd.exe /c "<child> > <logfile> 2>&1"` wrapper
+1. **The hidden-vs-visible discriminator has not been proven live from every kind of
+   session.** `Win32_Process.Create` attaches the new process to the *caller's own*
+   window station/session. In a non-interactive session (the common case for an
+   automated/CI-style shell), a window-visibility check cannot actually discriminate
+   a hidden launch from a visible one -- `ShowWindow=0` and `ShowWindow=1` both land
+   in a non-interactive session with no window title, so a positive-control test that
+   explicitly launches with `showWindow: true` and expects it to be visible will
+   self-skip (correctly) rather than produce a false pass. Treat any hidden-launch
+   verification run from a non-interactive shell as having proven the negative case
+   only (no window when hidden) -- proving the positive-control discriminator (a
+   visible-window launch is actually detected as visible) requires a real interactive
+   Windows logon (RDP or physical console), not just a live process launch.
+2. The nested-quote handling in the `cmd.exe /c "<child> >> <logfile> 2>&1"` wrapper
    is exactly the class of bug this helper was built to eliminate, and by its nature
    cannot be fully validated by code review or unit tests that mock the executor --
-   it needs to be exercised against a real `cmd.exe`/PowerShell pair on a live
-   Windows machine before being treated as fully proven.
+   ongoing live verification on a real Windows host (not just the sandbox environment
+   used for CI) is the only way to keep confidence in it.

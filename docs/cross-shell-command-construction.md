@@ -114,6 +114,35 @@ failures should be retried on the next call rather than memoized.
   numeric parsing used for POSIX `stat`/`date` output. Don't assume a single
   numeric-epoch parser covers both branches.
 
+## Decoding `powershell -EncodedCommand` failures (CLIXML)
+
+When a script sent via `wrapPowerShellEncoded` fails, PowerShell does not write a
+plain-text error to stderr -- it writes **CLIXML**, an XML serialization of the error
+record(s). A caller that surfaces raw stderr to a human or an LLM is showing them
+XML markup instead of a readable message, which is both noisy and hard to act on.
+Two things must both be true for the decoded message to be trustworthy:
+
+- **Decode CLIXML into a plain string** before surfacing it, rather than passing the
+  raw stderr through.
+- **Fully de-escape XML entities** in the decoded text (not just the common `&amp;`/
+  `&lt;`/`&gt;` set) -- a partial de-escape pass leaves mangled fragments in the
+  surfaced message that make the real error harder to read than the raw XML would
+  have been.
+- **Only print the decoded message once.** A caller that both logs the decoded CLIXML
+  itself and lets it propagate up to a generic error handler will double-print the
+  same failure, obscuring how many distinct errors actually happened.
+
+## `detectStacks`-style filename/marker matching on Windows
+
+Windows path and filename matching is case-insensitive by convention, but a naive
+lookup table (e.g. mapping a detected marker file name to a known stack) can still be
+implemented as a case-sensitive comparison or map key. When the filter step is
+case-insensitive but the lookup step it feeds is case-sensitive, a marker file that
+differs only in case from the expected name passes the filter but then fails to
+resolve in the lookup -- silently, with no error, just a missing match. Any two-stage
+match-then-lookup pipeline over filesystem-sourced names needs both stages normalized
+the same way (typically lowercased) on Windows, not just the first one.
+
 ## Where this pattern must be checked when adding a new member-bound command
 
 Any code that builds a command string for `strategy.execCommand` (directly,

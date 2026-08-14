@@ -90,6 +90,35 @@ Run `credential_store_delete name=<NAME>` then `credential_store_set
 name=<NAME>`. The new value is picked up immediately on the next
 `execute_command` that references `{{secure.NAME}}`.
 
+## Build / deploy
+
+**`npm ci` fails with `EPERM: operation not permitted, unlink ...` on a native
+module (e.g. a `.node` binary under `node_modules`) on Windows**
+
+A stale-lock-clearing preflight step can find "no stale processes holding
+node_modules open" and still leave the file locked, because its own detection
+is scoped too narrowly: it only recognizes a lock holder whose own
+`ExecutablePath` resolves to somewhere *inside* the checkout's `node_modules`
+directory (i.e. a build tool that was itself launched from there, like a
+leftover bundler worker). A process that merely has the native module mapped
+into its address space -- an out-of-tree `node.exe`, a stray test worker, or
+an antivirus scanner -- is invisible to that filter and will keep the file
+locked even after the preflight step reports success. Don't treat "preflight
+found nothing to clear" as proof the checkout is unlocked; if `npm ci` still
+fails with `EPERM`/`unlink` afterward, look for an out-of-tree process (not
+just processes under `node_modules`) holding the specific file open before
+retrying, and widen any lock-detection tooling to match on the loaded module
+path, not just the holding process's own executable path.
+
+**`npm ci` was interrupted partway through (e.g. by the lock above)**
+
+`npm ci` prunes `node_modules` before reinstalling. An interrupted or failed
+run can leave the tree in a partially-pruned, inconsistent state (missing
+`.bin` entries, missing package internals) even though no source file was
+touched. Don't assume the checkout is "unchanged" after a failed `npm ci` --
+a clean `npm ci`/`npm install` needs to complete successfully before builds or
+tests are trustworthy again.
+
 ## Git
 
 **Cannot push workflow files or merge PRs from a member**
