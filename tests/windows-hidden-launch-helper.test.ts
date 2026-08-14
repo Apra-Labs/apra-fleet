@@ -77,7 +77,12 @@ describe('buildDetachedHiddenLaunchCommand: SW_HIDE / STARTUPINFO contract', () 
     expect(decoded).toContain('$SW_HIDE = 0');
     expect(decoded).toMatch(/ShowWindow\s*=\s*(\[uint16\])?\$SW_HIDE/);
     expect(decoded).toContain('Win32_Process');
-    expect(decoded).toContain('-MethodName Create');
+    // apra-fleet-5ti7.2 review fix: the legacy [wmiclass] COM binding is used
+    // instead of Invoke-CimMethod (which throws "Type mismatch" live when an
+    // embedded Win32_ProcessStartup CIM instance is passed through
+    // -Arguments) -- assert the .Create( call rather than the CIM-specific
+    // -MethodName Create syntax.
+    expect(decoded).toMatch(/Win32_Process'\)\.Create\(/);
     // STARTF_USESHOWWINDOW is implicit in WMI's ShowWindow property (WMI sets
     // dwFlags |= STARTF_USESHOWWINDOW for us) -- assert the property that
     // drives it is present rather than a literal dwFlags token.

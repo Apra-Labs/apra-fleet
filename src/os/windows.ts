@@ -104,6 +104,18 @@ function psSingleQuote(value: string): string {
  * unnecessary because a Win32_Process child is parented to WmiPrvSE, so it
  * already outlives the launching process / SSH channel.
  *
+ * apra-fleet-5ti7.2 review fix: the CIM cmdlet path (`New-CimInstance` +
+ * `Invoke-CimMethod -Arguments @{ ProcessStartupInformation = $startup }`)
+ * throws a bare "Type mismatch" (HRESULT 0x80041005) live on a real Windows
+ * host -- verified: `New-CimInstance -ClassName Win32_ProcessStartup
+ * -ClientOnly` succeeds on its own, and `Invoke-CimMethod ... Create`
+ * without `ProcessStartupInformation` also succeeds, but passing the CIM
+ * instance as an embedded argument through `Invoke-CimMethod -Arguments`
+ * does not; a DCOM `CimSession` variant fails identically. The legacy WMI
+ * COM binding (`[wmiclass]'Win32_ProcessStartup'`/`[wmiclass]'Win32_Process'`)
+ * does not go through this code path and is what is used below -- also
+ * verified live, `ReturnValue=0` with a real PID.
+ *
  * The command is always emitted through `wrapPowerShellEncoded` -- a raw
  * interpolated PowerShell string is what cmd.exe quote-stripping destroyed in
  * the ad hoc attempts this helper replaces (apra-fleet-5ti7).
@@ -126,28 +138,28 @@ export function buildDetachedHiddenLaunchCommand(opts: DetachedLaunchOptions): s
   // cmd.exe itself, which is why the inner tokens stay individually quoted.
   const cmdLine = `cmd.exe /c "${childCommand} > ${quoteForCmd(logFile)} 2>&1"`;
 
-  // ShowWindow must be cast to [uint16] -- Win32_ProcessStartup.ShowWindow's
-  // CIM type is UInt16, and an untyped PowerShell int literal (Int32) trips
-  // WMI's strict type check with a bare "Type mismatch" (HRESULT
-  // 0x80041005), verified live on a real Windows host. CreateFlags is
-  // omitted entirely: also verified live, Invoke-CimMethod's Win32_Process
-  // Create returns ReturnValue=21 (invalid parameter) on this WMI provider
-  // when CreateFlags=CREATE_NO_WINDOW is set at all (typed or not) -- and
-  // it isn't needed for the hidden-window contract anyway: ShowWindow=
-  // SW_HIDE alone (with WMI's implicit STARTF_USESHOWWINDOW) already hides
-  // the child's console window, per Windows' documented CreateProcess
-  // wShowWindow behaviour.
-  const startupProps = showWindow
-    ? `@{ ShowWindow = [uint16]$SW_SHOWNORMAL; Title = '${psSingleQuote(title)}' }`
-    : '@{ ShowWindow = [uint16]$SW_HIDE }';
+  // ShowWindow is still cast to [uint16] -- Win32_ProcessStartup.ShowWindow's
+  // CIM type is UInt16 -- even though the legacy [wmiclass] binding below is
+  // more forgiving about untyped literals than Invoke-CimMethod was; keeping
+  // the explicit cast documents the contract and costs nothing. CreateFlags
+  // is omitted entirely: verified live, Win32_Process Create returns
+  // ReturnValue=21 (invalid parameter) on this WMI provider whenever
+  // CreateFlags=CREATE_NO_WINDOW is present at all -- and it isn't needed for
+  // the hidden-window contract anyway: ShowWindow=SW_HIDE alone (with WMI's
+  // implicit STARTF_USESHOWWINDOW) already hides the child's console window,
+  // per Windows' documented CreateProcess wShowWindow behaviour.
+  const startupAssign = showWindow
+    ? `$si.ShowWindow = [uint16]$SW_SHOWNORMAL; $si.Title = '${psSingleQuote(title)}'`
+    : `$si.ShowWindow = [uint16]$SW_HIDE`;
 
   const psScript = [
     '$SW_HIDE = 0',
     '$SW_SHOWNORMAL = 1',
     `$logDir = Split-Path -Path '${psSingleQuote(logFile)}' -Parent`,
     'if ($logDir) { New-Item -Path $logDir -ItemType Directory -Force | Out-Null }',
-    `$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property ${startupProps}`,
-    `$created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${psSingleQuote(cmdLine)}'; CurrentDirectory = '${psSingleQuote(cwd)}'; ProcessStartupInformation = $startup }`,
+    `$si = ([wmiclass]'Win32_ProcessStartup').CreateInstance()`,
+    startupAssign,
+    `$created = ([wmiclass]'Win32_Process').Create('${psSingleQuote(cmdLine)}', '${psSingleQuote(cwd)}', $si)`,
     'if ($created.ReturnValue -ne 0) { Write-Error ("Win32_Process Create failed ReturnValue=" + $created.ReturnValue); exit 1 }',
     `Write-Output ('${LAUNCH_PID_MARKER}' + $created.ProcessId)`,
   ].join('; ');

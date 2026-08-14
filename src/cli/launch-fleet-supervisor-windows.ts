@@ -44,18 +44,22 @@ export interface LaunchSupervisorOptions {
   cwd?: string;
   /** Absolute path of the file that receives the child's stdout/stderr. Defaults to DATA_DIR/fleet-supervisor.log. */
   logFile?: string;
+  /** HTTP port to pass to serve.mjs as --port. Defaults to SUPERVISOR_PORT (8787). */
+  port?: number;
 }
 
 function serveScriptPath(repoRoot: string): string {
   return path.join(repoRoot, 'packages', 'apra-fleet-se', 'bin', 'serve.mjs');
 }
 
-function resolveOptions(opts: LaunchSupervisorOptions): { command: string; args: string[]; cwd: string; logFile: string } {
+function resolveOptions(opts: LaunchSupervisorOptions): { command: string; args: string[]; cwd: string; logFile: string; port: number } {
+  const port = opts.port ?? SUPERVISOR_PORT;
   return {
     command: opts.nodeExecPath ?? process.execPath,
-    args: [serveScriptPath(opts.repoRoot)],
+    args: [serveScriptPath(opts.repoRoot), '--port', String(port)],
     cwd: opts.cwd ?? opts.repoRoot,
     logFile: opts.logFile ?? path.join(DATA_DIR, 'fleet-supervisor.log'),
+    port,
   };
 }
 
@@ -116,7 +120,17 @@ if (isMainModule()) {
     console.error('Usage: node dist/cli/launch-fleet-supervisor-windows.js <repoRoot> [port]');
     process.exit(1);
   }
-  const opts: LaunchSupervisorOptions = { repoRoot };
+  const portArg = process.argv[3];
+  let port: number | undefined;
+  if (portArg !== undefined) {
+    port = Number(portArg);
+    if (!Number.isInteger(port) || port <= 0) {
+      console.error(`Invalid port: ${portArg}`);
+      process.exit(1);
+    }
+  }
+  const opts: LaunchSupervisorOptions = port !== undefined ? { repoRoot, port } : { repoRoot };
+  const resolvedPort = resolveOptions(opts).port;
 
   if (process.platform === 'win32') {
     const result = launchFleetSupervisorWindows(opts);
@@ -124,13 +138,13 @@ if (isMainModule()) {
       console.error(`Failed to launch the fleet-sprint supervisor detached: ${result.error}\n${result.stderr}`);
       process.exit(1);
     }
-    console.log(`Supervisor launched (pid=${result.pid}); poll port ${SUPERVISOR_PORT} and ${resolveOptions(opts).logFile} to confirm it came up.`);
+    console.log(`Supervisor launched (pid=${result.pid}); poll port ${resolvedPort} and ${resolveOptions(opts).logFile} to confirm it came up.`);
   } else {
     const result = launchFleetSupervisorPosix(opts);
     if (!result.ok) {
       console.error(`Failed to launch the fleet-sprint supervisor detached: ${result.error}`);
       process.exit(1);
     }
-    console.log(`Supervisor launched (pid=${result.pid}); poll port ${SUPERVISOR_PORT} and ${resolveOptions(opts).logFile} to confirm it came up.`);
+    console.log(`Supervisor launched (pid=${result.pid}); poll port ${resolvedPort} and ${resolveOptions(opts).logFile} to confirm it came up.`);
   }
 }
