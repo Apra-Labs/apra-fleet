@@ -51,6 +51,21 @@ vi.mock('node:child_process', async importOriginal => {
 import { launchMcpServerPosix } from '../src/cli/launch-mcp-server-windows.js';
 import { launchFleetSupervisorPosix } from '../src/cli/launch-fleet-supervisor-windows.js';
 
+/**
+ * The nonexistent-executable spawns in tests 1a/1b/3a/3b/4a/4b exit almost
+ * instantly, so by the time we call process.kill() the pid can already be
+ * gone -- especially on Windows, where that throws ESRCH instead of being a
+ * silent no-op like on POSIX. The kill here is best-effort cleanup, not part
+ * of the assertion, so swallow that race instead of flaking the test.
+ */
+function killQuietly(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // Process already exited before we could kill it -- nothing to clean up.
+  }
+}
+
 describe('launchMcpServerPosix / launchFleetSupervisorPosix: POSIX detached-launch fallbacks', () => {
   let tmpDir: string;
 
@@ -75,7 +90,7 @@ describe('launchMcpServerPosix / launchFleetSupervisorPosix: POSIX detached-laun
       if (result.ok) {
         expect(Number.isInteger(result.pid)).toBe(true);
         expect(result.pid).toBeGreaterThan(0);
-        process.kill(result.pid, 'SIGKILL');
+        killQuietly(result.pid, 'SIGKILL');
       }
     });
 
@@ -91,7 +106,7 @@ describe('launchMcpServerPosix / launchFleetSupervisorPosix: POSIX detached-laun
       if (result.ok) {
         expect(Number.isInteger(result.pid)).toBe(true);
         expect(result.pid).toBeGreaterThan(0);
-        process.kill(result.pid, 'SIGKILL');
+        killQuietly(result.pid, 'SIGKILL');
       }
     });
   });
@@ -105,11 +120,22 @@ describe('launchMcpServerPosix / launchFleetSupervisorPosix: POSIX detached-laun
         logFile,
       });
       expect(result).toEqual(expect.objectContaining({ ok: false, error: expect.any(String) }));
-      // Give the async ENOENT 'error' event a tick to fire. If it were
-      // unhandled (no listener attached), Node would throw and crash this
-      // test process -- reaching the assertion below at all is the proof.
-      await new Promise(resolve => setTimeout(resolve, 100));
-      expect(true).toBe(true);
+      // Give the async ENOENT 'error' event a tick to fire, with an explicit
+      // uncaughtException listener as the real assertion: if the spawned
+      // child's 'error' event had no listener attached, Node would emit
+      // 'uncaughtException' and crash the process instead of just landing
+      // here quietly.
+      let uncaught: unknown;
+      const onUncaught = (err: unknown) => {
+        uncaught = err;
+      };
+      process.once('uncaughtException', onUncaught);
+      try {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(uncaught).toBeUndefined();
+      } finally {
+        process.removeListener('uncaughtException', onUncaught);
+      }
     });
 
     it('2b. launchFleetSupervisorPosix on a nonexistent nodeExecPath yields { ok: false, error } synchronously', async () => {
@@ -121,8 +147,17 @@ describe('launchMcpServerPosix / launchFleetSupervisorPosix: POSIX detached-laun
         logFile,
       });
       expect(result).toEqual(expect.objectContaining({ ok: false, error: expect.any(String) }));
-      await new Promise(resolve => setTimeout(resolve, 100));
-      expect(true).toBe(true);
+      let uncaught: unknown;
+      const onUncaught = (err: unknown) => {
+        uncaught = err;
+      };
+      process.once('uncaughtException', onUncaught);
+      try {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(uncaught).toBeUndefined();
+      } finally {
+        process.removeListener('uncaughtException', onUncaught);
+      }
     });
   });
 
@@ -132,7 +167,7 @@ describe('launchMcpServerPosix / launchFleetSupervisorPosix: POSIX detached-laun
       expect(fs.existsSync(path.dirname(logFile))).toBe(false);
       const result = launchMcpServerPosix({ execPath: process.execPath, cwd: tmpDir, logFile });
       expect(fs.existsSync(path.dirname(logFile))).toBe(true);
-      if (result.ok) process.kill(result.pid, 'SIGKILL');
+      if (result.ok) killQuietly(result.pid, 'SIGKILL');
     });
 
     it('3b. launchFleetSupervisorPosix creates a missing, nested log directory', () => {
@@ -145,7 +180,7 @@ describe('launchMcpServerPosix / launchFleetSupervisorPosix: POSIX detached-laun
         logFile,
       });
       expect(fs.existsSync(path.dirname(logFile))).toBe(true);
-      if (result.ok) process.kill(result.pid, 'SIGKILL');
+      if (result.ok) killQuietly(result.pid, 'SIGKILL');
     });
   });
 
@@ -163,7 +198,7 @@ describe('launchMcpServerPosix / launchFleetSupervisorPosix: POSIX detached-laun
       expect(typeof options.stdio?.[2]).toBe('number');
 
       expect(unrefSpy).toHaveBeenCalledTimes(1);
-      if (result.ok) process.kill(result.pid, 'SIGKILL');
+      if (result.ok) killQuietly(result.pid, 'SIGKILL');
     });
 
     it('4b. launchFleetSupervisorPosix spawns with stdio [ignore, fd, fd], detached, and unref()s the child', () => {
@@ -184,7 +219,7 @@ describe('launchMcpServerPosix / launchFleetSupervisorPosix: POSIX detached-laun
       expect(typeof options.stdio?.[2]).toBe('number');
 
       expect(unrefSpy).toHaveBeenCalledTimes(1);
-      if (result.ok) process.kill(result.pid, 'SIGKILL');
+      if (result.ok) killQuietly(result.pid, 'SIGKILL');
     });
   });
 });
