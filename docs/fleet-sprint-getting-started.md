@@ -231,6 +231,14 @@ runtime into `~/.apra-fleet/` and puts the `apra-fleet` binary on disk at
 `~/.apra-fleet/bin`. Substitute your own platform/arch in the installer filename
 (`darwin-arm64`, `linux-x64`, `win-x64`).
 
+**Windows-specific note on service mode:** when you run `apra-fleet install` on Windows,
+the fleet server registers as a Scheduled Task for persistent background operation. If
+you run the installer **with administrator elevation**, the task is registered to run as
+SYSTEM and can fire even with zero interactive logon sessions (headless capability) and
+survives machine reboot with automatic restart. If you run without elevation, the task
+falls back to user-only mode (cannot fire headless, only restarts when you log in). For
+headless operation with reboot survival, run the installer elevated.
+
 Then load the fleet MCP server in Claude Code (`/mcp`) and register members
 conversationally -- registration is driven through your agent in plain language,
 e.g. "Register a local member called `dev1`, work folder `C:\work\myapp`."

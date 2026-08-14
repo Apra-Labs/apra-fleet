@@ -79,9 +79,19 @@ apra-fleet install  # Switches to HTTP transport
 
 Fleet keeps a singleton server running so all your LLM clients share one instance.
 Registering it as an OS service keeps it alive across terminal sessions -- the server
-survives terminal close and restarts automatically on login:
+survives terminal close and restarts automatically:
 
-- Windows: a per-user Scheduled Task (Task Scheduler, OnLogon trigger)
+- **Windows:** Service registration uses a Scheduled Task. When `apra-fleet install` is
+  run with elevation, the task is registered to run as SYSTEM with an OnStart trigger,
+  enabling headless operation (the server fires even with zero interactive logon
+  sessions) and surviving machine reboot with automatic restart. When run without
+  elevation, the task falls back to a per-user OnLogon registration (cannot fire
+  headless, restarts only after a user logs in). Use `apra-fleet status` or check
+  `~/.apra-fleet/data/service-registration.json` to verify which mode you have. If you
+  need headless start on Windows without restarting the machine, run `apra-fleet
+  install` elevated once. If the task is stuck in interactive-only mode and you
+  cannot elevate, `apra-fleet start` falls back to direct process spawn (which will
+  not survive a machine reboot).
 - Linux: a systemd user unit (`systemctl --user`)
 - macOS: a LaunchAgent in `~/Library/LaunchAgents/`
 
