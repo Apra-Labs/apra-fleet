@@ -219,7 +219,18 @@ export interface WindowsStartOptions {
   pollBudgetMs?: number;
   /** Delay between polls, in ms. */
   pollIntervalMs?: number;
+  /**
+   * Bound on the 'schtasks /run' call itself, in ms. On some Windows
+   * versions 'schtasks /run' has been observed to block for the lifetime of
+   * the launched process rather than returning immediately once the task is
+   * submitted (apra-fleet-i8qj.8) -- without this, start() could hang
+   * indefinitely instead of failing fast per apra-fleet-i8qj.3 AC2.
+   */
+  runTimeoutMs?: number;
 }
+
+/** Default bound on the 'schtasks /run' invocation itself (see runTimeoutMs). */
+const DEFAULT_RUN_TIMEOUT_MS = 5000;
 
 /** Injectable command runner seam: takes (cmd, args), returns combined stdout+stderr text. */
 export type SessionQueryRunner = (cmd: string, args: string[]) => string;
@@ -375,16 +386,40 @@ export class WindowsServiceManager implements ServiceManager {
    * immediate sample would race that update and produce a false negative
    * (review round 1, defect 2), so this polls for up to pollBudgetMs before
    * declaring the task not-started.
+   *
+   * The '/run' call itself is bounded by runTimeoutMs. A removed comment on
+   * the previous (detached-spawn) implementation stated that on some Windows
+   * versions 'schtasks /run' waits for the launched process to exit rather
+   * than returning as soon as the task is submitted; if that is ever true
+   * here, an unbounded execFileSync would block start() for the server's
+   * entire lifetime (apra-fleet-i8qj.8). A timeout turns that hang into
+   * ETIMEDOUT, which is treated as "the run was submitted, not confirmed" --
+   * the same as any other non-error '/run' return -- so control falls
+   * through to the existing Last-Run-Time poll instead of failing hard.
    */
   async start(options: WindowsStartOptions = {}): Promise<void> {
-    const { pollBudgetMs = 1500, pollIntervalMs = 250 } = options;
+    const { pollBudgetMs = 1500, pollIntervalMs = 250, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS } = options;
     const before = queryTaskInfo();
 
     let runError: Error | undefined;
     try {
-      execFileSync('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME], { encoding: 'utf8' });
+      execFileSync('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME], {
+        encoding: 'utf8',
+        timeout: runTimeoutMs,
+        killSignal: 'SIGTERM',
+      });
     } catch (err) {
-      runError = err as Error;
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === 'ETIMEDOUT') {
+        // 'schtasks /run' itself hung past runTimeoutMs. Treat this as
+        // "submitted, unconfirmed" rather than a hard failure: fall through
+        // to the same Last-Run-Time poll used for a normal /run return, so a
+        // task that actually did fire (just slow to report back) is still
+        // detected as a success.
+        runError = undefined;
+      } else {
+        runError = err as Error;
+      }
     }
 
     if (runError) {

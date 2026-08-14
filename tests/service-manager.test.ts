@@ -168,9 +168,50 @@ describe('WindowsServiceManager', () => {
         .mockImplementationOnce(() => verboseOut('Ready', '8/13/2026 9:00:00 AM') as any); // post-run query
       const mgr = new WindowsServiceManager();
       await expect(mgr.start()).resolves.toBeUndefined();
-      expect(execFileSync).toHaveBeenNthCalledWith(2, 'schtasks', ['/run', '/tn', 'ApraFleet'], { encoding: 'utf8' });
+      expect(execFileSync).toHaveBeenNthCalledWith(2, 'schtasks', ['/run', '/tn', 'ApraFleet'], {
+        encoding: 'utf8',
+        timeout: 5000,
+        killSignal: 'SIGTERM',
+      });
       // Did not need to poll further or consult session state -- fired on the first check.
       expect(execFileSync).toHaveBeenCalledTimes(3);
+    });
+
+    it('respects a custom runTimeoutMs for the /run invocation itself', async () => {
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
+        .mockImplementationOnce(() => '' as any) // schtasks /run
+        .mockImplementationOnce(() => verboseOut('Ready', '8/13/2026 9:00:00 AM') as any); // post-run query
+      const mgr = new WindowsServiceManager();
+      await expect(mgr.start({ runTimeoutMs: 2000 })).resolves.toBeUndefined();
+      expect(execFileSync).toHaveBeenNthCalledWith(2, 'schtasks', ['/run', '/tn', 'ApraFleet'], {
+        encoding: 'utf8',
+        timeout: 2000,
+        killSignal: 'SIGTERM',
+      });
+    });
+
+    it('treats a timed-out /run call (ETIMEDOUT) as submitted-not-confirmed and falls through to the Last Run Time poll', async () => {
+      const timeoutErr = Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' });
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
+        .mockImplementationOnce(() => { throw timeoutErr; }) // schtasks /run hangs past runTimeoutMs
+        .mockImplementationOnce(() => verboseOut('Ready', '8/13/2026 9:00:00 AM') as any); // post-run query: advanced
+      const mgr = new WindowsServiceManager();
+      await expect(mgr.start()).resolves.toBeUndefined();
+    });
+
+    it('reports the interactive-session failure (not a hard error) when /run times out and never actually fires', async () => {
+      mockRegistrationRecord('onlogon-interactive');
+      const timeoutErr = Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' });
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // pre-run query
+        .mockImplementationOnce(() => { throw timeoutErr; }) // schtasks /run times out
+        .mockImplementationOnce(() => verboseOut('Ready', 'N/A') as any) // post-run query: unchanged
+        .mockImplementationOnce(() => noSessionOutput as any); // query user
+      const mgr = new WindowsServiceManager();
+      const err = await mgr.start({ pollBudgetMs: 0 }).catch(e => e);
+      expect(isNoInteractiveSessionError(err)).toBe(true);
     });
 
     it('polls Last Run Time (not a single sample) and resolves once it advances a few checks later', async () => {
