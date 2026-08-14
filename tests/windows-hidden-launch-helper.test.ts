@@ -18,6 +18,8 @@ import {
   type DetachedLaunchOptions,
   type DetachedLaunchExecutor,
 } from '../src/os/windows.js';
+import { launchMcpServerWindows } from '../src/cli/launch-mcp-server-windows.js';
+import { launchFleetSupervisorWindows } from '../src/cli/launch-fleet-supervisor-windows.js';
 
 /**
  * buildDetachedHiddenLaunchCommand() always emits
@@ -179,5 +181,42 @@ describe('buildDetachedHiddenLaunchCommand: opt-out titled-window path', () => {
     );
     expect(decoded).toContain('My Custom Title');
     expect(decoded).not.toContain(DETACHED_VISIBLE_WINDOW_TITLE);
+  });
+});
+
+describe('call sites route through the shared hidden-launch helper (apra-fleet-5ti7.2)', () => {
+  it('6a. launchMcpServerWindows routes through the injected hidden-launch executor, not a hand-rolled command', () => {
+    const { executor, calls } = makeStubExecutor(1111);
+    const result = launchMcpServerWindows(
+      { execPath: 'C:\\Program Files\\Apra Fleet\\apra-fleet.exe', cwd: 'C:\\Users\\svc account\\apra-fleet', logFile: 'C:\\Users\\svc account\\apra-fleet\\logs\\fleet.log' },
+      executor,
+    );
+    expect(calls).toHaveLength(1);
+    // The command handed to the executor must be the encoded hidden-launch
+    // invocation built by buildDetachedHiddenLaunchCommand -- not a raw,
+    // hand-rolled Invoke-CimMethod/`cmd /c start` string.
+    expect(calls[0]).toMatch(/^powershell -EncodedCommand \S+$/);
+    const decoded = decodeEncodedCommand(calls[0]);
+    expect(decoded).toContain('Win32_Process');
+    expect(decoded).toMatch(/ShowWindow\s*=\s*\$SW_HIDE/);
+    expect(decoded).toContain('run');
+    expect(decoded).toContain('--transport');
+    expect(decoded).toContain('http');
+    expect(result).toEqual(expect.objectContaining({ ok: true, pid: 1111 }));
+  });
+
+  it('6b. launchFleetSupervisorWindows routes through the injected hidden-launch executor, not a hand-rolled command', () => {
+    const { executor, calls } = makeStubExecutor(2222);
+    const result = launchFleetSupervisorWindows(
+      { repoRoot: 'C:\\Users\\svc account\\apra-fleet' },
+      executor,
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/^powershell -EncodedCommand \S+$/);
+    const decoded = decodeEncodedCommand(calls[0]);
+    expect(decoded).toContain('Win32_Process');
+    expect(decoded).toMatch(/ShowWindow\s*=\s*\$SW_HIDE/);
+    expect(decoded).toContain('serve.mjs');
+    expect(result).toEqual(expect.objectContaining({ ok: true, pid: 2222 }));
   });
 });
