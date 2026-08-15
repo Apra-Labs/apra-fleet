@@ -1974,11 +1974,12 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
     let token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
+    const os = await resolveMemberOs({ fleetApi, member, log });
 
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token });
+        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token, os });
 
         const res = await command(built.command, {
             member_name: member,
