@@ -225,6 +225,9 @@ Do NOT close the feature. Create a bug issue, parented under the sprint scope yo
 dispatch prompt named (grouping only -- see the graph-semantics section above; do NOT
 also `bd dep add` this bug to the feature or the scope root):
 
+`--title` is plain text only -- letters, digits, space, and `. , : ; ! ? ( ) ' _ / [ ] -`.
+No backticks, double quotes, `$`, or backslash; put formatted detail in `--description`.
+
 ```bash
 bd create \
   --title="[integ] <short description of failure>" \

@@ -46,19 +46,21 @@ process.env.APRA_FLEET_SPRINT_LOCK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), '
 //   Cycle 1 Plan prompt: baseline -- nothing pending yet.
 //   Cycle 1 Review round 1: the mock reviewer proposes two newTasks --
 //     one with a title that STILL fails validateNewTask()'s allowlist even
-//     with '[' ']' now permitted (a backtick, still shell-unsafe), and one
+//     with '[' ']' now permitted ($(...) command substitution, still
+//     shell-unsafe -- unlike a backtick, which apra-fleet-vk0a sanitizes
+//     rather than rejects, see newtasks-validation.test.mjs), and one
 //     titled '[test] foo' (brackets -- the planner.md convention
 //     apra-fleet-19o.1 exists to unblock).
 //   Cycle 2 Plan prompt (isDeltaCycle): MUST resurface the rejected item
 //     verbatim -- title, description, and rejection reason.
 //   Cycle 2 Review round 1: the mock reviewer resubmits a corrected title
-//     (backtick removed) with the SAME description -- proves end-to-end
+//     ($(...) removed) with the SAME description -- proves end-to-end
 //     acceptance AND exercises apra-fleet-xuo.4's description-keyed clear
 //     (a title-corrected resubmission must still clear the pending entry).
 //   Cycle 3 Plan prompt: MUST NOT resurface the (now-resubmitted) item.
 // =============================================================================
 
-const BAD_TITLE = 'Fix the `env` leak';
+const BAD_TITLE = 'Fix the $(env) leak';
 const BAD_DESCRIPTION = 'Scrub the leaked credential from the log output.';
 const CORRECTED_TITLE = 'Fix the env leak';
 const GOOD_BRACKET_TITLE = '[test] foo';

@@ -38,12 +38,11 @@ another 2258 tests.
    completes in **1m 47s vs 5m 06s** -- a **199s (3.2x) saving** -- but 263 tests fail
    because test files share one `registry.json`. See section 7.1. This one change is
    worth more than every deletion in this document combined.
-2. **934 lines of production code in the Dolt recovery ladder are unwired, and the
-   slowest test file in the repo defends them.** `dolt-recovery.mjs`,
-   `dolt-recovery-path-b.mjs`, and `dolt-recovery-tier2.mjs` are imported by *no*
-   production module (verified: static and dynamic import sweep, section 6.3).
-   `dolt-sync-discipline.test.mjs` is the slowest SE file at **63.4s** and spends
-   **34.1s of it** driving real `dolt` binaries through that dead code.
+2. **Resolved since this audit: the unwired Dolt recovery ladder (`dolt-recovery.mjs`,
+   `dolt-recovery-path-b.mjs`, `dolt-recovery-tier2.mjs`) was retired and deleted on
+   branch `fix/dolt-settle-recovery`, replaced by the deterministic
+   `settleDoltConflicts()` in `fleet-sprint/dolt-settle.mjs`, which IS wired at both
+   divergence terminals in `dolt-sync.mjs`.** See section 6.3.
 3. **433 tests in `packages/apra-fleet-se/apra-pm/test/` never run in CI.** `apra-pm` is
    not an npm workspace (`npm query .workspace` returns only the four declared
    packages), so `npm test --workspaces --if-present` never reaches it, and
@@ -470,15 +469,13 @@ for how to regenerate it.
 | apra-fleet-se | `packages/apra-fleet-se/test/dispatch-watchdog.test.mjs` | node --test | 3 | 1.04s | withDispatchWatchdog: a dispatch that settles within budget passes through unchanged and never logs a timeout |
 | apra-fleet-se | `packages/apra-fleet-se/test/doer-prompt-permission-directive.test.mjs` | node --test | 6 | 1.03s | buildDoerPrompt: surface-dont-bypass permission-block directive |
 | apra-fleet-se | `packages/apra-fleet-se/test/effort-point-split.test.mjs` | node --test | 4 | 1.03s | constants match the planner.md-documented values |
-| apra-fleet-se | `packages/apra-fleet-se/test/dolt-recovery-path-a.test.mjs` | node --test | 12 | 1.01s | Path A resolves a plain single-row issues conflict end-to-end with zero agent dispatch |
 | apra-fleet-se | `packages/apra-fleet-se/test/sanitize-pr-text.test.mjs` | node --test | 10 | 1.00s | sanitizePrText |
 | apra-fleet-se | `packages/apra-fleet-se/test/viewer-extensions.test.mjs` | node --test | 74 | 1.00s | beadsExtension.detailLookup: relocated findBeadById (server-side hook) |
 | apra-fleet-se | `packages/apra-fleet-se/test/regression-phase-never-gates.test.mjs` | node --test | 12 | 0.98s | Regression Test phase can never gate or abort the sprint |
 | apra-fleet-se | `packages/apra-fleet-se/test/vcs-module.test.mjs` | node --test | 10 | 0.92s | VCSModule.buildCreatePrCommand |
-| apra-fleet-se | `packages/apra-fleet-se/test/dolt-recovery-path-b.test.mjs` | node --test | 11 | 0.88s | Path B discards, re-bootstraps, replays the pending mutation, and republishes end-to-end |
 | apra-fleet-se | `packages/apra-fleet-se/test/supervisor-dolt-mutex.test.mjs` | node --test | 13 | 0.79s | dolt-mutex -- mutual exclusion / non-overlapping push windows |
 | apra-fleet-se | `packages/apra-fleet-se/test/dispatch-sync-bracket-coverage.test.mjs` | node --test | 2 | 0.76s | every agent() dispatch call site is either wrapped by withGitSync(...) or is the one documented exemption |
-| apra-fleet-se | `packages/apra-fleet-se/test/dolt-recovery-tier2.test.mjs` | node --test | 15 | 0.72s | the Tier 2 runbook doc exists in auto-sprint docs and is referenced by the escalation prompt/module |
+| apra-fleet-se | `packages/apra-fleet-se/test/dolt-settle.test.mjs` | node --test | 20 | ~0.4s | settleDoltConflicts resolves every row-level conflict shape deterministically -- per-field LWW, labels set-union, teardown-before-republish ordering, pinned-dolt install ladder |
 | apra-fleet-se | `packages/apra-fleet-se/test/bd-init-templating.test.mjs` | node --test | 1 (1 skip) | 0.69s | apra-fleet-3ei: real-mode `bd init` is templated -- one real spawn serves every scenario setup in this process |
 | apra-fleet-se | `packages/apra-fleet-se/test/supervisor-rename-with-retry.test.mjs` | node --test | 12 | 0.65s | renameWithRetry (apra-fleet-ed4.1) |
 | apra-fleet-se | `packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs` | node --test | 3 | 0.61s | every command()/agent() call site in runner.js passes member_name or member_id |
@@ -1119,36 +1116,20 @@ mislabels a git-credential failure as data divergence.
 
 Confidence: high. This is the highest-value gap to close relative to effort.
 
-### 6.3 Dolt recovery ladder -- 934 lines of tested-but-unwired code
+### 6.3 Dolt recovery ladder -- resolved: retired and replaced by `settleDoltConflicts()`
 
-`fleet-sprint/dolt-recovery.mjs` (363 lines), `dolt-recovery-path-b.mjs` (320),
-`dolt-recovery-tier2.mjs` (251).
+Resolved on branch `fix/dolt-settle-recovery`. The 934-line unwired ladder
+(`fleet-sprint/dolt-recovery.mjs`, `dolt-recovery-path-b.mjs`, `dolt-recovery-tier2.mjs`,
+plus `docs/dolt-tier2-runbook.md` and their three test files) was deleted outright rather
+than wired, per the "wire it, or delete it" call below. It is replaced by one
+deterministic function, `settleDoltConflicts()` in `fleet-sprint/dolt-settle.mjs`
+(tests: `test/dolt-settle.test.mjs`, 20 tests), wired at both divergence terminals in
+`dolt-sync.mjs` (`doltPushAfter` and `doltPullBefore`) plus `DoltSync.repair()`. See
+`fleet-sprint/docs/dolt-sync-redesign.md` for the design.
 
-These have tests (`dolt-recovery-path-a/-path-b/-tier2.test.mjs`, 38 tests, 2.6s).
-The gap is the inverse of the usual one: **nothing in production imports them.**
-Verified two ways during this audit:
-- `runner.js:21-23` imports only `conflict-ladder.mjs`, `sprint-lock.mjs`,
-  `vcs-module.mjs`.
-- a repo-wide sweep for `dolt-recovery` outside the modules themselves and their tests
-  returns only self-referencing comments; a dynamic-`import()` sweep finds only
-  `node:net` and `node:fs/promises`.
-
-So the tests are green against dead code, which makes the area *look* covered.
-
-Cost: as well as the 2.6s of dedicated tests, `dolt-sync-discipline.test.mjs` --
-**the slowest file in the SE suite at 63.4s** -- spends **34.1s** (subtest (d) 21.6s +
-subtest (e) 12.5s) driving *real dolt binaries* through `recoverDoltConflictPathB` and
-the Path A gates, i.e. through code production never calls.
-
-Incident tie: **`apra-fleet-vkc` (P1, open)** names exactly this ("doltPushAfter conflict
-path reaches the recovery ladder (or ladder is provably absent)"). Precedent:
-`apra-fleet-f34` (closed), where the id-allocator/mutex was likewise dead code that
-never engaged. A live Dolt conflict incident on 2026-07-30 is documented at
-`docs/dolt-operator-conflict-runbook.md:1-6`.
-
-**Decide: wire it, or delete it and its tests.** Leaving it is the worst option -- it
-costs 37s per run and provides false assurance on the repo's highest-incident area.
-Confidence: high.
+Incident tie: **`apra-fleet-vkc` (P1)** named exactly this gap ("doltPushAfter conflict
+path reaches the recovery ladder (or ladder is provably absent)") and is closed by this
+change.
 
 ### 6.4 `src/services/orphan-recovery.ts` -- zero test imports, on the live dispatch path
 
@@ -1289,26 +1270,13 @@ false`), not a config flip -- but the payoff is measured, not estimated: **199s 
 every CI run and every local `npm test`, on 3 OSes.** Worth more than every deletion
 here combined.
 
-### 7.2 `dolt-sync-discipline.test.mjs` -- 63.4s, the slowest file in the repo, 34s of it on dead code
+### 7.2 `dolt-sync-discipline.test.mjs` -- resolved, no longer applies
 
-Per-subtest measurement:
-
-| Subtest | Duration |
-|---|---|
-| (d) Path A resolves a REAL single-row wedged clone with zero data loss | **21.56s** |
-| (e) Path B discards, re-bootstraps a REAL wedged clone, replays the pending mutation | **12.50s** |
-| (c) concurrent same-parent child-id allocation never collides | 0.18s |
-| (a), (a)-control, (b), (f) x2 | 0.01-0.01s each |
-
-Subtests (d) and (e) build a deliberately wedged real dolt clone with the real dolt
-binary and exercise `recoverDoltConflictPathB` / the Path A gates -- **code that
-production never calls** (section 6.3). The other six subtests together cost 12ms and
-cover the actually-wired brackets and mutex.
-
-Lighter alternative: this is not a "make the test cheaper" problem, it is the
-wire-it-or-delete-it decision in 6.3. If the ladder gets wired, (d) and (e) become
-legitimate and should move to `test/slow/`. If it gets deleted, (d) and (e) go with it
-and the file drops to ~0.2s.
+The 34.1s of this file previously spent driving real dolt binaries through the dead
+Path A / Path B / Tier 2 ladder (subtests (d) and (e)) no longer applies: per the
+resolution in 6.3, those cases and the real-dolt helper block were removed along with
+the ladder. The file now has 4 tests, cases (a)/(b)/(c) only, and no longer needs a
+dolt binary.
 
 ### 7.3 The mock-sprint family -- 77% of the real-bd lane
 
@@ -1818,7 +1786,7 @@ Stated plainly so this document is not over-trusted:
 
 - **Measured, high confidence:** every duration, test count, file count, pass/fail
   result, the parallelism experiment (7.1), the two red tests (5.1, 5.2), the CI wiring
-  (1.3, 8.1), the unwired dolt-recovery modules (6.3), the absence of any `.only` and the
+  (1.3, 8.1), the now-retired-and-replaced dolt-recovery modules (6.3), the absence of any `.only` and the
   three `describe.todo` stubs.
 - **Verified by reading both sides, high confidence:** every duplicate and subsumption
   cluster in sections 3 and 4 carries file:line evidence on both sides.

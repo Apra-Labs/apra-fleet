@@ -24,11 +24,13 @@ const POST_DISPATCH_SYNC_RETRY_DELAYS_MS = [0, 5000, 15000];
 const mockInstantRetryBackoff = () => process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF === '1';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { parseUnmergedPaths, detectAndAbortRebaseConflict, dispatchConflictResolutionAgent } from './conflict-ladder.mjs';
-// apra-fleet-vkc.1: the dolt conflict recovery ladder (Path A -> Path B ->
-// Tier 2). syncMemberAfterOrdered() builds it and threads it through
-// DoltSync.syncAfter() so a wedged beads clone at the post-dispatch D-push
-// terminal attempts recovery before surfacing BEADS_SYNC_CONFLICT.
-import { buildDoltRecoveryLadder } from './dolt-recovery-tier2.mjs';
+// The deterministic dolt conflict settlement callback (docs/dolt-sync-
+// redesign.md). It REPLACES the retired Path A -> Path B -> Tier 2 ladder at
+// BOTH divergence terminals: the post-dispatch D-push bracket
+// (syncMemberAfterOrdered) and the pre-dispatch D-pull / readiness gate, so a
+// wedged beads clone self-heals instead of surfacing BEADS_SYNC_CONFLICT or
+// hard-aborting the run at its readiness gate.
+import { buildSettleCallback } from './dolt-settle.mjs';
 import { acquireSprintLock } from './sprint-lock.mjs';
 import { buildCreatePrCommand, resolveProvider, capabilities as vcsCapabilities, classifyFailure, toGitVerdict } from './vcs-module.mjs';
 
@@ -1114,33 +1116,22 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     // ordering above exists to prevent, and would erase the
     // BEADS_SYNC_CONFLICT terminal reason the dashboard reports.
     //
-    // apra-fleet-vkc.1: before that fatal divergence surfaces, attempt the
-    // Path A -> Tier 2 recovery ladder (Path B deliberately disabled here --
-    // see below). Path A's resolve-in-place sql runtime is not injected here
-    // (runner.js has no live dolt sql-server client), so in production Path A
-    // is reached and cleanly self-defers; Tier 2 dispatches through `agent`
-    // when one is available. The ladder only fails the streak
-    // (DoltDivergedError -> BEADS_SYNC_CONFLICT) if every enabled tier fails
-    // to close the clone.
+    // Before that fatal divergence surfaces, run the deterministic settle
+    // (settleDoltConflicts, dolt-settle.mjs). It is TOTAL over row-level
+    // conflicts -- no gates, no allowlist, no LLM escalation -- and a resolved
+    // settle is a VERIFIED recovery, because settle republishes (bd dolt pull
+    // + push) and checks the push actually landed before returning. The streak
+    // only fails (DoltDivergedError -> BEADS_SYNC_CONFLICT) when settle itself
+    // hits an operational failure (no usable dolt binary, the ephemeral server
+    // would not start, a SQL statement errored).
     //
-    // Path B (discard-and-re-bootstrap) is explicitly disabled
-    // (enablePathB: false) at THIS call site -- post-review fix, apra-fleet-
-    // vkc.1. syncMemberAfterOrdered() wraps an arbitrary, possibly
-    // multi-command agent dispatch (a doer/reviewer/planner streak), so there
-    // is no single well-defined `pendingMutation` this bracket could capture
-    // and replay. Without one, Path B's "replay the one pending mutation"
-    // step (dolt-recovery-path-b.mjs step 6) is a no-op, so firing it here
-    // would discard whatever bead mutations the dispatch just made on
-    // `member` and still report the D-push as recovered -- silent data loss
-    // masquerading as success. Path A (safe, gated, zero data loss when it
-    // fires) and Tier 2 (records + escalates, never discards) remain wired;
-    // only the unsafe fallback is turned off. See buildDoltRecoveryLadder's
-    // own doc comment (dolt-recovery-tier2.mjs) for the general hazard this
-    // guards against, and DoltSync.repair() for an explicit, operator-driven
-    // entry point where a real pendingMutation and member-scoped
-    // readConfig/removePath/listLocalState CAN be supplied deliberately.
-    const recover = buildDoltRecoveryLadder(member, { command, agent, log, model: resolveConflictModel, enablePathB: false });
-    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, recover });
+    // Notably, the data-loss hazard that forced the old ladder's Path B to be
+    // disabled at THIS call site does not exist for settle: it never discards
+    // and re-bootstraps a clone, so an arbitrary multi-command dispatch's bead
+    // mutations cannot be silently thrown away here. There is no pendingMutation
+    // to capture and replay because nothing is ever dropped.
+    const settle = buildSettleCallback(member, { command, log });
+    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, settle });
     return { ok: true, member, gPush, dPush };
 }
 
@@ -1210,6 +1201,22 @@ export function createHttpDoltPushMutexClient(opts = {}) {
                 // Non-fatal: the holder's lease expiry will reclaim the mutex
                 // even if this release never lands. Surface it for diagnostics.
                 log(`[dolt-mutex] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+        // Lease renewal (docs/dolt-sync-redesign.md Part 3.4): doltPushAfter()
+        // renews on an interval while it holds the mutex, so a legitimately
+        // long hold (push + reconcile + settle) is never force-evicted by the
+        // supervisor's 60s lease expiry while this sprint is still pushing.
+        async renew(token) {
+            if (token == null) return false;
+            const id = boundSprintId;
+            if (!id) throw new Error('[dolt-mutex] renew requires a bound sprintId');
+            try {
+                const payload = await postJson(routeFor(id, 'renew'), { token });
+                return Boolean(payload.renewed);
+            } catch (err) {
+                log(`[dolt-mutex] renew failed (non-fatal; the lease may expire): ${err.message}`);
                 return false;
             }
         },
@@ -1379,6 +1386,18 @@ export function createMcpDoltPushMutexClient(opts = {}) {
                 // Non-fatal: the holder's lease expiry reclaims the mutex even
                 // if this release never lands (same posture as the HTTP client).
                 log(`[dolt-mutex/mcp] release failed (non-fatal; lease will expire): ${err.message}`);
+                return false;
+            }
+        },
+        // Same lease-renewal contract as the HTTP client above (design doc
+        // Part 3.4); the fleet tool exposes action 'renew'.
+        async renew(token) {
+            if (token == null) return false;
+            try {
+                const payload = await call({ action: 'renew', token });
+                return Boolean(payload.renewed);
+            } catch (err) {
+                log(`[dolt-mutex/mcp] renew failed (non-fatal; the lease may expire): ${err.message}`);
                 return false;
             }
         },
@@ -1955,11 +1974,12 @@ async function raiseVcsPrForMember({ fleetApi, command, member, base, head, titl
         throw new Error(`Could not derive an owner/repo from member '${member}' git remote -- cannot build a VCSModule create-pull-request command without one.`);
     }
     let token = await readMemberVcsCredentialToken({ command, member, fleetApi, log });
+    const os = await resolveMemberOs({ fleetApi, member, log });
 
     let authHealAttempted = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token });
+        const built = buildCreatePrCommand({ provider: 'github', repo, base, head, title, body, token, os });
 
         const res = await command(built.command, {
             member_name: member,
@@ -2406,7 +2426,7 @@ export async function verifyDoerStreakClosed({ command, orchestratorMember, bead
     // closes. Routed through the single dolt-sync module's purpose-based BEFORE
     // bracket (apra-fleet-417.2.1); behavior is identical to the previous
     // direct doltPullBefore() call.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
     const label = `bd show ${beadIds.join(' ')} --json`;
     const showRes = await command(label, { member_name: orchestratorMember, silent: true });
     const showBeads = parseBdJson(showRes, label);
@@ -3808,8 +3828,8 @@ export function normalizeTierToken(raw) {
  * validation, so a description is not rejected wholesale over characters that
  * lose no meaning when normalized. This is a fixed substitution table, not a
  * general Unicode stripper: anything still outside the allowlist afterwards is
- * still a hard rejection. Deliberately scoped to description only -- title
- * stays on the tighter SAFE_TEXT_RE shell-safety allowlist.
+ * still a hard rejection. See sanitizeNewTaskTitle() below for title's own,
+ * stricter table.
  * @param {string} description
  * @returns {string}
  */
@@ -3819,6 +3839,38 @@ export function sanitizeNewTaskDescription(description) {
         .replace(/[\u2018\u2019]/g, "'") // curly single quotes (\u2018 \u2019)
         .replace(/[\u201C\u201D]/g, '"') // curly double quotes (\u201C \u201D)
         .replace(/\u2026/g, '...'); // horizontal ellipsis (\u2026)
+}
+
+/**
+ * Same idea as sanitizeNewTaskDescription() above, for title -- but with a
+ * STRICTER substitution table, since title still has to pass the tighter
+ * SAFE_TEXT_RE shell-safety allowlist afterwards (it is interpolated inline
+ * into a `bd create "..."` command; description is not). Every substitution
+ * here maps to a character SAFE_TEXT_RE already admits, so this never
+ * reopens the injection surface that allowlist exists to close -- it only
+ * rescues titles that would otherwise be needlessly rejected over benign,
+ * common LLM punctuation choices. Observed live (apra-fleet-vk0a's sibling
+ * finding): a reviewer wrote a title referencing a CLI command in backticks
+ * (`` `apra-fleet status` ``, ordinary Markdown inline-code style), which
+ * SAFE_TEXT_RE rejects outright (backtick is excluded as a POSIX
+ * command-substitution risk) -- the finding was then silently demoted to a
+ * freetext note on the parent bead instead of becoming its own actionable
+ * task. Backtick has no special meaning in a bd title (bd has no
+ * code-formatting concept), so it is rewritten to a single quote here rather
+ * than dropped or preserved. A literal `"`/`$`/backslash in a title is NOT
+ * rewritten (there is no safe ASCII stand-in that preserves meaning without
+ * reopening the injection question) -- those still hard-reject via
+ * SAFE_TEXT_RE below, exactly as before this function existed.
+ * @param {string} title
+ * @returns {string}
+ */
+export function sanitizeNewTaskTitle(title) {
+    return String(title ?? '')
+        .replace(/[\u2014\u2013]/g, '--') // em dash (\u2014), en dash (\u2013)
+        .replace(/[\u2018\u2019]/g, "'") // curly single quotes (\u2018 \u2019)
+        .replace(/[\u201C\u201D]/g, "'") // curly double quotes -> single quote (a literal `"` stays disallowed in title, unlike description)
+        .replace(/\u2026/g, '...') // horizontal ellipsis (\u2026)
+        .replace(/`/g, "'"); // backtick (Markdown inline-code marker) -> single quote
 }
 
 /**
@@ -3838,7 +3890,7 @@ export function validateNewTask(newTask) {
     if (!SAFE_PRIORITY_RE.test(priority)) {
         return { ok: false, reason: `priority '${priority}' does not match required pattern ${SAFE_PRIORITY_RE}` };
     }
-    const title = String(newTask && newTask.title);
+    const title = sanitizeNewTaskTitle(newTask && newTask.title);
     if (!title || !SAFE_TEXT_RE.test(title)) {
         return { ok: false, reason: `title fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(title)}` };
     }
@@ -5185,7 +5237,7 @@ async function runSprintCycle(context) {
             // EXPLICITLY FATAL (apra-fleet-417.3.1): a pre-dispatch D-pull that
             // silently degraded would hand the agent a STALE beads clone and
             // let it act on it -- worse than not dispatching at all.
-            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true });
+            await DoltSync.syncBefore(member, { command, log, skipRefresh: skipPreDispatchDoltPull, onAuthFailure, fatal: true, settle: buildSettleCallback(member, { command, log }) });
         }
         // The teardown is deliberately NOT a `finally`. A throw out of a
         // `finally` replaces the (successful) dispatch result and is
@@ -5704,7 +5756,7 @@ async function runSprintCycle(context) {
     // Routed through the single dolt-sync module (apra-fleet-417.2.1):
     // readinessGate (apra-fleet-417.5 rename of healthGate) selects the
     // pre-flight variant of the BEFORE bracket.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, readinessGate: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -6012,7 +6064,7 @@ async function runSprintCycle(context) {
     // doer's work, so pull again immediately before the verification read.
     // DoltSync.syncBefore() is a benign no-op when the clone is current and
     // when no dolt remote is configured at all.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
 
     await updateDashboard();
 
@@ -8300,7 +8352,7 @@ async function runSprintCycle(context) {
         // counts so the completion/stall math reads the current cross-member
         // beads state (every member's D-pushed closes) rather than the
         // orchestrator's stale local copy.
-        await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
+        await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -8580,7 +8632,7 @@ async function runSprintCycle(context) {
     // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
     // reflects every member's D-pushed beads state, not the orchestrator's
     // stale local copy.
-    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true });
+    await DoltSync.syncBefore(orchestratorMember, { command, log, fatal: true, settle: buildSettleCallback(orchestratorMember, { command, log }) });
     const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),

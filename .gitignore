@@ -25,7 +25,6 @@ CLAUDE.md
 *.db
 .beads-credential-key
 .beads/
-.claude/settings.json
 
 # E2E test fixtures (local only, never commit)
 .e2e-fixtures/

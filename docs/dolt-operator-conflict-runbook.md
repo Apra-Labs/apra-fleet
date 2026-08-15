@@ -5,24 +5,31 @@ This is the procedure a HUMAN OPERATOR follows when their own local clone's
 direct shell/`dolt` CLI access to that clone. It is the exact procedure used
 live on 2026-07-30 (verified safe twice, no data loss).
 
-## When to use this runbook (vs the Tier 2 runbook)
+## When to use this runbook (and when NOT to)
 
 Use **this** runbook when: you are an operator on your OWN local beads clone
 (not a fleet member's clone), `bd dolt pull` failed with a merge-conflict
 message, and you have direct terminal/`dolt` CLI access to resolve it by
 hand.
 
-Use
-[`packages/apra-fleet-se/fleet-sprint/docs/dolt-tier2-runbook.md`](../packages/apra-fleet-se/fleet-sprint/docs/dolt-tier2-runbook.md)
-instead when: a fleet MEMBER's clone is wedged during an automated sprint and
-an agent has been dispatched (by `dolt-recovery-tier2.mjs`) to resolve it as
-the last-resort escalation after the scripted Path A/Path B recovery ladder
-both failed. That is a different actor (a dispatched agent, not you at a
-terminal), a different clone (a member's, not your own), and a different
-entry point (automated escalation, not a merge conflict you personally hit).
+Do NOT use it on a fleet MEMBER's clone during an automated sprint. Members
+now SELF-HEAL: both sync brackets run `settleDoltConflicts()`
+(`packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs`), a single
+deterministic settlement step that is total over every row-level conflict
+shape and tears its ephemeral server down in a real `finally`. There is no
+LLM escalation and no multi-tier ladder any more -- the Path A / Path B /
+Tier 2 modules and the Tier 2 runbook were retired and deleted. See
+[`dolt-sync-redesign.md`](../packages/apra-fleet-se/fleet-sprint/docs/dolt-sync-redesign.md)
+for the design and
+[`dolt-manual-recovery-verified.md`](../packages/apra-fleet-se/fleet-sprint/docs/dolt-manual-recovery-verified.md)
+for the live-verified mechanical spec settle encodes (that doc is also the
+copy-paste fallback if you ever have to drive a member's clone by hand).
 
-See also: the Tier 2 runbook links back here for the "I am a human at a
-terminal, not a dispatched agent" case.
+If a member's sprint DOES surface a beads-sync conflict terminal, it means
+settle hit an OPERATIONAL failure (no usable dolt binary, the ephemeral
+server would not start, a SQL statement errored) -- not an unresolvable
+conflict. Fix the infrastructure it named; do not hand-resolve rows on the
+member.
 
 ## Step 1: a failing `bd dolt pull` is safe, not destructive
 
