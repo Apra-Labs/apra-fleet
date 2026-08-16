@@ -69,6 +69,50 @@ When `execute_prompt` output contains a permission denial, call `compose_permiss
 
 The tool validates (wildcard-matched denylist -- blocks sudo/env, `bash -c`, catch-alls and shell chaining; see [Never auto-granted](#never-auto-granted)), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
 
+## Per-role bounds and the out-of-bounds ledger flag
+
+When a `grant` request carries a `role` (see [Primary Mode](#primary-mode)), `compose_permissions`
+loads that role's bounds file, `skills/fleet/profiles/bounds-<role>.json`
+(for example `bounds-doer.json`, `bounds-reviewer.json`, `bounds-deployer.json`,
+`bounds-integ-test-runner.json`, `bounds-regression-test-runner.json`), and checks
+each newly requested permission against it before recording the grant.
+
+- **Shape**: a bounds file is a flat JSON array of permission prefix patterns, e.g.:
+  ```json
+  [
+    "Bash(bd:*)",
+    "Bash(git:*)",
+    "Bash(npm run build*)",
+    "Bash(npm test*)"
+  ]
+  ```
+  `*` in a pattern is a wildcard matching any run of characters (including none);
+  a pattern with no `*` matches only by exact equality. See `matchesBoundsPattern`
+  in `src/tools/compose-permissions.ts`.
+- **Which roles ship a bounds file**: `doer`, `reviewer`, `deployer`,
+  `integ-test-runner`, and `regression-test-runner` each have their own
+  `bounds-<role>.json` under `skills/fleet/profiles/`. A `grant` request with no
+  `role`, or with a role that has no matching bounds file, skips the bounds check
+  entirely (a defined-empty bounds list means "no bounds check", never "deny
+  everything" -- see `loadBounds`).
+- **Out-of-bounds handling is informational only, never a filter**: a permission
+  outside the requesting role's bounds is still granted exactly as requested. The
+  only difference is its `permissions.json` ledger entry gets `outOfBounds: true`
+  and `requestedByRole: "<role>"` recorded alongside the usual
+  `permission`/`reason`/`date` fields, so the grant is auditable after the fact.
+  An in-bounds grant, or a grant made with no role, gets no bounds fields at all --
+  identical shape to the ledger's pre-bounds behavior.
+- **Bounds never loosen `NEVER_AUTO_GRANT`**: the hard-rejected prefixes (`sudo`,
+  `su`, `env`, `printenv`, `nc`, `nmap`, `chmod 777` -- see
+  [Never auto-granted](#never-auto-granted)) are checked first and unconditionally,
+  before any bounds lookup happens. A role's bounds file cannot widen this set;
+  even if a bounds file were to list `Bash(sudo:*)`, the request is still rejected.
+- **Bounds files are not a member-editable surface**: they ship as static profiles
+  under `skills/fleet/profiles/` alongside the other profile JSON (base-dev,
+  stack profiles, tag profiles). Members and their dispatched work never write to
+  them; only a repo change (reviewed like any other profile edit) can add or
+  widen a role's bounds.
+
 ## Role switch
 
 When a member's primary mode changes (e.g., from doer to reviewer), re-run `compose_permissions` with the updated `role` or `tags`.
