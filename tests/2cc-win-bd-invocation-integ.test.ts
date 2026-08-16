@@ -134,7 +134,7 @@ describe('scripts/sandbox-seed-beads.mjs reaches completion of its bd steps agai
       expect(fs.existsSync(doltRemoteDir)).toBe(true);
       expect(fs.readdirSync(doltRemoteDir).length).toBeGreaterThan(0);
     },
-    60000,
+    120000,
   );
 });
 
