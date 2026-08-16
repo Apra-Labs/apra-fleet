@@ -301,7 +301,15 @@ god-mode. VCS access is provisioned and revocable per member. Permission
 composition verifies its own delivery: a grant is read back off the target
 member and structurally compared against what was intended before it is
 reported as applied, so a failed or partial write is surfaced as an
-explicit failure rather than a false success.
+explicit failure rather than a false success. Grants can optionally carry a
+requesting role, in which case the grant is checked against that role's
+expected permission scope; anything outside it is still granted but flagged
+in the audit ledger rather than blocked, so scope creep stays visible
+without turning into a new failure mode. A member can never grant its own
+permissions -- an automatic missing-permissions recovery path exists for
+Deploy/Integration Test/Regression Test, but it runs orchestrator-side only
+and can only request prefixes a reviewed, committed runbook already
+declares.
 
 ## Email Configuration
 

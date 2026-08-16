@@ -353,6 +353,73 @@ results. No bugs were filed as a result of the audit, consistent with a
 clean pass -- the full test suite (2314 tests, 0 failures) provides
 independent confirmation.
 
+## [Unreleased] -- per-role permission bounds, automatic missing-permissions heal, and a Windows home-probe fix
+
+Sprint goal: give `compose_permissions` a per-role notion of expected
+permission scope (with an audit flag for anything granted outside it), add
+an automatic self-heal path so Deploy/Integration Test/Regression Test can
+recover from a missing-permissions block without a human re-triggering the
+sprint, and fix a Windows home-directory probe that broke on members whose
+own default exec shell is PowerShell. The sprint's own final verdict is
+FAIL: the regression-coverage task for the self-heal path shipped its
+implementation but not its full deliverable (see "Carried forward" below).
+A same-day regression pass also failed, for an unrelated dispatch-stall
+reason on a Windows member; no carry-over beads were filed from that pass.
+
+```
+Budget ceiling: not set (no --budget flag) -- unlimited for this run.
+Tracked spend (priced dispatches only): $23.2405.
+Remaining budget: unknown/unbounded.
+Integ-test-runner spend: $0.2292 across 2 dispatch(es) this sprint (a subset of the tracked spend above, broken out of overhead/doer/reviewer).
+Pricing source: all 52 priced dispatch(es) used real per-member rates (get_member_model_pricing).
+Note: dispatches using an unpriced model id are not reflected above (see N10, feedback-reassessment.md) -- this figure is a lower bound on actual spend, not a complete total, and is reported honestly rather than fabricated.
+```
+
+What shipped:
+
+- **Per-role permission bounds.** `compose_permissions` can now load a
+  per-role bounds file (a flat list of allowed permission prefix patterns,
+  wildcard-capable) and check each newly granted permission against it. This
+  is informational only -- an out-of-bounds permission is still granted
+  exactly as requested, but its ledger entry is flagged for later audit
+  (which permission, which role asked for it) rather than silently blending
+  in with routine, in-scope grants. The existing hard denylist for
+  never-auto-grantable commands is checked first and unconditionally, and a
+  role's bounds can never widen it. See `docs/features/permissions-self-heal.md`
+  and `skills/fleet/permissions.md` for the full design and file format.
+- **Automatic missing-permissions self-heal.** The Deploy, Integration Test,
+  and Regression Test phases can now report a structured
+  `blockedReason: 'missing_permissions'` instead of only failing prose. When
+  that fires, the orchestrator dispatches a new, tightly-scoped
+  `permissions-composer` role (orchestrator-side only, `Read` +
+  `compose_permissions` tools only, never a member-dispatched role) that
+  reads the failing phase's own runbook Permissions section, grants exactly
+  those prefixes, and lets the orchestrator retry the original dispatch once.
+  A second consecutive block in the same cycle, or a denylist rejection, is
+  treated as terminal and surfaces as a real phase failure rather than
+  looping. This closes a gap where a checkout with no provisioned
+  permissions silently burned an entire sprint cycle before a human noticed.
+- **Windows home-directory probe fix.** The probe used to build its Windows
+  `USERPROFILE` lookup as a raw inline PowerShell string, relying on the
+  outer exec shell to leave the variable reference untouched for the inner
+  PowerShell invocation to expand. On a member whose own default exec shell
+  is also PowerShell, the outer shell expanded the variable during its own
+  tokenization first, producing a syntax error. The probe now routes through
+  the same base64 `-EncodedCommand` helper every other Windows-targeting
+  invocation in the codebase already uses, which avoids this class of bug
+  entirely. See `docs/cross-shell-command-construction.md`.
+
+Carried forward: regression test coverage for the missing-permissions
+self-heal path is not fully landed. The heal-and-retry implementation and
+the mock-sprint test harness's registration of the new composer role are
+committed, but the accompanying test file and its recorded fixtures were
+left uncommitted in the working tree, and one of the seven test scenarios'
+recorded fixture is one command short of what the scenario now issues (it
+fails in default replay mode). The other six scenarios pass on their real
+assertions. Remaining work is narrow: re-record the short fixture, confirm
+all scenarios pass in replay mode, and commit the test file, its fixtures,
+and the harness change together.
+
 ## [Unreleased] -- compose_permissions silent write no-op fix
 
 Sprint goal: fix a bug where `compose_permissions` could report a grant as
