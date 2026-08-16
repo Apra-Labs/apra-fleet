@@ -31,6 +31,13 @@ the `compose_permissions` MCP tool does internally. Its tool access is
 limited to `Read` and `compose_permissions`; it cannot deploy, run tests, or
 hand-edit any settings file.
 
+The governing invariant behind every constraint on this role is: **a member
+must never be able to escalate its own permissions.** That is why the
+composer runs orchestrator-side only, with no shell access to any member and
+no ability to hand-edit a settings file directly, and why it may only
+request prefixes a reviewed, committed runbook already declares rather than
+inferring or widening a request itself.
+
 Its job is a fully-specified extraction with no judgment calls:
 1. Map the calling phase name to its runbook (`deploy.md`,
    `integ-test-playbook.md`, `regression-test-playbook.md`).
@@ -83,7 +90,12 @@ audit-flag semantics). This is informational-only: an out-of-bounds
 permission is still granted exactly as requested, but its ledger entry is
 flagged `outOfBounds: true` / `requestedByRole: "<role>"` for later audit.
 Bounds can never widen `NEVER_AUTO_GRANT` -- that denylist is checked first,
-unconditionally, before any bounds lookup.
+unconditionally, before any bounds lookup. Out-of-bounds is deliberately
+informational rather than blocking: turning it into a hard rejection would
+convert an audit signal into a new failure mode for a role whose bounds file
+happens to be slightly stale, which is worse than the visibility gap it
+would close. The ledger flag makes the drift visible for a human to review
+without making the self-heal brittle to it.
 
 `permissions-composer` always passes the calling phase's role on its grant
 call, which is what lets an operator later audit whether a self-heal grant
