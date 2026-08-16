@@ -1,15 +1,12 @@
 import { z } from 'zod';
-import { resolveSecret } from '../providers/email/index.js';
-import { SendGridProvider } from '../providers/email/sendgrid.js';
-import { SmtpProvider } from '../providers/email/smtp.js';
-import type { EmailMessage, EmailProvider } from '../providers/email/provider.js';
-import { sessionRegistry } from '../services/session-registry.js';
-import { getAgentOrFail } from '../utils/agent-helpers.js';
+import { createEmailProvider, resolveSecret } from '../providers/email/index.js';
+import type { EmailConfig, EmailMessage, EmailProvider, EmailProviderName } from '../providers/email/provider.js';
+import { resolveSessionCaller } from '../utils/session-caller.js';
 import { logLine } from '../utils/log-helpers.js';
 
-// Basic RFC-5322-ish email format check -- not exhaustive, just catches
-// obviously malformed input before we attempt a network call.
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Same validator zod already uses elsewhere -- one definition of "valid email"
+// for both the MCP schema and the pre-credential runtime checks below.
+const emailAddress = z.string().email();
 
 const attachmentSchema = z.object({
   filename: z.string().min(1),
@@ -19,19 +16,19 @@ const attachmentSchema = z.object({
 
 export const sendEmailSchema = z.object({
   provider: z.enum(['sendgrid', 'smtp']).default('sendgrid').describe('Email provider to use'),
-  from: z.string().min(1).describe('Sender email address'),
+  from: emailAddress.describe('Sender email address'),
 
   host: z.string().optional().describe('SMTP server hostname (required for smtp provider)'),
   port: z.number().optional().default(587).describe('SMTP server port'),
   user: z.string().optional().describe('SMTP username (required for smtp provider)'),
-  secure: z.boolean().optional().default(false).describe('Use implicit TLS (port 465)'),
+  secure: z.boolean().optional().default(false).describe('Use implicit TLS (port 465). When false, STARTTLS is required; plaintext AUTH is refused.'),
 
-  to: z.union([z.string(), z.array(z.string())]).describe('Recipient email address, or list of addresses'),
+  to: z.union([emailAddress, z.array(emailAddress)]).describe('Recipient email address, or list of addresses'),
   subject: z.string().min(1).describe('Email subject line'),
   body: z.string().min(1).describe('Plain-text email body'),
   html: z.string().optional().describe('Optional HTML email body'),
-  cc: z.array(z.string()).optional().describe('CC recipient addresses'),
-  bcc: z.array(z.string()).optional().describe('BCC recipient addresses'),
+  cc: z.array(emailAddress).optional().describe('CC recipient addresses'),
+  bcc: z.array(emailAddress).optional().describe('BCC recipient addresses'),
   attachments: z.array(attachmentSchema).optional().describe('Optional file attachments (base64-encoded content)'),
 });
 
@@ -51,15 +48,15 @@ function validateInput(input: SendEmailInput): string[] {
 
   if (toList.length === 0) errors.push(`'to' must include at least one recipient`);
   for (const addr of toList) {
-    if (!EMAIL_RE.test(addr)) errors.push(`Invalid 'to' address: ${addr}`);
+    if (!emailAddress.safeParse(addr).success) errors.push(`Invalid 'to' address: ${addr}`);
   }
   for (const addr of input.cc ?? []) {
-    if (!EMAIL_RE.test(addr)) errors.push(`Invalid 'cc' address: ${addr}`);
+    if (!emailAddress.safeParse(addr).success) errors.push(`Invalid 'cc' address: ${addr}`);
   }
   for (const addr of input.bcc ?? []) {
-    if (!EMAIL_RE.test(addr)) errors.push(`Invalid 'bcc' address: ${addr}`);
+    if (!emailAddress.safeParse(addr).success) errors.push(`Invalid 'bcc' address: ${addr}`);
   }
-  if (!EMAIL_RE.test(input.from)) {
+  if (!emailAddress.safeParse(input.from).success) {
     errors.push(`Invalid 'from' address: ${input.from}`);
   }
   if (/[\r\n]/.test(input.subject)) {
@@ -73,50 +70,52 @@ function validateInput(input: SendEmailInput): string[] {
   return errors;
 }
 
-/**
- * Derive the caller identity for credential scoping. A connected member
- * session is identified by its MCP session (extra.sessionId, populated by the
- * SDK's HTTP transport) and gets its member friendly name -- so allowedMembers
- * restrictions on email credentials are enforced.
- *
- * Fail-closed rule: only a stdio caller (no sessionId at all -- the fleet
- * operator's own MCP connection) gets the '*' operator scope. An HTTP session
- * that is NOT a registered member session (http-transport admits
- * unauthenticated connections, and session churn can leave a sid
- * unresolvable) gets a synthetic non-member identity instead of '*': it can
- * still use credentials whose allowedMembers is '*' (the default -- this is
- * what workflow clients rely on), but member-scoped credentials are denied
- * rather than silently bypassed.
- */
-function resolveCallingMember(extra?: { sessionId?: string }): string {
-  const sessionId = extra?.sessionId;
-  if (!sessionId) return '*';
-  const session = sessionRegistry.findBySessionId(sessionId);
-  if (!session) return `session:${sessionId}`;
-  const agent = getAgentOrFail(session.member_id);
-  return typeof agent === 'string' ? session.member_id : agent.friendlyName;
+interface ProviderSpec {
+  credentialName: string;
+  missingMessage: string;
+  emptyMessage: string;
+  toConfig: (input: SendEmailInput, secret: string) => EmailConfig;
 }
 
-function buildProvider(input: SendEmailInput, callingMember: string): EmailProvider {
-  if (input.provider === 'smtp') {
-    const pass = resolveSecret('smtp_password', callingMember);
-    if (!pass) {
-      throw new Error('SMTP password not found. Store it with credential_store_set (name: "smtp_password").');
-    }
-    return new SmtpProvider({
-      host: input.host!,
-      port: input.port ?? 587,
-      secure: input.secure ?? false,
-      auth: { user: input.user!, pass },
+const PROVIDER_SPECS: Record<EmailProviderName, ProviderSpec> = {
+  smtp: {
+    credentialName: 'smtp_password',
+    missingMessage: 'SMTP password not found. Store it with credential_store_set (name: "smtp_password").',
+    emptyMessage: 'SMTP password is empty.',
+    toConfig: (input, secret) => ({
+      provider: 'smtp',
       from: input.from,
-    });
-  }
+      smtp: {
+        host: input.host!,
+        port: input.port ?? 587,
+        secure: input.secure ?? false,
+        auth: { user: input.user!, pass: secret },
+        from: input.from,
+      },
+    }),
+  },
+  sendgrid: {
+    credentialName: 'sendgrid_api_key',
+    missingMessage: 'SendGrid API key not found. Store it with credential_store_set (name: "sendgrid_api_key").',
+    emptyMessage: 'SendGrid API key is empty.',
+    toConfig: (input, secret) => ({
+      provider: 'sendgrid',
+      from: input.from,
+      sendgrid: { apiKey: secret, from: input.from },
+    }),
+  },
+};
 
-  const apiKey = resolveSecret('sendgrid_api_key', callingMember);
-  if (!apiKey) {
-    throw new Error('SendGrid API key not found. Store it with credential_store_set (name: "sendgrid_api_key").');
+function buildProvider(input: SendEmailInput, callingMember: string): EmailProvider {
+  const spec = PROVIDER_SPECS[input.provider];
+  const secret = resolveSecret(spec.credentialName, callingMember);
+  if (secret === undefined) {
+    throw new Error(spec.missingMessage);
   }
-  return new SendGridProvider({ apiKey, from: input.from });
+  if (secret === '') {
+    throw new Error(spec.emptyMessage);
+  }
+  return createEmailProvider(spec.toConfig(input, secret));
 }
 
 export async function sendEmail(input: SendEmailInput, extra?: { sessionId?: string }): Promise<string> {
@@ -137,7 +136,7 @@ export async function sendEmail(input: SendEmailInput, extra?: { sessionId?: str
   };
 
   try {
-    const provider = buildProvider(input, resolveCallingMember(extra));
+    const provider = buildProvider(input, resolveSessionCaller(extra?.sessionId).identity);
     const result = await provider.send(message);
     logLine('send_email', `sent via ${provider.name} messageId=${result.messageId}`);
     return JSON.stringify({ ok: true, messageId: result.messageId });

@@ -221,6 +221,27 @@ describe('sendEmail credential scoping', () => {
     expect(result.error).toMatch(/not accessible/);
   });
 
+  it('uses a synthetic session identity when the session exists but the agent is gone', async () => {
+    mockFindBySessionId.mockReturnValue({ member_id: 'uuid-gone' });
+    mockGetAgentOrFail.mockReturnValue('Member "uuid-gone" not found.');
+    mockCredentialResolve.mockReturnValue({
+      denied: "Credential 'sendgrid_api_key' is not accessible to member 'session:sess-stale'. Allowed: ops-bot",
+    });
+
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }, { sessionId: 'sess-stale' }));
+
+    expect(result.ok).toBe(false);
+    expect(mockCredentialResolve).toHaveBeenCalledWith('sendgrid_api_key', 'session:sess-stale');
+    expect(mockCredentialResolve).not.toHaveBeenCalledWith('sendgrid_api_key', 'uuid-gone');
+    expect(result.error).toMatch(/not accessible/);
+  });
+
   it('falls back to operator scope when there is no session id (stdio orchestrator)', async () => {
     mockCredentialResolve.mockReturnValue({ plaintext: 'sg-key', meta: {} });
     const mockSend = vi.fn().mockResolvedValue({ messageId: 'msg-3' });
@@ -240,6 +261,46 @@ describe('sendEmail credential scoping', () => {
 });
 
 describe('sendEmail address validation', () => {
+  it('reports an empty stored SMTP password as empty, not not-found', async () => {
+    mockCredentialResolve.mockImplementation((name: string) => {
+      if (name === 'smtp_password') return { plaintext: '', meta: {} };
+      return null;
+    });
+
+    const result = JSON.parse(await sendEmail({
+      provider: 'smtp',
+      from: 'noreply@example.com',
+      host: 'smtp.example.com',
+      user: 'me@example.com',
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/empty/);
+    expect(result.error).not.toMatch(/not found/);
+  });
+
+  it('reports an empty stored SendGrid API key as empty, not not-found', async () => {
+    mockCredentialResolve.mockImplementation((name: string) => {
+      if (name === 'sendgrid_api_key') return { plaintext: '', meta: {} };
+      return null;
+    });
+
+    const result = JSON.parse(await sendEmail({
+      provider: 'sendgrid',
+      from: 'noreply@example.com',
+      to: 'user@example.com',
+      subject: 'Test',
+      body: 'Hello',
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/empty/);
+    expect(result.error).not.toMatch(/not found/);
+  });
+
   it('rejects an invalid to address before reaching the provider', async () => {
     const result = JSON.parse(await sendEmail({
       provider: 'sendgrid',

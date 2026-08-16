@@ -1,6 +1,35 @@
 import { credentialResolve } from '../../services/credential-store.js';
+import { SendGridProvider } from './sendgrid.js';
+import { SmtpProvider } from './smtp.js';
+import type { EmailConfig, EmailProvider } from './provider.js';
 
-export type { EmailAttachment, EmailMessage, EmailSendResult, EmailProvider, EmailConfig } from './provider.js';
+export type {
+  EmailAttachment,
+  EmailMessage,
+  EmailSendResult,
+  EmailProvider,
+  EmailConfig,
+  EmailProviderName,
+} from './provider.js';
+
+/**
+ * Construct an EmailProvider from an EmailConfig. Adding a provider is a
+ * new EmailConfig branch here -- callers (send_email) do not grow an if/else.
+ */
+export function createEmailProvider(config: EmailConfig): EmailProvider {
+  switch (config.provider) {
+    case 'smtp':
+      if (!config.smtp) throw new Error('SMTP provider requires smtp config.');
+      return new SmtpProvider(config.smtp);
+    case 'sendgrid':
+      if (!config.sendgrid) throw new Error('SendGrid provider requires sendgrid config.');
+      return new SendGridProvider(config.sendgrid);
+    default: {
+      const _exhaustive: never = config.provider;
+      throw new Error(`Unknown email provider: ${_exhaustive}`);
+    }
+  }
+}
 
 /**
  * Resolve a secret from the credential store, enforcing member scoping.

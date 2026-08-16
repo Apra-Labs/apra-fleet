@@ -186,7 +186,7 @@ apra-fleet workflow email-notify
 | `host` | string | SMTP only | SMTP server hostname |
 | `port` | number | no (default: 587) | SMTP server port |
 | `user` | string | SMTP only | SMTP username |
-| `secure` | boolean | no (default: false) | Implicit TLS (port 465) |
+| `secure` | boolean | no (default: false) | Implicit TLS (port 465). When false, STARTTLS is required. |
 | `to` | string or string[] | yes | Recipient address(es) |
 | `subject` | string | yes | Subject line |
 | `body` | string | yes | Plain-text body |

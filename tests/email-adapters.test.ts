@@ -141,17 +141,36 @@ vi.mock('node:tls', () => ({
   default: { connect: (...args: unknown[]) => mockTlsConnect(...args) },
 }));
 
+function setupStartTls(afterTlsScript: string[]): { plain: FakeSocket; secure: FakeSocket } {
+  const plain = new FakeSocket([
+    '250-smtp.example.com\r\n250-STARTTLS\r\n250 AUTH LOGIN\r\n',
+    '220 Ready to start TLS\r\n',
+  ]);
+  const secure = new FakeSocket(afterTlsScript);
+  mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
+    // Use setTimeout (not nextTick) so the promise-continuation that
+    // attaches the SmtpConnection's 'data' listener runs before the
+    // greeting is emitted -- avoids a nextTick/microtask ordering race.
+    setTimeout(() => cb(), 0);
+    setTimeout(() => plain.emit('data', Buffer.from('220 smtp.example.com ready\r\n')), 5);
+    return plain;
+  });
+  mockTlsConnect.mockImplementation((_opts: unknown, cb: () => void) => {
+    setTimeout(() => cb(), 0);
+    return secure;
+  });
+  return { plain, secure };
+}
+
 describe('SmtpProvider', () => {
   beforeEach(() => {
     mockNetConnect.mockReset();
     mockTlsConnect.mockReset();
   });
 
-  it('performs the full SMTP handshake and returns a message id on success', async () => {
-    // Greeting is emitted by connectSocket's callback path; the rest of the
-    // conversation is scripted in response to each `write()`.
-    const script = [
-      '250-smtp.example.com\r\n250 AUTH LOGIN\r\n', // EHLO response (no STARTTLS -> stays plain)
+  it('performs the full SMTP handshake over STARTTLS and returns a message id on success', async () => {
+    const { plain, secure } = setupStartTls([
+      '250-smtp.example.com\r\n250 AUTH LOGIN\r\n', // EHLO after TLS
       '334 VXNlcm5hbWU6\r\n', // AUTH LOGIN
       '334 UGFzc3dvcmQ6\r\n', // username
       '235 Authentication successful\r\n', // password
@@ -160,13 +179,32 @@ describe('SmtpProvider', () => {
       '354 Start mail input\r\n', // DATA
       '250 OK queued as ABC123\r\n', // message body
       '221 Bye\r\n', // QUIT
-    ];
-    const socket = new FakeSocket(script);
+    ]);
 
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const provider = new SmtpProvider({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      auth: { user: 'user@example.com', pass: 'secret' },
+      from: 'from@example.com',
+    });
+
+    const result = await provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
+
+    expect(result.messageId).toBe('ABC123');
+    expect(plain.written.some(w => w.startsWith('STARTTLS'))).toBe(true);
+    expect(plain.written.some(w => w.startsWith('AUTH LOGIN'))).toBe(false);
+    expect(secure.written.some(w => w.startsWith('AUTH LOGIN'))).toBe(true);
+    expect(secure.written.some(w => w.startsWith('MAIL FROM:<from@example.com>'))).toBe(true);
+    expect(secure.written.some(w => w.startsWith('RCPT TO:<to@example.com>'))).toBe(true);
+  });
+
+  it('refuses plaintext when the server does not advertise STARTTLS', async () => {
+    const socket = new FakeSocket([
+      '250-smtp.example.com\r\n250 AUTH LOGIN\r\n',
+    ]);
     mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
-      // Use setTimeout (not nextTick) so the promise-continuation that
-      // attaches the SmtpConnection's 'data' listener runs before the
-      // greeting is emitted -- avoids a nextTick/microtask ordering race.
       setTimeout(() => cb(), 0);
       setTimeout(() => socket.emit('data', Buffer.from('220 smtp.example.com ready\r\n')), 5);
       return socket;
@@ -181,11 +219,34 @@ describe('SmtpProvider', () => {
       from: 'from@example.com',
     });
 
-    const result = await provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
+    await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
+      /did not advertise STARTTLS/,
+    );
+    expect(socket.written.some(w => w.startsWith('AUTH LOGIN'))).toBe(false);
+  });
 
-    expect(result.messageId).toBe('ABC123');
-    expect(socket.written.some(w => w.startsWith('MAIL FROM:<from@example.com>'))).toBe(true);
-    expect(socket.written.some(w => w.startsWith('RCPT TO:<to@example.com>'))).toBe(true);
+  it('clears the plaintext password from the provider after construction and send', async () => {
+    setupStartTls([
+      '250 smtp.example.com\r\n',
+      '250 OK\r\n',
+      '250 OK\r\n',
+      '354 Start mail input\r\n',
+      '250 OK queued as XYZ\r\n',
+      '221 Bye\r\n',
+    ]);
+
+    const { SmtpProvider } = await import('../src/providers/email/smtp.js');
+    const config = {
+      host: 'smtp.example.com',
+      port: 587,
+      auth: { user: '', pass: 'secret-pass' },
+      from: 'from@example.com',
+    };
+    const provider = new SmtpProvider(config);
+    expect(config.auth.pass).toBe('');
+
+    await provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' });
+    expect((provider as { pass?: string }).pass).toBeUndefined();
   });
 
   it('rejects when the server does not greet with 220', async () => {
@@ -212,18 +273,11 @@ describe('SmtpProvider', () => {
 
   it('rejects when MAIL FROM is rejected by the server', async () => {
     // auth.user is empty so the AUTH LOGIN step is skipped -- the next
-    // command after EHLO is MAIL FROM.
-    const script = [
-      '250 smtp.example.com\r\n', // EHLO
+    // command after the post-STARTTLS EHLO is MAIL FROM.
+    const { secure } = setupStartTls([
+      '250 smtp.example.com\r\n', // EHLO after TLS
       '550 Mailbox unavailable\r\n', // MAIL FROM rejected
-    ];
-    const socket = new FakeSocket(script);
-
-    mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
-      setTimeout(() => cb(), 0);
-      setTimeout(() => socket.emit('data', Buffer.from('220 smtp.example.com ready\r\n')), 5);
-      return socket;
-    });
+    ]);
 
     const { SmtpProvider } = await import('../src/providers/email/smtp.js');
     const provider = new SmtpProvider({
@@ -236,6 +290,7 @@ describe('SmtpProvider', () => {
     await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
       /MAIL FROM rejected/,
     );
+    expect(secure.written.some(w => w.startsWith('MAIL FROM:'))).toBe(true);
   });
 
   it('rejects a subject containing CR/LF before any network I/O', async () => {
@@ -292,20 +347,14 @@ describe('SmtpProvider', () => {
   });
 
   it('normalizes bare-LF line endings to CRLF and dot-stuffs lines the LF form would smuggle past', async () => {
-    const script = [
-      '250 smtp.example.com\r\n', // EHLO (no auth -- skipped)
+    const { secure } = setupStartTls([
+      '250 smtp.example.com\r\n', // EHLO after TLS (no auth -- skipped)
       '250 OK\r\n', // MAIL FROM
       '250 OK\r\n', // RCPT TO
       '354 Start mail input\r\n', // DATA
       '250 OK queued as XYZ\r\n', // message body
       '221 Bye\r\n', // QUIT
-    ];
-    const socket = new FakeSocket(script);
-    mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
-      setTimeout(() => cb(), 0);
-      setTimeout(() => socket.emit('data', Buffer.from('220 ready\r\n')), 5);
-      return socket;
-    });
+    ]);
 
     const { SmtpProvider } = await import('../src/providers/email/smtp.js');
     const provider = new SmtpProvider({
@@ -317,7 +366,7 @@ describe('SmtpProvider', () => {
 
     await provider.send({ to: 'to@example.com', subject: 'Hi', body: 'line1\n.\nline2' });
 
-    const payload = socket.written.find(w => w.includes('line1'));
+    const payload = secure.written.find(w => w.includes('line1'));
     expect(payload).toBeDefined();
     // Bare LFs normalized to CRLF, and the '.' line dot-stuffed to '..'.
     expect(payload).toContain('line1\r\n..\r\nline2');
@@ -325,20 +374,14 @@ describe('SmtpProvider', () => {
   });
 
   it('emits Date and Message-ID headers and wraps base64 attachments at 76 chars', async () => {
-    const script = [
+    const { secure } = setupStartTls([
       '250 smtp.example.com\r\n',
       '250 OK\r\n',
       '250 OK\r\n',
       '354 Start mail input\r\n',
       '250 OK queued as XYZ\r\n',
       '221 Bye\r\n',
-    ];
-    const socket = new FakeSocket(script);
-    mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
-      setTimeout(() => cb(), 0);
-      setTimeout(() => socket.emit('data', Buffer.from('220 ready\r\n')), 5);
-      return socket;
-    });
+    ]);
 
     const { SmtpProvider } = await import('../src/providers/email/smtp.js');
     const provider = new SmtpProvider({
@@ -356,7 +399,7 @@ describe('SmtpProvider', () => {
       attachments: [{ filename: 'a.bin', content: bigContent }],
     });
 
-    const payload = socket.written.find(w => w.includes('Message-ID'));
+    const payload = secure.written.find(w => w.includes('Message-ID'));
     expect(payload).toBeDefined();
     expect(payload).toMatch(/Date: [A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} .+\+0000/);
     expect(payload).toMatch(/Message-ID: <[0-9a-f]{32}@example\.com>/);
@@ -367,16 +410,10 @@ describe('SmtpProvider', () => {
   });
 
   it('destroys the socket when a protocol step fails (no socket leak)', async () => {
-    const script = [
-      '250 smtp.example.com\r\n', // EHLO
+    const { secure } = setupStartTls([
+      '250 smtp.example.com\r\n', // EHLO after TLS
       '550 Mailbox unavailable\r\n', // MAIL FROM rejected
-    ];
-    const socket = new FakeSocket(script);
-    mockNetConnect.mockImplementation((_opts: unknown, cb: () => void) => {
-      setTimeout(() => cb(), 0);
-      setTimeout(() => socket.emit('data', Buffer.from('220 ready\r\n')), 5);
-      return socket;
-    });
+    ]);
 
     const { SmtpProvider } = await import('../src/providers/email/smtp.js');
     const provider = new SmtpProvider({
@@ -389,7 +426,7 @@ describe('SmtpProvider', () => {
     await expect(provider.send({ to: 'to@example.com', subject: 'Hi', body: 'Hello' })).rejects.toThrow(
       /MAIL FROM rejected/,
     );
-    expect(socket.destroyed).toBe(true);
+    expect(secure.destroyed).toBe(true);
   });
 
   it('rejects the in-flight wait with the socket error instead of hanging until timeout', async () => {

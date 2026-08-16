@@ -171,7 +171,8 @@
  * @property {string} [host] - SMTP server hostname (required for smtp provider)
  * @property {number} [port] - SMTP server port (default 587)
  * @property {string} [user] - SMTP username (required for smtp provider)
- * @property {boolean} [secure] - Use implicit TLS, e.g. port 465 (default false)
+ * @property {boolean} [secure] - Use implicit TLS, e.g. port 465 (default false).
+ *   When false, STARTTLS is required; plaintext AUTH is refused.
  * @property {string | string[]} to - Recipient email address, or list of addresses
  * @property {string} subject - Email subject line
  * @property {string} body - Plain-text email body

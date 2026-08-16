@@ -323,7 +323,7 @@ walkthrough.
 | `host` | string | SMTP only | SMTP server hostname |
 | `port` | number | no (default: 587) | SMTP server port |
 | `user` | string | SMTP only | SMTP username |
-| `secure` | boolean | no (default: false) | Use implicit TLS (port 465) |
+| `secure` | boolean | no (default: false) | Implicit TLS (port 465). When false, STARTTLS is required. |
 | `to` | string or string[] | yes | Recipient email address(es) |
 | `subject` | string | yes | Email subject line |
 | `body` | string | yes | Plain-text email body |

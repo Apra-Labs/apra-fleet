@@ -30,9 +30,10 @@ function assertHeaderSafe(field: string, value: string): void {
 
 /**
  * Minimal SMTP client (no `nodemailer` dependency required).
- * Supports plain sockets, implicit TLS (port 465) and STARTTLS (e.g. port 587),
- * with AUTH LOGIN and a basic MIME multipart message (text + optional html +
- * attachments).
+ * Supports implicit TLS (port 465) and required STARTTLS (e.g. port 587).
+ * Plaintext is refused when STARTTLS is not advertised, so AUTH LOGIN never
+ * sends credentials over an unencrypted socket. AUTH LOGIN plus a basic MIME
+ * multipart message (text + optional html + attachments).
  */
 /** Exported for unit tests (response parsing/coalescing); not part of the public API. */
 export class SmtpConnection {
@@ -296,12 +297,33 @@ function dotStuff(message: string): string {
 
 export class SmtpProvider implements EmailProvider {
   public readonly name = 'smtp';
+  private readonly host: string;
+  private readonly port: number;
+  private readonly secure: boolean | undefined;
+  private readonly user: string;
+  private readonly from: string;
+  private readonly timeoutMs: number;
+  private pass: string | undefined;
 
-  constructor(private readonly config: SmtpConfig) {}
+  constructor(config: SmtpConfig) {
+    this.host = config.host;
+    this.port = config.port;
+    this.secure = config.secure;
+    this.user = config.auth.user;
+    this.from = config.from;
+    this.timeoutMs = config.timeoutMs ?? SMTP_TIMEOUT_MS;
+    this.pass = config.auth.pass;
+    // Drop the caller's retained plaintext as soon as we have our own copy.
+    config.auth.pass = '';
+  }
 
   async send(msg: EmailMessage): Promise<EmailSendResult> {
-    const { host, port, secure, auth, from } = this.config;
-    const timeoutMs = this.config.timeoutMs ?? SMTP_TIMEOUT_MS;
+    const { host, port, secure, user, from } = this;
+    const timeoutMs = this.timeoutMs;
+    // Consume the password into a local so it is not reachable on `this`
+    // after AUTH (or after this send returns, if AUTH is skipped).
+    const pass = this.pass ?? '';
+    this.pass = undefined;
 
     // Reject CR/LF in command-bound values up front, before any network I/O.
     const sender = msg.from ?? from;
@@ -327,7 +349,12 @@ export class SmtpProvider implements EmailProvider {
       let ehlo = await conn.command(`EHLO localhost`);
       if (ehlo.code !== 250) throw new Error(`SMTP EHLO failed: ${ehlo.lines.join(' ')}`);
 
-      if (!secure && ehlo.lines.some(l => /STARTTLS/i.test(l))) {
+      if (!secure) {
+        if (!ehlo.lines.some(l => /STARTTLS/i.test(l))) {
+          throw new Error(
+            'SMTP server did not advertise STARTTLS. Refusing to proceed over plaintext. Use secure:true for implicit TLS (port 465).',
+          );
+        }
         const startTlsResp = await conn.command('STARTTLS');
         if (startTlsResp.code !== 220) throw new Error(`STARTTLS failed: ${startTlsResp.lines.join(' ')}`);
         const tlsSocket = await starttls(socket as net.Socket, host, timeoutMs);
@@ -336,12 +363,12 @@ export class SmtpProvider implements EmailProvider {
         if (ehlo.code !== 250) throw new Error(`SMTP EHLO (after STARTTLS) failed: ${ehlo.lines.join(' ')}`);
       }
 
-      if (auth?.user) {
+      if (user) {
         const authStart = await conn.command('AUTH LOGIN');
         if (authStart.code !== 334) throw new Error(`SMTP AUTH LOGIN failed: ${authStart.lines.join(' ')}`);
-        const userResp = await conn.command(Buffer.from(auth.user, 'utf8').toString('base64'));
+        const userResp = await conn.command(Buffer.from(user, 'utf8').toString('base64'));
         if (userResp.code !== 334) throw new Error(`SMTP AUTH username rejected: ${userResp.lines.join(' ')}`);
-        const passResp = await conn.command(Buffer.from(auth.pass, 'utf8').toString('base64'));
+        const passResp = await conn.command(Buffer.from(pass, 'utf8').toString('base64'));
         if (passResp.code !== 235) throw new Error(`SMTP AUTH failed: ${passResp.lines.join(' ')}`);
       }
 
