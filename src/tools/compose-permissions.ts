@@ -138,7 +138,16 @@ export function isNeverAutoGrant(permission: string): boolean {
 
 interface Ledger {
   stacks: string[];
-  granted: Array<{ permission: string; reason: string; date: string }>;
+  granted: Array<{
+    permission: string;
+    reason: string;
+    date: string;
+    /** True when this grant fell outside the requesting role's bounds profile.
+     *  Informational only -- never filters the entry out of the granted list. */
+    outOfBounds?: true;
+    /** Role that requested this grant, recorded for out-of-bounds auditing. */
+    requestedByRole?: string;
+  }>;
 }
 
 function findProfilesDir(): string {
@@ -177,7 +186,7 @@ export function loadBounds(profilesDir: string, role: string | undefined): strin
   return bounds;
 }
 
-function loadLedger(projectFolder: string): Ledger {
+export function loadLedger(projectFolder: string): Ledger {
   const ledgerPath = path.join(projectFolder, 'permissions.json');
   if (fs.existsSync(ledgerPath)) {
     const raw = JSON.parse(fs.readFileSync(ledgerPath, 'utf-8'));
@@ -186,7 +195,7 @@ function loadLedger(projectFolder: string): Ledger {
   return { stacks: [], granted: [] };
 }
 
-function saveLedger(projectFolder: string, ledger: Ledger): void {
+export function saveLedger(projectFolder: string, ledger: Ledger): void {
   const ledgerPath = path.join(projectFolder, 'permissions.json');
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + '\n');
 }
