@@ -85,6 +85,20 @@ this helper rather than hand-rolling its own base64/`-EncodedCommand`
 wrapping, so the exit-code and quoting guarantees stay centralized in one
 place instead of drifting per call site.
 
+A concrete instance of the hazard this section warns about: the member-home
+directory probe used to build its Windows `USERPROFILE` lookup as a raw
+inline string (`powershell -NoProfile -c "...$env:USERPROFILE..."`), relying
+on the *outer* exec shell to leave `$env:USERPROFILE` untouched inside the
+double quotes so the inner `powershell -c` could expand it itself. On a
+member whose own default exec shell is also PowerShell, the outer shell
+expands the variable during its own tokenization before the inner
+`powershell -c` invocation ever sees it, producing a bare, unquoted path
+token -- a PowerShell syntax error. This reproduces the same defect class
+described above (relying on shell-level expansion in a member-bound command
+string) and was fixed by routing that probe through `wrapPowerShellEncoded`
+like every other Windows-targeting invocation, rather than inventing a
+probe-specific workaround.
+
 ## OS-detection caching pitfall
 
 Member OS detection results should only be cached on a successful,

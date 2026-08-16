@@ -6,6 +6,13 @@ Proposed (2026-08-05). Revised 2026-08-05 after design review -- see `## Revisio
 Nothing in this document is implemented yet, with one exception noted inline: the AGY half of the translation layer (`convertClaudeAllowToAgyPermissions` -> `.gemini/antigravity-cli/settings.json`) already exists. Everything else is a target design.
 
 ## Related Documents
+- `docs/features/permissions-self-heal.md` -- a narrower, already-shipped mechanism: a
+  structured `blockedReason: 'missing_permissions'` signal from the Deploy/Integ
+  Test/Regression Test phases triggers an orchestrator-side `permissions-composer` role
+  that grants exactly the prefixes the failing phase's own runbook already declares, then
+  retries once. It does not classify refusals by remediation owner, reverse-extract grants
+  from raw CLI text, or propose playbook diffs for human review -- the broader design below
+  remains unimplemented and the two are not in conflict.
 - `docs/auto-sprint-permission-diff-safety-block.md` (Auto-sprint permission diff safety & non-self-granting workflow rule)
 - `docs/runner-error-classification.md` (Runner error classification & `isNoMutationDispatchFailure` predicate)
 - `docs/adr-provider-agnostic-api.md` (Provider-agnostic API contract across LLM providers)
