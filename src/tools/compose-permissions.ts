@@ -14,7 +14,7 @@ import type { Agent } from '../types.js';
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
-  role: z.enum(['doer', 'reviewer']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test). The hard-rejected NEVER_AUTO_GRANT patterns are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
+  role: z.enum(['doer', 'reviewer', 'deployer', 'integ-test-runner', 'regression-test-runner']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test); deployer, integ-test-runner and regression-test-runner select their own base-dev/base-reviewer mode plus a matching bounds-<role>.json profile. The hard-rejected NEVER_AUTO_GRANT patterns are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
   tags: z.array(z.string()).optional().describe('Member tags. Include "doer" or "reviewer" to set the primary mode (default doer); other tags (e.g. "gpu", "devops") load tag-<name>.json profiles and merge additively. When both role and tags are given, tags wins.'),
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
@@ -184,6 +184,30 @@ export function loadBounds(profilesDir: string, role: string | undefined): strin
   const bounds = loadProfile(profilesDir, `bounds-${role}`);
   if (!Array.isArray(bounds)) return [];
   return bounds;
+}
+
+/** Escapes a string for literal use inside a RegExp, except '*' which callers
+ *  handle separately as the wildcard token. */
+function escapeRegExpExceptStar(s: string): string {
+  return s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Matches a single bounds entry against a granted permission string, treating
+ *  '*' in the bounds entry as a wildcard (matches any run of characters,
+ *  including none) rather than a literal character. Bounds files hold prefix
+ *  patterns like "Bash(npm run build*)" or "Bash(*apra-fleet* run *)", not
+ *  verbatim permission strings, so exact equality was never the right check
+ *  (apra-fleet-ivxi.2). A bounds entry with no '*' still matches only by
+ *  exact equality, preserving today's behavior for wildcard-free entries. */
+export function matchesBoundsPattern(pattern: string, permission: string): boolean {
+  const regex = new RegExp(`^${pattern.split('*').map(escapeRegExpExceptStar).join('.*')}$`);
+  return regex.test(permission);
+}
+
+/** True when `permission` is covered by at least one entry in `bounds`
+ *  (wildcard-aware, see matchesBoundsPattern). */
+export function isWithinBounds(bounds: string[], permission: string): boolean {
+  return bounds.some(pattern => matchesBoundsPattern(pattern, permission));
 }
 
 export function loadLedger(projectFolder: string): Ledger {
@@ -570,7 +594,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       for (const p of expanded) {
         if (!ledger.granted.some(e => e.permission === p)) {
           const entry: Ledger['granted'][number] = { permission: p, reason, date };
-          if (bounds.length > 0 && !bounds.includes(p)) {
+          if (bounds.length > 0 && !isWithinBounds(bounds, p)) {
             entry.outOfBounds = true;
             entry.requestedByRole = input.role;
           }

@@ -168,7 +168,9 @@
  * @typedef {Object} ComposePermissionsOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {"doer" | "reviewer"} [role] - Base profile. Provide at least one of role or tags.
+ * @property {"doer" | "reviewer" | "deployer" | "integ-test-runner" | "regression-test-runner"} [role] - Base profile
+ *   (doer/reviewer also select the compose mode; deployer/integ-test-runner/regression-test-runner select their
+ *   own bounds-<role>.json). Provide at least one of role or tags.
  * @property {string[]} [tags] - Member tags; "doer"/"reviewer" sets the primary mode
  *   and wins over role when both are given. Other tags load tag-<name>.json profiles.
  * @property {string} [project_folder] - Local project folder containing the

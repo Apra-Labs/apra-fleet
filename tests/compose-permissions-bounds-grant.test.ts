@@ -127,6 +127,91 @@ describe('composePermissions -- bounds-aware reactive grant (apra-fleet-ivxi.1.3
     expect(entry!.requestedByRole).toBeUndefined();
   });
 
+  it('trailing-wildcard bounds entry covers a matching grant (apra-fleet-ivxi.2)', async () => {
+    const member = makeTestAgent({ friendlyName: 'doer-wildcard-trailing', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // bounds-doer.json has "Bash(npm run build*)" -- a bare "Bash(npm run build)"
+    // grant must be recognised as in-bounds, not exact-string mismatched.
+    await composePermissions({
+      member_id: member.id,
+      role: 'doer',
+      project_folder: tmpDir,
+      grant: ['Bash(npm run build)'],
+    });
+
+    const ledger = loadLedger(tmpDir);
+    const entry = ledger.granted.find(e => e.permission === 'Bash(npm run build)');
+    expect(entry).toBeDefined();
+    expect(entry!.outOfBounds).toBeUndefined();
+    expect(entry!.requestedByRole).toBeUndefined();
+  });
+
+  it('mid-string wildcard bounds entry covers a matching grant (apra-fleet-ivxi.2)', async () => {
+    const member = makeTestAgent({ friendlyName: 'deployer-wildcard-midstring', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // bounds-deployer.json has "Bash(*apra-fleet* run *)".
+    await composePermissions({
+      member_id: member.id,
+      role: 'deployer',
+      project_folder: tmpDir,
+      grant: ['Bash(npx apra-fleet-cli run sprint)'],
+    });
+
+    const ledger = loadLedger(tmpDir);
+    const entry = ledger.granted.find(e => e.permission === 'Bash(npx apra-fleet-cli run sprint)');
+    expect(entry).toBeDefined();
+    expect(entry!.outOfBounds).toBeUndefined();
+    expect(entry!.requestedByRole).toBeUndefined();
+  });
+
+  it('a genuinely out-of-bounds grant is still flagged when wildcard matching is in play (apra-fleet-ivxi.2)', async () => {
+    const member = makeTestAgent({ friendlyName: 'deployer-genuinely-oob', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // "Bash(rm -rf /)" matches none of bounds-deployer.json's patterns.
+    const result = await composePermissions({
+      member_id: member.id,
+      role: 'deployer',
+      project_folder: tmpDir,
+      grant: ['Bash(rm -rf /)'],
+    });
+    expect(result).not.toMatch(/^❌/);
+
+    const ledger = loadLedger(tmpDir);
+    const entry = ledger.granted.find(e => e.permission === 'Bash(rm -rf /)');
+    expect(entry).toBeDefined();
+    expect(entry!.outOfBounds).toBe(true);
+    expect(entry!.requestedByRole).toBe('deployer');
+  });
+
+  it('a CO_OCCURRENCE-expanded permission the caller never explicitly requested is still individually bounds-checked', async () => {
+    const member = makeTestAgent({ friendlyName: 'doer-cooccurrence', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+
+    // Requesting Bash(docker:*) expands (CO_OCCURRENCE) to also grant
+    // Bash(docker-compose:*) and Bash(docker buildx:*), neither of which the
+    // caller listed explicitly nor which bounds-doer.json covers.
+    await composePermissions({
+      member_id: member.id,
+      role: 'doer',
+      project_folder: tmpDir,
+      grant: ['Bash(docker:*)'],
+    });
+
+    const ledger = loadLedger(tmpDir);
+    const composeEntry = ledger.granted.find(e => e.permission === 'Bash(docker-compose:*)');
+    expect(composeEntry).toBeDefined();
+    expect(composeEntry!.outOfBounds).toBe(true);
+    expect(composeEntry!.requestedByRole).toBe('doer');
+
+    const buildxEntry = ledger.granted.find(e => e.permission === 'Bash(docker buildx:*)');
+    expect(buildxEntry).toBeDefined();
+    expect(buildxEntry!.outOfBounds).toBe(true);
+    expect(buildxEntry!.requestedByRole).toBe('doer');
+  });
+
   it('NEVER_AUTO_GRANT still hard-rejects a denylisted permission even with a role/bounds present', async () => {
     const member = makeTestAgent({ friendlyName: 'doer-sudo', llmProvider: 'claude', os: 'linux' });
     addAgent(member);
