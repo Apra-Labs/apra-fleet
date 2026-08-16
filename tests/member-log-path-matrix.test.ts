@@ -284,8 +284,12 @@ describe('getMemberHomeDir -- probe, cache, and graceful failure', () => {
     expect(home).toBe(MEMBER_HOME[memberOs]);
     const cmd = mockExecCommand.mock.calls[0]![0];
     if (memberOs === 'windows') {
-      expect(cmd).toContain('USERPROFILE');
+      // Delivered via wrapPowerShellEncoded (base64 -EncodedCommand), not a
+      // raw inline string -- decode to inspect the actual script.
       expect(cmd).toContain('powershell');
+      const encodedMatch = cmd.match(/-EncodedCommand (\S+)/);
+      const decoded = encodedMatch ? Buffer.from(encodedMatch[1], 'base64').toString('utf16le') : cmd;
+      expect(decoded).toContain('USERPROFILE');
     } else {
       expect(cmd).toContain('$HOME');
       expect(cmd).not.toContain('USERPROFILE');
