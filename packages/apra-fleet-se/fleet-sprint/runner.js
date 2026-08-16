@@ -6602,10 +6602,29 @@ async function runSprintCycle(context) {
     }
 
     // The sprint branch must be git-ensured on EVERY member that will operate
-    // on it, not just the orchestrator: doers round-robin across the doer pool
-    // and the reviewer runs from the reviewer pool, and on a real multi-member
-    // fleet each has its own checkout. Ensure on the UNION of the orchestrator,
-    // doer, and reviewer pools before the first doer round.
+    // on it, not just the orchestrator: doers round-robin across the doer pool,
+    // the reviewer runs from the reviewer pool, and every other role dispatched
+    // through withGitSync's shared bracket (planner, plan-reviewer, deployer,
+    // integ-test-runner, regression-test-runner, harvester -- see that bracket's
+    // own doc comment a few hundred lines up) gets a pre-dispatch G-pull that
+    // ASSUMES the correct branch is already checked out. On a real multi-member
+    // fleet each role can resolve to its own independent checkout, so ensure on
+    // the union of every role's member pool before the first doer round -- not
+    // just doer/reviewer.
+    //
+    // Without this, a role pinned via roleMap to a member that was never
+    // branch-ensured (e.g. deployer isolated onto its own machine, per the
+    // fleet-supervisor skill's own recommended layout) can pass its G-pull's
+    // `git merge --ff-only origin/<branch>` silently: a fast-forward merge does
+    // not care what branch HEAD is currently on, only that HEAD is an ancestor
+    // of the fetched tip. If that member happens to be sitting on a branch
+    // (e.g. main) that is still fast-forward-compatible with the sprint branch,
+    // the merge succeeds and silently advances THAT branch's pointer instead of
+    // checking out/creating a correctly-named local branch -- the deploy/test
+    // dispatch still gets the right code, but the member's local branch bookkeeping
+    // ends up mislabeled. See apra-fleet-ivxi/u1qw/69pp sprint run
+    // (fleet-sprint/ivxi-u1qw-69pp), where fleet-win-deploy's local `main`
+    // silently absorbed the sprint branch's commits this way.
     //
     // SUPPORTED-TOPOLOGY NOTE: there is no cross-member bd/git sync layer here.
     // Every `bd` command below runs against the orchestrator member's beads DB
@@ -6619,6 +6638,12 @@ async function runSprintCycle(context) {
         orchestratorMember,
         ...getMembersForRole(ROLE_DOER),
         ...getMembersForRole(ROLE_REVIEWER),
+        ...getMembersForRole('planner'),
+        ...getMembersForRole('plan-reviewer'),
+        ...getMembersForRole('deployer'),
+        ...getMembersForRole('integ-test-runner'),
+        ...getMembersForRole('regression-test-runner'),
+        ...getMembersForRole('harvester'),
     ])];
 
     // Read the requirementsFile (if any) once, up front, so its content can
