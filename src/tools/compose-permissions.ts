@@ -560,9 +560,21 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     if (input.project_folder) {
       const reason = input.grant_reason ?? 'granted mid-sprint';
       const date = new Date().toISOString().slice(0, 10);
+      // apra-fleet-ivxi.1.3: when the request carries a role, check each new
+      // grant against that role's bounds profile. A defined-empty bounds
+      // result (no role supplied, or an unknown/missing role -- see
+      // loadBounds) means "no bounds check", matching today's behavior
+      // exactly. Out-of-bounds permissions are still granted (bounds are
+      // informational, never a filter) but their ledger entry is flagged.
+      const bounds = loadBounds(profilesDir, input.role);
       for (const p of expanded) {
         if (!ledger.granted.some(e => e.permission === p)) {
-          ledger.granted.push({ permission: p, reason, date });
+          const entry: Ledger['granted'][number] = { permission: p, reason, date };
+          if (bounds.length > 0 && !bounds.includes(p)) {
+            entry.outOfBounds = true;
+            entry.requestedByRole = input.role;
+          }
+          ledger.granted.push(entry);
         }
       }
       saveLedger(input.project_folder, ledger);
