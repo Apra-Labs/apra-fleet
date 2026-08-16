@@ -115,6 +115,12 @@ const FIXED_ROLE_TIER = {
     // states, so it gets 'cheap' even though it borrows the planner MEMBER for
     // routing convenience.
     streakAssignment: 'cheap',
+    // permissions-composer (apra-fleet-u1qw.2.1): orchestrator-side only, never
+    // member-dispatched. Its job is a small, fully-specified extraction (read a
+    // runbook's Permissions section, call compose_permissions with exactly those
+    // prefixes) with no exploration or judgment beyond what the prompt states,
+    // so it gets 'cheap' like streakAssignment.
+    permissionsComposer: 'cheap',
 };
 
 export const meta = { name: 'fleet-sprint-runner' };
