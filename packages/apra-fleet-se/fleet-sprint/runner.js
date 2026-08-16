@@ -126,6 +126,29 @@ const FIXED_ROLE_TIER = {
 export const meta = { name: 'fleet-sprint-runner' };
 
 // ---------------------------------------------------------------------------
+// permissions-composer output contract (apra-fleet-u1qw.2.2)
+// ---------------------------------------------------------------------------
+//
+// Declared here rather than in contracts.mjs on purpose: permissions-composer
+// is an ORCHESTRATOR-SIDE role with no vendored apra-pm output schema file, so
+// there is nothing for contracts.mjs's vendored-schema loader to resolve. The
+// three fields mirror agents/permissions-composer.md's own "Output schema"
+// section verbatim -- `composed` (did every extracted prefix actually get
+// granted), `grantedPrefixes` (exactly what was requested), `terminalFailure`
+// (null on success; otherwise the missing input / missing runbook section /
+// NEVER_AUTO_GRANT denylist rejection / underlying tool error). A
+// terminalFailure is NEVER retried by the heal helper below.
+export const permissionsComposerReport = {
+    type: 'object',
+    properties: {
+        composed: { type: 'boolean' },
+        grantedPrefixes: { type: 'array', items: { type: 'string' } },
+        terminalFailure: { type: ['string', 'null'] },
+    },
+    required: ['composed', 'grantedPrefixes', 'terminalFailure'],
+};
+
+// ---------------------------------------------------------------------------
 // bd JSON-parse helper
 // ---------------------------------------------------------------------------
 //
@@ -6372,6 +6395,116 @@ async function runSprintCycle(context) {
             : async () => {}
     );
 
+    // --- Missing-permissions self-heal (apra-fleet-u1qw.2.2) ----------------
+    //
+    // ONE helper shared by all three runbook-driven phases (Deploy, Integ
+    // Test, Regression Test). Each of those roles' output schemas carries the
+    // optional `blockedReason` field (apra-fleet-u1qw.1.1/.1.2); the only
+    // value it ever takes is 'missing_permissions', meaning "I could not do my
+    // work because a Bash prefix my own runbook declares was not granted to
+    // me". That is a mechanically fixable failure, not a real phase verdict:
+    // permissions-composer (apra-fleet-u1qw.2.1) reads that phase's runbook
+    // Permissions section and grants exactly those prefixes via
+    // compose_permissions, after which the identical dispatch can simply be
+    // re-run.
+    //
+    // Shape deliberately mirrors two existing patterns:
+    //   - the max_turns resume block at each phase's dispatch site (dispatch,
+    //     inspect the outcome, re-dispatch once with the fault addressed), and
+    //   - src/tools/execute-prompt.ts's trustHealAttempted gate: heal once,
+    //     retry once, and treat a REPEAT of the same failure as terminal
+    //     rather than looping.
+    //
+    // Guard state is per phase per cycle (`permissionHealAttempted`, keyed
+    // `C<cycle>:<phase>`), so:
+    //   - a second consecutive missing_permissions in the SAME cycle/phase is
+    //     terminal and surfaces through the phase's normal failure path, and
+    //   - a LATER cycle still gets its own fresh heal attempt (a genuinely new
+    //     permission need in a later cycle is not the loop this guards).
+    // The retried result is fed back through this same helper, which is what
+    // makes that terminal branch reachable (and observable in the log) without
+    // any second dispatch.
+    //
+    // A terminal permissions-composer outcome -- notably a NEVER_AUTO_GRANT
+    // denylist rejection -- is NEVER retried: the original failure propagates
+    // unchanged (with the terminal reason appended to its notes/summary), so
+    // the phase fails for real exactly as it would have without this helper.
+    // Ditto a composer dispatch that itself errors: the heal is best-effort
+    // and must never convert a phase failure into a thrown sprint abort.
+    const permissionHealAttempted = new Set();
+    /**
+     * @param {object} opts
+     * @param {string} opts.phaseName - human-readable phase name, e.g. 'Deploy'
+     * @param {string} opts.role - the failing phase's role, e.g. 'deployer'
+     * @param {number|string} opts.cycleLabel - cycle number/label, for the per-cycle guard key
+     * @param {any} opts.result - the phase's schema-valid result object
+     * @param {() => Promise<any>} opts.redispatch - re-runs the ORIGINAL phase dispatch once
+     * @param {string} [opts.noteField] - result field to append the terminal reason to
+     * @returns {Promise<any>} the original result, or the retried dispatch's result
+     */
+    const healMissingPermissionsOnce = async ({ phaseName, role, cycleLabel, result, redispatch, noteField = 'notes' }) => {
+        if (!result || result.blockedReason !== 'missing_permissions') return result;
+        const guardKey = `C${cycleLabel}:${phaseName}`;
+        if (permissionHealAttempted.has(guardKey)) {
+            log(`${phaseName}: still blockedReason=missing_permissions after the permissions heal-retry (${guardKey}) -- TERMINAL, surfacing the failure normally (no second heal, no loop).`);
+            return result;
+        }
+        permissionHealAttempted.add(guardKey);
+        const targetMember = getMemberForRole(role);
+        const appendReason = (reason) => {
+            const existing = typeof result[noteField] === 'string' ? result[noteField] : '';
+            return { ...result, [noteField]: `${existing}${existing ? ' ' : ''}[permissions heal] ${reason}` };
+        };
+        log(`${phaseName}: reported blockedReason=missing_permissions -- dispatching permissions-composer once for role ${role} on member ${targetMember}, then retrying this phase exactly once.`);
+        let composed = null;
+        try {
+            // Read-side bracket (pushCode:false, no pushBeads): the composer
+            // READS the failing phase's runbook out of the orchestrator's own
+            // clone, so it must not run against a stale checkout -- same
+            // reasoning as the deployer/integ brackets. It writes no code and
+            // mutates no beads, so nothing is pushed after.
+            composed = await withGitSync(orchestratorMember, false, () => agent(
+                `The ${phaseName} phase failed with blockedReason=missing_permissions: the ${role} on member ` +
+                `"${targetMember}" was denied a Bash prefix its own runbook declares it needs. Heal it per your ` +
+                `contract, using these inputs: phase = ${role}; member_name = ${targetMember}; project_folder = ` +
+                `the repository checkout root you are running in. Read only that phase's runbook Permissions ` +
+                `section and grant exactly the prefixes it declares -- no more, no fewer. If any requested prefix ` +
+                `is rejected as NEVER_AUTO_GRANT, that is a terminal failure: report it, do not route around it.`,
+                {
+                    member_name: orchestratorMember,
+                    // Unlike the Streak Assignment dispatch (which deliberately
+                    // omits agentType because it has no vendored persona), this
+                    // call DOES have one -- apra-pm/agents/permissions-composer.md
+                    // -- and needs it: the persona is what restricts the dispatch
+                    // to Read + compose_permissions.
+                    agentType: 'permissions-composer',
+                    label: `Permissions Composer (${phaseName} heal)`,
+                    schema: permissionsComposerReport,
+                    model: FIXED_ROLE_TIER.permissionsComposer,
+                }
+            ));
+        } catch (err) {
+            if (err instanceof AgentOutputError || err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                log(`${phaseName}: permissions-composer dispatch failed (${err.message}) -- leaving the original missing-permissions failure in place, no retry.`);
+                return appendReason(`composer dispatch failed: ${err.message}`);
+            }
+            throw err;
+        }
+        if (!composed || composed.composed !== true) {
+            const terminal = (composed && composed.terminalFailure) || 'permissions-composer returned composed:false with no stated reason';
+            log(`${phaseName}: permissions-composer did NOT grant -- TERMINAL, propagating the original failure (a NEVER_AUTO_GRANT rejection is never retried): ${terminal}`);
+            return appendReason(`terminal composer failure, phase NOT retried: ${terminal}`);
+        }
+        log(`${phaseName}: permissions-composer granted [${(composed.grantedPrefixes || []).join(', ') || 'none reported'}] -- retrying the ${phaseName} dispatch exactly once.`);
+        // Feed the retry's result back through this same helper: the guard is
+        // already set, so a repeat missing_permissions takes the terminal
+        // branch above instead of healing again.
+        return await healMissingPermissionsOnce({
+            phaseName, role, cycleLabel, redispatch, noteField,
+            result: await redispatch(),
+        });
+    };
+
     // ONE shared bracket wrapping EVERY role-identified agent() dispatch below
     // -- planner, plan-reviewer, doer, reviewer, deployer, integ-test-runner,
     // harvester. No phase-based exemptions: a deployer or integ-test-runner
@@ -9312,50 +9445,67 @@ async function runSprintCycle(context) {
                 max_total_s: DISPATCH_TIMEOUT_S,
                 max_turns: DEPLOYER_MAX_TURNS,
             };
-            try {
-                // The deployer is a read-side role (pushCode: false) -- but a
-                // deployer on a stale checkout is as damaging as a stale reviewer
-                // diff, so it still gets the pre-dispatch G-pull.
+            // The WHOLE deploy attempt -- dispatch, max_turns resume ladder and
+            // the failure classification below it -- as one named closure, so
+            // the missing-permissions heal (apra-fleet-u1qw.2.2) can re-run
+            // EXACTLY the original dispatch once after a grant, rather than a
+            // hand-copied approximation of it. Always returns a result object;
+            // only a non-dispatch error escapes.
+            const dispatchDeployAttempt = async () => {
                 try {
-                    deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                        'Deploy to test env using deploy.md.',
-                        { ...deployerDispatchOpts, member_name: getMemberForRole('deployer') }
-                    ));
-                } catch (err) {
-                    if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
-                        log(`Deployer exhausted its turn limit (max_turns=${DEPLOYER_MAX_TURNS}) -- resuming the same session with max_turns=${DEPLOYER_MAX_TURNS * 2}.`);
-                        await memberSessionGuard.killIfAlive(getMemberForRole('deployer'));
-                        deployResult = await withGitSync(getMemberForRole('deployer'), false, () => agent(
-                            'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
-                            {
-                                ...deployerDispatchOpts,
-                                member_name: getMemberForRole('deployer'),
-                                label: `Deploy (resume, max_turns=${DEPLOYER_MAX_TURNS * 2})`,
-                                resume: true,
-                                max_turns: DEPLOYER_MAX_TURNS * 2,
-                            }
+                    // The deployer is a read-side role (pushCode: false) -- but a
+                    // deployer on a stale checkout is as damaging as a stale reviewer
+                    // diff, so it still gets the pre-dispatch G-pull.
+                    try {
+                        return await withGitSync(getMemberForRole('deployer'), false, () => agent(
+                            'Deploy to test env using deploy.md.',
+                            { ...deployerDispatchOpts, member_name: getMemberForRole('deployer') }
                         ));
-                    } else {
+                    } catch (err) {
+                        if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
+                            log(`Deployer exhausted its turn limit (max_turns=${DEPLOYER_MAX_TURNS}) -- resuming the same session with max_turns=${DEPLOYER_MAX_TURNS * 2}.`);
+                            await memberSessionGuard.killIfAlive(getMemberForRole('deployer'));
+                            return await withGitSync(getMemberForRole('deployer'), false, () => agent(
+                                'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
+                                {
+                                    ...deployerDispatchOpts,
+                                    member_name: getMemberForRole('deployer'),
+                                    label: `Deploy (resume, max_turns=${DEPLOYER_MAX_TURNS * 2})`,
+                                    resume: true,
+                                    max_turns: DEPLOYER_MAX_TURNS * 2,
+                                }
+                            ));
+                        }
                         throw err;
                     }
-                }
-            } catch (err) {
-                if (err instanceof AgentOutputError) {
-                    log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
-                    deployResult = { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
-                } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
-                    // Self-heal now so the next cycle's Deployer dispatch on this
-                    // same member isn't walking into the identical unhealed auth
-                    // failure.
-                    if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
-                        await onLlmAuthFailure({ member: getMemberForRole('deployer'), label: 'Deployer dispatch', error: err.message });
+                } catch (err) {
+                    if (err instanceof AgentOutputError) {
+                        log(`Deployer: schema-repair exhausted, treating as deployed:false: ${err.message}`);
+                        return { deployed: false, notes: `Deployer failed to return a schema-valid report after repair attempts: ${err.message}` };
+                    } else if (err instanceof AgentDispatchError || err instanceof FleetTransportError) {
+                        // Self-heal now so the next cycle's Deployer dispatch on this
+                        // same member isn't walking into the identical unhealed auth
+                        // failure.
+                        if (isAuthDispatchError(err) && typeof onLlmAuthFailure === 'function') {
+                            await onLlmAuthFailure({ member: getMemberForRole('deployer'), label: 'Deployer dispatch', error: err.message });
+                        }
+                        log(`Deployer: agent dispatch failed, treating as deployed:false: ${err.message}`);
+                        return { deployed: false, notes: `Deployer dispatch failed: ${err.message}` };
                     }
-                    log(`Deployer: agent dispatch failed, treating as deployed:false: ${err.message}`);
-                    deployResult = { deployed: false, notes: `Deployer dispatch failed: ${err.message}` };
-                } else {
                     throw err;
                 }
-            }
+            };
+            deployResult = await dispatchDeployAttempt();
+            // No-op unless the deployer reported blockedReason=missing_permissions;
+            // a deploy with no blockedReason is returned untouched.
+            deployResult = await healMissingPermissionsOnce({
+                phaseName: 'Deploy',
+                role: 'deployer',
+                cycleLabel: cycle,
+                result: deployResult,
+                redispatch: dispatchDeployAttempt,
+                noteField: 'notes',
+            });
             // No duplicate log() dump -- see dispatchReview() for why.
             deployedThisCycle = deployResult.deployed === true;
             if (!deployedThisCycle) {
@@ -9532,13 +9682,21 @@ async function runSprintCycle(context) {
                         max_turns: INTEG_TEST_MAX_TURNS * 2,
                     }
                 ), { pushBeads: true });
+                // The dispatch plus its resume ladder as one named closure, so
+                // the missing-permissions heal (apra-fleet-u1qw.2.2) re-runs
+                // exactly this, once, after a grant. Deliberately does NOT
+                // include the scope derivation above it (bdListScoped /
+                // classifyVerifySet / verifyEverIds): a retry must not
+                // recompute or re-register this cycle's verify set. Dispatch
+                // errors still propagate to the outer catch, unchanged.
+                const dispatchIntegWithResumeLadder = async () => {
                 try {
-                    integResult = await dispatchIntegOnce();
+                    return await dispatchIntegOnce();
                 } catch (err) {
                     if (err instanceof AgentDispatchError && err.details?.reason === 'max_turns_exhausted') {
                         log(`Integ Test Runner exhausted its turn limit (max_turns=${INTEG_TEST_MAX_TURNS}) -- resuming the same session with max_turns=${INTEG_TEST_MAX_TURNS * 2} instead of restarting the run.`);
                         await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
-                        integResult = await dispatchIntegResume();
+                        return await dispatchIntegResume();
                     } else if (err instanceof AgentDispatchError && isInfraDispatchFailure(err)) {
                         // An INFRA dispatch failure (empty_response / inactivity
                         // timeout / orphan-recovery timeout) is NOT a test
@@ -9554,11 +9712,23 @@ async function runSprintCycle(context) {
                         // failure.
                         log(`Integ Test Runner: infrastructure dispatch failure (${err.details?.reason}) -- the member CLI produced no test verdict (no result envelope). This is NOT a test failure; resuming the same session once to recover before recording anything.`);
                         await memberSessionGuard.killIfAlive(getMemberForRole('integ-test-runner'));
-                        integResult = await dispatchIntegResume();
+                        return await dispatchIntegResume();
                     } else {
                         throw err;
                     }
                 }
+                };
+                integResult = await dispatchIntegWithResumeLadder();
+                // No-op unless the runner reported
+                // blockedReason=missing_permissions.
+                integResult = await healMissingPermissionsOnce({
+                    phaseName: 'Integ Test',
+                    role: 'integ-test-runner',
+                    cycleLabel: cycle,
+                    result: integResult,
+                    redispatch: dispatchIntegWithResumeLadder,
+                    noteField: 'summary',
+                });
             } catch (err) {
                 if (err instanceof AgentOutputError) {
                     log(`Integ Test Runner: schema-repair exhausted, treating as passed:false: ${err.message}`);
@@ -10363,8 +10533,13 @@ async function runSprintCycle(context) {
         try {
             // Mutates beads (files carry-over bugs) but never touches code:
             // pushCode false / pushBeads true, exactly like the integ runner.
+            //
+            // Dispatch + resume ladder as one named closure so the
+            // missing-permissions heal (apra-fleet-u1qw.2.2) re-runs exactly
+            // the original dispatch once after a grant.
+            const dispatchRegressionWithResumeLadder = async () => {
             try {
-                regressionResult = await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
+                return await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
                     regressionPrompt,
                     { ...regressionDispatchOpts, member_name: getMemberForRole('regression-test-runner') }
                 ), { pushBeads: true });
@@ -10376,7 +10551,7 @@ async function runSprintCycle(context) {
                     // dispatch's scope/filing rules -- a bare "continue" would
                     // lose the parent-less filing rule, which is the whole point
                     // of this phase.
-                    regressionResult = await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
+                    return await withGitSync(getMemberForRole('regression-test-runner'), false, () => agent(
                         'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining work, run Teardown, and return your final report now. ' +
                         'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
                         {
@@ -10391,6 +10566,19 @@ async function runSprintCycle(context) {
                     throw err;
                 }
             }
+            };
+            regressionResult = await dispatchRegressionWithResumeLadder();
+            // No-op unless the runner reported
+            // blockedReason=missing_permissions. finalCycleLabel (not `cycle`)
+            // is this once-per-sprint phase's cycle label.
+            regressionResult = await healMissingPermissionsOnce({
+                phaseName: 'Regression Test',
+                role: 'regression-test-runner',
+                cycleLabel: finalCycleLabel,
+                result: regressionResult,
+                redispatch: dispatchRegressionWithResumeLadder,
+                noteField: 'summary',
+            });
             if (regressionResult.passed !== true) {
                 log(`Regression pass reported FAILURES (carry-over beads: ${(regressionResult.bugsFiled || []).join(', ') || 'none'}): ${regressionResult.summary}`);
             } else {

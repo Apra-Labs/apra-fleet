@@ -901,7 +901,12 @@ test('Plan 3.3: every beads-mutating dispatch role sets pushBeads:true; read-onl
     // max_turns resume -- both read-side (pushCode:false) but BOTH mutating
     // (pushBeads:true): the runner files parent-less
     // `[regression][carry-over]` bug beads that must reach the shared remote.
-    assert.equal(sites.length, 20, `expected 20 withGitSync(...) dispatch brackets, found ${sites.length}`);
+    // 20 -> 21 (apra-fleet-u1qw.2.2): the shared missing-permissions heal
+    // helper's permissions-composer dispatch gets its own bracket -- read-side
+    // (pushCode:false) and NON-mutating (no pushBeads: it only grants
+    // permissions via compose_permissions, never touching beads), so the
+    // pushBeads count below is unchanged.
+    assert.equal(sites.length, 21, `expected 21 withGitSync(...) dispatch brackets, found ${sites.length}`);
 
     // apra-fleet-eft.54.1: the planner's first-attempt bracket now passes
     // `{ pushBeads: true, skipPreDispatchSync }` (retry-ladder pre-dispatch

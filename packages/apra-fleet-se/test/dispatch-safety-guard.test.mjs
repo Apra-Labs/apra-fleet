@@ -295,7 +295,13 @@ const EXPECTED_COMMAND_COUNT = 40;
 // call sites -- the dispatch itself and its max_turns-exhaustion
 // resume-and-continue, both `member_name:
 // getMemberForRole('regression-test-runner')`, verified compliant.
-const EXPECTED_AGENT_COUNT = 22;
+// 22 -> 23 (apra-fleet-u1qw.2.2): the shared missing-permissions heal helper
+// (healMissingPermissionsOnce, used by all three of Deploy / Integ Test /
+// Regression Test) adds exactly ONE new agent() call site -- the
+// permissions-composer dispatch, `member_name: orchestratorMember`, verified
+// compliant. The three phase retries reuse the existing dispatch closures, so
+// they add no further call sites.
+const EXPECTED_AGENT_COUNT = 23;
 
 // findCallSites/extractBalancedCall/skipStringLiteral/isInsideSameLineString
 // and the path-parameterized checkPath() checker now live in
