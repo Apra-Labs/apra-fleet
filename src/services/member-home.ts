@@ -51,7 +51,10 @@ const PROBE_TIMEOUT_MS = 10_000;
  *    expands `$env:USERPROFILE` inside the double quotes before the inner
  *    `powershell -c` ever sees it, leaving an unquoted path literal that is a
  *    syntax error (same defect class as apra-fleet-ot2z). Base64-encoding
- *    sidesteps re-tokenization by whatever shell sits in between.
+ *    sidesteps re-tokenization by whatever shell sits in between. Banner or
+ *    profile output (if present) is emitted BEFORE the command itself runs,
+ *    never after; the result filtering below deliberately takes the LAST
+ *    non-empty line, so chatty profiles do not corrupt the home path.
  *  - POSIX: `printf '%s'` rather than `echo` -- no trailing newline, no shell
  *    builtin escape-interpretation differences between sh/bash/dash.
  */
