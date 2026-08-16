@@ -16,7 +16,7 @@
  * exactly what broke ~71 tests during the #390 work.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, decodePowerShellEncodedCommand } from './test-helpers.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -63,7 +63,10 @@ describe('SF-18: member home-dir cache warming', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockExecCommand.mockImplementation(async (cmd: string) => {
       if (cmd.includes('$HOME')) return { stdout: '/export/home/bella\n', stderr: '', code: 0 };
-      if (cmd.includes('USERPROFILE')) return { stdout: 'D:\\Profiles\\bella', stderr: '', code: 0 };
+      // Windows probe is delivered via wrapPowerShellEncoded (base64
+      // -EncodedCommand), not a raw inline string -- decode to inspect it.
+      const decoded = decodePowerShellEncodedCommand(cmd);
+      if (decoded.includes('USERPROFILE')) return { stdout: 'D:\\Profiles\\bella', stderr: '', code: 0 };
       return { stdout: '', stderr: '', code: 0 };
     });
   });

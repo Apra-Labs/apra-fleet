@@ -8,6 +8,19 @@ import os from 'node:os';
 import type { Agent, SSHExecResult } from '../src/types.js';
 
 /**
+ * Decode a `powershell -EncodedCommand <base64>` string back to the underlying
+ * script so a test can assert on its content. wrapPowerShellEncoded()
+ * (src/os/windows.ts) base64/utf16le-encodes PowerShell scripts to survive
+ * re-tokenization by an intermediate shell; returns `cmd` unchanged if it is
+ * not an -EncodedCommand-wrapped string (e.g. a POSIX command).
+ */
+export function decodePowerShellEncodedCommand(cmd: string): string {
+  const m = cmd.match(/-EncodedCommand (\S+)/);
+  if (!m) return cmd;
+  return Buffer.from(m[1], 'base64').toString('utf16le');
+}
+
+/**
  * A strategy.execCommand implementation that simulates a real member filesystem
  * for the config files compose_permissions delivers.
  *

@@ -18,7 +18,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SSHExecResult } from '../src/types.js';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, decodePowerShellEncodedCommand } from './test-helpers.js';
 
 const { mockExecCommand, mockWriteStatusline, mockLogWarn } = vi.hoisted(() => ({
   mockExecCommand: vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>(),
@@ -213,7 +213,10 @@ describe('no-signal dispatches are not killed by the stall detector (#390 / igoe
     addAgent(agent);
 
     mockExecCommand.mockImplementation(async (cmd: string) => {
-      if (cmd.includes('USERPROFILE')) return { stdout: 'C:\\Users\\bella', stderr: '', code: 0 };
+      // Windows probe is delivered via wrapPowerShellEncoded (base64
+      // -EncodedCommand), not a raw inline string -- decode to inspect it.
+      const decodedCmd = decodePowerShellEncodedCommand(cmd);
+      if (decodedCmd.includes('USERPROFILE')) return { stdout: 'C:\\Users\\bella', stderr: '', code: 0 };
       return { stdout: '', stderr: '', code: 0 };
     });
 

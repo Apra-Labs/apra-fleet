@@ -30,6 +30,7 @@ import { getStrategy } from './strategy.js';
 import { getAgentOS } from '../utils/agent-helpers.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { getProvider } from '../providers/index.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 
 /** memberId -> resolved home directory. Successful probes only. */
 const homeDirCache = new Map<string, string>();
@@ -43,16 +44,20 @@ const PROBE_TIMEOUT_MS = 10_000;
  *  - Windows: `%USERPROFILE%` is the canonical Windows home and is what the
  *    codebase already uses member-side for exactly this purpose -- see
  *    ClaudeProvider.ensureWorkspaceTrusted (`$env:USERPROFILE\.claude.json`) and
- *    AgyProvider's SCRIPTS_WIN. It is read through `powershell -NoProfile -c`,
- *    the same shell prefix stall-poller.ts already uses for member-side
- *    filesystem reads (a Windows member's default exec shell is not PowerShell).
- *    `-NoProfile` keeps a chatty user profile from polluting stdout.
+ *    AgyProvider's SCRIPTS_WIN. Delivered via `wrapPowerShellEncoded` (same as
+ *    every other Windows-targeting PowerShell invocation in this codebase) --
+ *    a raw inline `powershell -c "..."` string is NOT safe here: if the
+ *    member's default exec shell is itself PowerShell, that outer shell
+ *    expands `$env:USERPROFILE` inside the double quotes before the inner
+ *    `powershell -c` ever sees it, leaving an unquoted path literal that is a
+ *    syntax error (same defect class as apra-fleet-ot2z). Base64-encoding
+ *    sidesteps re-tokenization by whatever shell sits in between.
  *  - POSIX: `printf '%s'` rather than `echo` -- no trailing newline, no shell
  *    builtin escape-interpretation differences between sh/bash/dash.
  */
 function probeCommandFor(targetOs: TargetOS): string {
   return targetOs === 'windows'
-    ? 'powershell -NoProfile -c "[Console]::Out.Write($env:USERPROFILE)"'
+    ? wrapPowerShellEncoded('[Console]::Out.Write($env:USERPROFILE)')
     : 'printf \'%s\' "$HOME"';
 }
 
