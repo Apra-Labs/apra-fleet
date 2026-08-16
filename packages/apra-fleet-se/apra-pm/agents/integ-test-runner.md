@@ -311,6 +311,10 @@ placeholder):
 }
 ```
 
+Set the optional `blockedReason` field to `missing_permissions` when, and only when, the
+integ-test phase could not proceed because a tool or git invocation was blocked by the
+permission layer. Omit it in all other cases; outputs omitting the field still validate.
+
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is
 authoritative -- respond with exactly that JSON and nothing else. It is expected to match
 this contract; if it differs, follow the dispatch prompt.

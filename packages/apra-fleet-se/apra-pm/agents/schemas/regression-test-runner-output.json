@@ -45,6 +45,11 @@
           "description": "The toy repo's head commit SHA after the toy sprint."
         }
       }
+    },
+    "blockedReason": {
+      "type": "string",
+      "enum": ["missing_permissions"],
+      "description": "Optional. Set only when the regression-test phase could not proceed because of a permission denial. Value is always missing_permissions."
     }
   }
 }
