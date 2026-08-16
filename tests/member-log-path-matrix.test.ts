@@ -41,7 +41,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import type { Agent, SSHExecResult } from '../src/types.js';
-import { decodePowerShellEncodedCommand } from './test-helpers.js';
 
 const { mockExecCommand, mockLogWarn } = vi.hoisted(() => ({
   mockExecCommand: vi.fn<(cmd: string, timeoutMs?: number) => Promise<SSHExecResult>>(),
@@ -286,10 +285,18 @@ describe('getMemberHomeDir -- probe, cache, and graceful failure', () => {
     const cmd = mockExecCommand.mock.calls[0]![0];
     if (memberOs === 'windows') {
       // Delivered via wrapPowerShellEncoded (base64 -EncodedCommand), not a
-      // raw inline string -- decode to inspect the actual script.
+      // raw inline string -- decode to inspect the actual script. No
+      // fallback to the raw `cmd` here: an un-encoded regression must
+      // decode to '' (no USERPROFILE match) instead of silently passing.
       expect(cmd).toContain('powershell');
-      const decoded = decodePowerShellEncodedCommand(cmd);
+      const encodedMatch = cmd.match(/-EncodedCommand (\S+)/);
+      const decoded = encodedMatch ? Buffer.from(encodedMatch[1], 'base64').toString('utf16le') : '';
+      expect(cmd).not.toBe(decoded); // must be -EncodedCommand wrapped
       expect(decoded).toContain('USERPROFILE');
+      // Regression guard (fleet-win11 / fleet-win-dev1 live failure): the
+      // raw issued command must carry no bare dollar-env reference an
+      // outer PowerShell shell could expand.
+      expect(cmd).not.toMatch(/\$\w/);
     } else {
       expect(cmd).toContain('$HOME');
       expect(cmd).not.toContain('USERPROFILE');

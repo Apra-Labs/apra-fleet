@@ -16,7 +16,7 @@
  * exactly what broke ~71 tests during the #390 work.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, decodePowerShellEncodedCommand } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -63,9 +63,14 @@ describe('SF-18: member home-dir cache warming', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockExecCommand.mockImplementation(async (cmd: string) => {
       if (cmd.includes('$HOME')) return { stdout: '/export/home/bella\n', stderr: '', code: 0 };
-      // Windows probe is delivered via wrapPowerShellEncoded (base64
-      // -EncodedCommand), not a raw inline string -- decode to inspect it.
-      const decoded = decodePowerShellEncodedCommand(cmd);
+      // Windows probe must be delivered via wrapPowerShellEncoded (base64
+      // -EncodedCommand), not a raw inline string with a bare $env
+      // reference an outer PowerShell shell could expand (the exact live
+      // failure for fleet-win11 / fleet-win-dev1). No fallback to the raw
+      // `cmd` here: an un-encoded regression must decode to '' (no
+      // USERPROFILE match) instead of silently passing through.
+      const encodedMatch = cmd.match(/-EncodedCommand (\S+)/);
+      const decoded = encodedMatch ? Buffer.from(encodedMatch[1], 'base64').toString('utf16le') : '';
       if (decoded.includes('USERPROFILE')) return { stdout: 'D:\\Profiles\\bella', stderr: '', code: 0 };
       return { stdout: '', stderr: '', code: 0 };
     });
@@ -113,6 +118,19 @@ describe('SF-18: member home-dir cache warming', () => {
         source: 'probe',
         homeDir: 'D:\\Profiles\\bella',
       });
+
+      // Case 1 + 2 (regression guard for the fleet-win11 / fleet-win-dev1
+      // live failure): the issued command must be an -EncodedCommand
+      // invocation whose DECODED script reads USERPROFILE, and the raw
+      // issued string itself must carry no bare dollar-env reference an
+      // outer PowerShell shell could expand.
+      expect(mockExecCommand).toHaveBeenCalledTimes(1);
+      const raw = mockExecCommand.mock.calls[0][0] as string;
+      const encodedMatch = raw.match(/-EncodedCommand (\S+)/);
+      const decoded = encodedMatch ? Buffer.from(encodedMatch[1], 'base64').toString('utf16le') : raw;
+      expect(raw).not.toBe(decoded); // must be -EncodedCommand wrapped
+      expect(decoded).toContain('USERPROFILE');
+      expect(raw).not.toMatch(/\$\w/); // no bare $env-style token in the raw issued command
     });
 
     it('never probes local members (os.homedir() is already exactly right)', async () => {
