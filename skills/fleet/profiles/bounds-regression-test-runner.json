@@ -1,0 +1,10 @@
+[
+  "Bash(mkdir *)",
+  "Bash(rm -rf ~/temp/.apra-fleet-tests*)",
+  "Bash(node dist/index.js *)",
+  "Bash(git clone *)",
+  "Bash(git -C ~/temp/.apra-fleet-tests* *)",
+  "Bash(node scripts/run-integ-suites.mjs *)",
+  "Bash(npm run test:slow*)",
+  "Bash(bd *)"
+]

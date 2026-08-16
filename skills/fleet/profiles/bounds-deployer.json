@@ -1,0 +1,11 @@
+[
+  "Bash(*apra-fleet-installer-* install *)",
+  "Bash(*apra-fleet* --version)",
+  "Bash(*apra-fleet* run *)",
+  "Bash(node scripts/preflight-clear-build-locks.mjs)",
+  "Bash(npm ci)",
+  "Bash(npm run build)",
+  "Bash(npm run build:binary)",
+  "Bash(dist/apra-fleet-installer-* install *)",
+  "Bash(curl * localhost:8787/api/sprints*)"
+]

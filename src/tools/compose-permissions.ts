@@ -166,6 +166,17 @@ function loadProfile(profilesDir: string, name: string): any {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 }
 
+/** Loads the per-role bounds file (bounds-<role>.json) listing Bash permission
+ *  prefix patterns considered in-scope for that role. Returns a defined empty
+ *  array (never undefined/deny-all) for an unknown or missing role -- callers
+ *  must treat an empty result as "no bounds check", not "deny everything". */
+export function loadBounds(profilesDir: string, role: string | undefined): string[] {
+  if (!role) return [];
+  const bounds = loadProfile(profilesDir, `bounds-${role}`);
+  if (!Array.isArray(bounds)) return [];
+  return bounds;
+}
+
 function loadLedger(projectFolder: string): Ledger {
   const ledgerPath = path.join(projectFolder, 'permissions.json');
   if (fs.existsSync(ledgerPath)) {
