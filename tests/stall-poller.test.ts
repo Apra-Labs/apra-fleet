@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { decodePowerShellEncodedCommand } from './test-helpers.js';
 
 const execAsync = promisify(exec);
 
@@ -457,8 +458,7 @@ describe('pollLogFile', () => {
           // real by the host shell.
           // Windows probe is delivered via wrapPowerShellEncoded (base64
           // -EncodedCommand), not a raw inline string -- decode to inspect it.
-          const encodedMatch = cmd.match(/-EncodedCommand (\S+)/);
-          const decodedCmd = encodedMatch ? Buffer.from(encodedMatch[1], 'base64').toString('utf16le') : cmd;
+          const decodedCmd = decodePowerShellEncodedCommand(cmd);
           if (decodedCmd.includes('$HOME') || decodedCmd.includes('USERPROFILE')) {
             return { stdout: fixtureHome, stderr: '', code: 0 };
           }
