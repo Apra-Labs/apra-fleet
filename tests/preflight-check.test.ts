@@ -241,6 +241,26 @@ describe('preflightCheck', () => {
     expect(result.reason).toContain('provision_llm_auth');
   });
 
+  // ---- Auth: per-probe indeterminacy (ANY errored probe fails open, not ALL) ----
+  it('fails open when the OAuth probe errors even though the api-key probes cleanly resolve to "not found" -- the dominant real-world Claude/OAuth scenario', async () => {
+    const agent = makeAgent();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockRejectedValueOnce(new Error('ssh exec transient failure')); // readRemoteJson (OAuth probe errors)
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck ANTHROPIC_API_KEY (cleanly not found)
+    mockExecCommand.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 }); // apiKeyCheck CLAUDE_CODE_OAUTH_TOKEN (cleanly not found)
+
+    const result = await preflightCheck(agent);
+    // Must NOT be auth_missing: that gets classified non-retryable and
+    // triggers auth self-heal on a member whose OAuth credentials (its actual
+    // mechanism) may be perfectly fine. The api-key probes "succeeding" at
+    // finding nothing must not be trusted as proof of no credentials when the
+    // OAuth probe itself failed to execute -- requiring ALL probes to error
+    // (rather than ANY) missed exactly this case, since the api-key probes
+    // almost always cleanly resolve for a Claude member.
+    expect(result.ok).toBe(true);
+    expect(result.code).toBeUndefined();
+  });
+
   // ---- Auth: stored encrypted env var counts ----
   it('passes when agent has stored encrypted env var for the auth env var', async () => {
     const agent = makeAgent({

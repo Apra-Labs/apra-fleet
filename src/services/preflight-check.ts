@@ -265,35 +265,48 @@ export async function preflightCheck(
       } else {
         // cs === null means either a non-Claude provider (freshness check not
         // implemented for it) OR a malformed/unparseable Claude credential file
-        // (JSON parse failure, missing claudeAiOauth.expiresAt). Both cases
-        // must log and skip explicitly rather than silently falling through to
-        // "all checks passed" -- a corrupted Claude credential file would
-        // otherwise report ok:true and only fail on the real dispatch.
+        // (JSON parse failure, missing claudeAiOauth.expiresAt). Both cases now
+        // get the same explicit "skipping" log instead of a silent no-op --
+        // but this is visibility only, NOT a fix to the underlying gap: the
+        // freshness check is still skipped either way, so preflight still
+        // reports ok:true (and caches it) for a malformed Claude credential
+        // file exactly as it did before this log line existed. Actually
+        // failing the check on cs===null for the 'claude' provider specifically
+        // would be the real fix; deliberately not done here, matching the
+        // narrower "log a warning, don't silently pass" scope this was
+        // reviewed and requested as.
         logLine('preflight', `OAuth file present but unparseable for provider ${provider.name}, skipping freshness check`, agent);
       }
     }
   }
 
   if (!oauthFilePresent && !apiKeyPresent) {
-    // Distinguish "we asked and confirmed no credentials exist" from "every
-    // probe we attempted errored out (SSH hiccup, transient exec failure) and
-    // we genuinely don't know." Only count probes that were actually
-    // attempted (a provider with no oauthCredentialFiles/authEnvVars never
-    // issues that probe at all -- that's not a failure, there's nothing to
-    // check). If every attempted probe errored, reporting auth_missing would
-    // be a false positive that (a) gets classified non-retryable and (b)
-    // triggers auth self-heal on a member whose credentials may be fine --
-    // the exact failure mode this feature exists to prevent, inverted.
+    // Distinguish "we asked and confirmed no credentials exist" from "at
+    // least one probe we attempted errored out (SSH hiccup, transient exec
+    // failure) and we can't trust a clean-absent verdict from the other."
+    // Only count probes that were actually attempted (a provider with no
+    // oauthCredentialFiles/authEnvVars never issues that probe at all --
+    // that's not a failure, there's nothing to check).
+    //
+    // Deliberately ANY errored probe, not ALL: for the dominant real-world
+    // case (a Claude/OAuth member), the api-key fallback probe almost always
+    // "succeeds" -- it cleanly executes and reports no key found, which is a
+    // real resolved absence, not an error. Requiring every probe to error
+    // before failing open meant a transient failure of ONLY the OAuth probe
+    // (the member's actual credential mechanism) still fell through to
+    // auth_missing, because the unrelated api-key probe "succeeded" at
+    // finding nothing -- the exact false positive this check exists to
+    // prevent, in the most common case. A single attempted probe erroring is
+    // enough that we cannot trust the other probe's clean-absent result as
+    // proof this member has no working credential of ANY kind.
     const oauthAttempted = !!(oauthFiles && oauthFiles.length > 0);
     const oauthProbeErrored = oauthAttempted && oauthResult === null;
     const apiKeyAttempted = authEnvVars.length > 0;
     const apiKeyProbesErrored = apiKeyAttempted && apiKeyResults.every(r => r === null);
-    const anyProbeAttempted = oauthAttempted || apiKeyAttempted;
-    const allAttemptedProbesErrored =
-      (!oauthAttempted || oauthProbeErrored) && (!apiKeyAttempted || apiKeyProbesErrored);
+    const anyAttemptedProbeErrored = oauthProbeErrored || apiKeyProbesErrored;
 
-    if (anyProbeAttempted && allAttemptedProbesErrored) {
-      logLine('preflight', `INDETERMINATE auth: all attempted probes errored (oauth attempted=${oauthAttempted}, apikey attempted=${apiKeyAttempted}) -- failing open`, agent);
+    if (anyAttemptedProbeErrored) {
+      logLine('preflight', `INDETERMINATE auth: a probe errored (oauth errored=${oauthProbeErrored}, apikey errored=${apiKeyProbesErrored}) -- failing open`, agent);
       // Fail open rather than cache: we have no positive evidence either way,
       // so force a recheck on the next dispatch instead of caching a guess.
       return {
