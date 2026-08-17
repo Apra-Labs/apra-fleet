@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+// @ts-expect-error -- plain .mjs helper, no type declarations
+import { execBdSync } from '../scripts/lib/exec-bd.mjs';
 import {
   isSyncRemoteActive,
   parseActiveSyncRemoteValue,
@@ -442,9 +444,16 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
       // reaching parseDoltRemoteList). Detect whether `bd` is actually reachable
       // and assert the specific outcome for that environment, so a real `bd`
       // installation always exercises the parser this test is meant to cover.
+      // The probe MUST use the same execBdSync helper as the code under test.
+      // A bare execFileSync('bd', ...) throws on Windows -- npm installs `bd` as
+      // a .cmd shim, which execFileSync cannot spawn without a shell -- so this
+      // computed bdAvailable=false on windows-latest while checkDoltRemoteAbsent
+      // (which routes through execBdSync's resolved bin/bd.js) DID reach bd,
+      // failing as: expected 'OK: Dolt-level remotes in ...' to match /unavailable/.
+      // execBdSync is also the injection-safe path -- see scripts/lib/exec-bd.mjs.
       let bdAvailable = true;
       try {
-        execFileSync('bd', ['--version'], { stdio: 'ignore' });
+        execBdSync(['--version'], { stdio: 'ignore' });
       } catch {
         bdAvailable = false;
       }
