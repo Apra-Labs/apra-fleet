@@ -218,7 +218,12 @@ in another repo's KB. Scope is normally derived from the caller's repo path;
 tools also accept an explicit `repo_remote_url` so a remote member (whose
 work folder is a path on another host, unreachable from the fleet server's
 filesystem) resolves to the same project KB as a local clone of that repo
-instead of a shared fallback database.
+instead of a shared fallback database. The automatic post-prompt harvest and
+the `code_context` KB enrichment path both forward this URL too, and an
+unreachable work-folder path is never silently swapped for the fleet
+server's own working directory -- see
+[Per-repo KB isolation](docs/knowledge-layer.md#per-repo-kb-isolation) for
+the full anchor and cache-keying rules.
 
 The backend is swappable: start with local SQLite, add a central HTTP server for
 a team, or plug in Postgres later -- all via a one-line config change.
